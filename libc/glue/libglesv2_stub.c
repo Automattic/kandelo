@@ -74,6 +74,8 @@ struct wpk_program_record {
     uint64_t link_epoch;
     struct wpk_program_record *shaders[2], *next;
 };
+struct wpk_program_stream;
+struct wpk_program_intent;
 struct wpk_object_group {
     pthread_mutex_t mutex, dispatch_mutex;
     /* Guarded by the recursive dispatch mutex, never read before acquisition.
@@ -85,6 +87,17 @@ struct wpk_object_group {
     struct wpk_object_name *names, *retired_objects;
     struct wpk_program_record *program_records;
     _Atomic int program_records_known;
+    /* Foreign publishers see only committed immutable intent cells, never
+     * another encoder's cursor or command bytes. Dispatch owns the list. */
+    struct wpk_program_stream *program_streams;
+    struct wpk_program_intent *program_head, *program_tail;
+    /* Reserve uncertain publication custody before entry, across every outer
+     * context. Another publisher must reconcile it rather than replay rows. */
+    struct wpk_program_stream *program_publication_caller;
+    uint32_t program_publication_transaction, program_publication_count;
+    uint64_t program_sequence;
+    _Atomic int program_intents_pending;
+    _Atomic uint64_t program_owner_epoch;
     /* Dispatch serialization admits at most one unpublished raw candidate.
      * Reserve its cleanup slot with the group, before any native allocation. */
     GLuint pending_external_texture;
@@ -108,6 +121,9 @@ static void destroy_object_records(struct wpk_object_name *records) {
     }
 }
 static struct wpk_object_group *object_group_create(void) {
+    // Ownership must predate every dispatch lock, including before journal
+    // admission or the first error drain. A child cannot inherit that lock.
+    if (!_wpk_gl_device_requests_fork_safe()) {errno=ENOMEM;return NULL;}
     struct wpk_object_group *group = calloc(1, sizeof *group);
     if (!group)
         return NULL;
@@ -132,12 +148,15 @@ static struct wpk_object_group *object_group_create(void) {
     }
     group->references = 1;
     group->program_records_known = 1;
+    atomic_store_explicit(&group->program_owner_epoch,_wpk_gl_device_owner_epoch(),memory_order_relaxed);
     group->next_serial = 1;
     for (unsigned i = 0; i < WPK_NAMES_COUNT; i++)
         group->next_name[i] = 1;
     return group;
 }
 static int object_group_retain(struct wpk_object_group *group) {
+    uint64_t owner=atomic_load_explicit(&group->program_owner_epoch,memory_order_relaxed);
+    if (!owner || owner!=_wpk_gl_device_owner_epoch()) {errno=EACCES;return 0;}
     pthread_mutex_lock(&group->mutex);
     int retained = group->references < UINT_MAX;
     if (retained)
@@ -319,6 +338,33 @@ struct wpk_program_capture {
     uint32_t handle;
     uint64_t link_epoch;
 };
+#define WPK_PROGRAM_SLOTS 256u
+#define WPK_PROGRAM_CACHE 32u
+#define WPK_PROGRAM_BLOCKED_RECEIPT 1
+#define WPK_PROGRAM_BLOCKED_EXECUTION 2
+#define WPK_PROGRAM_COUNTER_MAX UINT64_C(9007199254740991)
+struct wpk_program_generation {
+    GLuint name;
+    uint64_t link_epoch;
+    uint32_t token, capture;
+};
+struct wpk_program_intent {
+    struct wpk_program_stream *owner;
+    struct wpk_program_intent *next;
+    uint64_t ticket, sequence;
+    uint32_t index, name, token, phase;
+};
+/* Cold-reserved metadata has no pointer to mutable encoder storage. It owns
+ * both the output receiver and every cell before local acceptance. */
+struct wpk_program_stream {
+    struct wpk_program_stream *next;
+    int fd, active, blocked;
+    uint32_t id, transaction, cache_cursor;
+    uint64_t ticket;
+    struct wpk_program_generation generations[WPK_PROGRAM_CACHE];
+    struct wpk_program_intent slots[WPK_PROGRAM_SLOTS];
+    uint32_t request[3+8*WPK_PROGRAM_SLOTS], reply[12], recovery[12], read_request[2];
+};
 
 /* Client execution state belongs to the EGL context and follows it across
  * thread transfers. Shared object groups are a separate ownership layer. */
@@ -326,6 +372,7 @@ struct wpk_gles_context {
     struct wpk_object_group *objects;
     struct wpk_array_capture array_capture;
     struct wpk_program_record *current_program;
+    struct wpk_program_stream *program_stream;
     struct wpk_program_capture selected_program_capture, prepared_program_capture;
     int program_captures_uncertain;
     /* Embedded owned transport storage: publication/cleanup never allocates C
@@ -402,6 +449,11 @@ struct wpk_gles_context {
     char renderer[256];
     char extensions[4096];
 };
+int _wpk_gl_encoder_owned(struct wpk_gles_context *state) {
+    if (!state) return 0;
+    uint64_t owner=atomic_load_explicit(&state->objects->program_owner_epoch,memory_order_relaxed);
+    return owner && owner==_wpk_gl_device_owner_epoch();
+}
 
 #define g_cursor (_wpk_gl_current_encoder()->cursor)
 #define g_unpack_alignment (_wpk_gl_current_encoder()->unpack_alignment)
@@ -423,8 +475,19 @@ static GLuint checked_shader_program_creation(uint32_t kind, GLenum type, GLuint
 static GLuint create_program_record(uint32_t kind, GLenum type);
 static void mutate_program_record(uint32_t op, GLuint name, GLuint shader);
 static int checked_client_query(uint32_t op, const void *in, uint32_t len, void *out, uint32_t cap);
+static void raise_client_error(GLenum error);
+static int publish_program_intents(struct wpk_object_group *group);
+static int program_submission_scope(struct wpk_gles_context *, struct wpk_gl_name_scope *);
+static void complete_program_submission(struct wpk_gles_context *, int);
+static int disable_program_stream(struct wpk_gles_context *);
+static int try_program_stream_use(struct wpk_gles_context *, GLuint);
 static struct wpk_gl_name_scope begin_dispatch_scope(struct wpk_gles_context *state) {
     struct wpk_gl_name_scope scope = {.group = state->objects};
+    uint64_t owner=atomic_load_explicit(&scope.group->program_owner_epoch,memory_order_relaxed);
+    if (!owner || owner!=_wpk_gl_device_owner_epoch()) {
+        // Refuse before touching a mutex a vanished parent thread may own.
+        scope.group=NULL;errno=EACCES;raise_client_error(GL_INVALID_OPERATION);return scope;
+    }
     // Do not abandon native publication on cancellation; restore after unlock.
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &scope.cancel_state);
     /* WHY: publication barriers on queries and submits must compose with a
@@ -440,6 +503,10 @@ static struct wpk_gl_name_scope begin_dispatch_scope(struct wpk_gles_context *st
 }
 struct wpk_gl_name_scope _wpk_gl_begin_name_scope(struct wpk_gles_context *state) {
     struct wpk_gl_name_scope scope = begin_dispatch_scope(state);
+    if (!scope.group) return scope;
+    if (!publish_program_intents(scope.group)) {
+        _wpk_gl_end_name_scope(&scope);return scope;
+    }
     if (scope.group->dispatch_depth == 1 && scope.group->pending_external_texture &&
         !_wpk_gl_discard_external_candidate(scope.group->pending_external_texture)) {
         _wpk_gl_end_name_scope(&scope);
@@ -542,6 +609,7 @@ static void record_client_error(struct wpk_gles_context *state, GLenum error);
 static int hold_error(struct wpk_gles_context *state, GLenum error);
 static void finish_command_submission(struct wpk_gles_context *state,
                                       uint8_t *base, uint32_t errors, int rc) {
+    complete_program_submission(state,rc);
     g_cursor = base;
     if (rc == 0) state->client_errors &= ~errors;
     /* A reset context reports CONTEXT_LOST instead and never submits again. */
@@ -570,6 +638,9 @@ static int flush_commands(void) {
     if (!g_cursor) g_cursor = base;
     /* Commands recorded before a reset was observed have no effect. */
     if (_wpk_gl_context_reset()) { g_cursor = base; return 0; }
+    struct wpk_gl_name_scope publication __attribute__((cleanup(_wpk_gl_end_name_scope)))={0};
+    if (!program_submission_scope(state,&publication)) return -1;
+    if (_wpk_gl_context_reset()) {g_cursor=base;errno=ENODEV;return -1;}
     const uint32_t errors = state->client_errors;
     if (g_cursor == base && !errors) return 0;
     if (errors) {
@@ -1099,6 +1170,7 @@ void glLinkProgram(GLuint program) {
 
 void glUseProgram(GLuint program) {
     if (!_wpk_gl_command_encoder()) return;
+    if (try_program_stream_use(_wpk_gl_current_encoder(),program)) return;
     mutate_program_record(OP_USE_PROGRAM, program, 0);
 }
 
@@ -1544,6 +1616,8 @@ static int query_owned_reply(struct wpk_gles_context *state, uint8_t *base, int 
                              void *reply, uint32_t out_len, uint32_t prefix,
                              struct gl_submit_query_info *packet, int *query_entered) {
     if (query_entered) *query_entered = 0;
+    struct wpk_gl_name_scope publication __attribute__((cleanup(_wpk_gl_end_name_scope)))={0};
+    if (!program_submission_scope(state,&publication)) return WPK_GL_QUERY_NOT_DISPATCHED;
     struct gl_query_info qi = {
         .op = op,
         .in_buf_ptr = (uintptr_t)in, .in_buf_len = in_len,
@@ -1780,6 +1854,16 @@ static int accept_error_drain(struct wpk_gles_context *state, int *retained) {
     *retained = (int)reply[1];
     return 1;
 }
+static GLenum failed_error_observation(struct wpk_gles_context *state) {
+    state->client_errors &= ~(1u << (GL_INVALID_OPERATION-GL_INVALID_ENUM));
+    for (uint32_t i=0;i<state->held_error_count;i++) if (state->held_errors[i]==GL_INVALID_OPERATION) {
+        memmove(state->held_errors+i,state->held_errors+i+1,
+            (--state->held_error_count-i)*sizeof state->held_errors[0]);
+        break;
+    }
+    GLenum reset_error;
+    return _wpk_gl_reset_error(&reset_error)?reset_error:GL_INVALID_OPERATION;
+}
 GLenum glGetError(void) {
     /* KHR_robustness section 2.3.1rob: GetError keeps working after a
      * reset, reporting CONTEXT_LOST rather than lost context errors. */
@@ -1811,6 +1895,11 @@ GLenum glGetError(void) {
          * returning or consuming any flag under a now-invalid proof. */
     }
     state->errors_known = 0;
+    /* Only the fallback drain publishes metadata. Sampling its request epoch
+     * afterward lets the one actual error drain establish a fresh proof;
+     * local observations above must never turn into publication round trips. */
+    struct wpk_gl_name_scope publication __attribute__((cleanup(_wpk_gl_end_name_scope)))={0};
+    if (!program_submission_scope(state,&publication)) return failed_error_observation(state);
     /* One request carries the queued commands (as the compound prefix), the
      * unacknowledged client flags and the drain, in that order, matching the
      * ordering the separate trailer flush used to give. */
@@ -1833,14 +1922,7 @@ GLenum glGetError(void) {
          * flags a failed reply may have carried away are the remaining
          * copyout custody gap, as for any query whose completion is unknown.
          * The next call asks the host again. */
-        state->client_errors &= ~(1u << (GL_INVALID_OPERATION-GL_INVALID_ENUM));
-        for (uint32_t i = 0; i < state->held_error_count; ++i)
-            if (state->held_errors[i] == GL_INVALID_OPERATION) {
-                memmove(state->held_errors + i, state->held_errors + i + 1,
-                        (--state->held_error_count - i) * sizeof state->held_errors[0]);
-                break;
-            }
-        return _wpk_gl_reset_error(&reset_error) ? reset_error : GL_INVALID_OPERATION;
+        return failed_error_observation(state);
     }
     state->client_errors &= ~errors;
     state->predicted_errors = 0;
@@ -2121,12 +2203,301 @@ static void observe_program_capture(struct wpk_gles_context *state,
         *installed=*prepared;*prepared=(struct wpk_program_capture){0};
     }
 }
+static uint64_t program_counter(const uint32_t *words) {
+    return (uint64_t)words[0] | ((uint64_t)words[1]<<32);
+}
+static void write_program_counter(uint32_t *words,uint64_t value) {
+    words[0]=(uint32_t)value;words[1]=(uint32_t)(value>>32);
+}
+static int valid_program_receipt(const uint32_t *words) {
+    return words[11]==WPK_GL_QUERY_REPLY_MAGIC && words[0]<=2 &&
+        words[6]<=0x1fffff && words[8]<=0x1fffff && words[10]<=0x1fffff;
+}
+/* This transport never owns a command prefix or another encoder. In
+ * particular a foreign lifecycle publisher must not mark the calling thread's
+ * unrelated current context lost when its outer metadata context fails. */
+static int program_stream_io(struct wpk_program_stream *stream,uint32_t op,
+                              const uint32_t *request,uint32_t words,uint32_t *reply) {
+    memset(reply,0,48);
+    struct gl_query_info query={.op=op,.in_buf_ptr=(uintptr_t)request,.in_buf_len=words*4,
+        .out_buf_ptr=(uintptr_t)reply,.out_buf_len=48};
+    _wpk_gl_note_device_request();
+    int rc=ioctl(stream->fd,GLIO_QUERY,&query);
+    if (rc && errno==ENODEV) {
+        stream->blocked|=WPK_PROGRAM_BLOCKED_EXECUTION;
+        if (stream->fd==_wpk_gl_fd()) _wpk_gl_note_reset();
+    }
+    return !rc && valid_program_receipt(reply);
+}
+static int valid_program_mutation_receipt(struct wpk_program_stream *stream,const uint32_t *reply,
+                                           uint32_t action,uint32_t tx) {
+    if (!valid_program_receipt(reply) || reply[1]!=tx || reply[2]!=action) return 0;
+    if (reply[0]) return 1;
+    if (program_counter(reply+9)>program_counter(reply+7)) return 0;
+    if (action==1) return reply[3] && reply[4]==WPK_PROGRAM_SLOTS &&
+        !program_counter(reply+7) && !program_counter(reply+9);
+    if (reply[3]!=stream->id || program_counter(reply+7)>stream->ticket) return 0;
+    if (action==2) return reply[4]!=0;
+    if (action==3) return reply[4]==stream->request[2] &&
+        program_counter(reply+5)==program_counter(stream->request+3+8*(stream->request[2]-1)+4);
+    if (action==4) return reply[4]==stream->request[3];
+    return action==5 && !reply[4];
+}
+/* One entry, then read-only reconciliation. Never replay a mutation after an
+ * uncertain return. An unchanged last transaction proves nonentry but leaves
+ * retry to the next caller, with every immutable receiver still reserved. */
+static int program_stream_mutate(struct wpk_program_stream *stream,uint32_t action,
+                                 uint32_t words,uint32_t transport) {
+    if (stream->blocked || stream->transaction==UINT32_MAX) return -1;
+    uint32_t tx=stream->transaction+1;
+    stream->request[0]=action;stream->request[1]=tx;
+    int valid=program_stream_io(stream,transport,stream->request,words,stream->reply);
+    if (!valid || !valid_program_mutation_receipt(stream,stream->reply,action,tx) || stream->reply[0]) {
+        stream->read_request[0]=6;
+        if (!program_stream_io(stream,QOP_PROGRAM_JOURNAL_BARRIER,stream->read_request,1,stream->recovery)) {
+            stream->blocked|=WPK_PROGRAM_BLOCKED_RECEIPT;return -1;
+        }
+        if (stream->recovery[1]==stream->transaction && stream->recovery[0]!=2) return -2;
+        if (!valid_program_mutation_receipt(stream,stream->recovery,action,tx)) {
+            stream->blocked|=WPK_PROGRAM_BLOCKED_RECEIPT;return -1;
+        }
+        memcpy(stream->reply,stream->recovery,48);
+    }
+    stream->transaction=tx;
+    if (stream->reply[0]==2) {stream->blocked|=WPK_PROGRAM_BLOCKED_RECEIPT;return -1;}
+    return stream->reply[0]==0;
+}
+static void finish_program_publication(struct wpk_object_group *group) {
+    for (unsigned i=0;i<group->program_publication_count;i++) {
+        struct wpk_program_intent *p=group->program_head;
+        if (!p) abort();
+        group->program_head=p->next;p->next=NULL;p->phase=2;
+    }
+    if (!group->program_head) group->program_tail=NULL;
+    group->program_publication_caller=NULL;
+    group->program_publication_transaction=group->program_publication_count=0;
+}
+static int publish_program_intents(struct wpk_object_group *group) {
+    if (group->program_publication_caller) {
+        struct wpk_program_stream *caller=group->program_publication_caller;
+        caller->read_request[0]=6;
+        if (!program_stream_io(caller,QOP_PROGRAM_JOURNAL_BARRIER,caller->read_request,1,caller->recovery)) {
+            raise_client_error(GL_INVALID_OPERATION);return 0;
+        }
+        uint32_t tx=group->program_publication_transaction;
+        if (caller->transaction==tx-1 && caller->recovery[1]==caller->transaction && caller->recovery[0]!=2) {
+            // Only this exact retained predecessor proves the attempt never
+            // entered. Future publication may retry those still-owned rows.
+            caller->blocked&=~WPK_PROGRAM_BLOCKED_RECEIPT;
+            group->program_publication_caller=NULL;
+            group->program_publication_transaction=group->program_publication_count=0;
+        } else if (valid_program_mutation_receipt(caller,caller->recovery,3,tx) && !caller->recovery[0]) {
+            caller->transaction=tx;
+            // Receipt recovery is not renderer recovery. Execution/capture
+            // uncertainty and EGL reset state retain their separate authority.
+            caller->blocked&=~WPK_PROGRAM_BLOCKED_RECEIPT;
+            memcpy(caller->reply,caller->recovery,48);
+            finish_program_publication(group);
+        } else {raise_client_error(GL_INVALID_OPERATION);return 0;}
+    }
+    while (group->program_head) {
+        struct wpk_program_stream *caller=group->program_streams;
+        while (caller && (caller->blocked || caller->transaction==UINT32_MAX)) caller=caller->next;
+        if (!caller) {raise_client_error(GL_INVALID_OPERATION);return 0;}
+        unsigned count=0;
+        for (struct wpk_program_intent *p=group->program_head;p && count<WPK_PROGRAM_SLOTS;p=p->next) {
+            uint32_t *row=caller->request+3+8*count++;
+            row[0]=p->owner->id;row[1]=p->index;
+            write_program_counter(row+2,p->ticket);write_program_counter(row+4,p->sequence);
+            row[6]=p->name;row[7]=p->token;
+        }
+        caller->request[2]=count;
+        group->program_publication_caller=caller;
+        group->program_publication_transaction=caller->transaction+1;
+        group->program_publication_count=count;
+        int accepted=program_stream_mutate(caller,3,3+8*count,QOP_PROGRAM_JOURNAL_BARRIER);
+        if (accepted!=1 ||
+            caller->reply[4]!=count) {
+            if (accepted==-2) {
+                group->program_publication_caller=NULL;
+                group->program_publication_transaction=group->program_publication_count=0;
+            } else caller->blocked|=WPK_PROGRAM_BLOCKED_RECEIPT;
+            raise_client_error(GL_INVALID_OPERATION);return 0;
+        }
+        finish_program_publication(group);
+    }
+    atomic_store_explicit(&group->program_intents_pending,0,memory_order_release);
+    return 1;
+}
+static int program_submission_scope(struct wpk_gles_context *state,struct wpk_gl_name_scope *scope) {
+    if ((!state->program_stream || !state->program_stream->active) &&
+        !atomic_load_explicit(&state->objects->program_intents_pending,memory_order_acquire)) return 1;
+    *scope=begin_dispatch_scope(state);
+    if (!scope->group) return 0;
+    if (!publish_program_intents(scope->group)) {
+        _wpk_gl_end_name_scope(scope);return 0;
+    }
+    return 1;
+}
+static void complete_program_submission(struct wpk_gles_context *state,int rc) {
+    struct wpk_program_stream *stream=state->program_stream;
+    if (!stream || !stream->active) return;
+    if (rc) {stream->blocked|=WPK_PROGRAM_BLOCKED_EXECUTION;return;}
+    // Stage B's synchronous acknowledgement proves these selectors executed.
+    // C1 must transfer cell custody to jobs instead of freeing at admission.
+    for (unsigned i=0;i<WPK_PROGRAM_SLOTS;i++)
+        if (stream->slots[i].phase==2) stream->slots[i].phase=0;
+}
+static int disable_program_stream(struct wpk_gles_context *state) {
+    struct wpk_program_stream *stream=state->program_stream;
+    if (!stream || !stream->active) return 1;
+    if (!publish_program_intents(state->objects) || flush_commands()!=0) return 0;
+    if (program_stream_mutate(stream,5,2,QOP_PROGRAM_JOURNAL)!=1) {
+        raise_client_error(GL_INVALID_OPERATION);return 0;
+    }
+    stream->active=0;stream->id=0;stream->ticket=0;
+    for (unsigned i=0;i<WPK_PROGRAM_CACHE;i++) {
+        struct wpk_program_generation *g=&stream->generations[i];
+        g->token=0; // The acknowledged journal closure retired every token.
+        if (g->capture) {
+            struct wpk_program_capture capture={.name=g->name,.link_epoch=g->link_epoch,.handle=g->capture};
+            if (!release_program_capture(state,&capture)) {
+                stream->blocked|=WPK_PROGRAM_BLOCKED_EXECUTION;return 0; // Keep the exact receiver until context retirement.
+            }
+        }
+        *g=(struct wpk_program_generation){0};
+    }
+    return 1;
+}
+int _wpk_gl_enable_program_journal(void) {
+    struct wpk_gles_context *state=_wpk_gl_command_encoder();
+    if (!state || !_wpk_gl_device_requests_fork_safe()) return 0;
+    struct wpk_gl_name_scope guard __attribute__((cleanup(_wpk_gl_end_name_scope)))=begin_dispatch_scope(state);
+    if (!guard.group) return 0;
+    if (!publish_program_intents(state->objects) || flush_commands()!=0) return 0;
+    if (!atomic_load_explicit(&state->objects->program_records_known,memory_order_relaxed)) return 0;
+    struct wpk_program_stream *stream=state->program_stream;
+    if (!stream) {
+        stream=calloc(1,sizeof *stream);
+        if (!stream) {raise_client_error(GL_OUT_OF_MEMORY);return 0;}
+        stream->fd=_wpk_gl_fd();
+        stream->next=state->objects->program_streams;
+        state->objects->program_streams=stream;state->program_stream=stream;
+        atomic_store_explicit(&state->objects->program_owner_epoch,_wpk_gl_device_owner_epoch(),memory_order_relaxed);
+        stream->read_request[0]=6;
+        if (!program_stream_io(stream,QOP_PROGRAM_JOURNAL_BARRIER,stream->read_request,1,stream->reply) ||
+            stream->reply[0]==2) {stream->blocked|=WPK_PROGRAM_BLOCKED_RECEIPT;return 0;}
+        stream->transaction=stream->reply[1];
+    }
+    if (stream->blocked) return 0;
+    if (stream->active) return 1;
+    stream->request[2]=WPK_PROGRAM_SLOTS;
+    // Reserve the receiver even if the response is lost after host admission.
+    // Unknown entry must not fall back to legacy Use with a live host journal.
+    stream->active=1;
+    int admitted=program_stream_mutate(stream,1,3,QOP_PROGRAM_JOURNAL);
+    if (admitted!=1) {
+        if (!admitted || admitted==-2) stream->active=0;
+        return 0;
+    }
+    // Publish the receiver before checking the remaining receipt fields.
+    stream->id=stream->reply[3];stream->active=1;
+    if (!stream->id || stream->reply[4]!=WPK_PROGRAM_SLOTS ||
+        program_counter(stream->reply+5)!=state->objects->program_sequence) {
+        stream->blocked|=WPK_PROGRAM_BLOCKED_EXECUTION;raise_client_error(GL_INVALID_OPERATION);return 0;
+    }
+    return 1;
+}
+static uint32_t program_stream_generation(struct wpk_gles_context *state,struct wpk_program_record *record) {
+    struct wpk_program_stream *stream=state->program_stream;
+    for (unsigned i=0;i<WPK_PROGRAM_CACHE;i++) {
+        struct wpk_program_generation *g=&stream->generations[i];
+        if (g->token && g->name==record->name && g->link_epoch==record->link_epoch) return g->token;
+    }
+    // Cold acquisition may submit only this caller's prefix, never a peer's.
+    if (!publish_program_intents(state->objects) || flush_commands()!=0) return 0;
+    unsigned index=stream->cache_cursor++%WPK_PROGRAM_CACHE;
+    for (unsigned i=0;i<WPK_PROGRAM_CACHE;i++)
+        if (!stream->generations[i].token && !stream->generations[i].capture) {index=i;break;}
+    struct wpk_program_generation *g=&stream->generations[index];
+    if (g->capture) return 0;
+    if (g->token) {
+        stream->request[2]=stream->id;stream->request[3]=g->token;
+        if (program_stream_mutate(stream,4,4,QOP_PROGRAM_JOURNAL)!=1) return 0;
+        *g=(struct wpk_program_generation){0};
+    }
+    struct wpk_program_capture capture={.name=record->name,.link_epoch=record->link_epoch};
+    int observed=program_capture_query(state,1,record->name,&capture);
+    if (observed!=1) return 0;
+    *g=(struct wpk_program_generation){.name=record->name,.link_epoch=record->link_epoch,.capture=capture.handle};
+    stream->request[2]=capture.handle;
+    if (program_stream_mutate(stream,2,3,QOP_PROGRAM_JOURNAL)!=1) return 0;
+    g->token=stream->reply[4];
+    if (!g->token) {stream->blocked|=WPK_PROGRAM_BLOCKED_EXECUTION;return 0;}
+    if (!release_program_capture(state,&capture)) {stream->blocked|=WPK_PROGRAM_BLOCKED_EXECUTION;return 0;}
+    g->capture=0;
+    return g->token;
+}
+static int try_program_stream_use(struct wpk_gles_context *state,GLuint name) {
+    struct wpk_program_stream *stream=state->program_stream;
+    if (!stream || !stream->active) return 0;
+    struct wpk_gl_name_scope guard __attribute__((cleanup(_wpk_gl_end_name_scope)))=begin_dispatch_scope(state);
+    if (!guard.group) return 1;
+    if (stream->blocked) {raise_client_error(GL_INVALID_OPERATION);return 1;}
+    if (!atomic_load_explicit(&state->objects->program_records_known,memory_order_relaxed)) return 0;
+    struct wpk_program_record *record=find_program_record(state->objects,name);
+    GLenum error=GL_NO_ERROR;
+    if (name && !record) error=GL_INVALID_VALUE;
+    else if (record && record->kind!=5) error=GL_INVALID_OPERATION;
+    else if (record && !record->link_known) return 0;
+    else if (record && !record->linked) error=GL_INVALID_OPERATION;
+    if (!error && record && record!=state->current_program && record->references==UINT_MAX) {
+        raise_client_error(GL_OUT_OF_MEMORY);return 1;
+    }
+    uint32_t token=!error && record ? program_stream_generation(state,record) : 0;
+    if (!error && record && !token) return 0;
+    struct wpk_program_intent *slot=NULL;
+    for (unsigned i=0;i<WPK_PROGRAM_SLOTS;i++) if (!stream->slots[i].phase) {slot=&stream->slots[i];break;}
+    if (!slot) {
+        if (flush_commands()!=0) return 1;
+        for (unsigned i=0;i<WPK_PROGRAM_SLOTS;i++) if (!stream->slots[i].phase) {slot=&stream->slots[i];break;}
+    }
+    if (!slot || stream->ticket==WPK_PROGRAM_COUNTER_MAX ||
+        state->objects->program_sequence==WPK_PROGRAM_COUNTER_MAX) {
+        raise_client_error(GL_OUT_OF_MEMORY);return 1;
+    }
+    struct wpk_program_stream *publisher=state->objects->program_streams;
+    while (publisher && (publisher->blocked || publisher->transaction==UINT32_MAX)) publisher=publisher->next;
+    if (!publisher) {raise_client_error(GL_OUT_OF_MEMORY);return 1;}
+    uint8_t *cursor=reserve(20);
+    if (!cursor) return 1;
+    uint8_t *start=cursor;
+    *slot=(struct wpk_program_intent){.owner=stream,.index=(uint32_t)(slot-stream->slots),
+        .ticket=++stream->ticket,.sequence=++state->objects->program_sequence,
+        .name=name,.token=token,.phase=1};
+    w_u16(&cursor,OP_USE_PROGRAM_JOURNAL);w_u16(&cursor,16);
+    w_u32(&cursor,stream->id);w_u32(&cursor,slot->index);
+    w_u32(&cursor,(uint32_t)slot->ticket);w_u32(&cursor,(uint32_t)(slot->ticket>>32));
+    if (!error && record!=state->current_program) {
+        struct wpk_program_record *previous=state->current_program;
+        if (record) record->references++;
+        state->current_program=record;
+        if (previous) {previous->references--;collect_program_record(state->objects,previous);}
+    }
+    if (state->objects->program_tail) state->objects->program_tail->next=slot;
+    else state->objects->program_head=slot;
+    state->objects->program_tail=slot;
+    atomic_store_explicit(&state->objects->program_intents_pending,1,memory_order_release);
+    finish_predicted_command(start,cursor,error);
+    return 1;
+}
 static void mutate_program_record(uint32_t op, GLuint name, GLuint shader_name) {
     struct wpk_gles_context *state=_wpk_gl_current_encoder();
     struct wpk_gl_name_scope scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =
         _wpk_gl_begin_name_scope(state);
     if (!scope.group) return;
     struct wpk_object_group *group=state->objects;
+    if ((op==OP_USE_PROGRAM || op==OP_LINK_PROGRAM) && !disable_program_stream(state)) return;
     struct wpk_program_record *record=find_program_record(group,name);
     struct wpk_program_record *shader=find_program_record(group,shader_name);
     int slot=shader && shader->kind==4 ? (shader->shader_type==GL_VERTEX_SHADER?0:1) : -1;
@@ -2345,13 +2716,21 @@ static void release_vertex_array_objects(struct wpk_gles_context *state,
 struct wpk_gl_name_scope _wpk_gl_begin_encoder_retirement(struct wpk_gles_context *state) {
     // Retirement needs no current encoder and must not reconcile a pending
     // texture by querying whichever unrelated context happens to be current.
-    return begin_dispatch_scope(state);
+    struct wpk_gl_name_scope scope=begin_dispatch_scope(state);
+    if (scope.group && !publish_program_intents(scope.group)) _wpk_gl_end_name_scope(&scope);
+    return scope;
 }
 void _wpk_gl_retire_encoder_programs(struct wpk_gles_context *state) {
     // Called with the dispatch guard only AFTER acknowledged host retirement.
     // Its context index already retired known and lost-receipt capture owners.
     state->selected_program_capture=(struct wpk_program_capture){0};
     state->prepared_program_capture=(struct wpk_program_capture){0};
+    if (state->program_stream) {
+        struct wpk_program_stream **p=&state->objects->program_streams;
+        while (*p && *p!=state->program_stream) p=&(*p)->next;
+        if (*p) *p=(*p)->next;
+        free(state->program_stream);state->program_stream=NULL;
+    }
     if (state->current_program) {
         struct wpk_program_record *record=state->current_program;
         state->current_program=NULL;record->references--;
@@ -2363,7 +2742,8 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
         return;
     // Creation-failure encoders have no host captures; normal retirement has
     // already dropped these names under the same guard as GLIO_DESTROY_CONTEXT.
-    struct wpk_gl_name_scope scope=_wpk_gl_begin_encoder_retirement(state);
+    struct wpk_gl_name_scope scope=begin_dispatch_scope(state);
+    if (!scope.group) return;
     _wpk_gl_retire_encoder_programs(state);
     _wpk_gl_end_name_scope(&scope);
     while (state->image_attachments) {

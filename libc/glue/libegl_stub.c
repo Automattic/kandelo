@@ -389,6 +389,7 @@ int _wpk_gl_reset_error(GLenum *error) {
  * request is deliberately coarse: a missed invalidation would hide an error,
  * while an extra one only costs the round trip glGetError always paid. */
 static _Atomic uint64_t g_device_requests;
+static _Atomic uint64_t g_device_owner_epoch;
 static pthread_once_t g_device_requests_fork_once = PTHREAD_ONCE_INIT;
 static int g_device_requests_fork_tracked;
 void _wpk_gl_note_device_request(void) {
@@ -400,13 +401,24 @@ uint64_t _wpk_gl_device_requests(void) {
 /* A fork child inherits the encoder but not the parent's context binding,
  * which the kernel ties to the creating process. It must ask the device
  * (and see that refusal) rather than repeat the parent's knowledge. */
-static void device_requests_forked(void) { _wpk_gl_note_device_request(); }
+static void device_requests_forked(void) {
+    _wpk_gl_note_device_request();
+    uint64_t epoch=atomic_load_explicit(&g_device_owner_epoch,memory_order_relaxed);
+    // Exhaustion must never make an inherited owner equal an earlier process.
+    if (epoch==UINT64_MAX) abort();
+    atomic_store_explicit(&g_device_owner_epoch,epoch+1,memory_order_relaxed);
+}
 static void track_device_requests_across_fork(void) {
     g_device_requests_fork_tracked = pthread_atfork(NULL, NULL, device_requests_forked) == 0;
+    if (g_device_requests_fork_tracked)
+        atomic_store_explicit(&g_device_owner_epoch,1,memory_order_relaxed);
 }
 int _wpk_gl_device_requests_fork_safe(void) {
     pthread_once(&g_device_requests_fork_once, track_device_requests_across_fork);
     return g_device_requests_fork_tracked;
+}
+uint64_t _wpk_gl_device_owner_epoch(void) {
+    return atomic_load_explicit(&g_device_owner_epoch,memory_order_relaxed);
 }
 static int egl_device_ioctl(int fd, unsigned long request, const void *arg) {
     _wpk_gl_note_device_request();
@@ -1076,6 +1088,10 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
     /* EGL 1.5 section 2.7: a reset share group's objects are gone. */
     if (shared && context_reset(shared)) {
         g_last_error = EGL_CONTEXT_LOST;
+        return EGL_NO_CONTEXT;
+    }
+    if (shared && !_wpk_gl_encoder_owned(shared->encoder)) {
+        g_last_error=EGL_BAD_CONTEXT;
         return EGL_NO_CONTEXT;
     }
     if (!g_next_object_handle) {
@@ -1870,6 +1886,10 @@ static void retire_pending_resources_locked(struct egl_generation *g) {
             continue;
         }
         struct wpk_gl_name_scope retirement=_wpk_gl_begin_encoder_retirement(p->encoder);
+        if (!retirement.group) {
+            context=&p->next;
+            continue;
+        }
         if (egl_device_ioctl(p->session->fd, GLIO_DESTROY_CONTEXT, NULL) != 0) {
             _wpk_gl_end_name_scope(&retirement);
             context = &p->next;

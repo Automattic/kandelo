@@ -6974,8 +6974,9 @@ capture registration, cache release/disable and native command prefixes gain no
 authority from0x3c. A retained private execution cannot replace a live public
 context. Both query paths share the outer context's transaction receipt ledger.
 Publication fails after reset; read-only recovery remains available without
-reviving the context. The C driver still needs to integrate this barrier into
-its lifetime guards before enabling local acceptance.
+reviving the context. The explicitly admitted C prototype publishes through
+this barrier before shared-name queries, caller-prefix submission and EGL
+retirement, including retirement without a current GL binding.
 
 A wire receipt owns logical metadata, not an admitted native job. Stage B submits
 synchronously, so public context/session retirement discards abandoned wire
@@ -6986,11 +6987,33 @@ it through completion or explicit cancellation. Native program counts are
 checked before whole-machine teardown, including pending-context destruction
 and process exit, so terminating a worker cannot hide leaked owners.
 
-The C driver still performs checked synchronous program selection. Its shared
-immutable publication, generation-token cache, bounded pending-slot reuse and
-submission/error-observation integration remain required before local API
-acceptance is enabled. The existing final-context cleanup path remains part
-of the complete ownership audit. This optional transport changes the program
-contract digest while keeping versions56/3/17/21; normal matching products
-must be rebuilt. It adds no journal lookup or maintenance to ordinary draw/
-uniform handlers. No worker or application-performance acceptance is claimed.
+Ordinary applications still use checked synchronous program selection. An
+internal diagnostic admission entry point now enables a C selection prototype.
+Each context owns a cold-allocated stream with a32-entry generation-token cache,
+256 bounded intent/result slots and persistent request/recovery storage. Cache
+keys include the public name and link epoch; private native captures and C
+logical-current references retain separate executable and name lifetimes.
+Warm selection reserves its command record and immutable shared intent before
+local acceptance. Publication never reads or flushes a peer's mutable encoder.
+Cold capture acquisition submits only the caller's older prefix. Successful
+synchronous prefix acknowledgement permits slot reuse; asynchronous C1 jobs
+must acquire explicit slot custody before their admission acknowledgement.
+
+A group-level receiver is reserved before publication enters the device. If
+its response is lost, another publisher must reconcile that receiver with
+READ_LAST before issuing a new mutation. Read-only recovery validates the exact
+transaction/action/count and clears only receipt uncertainty, preserving
+execution-loss and capture ownership. A proven unchanged predecessor permits
+retry; an unknown entered result cannot authorize replay. Group ownership is
+stamped before any fork: inherited dispatch is refused before taking a possibly
+orphaned mutex, and sharing such an encoder reports EGL_BAD_CONTEXT. A refused
+cold registration releases known capture ownership after an acknowledged
+journal disable, rather than dropping its descriptor.
+
+Automatic application admission is still off. Genuine partial/indeterminate
+publication, native-loss and failed-prefix reconciliation, ordered error
+observation through transport failures, and the complete final-context audit
+remain required before activation. These are unfinished B1 work. The prototype
+adds no wire/snapshot change beyond the existing optional transport; versions
+remain56/3/17/21. Normal matching products are required. Focused warm device
+request counts do not establish application latency or native desktop feel.

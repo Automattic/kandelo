@@ -23094,3 +23094,81 @@ Unchanged Rust/xtask/shader checkpoint evidence remains recorded in R184; full
 host type checking last retained its39 baseline errors. The5693 preview remains
 normal R30+051 partial B1. Full B2–B6, a complete B preview before C1–C3, and
 every original ship requirement remain required without reduction or deferral.
+
+## 2026-11-04 explicitly admitted C selection prototype (R188–R199)
+
+The guest C driver now connects generation-token caching and an immutable
+shared selection queue to caller-prefix submission, queries and EGL retirement.
+Admission is an internal diagnostic entry point; ordinary applications still
+use checked selection. Each admitted context owns32 cache entries,256 bounded
+slots and persistent request/recovery storage. Local selection reserves its
+record and result ownership before accepting the call. Publication uses0x3c
+without accessing another context's mutable encoder. Synchronous prefix
+acknowledgement releases slots; C1 still requires explicit accepted-job custody.
+No new wire, snapshot, digest or version change is introduced relative6a94be2155;
+the family remains program56 / unpublished host3 / GL17 / fork21.
+
+A group receiver retains an entered publication across lost responses. Another
+publisher must recover that original receipt before submitting more metadata.
+Read-only recovery clears receipt uncertainty separately from execution loss.
+An unchanged predecessor permits retry only when it matches the remembered
+transaction. Known captures survive refused registration until acknowledged
+release. Group ownership is established before admission so fork children reject
+inherited dispatch before taking an orphaned mutex; invalid EGL sharing reports
+EGL_BAD_CONTEXT. These controls do not establish general post-fork EGL safety.
+
+| Run / exact principal command | Result | Scope |
+| --- | --- | --- |
+| R189 normal targeted build, then R189-r2 corrected SDK products | PASS | Normal SDK32/64, canonical kernel/image writer, ABI and registry708 |
+| R190 initial Chromium24 | FAIL24 | Publication changed the device epoch inside an error-drain snapshot; fixed by publishing before that snapshot, preserving the local fast branch |
+| R190-r2 and R191 | PASS24 and8 | Corrected warm selection, lost-success response and inherited-dispatch controls |
+| R192 `graphics-driver-journal-final-r192-1104-155023-4416` | PASS6m30 | C490, graphics2151/88, Node10, GPU300 on all three engines |
+| R193 focused guards and old-source fork control | FAIL | Refused registration lost a known capture descriptor; inherited EGL sharing reported BAD_ALLOC; group ownership was not initialized before admission. All are fixed at their owning layers |
+| R194 normal targeted build; R195 `graphics-driver-journal-final-r195-1104-160547-796d` | PASS2m23 and7m07 | C491, graphics2151/88, Node10, GPU336; source/products frozen |
+| R196 and R196-r2 no-replay controls | FAIL | Malformed accepted replies were treated as rejection; a second publisher could re-enter an already accepted intent after both responses were lost; resumed error state also failed. The group receiver and read-only reconciliation fix these tested paths |
+| R197 `graphics-driver-journal-build-r197-1104-162720-7c0d` | PASS2m48 | Normal SDK32/64 and canonical kernel/image-writer build |
+| R197-r2 `graphics-driver-journal-build-r197-r2-1104-163133-b630` | PASS1m42 | Final SDK32/64 ensures, ABI/evidence checks; normal R197 kernel/image writer reused byte-for-byte, unchanged Rust source |
+| R198 `graphics-driver-journal-recovery-r198-1104-163443-294a` | PASS20s | Eight Chromium controls: malformed responses, lost publication plus refused recovery, later successful read-only recovery, resumed rendering and explicit teardown; zero duplicate transactions/intents |
+| R199 `graphics-driver-journal-final-r199-1104-163909-76b4`, port6018 | PASS7m11 | C/UBSan491, graphics2151/88, Node10, actual-GPU348; ABI and registry708; source/product hash checks pass |
+
+The R199 exact command is
+`scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-driver-journal-final-r199/run.sh`,
+started through `scripts/agent-job start` and collected through its `wait`
+command. Scripts, frozen inventories, per-stage commands, raw results and logs
+are retained in that root-workspace evidence directory. All276 journal results
+(92 per engine) record actual guest hashes and the routed canonical kernel
+SHA256 `ffada2fef35551f258efbf50979f0208006fd731c6c45b2c873b67be71d5d605`.
+Native program live counts are zero before whole-machine teardown. This is not
+an exhaustive physical GPU-memory reclamation check. Wire capture-handle
+counters differ from native program counts; context retirement also closes the
+capture index.
+
+| Focused request count, after cold setup | Cohorts | Device requests |
+| --- | --- | --- |
+|20 warm UseProgram/GetError pairs |120 across three engines, both widths and production/fatal modes |0 each |
+|300 pairs /600 selections exercising bounded reuse |12 across the same engine/width/mode matrix |8 each |
+
+These counts are mechanism evidence, not an application performance comparison.
+Tests also cover peer deletion, successful and failed relinking,35 additional
+programs across a32-entry cache, retirement without a current binding, cold
+registration refusal and fork ownership. The Node10 cases retain explicit
+no-renderer refusal and do not constitute native GLES rendering. The new browser
+probe helper passes its separate strict TypeScript check. Full host type
+checking still fails with39 diagnostics; R195's normalized complete compiler
+stream matches retained R181. No full TypeScript pass is claimed.
+
+Automatic activation remains unfinished, including genuine host-indeterminate
+or partially applied publication, native-loss/failed-prefix reconciliation,
+transport-failure error ordering and the final-context audit. The tested
+lost-response scenario recovers a successful publication; it is not proof of
+recovery from genuine partial application. Remaining B1 attribute/draw and other
+required hot paths, ScummVM<=10 round trips/frame, correctness/conformance and
+application measurements remain required. Full B2–B6 and the complete normal B
+preview before C1–C3 retain their agreed order. This checkpoint does not update
+the5693 preview or establish native feel. Final three-engine CTS/desktop,
+full host/Rust/xtask, browser-memory/POSIX, Node/browser benchmark comparisons
+and manual-browser acceptance remain open.
+
+Disk was checked before producers. R195 cache GC used `./run.sh cache-gc --apply`
+and removed0 bytes; protected artifacts/evidence were preserved. Disk after
+R199 has37GiB available. No new boundary, deferral or reduced acceptance applies.

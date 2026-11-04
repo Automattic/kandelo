@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "../../../libc/glue/gl_abi.h"
 
@@ -96,6 +97,62 @@ static void *publish_before_retirement(void *opaque) {
     assert(p->result[0]==0&&p->result[1]==1&&p->result[2]==3&&p->result[4]==2&&p->result[11]==WPK_GL_QUERY_REPLY_MAGIC);
     assert(eglDestroyContext(p->display,p->retiring)&&eglReleaseThread());return NULL;
 }
+struct driver_peer {EGLDisplay display;EGLConfig config;EGLContext source,retiring;GLuint program,fragment;int fail;};
+static void *driver_retire_peer(void *opaque) {
+    struct driver_peer *p=opaque;
+    assert(eglDestroyContext(p->display,p->retiring)&&eglReleaseThread());return NULL;
+}
+static void *driver_relink_peer(void *opaque) {
+    struct driver_peer *p=opaque;
+    const EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
+    EGLContext context=eglCreateContext(p->display,p->config,p->source,attrs);assert(context!=EGL_NO_CONTEXT);
+    assert(eglMakeCurrent(p->display,EGL_NO_SURFACE,EGL_NO_SURFACE,context));
+    const char *source=p->fail?"intentional invalid shader":"precision mediump float;void main(){gl_FragColor=vec4(.8,.2,.4,1.);}";
+    glShaderSource(p->fragment,1,&source,NULL);glCompileShader(p->fragment);
+    GLint ok=0;glGetShaderiv(p->fragment,GL_COMPILE_STATUS,&ok);assert(ok==!p->fail);
+    glLinkProgram(p->program);glGetProgramiv(p->program,GL_LINK_STATUS,&ok);assert(ok==!p->fail);
+    glFinish();assert(glGetError()==GL_NO_ERROR);
+    assert(eglMakeCurrent(p->display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
+    assert(eglDestroyContext(p->display,context)&&eglReleaseThread());return NULL;
+}
+static void check_color(unsigned red,unsigned green,unsigned blue) {
+    GLubyte rgba[4]={0};glReadPixels(8,8,1,1,GL_RGBA,GL_UNSIGNED_BYTE,rgba);
+    assert(rgba[0]==red&&rgba[1]==green&&rgba[2]==blue&&rgba[3]==255);
+}
+struct driver_fork_guard {
+    struct wpk_gles_context *encoder;
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    int held,release;
+};
+static void *driver_hold_dispatch(void *opaque) {
+    struct driver_fork_guard *p=opaque;
+    struct wpk_gl_name_scope guard=_wpk_gl_begin_encoder_retirement(p->encoder);assert(guard.group);
+    assert(!pthread_mutex_lock(&p->mutex));p->held=1;assert(!pthread_cond_signal(&p->condition));
+    while(!p->release)assert(!pthread_cond_wait(&p->condition,&p->mutex));
+    assert(!pthread_mutex_unlock(&p->mutex));_wpk_gl_end_name_scope(&guard);return NULL;
+}
+static void check_driver_fork(EGLDisplay display,EGLConfig config,EGLContext context,GLuint program) {
+    struct driver_fork_guard p={.encoder=_wpk_gl_current_encoder(),
+        .mutex=PTHREAD_MUTEX_INITIALIZER,.condition=PTHREAD_COND_INITIALIZER};
+    pthread_t thread;assert(!pthread_create(&thread,NULL,driver_hold_dispatch,&p));
+    assert(!pthread_mutex_lock(&p.mutex));
+    while(!p.held)assert(!pthread_cond_wait(&p.condition,&p.mutex));
+    assert(!pthread_mutex_unlock(&p.mutex));
+    pid_t child=fork();assert(child>=0);
+    if(!child) {
+        const uint64_t requests=_wpk_gl_device_requests();
+        const EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
+        assert(eglCreateContext(display,config,context,attrs)==EGL_NO_CONTEXT);
+        assert(eglGetError()==EGL_BAD_CONTEXT);
+        glUseProgram(program);assert(_wpk_gl_device_requests()==requests);
+        assert(glGetError()==GL_INVALID_OPERATION);_exit(0);
+    }
+    int status=0;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
+    assert(!pthread_mutex_lock(&p.mutex));p.release=1;assert(!pthread_cond_signal(&p.condition));
+    assert(!pthread_mutex_unlock(&p.mutex));assert(!pthread_join(thread,NULL));
+    assert(!pthread_mutex_destroy(&p.mutex)&&!pthread_cond_destroy(&p.condition));
+}
 int main(int argc,char **argv) {
     assert(argc==2);const int errors=!strcmp(argv[1],"errors"),preflight=!strcmp(argv[1],"preflight");
     const int uniform=!strcmp(argv[1],"uniform-interleave");
@@ -142,6 +199,112 @@ int main(int argc,char **argv) {
     glGenBuffers(1,&buffer);glBindBuffer(GL_ARRAY_BUFFER,buffer);glBufferData(GL_ARRAY_BUFFER,sizeof triangle,triangle,GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
     glViewport(0,0,16,16);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);glFinish();assert(glGetError()==GL_NO_ERROR);
+    if(!strncmp(argv[1],"driver-",7)&&strcmp(argv[1],"driver-dispatch")) {
+        const int sharing=!strcmp(argv[1],"driver-sharing"),retirement=!strcmp(argv[1],"driver-retirement");
+        GLuint cached[35]={0};
+        if(!strcmp(argv[1],"driver-cache"))for(unsigned i=0;i<35;i++) {
+            cached[i]=glCreateProgram();assert(cached[i]);
+            glAttachShader(cached[i],vertex);glAttachShader(cached[i],fragment);
+            glBindAttribLocation(cached[i],0,"p");glLinkProgram(cached[i]);
+            GLint linked=0;glGetProgramiv(cached[i],GL_LINK_STATUS,&linked);assert(linked);
+        }
+        EGLContext retiring=EGL_NO_CONTEXT;
+        if(retirement) {
+            retiring=eglCreateContext(display,config,context,attrs);assert(retiring!=EGL_NO_CONTEXT);
+            assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,retiring));
+            glUseProgram(program);assert(glGetError()==GL_NO_ERROR);
+            assert(eglMakeCurrent(display,surface,surface,context));
+            glDeleteProgram(program);assert(glGetError()==GL_NO_ERROR);
+        }
+        assert(_wpk_gl_enable_program_journal());
+        if(!strcmp(argv[1],"driver-indeterminate")) {
+            EGLContext peer=eglCreateContext(display,config,context,attrs);assert(peer!=EGL_NO_CONTEXT);
+            assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
+            assert(_wpk_gl_enable_program_journal());
+            assert(eglMakeCurrent(display,surface,surface,context));
+            glUseProgram(program);
+            assert(glGetError()==GL_INVALID_OPERATION);
+            assert(glGetError()==GL_NO_ERROR);
+            glDrawArrays(GL_TRIANGLES,0,3);check_color(51,153,204);
+            glUseProgram(0);glDeleteProgram(program);glDeleteShader(vertex);glDeleteShader(fragment);
+            glDeleteBuffers(1,&buffer);assert(glGetError()==GL_NO_ERROR);
+            assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
+            assert(eglDestroyContext(display,peer)&&eglDestroySurface(display,surface)&&
+                eglDestroyContext(display,context)&&eglTerminate(display)&&eglReleaseThread());
+            printf("PASS journal wire %s\n",argv[1]);return 0;
+        }
+        if(!strcmp(argv[1],"driver-cold-refusal")) {
+            glUseProgram(program);assert(glGetError()==GL_NO_ERROR);
+            glDrawArrays(GL_TRIANGLES,0,3);check_color(51,153,204);
+            glUseProgram(0);glDeleteProgram(program);glDeleteShader(vertex);glDeleteShader(fragment);
+            glDeleteBuffers(1,&buffer);assert(glGetError()==GL_NO_ERROR);
+            assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
+            assert(eglDestroySurface(display,surface)&&eglDestroyContext(display,context)&&eglTerminate(display)&&eglReleaseThread());
+            printf("PASS journal wire %s\n",argv[1]);return 0;
+        }
+        glUseProgram(program);glUseProgram(0);assert(glGetError()==GL_NO_ERROR);
+        // Both native generation and all intent/error storage are now cold-
+        // reserved. Warm Use/GetError must not enter the device at all.
+        const uint64_t requests=_wpk_gl_device_requests();
+        const unsigned rounds=!strcmp(argv[1],"driver-wrap")?300:20;
+        for(unsigned i=0;i<rounds;i++) {
+            glUseProgram(program);assert(glGetError()==GL_NO_ERROR);
+            glUseProgram(0);assert(glGetError()==GL_NO_ERROR);
+        }
+        const uint64_t warm_requests=_wpk_gl_device_requests()-requests;
+        if(rounds==20)assert(!warm_requests);
+        else assert(warm_requests>0&&warm_requests<20);
+        printf("DRIVER_COUNTERS {\"pairs\":%u,\"warmDeviceRequests\":%llu}\n",rounds,(unsigned long long)warm_requests);
+        if(cached[0]) {
+            for(unsigned pass=0;pass<2;pass++)for(unsigned i=0;i<35;i++) {
+                glUseProgram(cached[i]);assert(glGetError()==GL_NO_ERROR);
+            }
+        }
+        glUseProgram(program);assert(glGetError()==GL_NO_ERROR);
+        if(sharing) {
+            struct peer_data p={display,config,context,program,_wpk_gl_fd()};pthread_t thread;
+            assert(!pthread_create(&thread,NULL,delete_in_peer,&p)&&!pthread_join(thread,NULL));
+            assert(glIsProgram(program)==GL_TRUE);
+        }
+        if(retirement) {
+            // Flush the previous probes, then accept a still-unsubmitted
+            // selection before an unbound thread retires the old name owner.
+            glUseProgram(0);glFinish();assert(glGetError()==GL_NO_ERROR);
+            glUseProgram(program);
+            struct driver_peer p={display,config,context,retiring,program,fragment};pthread_t thread;
+            assert(!pthread_create(&thread,NULL,driver_retire_peer,&p)&&!pthread_join(thread,NULL));
+            assert(glIsProgram(program)==GL_TRUE);
+        }
+        if(!strcmp(argv[1],"driver-errors")) {
+            glUseProgram(0xfffffff0);assert(glGetError()==GL_INVALID_VALUE);
+            glUseProgram(0xfffffff0);assert(glGetError()==GL_INVALID_VALUE);
+            glUseProgram(vertex);assert(glGetError()==GL_INVALID_OPERATION);
+            assert(glGetError()==GL_NO_ERROR);
+        }
+        if(!strcmp(argv[1],"driver-relink")||!strcmp(argv[1],"driver-failed-link")) {
+            struct driver_peer p={display,config,context,EGL_NO_CONTEXT,program,fragment,!strcmp(argv[1],"driver-failed-link")};pthread_t thread;
+            assert(!pthread_create(&thread,NULL,driver_relink_peer,&p)&&!pthread_join(thread,NULL));
+        }
+        if(!strcmp(argv[1],"driver-fork"))check_driver_fork(display,config,context,program);
+        glDrawArrays(GL_TRIANGLES,0,3);check_color(51,153,204);
+        if(!strcmp(argv[1],"driver-relink")) {
+            glUseProgram(program);glDrawArrays(GL_TRIANGLES,0,3);check_color(204,51,102);
+        }
+        if(!strcmp(argv[1],"driver-failed-link")) {
+            glUseProgram(program);assert(glGetError()==GL_INVALID_OPERATION&&glGetError()==GL_NO_ERROR);
+            glDrawArrays(GL_TRIANGLES,0,3);check_color(51,153,204);
+        }
+        glUseProgram(0);
+        if(cached[0])for(unsigned i=0;i<35;i++) {
+            glDeleteProgram(cached[i]);assert(glIsProgram(cached[i])==GL_FALSE);
+        }
+        if(!sharing&&!retirement)glDeleteProgram(program);
+        glDeleteShader(vertex);glDeleteShader(fragment);glDeleteBuffers(1,&buffer);
+        assert(glGetError()==GL_NO_ERROR);
+        assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
+        assert(eglDestroySurface(display,surface)&&eglDestroyContext(display,context)&&eglTerminate(display)&&eglReleaseThread());
+        printf("PASS journal wire %s\n",argv[1]);return 0;
+    }
     EGLContext retiring=EGL_NO_CONTEXT;int retirement_fd=-1;
     if(lifecycle) {
         retiring=eglCreateContext(display,config,context,attrs);assert(retiring!=EGL_NO_CONTEXT);

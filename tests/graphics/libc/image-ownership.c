@@ -3313,6 +3313,19 @@ static void *nested_dispatch_peer(void *encoder) {
     _wpk_gl_end_name_scope(&scope);
     return NULL;
 }
+struct fork_dispatch_guard {
+    struct wpk_gles_context *encoder;
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    int held,release;
+};
+static void *hold_dispatch_across_fork(void *opaque) {
+    struct fork_dispatch_guard *p=opaque;
+    struct wpk_gl_name_scope guard=_wpk_gl_begin_encoder_retirement(p->encoder);assert(guard.group);
+    assert(!pthread_mutex_lock(&p->mutex));p->held=1;assert(!pthread_cond_signal(&p->condition));
+    while(!p->release)assert(!pthread_cond_wait(&p->condition,&p->mutex));
+    assert(!pthread_mutex_unlock(&p->mutex));_wpk_gl_end_name_scope(&guard);return NULL;
+}
 
 int main(int argc, char **argv) {
     assert(argc == 2 || (argc == 3 && !strcmp(argv[1],"encoder-inline-export")));
@@ -4735,6 +4748,28 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1],"dispatch-fork-owner")) {
+        // No journal admission or error drain has initialized the fork guard.
+        struct fork_dispatch_guard p={.encoder=_wpk_gl_current_encoder(),
+            .mutex=PTHREAD_MUTEX_INITIALIZER,.condition=PTHREAD_COND_INITIALIZER};
+        pthread_t thread;assert(!pthread_create(&thread,NULL,hold_dispatch_across_fork,&p));
+        assert(!pthread_mutex_lock(&p.mutex));
+        while(!p.held)assert(!pthread_cond_wait(&p.condition,&p.mutex));
+        assert(!pthread_mutex_unlock(&p.mutex));
+        pid_t child=fork();assert(child>=0);
+        if(!child) {
+            alarm(5);errno=0;
+            struct wpk_gl_name_scope guard=_wpk_gl_begin_encoder_retirement(p.encoder);
+            assert(!guard.group&&errno==EACCES);_exit(0);
+        }
+        int status=0;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
+        assert(!pthread_mutex_lock(&p.mutex));p.release=1;assert(!pthread_cond_signal(&p.condition));
+        assert(!pthread_mutex_unlock(&p.mutex));assert(!pthread_join(thread,NULL));
+        assert(!pthread_mutex_destroy(&p.mutex)&&!pthread_cond_destroy(&p.condition));
+        assert(glGetError()==GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy)&&allocation_count()==0);
+        puts("PASS dispatch-fork-owner");return 0;
+    }
     if (!strcmp(argv[1],"dispatch-nested") || !strcmp(argv[1],"dispatch-retirement")) {
         int before;
         assert(!pthread_setcancelstate(PTHREAD_CANCEL_ENABLE,&before));

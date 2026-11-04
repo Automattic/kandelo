@@ -272,9 +272,10 @@ knowledge for the default-VAO scope with known bindings and slots. Converted
 layouts, first installations, nondefault-VAO history and uncertain state
 retain their conservative paths; full attribute/draw authority is unfinished.
 Program selection now has shared C names, current-context references, cold
-native executable captures and checked host-journal transport. C pending/result
-custody, generation-token caching and ordered shared publication still need
-integration. A positive link-status cache without complete ownership
+native executable captures and checked host-journal transport. Its explicitly
+admitted C prototype connects bounded pending/result custody, generation-token
+caching and ordered shared publication; ordinary application admission remains
+off until the remaining failure and error-ordering cases are closed. A positive link-status cache without complete ownership
 fails a newly shared pthread deletion regression; that prototype
 was not landed. This ownership remains required current-iteration work.
 This is only the start of B1: the remaining exact validation families and their audit
@@ -1089,13 +1090,17 @@ errors until their command positions. Checked kernel/host transport now
 validates current-session authority, publishes batches, executes own-context
 selectors and retains recoverable receipts. Wire-only metadata abandoned at
 context/session retirement is reclaimed; accepted asynchronous jobs must gain
-separate slot custody before C1 admission. Next, integrate the C shared immutable
-journal, generation-token cache, caller-prefix submission and recovery before
-enabling local program selection. Shared dispatch/lifecycle guards now nest on
+separate slot custody before C1 admission. The explicitly admitted C prototype
+now connects its immutable shared queue,32-entry generation-token cache,
+256 bounded slots, caller-prefix submission and retained-receipt recovery.
+Ordinary applications still use checked selection. Automatic admission requires
+closure of genuine partial/indeterminate publication, native-loss and uncertain
+prefix reconciliation, ordered error observation through transport failures,
+and the complete final-context ownership audit. Shared dispatch/lifecycle guards now nest on
 the owning thread while retaining peer exclusion and cancellation ordering;
-only the outer name scope reconciles unpublished external candidates. This
-prepares query/submission publication hooks, which remain unconnected. Audit the final
-context collector alongside the pending-work path. Reserve all
+only the outer name scope reconciles unpublished external candidates. Query, submission and EGL retirement hooks now publish metadata without
+flushing foreign mutable encoders. Audit the final context collector alongside
+the remaining failure paths. Reserve all
 fallible ownership/result metadata before local acceptance. Never query a
 destroyed session, flush a foreign mutable encoder or reuse the rejected
 name-only cache. A private native pin does not establish logical ownership.
@@ -1107,6 +1112,11 @@ required in their agreed order.
 C publication must also precede EGL lifetime mutations made without a current
 GL binding. The optional0x3c lifecycle barrier now supplies checked metadata-only
 authority through a live owned public context; ordinary0x3b current-thread
-checks and native submission authority are unchanged. Integrate it into C
-lifetime guards and the shared immutable queue before enabling local program
-acceptance. A foreign mutable encoder is never a source of submitted commands.
+checks and native submission authority are unchanged. The explicitly admitted
+prototype now integrates it into C lifetime guards and the immutable queue.
+Group-level receipt recovery prevents a second publisher from replaying entered
+intents after response loss. Read-only receipt recovery must preserve execution
+loss. Group ownership is checked before inherited fork mutexes are touched.
+Automatic activation, remaining attribute/draw and other required hot paths,
+full B1 correctness/conformance and ScummVM round-trip measurements remain open.
+A foreign mutable encoder is never a source of submitted commands.

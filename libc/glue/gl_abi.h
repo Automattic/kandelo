@@ -340,6 +340,12 @@ int      _wpk_gl_robustness_state(unsigned int pname, int32_t *value);
 void     _wpk_gl_note_device_request(void);
 uint64_t _wpk_gl_device_requests(void);
 int      _wpk_gl_device_requests_fork_safe(void);
+/* Private library ownership epoch; initialize fork tracking before acquiring
+ * local authority. Zero means tracking has not been installed successfully. */
+uint64_t _wpk_gl_device_owner_epoch(void);
+/* Cold driver admission, not a public GLES entrypoint. Ordinary clients keep
+ * checked selection until automatic admission is independently validated. */
+int _wpk_gl_enable_program_journal(void);
 
 /* Opaque client encoder state belongs to an EGL context, not its current
  * thread. Only libGLESv2 knows its layout; EGL owns creation and retirement. */
@@ -366,6 +372,7 @@ int _wpk_gl_finish_checked(void);
 int _wpk_gl_discard_external_candidate(uint32_t name);
 
 struct wpk_gles_context *_wpk_gl_current_encoder(void);
+int _wpk_gl_encoder_owned(struct wpk_gles_context *state);
 struct wpk_gles_context *_wpk_gl_create_encoder(void);
 #define WPK_GL_OBJECT_GROUPS 1
 struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *source);

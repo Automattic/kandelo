@@ -16,7 +16,7 @@ test.beforeAll(()=>{
       ["-pthread","-lEGL","-lGLESv2"],{arch,forkInstrument:true}));
 });
 test.afterAll(()=>{for(const fixture of fixtures.values())fixture.cleanup();});
-for(const mode of ["render","preflight","recovery","errors","abandon","exit-pending","uniform-interleave","lifecycle-unbound","lifecycle-current-peer","driver-dispatch"] as const) for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
+for(const mode of ["render","preflight","recovery","errors","abandon","exit-pending","uniform-interleave","lifecycle-unbound","lifecycle-current-peer","driver-dispatch","driver-local","driver-sharing","driver-wrap","driver-errors","driver-relink","driver-retirement","driver-recovery","driver-fork","driver-cache","driver-cold-refusal","driver-failed-link","driver-malformed","driver-indeterminate"] as const) for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
   test(`${mode} ${arch} checks journal transport and captured execution (${audit??"production"})`,async({page,baseURL,browser})=>{
     test.setTimeout(90_000);
     const image=KandeloImageFs.create();image.mkdir("/bin",0o755);
@@ -31,7 +31,7 @@ for(const mode of ["render","preflight","recovery","errors","abandon","exit-pend
     const errors:string[]=[];page.on("pageerror",e=>errors.push(e.message));
     await installBrowserMemoryBoundaryProbe(page);
     await page.goto(new URL("/trap-signal-test.html",baseURL).href);
-    await installProgramLifetimeProbe(page);
+    await installProgramLifetimeProbe(page,mode==="driver-recovery"?"lost-publication":mode==="driver-cold-refusal"?"refuse-registration":mode==="driver-malformed"?"malformed-reserve":mode==="driver-indeterminate"?"indeterminate-publication":false);
     const source=fileURLToPath(new URL("../../../host/src/browser-kernel-host.ts",import.meta.url));
     const result=await page.evaluate(async({url,audit,mode})=>{
       const {BrowserKernel}=await import(/* @vite-ignore */ url);
@@ -48,13 +48,43 @@ for(const mode of ["render","preflight","recovery","errors","abandon","exit-pend
         const native=await(window as any).__programLifetimeStats();return{...state,status,native};
       }finally{try{await kernel.destroy();}finally{(window as any).__disposeProgramLifetimeProbe();}}
     },{url:new URL(`/@fs${source}`,baseURL).href,audit,mode});
+    const evidence={engine:test.info().project.name,arch,audit,mode,kernelPath,kernelSha256,programSha256,version:browser.version(),...result};
+    writeFileSync(test.info().outputPath("guest-result.json"),JSON.stringify(evidence,null,2));
+    const lines=result.stdout.trim().split("\n");
+    let driverCounters:{pairs:number;warmDeviceRequests:number}|undefined;
+    if(mode.startsWith("driver-")&&mode!=="driver-dispatch"&&mode!=="driver-cold-refusal"&&mode!=="driver-indeterminate"&&result.status===0) {
+      expect(lines).toHaveLength(2);expect(lines[0]).toMatch(/^DRIVER_COUNTERS /);
+      driverCounters=JSON.parse(lines[0].slice("DRIVER_COUNTERS ".length));
+      expect(driverCounters!.pairs).toBe(mode==="driver-wrap"?300:20);
+      if(mode==="driver-wrap") {
+        expect(driverCounters!.warmDeviceRequests).toBeGreaterThan(0);
+        expect(driverCounters!.warmDeviceRequests).toBeLessThan(20);
+      }else expect(driverCounters!.warmDeviceRequests).toBe(0);
+    }else expect(lines).toHaveLength(1);
     writeFileSync(test.info().outputPath("guest-result.json"),JSON.stringify({engine:test.info().project.name,arch,audit,mode,kernelPath,kernelSha256,programSha256,
-      version:browser.version(),...result},null,2));
+      version:browser.version(),driverCounters,...result},null,2));
     expect(result.status,JSON.stringify(result)).toBe(0);
-    expect(result.stdout.trim()).toBe(`PASS journal wire ${mode}`);
+    expect(lines.at(-1)).toBe(`PASS journal wire ${mode}`);
     expect(result.stderr).toBe("");
     expect(result.native.created).toBeGreaterThan(0);expect(result.native.deleted).toBe(result.native.created);
     expect(result.native.live).toBe(0);
+    if(mode==="driver-recovery") {
+      expect(result.native.recovery.dropped).toBe(1);
+      expect(result.native.recovery.duplicates).toBe(0);
+      expect(result.native.recovery.reads).toBeGreaterThanOrEqual(2);
+    }
+    if(mode==="driver-cold-refusal") {
+      expect(result.native.recovery.refused).toBe(1);expect(result.native.recovery.duplicates).toBe(0);
+      expect(result.native.recovery.unreleasedCaptures).toBe(0);
+    }
+    if(mode==="driver-malformed") {
+      expect(result.native.recovery.corrupted).toBe(2);expect(result.native.recovery.duplicates).toBe(0);
+      expect(result.native.recovery.reads).toBeGreaterThanOrEqual(2);
+    }
+    if(mode==="driver-indeterminate") {
+      expect(result.native.recovery.dropped).toBe(1);expect(result.native.recovery.refusedReads).toBe(1);
+      expect(result.native.recovery.duplicateIntents).toBe(0);expect(result.native.recovery.duplicates).toBe(0);
+    }
     const auditRows=result.diagnostics.filter((d:any)=>d.source==="gl-audit").map((d:any)=>JSON.parse(d.message));
     expect(auditRows.filter((r:any)=>r.kind==="divergence")).toEqual([]);
     if(audit)expect(auditRows.some((r:any)=>r.cause==="instrumented")).toBe(true);
