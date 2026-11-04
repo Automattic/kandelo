@@ -4372,6 +4372,11 @@ pub mod gl {
     /// width/height/pixels and QUERY_REPLY_MAGIC in 16 output bytes, or a
     /// 20-byte reply that also carries the supported sample-count mask.
     pub const QOP_SURFACE_CAPABILITIES: u32 = 0x002D;
+    /// Compatible GL17 reset-scope receipt, allowed after context loss. No
+    /// input; 12-byte output [status=0, scope, QUERY_REPLY_MAGIC], scope:
+    /// 0 healthy, 1 logical context reset, 2 physical renderer/share-group loss.
+    /// No commands, muxer replay or native error drain may run for this query.
+    pub const QOP_CONTEXT_RESET_SCOPE: u32 = 0x0037;
     /// V17 retained fences. Input: one nonzero client token, allocated
     /// monotonically per object session before creation. Output: 16 bytes
     /// (status, echoed token, signaled bool, checked reply magic).
@@ -6800,6 +6805,7 @@ mod gl_tests {
             QOP_BIND_BUFFER,
             QOP_DELETE_BUFFER,
             QOP_SURFACE_CAPABILITIES,
+            QOP_CONTEXT_RESET_SCOPE,
             QOP_CREATE_FENCE,
             QOP_FENCE_STATUS,
             QOP_RELEASE_FENCE,

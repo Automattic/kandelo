@@ -232,6 +232,7 @@
  * or the 20-byte reply with the supported sample-count mask (bit n = n
  * samples) before the marker. Requires a live display's mapped object
  * session, not a current context. */
+#define QOP_CONTEXT_RESET_SCOPE 0x0037u
 #define QOP_SURFACE_CAPABILITIES 0x002Du
 #define WPK_SURFACE_CAPABILITIES_LEN 16u
 #define WPK_SURFACE_CAPABILITIES_SAMPLES_LEN 20u
@@ -316,7 +317,8 @@ int      _wpk_gl_fd(void);
 uint8_t *_wpk_gl_cmdbuf_base(void);
 void     _wpk_gl_flush(void);
 /* Graphics reset state, owned by libEGL (EXT/KHR_robustness section 2.6).
- * The host replies ENODEV once the current context's renderer was lost. */
+ * ENODEV loses the context; the failure-only scope receipt distinguishes
+ * its logical reset from physical renderer/share-group loss. */
 struct wpk_gles_context;
 struct wpk_gles_context *_wpk_gl_command_encoder(void);
 void     _wpk_gl_note_reset(void);

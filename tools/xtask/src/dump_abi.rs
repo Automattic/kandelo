@@ -4439,6 +4439,15 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
             "poll": runtime_core::dri::fence::HOST_REQUEST_POLL,
             "release": runtime_core::dri::fence::HOST_REQUEST_RELEASE},
     }));
+    s.add(Program, "gl_context_reset_scope", json!({
+        "opcode": shared::gl::QOP_CONTEXT_RESET_SCOPE,
+        "request_bytes": 0, "reply_bytes": 12,
+        "reply_fields": ["status", "scope", "magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "scope": {"healthy": 0, "logical_context_reset": 1, "physical_renderer_loss": 2},
+        "available_after_reset": true,
+        "execution": "read-only-no-replay-no-native-error-drain",
+    }));
     s.add(Program, "gl_object_capture", json!({
         "opcode": shared::gl::QOP_OBJECT_CAPTURE,
         "queries": {"shader_log":shared::gl::QOP_GET_SHADER_INFO_LOG,
@@ -8507,7 +8516,11 @@ fn additive_top_level_section(section: &str) -> bool {
         // additive: those are classified by
         // `classify_removal_only_array_by_module_name`, under which an
         // added import is breaking.
-        "clipboard_device_abi"
+        // A new query on an unused GL17 opcode cannot alter any old request.
+        // Existing receipt fields remain exact-match and therefore breaking
+        // if changed; only adding this section is compatible.
+        "gl_context_reset_scope"
+            | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
             | "ioctl_request_families"
@@ -10056,6 +10069,25 @@ mod tests {
             },
             "vfs_metadata": vfs_metadata()
         })
+    }
+
+    #[test]
+    fn reset_scope_query_is_additive_but_existing_receipt_cannot_change() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["gl_context_reset_scope"] = json!({"opcode": 0x37,
+            "request_bytes": 0, "reply_bytes": 12,
+            "scope": {"healthy": 0, "logical_context_reset": 1, "physical_renderer_loss": 2}});
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(report.additive, vec!["added top-level section \"gl_context_reset_scope\""]);
+        let established = new.clone();
+        for field in ["opcode", "request_bytes", "reply_bytes"] {
+            let mut changed = established.clone(); changed["gl_context_reset_scope"][field] = json!(99);
+            assert!(!classify_compat_change(&established, &changed).unwrap().breaking.is_empty());
+        }
+        new["gl_context_reset_scope"]["scope"]["logical_context_reset"] = json!(2);
+        assert!(!classify_compat_change(&established, &new).unwrap().breaking.is_empty());
     }
 
     #[test]

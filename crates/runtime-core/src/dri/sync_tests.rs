@@ -1196,6 +1196,14 @@ fn gl_work_waits_for_the_implicit_fences_of_buffers_the_process_names() {
     finish[..4].copy_from_slice(&gl::QOP_FINISH.to_le_bytes());
     assert_eq!(sys_ioctl(&mut d.proc, &mut d.host, fd, gl::GLIO_QUERY, &mut finish), Err(Errno::EAGAIN));
     glio_fence_query_test(&mut d.proc, &mut d.host, fd, gl::QOP_FENCE_STATUS).unwrap();
+    // Loss diagnosis must not wait on a writer that may itself have failed.
+    // The scope receipt reads no buffer and must still reach the host.
+    let mut scope = [0u8; 24];
+    scope[..4].copy_from_slice(&gl::QOP_CONTEXT_RESET_SCOPE.to_le_bytes());
+    scope[12..16].copy_from_slice(&32u32.to_le_bytes());
+    scope[16..20].copy_from_slice(&12u32.to_le_bytes());
+    sys_ioctl(&mut d.proc, &mut d.host, fd, gl::GLIO_QUERY, &mut scope).unwrap();
+    assert_eq!(d.host.gl_query_inputs.last(), Some(&(gl::QOP_CONTEXT_RESET_SCOPE, alloc::vec![], 12)));
     producer.inc(1, d.now());
     submit(&mut d).unwrap();
     assert_eq!(d.host.gl_submit_sessions.len(), ran + 1);

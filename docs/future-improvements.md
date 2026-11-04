@@ -1047,3 +1047,10 @@ runtime because the callback's call chain was not instrumented.
 Batch PRs classify every failure against main by rebuilding main in a second checkout and rerunning the full suites there, which takes hours and was thrown away each time. Main's known Vitest and Playwright failures lived only in run logs. Commit a small per-suite record of every result other than a plain pass (failure, expected failure, timeout, error, skip, intermittent, each with a one-line reason), plus totals and provenance. Key it not on the commit but on a digest of what the suite actually consumes: the built artifacts it used, the source paths it was measured to read, and the browser and Node versions. A README change then leaves every baseline current, and a reviewer sees a PR's change in results as a diff. A baseline records reality: it never turns a failing run green, and a stale one is never used for classification.
 
 **Files:** new `tests/baselines/`, an xtask command to record, check and classify, `docs/agent-guidance/validation.md`
+
+The A3 reset-scope follow-up keeps D-49/D-50 logical resets local in libc,
+with a checked failure-only receipt and physical-loss share-group propagation.
+Focused native C, host, Rust and browser device-double controls cover it;
+the final normal-built graphics, desktop and browser-memory runs still need
+the resulting archive/kernel/program/image set. This does not complete B1's
+shared program ownership or any B2–B6/C1–C3 stage.

@@ -23,6 +23,7 @@
       "clipboard_device_abi",
       "custom_sections",
       "gl_compressed_upload",
+      "gl_context_reset_scope",
       "gl_export_fence",
       "gl_image_container_receipts",
       "gl_inline_client_draw",
@@ -1436,6 +1437,24 @@
       "completion_magic"
     ],
     "unknown_commit": "no-replay-abort-drops-staging-only"
+  },
+  "gl_context_reset_scope": {
+    "available_after_reset": true,
+    "execution": "read-only-no-replay-no-native-error-drain",
+    "opcode": 55,
+    "reply_bytes": 12,
+    "reply_fields": [
+      "status",
+      "scope",
+      "magic"
+    ],
+    "reply_magic": 1196510259,
+    "request_bytes": 0,
+    "scope": {
+      "healthy": 0,
+      "logical_context_reset": 1,
+      "physical_renderer_loss": 2
+    }
   },
   "gl_export_fence": {
     "dispositions": {

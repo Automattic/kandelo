@@ -1607,6 +1607,20 @@ fn capture_gl_query_info(
             require_gl_display_live(proc, ofd_idx)?;
             require_gl_current_for_tid(proc, ofd_idx, tid)?;
         }
+    } else if info.op == gl::QOP_CONTEXT_RESET_SCOPE {
+        // WHY: failed MakeCurrent and shared-context creation can discover
+        // loss before this thread owns a current binding. This read-only
+        // receipt exposes only its own retained context's loss scope.
+        if info.in_buf_len != 0 || info.out_buf_len != 12 { return Err(Errno::EINVAL); }
+        let dri = dri_state(proc, ofd_idx)?;
+        let state = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+        if state.role != gl::SESSION_OBJECTS || state.context_id.is_none()
+            || !dri.gl_resources.borrow().owner.is_some_and(|owner| {
+                owner.pid == pid && owner.session_id == state.session_id
+                    && owner.native_live && owner.cmdbuf_range.is_some()
+            }) {
+            return Err(Errno::EACCES);
+        }
     } else if info.op == gl::QOP_SURFACE_CAPABILITIES {
         // Immutable limits do not expose context-local state and must
         // be available to EGL configuration queries before MakeCurrent.
@@ -1873,7 +1887,8 @@ fn gl_entry_touches_buffers(request: u32, buf: &[u8]) -> bool {
         gl::GLIO_QUERY => buf.get(..4).is_some_and(|op| !matches!(
             u32::from_le_bytes(op.try_into().unwrap()),
             gl::QOP_CREATE_FENCE | gl::QOP_FENCE_STATUS | gl::QOP_RELEASE_FENCE
-                | gl::QOP_SERVER_WAIT | gl::QOP_EXPORT_FENCE | gl::QOP_SURFACE_CAPABILITIES)),
+                | gl::QOP_SERVER_WAIT | gl::QOP_EXPORT_FENCE | gl::QOP_SURFACE_CAPABILITIES
+                | gl::QOP_CONTEXT_RESET_SCOPE)),
         _ => false,
     }
 }
@@ -60455,6 +60470,54 @@ impl HostIO for RelSymlinkMock {
             vec![(proc.pid as i32, bo_id, bo_addr, bo_len)]
         );
         assert_eq!(host.gl_unbind_calls, vec![proc.pid as i32]);
+    }
+
+    #[test]
+    fn glio_reset_scope_before_current_requires_own_live_context() {
+        use wasm_posix_shared::gl;
+        for width in [4, 8] {
+            let mut proc = Process::new(1); proc.pointer_width = width;
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+            glio_map_test(&mut proc, &mut host, fd);
+            let query = |op: u32, len: u32| -> Vec<u8> {
+                if width == 4 {
+                    let info = gl::GlQueryInfo { op, out_buf_ptr: 32, out_buf_len: len, ..Default::default() };
+                    unsafe { core::slice::from_raw_parts((&info as *const gl::GlQueryInfo).cast(), core::mem::size_of_val(&info)).to_vec() }
+                } else {
+                    let info = gl::GlQueryInfo64 { op, out_buf_ptr: 32, out_buf_len: len, ..Default::default() };
+                    unsafe { core::slice::from_raw_parts((&info as *const gl::GlQueryInfo64).cast(), core::mem::size_of_val(&info)).to_vec() }
+                }
+            };
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                &mut query(gl::QOP_CONTEXT_RESET_SCOPE, 12)), Err(Errno::EACCES));
+            let mut attrs = [0u8; 16]; attrs[..4].copy_from_slice(&2u32.to_le_bytes());
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut attrs).unwrap();
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            assert!(dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap().current.is_none());
+            host.proc_memory.fill(0xa5);
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                &mut query(gl::QOP_CONTEXT_RESET_SCOPE, 12)).unwrap();
+            assert_eq!(host.gl_query_inputs.len(), 1);
+            assert_eq!(host.gl_query_inputs[0], (gl::QOP_CONTEXT_RESET_SCOPE, vec![], 12));
+            assert_eq!(&host.proc_memory[32..44], &[0; 12]);
+            assert_eq!(host.proc_memory[31], 0xa5); assert_eq!(host.proc_memory[44], 0xa5);
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                &mut query(gl::QOP_GET_ERROR, 4)), Err(Errno::EACCES));
+            for len in [0, 8, 16] {
+                assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                    &mut query(gl::QOP_CONTEXT_RESET_SCOPE, len)), Err(Errno::EINVAL));
+            }
+            dri_state_mut(&mut proc, ofd).unwrap().gl.as_mut().unwrap().owner_pid = 2;
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                &mut query(gl::QOP_CONTEXT_RESET_SCOPE, 12)), Err(Errno::EACCES));
+            dri_state_mut(&mut proc, ofd).unwrap().gl.as_mut().unwrap().owner_pid = 1;
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_CONTEXT, &mut []).unwrap();
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                &mut query(gl::QOP_CONTEXT_RESET_SCOPE, 12)), Err(Errno::EACCES));
+            assert_eq!(host.gl_query_inputs.len(), 1);
+        }
     }
 
     #[test]

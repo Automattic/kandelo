@@ -805,6 +805,7 @@ static unsigned read_pixels_queries;
 /* A lost host renderer: the host answers ENODEV on submit, query, present,
  * binding and sharing (host/src/webgl/renderer-loss.ts). */
 static int renderer_lost;
+static int logical_reset_fd = -1, reset_scope_malformed;
 static unsigned device_calls, renderer_lost_replies;
 static uint32_t last_context_flags;
 static uint32_t read_pixels_capacity;
@@ -896,7 +897,15 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
     struct device_slot *slot = &device_slots[fd-10];
     commands = slot->commands;
     device_calls++;
-    if (renderer_lost && (request == GLIO_SUBMIT || request == GLIO_QUERY || request == GLIO_PRESENT ||
+    if (request == GLIO_QUERY && ((struct gl_query_info *)arg)->op == 0x37) {
+        const struct gl_query_info *q = arg;
+        assert(!q->in_buf_len && q->out_buf_len == 12 && !q->reserved);
+        uint32_t *reply = (uint32_t *)q->out_buf_ptr;
+        reply[0] = 0; reply[1] = renderer_lost ? 2 : fd == logical_reset_fd ? 1 : 0;
+        reply[2] = reset_scope_malformed ? 0 : WPK_GL_QUERY_REPLY_MAGIC;
+        return 0;
+    }
+    if ((renderer_lost || fd == logical_reset_fd) && (request == GLIO_SUBMIT || request == GLIO_QUERY || request == GLIO_PRESENT ||
         (request == GLIO_MAKE_CURRENT && ((const struct gl_make_current *)arg)->context_id) ||
         (request == GLIO_CREATE_CONTEXT && ((const struct gl_context_attrs *)arg)->share_context_id))) {
         renderer_lost_replies++;
@@ -3034,6 +3043,46 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
         assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
         assert(eglDestroyContext(dpy, peer) && eglDestroyContext(dpy, lose) && eglDestroyContext(dpy, other));
         assert(eglDestroySurface(dpy, surface) && eglTerminate(dpy));
+    } else if (!strcmp(name, "egl-spec-logical-reset") ||
+               !strcmp(name, "egl-spec-logical-reset-unknown") ||
+               !strcmp(name, "egl-spec-logical-reset-physical")) {
+        /* A3 D-49/D-50: ENODEV from a logical reset does not destroy a
+         * healthy sharing context. A later physical loss still does. */
+        const int unknown = strstr(name, "unknown") != NULL;
+        const int physical = strstr(name, "physical") != NULL;
+        PFNGLGETGRAPHICSRESETSTATUSKHRPROC status =
+            (PFNGLGETGRAPHICSRESETSTATUSKHRPROC)eglGetProcAddress("glGetGraphicsResetStatusKHR");
+        const EGLint attributes[] = {EGL_CONTEXT_CLIENT_VERSION, 2,
+            EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_KHR, EGL_LOSE_CONTEXT_ON_RESET_KHR, EGL_NONE};
+        assert(status && eglInitialize(dpy, NULL, NULL));
+        EGLContext guilty = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attributes);
+        EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, guilty, attributes);
+        assert(guilty && peer && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, guilty));
+        glClearColor(1, 0, 0, 1); glFlush(); assert(glGetError() == GL_NO_ERROR);
+        logical_reset_fd = _wpk_gl_fd(); reset_scope_malformed = unknown;
+        glClear(GL_COLOR_BUFFER_BIT); glFlush();
+        assert(status() == GL_UNKNOWN_CONTEXT_RESET_KHR);
+        assert(glGetError() == GL_CONTEXT_LOST_KHR && glGetError() == GL_NO_ERROR);
+        reset_scope_malformed = 0;
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer));
+        assert(status() == GL_NO_ERROR);
+        glClearColor(0, 1, 0, 1); glClear(GL_COLOR_BUFFER_BIT); glFlush();
+        assert(glGetError() == GL_NO_ERROR && status() == GL_NO_ERROR);
+        EGLContext survivor = eglCreateContext(dpy, (EGLConfig)1, peer, attributes);
+        assert(survivor != EGL_NO_CONTEXT);
+        if (physical) {
+            renderer_lost = 1;
+            glClear(GL_COLOR_BUFFER_BIT); glFlush();
+            assert(status() == GL_UNKNOWN_CONTEXT_RESET_KHR);
+            renderer_lost = 0;
+            assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, survivor));
+            const unsigned calls = device_calls;
+            assert(status() == GL_UNKNOWN_CONTEXT_RESET_KHR && calls == device_calls);
+        }
+        logical_reset_fd = -1;
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        assert(eglDestroyContext(dpy, guilty) && eglDestroyContext(dpy, peer) && eglDestroyContext(dpy, survivor));
+        assert(eglTerminate(dpy));
     } else if (!strcmp(name, "egl-spec-robustness-no-notification")) {
         /* NO_RESET_NOTIFICATION never reports the reset to GL (section
          * 2.6); EGL still reports EGL_CONTEXT_LOST and GL calls have no

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
 import * as O from "../src/webgl/ops.js";
+import { markRendererReset } from "../src/webgl/renderer-loss.js";
 
 const ENODEV = -19;
 
@@ -43,7 +44,12 @@ function harness() {
     present: env.host_gl_present(7, session) as number,
     makeCurrent: env.host_gl_make_current(7, context, 0, 0, session) as number,
   });
-  return { kernel, env, gl, state, lose, open, contact };
+  const scope = (session: number, input = 0, output = 12) => {
+    new Uint32Array(memory.buffer, 768, 3).fill(0x77777777);
+    const rc = env.host_gl_query(7, O.QOP_CONTEXT_RESET_SCOPE, input ? 256 : 0, input, 768, output, session);
+    return { rc, words: [...new Uint32Array(memory.buffer, 768, 3)] };
+  };
+  return { kernel, env, gl, state, lose, open, contact, scope };
 }
 
 describe("a lost WebGL renderer is a graphics reset", () => {
@@ -77,4 +83,34 @@ describe("a lost WebGL renderer is a graphics reset", () => {
     expect(contact(13, 23).submit).toBe(0);
     expect(contact(13, 23).makeCurrent).toBe(0);
   });
+});
+
+it("reports logical versus physical reset scope without replaying or consuming native flags", () => {
+  const { kernel, gl, open, scope, state, lose, contact } = harness();
+  expect(open(11, 21)).toBe(0);
+  expect(open(12, 22, 21)).toBe(0);
+  const guilty = kernel.gl.get(7, 11)!;
+  markRendererReset(guilty);
+  state.calls.length = 0;
+  let drains = 0;
+  Reflect.set(gl, "getError", () => { drains++; return 0x502; });
+  expect(scope(11)).toEqual({ rc: 12, words: [0, 1, 0x47514c33] });
+  expect(scope(12)).toEqual({ rc: 12, words: [0, 0, 0x47514c33] });
+  expect(contact(11, 21).submit).toBe(ENODEV);
+  expect(state.calls).toEqual([]);
+  expect(drains).toBe(0);
+  // A later physical loss widens the guilty context's scope too, even if
+  // rendererLost already short-circuits its sticky logical-reset flag.
+  lose(); state.lost = false;
+  expect(scope(11)).toEqual({ rc: 12, words: [0, 2, 0x47514c33] });
+  expect(scope(12)).toEqual({ rc: 12, words: [0, 2, 0x47514c33] });
+  expect(state.calls).toEqual([]);
+  expect(drains).toBe(0);
+});
+
+it("validates reset-scope lengths before writing a reply", () => {
+  const { open, scope } = harness();
+  expect(open(11, 21)).toBe(0);
+  for (const [input, output] of [[4, 12], [0, 8], [0, 16]])
+    expect(scope(11, input, output)).toEqual({ rc: -22, words: [0x77777777, 0x77777777, 0x77777777] });
 });

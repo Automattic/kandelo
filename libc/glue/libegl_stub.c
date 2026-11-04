@@ -67,11 +67,11 @@ void glGetnUniformivKHR(GLuint program, GLint location, GLsizei bufSize, GLint *
 /* Graphics reset state (EXT_robustness/KHR_robustness section 2.6, EGL 1.5
  * section 2.7). The host reports a lost WebGL renderer as ENODEV on the
  * submit, query, present and make-current replies the library already
- * waits for; the first such reply marks the context's share group lost.
- * Every later GL call then has no effect, as if no context were bound (EGL
- * 1.5 section 2.7), and glGetGraphicsResetStatus/glGetError answer from
- * this state with no host round trip. A reset in one context is a reset in
- * every context that shares objects with it (EXT_robustness issue 6). */
+ * waits for. A failure-only checked scope query distinguishes D-49/D-50's
+ * logical reset from physical renderer loss. Only a known physical loss
+ * marks the share group lost (EXT_robustness issue 6). Every later GL call
+ * on a lost context has no effect (EGL 1.5 section 2.7); reset/error getters
+ * then answer locally. An unavailable scope is diagnosed, never guessed. */
 struct egl_reset_group {
     atomic_int lost;
     unsigned references;
@@ -154,6 +154,7 @@ struct egl_context_record {
      * returned by glGetGraphicsResetStatus; a command ran after the reset
      * and GL_CONTEXT_LOST awaits glGetError. */
     int reset_reported, reset_error;
+    atomic_int lost;
     /* Created with EGL robust buffer access (host robust-access.ts). */
     int robust_access;
 };
@@ -310,16 +311,20 @@ struct wpk_gles_context *_wpk_gl_current_encoder(void) {
     return g_thread_binding.encoder;
 }
 /* The entry gate of a GL command: the current encoder, or NULL when no
- * context is current or the current one was reset. One flag test on the
+ * context is current or the current one was reset. Local reset-state tests on the
  * ordinary path. After a reset every command has no effect, as if no context
  * were bound (EGL 1.5 section 2.7), and KHR_robustness section 2.3.1rob
  * gives each one in a LOSE_CONTEXT_ON_RESET context a CONTEXT_LOST error.
  * Code inside a command keeps using _wpk_gl_current_encoder, which stays
  * valid while a reset is observed part-way through the command. */
+static int context_reset(const struct egl_context_record *context) {
+    return atomic_load_explicit(&context->lost, memory_order_relaxed) ||
+        atomic_load_explicit(&context->reset_group->lost, memory_order_relaxed);
+}
 struct wpk_gles_context *_wpk_gl_command_encoder(void) {
     struct egl_thread_binding *binding = &g_thread_binding;
     struct egl_context_record *context = binding->object;
-    if (context && atomic_load_explicit(&context->reset_group->lost, memory_order_relaxed)) {
+    if (context && context_reset(context)) {
         if (context->reset_strategy == EGL_LOSE_CONTEXT_ON_RESET)
             context->reset_error = 1;
         return NULL;
@@ -327,8 +332,23 @@ struct wpk_gles_context *_wpk_gl_command_encoder(void) {
     return binding->encoder;
 }
 static void mark_context_reset(struct egl_context_record *context) {
-    if (context)
+    if (!context) return;
+    atomic_store_explicit(&context->lost, 1, memory_order_relaxed);
+    uint32_t reply[3] = {0};
+    const struct gl_query_info query = {.op = QOP_CONTEXT_RESET_SCOPE,
+        .out_buf_ptr = (uintptr_t)reply, .out_buf_len = sizeof reply};
+    const int saved_errno = errno;
+    _wpk_gl_note_device_request();
+    const int rc = ioctl(context->session->fd, GLIO_QUERY, &query);
+    if (!rc && reply[0] == 0 && reply[2] == WPK_GL_QUERY_REPLY_MAGIC && reply[1] == 2)
         atomic_store_explicit(&context->reset_group->lost, 1, memory_order_relaxed);
+    else if (rc || reply[0] || reply[2] != WPK_GL_QUERY_REPLY_MAGIC || reply[1] != 1)
+        fprintf(stderr, "Kandelo graphics: reset scope unavailable for context %u; reset retained locally\n",
+            context->backend_id);
+    /* WHY: a failed or malformed observation cannot prove shared objects
+     * vanished. Peers still learn any physical loss from their own device
+     * replies. Never infer a group reset merely from the guilty ENODEV. */
+    errno = saved_errno;
 }
 /* A GL transport reply reported the renderer lost while this context was
  * current. The command that observed it generates CONTEXT_LOST too. */
@@ -342,7 +362,7 @@ void _wpk_gl_note_reset(void) {
 }
 int _wpk_gl_context_reset(void) {
     struct egl_context_record *context = g_thread_binding.object;
-    return context && atomic_load_explicit(&context->reset_group->lost, memory_order_relaxed);
+    return context && context_reset(context);
 }
 /* glGetError for a reset context: GL_CONTEXT_LOST once per command batch
  * since the last call (LOSE_CONTEXT_ON_RESET only), otherwise GL_NO_ERROR.
@@ -350,7 +370,7 @@ int _wpk_gl_context_reset(void) {
  * Returns 0 when the current context has not been reset. */
 int _wpk_gl_reset_error(GLenum *error) {
     struct egl_context_record *context = g_thread_binding.object;
-    if (!context || !atomic_load_explicit(&context->reset_group->lost, memory_order_relaxed))
+    if (!context || !context_reset(context))
         return 0;
     *error = context->reset_error ? GL_CONTEXT_LOST_KHR : GL_NO_ERROR;
     context->reset_error = 0;
@@ -397,7 +417,7 @@ GLenum _wpk_gl_graphics_reset_status(void) {
     struct egl_context_record *context = g_thread_binding.object;
     if (!context || context->reset_strategy != EGL_LOSE_CONTEXT_ON_RESET ||
         context->reset_reported ||
-        !atomic_load_explicit(&context->reset_group->lost, memory_order_relaxed))
+        !context_reset(context))
         return GL_NO_ERROR;
     context->reset_reported = 1;
     return GL_UNKNOWN_CONTEXT_RESET_KHR;
@@ -1051,7 +1071,7 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         return EGL_NO_CONTEXT;
     }
     /* EGL 1.5 section 2.7: a reset share group's objects are gone. */
-    if (shared && atomic_load_explicit(&shared->reset_group->lost, memory_order_relaxed)) {
+    if (shared && context_reset(shared)) {
         g_last_error = EGL_CONTEXT_LOST;
         return EGL_NO_CONTEXT;
     }

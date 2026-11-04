@@ -21952,3 +21952,39 @@ removed after repeated open-file and tracked-file checks. They contained no
 Wasm artifacts. Source, SDKs, normal images and evidence remain unchanged;
 `.context/graphics-cache-clean-r88/` retains the inventory. Concurrent builds
 and APFS still prevent attributing a free-space delta solely to cleanup.
+
+
+**A3 logical versus physical reset scope, 2026-11-04.** The host already
+reset only the guilty logical binding for native OOM/divergence, but libc
+incorrectly treated every ENODEV as physical share-group loss. It now marks
+the guilty context lost and asks a failure-only checked `QOP_CONTEXT_RESET_SCOPE`
+query (`0x37`, 12-byte `[status, scope, magic]` receipt). Only scope2, known
+physical renderer loss, marks the EGL share group lost. Scope1 leaves a
+healthy shared peer able to render and create another sharing context. A
+missing/malformed receipt emits a diagnostic and retains the loss locally;
+peers still learn real loss through their own replies. Physical restoration
+cannot erase the recorded scope, and later physical loss widens a previously
+logical reset. No replay/native-error drain occurs for this query. Rust
+allows it on the caller's retained live context before MakeCurrent and
+exempts it from buffer dependencies; ordinary state queries retain their
+current-thread gate.
+
+Focused evidence is source-level, not a new normal-preview acceptance claim:
+R98 has 434 native C UBSan passes, with all three new controls failing before
+the fix; R99-r3 has 19 host controls; R101 (`run.sh-1104-034919-dd66`) has
+20 Node and 60 Chromium/Firefox/WebKit device-double cases at both widths,
+including before failures and existing physical-loss controls. Read-only
+R16 SDK archive hashes and all frozen run inputs match afterward. Explicit
+libEGL/libGLES source objects were used; this is not latest-archive evidence.
+R103 graphics source gate passes 2,004 assertions in 84 files. R104
+(`run.sh-1104-035514-2a96`) passes 82 GLIO Rust controls, the pending implicit
+writer-fence control, query-opcode uniqueness, native layout checks and the
+ABI snapshot check against 4d2cff2144. The new receipt is classified additive;
+program56 / host3 / GL17 / fork21 remain unchanged. Its new program digest
+requires the next normal coherent program/image rebuild. Existing frozen
+R16 is earlier partial B1 and does not include this reset-scope fix. The
+initial R99 artifact global setup failed before collection (missing scratch
+SDK); R99-r2 then exposed a fixture's null input pointer for a bad-length
+check, corrected to a live pointer in R99-r3. Initial R100 ABI checking
+likewise stopped at the missing scratch SDK; APFS-provisioned matching cores
+then supported normal update/check. No failed run was erased or waived.

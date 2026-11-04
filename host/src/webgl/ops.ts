@@ -256,3 +256,7 @@ export const QOP_SERVER_WAIT = 0x0035;
 // session's fences for a sync_file, retaining it when it is on a separate
 // native context.
 export const QOP_EXPORT_FENCE = 0x0036;
+
+/** Failure-only read-only receipt [status,scope,magic]: 0 healthy, 1 logical
+ * context reset, 2 physical renderer loss. Allowed after reset, no replay. */
+export const QOP_CONTEXT_RESET_SCOPE = 0x0037;

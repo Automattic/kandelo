@@ -7,13 +7,13 @@ import { cpuImageKey, PLANAR_IMAGE_RECORD_BYTES, planarImageKey, planarImageReco
 import { drawGpuScanout, readGpuScanout, scanoutNeedsReduction, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
 import { KmsColorStage } from "./webgl/kms-color-stage.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
-import { observeRendererLoss, rendererLossCount, rendererLost, RENDERER_LOST } from "./webgl/renderer-loss.js";
+import { observeRendererLoss, rendererLossCount, rendererLost, rendererResetScope, RENDERER_LOST } from "./webgl/renderer-loss.js";
 import { contextWriteEpoch } from "./webgl/context-writes.js";
 import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer, validSurfaceCapabilitiesLength } from "./webgl/surface-capabilities.js";
-import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, QOP_EXPORT_FENCE, QOP_RELEASE_FENCE } from "./webgl/ops.js";
+import { QOP_CONTEXT_RESET_SCOPE, QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, QOP_EXPORT_FENCE, QOP_RELEASE_FENCE } from "./webgl/ops.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
  * import functions that bridge Wasm syscalls to the PlatformIO backend.
@@ -3671,7 +3671,7 @@ export class WasmPosixKernel {
           const operation = b.operations.tryBeginImmediate(queryOperationKind(op));
           if (!operation) return -5;
           try {
-          if (interruptUniformUpload(b)) return -5;
+          if (op !== QOP_CONTEXT_RESET_SCOPE && interruptUniformUpload(b)) return -5;
           let inputLength: number;
           let outputLength: number;
           let outputDestination: RustLentKernelDestination | null = null;
@@ -3707,17 +3707,27 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
           if (isFenceQuery(op) && !validFenceQuery(inBuf,outputLength)) return -22;
+          if (op === QOP_CONTEXT_RESET_SCOPE && (inputLength !== 0 || outputLength !== 12)) return -22;
           let outBuf: Uint8Array;
           let written: number;
           let preparedFence: PreparedFenceQuery | undefined;
           try {
-            if (!this.prepareForeignRetirements(b)) return -5;
+            if (op !== QOP_CONTEXT_RESET_SCOPE && !this.prepareForeignRetirements(b)) return -5;
             outBuf = new IntrinsicUint8Array(outputLength);
             // Fence creation/waits are guest execution too. Retained foreign
             // contexts keep their exact private checks, while native work on
             // this selected owner shares the same reset/sample policy.
             const queryWork = (): number => {
-            if (isFenceQuery(op)) {
+            if (op === QOP_CONTEXT_RESET_SCOPE) {
+              // WHY: ENODEV alone cannot justify poisoning healthy shared
+              // contexts after D-49/D-50's logical reset. Never replay this
+              // reset owner or sample/consume native flags to answer scope.
+              const view = new DataView(outBuf.buffer, outBuf.byteOffset, outBuf.byteLength);
+              view.setUint32(0, 0, true);
+              view.setUint32(4, rendererResetScope(b), true);
+              view.setUint32(8, 0x47514c33, true);
+              written = 12;
+            } else if (isFenceQuery(op)) {
               preparedFence = prepareFenceQuery(b,op,inBuf,outBuf,
                 gl => this.gl_muxers.get(gl)?.captureCurrentErrors(),
                 () => { if (b.gl) this.glMuxerFor(b.gl).switchTo(b); });
@@ -3778,7 +3788,7 @@ export class WasmPosixKernel {
             const retainedCleanup = op === QOP_EXPORT_FENCE || op === QOP_RELEASE_FENCE;
             // Destroying/exporting a retained sync remains possible after its
             // guest context resets. These paths do not execute guest GL work.
-            written = retainedCleanup && rendererLost(b) ? queryWork()
+            written = op === QOP_CONTEXT_RESET_SCOPE || retainedCleanup && rendererLost(b) ? queryWork()
               : withNativeBatch(b, `query 0x${op.toString(16)}`, queryWork,
                 op !== QOP_GET_ERROR && !retainedCleanup);
           } catch (caught) {

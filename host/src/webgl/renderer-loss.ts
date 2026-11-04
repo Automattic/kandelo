@@ -20,7 +20,7 @@
  */
 
 type LossCounter = { count: number; lost: boolean };
-type LossBaseline = { gl: WebGL2RenderingContext; counter: LossCounter; count: number; lost: boolean };
+type LossBaseline = { gl: WebGL2RenderingContext; counter: LossCounter; count: number; lost: boolean; physical: boolean };
 
 /** -ENODEV: the binding's renderer was lost; nothing was executed. */
 export const RENDERER_LOST = -19;
@@ -80,11 +80,11 @@ export function observeRendererLoss(b: { gl: WebGL2RenderingContext | null }): v
   const existing = baselines.get(b);
   if (existing?.gl === gl) return;
   const counter = lossCounter(gl);
-  const baseline = { gl, counter, count: counter.count, lost: !!existing?.lost };
+  const baseline = { gl, counter, count: counter.count, lost: !!existing?.lost, physical: !!existing?.physical };
   baselines.set(b, baseline);
   // A Node renderer may have no canvas restoration event. Starting a new
   // owner after restoration must permit detecting its next physical loss.
-  if (gl.isContextLost()) { noteRendererLoss(gl); baseline.lost = true; }
+  if (gl.isContextLost()) { noteRendererLoss(gl); baseline.lost = baseline.physical = true; }
   else counter.lost = false;
 }
 
@@ -95,9 +95,9 @@ export function rendererLost(b: { gl: WebGL2RenderingContext | null }): boolean 
   let baseline = baselines.get(b);
   if (!baseline || baseline.gl !== gl) { observeRendererLoss(b); baseline = baselines.get(b)!; }
   if (baseline.lost) return true;
-  if (gl.isContextLost()) { noteRendererLoss(gl); baseline.lost = true; }
+  if (gl.isContextLost()) { noteRendererLoss(gl); baseline.lost = baseline.physical = true; }
   else baseline.counter.lost = false;
-  if (baseline.counter.count !== baseline.count) baseline.lost = true;
+  if (baseline.counter.count !== baseline.count) baseline.lost = baseline.physical = true;
   return baseline.lost;
 }
 
@@ -107,4 +107,17 @@ export function markRendererReset(b: { gl: WebGL2RenderingContext | null }): voi
   observeRendererLoss(b);
   const baseline = baselines.get(b);
   if (baseline) baseline.lost = true;
+}
+
+/** Failure-path receipt only. A logical reset preserves shared objects; a
+ * physical renderer loss invalidates the whole EGL share group. Recheck a
+ * logical reset here because a later physical loss can widen its scope. */
+export function rendererResetScope(b: { gl: WebGL2RenderingContext | null }): number {
+  const gl = b.gl;
+  if (!gl) return 0;
+  observeRendererLoss(b);
+  const baseline = baselines.get(b)!;
+  if (gl.isContextLost()) { noteRendererLoss(gl); baseline.lost = baseline.physical = true; }
+  if (baseline.counter.count !== baseline.count) baseline.lost = baseline.physical = true;
+  return baseline.physical ? 2 : baseline.lost ? 1 : 0;
 }

@@ -2922,3 +2922,21 @@ older large-spawn reservation/fallback contract, and changes the synchronization
 semantics of reusable storage. By contrast, identical generated spawn/native
 layout constants and an internal TypeScript pointer-plus-capacity value would
 not by themselves require an ABI version bump.
+
+### Graphics reset scope within the unpublished ABI 56 family
+
+`QOP_CONTEXT_RESET_SCOPE` adds unused GL17 query tag `0x37`. Existing query
+inputs, replies and opcodes remain unchanged. It has no input and a checked
+12-byte reply `[status=0, scope, QUERY_REPLY_MAGIC]`: scope zero is healthy,
+one is a logical context reset, and two is physical renderer loss. It may
+read the caller's retained object session before MakeCurrent or after reset;
+it requires its own live context and grants no other state-query authority.
+It does not replay state, consume native error flags or wait on buffer fences.
+
+LibEGL asks only after a loss reply. A known physical loss invalidates its
+share group; D-49/D-50 logical resets invalidate only the guilty context.
+An unavailable scope is diagnosed and retained locally, never inferred to
+have destroyed healthy peers. Versions remain program56 / host3 / GL17 /
+fork21. The additive snapshot section changes the program contract digest,
+so the next coherent build must rebuild programs and images normally; an
+older frozen preview does not contain this fix merely because versions match.
