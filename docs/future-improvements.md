@@ -232,16 +232,16 @@ Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a p
 
 ## Graphics
 
-These graphics items were deferred by the maintainer while completing the
-GLES 2.0, EGL 1.5, GBM and single-display KMS baseline (draft PR #1594). Each
-records why it was deferred and what it would take. Current behavior for each
-is truthful: the feature is not advertised, or the call fails with the error
-its specification defines. The decisions and their evidence are recorded in
+The guest-driver migration and GPU worker below are now required work in
+the GLES 2.0, EGL 1.5, GBM and single-display KMS baseline (draft PR #1594),
+following the maintainer's 2026-11-03 revision of D-54. They remain
+unimplemented targets rather than supported behavior. The other graphics
+items retain their recorded deferrals. The decisions and their evidence are recorded in
 [the graphics compatibility ledger](graphics/compatibility-v1.md).
 
-### Move GL authority into the guest library and the Rust kernel (follow-up iteration)
+### Move GL authority into the guest library and the Rust kernel (current iteration)
 
-Planned as the next iteration after this baseline ships. Today the guest
+Required before this baseline ships. Today the guest
 GLES library encodes commands while the TypeScript host validates them as
 the acceptance authority. Native errors are sampled at batch boundaries
 for context-reset diagnostics rather than guest acceptance. Following Mesa's split, the guest library should own
@@ -267,16 +267,17 @@ also advance from the exact bytes published, rather than a later reread of
 its live mapping, so concurrent stores cannot become clean without ever
 reaching canonical storage.
 
-### Run WebGL in a dedicated GPU worker (only if the responsiveness bar is missed)
+### Run WebGL in a dedicated GPU worker (current iteration)
 
 Designed but not built: a GPU worker owning one WebGL context executes an
 ordered command ring copied at submit, while the kernel keeps buffer, fd and
-fence authority as DRM does. Measurements show synchronous WebGL calls, not
-the thread that runs GL, dominate today, so the worker is worthwhile only
-after the synchronous-call work, and only if the bar is still missed. Direct
-guest-to-GPU-worker submission (user-mode queues) is deferred further: after
-the guest-library work it saves about 0.1-0.3 ms per frame at a large cost in
-authority and teardown complexity.
+fence authority as DRM does. Implement after Stage B, first proving Rust
+queue/fence semantics on the kernel thread (C1), then separating the executor
+(C2), then moving it to the GPU worker (C3). Land and measure each stage
+separately. The maintainer now requires this isolation in the current
+iteration as part of native desktop feel, even if the earlier minimum bar
+is met. Direct guest-to-GPU-worker submission (user-mode queues) remains
+deferred under D-51; reconsider it only with measured submit-hop costs.
 
 ### Rework the CI browser job
 

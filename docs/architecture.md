@@ -3787,6 +3787,15 @@ throughput or performance claim.
 
 ## DRM/KMS (`/dev/dri/card0`, `/dev/dri/renderD128`)
 
+Graphics execution currently remains synchronous on the kernel worker.
+The maintainer's revised D-54 requires guest-local GL authority (Stage B),
+Rust asynchronous scheduling and fences (C1), executor separation (C2), and
+a dedicated GPU worker (C3) in the current baseline. These are planned
+changes, not the architecture implemented here. Each stage must preserve
+kernel ownership, ordering, mapped-buffer publication and Node/browser
+parity. See the [current shipping targets](graphics/compatibility-v1.md#current-shipping-priority-2026-11-03)
+and [migration plan](future-improvements.md#move-gl-authority-into-the-guest-library-and-the-rust-kernel-current-iteration).
+
 Kernel BO references, not the host mapping inventory, own DRI pixel
 backing. Unmapped PRIME imports and selected cursors retain storage after
 the allocator exits. Normal OFD close and process removal share the same

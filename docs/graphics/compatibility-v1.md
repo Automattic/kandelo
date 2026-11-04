@@ -8,6 +8,35 @@ tests retain both guest address widths. It is not a conformance
 claim. An ordinary defect remains open until implementation and executable
 validation cover it; a passing demo does not close an API family.
 
+## Current shipping priority, 2026-11-03
+
+The maintainer revised D-54 to make native desktop feel the primary
+performance acceptance criterion for PR #1594. Stage B's guest-library
+driver and Stage C1–C3's Rust scheduling, executor separation and dedicated
+GPU worker are now required in this iteration. The earlier follow-up and
+conditional-worker scheduling decisions below are historical. Implement,
+land, validate and measure each stage separately in A → B → C1 → C2 → C3
+order; the other maintainer decisions remain in force.
+
+Retain the existing pointer, typing, ScummVM and idle-worker ship bar.
+Additional targets are pointer input to display within one refresh interval
+p50 and two refresh intervals p95; desktop motion, dragging, resizing and
+scrolling at display cadence; and elimination of recurring platform-caused
+interaction stalls exceeding 50 ms. Measure with and without SFWBar and
+under concurrent application load on Chromium, Firefox and WebKit. Report
+latency distributions, missed frames, idle CPU and instrumentation overhead.
+Average FPS and isolated benchmarks do not establish native feel.
+
+These are acceptance targets, not supported-performance claims. First
+establish trustworthy input-to-display observations, then remove synchronous
+graphics round trips, isolate GPU work from kernel scheduling, bound frames
+in flight and address pacing and latency tails. All original correctness,
+cross-host, build, defect, conformance and final-validation requirements
+remain required, with ABI program 56 / unpublished host 3 / GL 17 / fork 21.
+Announce each runnable prototype and its URL separately from its validation
+status so the maintainer can try intermediate stages. Proposed subsequent
+work is remaining driver work, GLES3, IGT and multiple displays.
+
 ## Upstream coverage guide for the implementation pass
 
 [The upstream case-family map](cts-coverage-v1.md) links 92 recorded EGL/GLES2
