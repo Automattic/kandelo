@@ -21034,14 +21034,29 @@ The completed baseline reveals two older post-A3 regressions:
 `dEQP-EGL.performance.make_current.complex.contexts_100_pbuffers_100_release`
 and `dEQP-EGL.performance.make_current.complex.contexts_100_windows_10_release`
 change from Pass to case-deadline Timeout. They are not covered by D-56's
-shared-render timeout decision. Matched current-host checks with the old
-and iterative-fence-destruction kernels are queued/running; their cause
-and current verdict remain unproven. The complete final three-engine
-GLES2/EGL matrix is still required. Evidence:
+shared-render timeout decision. Matched current-host checks now pass both
+cases on WebKit 26.6 with both the old kernel and the kernel containing
+iterative fence destruction. Both arms use production host source identical
+to `55b515c7cb`, the same normally built EGL program and the same image.
+Each strict run accounts for two Pass, with no page or console errors.
+
+| Focused current-host arm | Kernel SHA-256 prefix | Pass | Fail/Timeout/Missing |
+|---|---|---:|---:|
+| Normal r9 kernel | `2f7a2f6e50cb` | 2 | 0 |
+| Normal r12 kernel, iterative fence destruction | `8bb010d5b72e` | 2 | 0 |
+
+The frozen scripts run `bash scripts/run-graphics-cts.sh egl webkit` with
+the exact two-case union and `--strict`; they retain the source equivalence
+proofs and complete artifact hashes. This isolated rerun does not attribute
+the historical timeouts to the fence fix or clear possible family/order
+interactions. The complete final three-engine GLES2/EGL matrix is still
+required. Evidence:
 `.context/graphics-cts-final-r2-comparison-completed-webkit/`,
 `.context/graphics-egl-pre-a3-r15-results/`,
 `.context/graphics-egl-release-fences-r15-before-r3/`,
-`.context/graphics-egl-release-fences-r15-after/`.
+`.context/graphics-egl-release-fences-r15-after/`,
+`.context/graphics-egl-release-fences-r16-before/`,
+`.context/graphics-egl-release-fences-r16-after/`.
 
 
 **Exact-case driver and current WebKit failure checkpoint, 2026-11-03.**
