@@ -21901,3 +21901,54 @@ manifest and archive SHA-256
 `e926450288cb6fd8b828db4292beca6b9b0d8a9d8562fcb8f3b1e89154edf8b6`.
 Concurrent builds and APFS cloning prevent assigning the free-space delta
 solely to these operations.
+
+
+### Program selection must retain ownership before becoming local
+
+A private, uncommitted program-selection cache passed its first 439 native C,
+16 Node/48 browser device-double and twelve real-GPU cases. It still fails a
+newly shared pthread regression on Chromium, Firefox and WebKit. All three
+ordinary-driver before arms pass; every cached-selection after arm fails
+fatally with guest error-mask divergence: host INVALID_VALUE (0x501), expected
+zero. The original context selects its program and checks errors, a new peer
+on another pthread deletes that program, then the original context checks
+errors and renders. The cache had returned before submitting the selection,
+so host deletion did not see its current reference. These failures remain in
+`.context/graphics-b1-program-sharing-r95/`, job
+`run.sh-1104-030806-6dff` (41 seconds, failed 1). The unsafe cache was never
+committed, pushed or previewed. Its earlier request counts are not accepted
+performance evidence.
+
+OpenGL ES 2.0 appendix C.1.3 retains a program name while it is current in any
+context; see the [OpenGL ES 2.0 specification](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf).
+An atomic sharing flag alone cannot repair queued work or already returned
+results. Program selection remains on the ordinary path until the guest
+library owns shared names, current/pending references and immutable executable
+versions correctly. That work remains required in this iteration; no stage,
+boundary or acceptance criterion is deferred or reduced.
+
+The permanent public-API fixture now covers both pointer widths on Node's
+explicit no-renderer path and production/fatal rendering on all three engines.
+It joins the peer pthread, checks the original program's pixels and retires
+both contexts normally. The evidence registry passes with 700 files; two Node
+cases and twelve browser cases pass in the 51-second run
+`.context/graphics-program-regression-r96/run.sh`. That run reads and hashes
+the existing installed SDK archives without rebuilding them beside the full
+preview build. It does not claim the pending newest normal SDK checkpoint,
+full conformance or desktop latency. No production graphics behavior changes
+in this regression-only increment.
+
+### Further lossless evidence preservation and inactive tool cleanup
+
+Forty-four historical profiler traces (2,184,941,568 allocated bytes) are
+preserved in `.context/graphics-evidence-archive-r87/raw-traces.tar.zst`
+(135,016,626 bytes). Every file SHA-256, member inventory and source stability
+check passed before raw removal; adjacent restoration notes retain access.
+Archive SHA-256:
+`b1b27fc48177a61f908f36b9bdfd0ae251ab4de2134636e42bb1851d21000e8c`.
+Primary measurement JSON, screenshots, scripts and verdicts remain readable.
+Five inactive native-tool target caches (1,742,168 KiB allocated) were also
+removed after repeated open-file and tracked-file checks. They contained no
+Wasm artifacts. Source, SDKs, normal images and evidence remain unchanged;
+`.context/graphics-cache-clean-r88/` retains the inventory. Concurrent builds
+and APFS still prevent attributing a free-space delta solely to cleanup.

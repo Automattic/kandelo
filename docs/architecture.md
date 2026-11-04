@@ -6221,6 +6221,16 @@ revoke slot knowledge separately from error flags; acknowledging an array
 bind does not restore those slots. Wider encoded offsets remain outside this
 proof. Client arrays retain their usual draw-time staging.
 
+Program selection retains its ordinary submission/error path. A successful
+link-status observation alone cannot prove future program namespace or
+executable ownership. A new sharing context on another pthread can delete or
+relink a program while its selection is still queued. Guest validation must
+retain logical current and pending-version references before making that
+selection local; disabling a cache after sharing begins cannot repair work
+already accepted. The normal program-sharing fixture keeps the original
+context current, deletes its program through a newly created peer, then
+checks errors and rendered pixels in the original context.
+
 This is still partial B1; the remaining draw/object validation, later driver
 stages and desktop acceptance measurements are not established by these
 scalar checks.

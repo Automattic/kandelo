@@ -271,6 +271,10 @@ Ordinary vertex layouts now reuse existing host slots and can preserve error
 knowledge for the default-VAO scope with known bindings and slots. Converted
 layouts, first installations, nondefault-VAO history and uncertain state
 retain their conservative paths; full attribute/draw authority is unfinished.
+Program selection still needs shared C names, current/pending references and
+native executable generations. A positive link-status cache without that
+ownership fails a newly shared pthread deletion regression; that prototype
+was not landed. This ownership remains required current-iteration work.
 This is only the start of B1: the remaining exact validation families and their audit
 coverage, application measurements and the ScummVM round-trip target remain
 required before B1 is complete. B2–B6 and C1–C3 remain current-iteration
