@@ -21285,3 +21285,29 @@ machine. Actual desktop pixel correlation, quiet workloads, capture
 overhead and all native-feel acceptance measurements remain open. Evidence:
 `.context/graphics-native-frame-canonical-r20/`,
 `.context/graphics-native-frame-preflight-r21/`.
+
+
+Normal-build client checks execute Foot and Qt successfully. The first
+strict SourceOnly run cannot execute GTK and skips Mako because their
+standalone SDK smoke programs are incorrectly requested as package
+artifacts. Both actual fixtures exist in `local-binaries/programs/wasm32`;
+all five Mako package artifacts resolve successfully. The fixture readers
+now use the resolver's explicit local-binaries directory, while package
+lookups remain strict. Mako no longer silently skips missing prerequisites.
+The unchanged GTK and Mako behavioral cases both pass with the corrected
+readers, using the normal r14 SDK/global setup and normal r14 artifacts.
+Production host, kernel, SDK and package inputs are checked identical to
+the normal producer; program ABI admission remains enabled. The focused
+run reports two passed files, two passed cases and zero skipped/load-failed
+files. This completes these four Node smoke cases across the recorded
+runs, not full host or client performance acceptance. Evidence:
+`.context/graphics-clients-normal-r22/`,
+`.context/graphics-client-fixture-role-r26/`.
+
+The same normal build's full selected compositor/desktop matrix reports
+Chromium 16 Pass; Firefox 12 Pass, two skipped and two Fail; WebKit 14 Pass
+and two skipped. Firefox's failures are Cage/wlterm startup and the initial
+Omarchy desktop case. Labwc, both SFWBar compositor flows and the remaining
+executed desktop cases pass; the failures and skips are retained, not
+waived. These runs do not measure native desktop feel. Evidence:
+`.context/graphics-desktop-normal-r22/`.

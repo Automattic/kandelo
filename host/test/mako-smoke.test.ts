@@ -22,13 +22,12 @@
  * The orchestrating dash script execs each program by its absolute host
  * path: exec reads its target from the kernel VFS, which the Node host's
  * VFS maps onto the host filesystem, so the resolver's cached wasm is
- * reachable there directly. Skips if any binary is
- * missing (bare checkout — mako comes from the package cache).
+ * reachable there directly. Missing prerequisites fail loudly. Run the
+ * normal setup and program build before this smoke.
  */
 import { describe, expect, it } from "vitest";
 import {
   copyFileSync,
-  existsSync,
   mkdirSync,
   readFileSync,
   writeFileSync,
@@ -36,7 +35,7 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { localBinariesDir, resolveBinary } from "../src/binary-resolver";
 import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -46,15 +45,14 @@ const INCONSOLATA = join(
   "third_party/Inconsolata-Regular.ttf",
 );
 
-const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
-const dashBin = tryResolveBinary("programs/dash.wasm");
-const daemonBin = tryResolveBinary("programs/dbus/dbus-daemon.wasm");
-const makoBin = tryResolveBinary("programs/mako/mako.wasm");
-const makoctlBin = tryResolveBinary("programs/mako/makoctl.wasm");
-const notifyBin = tryResolveBinary("programs/glib_gdbus_smoke.wasm");
-const hasBinaries =
-  !!compositorBin && !!dashBin && !!daemonBin && !!makoBin && !!makoctlBin &&
-  !!notifyBin && existsSync(dashBin!);
+const compositorBin = resolveBinary("programs/wayland-demo/wlcompositor.wasm");
+const dashBin = resolveBinary("programs/dash.wasm");
+const daemonBin = resolveBinary("programs/dbus/dbus-daemon.wasm");
+const makoBin = resolveBinary("programs/mako/mako.wasm");
+const makoctlBin = resolveBinary("programs/mako/makoctl.wasm");
+// This is a normal SDK-built program fixture, not a package output in the
+// SourceOnly projection. NodeKernelHost still checks its program ABI.
+const notifyBin = join(localBinariesDir(), "programs/wasm32/glib_gdbus_smoke.wasm");
 
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
@@ -95,11 +93,11 @@ async function waitFor(
 }
 
 describe("mako — upstream notification daemon on wlcompositor + dbus", () => {
-  it.skipIf(!hasBinaries)(
+  it(
     "owns org.freedesktop.Notifications, maps a layer-shell notification, answers makoctl",
     async () => {
-      const compositorBytes = loadBytes(compositorBin!);
-      const dashBytes = loadBytes(dashBin!);
+      const compositorBytes = loadBytes(compositorBin);
+      const dashBytes = loadBytes(dashBin);
 
       const root = makeHostScratchTempRoot("kandelo-mako-");
       const fontDir = join(root, "fonts");
@@ -129,24 +127,24 @@ describe("mako — upstream notification daemon on wlcompositor + dbus", () => {
 
       const script = [
         `printf '%s\\n' '${SESSION_CONF}' > /tmp/mako-session.conf`,
-        `${daemonBin!} --config-file=/tmp/mako-session.conf --nofork &`,
+        `${daemonBin} --config-file=/tmp/mako-session.conf --nofork &`,
         `daemon_pid=$!`,
         `i=0`,
         `while [ ! -S ${BUS_SOCKET} ] && [ $i -lt 20000 ]; do i=$((i+1)); done`,
         `export DBUS_SESSION_BUS_ADDRESS=unix:path=${BUS_SOCKET}`,
-        `${makoBin!} &`,
+        `${makoBin} &`,
         `mako_pid=$!`,
         // Retry until mako owns the name; the first success IS the
         // gate's notification.
         `tries=0`,
-        `until ${notifyBin!} --notify 2>/tmp/notify.err; do`,
+        `until ${notifyBin} --notify 2>/tmp/notify.err; do`,
         `  tries=$((tries+1))`,
         `  [ $tries -ge 60 ] && break`,
         `  j=0; while [ $j -lt 20000 ]; do j=$((j+1)); done`,
         `done`,
         `[ $tries -ge 60 ] && while read l; do echo "notify.err: $l"; done < /tmp/notify.err`,
         `while [ ! -e ${toastSeen} ]; do :; done`,
-        `${makoctlBin!} dismiss --all && echo MAKOCTL_OK`,
+        `${makoctlBin} dismiss --all && echo MAKOCTL_OK`,
         `kill $mako_pid`,
         `wait $mako_pid`,
         `echo MAKO_EXIT=$?`,
