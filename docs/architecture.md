@@ -6727,3 +6727,11 @@ acquisition budgets and durations are separate from the native observer's
 deadline and display timestamps. Native capture additionally requires the
 owned window to fit fully on one display. Positive physical validation, total
 instrumentation overhead and the full desktop workload matrix remain open.
+
+
+Surfaceless EGL contexts retain normal GL error semantics: their absent
+default framebuffer rejects clear, read and copy operations with
+`GL_INVALID_FRAMEBUFFER_OPERATION` before native work. This guest API error
+does not reset the context or its sharing peers. A later real drawable can
+render normally. Real window-system default targets are complete by
+construction; guest framebuffer attachment caches apply to user targets.

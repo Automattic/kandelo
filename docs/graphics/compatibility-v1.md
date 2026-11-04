@@ -22100,3 +22100,29 @@ The frozen public sharing regression R97-r4
 result. Superseded waiting queues retain their inputs and explicit cancellation
 records; no assertion was converted to a pass. Final matched benchmarks,
 physical latency controls and every ship-bar workload remain required.
+
+
+**Surfaceless default-framebuffer error prediction, 2026-11-04.** A missing
+EGL drawable uses a private empty framebuffer. Draw/read/copy preflight now
+returns `GL_INVALID_FRAMEBUFFER_OPERATION` before native execution instead
+of treating that private target as a complete default and triggering an A3
+reset. Real default drawables remain complete by construction and require no
+fallible guest-completeness cache allocation. Argument-error priority is
+unchanged. The public regression checks clear/read/copy errors, unchanged
+read output, then exact pbuffer pixels in both the context and its sharing
+peer; a valid API error must not poison either context.
+
+R114 source controls reproduce four failures before the fix and pass the
+2,010-assertion/84-file graphics gate afterward. R115-r2
+(`run.sh-1104-045154-7c3f`, port5944) compiles the public fixture at both
+widths against read-only normal R16 archives, then passes2 Node no-renderer
+checks and all12 after GPU cases (production/fatal on Chromium, Firefox and
+WebKit). All12 before cases fail at the intended error: production logs an
+unpredicted native0x506 reset and aborts the guest assertion; fatal audit
+reports the clear divergence. Both healthy contexts render exact colors
+after the fixed errors. Frozen inputs, SDK hashes and copied source identity
+are retained in `.context/graphics-default-framebuffer-native-r115-r2/`.
+This is a host-source regression with compatible older normal client/kernel
+artifacts, not final-head normal-build, browser-memory or full CTS evidence.
+ABI versions remain56/3/17/21. Node continues the approved explicit renderer
+refusal. Final combined-tree validation remains required.

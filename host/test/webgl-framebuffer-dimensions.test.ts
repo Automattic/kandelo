@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import * as O from "../src/webgl/ops.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
+import { requireGlesFramebufferComplete } from "../src/webgl/image-sizes.js";
 
 /** WebGL 2 follows ES 3.0 completeness: attachments of different sizes are
  * complete and render to their intersection. ES 2.0 section 4.4.5 instead
@@ -155,4 +156,34 @@ describe("FRAMEBUFFER_INCOMPLETE_DIMENSIONS (ES 2.0 section 4.4.5)", () => {
     expect(t.status()).toBe(0x8cd9);
     expect(t.error()).toBe(0);
   });
+});
+
+it.each([false,true])("rejects an undefined default framebuffer before native work (read: %s)",read=>{
+  const t=setup(),missing={} as WebGLFramebuffer;t.b.undefinedDefaultFbo=missing;
+  t.b.shadow.fbo=missing;t.b.shadow.readFbo=missing;
+  expect(requireGlesFramebufferComplete(t.b,read)).toBe(false);
+  expect(t.b.errors).toEqual([0x506]);expect(t.gl.log).toEqual([]);
+});
+
+it("returns a surfaceless framebuffer error for clear/read/copy without resetting the context",()=>{
+  const t=setup(),missing={} as WebGLFramebuffer;t.b.undefinedDefaultFbo=missing;
+  t.b.shadow.fbo=missing;t.b.shadow.readFbo=missing;
+  t.send(O.OP_CLEAR,[0x4000]);expect(t.error()).toBe(0x506);
+  expect(t.query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401],4).rc).toBeLessThan(0);
+  expect(t.error()).toBe(0x506);
+  t.send(O.OP_BIND_TEXTURE,[0x0de1,72]);t.gl.log.length=0;
+  t.send(O.OP_COPY_TEX_IMAGE_2D,[0x0de1,0,0x1908,0,0,1,1,0]);expect(t.error()).toBe(0x506);
+  t.send(O.OP_COPY_TEX_SUB_IMAGE_2D,[0x0de1,0,0,0,0,0,1,1]);expect(t.error()).toBe(0x506);
+  expect(t.gl.log).toEqual([]);
+  // Ordinary argument errors keep their existing independent priority.
+  t.send(O.OP_CLEAR,[0x80000000]);expect(t.error()).toBe(0x501);
+});
+
+it("uses the existing drawable's default completeness without allocating a verdict cache entry",()=>{
+  const t=setup(),framebuffer={} as WebGLFramebuffer;t.b.renderTargetFbo=framebuffer;
+  t.b.shadow.fbo=framebuffer;t.b.shadow.readFbo=framebuffer;
+  const spy=vi.spyOn(WeakMap.prototype,"set").mockImplementationOnce(()=>{throw Error("verdict allocation refused");});
+  let complete=false;
+  try{complete=requireGlesFramebufferComplete(t.b);}finally{spy.mockRestore();}
+  expect(complete).toBe(true);expect(t.b.errors).toEqual([]);expect(t.gl.log).toEqual([]);
 });

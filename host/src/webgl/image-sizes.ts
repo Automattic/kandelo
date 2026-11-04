@@ -147,6 +147,16 @@ function nativeIncomplete(b: GlBinding, framebuffer: WebGLFramebuffer | null, re
  * side effect. */
 export function requireGlesFramebufferComplete(b: GlBinding, read = false): boolean {
   const framebuffer = read ? b.shadow.readFbo : b.shadow.fbo;
+  // OES_surfaceless_context: the private empty FBO stands for an absent
+  // default drawable. Reject before native work; its error must not become
+  // an A3 prediction divergence and reset an otherwise healthy context.
+  if (framebuffer !== null && framebuffer === b.undefinedDefaultFbo) {
+    recordGlError(b, 0x506);
+    return false;
+  }
+  // A real window-system drawable is complete by construction. Its private
+  // target needs neither guest attachment validation nor a fallible cache.
+  if (isDefaultFramebuffer(b, framebuffer)) return true;
   if (glesIncompleteness(b, framebuffer) === 0 && !nativeIncomplete(b, framebuffer, read)) return true;
   recordGlError(b, 0x506);
   return false;
