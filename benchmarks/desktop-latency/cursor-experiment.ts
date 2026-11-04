@@ -82,7 +82,11 @@ export async function measureCursorExperiment(options: {
   const calibrationAttempts: { id: CursorPose; attempt: number; index: number; accepted: boolean; reason?: string }[] = [];
   const candidates: { id: CursorPose; x: number; y: number; template: ReturnType<typeof learnPixelTemplate> }[] = [];
   for (const id of ['a', 'b', 'c'] as const) {
-    await source.pose(id); await settle(); await page.screenshot({ path: join(out, `setup-${id}.png`) });
+    await source.pose(id); await settle();
+    // Native calibration already retains WindowServer rasters. Use that
+    // observation path alone, keeping extra DevTools capture activity out
+    // of the visible input/presentation experiment.
+    if (!native) await page.screenshot({ path: join(out, `setup-${id}.png`) });
     const reference = id === 'a' ? background : captured.a;
     let accepted = false;
     for (let attempt = 0; attempt < 3; attempt++) {

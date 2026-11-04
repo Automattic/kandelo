@@ -25,7 +25,9 @@ export function learnPixelTemplate(background: WindowRaster, foreground: WindowR
   assert.equal(background.width, foreground.width);
   assert.equal(background.height, foreground.height);
   assert(Object.values(rect).every(Number.isInteger));
-  assert(rect.width > 0 && rect.width <= 64 && rect.height > 0 && rect.height <= 64);
+  // A63-CSS-pixel cursor region can exceed64 raster pixels after calibration
+  // rounding or display scaling. The sparse matcher still samples at most256.
+  assert(rect.width > 0 && rect.width <= 128 && rect.height > 0 && rect.height <= 128);
   assert(rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= foreground.width && rect.y + rect.height <= foreground.height);
   assert(Number.isInteger(minimumContrast) && minimumContrast >= 32 && minimumContrast <= 255);
   const changed: PixelTemplate['points'] = [];

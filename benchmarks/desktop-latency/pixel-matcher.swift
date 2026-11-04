@@ -13,7 +13,7 @@ struct PixelTemplate: Codable {
   let points: [PixelTemplatePoint]
 
   func validate() throws {
-    guard (1...64).contains(width), (1...64).contains(height), (6...256).contains(points.count)
+    guard (1...128).contains(width), (1...128).contains(height), (6...256).contains(points.count)
     else { throw PixelMatcherError.invalid("template bounds") }
     var seen = Set<Int>()
     for point in points {

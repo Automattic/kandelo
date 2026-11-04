@@ -292,13 +292,16 @@ The owned-window observer now has bounded pixel matching with six headless
 engine/render-mode control cohorts. First-visibility bounds retain capture
 coalescing uncertainty. The moving-pixel controller now fits viewport coordinates and validates native
 pose identities, with passing headless replay on three engines. Its revised
-native-raster learning path still needs positive physical replay and total
-instrumentation-overhead measurements. The same controller now correlates
-real Foot and ScummVM cursor pixels in headless three-engine checks, including
-Foot under concurrent ScummVM load; those clocks are synthetic. Native desktop
-correlation and the complete workload matrix remain required. Preserved
-screenshot-acquisition and geometry failures must not be interpreted as guest
-latency or erased by favorable reruns; these controls do not establish native feel.
+native-raster learning path now passes a physical Chromium replay on an
+older frozen partial-B1 desktop: Foot, Foot under concurrent ScummVM load,
+and ScummVM's red software cursor, eight responses per cohort with no-op
+controls. It uses actual WindowServer display bounds, not synthetic clocks.
+The final combined tree, Firefox/WebKit physical desktop runs, with/without
+SFWBar, all interaction workloads, stable latency tails, missed frames,
+CPU and total instrumentation overhead remain required. See the
+[native method record](measurements/2026-11-04-native-desktop-cursor-method.md).
+Preserved calibration/screenshot failures do not count as guest latency or
+acceptance; the successful method run does not establish native feel.
 
 This migration must preserve ordinary shared-memory Wayland clients. The
 baseline removes the Foot, mako, GTK and Qt DRM-pool rewrites now that

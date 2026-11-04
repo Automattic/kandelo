@@ -42,6 +42,33 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Physical desktop cursor method, 2026-11-04
+
+R214 `graphics-native-desktop-r214-1104-184050-35db` passes the owned,
+visible Chromium replay in41seconds, on frozen partial-B1 host52fd558998
+with its recorded kperf instrumentation and normal producer07321b7bc4.
+It is not the current integration tree or a new B preview. Each of Foot,
+Foot with concurrent ScummVM, and ScummVM's own red cursor supplies eight
+actual input-to-WindowServer response bounds, independent pose validation
+and a passing no-op control. SFWBar remains present. The display is60Hz.
+The method's first two native calibration failures remain recorded.
+
+| Cohort | Diagnostic p50 bounds (ms) | Diagnostic p95 bounds (ms) |
+| --- | --- | --- |
+| Foot | 26.4–48.4 | 90.3–112.0 |
+| Foot with ScummVM | 20.2–43.0 | 27.2–49.6 |
+| ScummVM cursor | 26.8–48.4 | 41.6–63.7 |
+
+These are bounded observations and eight-sample diagnostic quantiles,
+not stable tail estimates, a latency improvement or ship-bar acceptance.
+The complete current-tree workload matrix and total instrumentation
+overhead remain required. R215's shared matcher controls pass396 assertions
+on three engines in DOM and OffscreenCanvas modes, including65/128-pixel
+calibration regions, rejection of129-pixel regions and retained comparison
+budgets. Neither change alters the runtime or ABI. Commands, identities,
+failed attempts and limitations are in the
+[measurement record](../measurements/2026-11-04-native-desktop-cursor-method.md).
+
 ## Ordinary selection request baseline, 2026-11-04
 
 The R212 diagnostic never enables the optional selection journal. Through

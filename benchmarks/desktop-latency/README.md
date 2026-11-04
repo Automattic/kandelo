@@ -95,6 +95,11 @@ The live recorder accepts these additional stdin commands:
   position, and can override the shared sparse RGB template. The comparison
   budget includes the sum of all selected templates. `learnPixelTemplate` in
   `pixel-template.ts` derives those samples from foreground/background captures.
+  Template rectangles are bounded at128×128 raster pixels, with at most256
+  sampled points. This accommodates calibrated cursor patches at display
+  scale without rounding a nearly unit scale outside the former64-pixel cap.
+  Native calibration uses these WindowServer captures directly; extra DevTools
+  screenshots are retained only by the headless diagnostic path.
 - `matcher-clear` removes the matcher.
 
 Matching frames emit `pixelMatch.state` (`matched`, `unmatched` or `ambiguous`),

@@ -104,6 +104,21 @@ for (const engine of ['chromium', 'firefox', 'webkit'] as const) {
           searchRadius: 1, maxChannelError: 16, maxMeanError: 4 };
         const request = (frame: WindowRaster, config = configuration) => ({ configuration: config,
           ...frame, bgra: Buffer.from(frame.bgra).toString('base64') });
+        // Calibration scale slightly above1 maps the63 CSS-pixel patch to65
+        // raster pixels; a2x capture needs up to128. Both implementations
+        // must accept those bounded regions and retain the sparse-point cap.
+        const wideResults = [];
+        for (const width of [65, 128]) {
+          const wide = learnPixelTemplate(background, frames[0], { ...positions[0], width, height: 128 });
+          assert(wide.points.length <= 256); assertions++;
+          const config = { ...configuration, template: wide, candidates: [configuration.candidates[0]] };
+          const result = JSON.parse(execFileSync(binary, [], {
+            input: JSON.stringify(request(frames[0], config)) + '\n', encoding: 'utf8',
+          }));
+          assert.equal(result.state, 'matched'); assert.equal(result.matches[0].id, '0'); assertions += 2;
+          wideResults.push({ width, points: wide.points.length, result });
+        }
+        assert.throws(() => learnPixelTemplate(background, frames[0], { ...positions[0], width: 129, height: 128 })); assertions++;
         const wrong = await raster('wrong-color', { ...positions[2], wrong: true });
         const green = learnPixelTemplate(background, wrong, { ...positions[2], width: 12, height: 18 });
         const override = { ...configuration, candidates: configuration.candidates.map(c => c.id === '2' ? { ...c, template: green } : c) };
@@ -137,7 +152,7 @@ for (const engine of ['chromium', 'firefox', 'webkit'] as const) {
           { ...request(frames[0]), bgra: Buffer.from(frames[0].bgra.subarray(4)).toString('base64') },
           request(frames[0], { ...configuration, searchRadius: 3 }),
           request(frames[0], { ...configuration, searchRadius: 2, candidates: Array.from({ length: 128 }, (_, i) => ({ id: String(i), x: i + 2, y: 50 })) }),
-          request(frames[0], { ...configuration, candidates: [{ ...configuration.candidates[0], template: { ...template, width: 65 } }] }),
+          request(frames[0], { ...configuration, candidates: [{ ...configuration.candidates[0], template: { ...template, width: 129 } }] }),
           request(frames[0], { ...configuration, template: { ...template, points: template.points.slice(0, 6) }, searchRadius: 2,
             candidates: Array.from({ length: 128 }, (_, i) => ({ id: String(i), x: i + 2, y: 50, template: budgetTemplate })) }),
         ];
@@ -149,7 +164,7 @@ for (const engine of ['chromium', 'firefox', 'webkit'] as const) {
         assert.deepEqual(pageErrors, []); assertions++;
         writeFileSync(join(dir, 'result.json'), JSON.stringify({ engine, mode, version: browser.version(),
           scope: 'Headless rendered-pixel classification only; no native display timing or instrumentation-overhead claim',
-          configuration, overrideConfiguration: override, results, assertions, negatives: negatives.length }, null, 2));
+          configuration, overrideConfiguration: override, results, wideResults, assertions, negatives: negatives.length }, null, 2));
         console.log(JSON.stringify({ engine, mode, version: browser.version(), results: results.length, negatives: negatives.length, assertions }));
       } finally { await context.close(); }
     }

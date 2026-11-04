@@ -6718,6 +6718,18 @@ desktop latency. The native path remains driven by WindowServer samples,
 with no worker-acknowledgement substitute for a visible response.
 
 
+The cursor template rectangle is bounded at128×128 raster pixels, with at
+most256 sparse points. This accommodates calibrated CSS patches at display
+scale, including a near-unit fit that rounds63 CSS pixels to65 raster
+pixels. Native calibration uses its retained WindowServer rasters directly;
+extra DevTools screenshots belong only to the headless path. R214 correlates
+actual Foot and ScummVM cursor changes on a frozen partial-B1 Chromium
+desktop, including concurrent ScummVM load and no-op controls. These eight
+samples per cohort establish the method, not the final workload matrix,
+tail distributions or total instrumentation overhead. See the
+[native cursor measurement record](measurements/2026-11-04-native-desktop-cursor-method.md).
+
+
 The opt-in desktop cursor method uses the same controller for real Foot and
 ScummVM cursors through ordinary browser input, with original event timestamps
 and separate KMS cursor pixels. ScummVM template qualification requires its
