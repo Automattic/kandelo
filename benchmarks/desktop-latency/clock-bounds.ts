@@ -45,3 +45,20 @@ export function quantile(values: number[], p: number) {
   const sorted = values.slice().sort((a, b) => a - b);
   return sorted[Math.ceil(p * (sorted.length - 1))];
 }
+
+// A captured native frame proves the response is visible by its display time.
+// Capture can coalesce earlier frames: only a preceding non-response frame
+// bounds first visibility from below. Do not turn a capture timestamp into
+// an exact first-display timestamp by applying clock uncertainty alone.
+export function nativeVisibleLatencyBounds(eventAt: number, previousNonResponse: number | undefined,
+  visibleDisplay: number, nativeToSource: { lo: number; hi: number }) {
+  if (![eventAt, visibleDisplay, nativeToSource.lo, nativeToSource.hi].every(Number.isFinite)
+    || nativeToSource.lo > nativeToSource.hi
+    || (previousNonResponse !== undefined && (!Number.isFinite(previousNonResponse) || previousNonResponse > visibleDisplay)))
+    throw new Error('invalid native visibility observation');
+  const lo = Math.max(0, previousNonResponse === undefined ? 0 : previousNonResponse + nativeToSource.lo - eventAt);
+  const hi = visibleDisplay + nativeToSource.hi - eventAt;
+  if (hi < lo)
+    throw new Error('native visible observation precedes input');
+  return { lo, hi };
+}

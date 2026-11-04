@@ -6636,3 +6636,22 @@ effects; it does not call kernel exports. Gateways forward only the
 original operation and the gate callback's exact scope and effect
 registrar. Notification callbacks and their captured state are created
 only on the active-watch path.
+
+
+### Native desktop measurement endpoint
+
+`benchmarks/desktop-latency/` contains an external macOS owned-window
+observer, separate from Kandelo's production rendering path. Its native
+pixel matcher compares sparse calibrated foreground samples at bounded
+candidate positions. Ambiguous and missing matches are observations, not
+successful responses. Calibration alone may request window rasters; timed
+matching emits scalar identities and scores. The Node/browser graphics
+contract is unchanged by this diagnostic.
+
+ScreenCaptureKit display metadata is an upper endpoint for the first visible
+response if capture coalesces frames. The preceding captured non-response
+provides the lower endpoint, with asymmetric clock uncertainty on both.
+Clock-only bounds around the first captured response are insufficient.
+Coordinates, actual guest cursor/content correlation and instrumentation
+overhead must be validated before this observer establishes desktop latency.
+Headless DOM/worker pixel controls establish classification only.

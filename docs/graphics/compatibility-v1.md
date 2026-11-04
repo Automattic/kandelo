@@ -21509,3 +21509,49 @@ The maintainer requests a runnable Stage B preview before starting C1–C3.
 Publish a normal-built B checkpoint and announce availability separately
 from validation. Any earlier partial B prototype must identify its exact
 components and open acceptance gates; none is claimed available here.
+
+
+### Native pixel-classification and capture-coalescing controls
+
+The owned-window recorder now supports sparse pixel-template matching and
+bounded calibration snapshots. Timed matching emits identities, scores,
+ambiguity, comparison counts and matcher self-time, without serializing
+window rasters. It refuses malformed configuration, out-of-bounds candidates
+and inaccessible capture memory. It still captures only the launched
+browser family, with the existing authorization, lock and foreground guards.
+No platform runtime path or ABI version changes in this diagnostic increment.
+
+The optimized shared Swift matcher passes 306 control assertions across
+headless Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6, each using
+DOM and worker-owned WebGL content. The six cohorts exercise eleven pixel
+classifications and five fatal malformed-input controls each. Templates are
+learned from captured foreground/background PNGs and validated at five other
+poses; wrong-color, background, stale/no-op, duplicate-cursor ambiguity and
+padded-row controls remain explicit. The native recorder also compiles.
+Exact command: `scripts/dev-shell.sh benchmarks/desktop-latency/run-pixel-control.sh`
+with private output `.context/graphics-native-pixels-r49/` (41 seconds).
+
+Initial attempts are preserved: r45 exposed a serialized page-script helper
+error; r46 omitted the browser gate's existing isolated Firefox launch home;
+r47 refused a stale WebKit worker screenshot as insufficient calibration.
+The corrected calibration advances compositor animation frames before the
+untimed screenshot. It does not replace pixel correlation with worker
+acknowledgement or rAF. The complete nonoptimized r48 control also passes.
+No native display capture occurred in any of these headless controls.
+
+First-visibility bounds also account for capture coalescing. A matching
+captured frame proves an upper bound on response visibility; only a preceding
+non-response frame bounds it from below. Applying clock uncertainty around
+the matching frame alone can exclude an earlier first response. The clock
+control now demonstrates that causal counterexample and rejects invalid
+observations. The strict-Node observer-promise custody control still passes.
+Historical clock-only lower quantiles are not exact first-display latency
+and cannot establish a ship-bar miss. The response must remain visible until
+the next controlled stimulus; desktop pose reuse needs transition proof.
+
+Actual desktop CSS-to-window calibration, native cursor/content correlation,
+positive physical replay of the packaged observer and total instrumentation
+overhead remain required before the ship-bar measurements can be accepted.
+The user has released the previous visible test session; these controls run
+headlessly. This increment makes no native-feel, latency, throughput, FPS or
+Stage B-completion claim and does not publish a new preview.

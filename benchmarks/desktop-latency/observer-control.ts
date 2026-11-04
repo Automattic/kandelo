@@ -7,7 +7,7 @@ import { performance as clock } from 'node:perf_hooks';
 import { randomUUID } from 'node:crypto';
 import { loadavg } from 'node:os';
 import assert from 'node:assert/strict';
-import { clockBounds, quantile, type ClockSample } from './clock-bounds.js';
+import { clockBounds, nativeVisibleLatencyBounds, quantile, type ClockSample } from './clock-bounds.js';
 import { holdObservation } from './observer-promises.js';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const out = process.env.KPERF_NATIVE_METHOD_OUT;
@@ -201,7 +201,11 @@ for (const engine of (process.env.KPERF_NATIVE_ENGINES ?? 'chromium,firefox,webk
     for (const s of samples) {
       s.input = data.inputs.find((x: any) => x.seq === s.seq);
       assert(s.input);
-      s.displayBounds = { lo: s.visible.displayMs + nativeToPage.lo - s.input.eventAt, hi: s.visible.displayMs + nativeToPage.hi - s.input.eventAt };
+      const previous = rows.filter(r => r.kind === 'frame' && r.index < s.visible.index
+        && color(r) !== color(s.visible)).at(-1);
+      s.previousNonResponse = previous ?? null;
+      s.displayBounds = nativeVisibleLatencyBounds(s.input.eventAt, previous?.displayMs,
+        s.visible.displayMs, nativeToPage);
       s.deliveryUpper = s.visible.receivedMs + nativeToPage.hi - s.input.eventAt;
       assert(s.displayBounds.hi >= 0, 'Frame display time precedes triggering input');
       assert(s.visible.receivedMs >= s.visible.displayMs, 'Frame callback predates display metadata');
@@ -216,7 +220,7 @@ for (const engine of (process.env.KPERF_NATIVE_ENGINES ?? 'chromium,firefox,webk
       assert(frames[index].index > frames[index - 1].index,
         'Duplicate or reordered native frame identity');
     }
-    const summary = { engine, mode, version: browser.version(), method: 'Owned window only; native ScreenCaptureKit display metadata and conservative callback upper bounds; standalone render control', ready, nativeToPage,
+    const summary = { engine, mode, version: browser.version(), method: 'Owned window only; native ScreenCaptureKit display metadata and conservative first-visibility intervals allowing capture coalescing; standalone render control', ready, nativeToPage,
       frames: frames.length, samples: regular.length, displayP50: { lo: quantile(regular.map(s => s.displayBounds.lo), .5), hi: quantile(regular.map(s => s.displayBounds.hi), .5) },
       displayP95: { lo: quantile(regular.map(s => s.displayBounds.lo), .95), hi: quantile(regular.map(s => s.displayBounds.hi), .95) },
       deliveryUpperP50: quantile(regular.map(s => s.deliveryUpper), .5), deliveryUpperP95: quantile(regular.map(s => s.deliveryUpper), .95),

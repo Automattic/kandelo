@@ -268,6 +268,13 @@ required before B1 is complete. B2–B6 and C1–C3 remain current-iteration
 work; no completed driver stage or native-feel result follows from the
 focused scalar controls.
 
+Native desktop measurement remains current-iteration work alongside the driver.
+The owned-window observer now has bounded pixel matching with six headless
+engine/render-mode control cohorts. First-visibility bounds retain capture
+coalescing uncertainty. Actual desktop coordinate calibration, cursor/content
+correlation, physical replay and total instrumentation-overhead measurements
+remain required; classification controls do not establish native feel.
+
 This migration must preserve ordinary shared-memory Wayland clients. The
 baseline removes the Foot, mako, GTK and Qt DRM-pool rewrites now that
 wlcompositor maps memfd pools; future graphics transport and scheduling

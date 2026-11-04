@@ -64,3 +64,58 @@ Browser `page.screencast` remains useful for visual evidence, but its
 is too coarse to decide the one-refresh median target. Never substitute its
 delivery time, an arbitrary later KMS commit or a rAF callback for a matching
 visible response.
+
+
+## Pixel matching controls without desktop access
+
+```bash
+scripts/dev-shell.sh benchmarks/desktop-latency/run-pixel-control.sh .context/native-pixel-controls
+```
+
+This command never opens a visible browser or starts ScreenCaptureKit. It
+compiles the optimized native recorder and the same matcher in an offline
+executable. Headless Chromium, Firefox and WebKit render DOM and worker-owned
+WebGL cursor-shaped content. Captured PNGs are decoded into window rasters;
+the matcher learns the actual foreground changes at one pose and verifies
+five further poses. Controls reject background-only learning, a wrong color,
+a stale/no-op pose, an ambiguous pair of cursors, malformed rasters, duplicate
+identities, out-of-window candidates and excessive work. Row-padding handling
+is checked separately. Calibration waits for compositor animation frames;
+a worker's submission acknowledgement is not a pixel response. Screenshots,
+source and binary hashes, versions and verdicts remain in the private output.
+These are classification controls, not native desktop latency measurements.
+
+The live recorder accepts these additional stdin commands:
+
+- `pixels <id>` returns the next complete owned-window raster as packed BGRA,
+  with its frame identity and display timestamp. This is calibration only:
+  at most sixteen unique snapshots per process and four pending requests.
+- `matcher <json>` installs a `PixelMatcherConfiguration` from
+  `pixel-matcher.swift`. Each candidate has a unique identity and a window-raster
+  position; the template contains sparse RGB samples. `learnPixelTemplate` in
+  `pixel-template.ts` derives those samples from foreground/background captures.
+- `matcher-clear` removes the matcher.
+
+Matching frames emit `pixelMatch.state` (`matched`, `unmatched` or `ambiguous`),
+all matching identities and scores, actual comparison counts and `matcherMs`.
+No raster bytes are emitted during ordinary matching. Configuration size,
+coordinates, search radius and comparisons per frame are bounded. Invalid
+geometry or inaccessible pixel buffers emits an error that invalidates the
+observer run. The optional third recorder argument selects capture width
+(128–2048 pixels; default 512). Higher resolution and matching both require
+instrumentation-overhead measurements; `matcherMs` alone does not supply them.
+
+A desktop caller still needs verified CSS-to-capture coordinate calibration,
+independent validation at a held-out cursor pose, and input-to-pixel correlation.
+Use original event timestamps. Preserve every ambiguous/unmatched observation
+and report coalesced inputs; do not silently remove latency tails. None of
+these controls completes the required desktop workload/engine matrix.
+
+Native visibility results now use the preceding captured non-response frame
+for the lower bound and the matching response frame for the upper bound,
+including asymmetric clock uncertainty. Capture may coalesce earlier displayed
+frames, so clock bounds around the matching frame alone are too narrow. The
+controlled response must remain visible until the next stimulus; repeated or
+reused poses require an independently verified transition. A missing preceding
+non-response gives a zero lower bound. Historical clock-only lower quantiles
+must not be used as exact first-display latency or evidence of a ship-bar miss.

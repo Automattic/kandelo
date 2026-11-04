@@ -22,6 +22,35 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
   private var continuation: CheckedContinuation<Void, Never>?
   private var ended = false
   private var count = 0
+  private var matcher: PixelMatcher?
+  private var snapshotRequests = [String]()
+  private var snapshotIds = Set<String>()
+
+  func command(_ line: String) throws {
+    if line.hasPrefix("pixels ") {
+      let id = String(line.dropFirst(7))
+      lock.lock()
+      let valid = !id.isEmpty && id.utf8.count <= 128 && snapshotRequests.count < 4 &&
+        snapshotIds.count < 16 && !snapshotIds.contains(id)
+      if valid { snapshotRequests.append(id); snapshotIds.insert(id) }
+      lock.unlock()
+      guard valid else { throw PixelMatcherError.invalid("snapshot identity or capacity") }
+    } else if line.hasPrefix("matcher ") {
+      guard line.utf8.count <= 262_144 else {
+        throw PixelMatcherError.invalid("configuration capacity")
+      }
+      let configuration = try JSONDecoder().decode(PixelMatcherConfiguration.self,
+        from: Data(line.dropFirst(8).utf8))
+      let configured = try PixelMatcher(configuration)
+      lock.lock(); matcher = configured; lock.unlock()
+      emit(["kind": "matcher-configured", "tag": configuration.tag])
+    } else if line == "matcher-clear" {
+      lock.lock(); matcher = nil; lock.unlock()
+      emit(["kind": "matcher-cleared"])
+    } else {
+      throw PixelMatcherError.invalid("unknown recorder command")
+    }
+  }
   func emit(_ value: [String: Any]) {
     lock.lock()
     defer { lock.unlock() }
@@ -88,12 +117,33 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       finish()
       return
     }
-    CVPixelBufferLockBaseAddress(pixels, .readOnly)
-    defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
-    guard let base = CVPixelBufferGetBaseAddress(pixels) else { return }
+    guard CVPixelBufferLockBaseAddress(pixels, .readOnly) == kCVReturnSuccess else {
+      emit(["kind": "error", "error": "capture pixel buffer lock failed"])
+      finish()
+      return
+    }
+    defer {
+      if CVPixelBufferUnlockBaseAddress(pixels, .readOnly) != kCVReturnSuccess {
+        emit(["kind": "error", "error": "capture pixel buffer unlock failed"])
+        finish()
+      }
+    }
+    guard let base = CVPixelBufferGetBaseAddress(pixels) else {
+      emit(["kind": "error", "error": "capture pixel buffer has no base address"])
+      finish()
+      return
+    }
     let width = CVPixelBufferGetWidth(pixels)
     let height = CVPixelBufferGetHeight(pixels)
     let stride = CVPixelBufferGetBytesPerRow(pixels)
+    guard (1...2048).contains(width), (1...2048).contains(height),
+      stride >= width * 4, stride <= 2048 * 4 + 4096,
+      CVPixelBufferGetDataSize(pixels) >= stride * height
+    else {
+      emit(["kind": "error", "error": "capture pixel buffer geometry is invalid"])
+      finish()
+      return
+    }
     let p = base.advanced(by: (height / 2) * stride + (width / 2) * 4).assumingMemoryBound(
       to: UInt8.self)
     count += 1
@@ -102,14 +152,50 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       finish()
       return
     }
-    emit([
+    var frame: [String: Any] = [
       "kind": "frame", "index": count, "displayMs": ticksMs(displayed), "receivedMs": received,
       "ptsMs": CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(buffer)) * 1000,
       "width": width, "height": height, "rgb": [p[2], p[1], p[0]],
       "active": observedApplication?.isActive ?? false,
       "scaleFactor": info[.scaleFactor] ?? NSNull(),
       "contentScale": info[.contentScale] ?? NSNull(),
-    ])
+    ]
+    lock.lock()
+    let currentMatcher = matcher
+    let snapshots = snapshotRequests
+    snapshotRequests.removeAll(keepingCapacity: true)
+    lock.unlock()
+    if let currentMatcher {
+      do {
+        let begin = nativeMs()
+        let bytes = UnsafeBufferPointer(start: base.assumingMemoryBound(to: UInt8.self),
+          count: stride * height)
+        frame["pixelMatch"] = try currentMatcher.match(bgra: bytes,
+          width: width, height: height, stride: stride).dictionary
+        frame["matcherMs"] = nativeMs() - begin
+      } catch {
+        emit(["kind": "error", "error": String(describing: error)])
+        finish()
+        return
+      }
+    }
+    emit(frame)
+    if !snapshots.isEmpty {
+      // Calibration only: at most sixteen explicitly requested owned-window
+      // rasters per process. Timed runs emit scalar matches, not image bytes.
+      var packed = Data(capacity: width * height * 4)
+      for y in 0..<height {
+        packed.append(base.advanced(by: y * stride).assumingMemoryBound(to: UInt8.self),
+          count: width * 4)
+      }
+      let encoded = packed.base64EncodedString()
+      for id in snapshots {
+        emit(["kind": "pixels", "id": id, "index": count,
+          "displayMs": ticksMs(displayed), "receivedMs": received,
+          "width": width, "height": height, "stride": width * 4, "bgra": encoded,
+          "active": observedApplication?.isActive ?? false])
+      }
+    }
   }
 }
 @main struct Capture {
@@ -143,12 +229,12 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
               .utf8))
         return
       }
-      guard CommandLine.arguments.count == 3 else {
+      guard CommandLine.arguments.count == 3 || CommandLine.arguments.count == 4 else {
         throw NSError(
           domain: "recorder", code: 1,
           userInfo: [
             NSLocalizedDescriptionKey:
-              "Exact owned window title and browser process family required"
+              "Owned window title, browser process family and optional capture width required"
           ])
       }
       _ = NSApplication.shared
@@ -192,8 +278,13 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       let observer = Observer()
       let config = SCStreamConfiguration()
       observer.observedApplication = application
-      config.width = 512
-      config.height = max(128, Int(512 * window.frame.height / window.frame.width))
+      let width = CommandLine.arguments.count == 4 ? Int(CommandLine.arguments[3]) ?? 0 : 512
+      guard (128...2048).contains(width) else {
+        throw PixelMatcherError.invalid("capture width must be 128 through 2048")
+      }
+      config.width = width
+      config.height = max(128, Int(Double(width) * window.frame.height / window.frame.width))
+      guard config.height <= 2048 else { throw PixelMatcherError.invalid("capture height") }
       config.pixelFormat = kCVPixelFormatType_32BGRA
       config.minimumFrameInterval = CMTime(value: 1, timescale: 120)
       config.queueDepth = 3
@@ -225,6 +316,13 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
           }
           if line.hasPrefix("ping ") {
             observer.emit(["kind": "pong", "id": String(line.dropFirst(5)), "nativeMs": nativeMs()])
+          } else {
+            do { try observer.command(line) }
+            catch {
+              observer.emit(["kind": "error", "error": String(describing: error)])
+              observer.finish()
+              return
+            }
           }
         }
         observer.finish()
