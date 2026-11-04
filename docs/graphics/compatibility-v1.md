@@ -21243,3 +21243,45 @@ stream job wrappers fail during private profile cleanup (`ENOTEMPTY` and
 `.context/graphics-screenshot-method-r18-r3/`,
 `.context/graphics-screencast-method-r18/`, and the private observer controls
 under `.context/graphics-kperf-final-r15/.context/`.
+
+
+The normal r14 retry at source `55b515c7cb` completes all stages: SDK32/64
+ensures 3/2 seconds, full setup 1,384 seconds, standalone programs 2,221
+seconds, ABI check 13 seconds and freshness check 11 seconds. The complete
+job takes 1 hour 11 minutes including its serial prerequisite. The original
+coreutils capture timeout remains recorded; no deadline was changed. The
+normal shell and compositor artifacts admit successfully, and the Chromium
+Cage/wlterm GLES2 boot case passes in 13.2 seconds. Preview port 5693 now
+serves this clean normal build. HTTP 200 and COOP/COEP headers are verified
+for the root and desktop routes. This is preview availability, not full
+validation or a Stage B/C prototype. Evidence:
+`.context/graphics-final-r14-build-r7/`,
+`.context/graphics-preview-r14-check/`, `.context/graphics-preview-r14/`.
+
+A native macOS WindowServer observer now provides display timestamps
+independently of browser screencast delivery. It selects only the owned
+test browser's process family and captures its window, with independent
+native and browser clock bounds. Private DOM and worker WebGL2 controls
+pass on all three engines: 60 ordinary inputs, one deliberately blocked
+50 ms input and a no-op negative control each. The worker uses the existing
+Kandelo framebuffer context attributes. Its conservative display p50
+intervals are Chromium 15.96–20.79 ms, Firefox 16.91–21.16 ms and WebKit
+8.42–12.53 ms; these are standalone control-page observations under build
+load, not Kandelo latency or a performance comparison. Native callback
+receipt follows the WindowServer display metadata by about 0.3 ms median;
+this does not measure total observer overhead. Evidence:
+`.context/graphics-native-frame-method-r19-r6/`,
+`.context/graphics-native-frame-method-r19-r7/`.
+
+The observer and clock controls are being packaged under
+`benchmarks/desktop-latency/`. The first repository-packaged positive rerun
+is invalid: the Mac had locked, so WindowServer supplied suspended frames.
+The lock is independently confirmed. The recorder now refuses a locked
+console before launching test browsers and invalidates blank, suspended or
+inactive observations during a run. Compilation, clock/invalid-value
+controls and the locked-screen refusal pass; the packaged positive rerun
+awaits an unlocked console. It does not request permission or unlock the
+machine. Actual desktop pixel correlation, quiet workloads, capture
+overhead and all native-feel acceptance measurements remain open. Evidence:
+`.context/graphics-native-frame-canonical-r20/`,
+`.context/graphics-native-frame-preflight-r21/`.

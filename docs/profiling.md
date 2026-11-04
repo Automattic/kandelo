@@ -565,3 +565,20 @@ const SUITE_MODULES: Record<string, string> = {
 ```
 
 Benchmark programs (C source) live in `benchmarks/programs/` and output metrics as `key=value` lines on stdout, which suites parse with a simple regex.
+
+
+## Native visible-frame observer controls
+
+Before measuring desktop input-to-display, run the [native observer controls](../benchmarks/desktop-latency/README.md).
+They exercise DOM and worker WebGL2 color changes on Chromium, Firefox and
+WebKit, using an owned-window macOS WindowServer stream and bounded clock
+conversion. A deliberately delayed input and a no-op input check that the
+observer neither hides dispatch delay nor invents a response. A locked or
+suspended display invalidates the run.
+
+These controls do not measure Kandelo desktop latency or instrumentation
+overhead. Keep their evidence separate from application workloads. For the
+latter, correlate the actual visible cursor or content with its triggering
+input, retain unmatched/coalesced observations, identify the display cadence
+and compare instrumentation on and off. A rAF callback or unrelated later
+KMS commit is insufficient evidence of visibility.
