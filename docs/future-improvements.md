@@ -275,14 +275,14 @@ Program selection now has shared C names, current-context references, cold
 native executable captures and checked host-journal transport. C pending/result
 custody, generation-token caching and ordered shared publication still need
 integration. A positive link-status cache without complete ownership
-ownership fails a newly shared pthread deletion regression; that prototype
+fails a newly shared pthread deletion regression; that prototype
 was not landed. This ownership remains required current-iteration work.
 This is only the start of B1: the remaining exact validation families and their audit
 coverage, application measurements and the ScummVM round-trip target remain
 required before B1 is complete. Completing program selection alone does not
 finish the remaining attribute/draw and other required hot-path validation.
-B2–B6 and C1–C3 remain current-iteration
-work; no completed driver stage or native-feel result follows from the
+B2–B6 and C1–C3 remain current-iteration work; no completed driver stage or
+native-feel result follows from the
 focused scalar controls.
 
 Native desktop measurement remains current-iteration work alongside the driver.

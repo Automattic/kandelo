@@ -23078,8 +23078,8 @@ runtime protection or test assertion is waived. Production products remain
 unchanged between the normal R186 producer and corrected R187-r3 fixture.
 
 The12 new actual-GPU cases nest name/lifecycle guards around ordinary checked
-program use and queries, then render through captured selectors. All120 journal probe results record the
-actual routed kernel and guest hashes, with native live0 before whole-machine
+program use and queries, then render through captured selectors. All120 journal
+probe results record the actual routed kernel and guest hashes, with native live0 before whole-machine
 teardown. The canonical normal kernel SHA256 is
 `f6901dafca9f71c32e7f060b3dc2611004da9153e17cc5cd16b1208ba58e9613`.
 Node retains explicit no-renderer refusal; those Node cases are not native GLES.
