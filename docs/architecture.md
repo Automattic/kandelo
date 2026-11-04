@@ -6824,3 +6824,23 @@ shared C shader/program graph, current/attachment/pending references and
 immutable executable-generation custody. This additive program-surface entry
 changes the digest, with versions56/3/17/21 unchanged; final normal desktop
 products must be rebuilt coherently.
+
+
+The C driver now reserves a typed shader/program record before native creation
+and publishes it only after the creation receipt. Attach, detach, use, delete
+and link use the checked mutation query under the shared dispatch scope.
+Current-context references and program attachment references retain separate C
+records through delete-pending state. A context keeps its current-program
+reference while unbound or transferred to another thread; retirement drops it
+after host context destruction using C-only cleanup, with no query to the
+dead session. The metadata mutex is not held across device IO, and cancellation
+stays disabled until receipt handling and C publication finish.
+
+Every reference increment has reserved capacity before native admission.
+Rejected or uncertain mutation receipts do not publish a new C reference;
+uncertainty revokes group knowledge and never authorizes replay. Link-status
+observations are serialized with mutations, but these named-object records do
+not yet own immutable executable generations or pending batches. Selection
+remains synchronous. Complete native-generation custody and ordered logical
+current publication before enabling local selection/error proofs; this is an
+intermediate B1 ownership implementation, not native-feel acceptance.

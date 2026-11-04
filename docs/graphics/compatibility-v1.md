@@ -22556,3 +22556,63 @@ versions and hashes. The new snapshot section is explicitly additive and
 rejects existing-field mutation/removal; program56/host3/GL17/fork21 remain
 unchanged. Full normal current products, CTS, host/Rust/xtask completeness,
 POSIX, memory, benchmarks and native-feel ship-bar measurements remain open.
+
+
+**B1 C namespace/current/attachment records, 2026-11-04.** The driver now
+preallocates typed creation metadata, then records only acknowledged native
+creation. Shared shader attachments and per-context current references survive
+delete-pending state and context/thread transfer. Six mutation families use
+query0x39 under the existing dispatch/cancellation scope; reference capacity is
+reserved before native admission. Teardown releases C references without
+querying a destroyed session. Unknown/nonaccepted mutations establish no new
+state proof and are never replayed. Link-status observation is ordered with
+mutations; immutable executable and pending-batch ownership are still missing.
+Selection is synchronous, so this is correctness infrastructure within B1,
+not its completed round-trip reduction or a performance/native-feel claim.
+
+R156's first native run passes461/fails2: a new metadata-OOM control assumed a
+name had already been reserved, and an older uniform failure control injected
+failure after the selector's new ACK. The metadata control now permits the
+unreserved first name on recovery. The uniform control retains its original
+assertions but fails the selector's own prefix, rather than assuming a later
+failed flush can undo an acknowledged selection. R156-r2 passes463 controls.
+The old cde1265f22 source with the new resource controls passes the retained
+uniform control and fails14 new controls as expected; its exact source is
+selected by the native harness's existing revision argument.
+
+Final native job `graphics-program-records-r156-native-fin-1104-095252-ba20`
+passes464 UBSan controls with frozen input hashes. The added asynchronous
+cancellation case cancels at mutation acceptance, keeps the canceled thread's
+context alive, verifies its current-program reference survives until another
+thread rebinds/unselects it, and checks final allocation reclamation. Earlier
+controls cover current/attachment/deferred destruction, rejection, unknown
+completion before/after mutation, corrupt/contradictory receipts, input/reply
+allocation failure and failed prefix admission. These device-double resource
+controls are separate from actual rendering evidence.
+
+R157 (`graphics-program-records-r157-1104-094243-3176`) normally ensures both
+SDK widths and passes the ABI check against cde1265f22 with unchanged snapshot
+and versions56/3/17/21. R158 (`graphics-program-records-r158-1104-094520-0fb7`,
+port5975) passes8 Node controls and72 actual-GPU standard SDK cases on three
+engines, both widths, production/fatal: creation/mutation, shared deletion,
+failed and successful peer relink, surfaceless errors and default-target state.
+Source/product hashes remain unchanged. The later cancellation addition changes
+only native test sources; the C library bytes match the validated SDK. Exact
+commands are in `.context/graphics-program-records-r156/native-final.sh`,
+`graphics-program-records-build-r157/run.sh` and
+`graphics-program-records-gpu-r158/run.sh`, all through scripts/dev-shell.sh.
+Full CTS, memory, desktop, performance and final full-source validation remain
+required; no full B preview is announced by this component.
+
+The frozen normal R30 build (`run.sh-1104-052535-046c`) completes successfully
+in4h01m: setup-all10,599s, programs3,764s, ABI14s and freshness3s. Original
+admission fails12 missing-import fixture cases and passes30. Corrected R147
+passes6 Node/41 of42 browser cases; Firefox Cage times out opening Internals.
+Its trace shows the graphics machine running with webgl2-gl, but the popup is
+closed, so admission remains failed and5693 stays on R16. No assertion or
+acceptance gate is waived. R148 and its original predecessor stop on that
+admission before host tests. Independent R159 (`graphics-host-r159-1104-094333-b757`)
+now runs the complete ordinary host inventory at frozen96e9dcd068 using the
+normal R30 products; its own tool/SDK, host build, canonical rootfs and registry
+setup pass. Browser admission still fails and historical host failures remain
+open; R159 is not final-current-head acceptance.

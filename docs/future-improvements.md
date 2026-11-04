@@ -1099,3 +1099,13 @@ graph before enabling local selection; a failed or uncertain mutation does
 not establish new state knowledge or permit retry. Immutable-generation
 custody and ordered logical-current publication remain current-iteration B1
 work, followed by B2–B6 and C1–C3 in the agreed order.
+
+
+The C driver now maintains typed namespace, current-context and shader
+attachment records through acknowledged mutations. Creation metadata is
+reserved before native publication; cancellation and unknown replies preserve
+ownership. Finish immutable native-generation and pending-batch custody plus
+ordered logical-current publication next. Current program selection still
+waits for its receipt, so this intermediate step makes no performance claim
+and does not complete B1. Broader B2–B6/C1–C3 and all acceptance gates remain
+current-iteration requirements.

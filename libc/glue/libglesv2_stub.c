@@ -62,12 +62,24 @@ struct wpk_pending_image {
     struct wpk_object_name *object;
     struct wpk_pending_image *next;
 };
+/* Public name references are distinct from immutable native executable pins.
+ * This first layer owns C metadata for current contexts and attachments only;
+ * program selection remains acknowledged by the independent host oracle. */
+struct wpk_program_record {
+    GLuint name;
+    uint32_t kind, references;
+    GLenum shader_type;
+    int delete_pending, link_known, linked;
+    struct wpk_program_record *shaders[2], *next;
+};
 struct wpk_object_group {
     pthread_mutex_t mutex, dispatch_mutex;
     unsigned references;
     GLuint next_name[WPK_NAMES_COUNT];
     uint64_t next_serial;
     struct wpk_object_name *names, *retired_objects;
+    struct wpk_program_record *program_records;
+    int program_records_known;
     /* Dispatch serialization admits at most one unpublished raw candidate.
      * Reserve its cleanup slot with the group, before any native allocation. */
     GLuint pending_external_texture;
@@ -104,6 +116,7 @@ static struct wpk_object_group *object_group_create(void) {
         return NULL;
     }
     group->references = 1;
+    group->program_records_known = 1;
     group->next_serial = 1;
     for (unsigned i = 0; i < WPK_NAMES_COUNT; i++)
         group->next_name[i] = 1;
@@ -130,6 +143,11 @@ static void object_group_release(struct wpk_object_group *group) {
         if (entry->image)
             _wpk_egl_image_release(entry->image);
         free(entry);
+    }
+    while (group->program_records) {
+        struct wpk_program_record *record = group->program_records;
+        group->program_records = record->next;
+        free(record);
     }
     destroy_object_records(group->names);
     destroy_object_records(group->retired_objects);
@@ -282,6 +300,7 @@ struct wpk_array_capture {
 struct wpk_gles_context {
     struct wpk_object_group *objects;
     struct wpk_array_capture array_capture;
+    struct wpk_program_record *current_program;
     uint8_t *cursor;
     /* Client upload layout is gathered into command records exactly once. */
     GLint unpack_alignment;
@@ -370,6 +389,8 @@ struct wpk_gles_context {
 
 static int checked_mutation_query(uint32_t op, const uint32_t *words, uint32_t count);
 static GLuint checked_shader_program_creation(uint32_t kind, GLenum type, GLuint name);
+static GLuint create_program_record(uint32_t kind, GLenum type);
+static void mutate_program_record(uint32_t op, GLuint name, GLuint shader);
 static int checked_client_query(uint32_t op, const void *in, uint32_t len, void *out, uint32_t cap);
 struct wpk_gl_name_scope _wpk_gl_begin_name_scope(struct wpk_gles_context *state) {
     struct wpk_gl_name_scope scope = {.group = state->objects};
@@ -962,8 +983,7 @@ GLuint glCreateShader(GLenum type) {
     struct wpk_gl_name_scope scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =
         _wpk_gl_begin_name_scope(_wpk_gl_current_encoder());
     if (!scope.group) return 0;
-    GLuint name = next_shader_program_name();
-    return name ? checked_shader_program_creation(4, type, name) : 0;
+    return create_program_record(4, type);
 }
 
 static void upload_shader_source(GLuint, GLsizei, const GLchar *const *, const GLint *, uint32_t);
@@ -1002,7 +1022,7 @@ void glCompileShader(GLuint shader) {
 
 void glDeleteShader(GLuint shader) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_DELETE_SHADER, 4) w_u32(&_c, shader); EMIT_END()
+    mutate_program_record(OP_DELETE_SHADER, shader, 0);
 }
 
 GLuint glCreateProgram(void) {
@@ -1010,37 +1030,32 @@ GLuint glCreateProgram(void) {
     struct wpk_gl_name_scope scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =
         _wpk_gl_begin_name_scope(_wpk_gl_current_encoder());
     if (!scope.group) return 0;
-    GLuint name = next_shader_program_name();
-    return name ? checked_shader_program_creation(5, 0, name) : 0;
+    return create_program_record(5, 0);
 }
 
 void glAttachShader(GLuint program, GLuint shader) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_ATTACH_SHADER, 8)
-    w_u32(&_c, program); w_u32(&_c, shader);
-    EMIT_END()
+    mutate_program_record(OP_ATTACH_SHADER, program, shader);
 }
 
 void glDetachShader(GLuint program, GLuint shader) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_DETACH_SHADER, 8)
-    w_u32(&_c, program); w_u32(&_c, shader);
-    EMIT_END()
+    mutate_program_record(OP_DETACH_SHADER, program, shader);
 }
 
 void glLinkProgram(GLuint program) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_LINK_PROGRAM, 4) w_u32(&_c, program); EMIT_END()
+    mutate_program_record(OP_LINK_PROGRAM, program, 0);
 }
 
 void glUseProgram(GLuint program) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_USE_PROGRAM, 4) w_u32(&_c, program); EMIT_END()
+    mutate_program_record(OP_USE_PROGRAM, program, 0);
 }
 
 void glDeleteProgram(GLuint program) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_DELETE_PROGRAM, 4) w_u32(&_c, program); EMIT_END()
+    mutate_program_record(OP_DELETE_PROGRAM, program, 0);
 }
 
 void glBindAttribLocation(GLuint program, GLuint index, const GLchar *name) {
@@ -1932,6 +1947,110 @@ static GLuint checked_shader_program_creation(uint32_t kind, GLenum type, GLuint
     return 0;
 }
 
+/* All record access below is serialized by the group's dispatch scope. No
+ * metadata mutex crosses IO; the scope also disables cancellation until C
+ * publication is complete. Metadata retirement performs no native calls. */
+static struct wpk_program_record *find_program_record(struct wpk_object_group *group, GLuint name) {
+    for (struct wpk_program_record *p=group->program_records; p; p=p->next)
+        if (p->name==name) return p;
+    return NULL;
+}
+static void collect_program_record(struct wpk_object_group *group, struct wpk_program_record *record) {
+    if (!record || !record->delete_pending || record->references) return;
+    struct wpk_program_record **p=&group->program_records;
+    while (*p && *p!=record) p=&(*p)->next;
+    if (!*p) return;
+    *p=record->next;
+    if (record->kind==5) for (unsigned i=0; i<2; i++) {
+        struct wpk_program_record *shader=record->shaders[i];
+        if (shader) { shader->references--; collect_program_record(group,shader); }
+    }
+    free(record);
+}
+static GLuint create_program_record(uint32_t kind, GLenum type) {
+    struct wpk_object_group *group=_wpk_gl_current_encoder()->objects;
+    /* Reserve the C publication before creating a native/name owner. */
+    struct wpk_program_record *record=calloc(1,sizeof *record);
+    if (!record) { raise_client_error(GL_OUT_OF_MEMORY); return 0; }
+    GLuint name=next_shader_program_name();
+    if (!name || checked_shader_program_creation(kind,type,name)!=name) {
+        free(record); return 0;
+    }
+    *record=(struct wpk_program_record){.name=name,.kind=kind,.shader_type=type,
+        .link_known=kind==5,.next=group->program_records};
+    group->program_records=record;
+    return name;
+}
+/* A canonical nonacceptance supplies no new state proof. Even a valid error
+ * receipt cannot authorize retry of a mutation that may have partly run. */
+static int checked_program_mutation(uint32_t op, GLuint name, GLuint shader) {
+    uint32_t count=(op==OP_ATTACH_SHADER || op==OP_DETACH_SHADER)?3:2;
+    uint32_t *input=malloc(count*4);
+    if (!input) { raise_client_error(GL_OUT_OF_MEMORY); return -2; }
+    input[0]=op;input[1]=name;if(count==3)input[2]=shader;
+    uint32_t reply[3]={0};int entered=0;
+    const struct wpk_error_proof proof=capture_error_proof();
+    int rc=query_into_tracked(QOP_PROGRAM_MUTATION,input,count*4,reply,12,&entered);
+    free(input);
+    if (rc==WPK_GL_QUERY_NOT_DISPATCHED || (rc && !entered)) return -2;
+    if (!rc && reply[2]==WPK_GL_QUERY_REPLY_MAGIC) {
+        if (reply[0]==0 && reply[1]==1) { accept_error_proof(proof); return 1; }
+        if (reply[0]==1 && reply[1]==0) return 0;
+    }
+    invalidate_binding_knowledge(_wpk_gl_current_encoder());
+    raise_client_error(GL_INVALID_OPERATION);
+    return -1;
+}
+static void mutate_program_record(uint32_t op, GLuint name, GLuint shader_name) {
+    struct wpk_gles_context *state=_wpk_gl_current_encoder();
+    struct wpk_gl_name_scope scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =
+        _wpk_gl_begin_name_scope(state);
+    if (!scope.group) return;
+    struct wpk_object_group *group=state->objects;
+    struct wpk_program_record *record=find_program_record(group,name);
+    struct wpk_program_record *shader=find_program_record(group,shader_name);
+    int slot=shader && shader->kind==4 ? (shader->shader_type==GL_VERTEX_SHADER?0:1) : -1;
+    /* Dispatch serialization reserves reference capacity until publication.
+     * No allocation or counter overflow may follow accepted native work. */
+    if ((op==OP_USE_PROGRAM && record && record->kind==5 && record!=state->current_program &&
+         record->references==UINT_MAX) ||
+        (op==OP_ATTACH_SHADER && record && record->kind==5 && slot>=0 &&
+         !record->shaders[slot] && shader->references==UINT_MAX)) {
+        raise_client_error(GL_OUT_OF_MEMORY);return;
+    }
+    int accepted=checked_program_mutation(op,name,shader_name);
+    if (accepted!=1) {
+        if (accepted!=-2) group->program_records_known=0;
+        return;
+    }
+    if (op==OP_USE_PROGRAM) {
+        if (record && record->kind!=5) record=NULL;
+        if (name && !record) group->program_records_known=0;
+        struct wpk_program_record *previous=state->current_program;
+        if (record!=previous) {
+            if (record) record->references++;
+            state->current_program=record;
+            if (previous) {previous->references--;collect_program_record(group,previous);}
+        }
+        if (record) {record->link_known=1;record->linked=1;}
+    } else if (op==OP_ATTACH_SHADER || op==OP_DETACH_SHADER) {
+        if (!record || record->kind!=5 || slot<0) {group->program_records_known=0;return;}
+        struct wpk_program_record *previous=record->shaders[slot];
+        if (op==OP_ATTACH_SHADER && !previous) {
+            shader->references++;record->shaders[slot]=shader;
+        } else if (op==OP_DETACH_SHADER && previous==shader) {
+            record->shaders[slot]=NULL;shader->references--;collect_program_record(group,shader);
+        } else group->program_records_known=0;
+    } else if (op==OP_LINK_PROGRAM) {
+        if (record && record->kind==5) record->link_known=0;
+        else group->program_records_known=0;
+    } else if (op==OP_DELETE_SHADER || op==OP_DELETE_PROGRAM) {
+        if (record && record->kind==(op==OP_DELETE_SHADER?4u:5u)) {
+            record->delete_pending=1;collect_program_record(group,record);
+        } else if (name) group->program_records_known=0;
+    }
+}
+
 /* Return 1 for checked acceptance, 0 for definite rejection and -1 for
  * indeterminate completion. Inputs must be heap-owned for guest marshalling. */
 static int checked_mutation_query(uint32_t op, const uint32_t *words, uint32_t count) {
@@ -2093,6 +2212,15 @@ static void release_vertex_array_objects(struct wpk_gles_context *state,
 void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
     if (!state)
         return;
+    if (state->current_program) {
+        /* libEGL holds the lifetime/cancellation guard after host retirement.
+         * Drop only C ownership here; never query a destroyed GL session. */
+        pthread_mutex_lock(&state->objects->dispatch_mutex);
+        struct wpk_program_record *record=state->current_program;
+        state->current_program=NULL;record->references--;
+        collect_program_record(state->objects,record);
+        pthread_mutex_unlock(&state->objects->dispatch_mutex);
+    }
     while (state->image_attachments) {
         struct wpk_image_attachment *entry = state->image_attachments;
         state->image_attachments = entry->next;
@@ -3560,11 +3688,18 @@ void glGetShaderInfoLog(GLuint object, GLsizei bufSize, GLsizei *length, GLchar 
 void glGetProgramiv(GLuint program, GLenum pname, GLint *params) {
     if (!_wpk_gl_command_encoder()) return;
     if (!params) return;
+    struct wpk_gl_name_scope scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =
+        _wpk_gl_begin_name_scope(_wpk_gl_current_encoder());
+    if (!scope.group) return;
     uint8_t in[8];
     uint32_t s = program, p = (uint32_t)pname;
     memcpy(in, &s, 4); memcpy(in + 4, &p, 4);
     int32_t out = 0;
     if (_wpk_gl_query_into(QOP_GET_PROGRAMIV, in, 8, &out, 4) != 0) return;
+    struct wpk_program_record *record=find_program_record(scope.group,program);
+    if (record && record->kind==5 && pname==GL_LINK_STATUS && (out==0 || out==1)) {
+        record->link_known=1;record->linked=out;
+    }
     *params = out;
 }
 

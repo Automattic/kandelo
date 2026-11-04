@@ -270,6 +270,9 @@ static unsigned drain_corrupt, drain_lost_reply;
 static uint32_t drain_extra_error;
 static unsigned creation_queries;
 static int creation_failure;
+static unsigned program_mutation_queries;
+static int program_mutation_failure;
+static _Thread_local int cancel_program_mutation;
 
 static struct native_program *native_program(struct device_slot *slot, uint32_t name) {
     for (unsigned i = 0; i < 32; ++i)
@@ -1462,6 +1465,31 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             reply[1]=creation_failure==1 ? 0 : input[2]+(creation_failure==5);
             reply[2]=creation_failure==4 ? 0 : WPK_GL_QUERY_REPLY_MAGIC;
             if (creation_failure==1) query_gl_error=GL_OUT_OF_MEMORY;
+            return 0;
+        }
+        if (q->op == 0x39) {
+            assert(q->out_buf_len==12 && (q->in_buf_len==8 || q->in_buf_len==12) && !q->reserved);
+            const uint32_t *input=allocation_for(q->in_buf_ptr,q->in_buf_len);
+            uint32_t *reply=allocation_for(q->out_buf_ptr,12);
+            unsigned failure=program_mutation_failure;program_mutation_failure=0;program_mutation_queries++;
+            assert(input[0]==OP_USE_PROGRAM || input[0]==OP_LINK_PROGRAM || input[0]==OP_DELETE_PROGRAM ||
+                input[0]==OP_DELETE_SHADER || input[0]==OP_ATTACH_SHADER || input[0]==OP_DETACH_SHADER);
+            assert(q->in_buf_len==((input[0]==OP_ATTACH_SHADER || input[0]==OP_DETACH_SHADER)?12:8));
+            if (failure==1) {errno=EIO;return -1;}
+            uint32_t prior=query_gl_error;query_gl_error=0;
+            if (failure==2) query_gl_error=GL_INVALID_OPERATION;
+            else if (program_model && (input[0]==OP_LINK_PROGRAM || input[0]==OP_USE_PROGRAM || input[0]==OP_DELETE_PROGRAM))
+                native_program_command(slot,(uint16_t)input[0],input[1]);
+            uint32_t error=query_gl_error;query_gl_error=prior;
+            if (error) client_error_masks[fd-10]|=1u<<(error-GL_INVALID_ENUM);
+            if (failure==3) {errno=EIO;return -1;}
+            reply[0]=error?1:0;reply[1]=error?0:1;
+            if (failure==5) reply[0]=9;
+            if (failure==6) {reply[0]=1;reply[1]=1;}
+            reply[2]=failure==4?0:WPK_GL_QUERY_REPLY_MAGIC;
+            if (cancel_program_mutation) {
+                cancel_program_mutation=0;assert(pthread_cancel(pthread_self())==0);
+            }
             return 0;
         }
         if(q->op==0x35) {
@@ -3184,6 +3212,16 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
     } else return 0;
     printf("PASS %s\n", name);
     return 1;
+}
+
+struct cancel_program_selection {EGLDisplay display;EGLContext context;GLuint program;};
+static void *cancelled_program_selection(void *opaque) {
+    struct cancel_program_selection *args=opaque;
+    assert(eglMakeCurrent(args->display,EGL_NO_SURFACE,EGL_NO_SURFACE,args->context));
+    int old_type;assert(pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS,&old_type)==0);
+    cancel_program_mutation=1;
+    glUseProgram(args->program);
+    return (void *)1;
 }
 
 int main(int argc, char **argv) {
@@ -6909,7 +6947,10 @@ int main(int argc, char **argv) {
             /* Inactive validation has no allocation or synchronous query. */
             fail_malloc = 1; call_uniform_setter(0, -1); fail_malloc = 0;
             assert(glGetError() == GL_NO_ERROR);
-            glUseProgram(0);
+            /* Lose the selector's own prefix, before its checked admission.
+             * A later failed uniform-only flush cannot undo an earlier ACK. */
+            glClearColor(.1f,.2f,.3f,1);fail_submit=1;
+            glUseProgram(0);fail_submit=0;
             const unsigned checks = inactive_uniform_checks;
             call_uniform_setter(0, -1);
             fail_submit = 1; glFlush(); fail_submit = 0;
@@ -6917,7 +6958,8 @@ int main(int argc, char **argv) {
             assert(inactive_uniform_checks == checks);
             call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
             glUseProgram(0); glFlush();
-            glUseProgram(program);
+            glClearColor(.1f,.2f,.3f,1);fail_submit=1;
+            glUseProgram(program);fail_submit=0;
             call_uniform_setter(0, -1);
             fail_submit = 1; glFlush(); fail_submit = 0;
             assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
@@ -9724,6 +9766,7 @@ int main(int argc, char **argv) {
         if (!strcmp(mode,"contradiction")) creation_failure=6;
         if (!strcmp(mode,"status")) creation_failure=7;
         if (!strcmp(mode,"malloc")) fail_malloc=1;
+        if (!strcmp(mode,"metadata")) fail_calloc=1;
         if (!strcmp(mode,"reply-malloc")) malloc_before_failure=1;
         if (!strcmp(mode,"prefix") || !strcmp(mode,"compound")) {
             glClearColor(.2f,.4f,.6f,1);
@@ -9733,16 +9776,17 @@ int main(int argc, char **argv) {
         if (!strcmp(mode,"older")) {query_gl_error=GL_INVALID_ENUM;_wpk_gl_note_device_request();}
         const uint64_t before=_wpk_gl_device_requests();
         GLuint name=glCreateProgram();
-        fail_malloc=fail_submit=0;malloc_before_failure=-1;
+        fail_malloc=fail_submit=fail_calloc=0;malloc_before_failure=-1;
         if (!strcmp(mode,"proof") || !strcmp(mode,"older")) {
             assert(name && creation_queries==1 && programs_created==1);
             const uint64_t after=_wpk_gl_device_requests();assert(after==before+1);
             assert(glGetError()==(!strcmp(mode,"older")?GL_INVALID_ENUM:GL_NO_ERROR));
             assert(glGetError()==GL_NO_ERROR);
             if (!strcmp(mode,"proof")) assert(_wpk_gl_device_requests()==after);
+            glDeleteProgram(name);assert(glGetError()==GL_NO_ERROR);
         } else {
             assert(name==0);
-            if (!strcmp(mode,"malloc") || !strcmp(mode,"reply-malloc")) {
+            if (!strcmp(mode,"malloc") || !strcmp(mode,"reply-malloc") || !strcmp(mode,"metadata")) {
                 assert(creation_queries==0 && programs_created==0);
                 assert(glGetError()==GL_OUT_OF_MEMORY);
             } else if (!strcmp(mode,"prefix")) {
@@ -9755,12 +9799,82 @@ int main(int argc, char **argv) {
             }
             assert(glGetError()==GL_NO_ERROR);
             unsigned issued=creation_queries;creation_failure=0;
-            GLuint recovery=glCreateProgram();assert(recovery>1 && creation_queries==issued+1);
+            GLuint recovery=glCreateProgram();assert(recovery && (!strcmp(mode,"metadata") || recovery>1) && creation_queries==issued+1);
             assert(glGetError()==GL_NO_ERROR && creation_queries==issued+1);
+            glDeleteProgram(recovery);assert(glGetError()==GL_NO_ERROR);
         }
         assert(allocation_count()==live);
         assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy));
         assert(allocation_count()==0);
+        printf("PASS %s\n",argv[1]);return 0;
+    }
+    if (!strncmp(argv[1],"encoder-records-",16)) {
+        const char *mode=argv[1]+16;assert(glGetError()==GL_NO_ERROR);
+        unsigned baseline=allocation_count();
+        GLuint p=glCreateProgram(),q=glCreateProgram();assert(p&&q);
+        unsigned named=allocation_count();assert(named>baseline);
+        if (!strcmp(mode,"attachments") || !strcmp(mode,"detach") || !strcmp(mode,"retire")) {
+            GLuint v=glCreateShader(GL_VERTEX_SHADER),f=glCreateShader(GL_FRAGMENT_SHADER);assert(v&&f);
+            unsigned attached=allocation_count();
+            glAttachShader(p,v);glAttachShader(p,f);glDeleteShader(v);glDeleteShader(f);
+            assert(glGetError()==GL_NO_ERROR && allocation_count()==attached);
+            if (!strcmp(mode,"detach")) {
+                glDetachShader(p,v);assert(glGetError()==GL_NO_ERROR && allocation_count()<attached);
+            }
+        }
+        glLinkProgram(p);glUseProgram(p);assert(glGetError()==GL_NO_ERROR);
+        unsigned current=allocation_count();glDeleteProgram(p);
+        assert(glGetError()==GL_NO_ERROR && allocation_count()==current);
+        if (!strcmp(mode,"reject"))program_mutation_failure=2;
+        if (!strcmp(mode,"unknown-before"))program_mutation_failure=1;
+        if (!strcmp(mode,"unknown-after"))program_mutation_failure=3;
+        if (!strcmp(mode,"magic"))program_mutation_failure=4;
+        if (!strcmp(mode,"status"))program_mutation_failure=5;
+        if (!strcmp(mode,"contradiction"))program_mutation_failure=6;
+        if (!strcmp(mode,"malloc"))fail_malloc=1;
+        if (!strcmp(mode,"reply-malloc"))malloc_before_failure=1;
+        if (!strcmp(mode,"prefix")){glClearColor(.1f,.2f,.3f,1);fail_submit=1;}
+        unsigned issued=program_mutation_queries;
+        if (!strcmp(mode,"cancel")) {
+            const EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
+            EGLContext peer=eglCreateContext(dpy,(EGLConfig)1,ctx,attrs);assert(peer);
+            struct cancel_program_selection args={dpy,peer,p};
+            pthread_t thread;void *result=NULL;
+            assert(pthread_create(&thread,NULL,cancelled_program_selection,&args)==0);
+            assert(pthread_join(thread,&result)==0 && result==PTHREAD_CANCELED);
+            /* The canceled thread left its context alive. Its current-program
+             * reference must outlive the thread, then follow a new owner. */
+            unsigned retained=allocation_count();
+            glUseProgram(0);assert(glGetError()==GL_NO_ERROR && allocation_count()==retained);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
+            retained=allocation_count();
+            glUseProgram(0);assert(glGetError()==GL_NO_ERROR && allocation_count()<retained);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));
+            assert(eglDestroyContext(dpy,peer));
+            glDeleteProgram(q);assert(glGetError()==GL_NO_ERROR);
+            assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy));
+            assert(allocation_count()==0);
+        } else if (!strcmp(mode,"retire")) {
+            glDeleteProgram(q);assert(glGetError()==GL_NO_ERROR);
+            issued=program_mutation_queries;
+            assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy));
+            assert(program_mutation_queries==issued && allocation_count()==0);
+        } else {
+            glUseProgram(0);fail_malloc=fail_submit=0;malloc_before_failure=-1;
+            if (!strcmp(mode,"current") || !strcmp(mode,"attachments") || !strcmp(mode,"detach")) {
+                assert(program_mutation_queries==issued+1 && glGetError()==GL_NO_ERROR);
+                assert(allocation_count()<current);
+            } else {
+                if (!strcmp(mode,"malloc") || !strcmp(mode,"reply-malloc") || !strcmp(mode,"prefix"))
+                    assert(program_mutation_queries==issued);
+                else assert(program_mutation_queries==issued+1);
+                assert(glGetError()==(!strcmp(mode,"malloc") || !strcmp(mode,"reply-malloc")?GL_OUT_OF_MEMORY:GL_INVALID_OPERATION));
+                assert(glGetError()==GL_NO_ERROR && allocation_count()==current);
+                glUseProgram(0);assert(glGetError()==GL_NO_ERROR && allocation_count()<current);
+            }
+            glDeleteProgram(q);assert(glGetError()==GL_NO_ERROR && allocation_count()==baseline);
+            assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy));assert(allocation_count()==0);
+        }
         printf("PASS %s\n",argv[1]);return 0;
     }
     if (!strcmp(argv[1], "namespace")) {
