@@ -48,7 +48,8 @@ import { runObjectQuery } from "./object-query.js";
 import { runShaderSourceUpload } from "./shader-source.js";
 import { collectRetiredBuffers, deleteBufferNames } from "./buffer-references.js";
 import { bindBufferObject, canonicalBuffer } from "./buffer-storage.js";
-import type { GlBinding } from "./registry.js";
+import type { GlBinding, GlContextExecutionLease } from "./registry.js";
+import { runProgramCaptureQuery } from "./program-capture-query.js";
 import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
 import { checkedGlCall, currentProgramName, recordGlError, linkedProgramForQuery, attributeLocation } from "./program-objects.js";
@@ -263,6 +264,7 @@ export function runGlQuery(
   op: number,
   input: Uint8Array,
   out: Uint8Array,
+  execution?: GlContextExecutionLease,
 ): number {
   const errorQuery = op === O.QOP_GET_ERROR ? readGlErrorQuery(input) : null;
   if (op === O.QOP_GET_ERROR && (errorQuery === null ||
@@ -289,6 +291,7 @@ export function runGlQuery(
   if (op === O.QOP_OBJECT_CAPTURE) return runObjectCapture(b,input,out);
   if (op === O.QOP_READBACK_CAPTURE) return runReadbackCapture(b,input,out,(metadata,bytes)=>readNativePixels(b,metadata,bytes));
   if (op === O.QOP_LOOKUP_UNIFORM) return runUniformLookup(b,input,out);
+  if (op === O.QOP_PROGRAM_CAPTURE) return runProgramCaptureQuery(b,input,out,execution);
   if (op === O.QOP_COMPRESSED_UPLOAD) return runCompressedUpload(b,input,out);
   if (op === O.QOP_SHADER_SOURCE_UPLOAD) return runShaderSourceUpload(b,input,out);
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);

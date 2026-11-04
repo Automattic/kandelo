@@ -1,4 +1,4 @@
-import { retireLastPublicProgramCaptures } from "./program-captures.js";
+import { retireContextProgramCaptures, retireLastPublicProgramCaptures } from "./program-captures.js";
 import { forgetRendererLoss, rendererObjectEpoch } from "./renderer-loss.js";
 import { cubeExtraTextures } from "./cube-storage.js";
 import type { GlObjectCapture } from "./object-capture.js";
@@ -46,7 +46,7 @@ import type { GlMuxer } from "./muxer.js";
 import { replaceDefaultFramebuffer } from "./framebuffer.js";
 import { framebufferInputsChanged } from "./framebuffer-revision.js";
 import { createGlObjectGroup, exposeGlSharedObjects, type GlObjectGroup, type GlSharedObjects } from "./object-group.js";
-import { finalizeProgram, releaseRetainedExecutable } from "./program-objects.js";
+import { finalizeProgram, releaseRetainedExecutable, retireProgramNameOwner } from "./program-objects.js";
 import { releaseReversedDepthTwin } from "./reversed-depth.js";
 import { collectRetiredImages, type GlImageAttachment } from "./image-references.js";
 import { destroyBufferStorage } from "./buffer-storage.js";
@@ -424,6 +424,7 @@ export class GlContextRegistry {
   /** True when native resources were destroyed now; false when an accepted
    * execution retains them and retires them when it completes. */
   private retireContextBinding(b: GlBinding, replace: boolean): boolean {
+    retireContextProgramCaptures(b);
     retireLastPublicProgramCaptures(b,this.bindings.values());
     // Copied replies own no native execution; public context retirement revokes
     // their private transfer immediately, even while native work is retained.
@@ -431,6 +432,10 @@ export class GlContextRegistry {
     b.compressedUpload = null;
     const record = this.executions.get(b);
     if (record && record.references > 0) {
+      // An accepted execution retains native state, never a destroyed public
+      // context's program-name reference. Keep its installed executable for
+      // that execution while making delete-pending names disappear on time.
+      retireProgramNameOwner(b);
       const next = record.replacement;
       next.canvas = b.canvas;
       if (b.surfaceId !== null) next.surface = b.surface;

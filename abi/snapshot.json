@@ -28,6 +28,7 @@
       "gl_image_container_receipts",
       "gl_inline_client_draw",
       "gl_object_capture",
+      "gl_program_capture",
       "gl_program_mutation",
       "gl_readback_capture",
       "gl_server_wait",
@@ -1623,6 +1624,39 @@
     "tokens": "monotonic-per-context-no-query-replay",
     "units": "bytes-except-attached-shaders-u32",
     "value": "original-unit-count,[active-size,active-type],requested-prefix"
+  },
+  "gl_program_capture": {
+    "commands": {
+      "acquire": [
+        1,
+        8
+      ],
+      "release": [
+        3,
+        8
+      ],
+      "select": [
+        2,
+        12
+      ]
+    },
+    "lifetime": "acquiring-context-cache-with-independent-accepted-execution-custody",
+    "opcode": 58,
+    "query_dependencies": "ordinary-query-replay",
+    "reply_bytes": 16,
+    "reply_fields": [
+      "status",
+      "linked_or_accepted",
+      "handle_or_zero",
+      "magic"
+    ],
+    "reply_magic": 1196510259,
+    "request_fields": [
+      "action",
+      "name_or_handle",
+      "select_handle_only"
+    ],
+    "requires_current_context": true
   },
   "gl_program_mutation": {
     "commands": {

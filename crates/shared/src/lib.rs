@@ -4384,6 +4384,11 @@ pub mod gl {
     /// name payload (8 bytes, or 12 for attach/detach). Reply: status, accepted
     /// boolean, QUERY_REPLY_MAGIC. Ordinary replay/dependencies/current authority.
     pub const QOP_PROGRAM_MUTATION: u32 = 0x0039;
+    /// Context-owned executable captures. Acquire [1, name], select
+    /// [2, name, handle], release [3, handle]. Checked 16-byte reply:
+    /// status, linked_or_accepted, handle_or_zero, QUERY_REPLY_MAGIC.
+    /// Ordinary current-thread query authority and replay/dependencies.
+    pub const QOP_PROGRAM_CAPTURE: u32 = 0x003A;
     /// V17 retained fences. Input: one nonzero client token, allocated
     /// monotonically per object session before creation. Output: 16 bytes
     /// (status, echoed token, signaled bool, checked reply magic).
@@ -6815,6 +6820,7 @@ mod gl_tests {
             QOP_CONTEXT_RESET_SCOPE,
             QOP_CREATE_SHADER_PROGRAM,
             QOP_PROGRAM_MUTATION,
+            QOP_PROGRAM_CAPTURE,
             QOP_CREATE_FENCE,
             QOP_FENCE_STATUS,
             QOP_RELEASE_FENCE,

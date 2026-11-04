@@ -544,6 +544,7 @@ host/test/webgl-operation-stream.test.ts	source-only
 host/test/webgl-present-target.test.ts	source-only
 host/test/webgl-private-client-draw.test.ts	source-only
 host/test/webgl-private-limits.test.ts	source-only
+host/test/webgl-program-capture-query.test.ts	source-only
 host/test/webgl-program-captures.test.ts	source-only
 host/test/webgl-program-link.test.ts	source-only
 host/test/webgl-readback-capture.test.ts	source-only

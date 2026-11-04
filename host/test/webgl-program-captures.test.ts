@@ -3,7 +3,7 @@ import { GlContextRegistry } from "../src/webgl/registry.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
 import { NativeGlFault } from "../src/webgl/native-recovery.js";
 import { GlProgramQueryPin } from "../src/webgl/program-objects.js";
-import { captureGlProgram,retainGlProgramCapture,releaseGlProgramCapture } from "../src/webgl/program-captures.js";
+import { captureContextGlProgram,captureGlProgram,retainGlProgramCapture,releaseGlProgramCapture } from "../src/webgl/program-captures.js";
 
 function fixture() {
   const live=new Set<object>(),deleted:object[]=[];
@@ -30,6 +30,60 @@ for(const removal of ["destroy","unbind"] as const)
     expect(retainGlProgramCapture(f.owner,handle)).toBeNull();
     f.registry.unbind(1);expect(f.deleted.filter(p=>p===f.program)).toHaveLength(1);
   });
+it("retires only the exact context-owned cache while a shared peer and accepted clone survive",()=>{
+  const f=fixture(),peer=f.bind(12);expect(f.registry.shareObjects(1,12,0)).toBe(true);
+  const own=captureContextGlProgram(f.execution,20),group=captureGlProgram(f.execution,20);
+  const peerExecution=f.registry.retainContextExecution(1,12,f.muxer)!;
+  const peerHandle=captureContextGlProgram(peerExecution,20),accepted=retainGlProgramCapture(f.owner,own)!;
+  peerExecution.release();f.execution.release();
+  f.registry.destroyContext(1,0);
+  expect(retainGlProgramCapture(peer,own)).toBeNull();
+  for(const handle of [peerHandle,group]) {
+    const retained=retainGlProgramCapture(peer,handle)!;expect(retained.program).toBe(f.program);retained.release();
+  }
+  expect(accepted.program).toBe(f.program);
+  f.registry.destroyContext(1,12);expect(f.live.has(f.program)).toBe(true);
+  accepted.release();expect(f.live.size).toBe(0);expect(f.group.members.size).toBe(0);
+});
+it("rolls back a failed context-owner index publication without leaking a pin",()=>{
+  const f=fixture(),original=Map.prototype.set;
+  const failure=vi.spyOn(Map.prototype,"set").mockImplementation(function(this:Map<unknown,unknown>,key:unknown,value:unknown){
+    if(typeof key==="number" && value===f.owner)throw new Error("owner-index allocation");
+    return original.call(this,key,value);
+  });
+  try {expect(captureContextGlProgram(f.execution,20)).toBe(0);}finally{failure.mockRestore();}
+  expect(f.owner.programQueryPins.size).toBe(0);expect(f.owner.errors).toEqual([0x505]);
+  f.execution.release();f.registry.destroyContext(1,0);expect(f.live.size).toBe(0);
+});
+for(const custody of ["program-pin","context-execution"] as const)
+it(`does not retain a deleted public name through retired private ${custody}`,()=>{
+  const f=fixture(),peer=f.bind(12);expect(f.registry.shareObjects(1,12,0)).toBe(true);
+  const handle=captureContextGlProgram(f.execution,20);
+  f.owner.currentProgram=f.owner.shadow.currentProgram=f.program;f.owner.currentProgramId=20;
+  f.owner.programDeletePending.add(20);
+  const pending=custody==="program-pin" ? retainGlProgramCapture(f.owner,handle)! : f.execution.clone()!;
+  f.execution.release();f.registry.destroyContext(1,0);
+  expect(peer.programs.has(20)).toBe(false);expect(f.live.has(f.program)).toBe(true);
+  if(custody==="context-execution")expect(pending.binding.currentProgram).toBe(f.program);
+  expect(pending.release()).toBe(true);expect(f.live.has(f.program)).toBe(false);
+  f.registry.destroyContext(1,12);expect(f.group.members.size).toBe(0);expect(f.group.programQueryPins.size).toBe(0);
+});
+for(const mode of ["refusal","throw"] as const)
+it(`keeps failed publication custody after native rollback ${mode} for explicit context containment`,()=>{
+  const f=fixture(),original=Map.prototype.set;
+  const publication=vi.spyOn(Map.prototype,"set").mockImplementation(function(this:Map<unknown,unknown>,key:unknown,value:unknown){
+    if(typeof key==="number" && value===f.owner)throw new Error("owner publication");
+    return original.call(this,key,value);
+  });
+  const cleanup=vi.spyOn(GlProgramQueryPin.prototype,"release").mockImplementation(()=>{
+    if(mode==="throw")throw new Error("native rollback threw");return false;
+  });
+  try {expect(()=>captureContextGlProgram(f.execution,20)).toThrow(NativeGlFault);}
+  finally{publication.mockRestore();cleanup.mockRestore();}
+  expect(f.live.has(f.program)).toBe(true);expect(f.owner.programQueryPins.get(f.program)).toBe(1);
+  f.execution.release();f.registry.destroyContext(1,0);
+  expect(f.live.size).toBe(0);expect(f.owner.programQueryPins.size).toBe(0);expect(f.group.members.size).toBe(0);
+});
 it("keeps captures through one peer retirement and pending clones through the last public retirement",()=>{
   const f=fixture(),peer=f.bind(12);expect(f.registry.shareObjects(1,12,0)).toBe(true);
   const handle=captureGlProgram(f.execution,20);f.execution.release();f.registry.destroyContext(1,0);

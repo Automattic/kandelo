@@ -13,7 +13,8 @@ import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer, validSurfaceCapabilitiesLength } from "./webgl/surface-capabilities.js";
-import { QOP_CONTEXT_RESET_SCOPE, QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, QOP_EXPORT_FENCE, QOP_RELEASE_FENCE } from "./webgl/ops.js";
+import { QOP_PROGRAM_CAPTURE, QOP_CONTEXT_RESET_SCOPE, QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, QOP_EXPORT_FENCE, QOP_RELEASE_FENCE } from "./webgl/ops.js";
+import { validProgramCaptureRequest } from "./webgl/program-capture-query.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
  * import functions that bridge Wasm syscalls to the PlatformIO backend.
@@ -3776,7 +3777,15 @@ export class WasmPosixKernel {
               // must propagate; see the catch below).
               let failure: { error: unknown } | null = null;
               let reply = -5;
-              try { reply = runGlQuery(b, op, inBuf, outBuf); }
+              try {
+                if(op===QOP_PROGRAM_CAPTURE && validProgramCaptureRequest(inBuf,outputLength) && inBuf[0]===1) {
+                  // Cold acquisition alone reserves execution custody. Other
+                  // queries and unused features allocate no capture owner.
+                  const execution=this.gl.retainContextExecution(b.pid,b.sessionId,this.glMuxerFor(b.gl!));
+                  try {reply=runGlQuery(b,op,inBuf,outBuf,execution??undefined);}
+                  finally {execution?.release();}
+                } else reply = runGlQuery(b, op, inBuf, outBuf);
+              }
               catch (error) { failure = { error }; }
               const published = this.gl.cpuImages.publish(b, this.bos, capture);
               if (failure) throw failure.error;

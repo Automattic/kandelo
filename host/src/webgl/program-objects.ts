@@ -105,6 +105,18 @@ const shaderTypes = new WeakMap<WebGLShader, number>();
  * link-status rule is predicted for them (es2-validation.ts). A program the
  * host never saw linked is left to the renderer (native-predictions.ts). */
 const failedLinks = new WeakSet<WebGLProgram>();
+/** Retained execution still owns its installed native program after public
+ * context destruction. That private custody is no longer a public name ref. */
+const retiredProgramNameOwners = new WeakSet<GlBinding>();
+
+export function retireProgramNameOwner(b: GlBinding): void {
+  try {retiredProgramNameOwners.add(b);}
+  catch(error) {rethrowNativeGlFault(error);if(isKernelExportFailure(error))throw error;
+    nativeGlFault("Could not retire a public program namespace owner",error);
+  }
+  const name=currentProgramName(b);
+  if(name) finalizeProgram(b,name);
+}
 export function shaderType(shader: WebGLShader | undefined): number | undefined {
   return shader ? shaderTypes.get(shader) : undefined;
 }
@@ -316,7 +328,7 @@ export function finalizeShader(b: GlBinding, name: number): void {
 export function finalizeProgram(b: GlBinding, name: number): void {
   if (!b.programDeletePending.has(name)) return;
   const program = b.programs.get(name);
-  if ([...b.objects.members].some(member => name === currentProgramName(member))) return;
+  if ([...b.objects.members].some(member => !retiredProgramNameOwners.has(member) && name === currentProgramName(member))) return;
   finishProgramDeletion(b,name,program);
 }
 
@@ -325,7 +337,9 @@ function finishProgramDeletion(b: GlBinding, name: number, program: WebGLProgram
   // name. Otherwise a peer can keep using a deleted, non-current program.
   // Its last pin releases the unnamed native object through the same exact
   // cleanup path; current contexts remain separate logical name owners.
-  if (program && !b.programQueryPins.has(program) && b.gl && !deleteUnusedNativeProgram(b, program)) return false;
+  if (program && !b.programQueryPins.has(program) &&
+      ![...b.objects.members].some(member=>member.currentProgram===program) &&
+      b.gl && !deleteUnusedNativeProgram(b, program)) return false;
   b.programDeletePending.delete(name);
   b.programs.delete(name);
   const shaders = b.programShaders.get(name);
@@ -467,24 +481,25 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
   }
 }
 
-export function useProgramIfAccepted(b: GlBinding, name: number): void {
+export function useProgramIfAccepted(b: GlBinding, name: number): boolean {
   const program = name === 0 ? null : b.programs.get(name);
   if (program === undefined) {
-    recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501); return;
+    recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501); return false;
   }
   const linkError = useProgramError(program, program === null || !failedLinks.has(program));
-  if (linkError) { recordGlError(b, linkError); return; }
+  if (linkError) { recordGlError(b, linkError); return false; }
   const previous = b.currentProgram, previousName = currentProgramName(b);
   const wasRetained = previous !== null && b.programs.get(previousName) !== previous;
   const released = wasRetained ? reserveExecutableRelease(b, previous) : null;
-  if (wasRetained && !released) return;
+  if (wasRetained && !released) return false;
   let primaryFailure: unknown, failed = false;
   try {
-    if (!checkedGlCall(b, () => b.gl!.useProgram(program))) return;
+    if (!checkedGlCall(b, () => b.gl!.useProgram(program))) return false;
     b.currentProgram = program;
     b.currentProgramId = name;
     b.shadow.currentProgram = program;
     if (previous !== program && previousName !== 0) finalizeProgram(b, previousName);
+    return true;
   } catch (error) { primaryFailure = error; failed = true; throw error; }
   finally {
     try { if (released) retireNativeRetirement(released); }

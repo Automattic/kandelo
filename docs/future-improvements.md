@@ -1055,57 +1055,32 @@ the final normal-built graphics, desktop and browser-memory runs still need
 the resulting archive/kernel/program/image set. This does not complete B1's
 shared program ownership or any B2–B6/C1–C3 stage.
 
-Prepared host program-query custody now releases a deleted non-current public
-name independently of its private executable pins; actual current peers still
-retain the name. This corrects the custody mechanism needed by B1, whose
-shared guest program/current/pending references and immutable generation
-receipts remain required. It does not make the rejected selection cache safe
-or establish an application performance benefit.
-
-
 The B1 default-target increment removes error-query requests for a proven
-zero-target bind/clear prefix. It does not complete the current-iteration
-shared program/executable model or the remaining object/draw error families.
-Those, B2–B6 and C1–C3 remain required in this iteration, with normal SDK
-artifacts, application measurements and the complete native-feel ship bar.
-
-
-The prepared host executable-capture cache now has explicit last-public-context
-retirement and independent pending clones. Complete the current-iteration C
-shader/program namespace, logical current/pending references and checked
-immutable-generation protocol before enabling local program-selection errors.
-Do not reuse the rejected name-only cache: its sharing race is still a required
-regression, and a native pin alone does not establish logical program ownership.
-
-
-B1's checked shader/program creation protocol now supplies authoritative
-allocation receipts while preserving old guest flags and normal query replay.
-The C API now waits for those allocation receipts before returning a name,
-without replaying uncertain creation. It still needs shared C object records,
-current/pending references and immutable-generation custody before local
-program selection. Finish that graph next; retain the existing deletion/relink
-regressions, independent error oracle and normal product gates. The recognized
-query-reset errno now reaches libc through plain and compound GLIO, preserving
-A3's existing context-reset boundary. Focused correctness gates do not complete
-B1–B6 or C1–C3, which all remain current-iteration work.
-
-
-The optional checked program-mutation query now acknowledges attach, detach,
-delete, link and selection through the same host dispatcher. It preserves
-older error flags and real current-binding writes, including failed-link
-versus installed-executable behavior. The C mutation entrypoints have not
-switched to this protocol. Use these receipts to establish the shared C
-graph before enabling local selection; a failed or uncertain mutation does
-not establish new state knowledge or permit retry. Immutable-generation
-custody and ordered logical-current publication remain current-iteration B1
-work, followed by B2–B6 and C1–C3 in the agreed order.
-
+zero-target bind/clear prefix. It does not complete the shared program/
+executable model or the remaining object/draw error families. Those, B2–B6 and
+C1–C3 remain required in this iteration, with normal SDK artifacts, application
+measurements and the complete native-feel ship bar.
 
 The C driver now maintains typed namespace, current-context and shader
-attachment records through acknowledged mutations. Creation metadata is
-reserved before native publication; cancellation and unknown replies preserve
-ownership. Finish immutable native-generation and pending-batch custody plus
-ordered logical-current publication next. Current program selection still
-waits for its receipt, so this intermediate step makes no performance claim
-and does not complete B1. Broader B2–B6/C1–C3 and all acceptance gates remain
-current-iteration requirements.
+attachment records through checked creation/mutation receipts. Creation
+metadata is reserved before native publication; cancellation and unknown
+replies preserve ownership. Current selection still waits for its receipt.
+
+The host now exposes optional context-owned executable capture, checked
+selection and release receipts. It ends each context's cache at retirement,
+while accepted work retains independent native custody. A retired execution
+no longer retains a deleted public program name. Internal group captures
+remain private, and stale/peer-owned generations cannot manufacture a valid
+selection. The real three-engine retirement regression and failed/successful
+peer-relink controls are retained in the graphics compatibility ledger.
+
+Next, consume those receipts in the C generation/current/pending graph,
+serialize C capture metadata with host context destruction, and implement
+independently audited ordered logical-current publication. Reserve all
+fallible ownership/result metadata before local acceptance. Never query a
+destroyed session, flush a foreign mutable encoder or reuse the rejected
+name-only cache. A private native pin does not establish logical ownership.
+These steps remain current-iteration B1 work; the new host protocol does not
+complete B1 or demonstrate an application performance improvement. Full B2–B6,
+C1–C3 and all correctness, conformance, memory and native-feel gates remain
+required in their agreed order.

@@ -12,7 +12,7 @@ import {
   createWasmPosixKernelTestHarness,
   WasmPosixKernel,
 } from "../src/kernel";
-import { QOP_GET_ERROR, QOP_FINISH } from "../src/webgl/ops";
+import { QOP_GET_ERROR, QOP_FINISH, QOP_PROGRAM_CAPTURE } from "../src/webgl/ops";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 function hostileBytes(length: number, reportedLength = 1): Uint8Array {
@@ -1566,4 +1566,42 @@ it.each([4,8] as const)("completion queries preflight before native work at wasm
   expect(imports.env.host_gl_query(7,QOP_FINISH,ptr(0),ptr(0),ptr(8192),ptr(4))).toBe(-22);
   expect([...output]).toEqual([0xa5,0xa5,0xa5,0xa5]);
   expect(native).not.toHaveBeenCalled();
+});
+
+it.each([4,8] as const)("capture queries reserve custody only after the full wasm%d destination preflight",(width)=>{
+  const {kernel,memory}=fullKernelHarness({}, {}, width);
+  kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+  const b=kernel.gl.get(7,0)!,program={};b.contextId=21;b.programs.set(20,program);b.programShaders.set(20,new Set());
+  b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null,getProgramParameter:()=>true},
+    {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+  const retained=vi.spyOn(kernel.gl,"retainContextExecution");
+  const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+  const ptr=(n:number)=>width===8?BigInt(n):n;
+  new Uint32Array(memory.buffer,4096,2).set([1,20]);
+  expect(imports.env.host_gl_query(7,QOP_PROGRAM_CAPTURE,ptr(4096),ptr(8),ptr(memory.buffer.byteLength-2),ptr(16),0)).toBe(-14);
+  expect(retained).not.toHaveBeenCalled();expect(b.programQueryPins.size).toBe(0);
+  expect(imports.env.host_gl_query(7,QOP_PROGRAM_CAPTURE,ptr(4096),ptr(8),ptr(8192),ptr(16),0)).toBe(16);
+  expect([...new Uint32Array(memory.buffer,8192,4)]).toEqual([0,1,1,0x47514c33]);
+  expect(retained).toHaveBeenCalledTimes(1);expect(b.programQueryPins.get(program)).toBe(1);
+  new Uint32Array(memory.buffer,4096,2).set([3,1]);
+  expect(imports.env.host_gl_query(7,QOP_PROGRAM_CAPTURE,ptr(4096),ptr(8),ptr(8192),ptr(16),0)).toBe(16);
+  expect([...new Uint32Array(memory.buffer,8192,4)]).toEqual([0,1,0,0x47514c33]);
+  expect(retained).toHaveBeenCalledTimes(1);expect(b.programQueryPins.size).toBe(0);
+  kernel.gl.destroyContext(7,0);
+});
+
+it.each([4,8] as const)("capture reservation OOM remains ordinary and leaves the wasm%d context alive",(width)=>{
+  const {kernel,memory}=fullKernelHarness({}, {}, width);
+  kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+  const b=kernel.gl.get(7,0)!;b.contextId=21;b.programs.set(20,{});
+  b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null,getProgramParameter:()=>true},
+    {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+  vi.spyOn(kernel.gl,"retainContextExecution").mockReturnValue(null);
+  const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+  const ptr=(n:number)=>width===8?BigInt(n):n;
+  new Uint32Array(memory.buffer,4096,2).set([1,20]);
+  expect(imports.env.host_gl_query(7,QOP_PROGRAM_CAPTURE,ptr(4096),ptr(8),ptr(8192),ptr(16),0)).toBe(16);
+  expect([...new Uint32Array(memory.buffer,8192,4)]).toEqual([1,0,0,0x47514c33]);
+  expect(b.errors).toContain(0x505);expect(b.contextId).toBe(21);expect(b.currentProgram).toBeNull();
+  expect(b.programQueryPins.size).toBe(0);kernel.gl.destroyContext(7,0);
 });

@@ -22699,3 +22699,61 @@ ordinary host inventory is active. Those warnings remain evidence for latency
 investigation, not a distribution or an attributed outside-runtime defect.
 No performance/native-feel bar is established by this manual functional check.
 Only the owned browser tab was closed; the preview server remains available.
+
+
+## 2026-11-04 context-owned executable query and public retirement (R164–R166)
+
+Optional GL17 query0x3a adds checked capture `[1,name]`, synchronous selection
+`[2,name,handle]` and release `[3,handle]`, with16-byte status/payload/magic replies.
+All actions keep ordinary current-thread authority, prefix replay and buffer
+fence dependencies. The acquisition alone reserves execution/cache custody;
+other queries do not allocate that owner. Reply allocation precedes capture
+publication. A pre-reserved admission receiver also retains a failed rollback
+for exact context/group containment, even when cache publication itself fails.
+Failed linking returns a successful false-status observation with
+no capture and preserves an older installed executable. Selection requires the
+caller's own capture of the latest named native executable. Unknown, stale,
+peer-owned and deleted captures cannot select or resurrect a public name.
+Guest release cannot retire a private internal group capture.
+
+Owned captures close before their public context retires; pending clones keep
+independent native/context custody. The native regression exposed an additional
+retirement bug: a retained private execution kept its destroyed context's
+current-program name reference. A separate namespace-owner retirement now ends
+that logical reference without clearing the installed native executable used
+by accepted work. Delete-pending names disappear while pending rendering and
+exact final native cleanup remain valid. Failed private cleanup stays fatal
+and retains explicit retry custody. CPU metadata OOM remains an ordinary API
+resource failure, not a context-reset boundary.
+
+R164 (`graphics-program-capture-r164-1104-105940-f51d`) passes the own-tool
+build, explicit additive classifier,90 GLIO controls, query uniqueness,
+normal kernel/export-snapshot build, ABI update/check and evidence registry.
+The snapshot adds only the optional Program section; versions stay56/3/17/21.
+Its initial graphics gate passes2,075 assertions/86 files. After the retirement
+fix, the final source gate passes2,083 assertions/86 files, including both-width
+host-import destination/custody preflight and ordinary reservation-OOM checks.
+The snapshot changes the program digest; the canonical published kernel/SDK/
+program/image set still requires its normal coherent rebuild.
+
+R165's direct real-WebGL controls use the actual registry/query/dispatcher and
+native OffscreenCanvas renderer, without a guest kernel or C API substitution.
+Before the namespace fix, all3 engines fail the retired-owner public-name
+assertion;9 other checks pass. Afterward all12 checks pass on Chromium, Firefox
+and WebKit (5.9s), including exact old/new pixels, failed and successful peer
+relink, stale selection rejection, accepted pending rendering, native program
+death after final release and empty ownership ledgers. Private ports5986/5987,
+source hashes, patches, JSON, logs and original failures remain under
+`.context/graphics-program-capture-native-r165{,-after}/`. The final admission-
+receiver version repeats all12 unchanged native assertions at a fresh port5988
+in graphics-program-capture-native-r165-final:12 pass9.8s, frozen inputs pass.
+The ordinary native C/UBSan suite also retains all464 passing controls.
+
+R166 repeats both complete host type checks: both FAIL with39 identical
+baseline/candidate diagnostics after root-path normalization only. No typecheck
+pass is claimed. Exact scripts/results are in graphics-program-capture-r164
+and graphics-program-capture-types-r166. These are focused source/kernel/native
+controls, not normal public-C/browser GLIO, full CTS, browser-memory or desktop
+performance acceptance. The C driver does not consume0x3a yet and enables no
+local selector. Finish its immutable generation/pending graph and ordered
+logical-current publication, then B2–B6 and C1–C3; no scope is deferred.

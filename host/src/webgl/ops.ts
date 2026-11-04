@@ -263,3 +263,5 @@ export const QOP_CONTEXT_RESET_SCOPE = 0x0037;
 /** Checked creation: [kind=4 shader/5 program,type,name] -> [status,name,magic]. */
 export const QOP_CREATE_SHADER_PROGRAM = 0x0038;
 export const QOP_PROGRAM_MUTATION = 0x0039;
+/** Context-owned executable capture: acquire1/select2/release3; checked16-byte reply. */
+export const QOP_PROGRAM_CAPTURE = 0x003a;

@@ -5550,7 +5550,7 @@ A retained current old generation can overlap a newly initialized one.
 Public C shared contexts join the retained C owner and native/kernel group;
 the full API/error and lifecycle audit remains open.
 
-ABI 57 surface creation uses a 36-byte input/output GlSurfaceCreateInfo:
+Surface creation uses a 36-byte input/output GlSurfaceCreateInfo:
 32 attribute bytes followed by a zero-on-input surface identity. The
 kernel returns a fresh identity and accepted dimensions only after the
 renderer acknowledges creation. A private copy translates the caller's
@@ -5586,7 +5586,7 @@ and values. They do not depend on an earlier reflection call or a C width
 cache. Shared program/location associations validate ownership and link
 state before reading without changing the current program. C publishes
 only a completed successful reply; failed or malformed results preserve
-caller output. Table 7 adds this query within ABI 58, preserving all older
+caller output. Table 7 adds this query, preserving all older
 tags/layouts. Table 8 adds checked active-uniform chunks and context-owned
 name lookup transfers in the existing 64 KiB query messages. Uniform
 locations are numbered per program, as Mesa and native ANGLE number them
@@ -5978,7 +5978,7 @@ GL context identities are also kernel-issued and returned by creation;
 foreign texture imports select the exact context. Cross-process inherited
 descriptions cannot operate another process's renderer or invalidate its
 command mapping; final cleanup retains the renderer's original process.
-ABI 58 context creation can name a live source context in the same process
+Context creation can name a live source context in the same process
 and display generation. The kernel validates authority before backend
 entry; the host joins the new context to its source's object maps before
 acknowledgement. Source-session lookup preserves local bindings, errors, default textures and FBO/VAO containers.
@@ -6747,16 +6747,33 @@ its target. Private exact and user framebuffer operations keep transactional
 allocation/error behavior; surfaceless clears retain ordinary host validation.
 
 
-Prepared program capture caches are scoped to a share group and retain an
-exact native executable independently of its public program name. They have
-no guest protocol yet. A pending owner clones that exact pin, including its
-execution custody, before cache ownership can end. The registry closes cached
-owners before retiring the group's last public context: otherwise the cache
-would retain the very execution/context whose retirement must close it.
-Pending clones remain independent and retire through the existing ledger.
-Closed caches retain unfinished cleanup custody after a fatal fault for an
-explicit containment retry. This does not enable guest-local program selection;
-that still needs the shared C object/current/pending model and link receipts.
+Program captures retain an exact native executable independently of its public
+program name. Internal share-group captures remain private. Optional GL17
+`QOP_PROGRAM_CAPTURE` (0x3a) exposes context-owned captures with ordinary query
+replay, buffer dependencies and current-thread authority. Acquire is `[1,name]`,
+checked selection is `[2,name,handle]`, and release is `[3,handle]`. The16-byte
+reply is `[status,linked_or_accepted,handle_or_zero,QUERY_REPLY_MAGIC]`.
+Successful acquisition of an unlinked program returns `[0,0,0,magic]` without
+replacing an older current executable. Selection requires this context's exact
+capture of the latest named executable; a stale, deleted or peer-owned capture
+cannot select a different generation. Release may end a shared peer's context
+cache owner, but cannot release a private internal group capture.
+
+Acquisition reserves result storage and execution/cache ownership before
+publication. Ordinary resource failure supplies no handle; refused private
+native retirement is a fatal host fault, preserving custody for containment.
+The registry closes each context's acquired cache before retiring its execution
+and closes internal group caches before the last public context retires.
+Accepted work retains independent clones. Retained private execution keeps its
+installed native program but ceases to own a public program-name reference at
+context destruction. Delete-pending names therefore disappear while accepted
+work can still render using the retained native executable.
+
+The C API does not yet consume these capture receipts. Its typed shared names,
+current references and shader attachments remain on checked mutation receipts.
+Complete C executable generations, pending-batch custody and ordered logical
+current publication before enabling local program-selection error proofs.
+These are intermediate B1 mechanisms, not application performance acceptance.
 
 
 The optional GL17 `QOP_CREATE_SHADER_PROGRAM` receipt creates a reserved
@@ -6782,8 +6799,8 @@ across admission, keeps name reservation monotonic, and never retries an
 uncertain creation. A malformed or lost reply returns zero and invalidates
 binding knowledge; older guest flags remain independently observable. The
 legacy creation commands remain available to existing clients. No guest
-program-selection cache is enabled: shared C namespace/current/pending
-references and immutable executable receipts remain necessary.
+program-selection cache is enabled: C executable-generation/pending references
+and ordered logical-current publication remain necessary.
 
 Immediate GL queries preserve a recognized renderer-reset ENODEV through
 both plain and compound GLIO replies, allowing libc to record the already
@@ -6818,12 +6835,12 @@ installed old executable remains separate from the latest failed link. An
 unaccepted or uncertain reply supplies no new mirror-state proof and never
 authorizes replay of a possibly executed mutation.
 
-The ordinary C mutation entrypoints still emit their legacy commands; no
-local selector is enabled by this query. The required next driver step is the
-shared C shader/program graph, current/attachment/pending references and
-immutable executable-generation custody. This additive program-surface entry
-changes the digest, with versions56/3/17/21 unchanged; final normal desktop
-products must be rebuilt coherently.
+The ordinary C mutation entrypoints now wait for these receipts; no local
+selector is enabled by this query. The remaining driver work is immutable
+executable-generation/pending custody and ordered logical-current publication.
+The additive program-surface mutation and capture entries change the digest,
+with versions56/3/17/21 unchanged; final normal desktop products must be rebuilt
+coherently.
 
 
 The C driver now reserves a typed shader/program record before native creation

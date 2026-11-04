@@ -4464,6 +4464,17 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "requires_current_context": true,
         "query_dependencies": "ordinary-query-replay",
     }));
+    s.add(Program, "gl_program_capture", json!({
+        "opcode": shared::gl::QOP_PROGRAM_CAPTURE,
+        "commands": {"acquire": [1, 8], "select": [2, 12], "release": [3, 8]},
+        "request_fields": ["action", "name_or_handle", "select_handle_only"],
+        "reply_bytes": 16,
+        "reply_fields": ["status", "linked_or_accepted", "handle_or_zero", "magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "requires_current_context": true,
+        "query_dependencies": "ordinary-query-replay",
+        "lifetime": "acquiring-context-cache-with-independent-accepted-execution-custody",
+    }));
     s.add(Program, "gl_context_reset_scope", json!({
         "opcode": shared::gl::QOP_CONTEXT_RESET_SCOPE,
         "request_bytes": 0, "reply_bytes": 12,
@@ -8547,6 +8558,7 @@ fn additive_top_level_section(section: &str) -> bool {
         "gl_context_reset_scope"
             | "gl_shader_program_creation"
             | "gl_program_mutation"
+            | "gl_program_capture"
             | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
@@ -10160,6 +10172,30 @@ mod tests {
             assert!(!classify_compat_change(&new, &changed).unwrap().breaking.is_empty(), "{field}");
         }
         assert!(!classify_compat_change(&new, &old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn program_capture_is_additive_but_existing_receipt_cannot_change() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["gl_program_capture"] = json!({"opcode": 0x3a,
+            "commands": {"acquire": [1,8],"select": [2,12],"release": [3,8]},
+            "request_fields": ["action","name_or_handle","select_handle_only"],
+            "reply_bytes": 16,"reply_fields": ["status","linked_or_accepted","handle_or_zero","magic"],
+            "reply_magic": 0x47514c33u32,"requires_current_context": true,
+            "query_dependencies": "ordinary-query-replay",
+            "lifetime": "acquiring-context-cache-with-independent-accepted-execution-custody"});
+        let report = classify_compat_change(&old,&new).unwrap();
+        assert!(report.breaking.is_empty(),"{report:?}");
+        assert_eq!(report.additive,vec!["added top-level section \"gl_program_capture\""]);
+        for field in new["gl_program_capture"].as_object().unwrap().keys() {
+            let mut changed = new.clone();
+            changed["gl_program_capture"][field] = json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_program_capture"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
     }
 
     #[test]
