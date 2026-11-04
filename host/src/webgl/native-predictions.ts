@@ -114,6 +114,9 @@ const OP_GAPS: ReadonlyMap<number, readonly Gap[]> = new Map<number, readonly Ga
   [O.OP_COPY_TEX_IMAGE_2D, [gap(COPY_TEX_IMAGE, "copyTexImage2D", "texImage3D", "copyTexSubImage3D")]],
   [O.OP_COPY_TEX_SUB_IMAGE_2D, [gap(COPY_TEX_SUB_IMAGE, "copyTexSubImage2D", "copyTexSubImage3D")]],
   [O.OP_USE_PROGRAM, [gap(USE_PROGRAM, "useProgram")]],
+  // Journal admission already checked this immutable linked generation. Its
+  // stored API error is replayed without a native call at the selector slot.
+  [O.OP_USE_PROGRAM_JOURNAL, []],
   [O.OP_BIND_ATTRIB_LOCATION, [gap(BIND_ATTRIB_LOCATION, "bindAttribLocation")]],
   [O.OP_DRAW_ARRAYS, [gap(DRAW, "drawArrays")]],
   [O.OP_DRAW_ELEMENTS, [gap(DRAW, "drawElements")]],

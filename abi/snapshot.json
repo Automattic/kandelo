@@ -29,6 +29,7 @@
       "gl_inline_client_draw",
       "gl_object_capture",
       "gl_program_capture",
+      "gl_program_journal",
       "gl_program_mutation",
       "gl_readback_capture",
       "gl_server_wait",
@@ -1657,6 +1658,126 @@
       "select_handle_only"
     ],
     "requires_current_context": true
+  },
+  "gl_program_journal": {
+    "actions": {
+      "disable": [
+        5,
+        8
+      ],
+      "publish": [
+        3,
+        "12+32*count"
+      ],
+      "read_last": [
+        6,
+        4
+      ],
+      "register": [
+        2,
+        12
+      ],
+      "release": [
+        4,
+        16
+      ],
+      "reserve": [
+        1,
+        12
+      ],
+      "snapshot": [
+        7,
+        8
+      ]
+    },
+    "admission": "logical-metadata-only; synchronous-submit-executes-selectors; public-retirement-discards-unsubmitted-cells",
+    "authority": "own-current-tid-outer; live-same-pid-share-group-metadata; own-context-selector",
+    "counters": "nonzero-u53-little-endian-split-u32",
+    "entry_fields": [
+      "journal",
+      "slot",
+      "ticket_lo",
+      "ticket_hi",
+      "sequence_lo",
+      "sequence_hi",
+      "name",
+      "generation"
+    ],
+    "generation_tokens": "nonzero-u32; never-wrap-or-reuse-within-journal",
+    "handles": "monotonic-per-object-group-no-reuse-after-disable",
+    "maximum_capacity": 256,
+    "maximum_entries": 256,
+    "maximum_input_bytes": 8204,
+    "mutator_prefix": [
+      "action",
+      "nonzero_transaction"
+    ],
+    "opcode": 59,
+    "preflight": "whole-publication-batch-before-any-intent",
+    "publish_fields": [
+      "action",
+      "transaction",
+      "count",
+      "entries"
+    ],
+    "query_dependencies": "metadata-only-no-buffer-sync",
+    "reads": "available-after-reset; no-native-replay-error-drain-or-upload-interruption",
+    "recovery": "read-last-without-mutator-replay; status2-retains-uncertain-custody",
+    "register_fields": [
+      "action",
+      "transaction",
+      "own_context_capture_handle"
+    ],
+    "release_fields": [
+      "action",
+      "transaction",
+      "journal",
+      "generation"
+    ],
+    "reply_bytes": 48,
+    "reply_fields": [
+      "status",
+      "transaction",
+      "action",
+      "journal",
+      "value",
+      "sequence_lo",
+      "sequence_hi",
+      "published_lo",
+      "published_hi",
+      "executed_lo",
+      "executed_hi",
+      "magic"
+    ],
+    "reply_magic": 1196510259,
+    "reserve_fields": [
+      "action",
+      "transaction",
+      "capacity"
+    ],
+    "selector_fields": [
+      "journal",
+      "slot",
+      "ticket_lo",
+      "ticket_hi"
+    ],
+    "selector_opcode": 780,
+    "selector_payload_bytes": 16,
+    "snapshot_fields": [
+      "action",
+      "journal"
+    ],
+    "snapshot_flags": {
+      "closed": 2,
+      "poisoned": 4,
+      "ready": 1
+    },
+    "status": {
+      "accepted": 0,
+      "indeterminate": 2,
+      "rejected": 1
+    },
+    "transactions": "next-nonzero-u32-per-outer-context; exhausted-or-indeterminate-rejects-new-entry"
   },
   "gl_program_mutation": {
     "commands": {

@@ -6910,10 +6910,11 @@ position. Repeated errors separated by observations therefore remain distinct.
 Each successor retains its predecessor until the native switch completes, even
 if the predecessor has already lost its public name and cache owner.
 
-Publication accepts metadata only within one process/object group; its future
-kernel entrypoint must still establish the caller's live current-thread
-session authority. Namespace cleanup uses the metadata caller's error owner,
-not the target peer's. No peer native-selection authority is granted. Busy
+Publication accepts metadata only within one process/object group. The optional
+journal query validates the caller's live current-thread session authority;
+peer entries name host-issued group-scoped journal handles, never context
+pointers. Namespace cleanup uses the metadata caller's error owner, not the
+target peer's. No peer native-selection authority is granted. Busy
 cells, stale tickets and out-of-order execution are refused. Native selection
 failure is consumed and cannot be replayed. A driver must drain and disable
 journal mode before an ordinary synchronous link/use operation.
@@ -6925,10 +6926,42 @@ published cold index nor a failed public-name finalization loses ownership.
 Session reuse clears the retired logical-name override. These mechanisms are
 shared by Node and browser and add no journal lookup to draw/uniform handlers.
 
-This is prepared host machinery, not an enabled guest transport. The C driver
-still performs checked synchronous program selection. Kernel query authority,
-C shared-journal publication, bounded pending-slot reuse/completion, command
-execution selectors and ordered error-observation wiring must be completed
-before local program acceptance is enabled. The existing final-context cleanup
-path remains part of the complete ownership audit. No new wire operation,
-version bump, worker or application-performance claim is introduced here.
+The optional GL17 query0x3b now exposes cold journal reservation, own-context
+capture registration, batched logical publication, cache release/disable and
+read-only recovery/status. The kernel freezes and validates the full nested
+shape and destination before effects. A48-byte receipt retains transaction,
+action, result and group/context progress; it is staged as indeterminate before
+entry. A possibly entered mutation is never replayed: READ_LAST retrieves the
+retained receipt, while indeterminate status blocks further mutators. Read-only
+recovery remains available after reset, without native replay, error draining,
+buffer synchronization or interruption of pending uploads. A recovered receipt
+does not clear a context reset; existing reset-scope handling still governs
+execution. Transactions and
+handles are bounded nonzero u32 values; sequence/ticket counters are exact u53
+values. Handles never wrap into older authority within their owning scope.
+
+Publication preflights every row before committing any intent. Native command
+0x030c selects only the submitting context's exact journal/slot/ticket. Original
+error-observation records consume independently predicted slot results at their
+execution positions. Neither peer metadata publication nor a retained pointer
+grants new public submission authority. Metadata-only queries do not touch
+buffer contents; actual submit prefixes and selectors retain ordinary buffer
+ordering. Legacy queries and commands keep their existing contracts.
+
+A wire receipt owns logical metadata, not an admitted native job. Stage B submits
+synchronously, so public context/session retirement discards abandoned wire
+cells that can no longer be submitted. Retained host executions keep their
+separate accepted-work lifetime. When adding asynchronous submission in C1,
+transfer exact slot custody to the accepted job before admission and preserve
+it through completion or explicit cancellation. Native program counts are
+checked before whole-machine teardown, including pending-context destruction
+and process exit, so terminating a worker cannot hide leaked owners.
+
+The C driver still performs checked synchronous program selection. Its shared
+immutable publication, generation-token cache, bounded pending-slot reuse and
+submission/error-observation integration remain required before local API
+acceptance is enabled. The existing final-context cleanup path remains part
+of the complete ownership audit. This optional transport changes the program
+contract digest while keeping versions56/3/17/21; normal matching products
+must be rebuilt. It adds no journal lookup or maintenance to ordinary draw/
+uniform handlers. No worker or application-performance acceptance is claimed.

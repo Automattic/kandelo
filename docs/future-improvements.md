@@ -1081,9 +1081,13 @@ capture/name retirement with acknowledged host context destruction. Ordinary
 program selection remains synchronous. The prepared host logical journal now
 reserves pending/result cells and independent generation/context custody,
 separates logical names from installed execution, and delays host-computed
-errors until their command positions. Next, wire kernel current-session
-validation, the C shared journal/capture-token cache and native submission/
-completion selectors before enabling local program selection. Audit the final
+errors until their command positions. Checked kernel/host transport now
+validates current-session authority, publishes batches, executes own-context
+selectors and retains recoverable receipts. Wire-only metadata abandoned at
+context/session retirement is reclaimed; accepted asynchronous jobs must gain
+separate slot custody before C1 admission. Next, integrate the C shared immutable
+journal, generation-token cache, caller-prefix submission and recovery before
+enabling local program selection. Audit the final
 context collector alongside the pending-work path. Reserve all
 fallible ownership/result metadata before local acceptance. Never query a
 destroyed session, flush a foreign mutable encoder or reuse the rejected

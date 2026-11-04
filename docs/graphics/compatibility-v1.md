@@ -22897,3 +22897,65 @@ and error-observation wiring, then the required frozen-stage validation and
 measurements. B1 remains partial; B2–B6/C1–C3 and every ship-bar requirement stay
 open. The5693 preview is unchanged R30+051. No ABI wire/snapshot changes or new
 boundary: versions remain56/3/17/21.
+
+## 2026-11-04 checked journal transport and unsubmitted retirement (R175–R179)
+
+Optional query0x3b and selector0x030c now connect the prepared journal to the
+kernel/host wire. Rust validates native-width spans, complete nested shapes and
+own-current-TID/process authority before effects. Publication targets opaque
+live same-process/share-group journal handles; selectors execute only on their
+own submitted context. Every row is preflighted before logical effects. Handle
+and generation-token exhaustion cannot wrap into old authority.
+
+The48-byte transaction receipt is reserved as indeterminate before entry.
+READ_LAST recovers a lost response without repeating a possibly entered mutation;
+indeterminate status blocks new mutators. Read-only status/recovery performs no
+native replay, error drain, buffer synchronization or upload interruption, even
+after reset. Actual submit prefixes retain ordinary buffer dependencies. Slot
+results preserve repeated errors at their original observation positions.
+Existing query/command contracts are unchanged. Snapshot changes are exactly
+one optional Program section plus its generated surface membership; versions
+remain56/3/17/21. Its changed contract digest requires matching normal products.
+
+An independent teardown control found a real new-wire ownership gap: destroying
+a context after publication but before submission retained one native program.
+The unit unbind control and all four Chromium before-cases fail. Wire metadata
+is now distinguished from an admitted host execution. Synchronous Stage B public
+retirement abandons its unsubmitted cells, while retained host work preserves
+its existing lifetime. C1 must transfer exact slot custody to queued jobs before
+asynchronous admission. Regression cases cover context/session destruction and
+process exit, counting actual native programs before whole-machine teardown.
+No worker termination or discarded handle is used as proof of reclamation.
+
+Commands run inside scripts/dev-shell.sh from integration. Private run scripts
+and complete command/output/input/product records are under the root workspace's
+.context directories named below; each script changes to integration explicitly.
+
+| Run / exact principal commands | Result | Scope |
+| --- | --- | --- |
+| R175-r3 graphics-journal-transport-build-r175-r3-1104-134545-e136; build.sh in graphics-journal-transport-r175-r3 | PASS1m40 | Normal SDK32/64 ensures, xtask bootstrap kernel, image writer, ABI check against4d6332faee, additive classifier and registry708; production source/products frozen |
+| R178 graphics-journal-transport-final-r178-1104-134804-c9c5; run.sh in graphics-journal-transport-final-r178, port5999 | PASS8m32 | Full xtask840 unit+8 integration; cargo test -p runtime-core -p kandelo -p wasm-posix-shared --target aarch64-apple-darwin --lib:13+2867+96 pass;486 native C/UBSan controls; graphics2143 assertions/88files; Node10/GPU144; frozen source/products |
+| R178 node tests/graphics/shader-rewrite-check/run.mjs with private output | No hard failures | Chromium266pass; Firefox263pass,1inconclusive and2 native-control results; WebKit266pass. These controls do not make inconclusive cases pass |
+| R179 graphics-journal-transport-admission-r17-1104-135814-82f9; run.sh in graphics-journal-transport-admission-r179, port6001 | PASS3m25 | Final dispatch-only cleanup and routed-identity evidence: ABI/registry, graphics2143/88, Node10/GPU144, all3 engines/both widths/production+fatal; frozen source/products |
+| Final full host npx --no-install tsc --noEmit --pretty false | FAIL39 | Complete compiler stream equals retained R172/R166 baseline after root normalization only; no typecheck pass |
+
+R179's72 new journal cases record the actual routed kernel and guest hashes.
+Every routed kernel matches the normally built canonical SHA256
+`a808fb9a3f3b251f7a5499806e4787b9e98c32a90f6b7c3fcc76a6ed0301226e`.
+All72 observe native live0 with created/deleted counts equal before whole-machine
+teardown. The other72 GPU cases retain ordinary creation, shared-program and
+default/surfaceless target coverage. Node preserves explicit no-renderer refusal;
+those Node cases do not execute native GLES. The first R175 private JSON check
+failed because it incorrectly rejected generated Program surface membership;
+R175-r2/r3 correct that check. All before/failure evidence remains separate.
+A test-only strict declaration correction followed the R175-r3 build; production
+inputs/products are unchanged and final validation freezes the corrected probe.
+
+This is checked transport plus a raw SDK wire probe, not an enabled C user-mode
+fast path or complete B1. C shared immutable publication, generation-token caches,
+own-prefix submission, completion/reuse and real transport-loss/native-fault
+integration still precede local program acceptance. Full B1 stage measurements,
+B2–B6, the full B preview before C1–C3 and every final ship-bar/conformance/memory/
+POSIX/benchmark/manual gate remain required. Application performance was not
+measured. The5693 preview remains normal R30+051 partial B1, not this source.
+No new platform boundary or acceptance reduction is introduced.

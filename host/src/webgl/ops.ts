@@ -187,6 +187,7 @@ export const QOP_GET_FB_ATTACHMENT = 0x001B;
 export const QOP_GET_RENDERBUFFER_PARAMETER = 0x001C;
 export const QOP_GET_TEX_PARAMETER = 0x001D;
 export const OP_VALIDATE_PROGRAM = 0x030B;
+export const OP_USE_PROGRAM_JOURNAL = 0x030C;
 
 // V5: acknowledged, transactional large shader source upload.
 export const QOP_SHADER_SOURCE_UPLOAD = 0x001E;
@@ -265,3 +266,4 @@ export const QOP_CREATE_SHADER_PROGRAM = 0x0038;
 export const QOP_PROGRAM_MUTATION = 0x0039;
 /** Context-owned executable capture: acquire1/select2/release3; checked16-byte reply. */
 export const QOP_PROGRAM_CAPTURE = 0x003a;
+export const QOP_PROGRAM_JOURNAL = 0x003B;

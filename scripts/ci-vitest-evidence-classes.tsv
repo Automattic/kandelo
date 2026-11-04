@@ -176,6 +176,7 @@ host/test/getpwent.test.ts	prepared-product
 host/test/gles-default-target.test.ts	prepared-product
 host/test/gles-hints.test.ts	prepared-product
 host/test/gles-program-creation.test.ts	prepared-product
+host/test/gles-program-journal.test.ts	prepared-product
 host/test/gles-program-sharing.test.ts	prepared-product
 host/test/gles-surfaceless-default.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
@@ -546,6 +547,7 @@ host/test/webgl-private-client-draw.test.ts	source-only
 host/test/webgl-private-limits.test.ts	source-only
 host/test/webgl-program-capture-query.test.ts	source-only
 host/test/webgl-program-captures.test.ts	source-only
+host/test/webgl-program-journal-query.test.ts	source-only
 host/test/webgl-program-journal.test.ts	source-only
 host/test/webgl-program-link.test.ts	source-only
 host/test/webgl-readback-capture.test.ts	source-only

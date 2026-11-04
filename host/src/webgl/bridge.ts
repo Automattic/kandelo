@@ -1,3 +1,5 @@
+import {nativeGlFault} from "./native-recovery.js";
+import {journalInteger} from "./program-journal-query.js";
 import { interruptCompressedUpload } from "./compressed-upload.js";
 import { rendererLost } from "./renderer-loss.js";
 import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
@@ -406,6 +408,9 @@ function validPayload(op: number, v: DataView): boolean {
   }
   if (uniformUploadOp(op)) return validUniformUploadPayload(op,v);
   switch (op) {
+    case O.OP_USE_PROGRAM_JOURNAL:
+      return exact(v,16) && v.getUint32(0,true)!==0 && v.getUint32(4,true)<256 &&
+        v.getUint32(12,true)<=0x1f_ffff && journalInteger(v,8)!==0;
     case O.OP_DRAW_CLIENT_ARRAYS:
       return validPrivateClientDraw(v);
     case O.OP_BEGIN_CLIENT_ARRAY:
@@ -1412,6 +1417,12 @@ function dispatch(
     }
     case O.OP_LINK_PROGRAM: {
       linkProgramRetainingExecutable(b, v.getUint32(p, true));
+      return;
+    }
+    case O.OP_USE_PROGRAM_JOURNAL: {
+      const journal=b.programJournal;
+      if(!journal || journal.id!==v.getUint32(p,true) || !journal.execute(v.getUint32(p+4,true),journalInteger(v,p+8)))
+        nativeGlFault("Program journal selector has no exact accepted context/ticket owner");
       return;
     }
     case O.OP_USE_PROGRAM: {

@@ -4157,6 +4157,7 @@ pub mod gl {
     pub const OP_DELETE_PROGRAM: u16 = 0x0309;
     pub const OP_DETACH_SHADER: u16 = 0x030A;
     pub const OP_VALIDATE_PROGRAM: u16 = 0x030B;
+    pub const OP_USE_PROGRAM_JOURNAL: u16 = 0x030C;
 
     pub const OP_UNIFORM1I: u16 = 0x0400;
     pub const OP_UNIFORM1F: u16 = 0x0401;
@@ -4389,6 +4390,7 @@ pub mod gl {
     /// status, linked_or_accepted, handle_or_zero, QUERY_REPLY_MAGIC.
     /// Ordinary current-thread query authority and replay/dependencies.
     pub const QOP_PROGRAM_CAPTURE: u32 = 0x003A;
+    pub const QOP_PROGRAM_JOURNAL: u32 = 0x003B;
     /// V17 retained fences. Input: one nonzero client token, allocated
     /// monotonically per object session before creation. Output: 16 bytes
     /// (status, echoed token, signaled bool, checked reply magic).
@@ -6728,6 +6730,7 @@ mod gl_tests {
             OP_ATTACH_SHADER,
             OP_LINK_PROGRAM,
             OP_USE_PROGRAM,
+            OP_USE_PROGRAM_JOURNAL,
             OP_BIND_ATTRIB_LOCATION,
             OP_DELETE_PROGRAM,
             OP_DETACH_SHADER,
@@ -6821,6 +6824,7 @@ mod gl_tests {
             QOP_CREATE_SHADER_PROGRAM,
             QOP_PROGRAM_MUTATION,
             QOP_PROGRAM_CAPTURE,
+            QOP_PROGRAM_JOURNAL,
             QOP_CREATE_FENCE,
             QOP_FENCE_STATUS,
             QOP_RELEASE_FENCE,

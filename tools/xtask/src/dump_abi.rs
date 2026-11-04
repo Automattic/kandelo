@@ -4475,6 +4475,36 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "query_dependencies": "ordinary-query-replay",
         "lifetime": "acquiring-context-cache-with-independent-accepted-execution-custody",
     }));
+    s.add(Program, "gl_program_journal", json!({
+        "opcode": shared::gl::QOP_PROGRAM_JOURNAL,
+        "actions": {"reserve":[1,12],"register":[2,12],"publish":[3,"12+32*count"],
+            "release":[4,16],"disable":[5,8],"read_last":[6,4],"snapshot":[7,8]},
+        "mutator_prefix": ["action","nonzero_transaction"],
+        "reserve_fields":["action","transaction","capacity"],
+        "register_fields":["action","transaction","own_context_capture_handle"],
+        "release_fields":["action","transaction","journal","generation"],
+        "snapshot_fields":["action","journal"],
+        "publish_fields": ["action","transaction","count","entries"],
+        "entry_fields": ["journal","slot","ticket_lo","ticket_hi","sequence_lo","sequence_hi","name","generation"],
+        "maximum_entries":256,"maximum_capacity":256,"maximum_input_bytes":8204,
+        "reply_bytes":48,"reply_fields":["status","transaction","action","journal","value",
+            "sequence_lo","sequence_hi","published_lo","published_hi","executed_lo","executed_hi","magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "status":{"accepted":0,"rejected":1,"indeterminate":2},
+        "selector_opcode":shared::gl::OP_USE_PROGRAM_JOURNAL,"selector_payload_bytes":16,
+        "selector_fields":["journal","slot","ticket_lo","ticket_hi"],
+        "counters":"nonzero-u53-little-endian-split-u32",
+        "handles":"monotonic-per-object-group-no-reuse-after-disable",
+        "generation_tokens":"nonzero-u32; never-wrap-or-reuse-within-journal",
+        "transactions":"next-nonzero-u32-per-outer-context; exhausted-or-indeterminate-rejects-new-entry",
+        "snapshot_flags":{"ready":1,"closed":2,"poisoned":4},
+        "authority":"own-current-tid-outer; live-same-pid-share-group-metadata; own-context-selector",
+        "recovery":"read-last-without-mutator-replay; status2-retains-uncertain-custody",
+        "preflight":"whole-publication-batch-before-any-intent",
+        "admission":"logical-metadata-only; synchronous-submit-executes-selectors; public-retirement-discards-unsubmitted-cells",
+        "query_dependencies":"metadata-only-no-buffer-sync",
+        "reads":"available-after-reset; no-native-replay-error-drain-or-upload-interruption",
+    }));
     s.add(Program, "gl_context_reset_scope", json!({
         "opcode": shared::gl::QOP_CONTEXT_RESET_SCOPE,
         "request_bytes": 0, "reply_bytes": 12,
@@ -8559,6 +8589,7 @@ fn additive_top_level_section(section: &str) -> bool {
             | "gl_shader_program_creation"
             | "gl_program_mutation"
             | "gl_program_capture"
+            | "gl_program_journal"
             | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
@@ -10193,6 +10224,24 @@ mod tests {
             changed["gl_program_capture"][field] = json!("different");
             assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
             changed["gl_program_capture"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn program_journal_is_additive_but_existing_fields_cannot_change() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["gl_program_journal"]=json!({"opcode":0x3b,"reply_bytes":48,
+            "selector_opcode":0x30c,"selector_payload_bytes":16,"maximum_entries":256,
+            "recovery":"no-mutator-replay","authority":"own-current-tid"});
+        let report=classify_compat_change(&old,&new).unwrap();
+        assert!(report.breaking.is_empty(),"{report:?}");
+        assert_eq!(report.additive,vec!["added top-level section \"gl_program_journal\""]);
+        for field in new["gl_program_journal"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_program_journal"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_program_journal"].as_object_mut().unwrap().remove(field);
             assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
         }
         assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());

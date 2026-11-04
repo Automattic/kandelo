@@ -1,3 +1,4 @@
+import {runProgramJournalQuery} from "./program-journal-query.js";
 import { rendererLost } from "./renderer-loss.js";
 import { createShaderIfAccepted, createProgramIfAccepted } from "./program-objects.js";
 import { externalValidationFailed, guestUniformType } from "./external-texture.js";
@@ -266,6 +267,9 @@ export function runGlQuery(
   out: Uint8Array,
   execution?: GlContextExecutionLease,
 ): number {
+  // Journal control is not guest rendering or an upload barrier. In particular
+  // recovery/status must not interrupt a transfer, replay state or drain errors.
+  if(op===O.QOP_PROGRAM_JOURNAL)return runProgramJournalQuery(b,input,out,execution);
   const errorQuery = op === O.QOP_GET_ERROR ? readGlErrorQuery(input) : null;
   if (op === O.QOP_GET_ERROR && (errorQuery === null ||
       (errorQuery.drain ? out.byteLength !== O.GL_ERROR_DRAIN_REPLY_BYTES : out.byteLength < 4))) return -22;

@@ -12,7 +12,7 @@ import {
   createWasmPosixKernelTestHarness,
   WasmPosixKernel,
 } from "../src/kernel";
-import { QOP_GET_ERROR, QOP_FINISH, QOP_PROGRAM_CAPTURE } from "../src/webgl/ops";
+import { QOP_GET_ERROR, QOP_FINISH, QOP_PROGRAM_JOURNAL, QOP_PROGRAM_CAPTURE } from "../src/webgl/ops";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 function hostileBytes(length: number, reportedLength = 1): Uint8Array {
@@ -1604,4 +1604,28 @@ it.each([4,8] as const)("capture reservation OOM remains ordinary and leaves the
   expect([...new Uint32Array(memory.buffer,8192,4)]).toEqual([1,0,0,0x47514c33]);
   expect(b.errors).toContain(0x505);expect(b.contextId).toBe(21);expect(b.currentProgram).toBeNull();
   expect(b.programQueryPins.size).toBe(0);kernel.gl.destroyContext(7,0);
+});
+
+it.each([4,8] as const)("journal controls preflight before custody at wasm%d width and keep recovery native-free",(width)=>{
+ const {kernel,memory}=fullKernelHarness({}, {}, width);
+ kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+ const b=kernel.gl.get(7,0)!;b.contextId=21;
+ b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null},
+   {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+ const retained=vi.spyOn(kernel.gl,"retainContextExecution");
+ const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+ const ptr=(n:number)=>width===8?BigInt(n):n;
+ new Uint32Array(memory.buffer,4096,3).set([1,1,4]);
+ expect(imports.env.host_gl_query(7,QOP_PROGRAM_JOURNAL,ptr(4096),ptr(12),ptr(memory.buffer.byteLength-2),ptr(48),0)).toBe(-14);
+ expect(retained).not.toHaveBeenCalled();expect(b.programJournal).toBeUndefined();
+ expect(imports.env.host_gl_query(7,QOP_PROGRAM_JOURNAL,ptr(4096),ptr(12),ptr(8192),ptr(48),0)).toBe(48);
+ expect([...new Uint32Array(memory.buffer,8192,12)]).toEqual([0,1,1,1,4,0,0,0,0,0,0,0x47514c33]);
+ expect(retained).toHaveBeenCalledTimes(1);
+ const native=vi.spyOn(b.gl!,"getError").mockImplementation(()=>{throw new Error("read-only native drain");});
+ const restore=vi.spyOn(kernel.gl.cpuImages,"prepare");
+ new Uint32Array(memory.buffer,4096,1).set([6]);
+ expect(imports.env.host_gl_query(7,QOP_PROGRAM_JOURNAL,ptr(4096),ptr(4),ptr(8192),ptr(48),0)).toBe(48);
+ expect(retained).toHaveBeenCalledTimes(1);expect(native).not.toHaveBeenCalled();expect(restore).not.toHaveBeenCalled();
+ expect(b.programJournalControl.receipt.buffer).not.toBe(memory.buffer);
+ native.mockRestore();restore.mockRestore();kernel.gl.destroyContext(7,0);
 });

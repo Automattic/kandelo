@@ -1,4 +1,4 @@
-import { retireProgramJournal, type GlProgramJournal } from "./program-journal.js";
+import { retireProgramJournal, createProgramJournalControl, type GlProgramJournal, type GlProgramJournalControl } from "./program-journal.js";
 import { retireContextProgramCaptures, retireLastPublicProgramCaptures } from "./program-captures.js";
 import { forgetRendererLoss, rendererObjectEpoch } from "./renderer-loss.js";
 import { cubeExtraTextures } from "./cube-storage.js";
@@ -155,6 +155,7 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   currentProgramId: number;
   /** Optional driver journal; never consulted by draw/uniform hot paths. */
   programJournal?: GlProgramJournal;
+  programJournalControl: GlProgramJournalControl;
   logicalProgramCurrent?: {name: number};
 
 
@@ -343,6 +344,7 @@ export class GlContextRegistry {
       claimedKmsCrtc: null,
       currentProgram: null,
       currentProgramId: 0,
+      programJournalControl: createProgramJournalControl(),
       shadow: defaultShadow(),
       compressedUpload: null,
       compressedUploadSerial: 0,
@@ -809,6 +811,7 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
   b.currentProgram = null;
   b.currentProgramId = 0;
   b.logicalProgramCurrent = undefined;
+  b.programJournalControl.receipt.fill(0);b.programJournalControl.receipt[11]=0x47514c33;
   b.currentDrawable = null;
   b.hasBeenCurrent = false;
   b.shadow = defaultShadow();

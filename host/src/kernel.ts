@@ -1,3 +1,4 @@
+import {validProgramJournalRequest} from "./webgl/program-journal-query.js";
 import { QOP_GET_ERROR } from "./webgl/ops.js";
 import { withNativeBatch } from "./webgl/native-batch.js";
 import type { HostDiagnostic } from "./host-diagnostic.js";
@@ -13,7 +14,7 @@ import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer, validSurfaceCapabilitiesLength } from "./webgl/surface-capabilities.js";
-import { QOP_PROGRAM_CAPTURE, QOP_CONTEXT_RESET_SCOPE, QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, QOP_EXPORT_FENCE, QOP_RELEASE_FENCE } from "./webgl/ops.js";
+import { QOP_PROGRAM_JOURNAL, QOP_PROGRAM_CAPTURE, QOP_CONTEXT_RESET_SCOPE, QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, QOP_EXPORT_FENCE, QOP_RELEASE_FENCE } from "./webgl/ops.js";
 import { validProgramCaptureRequest } from "./webgl/program-capture-query.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
@@ -3709,16 +3710,28 @@ export class WasmPosixKernel {
           }
           if (isFenceQuery(op) && !validFenceQuery(inBuf,outputLength)) return -22;
           if (op === QOP_CONTEXT_RESET_SCOPE && (inputLength !== 0 || outputLength !== 12)) return -22;
+          if(op===QOP_PROGRAM_JOURNAL && !validProgramJournalRequest(inBuf,outputLength))return -22;
+          const journalRead=op===QOP_PROGRAM_JOURNAL && (inBuf[0]===6 || inBuf[0]===7);
           let outBuf: Uint8Array;
           let written: number;
           let preparedFence: PreparedFenceQuery | undefined;
           try {
-            if (op !== QOP_CONTEXT_RESET_SCOPE && !this.prepareForeignRetirements(b)) return -5;
+            if (op !== QOP_CONTEXT_RESET_SCOPE && op!==QOP_PROGRAM_JOURNAL && !this.prepareForeignRetirements(b)) return -5;
             outBuf = new IntrinsicUint8Array(outputLength);
             // Fence creation/waits are guest execution too. Retained foreign
             // contexts keep their exact private checks, while native work on
             // this selected owner shares the same reset/sample policy.
             const queryWork = (): number => {
+            if(op===QOP_PROGRAM_JOURNAL){
+              if(journalRead)return runGlQuery(b,op,inBuf,outBuf);
+              if(rendererLost(b))return RENDERER_LOST;
+              const muxer=this.glMuxerFor(b.gl!);muxer.switchTo(b);
+              if(inBuf[0]===1){
+                const execution=this.gl.retainContextExecution(b.pid,b.sessionId,muxer);
+                try{return runGlQuery(b,op,inBuf,outBuf,execution??undefined);}finally{execution?.release();}
+              }
+              return runGlQuery(b,op,inBuf,outBuf);
+            }
             if (op === QOP_CONTEXT_RESET_SCOPE) {
               // WHY: ENODEV alone cannot justify poisoning healthy shared
               // contexts after D-49/D-50's logical reset. Never replay this
@@ -3797,7 +3810,7 @@ export class WasmPosixKernel {
             const retainedCleanup = op === QOP_EXPORT_FENCE || op === QOP_RELEASE_FENCE;
             // Destroying/exporting a retained sync remains possible after its
             // guest context resets. These paths do not execute guest GL work.
-            written = op === QOP_CONTEXT_RESET_SCOPE || retainedCleanup && rendererLost(b) ? queryWork()
+            written = op === QOP_CONTEXT_RESET_SCOPE || journalRead || retainedCleanup && rendererLost(b) ? queryWork()
               : withNativeBatch(b, `query 0x${op.toString(16)}`, queryWork,
                 op !== QOP_GET_ERROR && !retainedCleanup);
           } catch (caught) {

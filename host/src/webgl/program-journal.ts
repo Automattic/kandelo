@@ -12,8 +12,8 @@ import type { GlObjectGroup } from "./object-group.js";
 type Generation = { token: number; pin: GlProgramQueryPin | null; cache: boolean; references: number };
 type Slot = { phase: "free" | "published" | "executing" | "failed"; ticket: number;
   sequence: number; name: number; error: number; target: Generation | null;
-  previous: Generation | null; select: () => void };
-type GroupOrder = { sequence: number };
+  previous: Generation | null; checked: boolean; select: () => void };
+type GroupOrder = { sequence: number; nextJournal: number; journals: Map<number,GlProgramJournal> };
 const orders = new WeakMap<GlObjectGroup, GroupOrder>();
 const MAX = Number.MAX_SAFE_INTEGER;
 
@@ -35,20 +35,23 @@ export class GlProgramJournal {
   private ready = false;
   private poisoned = false;
   private retiringName = 0;
+  private previewActive = false;
+  private previewTicket = 0;
 
   private readonly objects: GlObjectGroup;
 
-  private constructor(readonly binding: GlBinding, readonly capacity: number,
-      private readonly order: GroupOrder) {
+  private constructor(readonly binding: GlBinding, readonly capacity: number, readonly id: number,
+      private readonly order: GroupOrder, private readonly unsubmittedTransport: boolean) {
     this.objects=binding.objects;
     for (let i=0;i<capacity;i++) {
       const slot: Slot={phase:"free",ticket:0,sequence:0,name:0,error:0,
-        target:null,previous:null,select:()=>binding.gl!.useProgram(slot.target?.pin?.program ?? null)};
+        target:null,previous:null,checked:false,select:()=>binding.gl!.useProgram(slot.target?.pin?.program ?? null)};
       this.slots.push(slot);
     }
   }
 
-  static create(execution: GlContextExecutionLease, capacity: number): GlProgramJournal | null {
+  static create(execution: GlContextExecutionLease, capacity: number,
+      owner: "retained-execution" | "guest-metadata" = "retained-execution"): GlProgramJournal | null {
     const b=execution.binding;
     if(!Number.isSafeInteger(capacity) || capacity<1 || capacity>256 || execution.retired || !b.gl || b.contextId===null || b.programJournal) {
       recordGlError(b,0x502);return null;
@@ -56,10 +59,12 @@ export class GlProgramJournal {
     let journal: GlProgramJournal | undefined;
     try {
       let order=orders.get(b.objects);
-      if(!order) {order={sequence:0};orders.set(b.objects,order);}
-      journal=new GlProgramJournal(b,capacity,order);
+      if(!order) {order={sequence:0,nextJournal:1,journals:new Map()};orders.set(b.objects,order);}
+      if(order.nextJournal>0xffff_ffff){recordGlError(b,0x505);return null;}
+      journal=new GlProgramJournal(b,capacity,order.nextJournal++,order,owner==="guest-metadata");
       // Publish the rollback receiver BEFORE acquiring any private native pin.
       b.programJournal=journal;
+      order.journals.set(journal.id,journal);
       journal.execution=execution.clone();
       if(!journal.execution) {recordGlError(b,0x505);journal.retire();return null;}
       if(b.currentProgram) {
@@ -82,7 +87,9 @@ export class GlProgramJournal {
   /** Own-context cold acquisition only; the opaque capture must not be a
    * private group handle or a cache owned by another context. */
   registerCapture(handle: number): number {
-    if(!this.ready || this.closed || this.pending || this.nextGeneration>MAX) {recordGlError(this.binding,0x502);return 0;}
+    // Tokens cross the optional transport as one u32; never publish a handle
+    // that copyout would truncate into an older generation's authority.
+    if(!this.ready || this.closed || this.pending || this.nextGeneration>0xffff_ffff) {recordGlError(this.binding,0x502);return 0;}
     const token=this.nextGeneration;
     try {
       const generation: Generation={token,pin:null,cache:true,references:0};
@@ -106,17 +113,9 @@ export class GlProgramJournal {
    * It grants no native execution on the peer. Kernel transport still requires
    * the caller's ordinary current-thread authority for its outer request. */
   publish(authority: GlBinding,index: number,ticket: number,sequence: number,name: number,token: number): boolean {
-    if(!this.ready || this.closed || this.poisoned || authority.pid!==this.binding.pid ||
-        authority.objects!==this.objects || this.binding.objects!==this.objects ||
-        !authority.gl || !this.binding.gl || authority.contextId===null ||
-        !Number.isInteger(name) || name<0 || name>0xffff_ffff ||
-        !Number.isSafeInteger(ticket) || ticket!==this.published+1 ||
-        !Number.isSafeInteger(sequence) || sequence!==this.order.sequence+1 ||
-        ticket>MAX || sequence>MAX || !Number.isInteger(index) || index<0 || index>=this.capacity) return false;
-    const slot=this.slots[index]!;
-    if(slot.phase!=="free")return false;
-    const target=token===0?null:this.generations.get(token);
-    if(token!==0 && (!target || !target.cache || !target.pin))return false;
+    const slot=this.publicationSlot(authority,index,ticket,sequence,name,token,this.published+1,this.order.sequence+1);
+    if(!slot)return false;
+    const target=token===0?null:this.generations.get(token)!;
     const program=name===0?null:this.binding.programs.get(name);
     let error=0;
     if(program===undefined)error=this.binding.shaders.has(name)?0x502:0x501;
@@ -142,6 +141,36 @@ export class GlProgramJournal {
     }
     return true;
   }
+
+  private publicationSlot(authority: GlBinding,index: number,ticket: number,sequence: number,
+      name: number,token: number,expectedTicket: number,expectedSequence: number): Slot | null {
+    if(!this.ready || this.closed || this.poisoned || authority.pid!==this.binding.pid ||
+        authority.objects!==this.objects || this.binding.objects!==this.objects ||
+        !authority.gl || !this.binding.gl || authority.contextId===null ||
+        !Number.isInteger(name) || name<0 || name>0xffff_ffff ||
+        !Number.isSafeInteger(ticket) || ticket!==expectedTicket ||
+        !Number.isSafeInteger(sequence) || sequence!==expectedSequence ||
+        ticket>MAX || sequence>MAX || !Number.isInteger(index) || index<0 || index>=this.capacity) return null;
+    const slot=this.slots[index]!;
+    if(slot.phase!=="free")return null;
+    const target=token===0?null:this.generations.get(token);
+    if(token!==0 && (!target || !target.cache || !target.pin))return null;
+    return slot;
+  }
+  checkPublication(authority: GlBinding,index: number,ticket: number,sequence: number,
+      name: number,token: number,expectedSequence: number): boolean {
+    if(!this.previewActive){this.previewActive=true;this.previewTicket=this.published;}
+    const slot=this.publicationSlot(authority,index,ticket,sequence,name,token,this.previewTicket+1,expectedSequence);
+    if(!slot || slot.checked)return false;
+    slot.checked=true;this.previewTicket=ticket;return true;
+  }
+  clearPublicationCheck(): void {
+    if(!this.previewActive)return;
+    this.previewActive=false;for(const slot of this.slots)slot.checked=false;
+  }
+  get publishedTicket(): number {return this.published;}
+  get executedTicket(): number {return this.executed;}
+  get flags(): number {return (this.ready&&!this.closed?1:0)|(this.closed?2:0)|(this.poisoned?4:0);}
 
   /** Execute at the original command/error-observation position, inside the
    * caller's ordinary muxer/native-batch scope. Errors computed during logical
@@ -205,6 +234,19 @@ export class GlProgramJournal {
     this.finish();
   }
 
+  retirePublic(): void {
+    this.retire();
+    // Stage B submits synchronously: a wire receipt owns logical metadata,
+    // not an admitted host job. After public retirement no caller can submit
+    // these abandoned selectors. Keeping their pins would leak the context.
+    // An asynchronous queue must transfer exact slot custody before admission;
+    // retained host executions already have a separate retirement contract.
+    if(this.unsubmittedTransport)for(let i=0;i<this.slots.length;i++) {
+      const slot=this.slots[i]!;
+      if(slot.phase==="published" || slot.phase==="failed")this.discard(i,slot.ticket);
+    }
+  }
+
   private close(): void {
     if(!this.closed) {
       this.closed=true;this.ready=false;
@@ -253,7 +295,22 @@ export class GlProgramJournal {
       nativeGlFault("Program journal execution retirement threw",error);}
     this.execution=null;
     if(this.binding.programJournal===this)this.binding.programJournal=undefined;
+    if(this.order.journals.get(this.id)===this)this.order.journals.delete(this.id);
   }
 }
 
-export function retireProgramJournal(binding: GlBinding): void {binding.programJournal?.retire();}
+export function retireProgramJournal(binding: GlBinding): void {binding.programJournal?.retirePublic();}
+
+/** Handles are group-scoped, monotonic and never reused after disable/recreate.
+ * Read-only lookup may inspect a closed owner; it grants no new publication. */
+export function lookupProgramJournal(authority: GlBinding,id: number): GlProgramJournal | null {
+  const journal=orders.get(authority.objects)?.journals.get(id);
+  return journal && journal.binding.pid===authority.pid && journal.binding.objects===authority.objects ? journal : null;
+}
+export function programJournalSequence(binding: GlBinding): number {return orders.get(binding.objects)?.sequence ?? 0;}
+export type GlProgramJournalControl={receipt:Uint32Array;bytes:Uint8Array;snapshot:Uint32Array;snapshotBytes:Uint8Array;errors:number[]};
+export function createProgramJournalControl(): GlProgramJournalControl {
+  const receipt=new Uint32Array(12),snapshot=new Uint32Array(12);
+  receipt[11]=snapshot[11]=0x47514c33;
+  return {receipt,bytes:new Uint8Array(receipt.buffer),snapshot,snapshotBytes:new Uint8Array(snapshot.buffer),errors:[]};
+}

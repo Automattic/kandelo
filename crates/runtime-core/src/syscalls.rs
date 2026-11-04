@@ -1652,6 +1652,11 @@ fn capture_gl_query_info(
             return Err(Errno::EINVAL);
         }
         require_gl_current_for_tid(proc, ofd_idx, tid)?;
+    } else if info.op == gl::QOP_PROGRAM_JOURNAL {
+        if !(4..=8204).contains(&info.in_buf_len) || info.in_buf_len % 4 != 0 || info.out_buf_len != 48 {
+            return Err(Errno::EINVAL);
+        }
+        require_gl_current_for_tid(proc,ofd_idx,tid)?;
     } else if info.op == gl::QOP_SERVER_WAIT {
         // in: [source session fd, fence token]; out: the 16-byte fence reply.
         if info.in_buf_len != 8 || info.out_buf_len != 16 { return Err(Errno::EINVAL); }
@@ -1715,6 +1720,9 @@ fn capture_gl_query_info(
             _ => false,
         };
         if !valid { return Err(Errno::EINVAL); }
+    }
+    if info.op == gl::QOP_PROGRAM_JOURNAL && !valid_program_journal_input(&in_buf) {
+        return Err(Errno::EINVAL);
     }
     let mut kernel_reply = None;
     if info.op == gl::QOP_SERVER_WAIT && u32::from_le_bytes(in_buf[4..8].try_into().unwrap()) == 0 {
@@ -1933,8 +1941,34 @@ fn gl_entry_touches_buffers(request: u32, buf: &[u8]) -> bool {
             u32::from_le_bytes(op.try_into().unwrap()),
             gl::QOP_CREATE_FENCE | gl::QOP_FENCE_STATUS | gl::QOP_RELEASE_FENCE
                 | gl::QOP_SERVER_WAIT | gl::QOP_EXPORT_FENCE | gl::QOP_SURFACE_CAPABILITIES
-                | gl::QOP_CONTEXT_RESET_SCOPE)),
+                | gl::QOP_CONTEXT_RESET_SCOPE | gl::QOP_PROGRAM_JOURNAL)),
         _ => false,
+    }
+}
+
+/// Optional metadata transport. Counters are unsigned exact JS integers;
+/// publication rows are fully shaped before the host can commit any intent.
+fn valid_program_journal_input(input: &[u8]) -> bool {
+    if input.len()<4 || input.len()%4!=0 || input.len()>8204 {return false;}
+    let word=|at:usize|u32::from_le_bytes(input[at..at+4].try_into().unwrap());
+    let action=word(0);let n=input.len();
+    if action==6 {return n==4;}
+    if action==7 {return n==8 && word(4)!=0;}
+    if n<8 || word(4)==0 {return false;}
+    match action {
+        1=>n==12 && (1..=256).contains(&word(8)),
+        2=>n==12 && word(8)!=0,
+        4=>n==16 && word(8)!=0 && word(12)!=0,
+        5=>n==8,
+        3=>{
+            if n<12 {return false;}
+            let count=word(8) as usize;
+            if count==0 || count>256 || n!=12+count*32 {return false;}
+            (12..n).step_by(32).all(|p|word(p)!=0 && word(p+4)<256 &&
+                word(p+12)<=0x1f_ffff && (word(p+8)!=0 || word(p+12)!=0) &&
+                word(p+20)<=0x1f_ffff && (word(p+16)!=0 || word(p+20)!=0))
+        }
+        _=>false,
     }
 }
 
@@ -60977,6 +61011,62 @@ impl HostIO for RelSymlinkMock {
         use wasm_posix_shared::gl;
         assert!(gl_entry_touches_buffers(gl::GLIO_QUERY,&gl::QOP_PROGRAM_CAPTURE.to_le_bytes()));
         assert!(gl_entry_touches_buffers(gl::GLIO_SUBMIT_QUERY,&gl::QOP_PROGRAM_CAPTURE.to_le_bytes()));
+    }
+
+    #[test]
+    fn glio_program_journal_shape_current_and_fork_authority() {
+        use wasm_posix_shared::gl;
+        for width in [4,8] {
+            let (mut proc,mut host,fd)=glio_query_preflight_fixture();proc.pointer_width=width;
+            host.proc_memory.resize(4096,0xa5);
+            let query=|input_len:u32,output_len:u32|->Vec<u8>{
+                if width==4 {
+                    let q=gl::GlQueryInfo{op:gl::QOP_PROGRAM_JOURNAL,in_buf_ptr:128,in_buf_len:input_len,
+                        out_buf_ptr:64,out_buf_len:output_len,..Default::default()};
+                    unsafe{core::slice::from_raw_parts((&q as *const gl::GlQueryInfo).cast(),core::mem::size_of_val(&q)).to_vec()}
+                }else{
+                    let q=gl::GlQueryInfo64{op:gl::QOP_PROGRAM_JOURNAL,in_buf_ptr:128,in_buf_len:input_len,
+                        out_buf_ptr:64,out_buf_len:output_len,..Default::default()};
+                    unsafe{core::slice::from_raw_parts((&q as *const gl::GlQueryInfo64).cast(),core::mem::size_of_val(&q)).to_vec()}
+                }
+            };
+            for words in [vec![0],vec![1,0,2],vec![1,1,0],vec![1,1,257],vec![2,1,0],
+                vec![3,1,0],vec![3,1,1],vec![4,1,0,1],vec![5,1,1],vec![6,1],vec![7,0],
+                vec![3,1,1,1,256,1,0,1,0,20,1],vec![3,1,1,1,0,1,0x20_0000,1,0,20,1]] {
+                let input=words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
+                host.proc_memory[128..128+input.len()].copy_from_slice(&input);
+                assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(input.len() as u32,48)),Err(Errno::EINVAL));
+                assert_eq!(&host.proc_memory[64..112],&[0xa5;48]);
+            }
+            host.proc_memory[128..132].copy_from_slice(&6u32.to_le_bytes());
+            for len in [0,3,6,8208] {assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(len,48)),Err(Errno::EINVAL));}
+            for len in [0,16,44,52] {assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(4,len)),Err(Errno::EINVAL));}
+            assert!(host.gl_query_inputs.is_empty());assert!(host.proc_write_calls.is_empty());
+            let ofd=proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid=2;
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(4,48)),Err(Errno::EACCES));
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid=1;
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().owner_pid=2;
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(4,48)),Err(Errno::EACCES));
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().owner_pid=1;
+            assert!(host.gl_query_inputs.is_empty());
+            for words in [vec![1u32,1,2],vec![2,2,1],vec![3,3,1,1,0,1,0,1,0,20,1],
+                vec![4,4,1,1],vec![5,5],vec![6],vec![7,1]] {
+                let input=words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
+                host.proc_memory[128..128+input.len()].copy_from_slice(&input);
+                sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(input.len() as u32,48)).unwrap();
+                assert_eq!(host.gl_query_inputs.last(),Some(&(gl::QOP_PROGRAM_JOURNAL,input,48)));
+            }
+            assert_eq!(host.gl_query_inputs.len(),7);
+        }
+    }
+
+    #[test]
+    fn glio_program_journal_metadata_has_no_buffer_dependency_but_selectors_do() {
+        use wasm_posix_shared::gl;
+        assert!(!gl_entry_touches_buffers(gl::GLIO_QUERY,&gl::QOP_PROGRAM_JOURNAL.to_le_bytes()));
+        assert!(gl_entry_touches_buffers(gl::GLIO_SUBMIT_QUERY,&gl::QOP_PROGRAM_JOURNAL.to_le_bytes()));
+        assert!(gl_entry_touches_buffers(gl::GLIO_SUBMIT,&[]));
     }
 
     fn glio_query_bytes(info: wasm_posix_shared::gl::GlQueryInfo)
