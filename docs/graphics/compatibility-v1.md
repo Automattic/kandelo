@@ -21205,8 +21205,41 @@ exact normally built coreutils, kernel and rootfs artifacts completes all
 100 tools; the existing `test` empty-help skip is retained. It logs actual
 process start/exit events, changes no guest argument or deadline and does
 not publish a package. This does not explain the original timeout. A normal
-cached retry is queued behind the current build's actual termination, with
-unchanged source and acceptance checks. Evidence:
+cached retry runs after the failed build's actual termination, with
+unchanged source and acceptance checks. Its full `setup --all` stage passes
+in 1,384 seconds; standalone programs, ABI and freshness checks remain
+pending, so this is not yet a complete candidate or preview. Evidence:
 `.context/graphics-final-r14-build-r6/`,
 `.context/graphics-coreutils-capture-r17/`,
 `.context/graphics-final-r14-build-r7/`.
+
+
+The latency observer now checks primary-plane identity against the Rust
+KMS constants: plane 4 is primary and plane 10 is cursor. Cursor-only,
+TEST_ONLY and failed atomic commits cannot satisfy a primary-frame endpoint.
+Protocol controls distinguish damage or attachment commits from callback-
+only commits, reset state across surface generations and decode cursor
+hotspots. Input analysis must start at the browser event's `timeStamp`,
+including its dispatch queue delay. Canvas content geometry and mode must
+remain stable throughout each observation window. These are method controls,
+not evidence that the desktop meets the latency bar.
+
+Standalone 128-pixel DOM controls compare browser screenshots and decoded
+compositor frame streams before using either as a desktop display endpoint.
+Thirty ordinary inputs plus a deliberately delayed 50 ms input and a no-op
+negative control run on Chromium 153, Firefox 155 and WebKit 26.6. The frame
+stream's conservative input-to-delivery upper p50/p95 is 13.93/17.38 ms,
+42.06/50.22 ms and 39.01/45.60 ms respectively. Those Firefox and WebKit
+delivery bounds are too wide to decide the one-refresh median target;
+they are not measured Kandelo latency. Their reported frame timestamps are
+anchored to first-frame receipt by the driver and cannot be treated as an
+exact display clock. Chromium screenshots likewise have a roughly 33 ms
+capture floor in this control. Retain pixel evidence, asymmetric clock
+bounds, unresolved intervals and observer overhead; an arbitrary subsequent
+commit, rAF callback or capture delivery is not proof of a matching visible
+response. All engine data controls complete, but the screenshot and frame-
+stream job wrappers fail during private profile cleanup (`ENOTEMPTY` and
+`EACCES`); neither whole job is reported as passing. Evidence:
+`.context/graphics-screenshot-method-r18-r3/`,
+`.context/graphics-screencast-method-r18/`, and the private observer controls
+under `.context/graphics-kperf-final-r15/.context/`.
