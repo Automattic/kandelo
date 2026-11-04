@@ -22158,3 +22158,69 @@ a source-object comparison, not a newly rebuilt SDK archive, full B1,
 application latency or native-feel claim. The permanent standard SDK tests
 are added for the next normally built checkpoint; final full CTS, memory,
 Node/browser benchmark and combined-artifact validation remain required.
+
+
+**Completed normal-product desktop profile, 2026-11-04.** R78-r5
+(`run.sh-1104-044101-a086`) finishes all12 engine/arm cases using frozen
+instrumented R25 host source and normal R14/R16 products in
+before1/after1/after2/before2 order. Each case includes no-ScummVM pointer,
+ScummVM idle, pointer over Foot and pointer over ScummVM workloads. The
+ScummVM-pointer error-query count is57 per clear cycle in each before arm
+and18 in each after arm on all3 engines. This is an ordered request-count
+comparison; a clear cycle is not a display frame. The input workload is
+paced around30 Hz. The KMS measurements below are intervals between accepted
+non-test atomic commits, not physical display or application-frame timing.
+
+| Engine | Before1 KMS p95 ms | After1 | After2 | Before2 |
+| --- | ---: | ---: | ---: | ---: |
+| Chromium153.0.8010.12 | 37.300 | 36.155 | 36.405 | 37.500 |
+| Firefox155 | 40.360 | 40.620 | 42.180 | 42.280 |
+| WebKit26.6 | 41.400 | 43.680 | 44.400 | 40.220 |
+
+Raw distributions, counts, load snapshots and the exact summarizer remain in
+`.context/graphics-b1-normal-profile-r78-r5/`. These instrumented headless
+results do not establish causal input-to-commit latency, visible display
+latency, missed display frames, native feel, instrumentation overhead or
+Node/browser benchmark parity. CPU sampling was explicitly off. Long commit
+intervals remain in these traces; no native-feel acceptance is claimed.
+The final combined tree still needs all ship-bar workloads and overhead
+measurements with/without SFWBar and concurrent application load.
+
+The normal e1 SDK public sharing replay R97-r6
+(`run.sh-1104-051118-d4c1`, port5946) passes2 Node and12 actual GPU cases
+at both widths, production/fatal, three engines. R97-r4 and R5 failed at
+browser collection because of a second Playwright installation; R5 retained
+an old shell output variable and repeated that collection failure. Corrected
+R6 explicitly uses its producer's declared driver and private output/port.
+No browser assertion was waived; source/archive hashes verify. This remains
+the e1 normal archive checkpoint, not final-head acceptance.
+
+**Generated-output retirement and cache GC, 2026-11-04.** R119 records
+canonical cache GC and safe retirement of old generated `local-binaries`
+outputs from R8/R9, clients-R10, current-R12, final-R13, host-failure-R14,
+shell-budget and wlcomp-shm. Exact SHA inventories and uncommitted source
+patches are retained before removal. Source and evidence remain; those old
+trees need a normal rebuild before consuming products again. The retained
+live R14/R16/R20 products and the port5693 preview are untouched. R7 was
+explicitly skipped because its old port5401 CTS server still has that cwd.
+No server was stopped. Open-file and process-cwd checks are retained.
+
+After dead projections retired, the canonical age1 collector removes
+7.3 MiB,216.9 MiB and3.7 GiB in three separate invocations, including dead
+root registrations; it leaves live roots protected. An attempted age0 is
+rejected by the CLI and removed nothing. Inactive native Cargo incremental
+caches in integration/R16/R20 account for2,666,064 KiB allocated and are
+removed after two empty open-file checks and tracked/Wasm guards; native
+binaries, SDKs and Wasm artifacts remain. Free space later reads32 GiB;
+APFS and concurrent activity prevent a causal reclaimed-byte claim from
+that reading. Full evidence is `.context/graphics-cache-clean-r119/`.
+
+One new full normal build R30@266a35ae5a
+(`run.sh-1104-052535-046c`) starts only after the30 GiB disk guard passes.
+It includes all B1 increments and later reset/custody/framebuffer fixes;
+versions remain56/3/17/21, with the changed Program digest requiring a
+coherent normal kernel/SDK/program/image family. Its queued standard
+regression and Cage/ScummVM admission is `run.sh-1104-052635-ecfc`, port5949.
+The separate shader harness replay is `run.sh-1104-052635-67ef`. Queued work
+is not successful validation, and the preview remains the earlier R16 until
+normal admission and explicit promotion complete.
