@@ -5,7 +5,7 @@ import {runGlQuery} from "../src/webgl/query.js";
 import {captureContextGlProgram} from "../src/webgl/program-captures.js";
 import {publicCurrentProgramName,GlProgramQueryPin} from "../src/webgl/program-objects.js";
 import {decodeAndDispatch,validateCommandBuffer} from "../src/webgl/bridge.js";
-import {QOP_PROGRAM_JOURNAL,OP_USE_PROGRAM_JOURNAL,OP_ERROR_OBSERVED} from "../src/webgl/ops.js";
+import {QOP_PROGRAM_JOURNAL,QOP_PROGRAM_JOURNAL_BARRIER,OP_USE_PROGRAM_JOURNAL,OP_ERROR_OBSERVED} from "../src/webgl/ops.js";
 import {NativeGlFault} from "../src/webgl/native-recovery.js";
 import {configureGlAudit,resetGlAuditForTesting} from "../src/webgl/native-audit.js";
 afterEach(()=>resetGlAuditForTesting());
@@ -108,6 +108,26 @@ it("gives metadata peers no selector authority and never reuses a disabled journ
 it("does not let older identical errors manufacture a successful operation receipt",()=>{
  const f=fixture();f.setup();f.b.errors=[0x502];
  expect(f.query([4,3,1,999]).words[0]).toBe(1);expect(f.b.errors).toEqual([0x502]);f.dispose();
+});
+it("shares the receipt ledger for lifecycle metadata without granting cold acquisition",()=>{
+ const f=fixture();f.setup();const barrier=(words:number[],out=new Uint8Array(48).fill(0xa5))=>{
+  const rc=runGlQuery(f.b,QOP_PROGRAM_JOURNAL_BARRIER,new Uint8Array(new Uint32Array(words).buffer),out,f.execution);
+  return {rc,words:[...new Uint32Array(out.buffer)]};
+ };
+ for(const words of [[1,3,4],[2,3,f.capture],[4,3,1,1],[5,3]]){
+  expect(barrier(words)).toEqual({rc:-22,words:new Array(12).fill(0xa5a5a5a5)});
+ }
+ expect(barrier([6]).words).toEqual(f.query([6]).words);
+ expect(barrier([3,3,2,1,0,1,0,1,0,20,1,1,1,2,0,2,0,0,0]).words.slice(0,7)).toEqual([0,3,3,1,2,2,0]);
+ expect(f.query([6]).words[1]).toBe(3);expect(f.selected).toEqual([]);
+ expect(decodeAndDispatch(f.b,0,f.emit([[OP_USE_PROGRAM_JOURNAL,[1,0,1,0]],[OP_USE_PROGRAM_JOURNAL,[1,1,2,0]]]))).toBe(0);
+ f.dispose();
+});
+it("refuses lifecycle metadata through a missing native public context",()=>{
+ const f=fixture();const previous=f.b.contextId;f.b.contextId=null;
+ const out=new Uint8Array(48).fill(0xa5);
+ expect(runGlQuery(f.b,QOP_PROGRAM_JOURNAL_BARRIER,new Uint8Array(new Uint32Array([6]).buffer),out)).toBe(-22);
+ expect([...out]).toEqual(new Array(48).fill(0xa5));f.b.contextId=previous;f.dispose();
 });
 for(const words of [[0],[1,0,4],[1,1,257],[2,1,0],[3,1,0],[3,1,1],[4,1,0,1],[5,1,1],[6,1],[7,0],
  [3,1,1,1,256,1,0,1,0,20,1],[3,1,1,1,0,1,0x20_0000,1,0,20,1]])

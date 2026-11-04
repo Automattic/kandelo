@@ -6951,6 +6951,20 @@ grants new public submission authority. Metadata-only queries do not touch
 buffer contents; actual submit prefixes and selectors retain ordinary buffer
 ordering. Legacy queries and commands keep their existing contracts.
 
+Lifecycle query0x3c provides only publication and recovery (actions3/6/7) through
+a live public object context owned by the calling process. EGL retirement can
+run without a current binding, yet pending peer selections must become visible
+before retirement finalizes a delete-pending name. Rust checks creator PID,
+context liveness, object-session role and mapped native-resource ownership.
+An unbound context or one current on another thread grants only this metadata
+capability. Ordinary0x3b operations keep their own-current-TID checks; creation,
+capture registration, cache release/disable and native command prefixes gain no
+authority from0x3c. A retained private execution cannot replace a live public
+context. Both query paths share the outer context's transaction receipt ledger.
+Publication fails after reset; read-only recovery remains available without
+reviving the context. The C driver still needs to integrate this barrier into
+its lifetime guards before enabling local acceptance.
+
 A wire receipt owns logical metadata, not an admitted native job. Stage B submits
 synchronously, so public context/session retirement discards abandoned wire
 cells that can no longer be submitted. Retained host executions keep their

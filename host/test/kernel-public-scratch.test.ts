@@ -12,7 +12,7 @@ import {
   createWasmPosixKernelTestHarness,
   WasmPosixKernel,
 } from "../src/kernel";
-import { QOP_GET_ERROR, QOP_FINISH, QOP_PROGRAM_JOURNAL, QOP_PROGRAM_CAPTURE } from "../src/webgl/ops";
+import { QOP_GET_ERROR, QOP_FINISH, QOP_PROGRAM_JOURNAL_BARRIER, QOP_PROGRAM_JOURNAL, QOP_PROGRAM_CAPTURE } from "../src/webgl/ops";
 import {markRendererReset,rendererLost} from "../src/webgl/renderer-loss";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
@@ -1678,4 +1678,41 @@ it.each([4,8] as const)("ordinary query destination preflight precedes upload in
  expect(imports.env.host_gl_query(7,QOP_FINISH,ptr(0),ptr(0),ptr(0),ptr(0),0)).toBe(-5);
  expect(b.uniformUpload).toBeNull();expect(b.errors).toEqual([0x500,0x502]);expect(finish).not.toHaveBeenCalled();
  kernel.gl.destroyContext(7,0);
+});
+
+it.each([4,8] as const)("lifecycle journal import confines metadata and preserves transfers at wasm%d width",width=>{
+ const {kernel,memory}=fullKernelHarness({}, {}, width);
+ kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+ const b=kernel.gl.get(7,0)!;b.contextId=21;
+ b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null},
+   {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+ const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+ const ptr=(n:number)=>width===8?BigInt(n):n;
+ const query=(op:number,words:number[],out=8192)=>{
+  new Uint32Array(memory.buffer,4096,words.length).set(words);
+  return imports.env.host_gl_query(7,op,ptr(4096),ptr(words.length*4),ptr(out),ptr(48),0);
+ };
+ expect(query(QOP_PROGRAM_JOURNAL,[1,1,4])).toBe(48);
+ const journal=b.programJournal!,execute=vi.spyOn(journal,"execute"),retain=vi.spyOn(kernel.gl,"retainContextExecution");
+ const upload={} as NonNullable<typeof b.uniformUpload>;b.uniformUpload=upload;b.errors=[0x500];
+ const native=vi.spyOn(b.gl,"getError").mockImplementation(()=>{throw new Error("lifecycle read native drain");});
+ try {
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[6],memory.buffer.byteLength-2)).toBe(-14);
+  for(const words of [[1,2,4],[2,2,1],[4,2,1,1],[5,2]])expect(query(QOP_PROGRAM_JOURNAL_BARRIER,words)).toBe(-22);
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[6])).toBe(48);
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[7,journal.id])).toBe(48);expect(native).not.toHaveBeenCalled();
+ }finally{native.mockRestore();}
+ expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[3,2,1,journal.id,0,1,0,1,0,0,0])).toBe(48);
+ expect(execute).not.toHaveBeenCalled();expect(retain).not.toHaveBeenCalled();
+ expect(b.uniformUpload).toBe(upload);expect(b.errors).toEqual([0x500]);
+ markRendererReset(b);
+ const lostNative=vi.spyOn(b.gl,"getError").mockImplementation(()=>{throw new Error("lifecycle recovery sampled lost renderer");});
+ try {
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[6])).toBe(48);
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[7,journal.id])).toBe(48);
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[3,3,1,journal.id,1,2,0,2,0,0,0])).toBe(-19);
+  expect(b.programJournalControl.receipt[1]).toBe(2);expect(lostNative).not.toHaveBeenCalled();
+ }finally{lostNative.mockRestore();}
+ expect(rendererLost(b)).toBe(true);expect(b.uniformUpload).toBe(upload);
+ b.uniformUpload=null;kernel.gl.destroyContext(7,0);
 });

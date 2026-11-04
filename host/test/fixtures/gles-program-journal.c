@@ -14,11 +14,14 @@
 #include "../../../libc/glue/gl_abi.h"
 
 static uint32_t reply[12],transaction;
-static void query(uint32_t op,const uint32_t *input,size_t count,void *output,size_t bytes) {
+static int query_at(int fd,uint32_t op,const uint32_t *input,size_t count,void *output,size_t bytes) {
     struct gl_query_info q={.op=op,.in_buf_ptr=(uintptr_t)input,.in_buf_len=count*4,
         .out_buf_ptr=(uintptr_t)output,.out_buf_len=bytes};
     _wpk_gl_note_device_request();
-    assert(ioctl(_wpk_gl_fd(),GLIO_QUERY,&q)==0);
+    return ioctl(fd,GLIO_QUERY,&q);
+}
+static void query(uint32_t op,const uint32_t *input,size_t count,void *output,size_t bytes) {
+    assert(query_at(_wpk_gl_fd(),op,input,count,output,bytes)==0);
 }
 static void journal(const uint32_t *input,size_t count) {
     memset(reply,0xa5,sizeof reply);query(QOP_PROGRAM_JOURNAL,input,count,reply,sizeof reply);
@@ -60,9 +63,44 @@ static void *delete_in_peer(void *opaque) {
     assert(eglMakeCurrent(p->display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
     assert(eglDestroyContext(p->display,context)&&eglReleaseThread());return NULL;
 }
+struct lifecycle_data {
+    EGLDisplay display;EGLContext retiring;int fd;
+    uint32_t publication[19],request[4],result[12];
+    struct gl_submit_query_info packet;
+};
+static void untouched(const uint32_t *words) {
+    for(unsigned i=0;i<12;i++)assert(words[i]==0xa5a5a5a5);
+}
+static void *publish_before_retirement(void *opaque) {
+    struct lifecycle_data *p=opaque;p->request[0]=6;memset(p->result,0xa5,sizeof p->result);
+    errno=0;assert(query_at(p->fd,QOP_PROGRAM_JOURNAL,p->request,1,p->result,sizeof p->result)==-1&&errno==EACCES);
+    untouched(p->result);
+    const uint32_t forbidden[][4]={{1,1,4},{2,1,1},{4,1,1,1},{5,1}};
+    for(unsigned i=0;i<4;i++) {
+        memcpy(p->request,forbidden[i],sizeof p->request);errno=0;
+        assert(query_at(p->fd,QOP_PROGRAM_JOURNAL_BARRIER,p->request,i==2?4:i==3?2:3,p->result,sizeof p->result)==-1&&errno==EINVAL);
+        untouched(p->result);
+    }
+    // A metadata capability cannot smuggle a foreign command prefix.
+    p->request[0]=6;p->packet.submit.length=4;
+    p->packet.query=(struct gl_query_info){.op=QOP_PROGRAM_JOURNAL_BARRIER,
+        .in_buf_ptr=(uintptr_t)p->request,.in_buf_len=4,.out_buf_ptr=(uintptr_t)p->result,.out_buf_len=sizeof p->result};
+    _wpk_gl_note_device_request();assert(ioctl(p->fd,GLIO_SUBMIT_QUERY,&p->packet)==0);
+    assert(p->packet.result.completed_phase==WPK_GL_SUBMIT_QUERY_PHASE_SUBMIT&&p->packet.result.submit_rc==-EACCES&&
+        p->packet.result.query_rc==0&&p->packet.result.result_magic==WPK_GL_SUBMIT_QUERY_REPLY_MAGIC);
+    untouched(p->result);
+    assert(query_at(p->fd,QOP_PROGRAM_JOURNAL_BARRIER,p->publication,19,p->result,sizeof p->result)==0);
+    assert(p->result[0]==0&&p->result[1]==1&&p->result[2]==3&&p->result[3]==0&&p->result[4]==2&&p->result[5]==2);
+    memset(p->result,0,sizeof p->result);
+    assert(query_at(p->fd,QOP_PROGRAM_JOURNAL_BARRIER,p->request,1,p->result,sizeof p->result)==0);
+    assert(p->result[0]==0&&p->result[1]==1&&p->result[2]==3&&p->result[4]==2&&p->result[11]==WPK_GL_QUERY_REPLY_MAGIC);
+    assert(eglDestroyContext(p->display,p->retiring)&&eglReleaseThread());return NULL;
+}
 int main(int argc,char **argv) {
     assert(argc==2);const int errors=!strcmp(argv[1],"errors"),preflight=!strcmp(argv[1],"preflight");
     const int uniform=!strcmp(argv[1],"uniform-interleave");
+    const int lifecycle=!strcmp(argv[1],"lifecycle-unbound")||!strcmp(argv[1],"lifecycle-current-peer");
+    const int current_peer=!strcmp(argv[1],"lifecycle-current-peer");
     EGLDisplay display=eglGetDisplay(EGL_DEFAULT_DISPLAY);assert(display!=EGL_NO_DISPLAY);
     if(!strcmp(argv[1],"no-renderer")) {
         assert(!eglInitialize(display,NULL,NULL)&&eglGetError()==EGL_NOT_INITIALIZED);
@@ -92,6 +130,15 @@ int main(int argc,char **argv) {
     glGenBuffers(1,&buffer);glBindBuffer(GL_ARRAY_BUFFER,buffer);glBufferData(GL_ARRAY_BUFFER,sizeof triangle,triangle,GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
     glViewport(0,0,16,16);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);glFinish();assert(glGetError()==GL_NO_ERROR);
+    EGLContext retiring=EGL_NO_CONTEXT;int retirement_fd=-1;
+    if(lifecycle) {
+        retiring=eglCreateContext(display,config,context,attrs);assert(retiring!=EGL_NO_CONTEXT);
+        assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,retiring));
+        glUseProgram(program);glFinish();assert(glGetError()==GL_NO_ERROR);
+        retirement_fd=dup(_wpk_gl_fd());assert(retirement_fd>=0);
+        assert(eglMakeCurrent(display,surface,surface,context));
+        glDeleteProgram(program);assert(glGetError()==GL_NO_ERROR&&glIsProgram(program)==GL_TRUE);
+    }
     uint32_t captured[4];const uint32_t acquire[]={1,program};
     query(QOP_PROGRAM_CAPTURE,acquire,2,captured,sizeof captured);
     assert(captured[0]==0&&captured[1]==1&&captured[2]&&captured[3]==WPK_GL_QUERY_REPLY_MAGIC);
@@ -124,7 +171,24 @@ int main(int argc,char **argv) {
         assert(glGetError()==GL_INVALID_OPERATION&&glGetError()==GL_NO_ERROR);
         publication[15]=2;publication[1]=++transaction;
     }
-    journal(publication,19);assert(reply[0]==0&&reply[4]==2&&reply[5]==2&&reply[7]==2&&reply[9]==0);
+    if(lifecycle) {
+        struct lifecycle_data *p=calloc(1,sizeof *p);assert(p);
+        p->display=display;p->retiring=retiring;p->fd=retirement_fd;
+        memcpy(p->publication,publication,sizeof publication);p->publication[1]=1;
+        transaction--; // The retiring context, not this one, owns the receipt.
+        if(current_peer)assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,retiring));
+        pthread_t thread;assert(!pthread_create(&thread,NULL,publish_before_retirement,p)&&!pthread_join(thread,NULL));
+        if(current_peer)assert(eglMakeCurrent(display,surface,surface,context));
+        p->request[0]=6;memset(p->result,0xa5,sizeof p->result);errno=0;
+        // EGL also terminates the object session; dup keeps the fd valid,
+        // but an uninitialized session is EINVAL, not live-context EACCES.
+        assert(query_at(retirement_fd,QOP_PROGRAM_JOURNAL_BARRIER,p->request,1,p->result,sizeof p->result)==-1&&errno==EINVAL);
+        untouched(p->result);assert(close(retirement_fd)==0);free(p);
+        const uint32_t status[]={7,id};journal(status,2);
+        assert(reply[0]==0&&reply[4]==1&&reply[5]==2&&reply[7]==2&&reply[9]==0);
+    }else {
+        journal(publication,19);assert(reply[0]==0&&reply[4]==2&&reply[5]==2&&reply[7]==2&&reply[9]==0);
+    }
     if(!strcmp(argv[1],"exit-pending")) {
         puts("PASS journal wire exit-pending");fflush(stdout);_exit(0);
     }
@@ -133,11 +197,12 @@ int main(int argc,char **argv) {
         assert(eglDestroySurface(display,surface)&&eglDestroyContext(display,context)&&eglTerminate(display)&&eglReleaseThread());
         puts("PASS journal wire abandon");return 0;
     }
-    if(!errors) {
+    if(!errors&&!lifecycle) {
         struct peer_data peer={display,config,context,program,_wpk_gl_fd()};pthread_t thread;
         assert(!pthread_create(&thread,NULL,delete_in_peer,&peer)&&!pthread_join(thread,NULL));
         assert(glIsProgram(program)==GL_FALSE); /* Logical selection is already zero. */
     }
+    if(lifecycle)assert(glIsProgram(program)==GL_FALSE);
     const uint32_t first[]={id,0,1,0},second[]={id,1,2,0},draw[]={GL_TRIANGLES,0,3},observed[]={2,2};
     size_t length=emit(0,OP_USE_PROGRAM_JOURNAL,first,4);
     length=emit(length,errors?OP_ERROR_OBSERVED:OP_DRAW_ARRAYS,errors?observed:draw,errors?2:3);

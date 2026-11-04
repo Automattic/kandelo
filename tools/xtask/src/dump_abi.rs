@@ -4505,6 +4505,18 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "query_dependencies":"metadata-only-no-buffer-sync",
         "reads":"available-after-reset; no-native-replay-error-drain-or-upload-interruption",
     }));
+    s.add(Program, "gl_program_journal_barrier", json!({
+        "opcode":shared::gl::QOP_PROGRAM_JOURNAL_BARRIER,
+        "journal_protocol":"gl_program_journal",
+        "actions":[3,6,7],
+        "maximum_input_bytes":8204,"reply_bytes":48,
+        "authority":"creator-pid; live-public-object-context; mapped-native-resource-owner; no-current-binding-required",
+        "forbidden":"reserve; register; release; disable; native-selection; submit-prefix-without-own-current-tid",
+        "receipt_ledger":"same-outer-context-transaction-and-read-last-as-ordinary-journal",
+        "metadata_targets":"live-same-pid-share-group-journal-handles",
+        "dependencies":"metadata-only-no-buffer-sync; compound-prefix-keeps-ordinary-authority-and-dependencies",
+        "loss":"publication-refused-after-reset; read-only-recovery-does-not-revive-context",
+    }));
     s.add(Program, "gl_context_reset_scope", json!({
         "opcode": shared::gl::QOP_CONTEXT_RESET_SCOPE,
         "request_bytes": 0, "reply_bytes": 12,
@@ -8590,6 +8602,7 @@ fn additive_top_level_section(section: &str) -> bool {
             | "gl_program_mutation"
             | "gl_program_capture"
             | "gl_program_journal"
+            | "gl_program_journal_barrier"
             | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
@@ -10242,6 +10255,22 @@ mod tests {
             let mut changed=new.clone();changed["gl_program_journal"][field]=json!("different");
             assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
             changed["gl_program_journal"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn program_journal_barrier_is_additive_without_relaxing_ordinary_authority() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["gl_program_journal_barrier"]=json!({"opcode":0x3c,"actions":[3,6,7],"reply_bytes":48,
+            "authority":"owned-live-public-context","native_selection":false});
+        let report=classify_compat_change(&old,&new).unwrap();assert!(report.breaking.is_empty(),"{report:?}");
+        assert_eq!(report.additive,vec!["added top-level section \"gl_program_journal_barrier\""]);
+        for field in new["gl_program_journal_barrier"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_program_journal_barrier"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_program_journal_barrier"].as_object_mut().unwrap().remove(field);
             assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
         }
         assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());

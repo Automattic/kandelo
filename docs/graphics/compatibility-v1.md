@@ -22988,3 +22988,54 @@ metadata while that transaction is pending, then COMMIT and verify exact rendere
 pixels. This supplements the import-level pointer/error/upload/reset controls.
 It does not enable the C program-selection fast path, complete B1, or establish
 application performance or final ship acceptance.
+
+## 2026-11-04 lifecycle authority for shared journal metadata (R181–R184)
+
+A C integration prerequisite is now provided by optional query0x3c. It permits
+only journal publication/recovery (actions3/6/7) through a live public object
+context owned by the calling process, including calls with no current GL
+binding. Pending peer selections must be published before EGL retirement can
+finalize a delete-pending program name. Ordinary query0x3b retains its existing
+own-current-TID checks. Reserve/register/release/disable and command-prefix
+execution receive no new authority. Creator, role, native-resource liveness,
+context and complete nested-span checks precede effects. Both transports use
+the same outer-context receipt ledger; reads remain quiet after reset while
+publication is refused. The C driver fast path is not enabled by this transport.
+
+R181's two new Rust controls fail before implementation, then pass with the old
+current-thread rejection controls preserved. R182 normal targeted build
+`graphics-journal-barrier-build-r182-1104-143832-78a0` passes in4m00: SDK32/64,
+canonical kernel/image writer, ABI and classifier/registry708. Snapshot changes
+are only the new optional Program section and its generated surface membership;
+all previous fields and versions56/3/17/21 are unchanged. The Program digest
+changes, requiring coherent normal-built products.
+
+R183 first Chromium8 reaches a fixture error: after EGL also terminates the
+object session, a retained dup fd returns EINVAL, not the fixture's expected
+EACCES. Only that exact expectation is corrected; no runtime permission is
+relaxed. R183-r2 `graphics-journal-barrier-native-r183-r2-1104-144424-fd2e`, port6004,
+passes8 in18s. Live-but-contextless rejection remains covered separately in Rust.
+
+R184 `graphics-journal-barrier-final-r184-1104-144655-a895`, port6005, runs
+`scripts/dev-shell.sh bash ../graphics-journal-barrier-final-r184/run.sh` from
+integration and passes in9m39. Full xtask841 unit+8 integration, Rust13+2869+96,
+native C/UBSan486, graphics2151 assertions/88files, Node10 and GPU180 all pass.
+Shader rewrite has no hard failures: Chromium/WebKit266pass each; Firefox263pass,
+1inconclusive and2 native controls. All source/product hashes are unchanged.
+
+The24 new lifecycle GPU cases run on all three engines, both widths and
+production/fatal modes. An unbound caller publishes another context's selections
+through the context being retired, either unbound or current on a different
+thread. Ordinary journal access and a foreign submit/query prefix stay rejected.
+The public program name then disappears, and the submitting peer still renders
+exact captured-generation pixels. All108 journal cases record actual guest and
+routed kernel hashes and native live0 before whole-machine teardown. The normal
+canonical kernel SHA256 is
+`c5a44a0c9d4222cdd853794c00a638ab9fbc66b77f4da00a173da978096ad02b`.
+
+The full host type check still fails with the same39 baseline diagnostics.
+C shared-queue/cache/submission integration, full B1 measurements and every
+remaining stage and final acceptance gate stay required. This is a raw SDK
+transport/lifecycle proof, not a full B preview or native-feel claim. The5693
+preview remains normal R30+051 partial B1. No new platform boundary, deferral
+or reduction in acceptance is introduced.

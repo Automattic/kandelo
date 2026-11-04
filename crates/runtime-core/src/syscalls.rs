@@ -1652,11 +1652,26 @@ fn capture_gl_query_info(
             return Err(Errno::EINVAL);
         }
         require_gl_current_for_tid(proc, ofd_idx, tid)?;
-    } else if info.op == gl::QOP_PROGRAM_JOURNAL {
+    } else if info.op == gl::QOP_PROGRAM_JOURNAL || info.op == gl::QOP_PROGRAM_JOURNAL_BARRIER {
         if !(4..=8204).contains(&info.in_buf_len) || info.in_buf_len % 4 != 0 || info.out_buf_len != 48 {
             return Err(Errno::EINVAL);
         }
-        require_gl_current_for_tid(proc,ofd_idx,tid)?;
+        if info.op == gl::QOP_PROGRAM_JOURNAL {
+            require_gl_current_for_tid(proc,ofd_idx,tid)?;
+        } else {
+            // EGL can retire an unbound context while another thread has
+            // committed shared logical intents. This capability publishes
+            // metadata only; current-thread authority still gates all native
+            // submissions and ordinary journal/capture operations.
+            let dri=dri_state(proc,ofd_idx)?;
+            let state=dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+            if state.role!=gl::SESSION_OBJECTS || state.context_id.is_none() ||
+                !dri.gl_resources.borrow().owner.is_some_and(|owner|
+                    owner.pid==pid && owner.session_id==state.session_id &&
+                    owner.role==gl::SESSION_OBJECTS && owner.native_live && owner.cmdbuf_range.is_some()) {
+                return Err(Errno::EACCES);
+            }
+        }
     } else if info.op == gl::QOP_SERVER_WAIT {
         // in: [source session fd, fence token]; out: the 16-byte fence reply.
         if info.in_buf_len != 8 || info.out_buf_len != 16 { return Err(Errno::EINVAL); }
@@ -1721,7 +1736,9 @@ fn capture_gl_query_info(
         };
         if !valid { return Err(Errno::EINVAL); }
     }
-    if info.op == gl::QOP_PROGRAM_JOURNAL && !valid_program_journal_input(&in_buf) {
+    if matches!(info.op,gl::QOP_PROGRAM_JOURNAL | gl::QOP_PROGRAM_JOURNAL_BARRIER) &&
+        (!valid_program_journal_input(&in_buf) || info.op==gl::QOP_PROGRAM_JOURNAL_BARRIER &&
+            !matches!(u32::from_le_bytes(in_buf[..4].try_into().unwrap()),3|6|7)) {
         return Err(Errno::EINVAL);
     }
     let mut kernel_reply = None;
@@ -1941,7 +1958,7 @@ fn gl_entry_touches_buffers(request: u32, buf: &[u8]) -> bool {
             u32::from_le_bytes(op.try_into().unwrap()),
             gl::QOP_CREATE_FENCE | gl::QOP_FENCE_STATUS | gl::QOP_RELEASE_FENCE
                 | gl::QOP_SERVER_WAIT | gl::QOP_EXPORT_FENCE | gl::QOP_SURFACE_CAPABILITIES
-                | gl::QOP_CONTEXT_RESET_SCOPE | gl::QOP_PROGRAM_JOURNAL)),
+                | gl::QOP_CONTEXT_RESET_SCOPE | gl::QOP_PROGRAM_JOURNAL | gl::QOP_PROGRAM_JOURNAL_BARRIER)),
         _ => false,
     }
 }
@@ -61067,6 +61084,82 @@ impl HostIO for RelSymlinkMock {
         assert!(!gl_entry_touches_buffers(gl::GLIO_QUERY,&gl::QOP_PROGRAM_JOURNAL.to_le_bytes()));
         assert!(gl_entry_touches_buffers(gl::GLIO_SUBMIT_QUERY,&gl::QOP_PROGRAM_JOURNAL.to_le_bytes()));
         assert!(gl_entry_touches_buffers(gl::GLIO_SUBMIT,&[]));
+        assert!(!gl_entry_touches_buffers(gl::GLIO_QUERY,&gl::QOP_PROGRAM_JOURNAL_BARRIER.to_le_bytes()));
+        assert!(gl_entry_touches_buffers(gl::GLIO_SUBMIT_QUERY,&gl::QOP_PROGRAM_JOURNAL_BARRIER.to_le_bytes()));
+    }
+
+    #[test]
+    fn glio_program_journal_barrier_publishes_without_current_but_grants_no_execution() {
+        use wasm_posix_shared::gl;
+        for width in [4,8] {
+            let (mut proc,mut host,fd)=glio_query_preflight_fixture();proc.pointer_width=width;
+            host.proc_memory.resize(4096,0xa5);
+            let query=|op:u32,n:u32,cap:u32,out:u64|->Vec<u8>{
+                if width==4 {
+                    let q=gl::GlQueryInfo{op,in_buf_ptr:128,in_buf_len:n,out_buf_ptr:out as u32,out_buf_len:cap,..Default::default()};
+                    unsafe{core::slice::from_raw_parts((&q as *const gl::GlQueryInfo).cast(),core::mem::size_of_val(&q)).to_vec()}
+                }else{
+                    let q=gl::GlQueryInfo64{op,in_buf_ptr:128,in_buf_len:n,out_buf_ptr:out,out_buf_len:cap,..Default::default()};
+                    unsafe{core::slice::from_raw_parts((&q as *const gl::GlQueryInfo64).cast(),core::mem::size_of_val(&q)).to_vec()}
+                }
+            };
+            let ofd=proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            let current=dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.take().unwrap();
+            host.proc_memory[128..132].copy_from_slice(&6u32.to_le_bytes());
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(gl::QOP_PROGRAM_JOURNAL,4,48,64)),Err(Errno::EACCES));
+            for words in [vec![6u32],vec![7,1],vec![3,1,1,1,0,1,0,1,0,20,1]] {
+                let input=words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
+                host.proc_memory[128..128+input.len()].copy_from_slice(&input);
+                sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(0x3c,input.len() as u32,48,64)).unwrap();
+                assert_eq!(host.gl_query_inputs.last(),Some(&(0x3c,input,48)));
+            }
+            assert_eq!(host.gl_query_inputs.len(),3);
+            host.proc_memory[128..132].copy_from_slice(&6u32.to_le_bytes());
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(0x3c,4,48,4094)),Err(Errno::EFAULT));
+            // Another current TID still grants metadata only, never a prefix.
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current=Some(current);
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid=2;
+            sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(0x3c,4,48,64)).unwrap();
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_SUBMIT,
+                &mut [0u8;core::mem::size_of::<gl::GlSubmitInfo>()]),Err(Errno::EACCES));
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(gl::QOP_PROGRAM_JOURNAL,4,48,64)),Err(Errno::EACCES));
+            assert_eq!(host.gl_query_inputs.len(),4);
+        }
+    }
+
+    #[test]
+    fn glio_program_journal_barrier_requires_complete_shape_and_live_public_context() {
+        use wasm_posix_shared::gl;
+        let (mut proc,mut host,fd)=glio_query_preflight_fixture();host.proc_memory.resize(4096,0xa5);
+        let query=|n:u32,cap:u32|->Vec<u8>{
+            let q=gl::GlQueryInfo{op:0x3c,in_buf_ptr:128,in_buf_len:n,out_buf_ptr:64,out_buf_len:cap,..Default::default()};
+            unsafe{core::slice::from_raw_parts((&q as *const gl::GlQueryInfo).cast(),core::mem::size_of_val(&q)).to_vec()}
+        };
+        let ofd=proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current=None;
+        for words in [vec![1u32,1,4],vec![2,1,1],vec![4,1,1,1],vec![5,1],vec![6,1],vec![7,0],vec![3,1,0],vec![3,1,1]] {
+            let input=words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
+            host.proc_memory[128..128+input.len()].copy_from_slice(&input);
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(input.len() as u32,48)),Err(Errno::EINVAL));
+        }
+        host.proc_memory[128..132].copy_from_slice(&6u32.to_le_bytes());
+        for cap in [0,16,44,52] {assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(4,cap)),Err(Errno::EINVAL));}
+        for broken in 0..6 {
+            let dri=dri_state_mut(&mut proc,ofd).unwrap();
+            let saved_gl=dri.gl.as_ref().unwrap().clone();let saved_owner=dri.gl_resources.borrow().owner;
+            match broken {
+                0=>dri.gl.as_mut().unwrap().owner_pid=2,
+                1=>dri.gl.as_mut().unwrap().context_id=None,
+                2=>dri.gl.as_mut().unwrap().role=gl::SESSION_DISPLAY,
+                3=>dri.gl_resources.borrow_mut().owner.as_mut().unwrap().native_live=false,
+                4=>dri.gl_resources.borrow_mut().owner.as_mut().unwrap().pid=2,
+                _=>dri.gl_resources.borrow_mut().owner.as_mut().unwrap().cmdbuf_range=None,
+            }
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(4,48)),Err(Errno::EACCES));
+            let dri=dri_state_mut(&mut proc,ofd).unwrap();dri.gl=Some(saved_gl);dri.gl_resources.borrow_mut().owner=saved_owner;
+        }
+        assert!(host.gl_query_inputs.is_empty());assert!(host.proc_write_calls.is_empty());
+        assert_eq!(&host.proc_memory[64..112],&[0xa5;48]);
     }
 
     fn glio_query_bytes(info: wasm_posix_shared::gl::GlQueryInfo)

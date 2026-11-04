@@ -267,3 +267,4 @@ export const QOP_PROGRAM_MUTATION = 0x0039;
 /** Context-owned executable capture: acquire1/select2/release3; checked16-byte reply. */
 export const QOP_PROGRAM_CAPTURE = 0x003a;
 export const QOP_PROGRAM_JOURNAL = 0x003B;
+export const QOP_PROGRAM_JOURNAL_BARRIER = 0x003C;

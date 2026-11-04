@@ -31,15 +31,23 @@ export function validProgramJournalRequest(input:Uint8Array,outputBytes:number):
     !safeCounter(v,p+8) || !safeCounter(v,p+16))return false;
   return true;
 }
+/** Lifecycle authority grants only publication and recovery of cold-reserved
+ * metadata. Creation, capture registration and native execution keep their
+ * independent current-thread gates. */
+export function validProgramJournalBarrierRequest(input:Uint8Array,outputBytes:number):boolean {
+  if(!validProgramJournalRequest(input,outputBytes))return false;
+  const action=new DataView(input.buffer,input.byteOffset,input.byteLength).getUint32(0,true);
+  return action===3 || action===6 || action===7;
+}
 function u64(words:Uint32Array,at:number,value:number):void {words[at]=value>>>0;words[at+1]=Math.floor(value/0x1_0000_0000);}
 function snapshot(words:Uint32Array,b:GlBinding,journal:GlProgramJournal|null):void {
   u64(words,5,programJournalSequence(b));u64(words,7,journal?.publishedTicket??0);u64(words,9,journal?.executedTicket??0);
   words[11]=MAGIC;
 }
 
-/** The Rust outer query retains ordinary own-current-TID authority. Host-issued
- * journal handles restrict peer metadata to live same-process/group owners;
- * selector execution remains confined to its own submitted context. */
+/** Ordinary queries keep own-current-TID authority; the lifecycle barrier
+ * proves a live owned public context and restricts actions. Host-issued handles
+ * scope peer metadata; selectors retain their own submitted-context authority. */
 export function runProgramJournalQuery(b:GlBinding,input:Uint8Array,out:Uint8Array,execution?:GlContextExecutionLease):number {
   if(!validProgramJournalRequest(input,out.byteLength))return -22;
   const v=new DataView(input.buffer,input.byteOffset,input.byteLength),action=v.getUint32(0,true),control=b.programJournalControl;

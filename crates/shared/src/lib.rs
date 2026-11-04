@@ -4391,6 +4391,10 @@ pub mod gl {
     /// Ordinary current-thread query authority and replay/dependencies.
     pub const QOP_PROGRAM_CAPTURE: u32 = 0x003A;
     pub const QOP_PROGRAM_JOURNAL: u32 = 0x003B;
+    /// Publish/recover already-reserved shared program metadata through a live
+    /// owned public context, including EGL lifecycle calls with no GL binding.
+    /// Only journal actions 3/6/7; never native selection or a submit prefix.
+    pub const QOP_PROGRAM_JOURNAL_BARRIER: u32 = 0x003C;
     /// V17 retained fences. Input: one nonzero client token, allocated
     /// monotonically per object session before creation. Output: 16 bytes
     /// (status, echoed token, signaled bool, checked reply magic).
@@ -6825,6 +6829,7 @@ mod gl_tests {
             QOP_PROGRAM_MUTATION,
             QOP_PROGRAM_CAPTURE,
             QOP_PROGRAM_JOURNAL,
+            QOP_PROGRAM_JOURNAL_BARRIER,
             QOP_CREATE_FENCE,
             QOP_FENCE_STATUS,
             QOP_RELEASE_FENCE,

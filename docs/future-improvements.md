@@ -1098,7 +1098,8 @@ C1–C3 and all correctness, conformance, memory and native-feel gates remain
 required in their agreed order.
 
 C publication must also precede EGL lifetime mutations made without a current
-GL binding. Preserve the current-thread checks on ordinary journal queries;
-the lifecycle path needs explicit authority to publish only shared metadata,
-without selecting a peer or submitting its mutable command buffer. Complete
-and validate that path before enabling local program acceptance.
+GL binding. The optional0x3c lifecycle barrier now supplies checked metadata-only
+authority through a live owned public context; ordinary0x3b current-thread
+checks and native submission authority are unchanged. Integrate it into C
+lifetime guards and the shared immutable queue before enabling local program
+acceptance. A foreign mutable encoder is never a source of submitted commands.
