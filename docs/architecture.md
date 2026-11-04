@@ -6162,10 +6162,10 @@ their original records still reach the host for independent validation and
 execution. An unknown command leaves the proven prefix behind and forces
 the next error drain. Automatic buffer submission also invalidates the
 request epoch, even when the command cursor wraps to the same address.
-Draws and object-dependent operations do not use this proof. Any request,
-including a state query, make-current, swap, fence operation or another
-thread's work, voids that knowledge, and the next `glGetError` drains
-again. This relies on the host recording a flag only into the context
+Draws and object-dependent commands do not extend this exact prefix.
+Ordinary requests, including a state query, make-current, swap, fence
+operation or another thread's work, void that knowledge, and the next
+`glGetError` drains again. This relies on the host recording a flag only into the context
 whose request produced it, as described above. Reset reporting is
 consulted before any local answer and is still learned from the next
 request's `ENODEV`. A malformed or failed drain reply is reported as one
@@ -6185,6 +6185,18 @@ process, context, batch and operation identity. Client-only guards remain a
 separate error source and cannot mask an incorrect command prediction.
 Reserving an observation can submit a full buffer; the guest rechecks the
 epoch before consuming any flag and uses the ordinary drain if it changed.
+A fully checked synchronous mutation receipt can retain an existing exact
+proof. The guest snapshots its current encoder, command-buffer base and
+request count before the query. It restores knowledge only for an accepted
+mutation in the same context, with exactly one device request, an emptied
+command buffer, no reset and no pending client-only trailer. Ordinary query
+success, an unknown prefix, extra I/O and rejected or malformed receipts
+provide no such proof. Binds still execute synchronously. An unreturned
+predicted flag may remain on the host after acceptance; even with an empty
+buffer, a local `glGetError` must queue its ordered observation before
+consuming that flag. Later I/O revokes the proof through the normal epoch
+check.
+
 This is still partial B1; the remaining draw/object validation, later driver
 stages and desktop acceptance measurements are not established by these
 scalar checks.

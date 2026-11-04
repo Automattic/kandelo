@@ -259,8 +259,10 @@ The initial B1 source increments preserve local error knowledge across
 scalar and argument-validated setters, retaining the ordinary host command
 records. Ordered error observations clear locally returned flags at the
 same stream position; the fatal audit checks the independent host oracle.
-Unknown operations and device requests still force a drain. This is only
-the start of B1: the remaining exact validation families and their audit
+Unknown operations and ordinary device requests still force a drain. A fully
+checked synchronous mutation receipt can preserve an existing exact proof
+when context, cursor and request-count checks establish that it added no
+error; this does not make binds asynchronous. This is only the start of B1: the remaining exact validation families and their audit
 coverage, application measurements and the ScummVM round-trip target remain
 required before B1 is complete. B2–B6 and C1–C3 remain current-iteration
 work; no completed driver stage or native-feel result follows from the

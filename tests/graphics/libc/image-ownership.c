@@ -454,6 +454,7 @@ static unsigned pixel_store_commands, framebuffer_bind_commands, framebuffer_sta
 static unsigned bind_failure, bind_queries;
 static uint32_t last_image_target; /* QOP_BOUND_IMAGE_TARGET's target */
 static unsigned buffer_bind_failure, buffer_delete_failure;
+static unsigned buffer_bind_other_request, buffer_bind_bad_receipt;
 static unsigned image_mutation_failure, image_mutation_queries;
 static unsigned framebuffer_bind_queries;
 static int fail_alloc_after_image_mutation;
@@ -1086,6 +1087,8 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             memcpy(words, commands + at + 4, len < 8 ? len : 8);
             if (op != OP_CLIENT_ERRORS && op != GRAPHICS_ERROR_OBSERVED) only_client_errors = 0;
             if ((op == OP_ENABLE || op == OP_DISABLE) && words[0] == 0xdead) client_error_masks[fd-10] |= 1u;
+            if (op == OP_CLEAR && (words[0] & ~(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT)))
+                client_error_masks[fd-10] |= 2u;
             if ((op == OP_ENABLE_VERTEX_ATTRIB_ARRAY || op == OP_DISABLE_VERTEX_ATTRIB_ARRAY) &&
                 words[0] >= (advertised_vertex_attribs ? advertised_vertex_attribs : 16u))
                 client_error_masks[fd-10] |= 2u;
@@ -1678,6 +1681,14 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             reply[0] = native_buffer_bind(slot, input[0], input[1]) ? 0u : 1u;
             reply[1] = reply[0] ? 0u : 1u;
             reply[2] = 0x47514c33u;
+            if (buffer_bind_other_request) {
+                buffer_bind_other_request = 0;
+                _wpk_gl_note_device_request();
+            }
+            if (buffer_bind_bad_receipt) {
+                buffer_bind_bad_receipt = 0;
+                reply[2] ^= 0x100u;
+            }
             uint32_t trace[5] = {q->op, 12, reply[0], input[0], input[1]};
             egl_trace(11, fd, trace, sizeof trace);
             protocol_trace(2, q->op, input, 8, 12);
@@ -4626,6 +4637,80 @@ int main(int argc, char **argv) {
         assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS error-drain-infallible"); return 0;
+    }
+    if (!strcmp(argv[1], "error-receipt-local")) {
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries;
+        glClearColor(0,0,0,1);
+        glBindBuffer(GL_ARRAY_BUFFER,0);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries);
+        glBindTexture(GL_TEXTURE_2D,0);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-receipt-local"); return 0;
+    }
+    if (!strcmp(argv[1], "error-receipt-pending")) {
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries;
+        glEnable(0xdead);
+        glBindBuffer(GL_ARRAY_BUFFER,0);
+        /* A nonempty server flag survives accepted submission. Observing it
+         * must enqueue an ACK even though the command cursor is now empty. */
+        assert(glGetError() == GL_INVALID_ENUM && error_queries == queries);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries);
+        glEnable(0xdead);assert(glGetError() == GL_INVALID_ENUM);
+        glBindTexture(GL_TEXTURE_2D,0);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries);
+        glFlush();
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-receipt-pending"); return 0;
+    }
+    if (!strcmp(argv[1], "error-receipt-client")) {
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries;
+        glBindBuffer(0xdead,0);
+        glBindBuffer(GL_ARRAY_BUFFER,0);
+        /* The separate client trailer caused an extra request. The proof
+         * cannot ignore it or lose the flag transferred to the server. */
+        assert(glGetError() == GL_INVALID_ENUM && error_queries == queries + 1);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-receipt-client"); return 0;
+    }
+    if (!strcmp(argv[1], "error-receipt-unknown")) {
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries;
+        glClear(0x80000000u);
+        glBindBuffer(GL_ARRAY_BUFFER,0);
+        assert(glGetError() == GL_INVALID_VALUE && error_queries == queries + 1);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-receipt-unknown"); return 0;
+    }
+    if (!strcmp(argv[1], "error-receipt-epoch")) {
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries;
+        buffer_bind_other_request = 1;
+        glBindBuffer(GL_ARRAY_BUFFER,0);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-receipt-epoch"); return 0;
+    }
+    if (!strcmp(argv[1], "error-receipt-failed")) {
+        assert(glGetError() == GL_NO_ERROR);
+        unsigned queries = error_queries;
+        buffer_bind_failure = 1;
+        glBindBuffer(GL_ARRAY_BUFFER,0);
+        assert(glGetError() == GL_OUT_OF_MEMORY && error_queries == queries + 1);
+        assert(glGetError() == GL_NO_ERROR);
+        queries = error_queries;
+        buffer_bind_bad_receipt = 1;
+        glBindBuffer(GL_ARRAY_BUFFER,0);
+        assert(glGetError() == GL_INVALID_OPERATION && error_queries == queries + 1);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-receipt-failed"); return 0;
     }
     if (!strcmp(argv[1], "error-predicted-ordered")) {
         assert(glGetError() == GL_NO_ERROR);

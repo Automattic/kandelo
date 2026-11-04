@@ -533,6 +533,34 @@ static int exact_error_state(struct wpk_gles_context *state) {
            _wpk_gl_device_requests() == state->errors_known_at;
 }
 
+struct wpk_error_proof {
+    struct wpk_gles_context *state;
+    uint8_t *base;
+    uint64_t requests;
+    int valid;
+};
+static struct wpk_error_proof capture_error_proof(void) {
+    struct wpk_error_proof proof = {
+        .state = _wpk_gl_current_encoder(), .base = _wpk_gl_cmdbuf_base(),
+        .requests = _wpk_gl_device_requests(),
+    };
+    proof.valid = proof.state && !proof.state->client_errors && exact_error_state(proof.state);
+    return proof;
+}
+/* A checked acceptance receipt proves the mutation added no API error.
+ * Keep this separate from ordinary successful transport: arbitrary queries,
+ * rejected mutations and uncertain completions provide no such evidence. */
+static void accept_error_proof(struct wpk_error_proof proof) {
+    if (!proof.valid || _wpk_gl_current_encoder() != proof.state ||
+        _wpk_gl_cmdbuf_base() != proof.base || _wpk_gl_context_reset() ||
+        _wpk_gl_device_requests() != proof.requests + 1 ||
+        (g_cursor && g_cursor != proof.base) || proof.state->client_errors)
+        return;
+    proof.state->errors_known = 1;
+    proof.state->errors_known_at = proof.requests + 1;
+    proof.state->errors_known_cursor = proof.base;
+}
+
 /* Keep original records, including rejected arguments: the host oracle
  * independently validates them before the ordered error observation. */
 static void finish_predicted_command(uint8_t *start, uint8_t *end, GLenum error) {
@@ -1636,7 +1664,8 @@ GLenum glGetError(void) {
     uint8_t *base = _wpk_gl_cmdbuf_base();
     if (base == NULL) return GL_NO_ERROR;
     if (exact_error_state(state)) {
-        if (!g_cursor || g_cursor == base) return take_held_error(state);
+        if ((!g_cursor || g_cursor == base) && !state->predicted_errors)
+            return take_held_error(state);
         /* WHY: observing a flag is ordered work too. If another invalid
          * command records that value later, it must set a fresh flag rather
          * than being swallowed by a host flag the guest already returned. */
@@ -1825,14 +1854,17 @@ static int checked_mutation_query(uint32_t op, const uint32_t *words, uint32_t c
     }
     memcpy(input, words, count * sizeof *input);
     uint32_t reply[3] = {0};
+    const struct wpk_error_proof proof = capture_error_proof();
     int rc = _wpk_gl_query_into(op, input, count * sizeof *input, reply, sizeof reply);
     free(input);
     if (rc == WPK_GL_QUERY_NOT_DISPATCHED) return 0;
     if (!rc && reply[2] == WPK_GL_QUERY_REPLY_MAGIC) {
         if (reply[0] == 1)
             return 0;
-        if (reply[0] == 0 && reply[1] == 1)
+        if (reply[0] == 0 && reply[1] == 1) {
+            accept_error_proof(proof);
             return 1;
+        }
     }
     raise_client_error(GL_INVALID_OPERATION);
     return -1;
@@ -2101,6 +2133,7 @@ static int bind_image_object(uint32_t kind, GLenum target, GLuint name) {
     input[1] = target;
     input[2] = name;
     uint8_t reply[12];
+    const struct wpk_error_proof proof = capture_error_proof();
     int accepted = checked_query_reply(QOP_BIND_IMAGE_OBJECT, input, 12, reply, 4);
     free(input);
     if (accepted) {
@@ -2110,6 +2143,7 @@ static int bind_image_object(uint32_t kind, GLenum target, GLuint name) {
             raise_client_error(GL_INVALID_OPERATION);
             return 0;
         }
+        accept_error_proof(proof);
     }
     return accepted;
 }

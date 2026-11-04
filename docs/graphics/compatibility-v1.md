@@ -21457,3 +21457,55 @@ the diagnostic includes instrumentation and does not establish displayed
 frame rate. Evidence: `.context/graphics-b1-hotpaths-r36/`. B1's remaining
 object/draw validation, application measurements and full conformance gates
 remain open; B2–B6 and C1–C3 remain required. The normal preview has not moved.
+
+
+### B1 acceptance receipts preserve existing error knowledge
+
+A checked synchronous mutation reply now preserves an already exact error
+proof when it names an accepted operation in the same context, consumes
+exactly one device request and leaves an empty command buffer without reset
+or client-only errors. Successful transport alone is insufficient. Unknown
+prefixes, arbitrary queries, extra I/O, rejected operations and malformed
+replies still force an error drain. This is a further B1 component; binds
+remain synchronous and B2 has not started.
+
+Acceptance can submit a predicted but unreturned error flag. Even with an
+empty command buffer, the next local observation queues its ordered ACK so
+a later command can record the same flag again. The regressions cover that
+case, client-only error custody, unknown prefixes, an injected extra request,
+rejected allocation and a corrupted receipt.
+
+The native library suite passes 421 cases. The two local/pending assertions
+fail against 12eec17747, establishing their causal controls. Both normal
+worktree SDKs rebuild and the complete ABI/layout check passes; program 56,
+unpublished host 3, GL 17, fork 21 and the snapshot remain unchanged. The
+current SDK/current kernel/current compiled host cohort passes 14 Node and
+45 browser cases with zero skips. These include the expected old-library
+assertion failures and the unchanged exact loud Node renderer refusal.
+
+The ordinary SDK probe `tests/graphics/libc/accepted-error-proof.c` performs
+32 buffer/texture binds, checking each error result. Each engine observes:
+
+| Engine | 12eec17747 library, fatal audit | Candidate, production | Candidate, fatal audit |
+| --- | ---: | ---: | ---: |
+| Chromium 153.0.8010.12 | 64 requests | 32 requests | 32 requests |
+| Firefox 155.0 | 64 requests | 32 requests | 32 requests |
+| WebKit 26.6 | 64 requests | 32 requests | 32 requests |
+
+The same probe checks repeated pending flags, unknown-command fallback,
+client-trailer custody and arbitrary-query invalidation. Positive browser
+cases report no audit divergence, page error or memory-boundary failure.
+This is request-count and API evidence, not desktop latency, application
+performance or full B1 acceptance. The graphics gate, shader harness and
+full conformance matrix were not repeated for this C-only component; their
+final combined-tree gates remain required. No normal preview update is
+claimed. Evidence and exact commands: `.context/graphics-b1-receipts-r43/`
+and `.context/graphics-b1-receipt-runtime-r44/run.sh`, including frozen source
+patches and artifact hashes. An unreachable harness branch was corrected
+before browser invocation; its original text is retained, and no production
+source changed during the run.
+
+The maintainer requests a runnable Stage B preview before starting C1–C3.
+Publish a normal-built B checkpoint and announce availability separately
+from validation. Any earlier partial B prototype must identify its exact
+components and open acceptance gates; none is claimed available here.
