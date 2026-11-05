@@ -88,9 +88,20 @@ const OFF_TEXT_LEN: usize = 19;
 /// into a fixed table, not a handle that is allocated at run time.
 pub type CallsiteId = u32;
 
-/// Callsite ids `0..KMSG_CALLSITES` each get their own limiter slot. This
-/// covers every syscall number with room to spare.
-pub const KMSG_CALLSITES: usize = 256;
+/// The highest callsite id that gets its own limiter slot.
+///
+/// Callers use syscall numbers as callsite ids so a flood from one syscall
+/// cannot suppress reports about another. The bound is the highest `SYS_*`
+/// number defined in `crates/shared/src/lib.rs`: `SYS_SPAWN` (500, handled by
+/// the host before kernel dispatch). The kernel dispatch table in
+/// `wasm_api.rs` tops out at 415 and the libc glue's own `SYS_*` list at 386
+/// (`SYS_EXECVEAT`). When a syscall is added past this number, raise it; the
+/// `every_syscall_number_has_its_own_callsite_slot` test checks the
+/// shared-crate constants.
+pub const KMSG_MAX_CALLSITE_ID: CallsiteId = 500;
+
+/// Callsite ids `0..=KMSG_MAX_CALLSITE_ID` each get their own limiter slot.
+pub const KMSG_CALLSITES: usize = KMSG_MAX_CALLSITE_ID as usize + 1;
 
 /// Records one callsite may log per window before the rest are dropped.
 ///
@@ -154,9 +165,10 @@ enum Verdict {
 
 /// Per-callsite rate limiter over a fixed table: no allocation, ever.
 ///
-/// Ids at or beyond [`KMSG_CALLSITES`] share one extra overflow slot, so an
+/// Ids above [`KMSG_MAX_CALLSITE_ID`] share one extra overflow slot, so an
 /// unknown callsite is still limited, just together with the other unknown
-/// ones, rather than being exempt or panicking.
+/// ones, rather than being exempt or panicking. Syscall callsites never reach
+/// it; it is a safety net, not a shared bucket.
 pub struct CallsiteLimiter {
     slots: [CallsiteSlot; KMSG_CALLSITES + 1],
 }
@@ -804,6 +816,38 @@ mod tests {
             assert!(ring.push_limited(1, 0, 4, 1_000 + KMSG_RATE_INTERVAL_NSEC, b"m").is_some());
         }
         assert_eq!(ring.push_limited(1, 0, 4, 1_000 + KMSG_RATE_INTERVAL_NSEC, b"m"), None);
+    }
+
+    #[test]
+    fn callsites_above_255_are_limited_independently() {
+        // Syscall numbers run past 255 (SYS_EXECVEAT is 386), and each must
+        // have its own slot so a flood from one does not silence another.
+        let (a, b) = (300, 386);
+        let mut ring = ring();
+        for _ in 0..KMSG_RATE_BURST {
+            assert!(ring.push_limited(a, 0, 4, 0, b"a").is_some());
+        }
+        assert_eq!(ring.push_limited(a, 0, 4, 0, b"a"), None);
+        for _ in 0..KMSG_RATE_BURST {
+            assert!(ring.push_limited(b, 0, 4, 0, b"b").is_some(), "site {b} shared site {a}'s budget");
+        }
+        assert_eq!(ring.push_limited(b, 0, 4, 0, b"b"), None);
+        // Neither shares the overflow slot with an out-of-range id.
+        assert!(ring.push_limited(KMSG_MAX_CALLSITE_ID + 1, 0, 4, 0, b"c").is_some());
+    }
+
+    #[test]
+    fn every_syscall_number_has_its_own_callsite_slot() {
+        use wasm_posix_shared::abi::{extended_syscalls, host_intercepted};
+        // The highest numbers in each shared-crate syscall group.
+        for number in [
+            extended_syscalls::SYS_THREAD_CANCEL,
+            extended_syscalls::SYS_EXIT_GROUP,
+            host_intercepted::SYS_EXECVEAT,
+            host_intercepted::SYS_SPAWN,
+        ] {
+            assert!(number <= KMSG_MAX_CALLSITE_ID, "syscall {number} would share the overflow slot");
+        }
     }
 
     #[test]
