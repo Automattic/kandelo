@@ -73,13 +73,14 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
         await kernel.writeFileToVfs("/var/www/html/__kandelo_opcache_target.php", new TextEncoder().encode("<?php return 1;"));
         await kernel.writeFileToVfs("/var/www/html/__kandelo_opcache_probe.php", new TextEncoder().encode(`<?php
 header('Content-Type: application/json');
-$status = opcache_get_status(false);
+$configuration = opcache_get_configuration();
 $target = __DIR__ . '/__kandelo_opcache_target.php';
+$compiled = opcache_compile_file($target);
 echo json_encode([
     'loaded' => extension_loaded('Zend OPcache'),
-    'enabled' => is_array($status) && !empty($status['opcache_enabled']),
-    'compiled' => opcache_compile_file($target),
-    'cached' => opcache_is_script_cached($target),
+    'fileCacheOnly' => !empty($configuration['directives']['opcache.file_cache_only']),
+    'compiled' => $compiled,
+    'cacheFilePresent' => count(glob('/var/cache/opcache/*' . $target . '.bin')) > 0,
 ], JSON_THROW_ON_ERROR);
 `));
         const { pid, exit } = await kernel.spawnFromVfs("/sbin/dinit", [
@@ -233,7 +234,9 @@ echo json_encode([
     }, { imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, serviceName });
 
     expect(result.opcacheStatus, `${result.opcacheBody}\n${result.serviceLog.slice(-3000)}`).toBe(200);
-    expect(JSON.parse(result.opcacheBody)).toEqual({ loaded: true, enabled: true, compiled: true, cached: true });
+    expect(JSON.parse(result.opcacheBody)).toEqual({
+      loaded: true, fileCacheOnly: true, compiled: true, cacheFilePresent: true,
+    });
     expect(result.homepageStatus, `${result.homepageBody.slice(-1000)}\n${result.serviceLog.slice(-3000)}\n${result.stderr.slice(-1000)}\n${JSON.stringify(result.diagnostics)}`).toBe(200);
     expect(result.homepageBody).toContain("WordPress on Kandelo");
     expect(result.homepageBody).not.toContain("id=\"setup\"");

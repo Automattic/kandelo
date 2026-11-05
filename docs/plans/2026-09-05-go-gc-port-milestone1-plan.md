@@ -4282,3 +4282,14 @@ path after clearing its wait word, preserving current process retirement.
 The host TypeScript check still reports unrelated existing errors (including
 browser artifact aliases, a kernel-worker symbol, and external TLS sources),
 so it is not claimed as a passing host-wide typecheck.
+
+A disposable Node diagnostic with `opcache.file_cache_only=1` and a writable
+`/var/cache/opcache` then booted FrankenPHP classic on ABI 55. It returned
+HTTP 200 for PHP and a static asset, loaded the built-in OPcache extension,
+compiled a target script, and wrote its `.bin` file in the shared VFS cache.
+No host diagnostic was emitted. As expected for this PHP mode,
+`opcache_get_status(false)` reports `opcache_enabled=false` and
+`opcache_is_script_cached()` returns false even though the cache file exists.
+The browser probe now checks the configured file-cache-only mode and the
+written cache file instead; Playwright lists all six cases, but none has run
+on the new WordPress image yet.
