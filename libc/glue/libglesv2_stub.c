@@ -360,6 +360,7 @@ struct wpk_uniform_signature {
     GLint location;
     int valid;
 };
+struct wpk_draw_signature { uint32_t token; int known, simple; };
 struct wpk_program_intent {
     struct wpk_program_stream *owner;
     struct wpk_program_intent *next;
@@ -376,6 +377,8 @@ struct wpk_program_stream {
     uint64_t ticket;
     struct wpk_program_generation generations[WPK_PROGRAM_CACHE];
     struct wpk_uniform_signature signatures[WPK_PROGRAM_CACHE];
+    struct wpk_draw_signature draw_signatures[WPK_PROGRAM_CACHE];
+    uint32_t draw_cursor, draw_slot;
     uint32_t signature_request[4], signature_reply[12];
     struct wpk_program_intent slots[WPK_PROGRAM_SLOTS];
     uint32_t request[3+8*WPK_PROGRAM_SLOTS], reply[12], recovery[12], read_request[2];
@@ -1274,10 +1277,10 @@ void glBindAttribLocation(GLuint program, GLuint index, const GLchar *name) {
  * on every platform except Emscripten. */
 
 static uint32_t attrib_type_size(GLenum type);
-static void emit_vertex_attrib_pointer(GLuint index, GLint size, GLenum type,
+static void write_vertex_attrib_pointer(uint8_t *_c, GLuint index, GLint size, GLenum type,
                                        GLboolean normalized, GLsizei stride,
                                        uintptr_t offset) {
-    EMIT_BEGIN(OP_VERTEX_ATTRIB_POINTER, 24)
+    w_u16(&_c, OP_VERTEX_ATTRIB_POINTER); w_u16(&_c, 24);
     w_u32(&_c, (uint32_t)index);
     w_i32(&_c, (int32_t)size);
     w_u32(&_c, (uint32_t)type);
@@ -1295,6 +1298,13 @@ static void emit_vertex_attrib_pointer(GLuint index, GLint size, GLenum type,
         (uint32_t)stride % width == 0 && offset <= INT32_MAX && offset % width == 0)
         finish_predicted_command(start,_c,GL_NO_ERROR);
     else g_cursor = _c;
+}
+
+static void emit_vertex_attrib_pointer(GLuint index, GLint size, GLenum type,
+                                       GLboolean normalized, GLsizei stride,
+                                       uintptr_t offset) {
+    uint8_t *record=reserve(28);
+    if(record)write_vertex_attrib_pointer(record,index,size,type,normalized,stride,offset);
 }
 
 static uint32_t vertex_attrib_limit(struct wpk_gles_context *state);
@@ -1373,6 +1383,11 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
         raise_client_error(GL_INVALID_OPERATION);
         return;
     }
+    /* A rollover can refuse its prefix. Reserve before publishing either the
+     * client layout or its buffer reference so a failed call leaves the old
+     * definition observable through getters and subsequent draws. */
+    uint8_t *record=reserve(28);
+    if(!record)return;
     {
         struct wpk_client_attrib *a = &g_attribs[index];
         if (!object_reference(state->objects, state->array_object)) {
@@ -1395,12 +1410,12 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
         a->pointer = pointer;
         /* Clear a previous native VBO reference without forwarding the
          * client pointer. Draw-time staging supplies the actual bytes. */
-        emit_vertex_attrib_pointer(index,size,type,normalized,stride,0);
+        write_vertex_attrib_pointer(record,index,size,type,normalized,stride,0);
         return;
     }
     g_attribs[index].client = 0;
     /* `pointer` is an offset into the bound GL_ARRAY_BUFFER. */
-    emit_vertex_attrib_pointer(index, size, type, normalized, stride,
+    write_vertex_attrib_pointer(record,index, size, type, normalized, stride,
                                (uintptr_t)pointer);
 }
 
@@ -1556,6 +1571,7 @@ failed:
 /* A whole small nonindexed draw owns one record. Source layout stays in the
  * encoder; the device receives packed referenced elements without public names
  * or ARRAY mutations. Return zero only before admission for the legacy path. */
+static int inline_client_error_prediction(void);
 static int emit_inline_client_arrays(GLenum mode, GLint first, GLsizei count) {
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
     if (count <= 0 || state->current_vertex_array->name)
@@ -1600,8 +1616,19 @@ static int emit_inline_client_arrays(GLenum mode, GLint first, GLsizei count) {
     }
     if (!clients || payload > WPK_GL_INLINE_DRAW_MAX_BYTES)
         return 0;
+    int exact=0;
+    if(state->default_framebuffer_only && _wpk_gl_has_draw_surface() &&
+        state->default_vertex_array_only && state->array_binding_known){
+        int only_known_clients=1;
+        for(uint32_t i=0;i<state->current_vertex_array->attrib_count;i++){
+            const struct wpk_client_attrib *a=&g_attribs[i];
+            if(a->enabled && (!a->client || !a->host_row_known)){only_known_clients=0;break;}
+        }
+        if(only_known_clients){exact=inline_client_error_prediction();if(exact<0)return -1;}
+    }
     uint8_t *cursor = reserve(4 + (size_t)payload);
     if (!cursor) return -1;
+    uint8_t *start=cursor;
     w_u16(&cursor, OP_DRAW_CLIENT_ARRAYS);
     w_u16(&cursor, (uint16_t)payload);
     w_u32(&cursor, mode);
@@ -1626,7 +1653,8 @@ static int emit_inline_client_arrays(GLenum mode, GLint first, GLsizei count) {
             }
         }
     }
-    g_cursor = cursor;
+    if(exact)finish_predicted_command(start,cursor,GL_NO_ERROR);
+    else g_cursor = cursor;
     return 1;
 }
 
@@ -2540,6 +2568,7 @@ static int disable_program_stream(struct wpk_gles_context *state) {
     }
     stream->active=0;stream->id=0;stream->ticket=0;stream->current_token=0;
     memset(stream->signatures,0,sizeof stream->signatures);stream->signature_cursor=0;
+    memset(stream->draw_signatures,0,sizeof stream->draw_signatures);stream->draw_cursor=stream->draw_slot=0;
     for (unsigned i=0;i<WPK_PROGRAM_CACHE;i++) {
         struct wpk_program_generation *g=&stream->generations[i];
         g->token=0; // The acknowledged journal closure retired every token.
@@ -3905,17 +3934,9 @@ static int uniform_location_accepted(GLint location) {
 /* A public name can acquire a different link while this context keeps its
  * old installed executable. Only the journal's exact-generation pin can
  * justify a signature. Ordinary contexts retain the host observation path. */
-static int uniform_error_prediction(GLint location,GLsizei count,uint32_t type,
-                                    uint32_t boolean_type,const GLint *integers,GLenum *error) {
-    struct wpk_gles_context *state=_wpk_gl_current_encoder();
+static int uniform_signature(struct wpk_gles_context *state,GLint location,
+                             struct wpk_uniform_signature **result) {
     struct wpk_program_stream *stream=state->program_stream;
-    if(!stream || !stream->active)return 0;
-    struct wpk_gl_name_scope guard __attribute__((cleanup(_wpk_gl_end_name_scope)))=begin_dispatch_scope(state);
-    if(!guard.group)return -1;
-    if(stream->blocked){raise_client_error(GL_INVALID_OPERATION);return -1;}
-    if(!atomic_load_explicit(&state->objects->program_records_known,memory_order_relaxed))return 0;
-    *error=GL_INVALID_OPERATION;
-    if(!state->current_program)return 1;
     struct wpk_uniform_signature *meta=NULL;
     for(unsigned i=0;i<WPK_PROGRAM_CACHE;i++){
         struct wpk_uniform_signature *s=&stream->signatures[i];
@@ -3942,6 +3963,23 @@ static int uniform_error_prediction(GLint location,GLsizei count,uint32_t type,
         *meta=(struct wpk_uniform_signature){.token=stream->current_token,.location=location,
             .type=reply[6],.remaining=reply[7],.flags=reply[8],.valid=1};
     }
+    *result=meta;return 1;
+}
+
+static int uniform_error_prediction(GLint location,GLsizei count,uint32_t type,
+                                    uint32_t boolean_type,const GLint *integers,GLenum *error) {
+    struct wpk_gles_context *state=_wpk_gl_current_encoder();
+    struct wpk_program_stream *stream=state->program_stream;
+    if(!stream || !stream->active)return 0;
+    struct wpk_gl_name_scope guard __attribute__((cleanup(_wpk_gl_end_name_scope)))=begin_dispatch_scope(state);
+    if(!guard.group)return -1;
+    if(stream->blocked){raise_client_error(GL_INVALID_OPERATION);return -1;}
+    if(!atomic_load_explicit(&state->objects->program_records_known,memory_order_relaxed))return 0;
+    *error=GL_INVALID_OPERATION;
+    if(!state->current_program)return 1;
+    struct wpk_uniform_signature *meta=NULL;
+    int available=uniform_signature(state,location,&meta);
+    if(available<=0)return available;
     const int sampler=type==GL_INT &&
         (meta->type==GL_SAMPLER_2D || meta->type==GL_SAMPLER_CUBE || meta->type==0x8dc1u);
     if((meta->type!=type && (!boolean_type || meta->type!=boolean_type) && !sampler) ||
@@ -3962,6 +4000,53 @@ static int uniform_error_prediction(GLint location,GLsizei count,uint32_t type,
     if(count && !(meta->flags&6u))return 0; // Long native name remains unresolved.
     *error=count && (meta->flags&4u)?GL_INVALID_OPERATION:GL_NO_ERROR;
     return 1;
+}
+
+
+/* Only a private client-array record can use this proof: its complete fetch
+ * spans were packed locally, every enabled row is a known client definition,
+ * and the untouched EGL default framebuffer has a live draw surface. Native
+ * imported-image sampling views are separate textures, not default attachments.
+ * Zero/one active sampler cannot have a mixed-sampler unit conflict regardless
+ * of shared uniform writes. Multi-sampler/unknown programs keep observation.
+ * Reflection is cold and bounded; subsequent draws read a numeric token cell. */
+static int inline_client_error_prediction(void) {
+    struct wpk_gles_context *state=_wpk_gl_current_encoder();
+    struct wpk_program_stream *stream=state->program_stream;
+    if(!stream || !stream->active)return 0;
+    struct wpk_gl_name_scope guard __attribute__((cleanup(_wpk_gl_end_name_scope)))=begin_dispatch_scope(state);
+    if(!guard.group)return -1;
+    if(stream->blocked){raise_client_error(GL_INVALID_OPERATION);return -1;}
+    if(!state->current_program || !atomic_load_explicit(&state->objects->program_records_known,memory_order_relaxed))return 0;
+    struct wpk_draw_signature *saved=&stream->draw_signatures[stream->draw_slot];
+    if(saved->known && saved->token==stream->current_token)return saved->simple;
+    for(unsigned i=0;i<WPK_PROGRAM_CACHE;i++){
+        saved=&stream->draw_signatures[i];
+        if(saved->known && saved->token==stream->current_token){stream->draw_slot=i;return saved->simple;}
+    }
+    GLint location=0;unsigned samplers=0;int simple=0;
+    for(unsigned i=0;i<WPK_PROGRAM_CACHE;i++){
+        struct wpk_uniform_signature *meta=NULL;
+        int available=uniform_signature(state,location,&meta);
+        if(available<=0)return available;
+        if(!meta->type){simple=1;break;}
+        switch(meta->type){
+        case GL_SAMPLER_2D:case GL_SAMPLER_CUBE:case 0x8dc1u:
+            if(meta->remaining!=1 || samplers++)goto complete;
+            break;
+        case GL_FLOAT:case GL_FLOAT_VEC2:case GL_FLOAT_VEC3:case GL_FLOAT_VEC4:
+        case GL_INT:case GL_INT_VEC2:case GL_INT_VEC3:case GL_INT_VEC4:
+        case GL_BOOL:case GL_BOOL_VEC2:case GL_BOOL_VEC3:case GL_BOOL_VEC4:
+        case GL_FLOAT_MAT2:case GL_FLOAT_MAT3:case GL_FLOAT_MAT4:break;
+        default:goto complete;
+        }
+        if(meta->remaining>(uint32_t)(INT32_MAX-location))goto complete;
+        location+=(GLint)meta->remaining;
+    }
+complete:
+    stream->draw_slot=stream->draw_cursor++%WPK_PROGRAM_CACHE;
+    stream->draw_signatures[stream->draw_slot]=(struct wpk_draw_signature){stream->current_token,1,simple};
+    return simple;
 }
 
 void glUniform1i(GLint location, GLint v) {

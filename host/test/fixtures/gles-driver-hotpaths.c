@@ -188,6 +188,64 @@ static void uniform_proofs(EGLDisplay d,EGLConfig config,EGLContext context,GLui
  if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);
  printf("UNIFORM_PROOFS %u\n",uniform_checks);fflush(stdout);
 }
+struct inline_peer {EGLDisplay display;EGLConfig config;EGLContext source;GLuint program,fragment;const char *text;};
+static void *inline_relink(void *opaque){
+ struct inline_peer *p=opaque;const EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
+ EGLContext ctx=eglCreateContext(p->display,p->config,p->source,attrs);assert(ctx!=EGL_NO_CONTEXT);
+ assert(eglMakeCurrent(p->display,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));
+ glShaderSource(p->fragment,1,&p->text,NULL);glCompileShader(p->fragment);GLint ok=0;glGetShaderiv(p->fragment,GL_COMPILE_STATUS,&ok);assert(ok);
+ linked(p->program);glFinish();assert(glGetError()==GL_NO_ERROR);
+ assert(eglMakeCurrent(p->display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT)&&eglDestroyContext(p->display,ctx)&&eglReleaseThread());return NULL;
+}
+#define INLINE_CHECK(label,error,...) do { \
+ uint64_t cold_before=_wpk_gl_device_requests(); \
+ __VA_ARGS__;assert(glGetError()==(error)&&glGetError()==GL_NO_ERROR); \
+ uint64_t before=_wpk_gl_device_requests(),cold=before-cold_before; \
+ for(unsigned check=0;check<4;check++){__VA_ARGS__;assert(glGetError()==(error)&&glGetError()==GL_NO_ERROR);} \
+ printf("INLINE_COUNT {\"operation\":\"%s\",\"cold\":%llu,\"requests\":%llu}\n",label,(unsigned long long)cold,(unsigned long long)(_wpk_gl_device_requests()-before));inline_checks++; \
+} while(0)
+static void inline_pixel(const unsigned char expected[4]){
+ unsigned char pixel[4];glReadPixels(8,8,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
+ assert(!memcmp(pixel,expected,4)&&glGetError()==GL_NO_ERROR);
+}
+static void inline_proofs(EGLDisplay d,EGLConfig config,EGLContext parent,EGLSurface parent_surface,int admitted,int automatic){
+ unsigned inline_checks=0;const EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE},size[]={EGL_WIDTH,16,EGL_HEIGHT,16,EGL_NONE};
+ EGLContext ctx=eglCreateContext(d,config,parent,attrs);EGLSurface surface=eglCreatePbufferSurface(d,config,size);
+ assert(ctx!=EGL_NO_CONTEXT&&surface!=EGL_NO_SURFACE&&eglMakeCurrent(d,surface,surface,ctx));
+ GLuint v=shader(GL_VERTEX_SHADER,"attribute vec2 p;attribute vec4 c;varying vec4 color;void main(){gl_Position=vec4(p,0.,1.);color=c;}"),
+ f=shader(GL_FRAGMENT_SHADER,"precision mediump float;varying vec4 color;void main(){gl_FragColor=vec4(.2,.6,.8,1.)+color*.001;}"),program=glCreateProgram();
+ glAttachShader(program,v);glAttachShader(program,f);glBindAttribLocation(program,0,"p");glBindAttribLocation(program,1,"c");linked(program);glUseProgram(program);
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());
+ const GLfloat triangle[]={-1,-1,1,-1,0,1};glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,triangle);glEnableVertexAttribArray(0);
+ glViewport(0,0,16,16);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_NO_ERROR);
+ const unsigned char blue[]={51,153,204,255},white[]={255,255,255,255};
+ INLINE_CHECK("no-sampler",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(blue);
+ // Mixed client/VBO arrays keep the conservative path even if this particular
+ // buffer is large enough. Shared mutable storage is not a local draw proof.
+ GLuint buffer;glGenBuffers(1,&buffer);glBindBuffer(GL_ARRAY_BUFFER,buffer);const GLfloat colors[12]={0};
+ glBufferData(GL_ARRAY_BUFFER,sizeof colors,colors,GL_STATIC_DRAW);glVertexAttribPointer(1,4,GL_FLOAT,GL_FALSE,0,NULL);glEnableVertexAttribArray(1);assert(glGetError()==GL_NO_ERROR);
+ INLINE_CHECK("mixed-buffer",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(blue);
+ glDisableVertexAttribArray(1);glBindBuffer(GL_ARRAY_BUFFER,0);glDeleteBuffers(1,&buffer);assert(glGetError()==GL_NO_ERROR);
+ GLuint sf=shader(GL_FRAGMENT_SHADER,"precision mediump float;uniform sampler2D t;void main(){gl_FragColor=texture2D(t,vec2(.5));}"),sp=glCreateProgram();
+ glAttachShader(sp,v);glAttachShader(sp,sf);glBindAttribLocation(sp,0,"p");linked(sp);glUseProgram(sp);
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());
+ GLuint texture;glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,white);assert(glGetError()==GL_NO_ERROR);
+ INLINE_CHECK("one-sampler",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(white);
+ struct inline_peer peer={d,config,ctx,sp,sf,"precision mediump float;uniform sampler2D t,s;void main(){gl_FragColor=(texture2D(t,vec2(.5))+texture2D(s,vec2(.5)))/2.;}"};pthread_t thread;
+ assert(!pthread_create(&thread,NULL,inline_relink,&peer)&&!pthread_join(thread,NULL));
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);
+ INLINE_CHECK("old-link",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(white);
+ glUseProgram(sp);assert(glGetError()==GL_NO_ERROR);
+ INLINE_CHECK("new-link-multi-sampler",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(white);
+ glUseProgram(program);assert(glGetError()==GL_NO_ERROR);
+ GLuint fbo;glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);assert(glGetError()==GL_NO_ERROR);
+ INLINE_CHECK("incomplete-framebuffer",GL_INVALID_FRAMEBUFFER_OPERATION,glDrawArrays(GL_TRIANGLES,0,3));
+ glBindFramebuffer(GL_FRAMEBUFFER,0);glDeleteFramebuffers(1,&fbo);assert(glGetError()==GL_NO_ERROR);
+ INLINE_CHECK("restored-framebuffer",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(blue);
+ glUseProgram(0);glDeleteProgram(program);glDeleteProgram(sp);glDeleteShader(v);glDeleteShader(f);glDeleteShader(sf);glDeleteTextures(1,&texture);assert(glGetError()==GL_NO_ERROR);
+ assert(eglMakeCurrent(d,parent_surface,parent_surface,parent)&&eglDestroyContext(d,ctx)&&eglDestroySurface(d,surface));
+ printf("INLINE_PROOFS %u\n",inline_checks);fflush(stdout);
+}
 /* Read-only rejection cannot revoke independently owned program names.
  * Both standalone requests and accepted-prefix/query-rejection receipts keep
  * exact errors and untouched outputs. Checked mode remains the control. */
@@ -272,6 +330,7 @@ int main(int argc,char **argv){
  matrix_proofs(d,config,ctx,program,automatic||!strcmp(argv[1],"admitted"),automatic);
  uniform_proofs(d,config,ctx,program,automatic||!strcmp(argv[1],"admitted"),automatic);
  readonly_query_proofs(program,automatic||!strcmp(argv[1],"admitted"));
+ inline_proofs(d,config,ctx,surface,automatic||!strcmp(argv[1],"admitted"),automatic);
  glBindVertexArray(0);glDeleteVertexArrays(1,&vao);glUseProgram(0);glDeleteProgram(program);glDeleteShader(v);glDeleteShader(f);glDeleteBuffers(3,buffers);glDeleteTextures(1,&texture);assert(glGetError()==GL_NO_ERROR);
  assert(eglMakeCurrent(d,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT)&&eglDestroyContext(d,ctx)&&eglDestroySurface(d,surface)&&eglTerminate(d)&&eglReleaseThread());
  puts("PASS hotpath request attribution");return 0;

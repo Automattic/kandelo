@@ -6316,6 +6316,24 @@ predecessor, and closure clears the cache. Public names cannot prove a
 signature because a peer relink leaves this context's older executable
 installed.
 
+Small inline client-array draws can also retain the error proof when all
+enabled attributes have known client definitions and packed source spans,
+the default VAO/framebuffer have never been displaced and EGL has a live draw
+surface. A cold bounded scan of the owned executable's uniform signatures
+proves zero or one active sampler; numeric per-token cells, with a last-cell
+hint, retain that immutable fact until journal closure. It does not infer a
+signature from a mutable public program name. Original draw records still
+reach the independent host validator and error audit. Mixed client/VBO rows,
+multiple samplers, unresolved metadata and framebuffer/VAO uncertainty retain
+the existing error observation. Buffer-backed draw/storage authority remains
+separate required B1 work; this selected proof does not complete the stage.
+No additional scan runs when the draw has no inline client arrays.
+
+Vertex-pointer setters reserve their complete command record before changing
+C layout or buffer-reference ownership. A refused rollover prefix leaves the
+old size, type, normalization and pointer observable through getters; it
+cannot publish a new client layout whose command was never recorded.
+
 Optional journal action8 reads the owned immutable pin's uniform type,
 remaining array elements and already-known native-location state. It
 requires own-current-thread/context/journal authority, cannot run

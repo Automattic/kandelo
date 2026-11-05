@@ -1248,6 +1248,20 @@ conformance, matched measurements and complete-preview acceptance remain open.
 Exact scripts, frozen sources, cold/warm records and comparisons are in
 `.context/graphics-uniform-proof-r395/`.
 
+R398/R400 add the owned-generation proof for selected small inline client
+arrays and preserve old pointer metadata when a rollover refuses a new
+attribute definition. Final native488, graphics2193/88, Node18/6 and36 GPU
+modes pass, with the identical24 compiler diagnostics still open. Three of
+seven inline scenarios change four warmed device requests to zero; complete
+warm totals28 to16 and cold7 to11 are retained. Mixed buffers, multiple
+samplers and framebuffer uncertainty preserve observation. Actual ScummVM's
+recorded draws are buffer-backed, so these inline results do not establish
+an application improvement or closure of its draw drains. Required buffer/
+storage authority and actual application/conformance/latency gates remain
+open. See `.context/graphics-inline-proof-r398/` and
+`.context/graphics-pointer-reservation-r400/`; no complete B1 preview is
+announced. The maintainer wants to wait for all B1 changes.
+
 C publication must also precede EGL lifetime mutations made without a current
 GL binding. The optional0x3c lifecycle barrier now supplies checked metadata-only
 authority through a live owned public context; ordinary0x3b current-thread

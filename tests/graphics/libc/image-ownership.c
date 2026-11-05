@@ -6885,6 +6885,22 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
         puts("PASS encoder-inline-fallbacks"); return 0;
     }
+    if (!strcmp(argv[1], "encoder-pointer-reserve-failure")) {
+        const GLfloat original[2] = {1.5f,-2.5f};
+        const GLshort replacement[3] = {1,2,3};
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,original); glEnableVertexAttribArray(0); glFlush();
+        for (unsigned i=0; i<(WPK_GL_CMDBUF_LEN-12)/8; i++) glClear(GL_COLOR_BUFFER_BIT);
+        fail_submit=1; glVertexAttribPointer(0,3,GL_SHORT,GL_TRUE,0,replacement); fail_submit=0;
+        assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        GLint value=-1; void *pointer=NULL;
+        glGetVertexAttribiv(0,GL_VERTEX_ATTRIB_ARRAY_SIZE,&value); assert(value == 2);
+        glGetVertexAttribiv(0,GL_VERTEX_ATTRIB_ARRAY_TYPE,&value); assert(value == GL_FLOAT);
+        glGetVertexAttribiv(0,GL_VERTEX_ATTRIB_ARRAY_NORMALIZED,&value); assert(value == GL_FALSE);
+        glGetVertexAttribPointerv(0,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer); assert(pointer == original);
+        assert(glGetError() == GL_NO_ERROR && clear_commands == 0);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-pointer-reserve-failure"); return 0;
+    }
     if (!strcmp(argv[1], "encoder-inline-reserve-failure")) {
         const GLfloat vertices[2] = {1.5f,-2.5f};
         glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertices); glEnableVertexAttribArray(0); glFlush();

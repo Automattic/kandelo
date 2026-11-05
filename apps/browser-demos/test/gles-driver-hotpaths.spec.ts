@@ -72,6 +72,14 @@ for(const mode of ["ordinary","admitted","automatic"] as const) for(const arch o
     expect(new Set(uniformCounts.map((row:any)=>row.operation)).size).toBe(40);
     if(mode!=="ordinary")expect(uniformCounts.every((row:any)=>row.requests===0)).toBe(true);
     expect(lines).toContain("READONLY_QUERY_PROOFS 12");
+    expect(lines).toContain("INLINE_PROOFS 7");
+    const inlineCounts=lines.filter((line:string)=>line.startsWith("INLINE_COUNT ")).map((line:string)=>JSON.parse(line.slice(13)));
+    expect(inlineCounts).toHaveLength(7);
+    expect(new Set(inlineCounts.map((row:any)=>row.operation)).size).toBe(7);
+    for(const row of inlineCounts){
+      const exact=mode!=="ordinary" && ["no-sampler","one-sampler","old-link"].includes(row.operation);
+      expect(row.requests,row.operation).toBe(exact?0:4);
+    }
     // Permit future improvements, while rejecting one drain for every large
     // definition. Rollover still revokes the exact prefix and needs recovery.
     expect((byName.get("array-definition-large") as any).total).toBeLessThanOrEqual(4);

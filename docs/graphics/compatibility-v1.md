@@ -51,6 +51,66 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Owned inline-draw proof and rejected pointer changes, 2026-11-05
+
+B1's selected inline client-array path now preserves its exact error prefix
+when every enabled attribute has a known packed client definition, its default
+VAO/framebuffer remain untouched and EGL has a live draw surface. A bounded
+cold scan of the owned generation's uniform signatures proves zero or one
+active sampler. Numeric per-token cells retain the result; journal closure
+clears them. Multi-sampler programs, mixed VBO/client arrays, unproved metadata
+and framebuffer/VAO uncertainty keep the original observation path. Original
+records still execute under independent host validation and production/fatal
+error audit. Other draws gain no reflection or extra attribute scan.
+
+A new failure control also proves that vertex-pointer changes previously
+published C metadata before command reservation. When rollover submission was
+refused, getters exposed the rejected new size/type/normalization/pointer.
+The setter now reserves its complete record before changing layout or buffer
+references; the same emitter writes already-reserved records. The causal unit
+fails before the correction and passes afterwards, preserving original state,
+error reporting and final allocation cleanup. No wire, snapshot or version
+change is introduced.
+
+| Exact supervised command / job | Result and scope |
+| --- | --- |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-inline-proof-r398/before.sh`; `graphics-inline-before-r398-1105-124225-b248`, port6158 | Three expected browser failures of the new local-request expectation; all seven guest draw/pixel/error scenarios complete successfully on each old-SDK engine, each requiring four warmed requests |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-inline-proof-r398/build.sh`; `graphics-inline-build-r398-1105-124415-804f` | PASS1m29: native487, normal SDK32/64, ABI and evidence709 |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-inline-proof-r398/after.sh`; `graphics-inline-after-r398-1105-124626-9e2a`, port6159 | Overall FAILED2m41 solely identical24 compiler diagnostics; graphics2193/88, Node18/6, all36 browser modes pass. Each has seven new inline cases plus40 uniform,19 matrix and12 query controls, with values/pixels/native-live0 and no audit divergence |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-pointer-reservation-r400/before.sh`; `graphics-pointer-reservation-before-r400-1105-125951-2222` | FAIL7s: rejected pointer setter exposes size3 rather than original2 |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-pointer-reservation-r400/build.sh`; `graphics-pointer-reservation-build-r400-1105-130152-fabf` | PASS1m27: all488 native C/UBSan controls, normal SDK32/64, ABI and evidence709 |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-pointer-reservation-r400/after.sh`; `graphics-pointer-reservation-after-r400-1105-130442-f2d2`, port6160 | Overall FAILED2m31 solely identical24 compiler diagnostics. Final graphics2193/88, Node18/6, all36 three-engine/both-width/ordinary-admitted-automatic/production-fatal browser modes pass. Complete original14, uniform40 and inline7 cold/warm records match R398 in all36 cohorts; inputs/products remain frozen |
+
+In each matched admitted wasm32 production cohort, the seven-scenario complete
+warm total changes28 to16 requests: no-sampler, single-sampler and retained-old-
+link draws each change four requests to zero; all four conservative controls
+remain four. Cold totals increase7 to11. Peer relink leaves the old installed
+proof valid; selecting the new multi-sampler generation restores observation.
+These are operation counts against intermediate978, not application latency,
+main or native feel. R356's actual ScummVM prefixes use buffer-backed
+`OP_DRAW_ARRAYS`, so this inline result does not prove removal of its three
+draw drains. Buffer/storage authority, remaining required hot paths, actual
+application measurements and all full-stage gates stay open. No complete B1
+preview or new acceptance boundary is declared. Exact commands, frozen source
+versions and complete records are retained in the R398/R400 evidence roots.
+
+The maintainer unlocked the Mac for a manual check of actual preview5693's
+normal c635 build: Sway, SFWBar and Foot render with readable text; a typed
+command produces output and the Foot prompt returns. Screenshot
+`.context/manual-preview-r397-sway.jpg` and its JSON record retain that smoke
+check, not latency or current-R400 preview evidence. The maintainer now wants
+to wait for all B1 changes before another preview announcement.
+
+For disk space, R399 retires only inactive R360 Cargo intermediates/tools after
+checking no live process uses them and retaining source/product/tool hashes.
+Observed free space increases3.011GB;36 retained kernel/image/SDK/ABI files
+still match. Reproducing that old build requires regenerating its tools.
+Canonical `./run.sh cache-gc --apply` (`graphics-cache-gc-r399-1105-124809-f441`)
+then succeeds7s and removes0B:45 live roots protect2904 of2932 generations,
+while the remaining28 are retained by the14-day policy. Root protections are
+preserved. Exact judgment and checks are in
+`.context/graphics-old-build-cleanup-r399/`.
+
 ## Scalar/vector uniform proof and selected conformance, 2026-11-05
 
 B1 now uses its existing immutable-generation signature cache for small
