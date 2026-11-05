@@ -251,6 +251,14 @@ export function attachedNativeStorage(b: GlBinding, image: GlImageAttachment): o
 /** Retarget all containers before publishing storage. Other contexts' bindings
  * remain logical and resolve the current view on their next muxer selection. */
 function retarget(b: GlBinding, kind: number, object: WebGLTexture | WebGLRenderbuffer, old: GlTextureView | GlRenderbufferView, next: GlTextureView | GlRenderbufferView): boolean {
+  // Other contexts' native containers must agree with the published shared
+  // generation. A predicted retarget can leave a healthy peer attached to
+  // old storage when the submitter resets at the batch sample. Keep this
+  // host publication exact; native failures still reset the submitting
+  // context and unwind the container changes before any peer can enter.
+  return withNativeBookkeeping(() => retargetExact(b,kind,object,old,next));
+}
+function retargetExact(b: GlBinding, kind: number, object: WebGLTexture | WebGLRenderbuffer, old: GlTextureView | GlRenderbufferView, next: GlTextureView | GlRenderbufferView): boolean {
   const gl = b.gl!;
   let draw: WebGLFramebuffer|null = null, read: WebGLFramebuffer|null = null, active = 0;
   if (!checkedGlCall(b, () => { draw = gl.getParameter(0x8ca6); }) ||

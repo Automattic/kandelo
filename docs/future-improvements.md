@@ -257,7 +257,10 @@ binds also fix the dEQP-EGL `gles2_shared_render` timeouts, where every
 
 Private buffer and image copies retain exact native checks until their
 results can be published safely. Image refresh counts remain stale on failure,
-and possible writes stay counted through reset unwinding. Moving validation
+and possible writes stay counted through reset unwinding. Shared native
+container retargeting also retains exact checks before generation publication;
+a submitting-context reset cannot leave a healthy peer attached to a different
+generation from the one sampling observes. Moving validation
 into the guest must preserve this host storage-validity contract.
 
 The initial B1 source increments preserve local error knowledge across
@@ -286,8 +289,11 @@ application acceptance remain required. A positive link-status cache without com
 fails a newly shared pthread deletion regression; that prototype
 was not landed. This ownership remains required current-iteration work.
 This is only the start of B1: the remaining exact validation families and their audit
-coverage, application measurements and the ScummVM round-trip target remain
-required before B1 is complete. Completing program selection alone does not
+coverage and application measurements remain required before B1 is complete.
+The maintainer kept asynchronous bindings in B2 and moved the ScummVM <=10
+total synchronous requests per produced buffer gate to B2 completion on
+2026-11-05; all other stage and final gates remain required.
+Completing program selection alone does not
 finish the remaining attribute/draw and other required hot-path validation.
 B2–B6 and C1–C3 remain current-iteration work; no completed driver stage or
 native-feel result follows from the
@@ -1178,8 +1184,9 @@ each require a submit and error drain. The other13 measured operation
 families retain their request counts. This is an operation- count result
 against4de407f20f, not main, application latency, total overhead or
 native-feel acceptance. Remaining B1 upload/draw/object families,
-ordinary activation, complete stage validation and ScummVM's round-trip
-target still need closure before a complete normal-built B1 preview.
+ordinary activation and complete stage validation still need closure before a
+complete normal-built B1 preview. ScummVM's <=10 total-request gate is required
+at B2 completion under the maintainer's stage-allocation decision.
 B2–B6 and C1–C3 remain required in their recorded order.
 
 The admitted B1 prototype now predicts small matrix2/3/4 errors from a
@@ -1219,8 +1226,9 @@ device requests between produced front copies; these are not display timestamps.
 A standalone rejected numeric getter no longer discards independent program-name
 knowledge. Twelve getter/error/output/selection controls per hot-path case pass
 across both widths, three engines and production/fatal modes. Application impact
-needs a normally rebuilt application and new measurements; B1's <=10 target and
-full stage acceptance remain open. Remaining binds and draw/attribute authority
+has rebuilt request-count evidence below; current-tree latency and full stage
+acceptance remain open. The <=10 target is required at B2 completion.
+Remaining binds and draw/attribute authority
 must follow the measured path rather than inferred uniform costs: decimal query
 43 is QOP_BIND_BUFFER (0x2b), not a uniform setter. The full864-case R298 component
 regression passes, including pre-exit ownership and all new getter proofs.
@@ -1231,12 +1239,16 @@ snapshot of its successful normal setup now supplies12 checked/automatic
 ScummVM cohorts across three engines: every2055 automatic interval has24
 requests, compared with25 in every2331 checked interval. Both retain13
 buffer binds,3 image binds and6 error drains; automatic selection replaces
-2 program mutations with1 journal barrier. B1's <=10 target is unmet even
-from binds alone. The maintainer is resolving the B1/B2 stage dependency;
-no order or acceptance gate changes while that question is pending. The
+2 program mutations with1 journal barrier. The <=10 target is unmet even
+from binds alone. The maintainer resolved the dependency: bindings remain
+in B2 and the <=10 total-request gate applies at B2 completion. Other
+stage requirements and the final acceptance bar are unchanged. The
 frozenb45 host observer excludes later host correctness fixes. These are
 client-front request counts, not physical latency, display FPS, overhead,
 main or native-feel acceptance. The frozen17d normal producer completes3h25;
-normal admission and final combined-tree checks remain required. Desktop
-R291 remains36 pass/2 fail/4 existing skips,
-with Firefox Cage cursor readiness and Sway's missing startup syslog still open.
+normal admission and final combined-tree checks remain required. R354 later
+checks the combined host/app source against unchanged normal guest sources:
+61 pass,1 Firefox SNKRX interaction failure and4 existing host-clipboard skips
+of66 desktop cases. Cage, labwc, Sway and both SFWBar compositor checks pass
+on all three engines. This does not close the other desktop/performance
+defects or establish a completed stage.

@@ -5512,7 +5512,14 @@ sharing canonical source pixels. Texture views preserve independent sampling
 parameters; FBO attachments target canonical storage and retain their logical
 query identity. Sampling views copy current source pixels before drawing.
 Respecification stages an owned view and retargets all referencing group
-FBOs before replacement. C image holds release old backing only after checked
+FBOs before replacement. Shared container retargeting retains exact host
+bookkeeping checks even inside a predicted guest batch: publishing a new
+image while a healthy peer still attaches the previous storage would make
+attachment reads disagree with sampling. An unpredicted native refusal
+resets the submitting context and unwinds the container changes before
+the replacement is published. Guest acceptance remains host-predicted;
+the private publication checks do not turn native flags into late API errors.
+C image holds release old backing only after checked
 orphaning. Confirmed holds belong to retained shared object records;
 ambiguous imports retain candidate object/image references until final group
 retirement. Association revisions prevent older completions from replacing

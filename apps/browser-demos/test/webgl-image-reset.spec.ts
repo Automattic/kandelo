@@ -2,7 +2,7 @@ import {expect,test} from "@playwright/test";
 import {fileURLToPath} from "node:url";
 import {writeFileSync} from "node:fs";
 import {installBrowserMemoryBoundaryProbe,memoryBoundaryFailures} from "./support/browser-memory-boundary";
-for (const mode of ["retargetReset","allocationReset","refreshReset"]) test(`private image ${mode} preserves coherent healthy-peer storage`,async({page,browser})=>{
+for (const mode of ["retargetReset","peerRetargetReset","allocationReset","refreshReset"]) test(`private image ${mode} preserves coherent healthy-peer storage`,async({page,browser})=>{
  await installBrowserMemoryBoundaryProbe(page); await page.goto("/trap-signal-test.html");
  const root=fileURLToPath(new URL("../../../",import.meta.url));
  const result=await page.evaluate(async ({root,mode})=>{

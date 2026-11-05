@@ -83,6 +83,38 @@ not a current full-distribution preview, full host type-check pass, final
 stage acceptance or latency/native-feel evidence. Other audit and final
 goal gates remain required.
 
+## Shared image publication retains healthy peer attachments, 2026-11-05
+
+A new fault control refuses retargeting of the healthy peer's framebuffer
+while the submitting context replaces shared image storage. Previously the
+batch sample reset only the submitter, but shared metadata already named
+the new generation: the peer read blue through its old attachment and red
+through sampling. Retiring the guilty context did not repair the mismatch.
+This reproduces on Chromium, Firefox and WebKit; it is a platform defect,
+not an allowed consequence of the guilty context's reset.
+
+Shared texture/renderbuffer container retargeting now runs in the existing
+exact host-bookkeeping scope before generation publication. A native
+refusal retains the submitting-context reset and attributed diagnostic,
+and the native inverse restores attempted peer containers before the
+replacement can publish. Guest acceptance remains host-predicted. This
+scope concerns shared native storage publication, like private allocation
+and copy checks; it adds no wire, ABI entry or unused-feature scan.
+
+| Frozen run / principal command | Result | Native peer observation |
+| --- | --- | --- |
+| R361 `graphics-image-peer-reset-r361-1105-100755-b28a`; `scripts/dev-shell.sh bash .context/graphics-image-peer-reset-r361/run.sh` | FAIL3 / PASS9,38s | All three new peer controls fail: published source1, attachment blue, sampling red, attachment still blue after guilty retirement |
+| R362 `graphics-image-peer-reset-after-r362-1105-100917-bd51`; `scripts/dev-shell.sh bash .context/graphics-image-peer-reset-after-r362/run.sh` | PASS12,41s | Published source0, attachment/sampling/post-retirement all blue; guilty submit and later query both ENODEV, one diagnostic, native cleanup and memory-boundary checks pass |
+
+The original nine reset controls retain their assertions. Both runs check
+frozen source/configuration hashes after execution. This is native import
+and shared-storage evidence, not a guest ABI, application performance or
+full stage acceptance claim. R363 separately runs the broader graphics,
+Node, three-engine state/retirement, shader, ABI/evidence and compiler
+checks; its result is not yet final. The frozen normal preview producer
+R360 is at2a8efe467d and excludes this later host correction. All remaining
+A3/B1 and final ship gates stay required, with family56/3/17/21 unchanged.
+
 ## Automatic application-driver admission prototype, 2026-11-05
 
 Ordinary applications now enter the B1 program journal at their first

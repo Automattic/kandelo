@@ -192,14 +192,15 @@ self.onmessage = ({ data }) => {
     }
     require(error() === 0x505, "candidate allocation error");
     const rejected = pixels(71);
-    if ((scenario === "retargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
+    if ((scenario === "retargetReset" || scenario === "peerRetargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
       current(12); bind(17,12); fbo(81,17,12); current(11); bind(17); pixels(71);
       if (scenario === "refreshReset") {
         checked(O.QOP_IMAGE_TARGET,[1,17,source]);
         send(O.OP_BIND_FRAMEBUFFER,[0x8d40,72]); send(O.OP_CLEAR_COLOR,[0,0x3f800000,0,0x3f800000]); send(O.OP_CLEAR,[0x4000]);
       }
     }
-    const attach = gl.framebufferTexture2D.bind(gl), ownedFbo = kernel.gl.get(7, 11)!.fbos.get(71)!;
+    const attach = gl.framebufferTexture2D.bind(gl), ownedFbo = scenario === "peerRetargetReset"
+      ? kernel.gl.get(7,12)!.fbos.get(81)! : kernel.gl.get(7,11)!.fbos.get(71)!;
     let injected = false, allocationFlag = 0;
     const nativeTexImage = gl.texImage2D.bind(gl), nativeCopy = gl.copyTexSubImage2D.bind(gl), nativeGetError = gl.getError.bind(gl);
     if (scenario === "allocationReset") {
@@ -217,7 +218,7 @@ self.onmessage = ({ data }) => {
       gl.getError = () => { if (allocationFlag) { const value = allocationFlag; allocationFlag = 0; return value; } return nativeGetError(); };
     }
     gl.framebufferTexture2D = (target, point, textarget, texture, level) => {
-      if ((!scenario || scenario === "retargetReset") && !injected && target === 0x8ca9 && gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === ownedFbo) {
+      if ((!scenario || scenario === "retargetReset" || scenario === "peerRetargetReset") && !injected && target === 0x8ca9 && gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === ownedFbo) {
         injected = true;
         attach(target, point, 0xdead, texture, level);
       }
@@ -226,7 +227,7 @@ self.onmessage = ({ data }) => {
     };
     let resetRc = 0;
     try {
-      if ((scenario === "retargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
+      if ((scenario === "retargetReset" || scenario === "peerRetargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
         new Uint32Array(memory.buffer,64,3).set([1,17,source]);
         resetRc = api.host_gl_query(7,O.QOP_IMAGE_TARGET,64,12,512,12,11);
       } else if (!scenario) checked(O.QOP_IMAGE_TARGET, [1, 17, source], 1);
@@ -235,7 +236,7 @@ self.onmessage = ({ data }) => {
       gl.framebufferTexture2D = attach;
       if (scenario === "allocationReset" || scenario === "refreshReset") { gl.texImage2D = nativeTexImage as typeof gl.texImage2D; gl.copyTexSubImage2D = nativeCopy; gl.getError = nativeGetError; }
     }
-    if ((scenario === "retargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
+    if ((scenario === "retargetReset" || scenario === "peerRetargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
       require(injected && resetRc === -19,"retarget logical reset");
       const refused = api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,11);
       current(12); const healthyPixels = pixels(81,12);
