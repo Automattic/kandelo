@@ -4545,3 +4545,23 @@ VFS inspector. These observations leave both the guest/bridge request stall
 and the preview routing failure open. The next investigation must capture
 service-worker control and response provenance during navigation, then
 address the actual platform boundary. No browser-engine defect is claimed.
+
+**2026-11-05 — Refuse unhandled computer routes at the Vite boundary.** A
+raw request that bypassed the browser service worker for
+`/computer/missing/wp-admin/site-editor.php` returned HTTP 200 with Vite's
+app-shell fallback before the change. Vite's development and preview
+middleware now returns an explicit, non-cacheable HTTP 503 for the
+`/computer` namespace. A focused raw-route browser test covers the bare
+path and a named editor path; it passed in Chromium, Firefox and WebKit
+after failing with HTTP 200 before the change. This prevents recursive
+Kandelo boots when the local static server receives a missed bridge route.
+It does not restore a lost service worker or fix the classic PHP request
+stall, and deployed static hosts need the same route policy. The broader
+`ci-check-browser-assets.sh` check reached its resolver stage but failed
+because this SourceOnly checkout lacks six unrelated optional artifacts
+(Erlang, `fbtest`, and MariaDB); its size and memory64 prechecks passed.
+The real classic Chromium app editor/20-second health case still passed
+with the Vite guard in place (1.9m). An attempted browser TypeScript
+project check returned 181 errors in host and shared dependencies, with
+no diagnostics naming the changed Vite config or test file; this is not
+a passing typecheck.

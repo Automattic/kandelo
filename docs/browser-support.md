@@ -2588,6 +2588,14 @@ fallback for any request that has no demo chrome to render a status in, such
 as loading `/<scope>/computer/<name>/` directly with no page-side listener
 attached.
 
+If a browser navigation reaches the static origin without service-worker
+control, the static server must also refuse the `/<scope>/computer/` namespace.
+Vite's development and preview servers return a non-cacheable 503 there,
+instead of serving the Kandelo app shell inside its own web-preview iframe
+and recursively booting another computer. The 503 identifies lost bridge
+control; it does not restart the guest. Other static hosts need the same
+route policy when they use an app-shell fallback.
+
 ### Blob-URL iframes (service-worker boundary)
 
 The service worker can only bridge requests from documents it **controls**. A
