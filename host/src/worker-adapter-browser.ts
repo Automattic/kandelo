@@ -1,18 +1,38 @@
+import { SPARE_WORKERS, SpareWorkerPool } from "./spare-worker-pool";
 import type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 
 export class BrowserWorkerAdapter implements WorkerAdapter {
   private entryUrl: string | URL;
+  private readonly spares: SpareWorkerPool<Worker>;
 
   constructor(entryUrl: string | URL) {
     this.entryUrl = entryUrl;
+    this.spares = new SpareWorkerPool(
+      SPARE_WORKERS,
+      (failed) => {
+        const worker = this.constructWorker();
+        // The taking launch's handle replaces this listener.
+        worker.onerror = failed;
+        return worker;
+      },
+      (worker) => worker.terminate(),
+    );
   }
 
   createWorker(workerData: unknown): WorkerHandle {
+    return initializeBrowserWorker(this.spares.take() ?? this.constructWorker(), workerData);
+  }
+
+  /** Terminate the spare Workers. Launched Workers keep their own owners. */
+  dispose(): void {
+    this.spares.dispose();
+  }
+
+  private constructWorker(): Worker {
     // Keep process and thread Workers module Workers: Firefox crashes when a
     // Worker terminates a nested classic Worker that is still starting
     // (docs/measurements/2026-10-28-firefox-nested-classic-worker-termination.md).
-    const worker = new Worker(this.entryUrl, { type: "module" });
-    return initializeBrowserWorker(worker, workerData);
+    return new Worker(this.entryUrl, { type: "module" });
   }
 }
 
