@@ -1904,7 +1904,10 @@ Reaping on init's behalf uses the same Rust removal and host-cleanup path as a
 `waitpid()` reap, including the resource-free `Limbo` record kept for a
 group leader that still has group members. That `Limbo` record is not a
 process, so `kernel_get_parent_pid` reports `ESRCH` for it, as
-`kernel_get_process_state` does. Only the first acknowledgement of an exit
+`kernel_get_process_state` and both process-exit queries do. Otherwise a
+host could mistake a reaped leader for a live process and miss its exit
+notification while another group member remains alive.
+Only the first acknowledgement of an exit
 has effects; a repeat, such as the second arrival for a spawn child that
 exited before its spawn result was published, changes nothing. Removing a
 process record for any other reason (for example forced teardown) also
