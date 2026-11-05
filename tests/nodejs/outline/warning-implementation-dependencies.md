@@ -76,3 +76,9 @@ current. No new guest cases, overall suites or full product rebuild ran.
 Continue independent audited gaps across families; do not turn this into an
 unbounded warning-only investigation. Later identified-artifact four-host
 checks must cover these owners and all remaining API obligations.
+
+The staged whitespace check reported patch context lines75and101. Both are
+required single-space blank lines in unified-diff syntax; authored patch
+additions have no trailing whitespace, and all other committed files pass
+the whitespace check. Exact patch apply/reverse evidence remains unchanged.
+The initial check failure is retained, not reported as a default-check pass.

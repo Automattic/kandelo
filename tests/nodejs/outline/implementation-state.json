@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-05T20:47:59.983128+00:00",
+  "updatedAt": "2026-11-05T20:50:28.974367+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1327,9 +1327,9 @@
     "host/test/fixtures/node-warning-controls.cjs": "15b9675da33717f5408630e5523e8c801d946a7c7962d404c19b94b2f0f7a0fd",
     "third_party/node-core/upstream/warning/src/node_options.cc": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279",
     "third_party/node-core/upstream/warning/lib/internal/process/pre_execution.js": "b87b010a0f42b40bc7af93195b520193e49dd1ac80a30ece13642978737c351c",
-    "tests/nodejs/outline/warning-implementation-dependencies.md": "256ccddae0def1e44e10eb862d3ecc0985852da0f4c14adb8122a53ee1aea01c",
+    "tests/nodejs/outline/warning-implementation-dependencies.md": "39beba3516bd85a33f9072e24722fe8c26a1d711467a66c0b0a5c746744a40f0",
     "host/test/fixtures/node-warning-platform.cjs": "dab721f86e644f4438368155c52c5276097180d0fc27310e53920c003d4eb208",
-    "tests/nodejs/outline/warning-finding-progress.json": "5625bd5f7d23ee332472d8348454fffef08c9393a3076235b1e620368d4fd892",
+    "tests/nodejs/outline/warning-finding-progress.json": "a2351607f344b496a73606c150e092143fa882745f93680e94042a54afd4a570",
     "third_party/node-core/upstream/warning/src/node_options-inl.h": "1d3b7cd2dc488d09ad583f3df71cdbe40f71bcaa104191e7abe3b9a4fdbfb516",
     "third_party/node-core/upstream/warning/lib/internal/process/warning.js": "b3abe35b1f8c98d6fb7ff34649d422fe4ae8b700968a533a5e20ade7bc471ee8"
   },
@@ -35524,10 +35524,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/warning-20261105T204800Z.tar.gz",
-    "sha256": "f2f987143740566c6793059a52d0480f3ed85ae10691d65be304117d5a3145e5",
-    "bytes": 13055850,
-    "scope": "Selected121source/preimages,portable/parser/frontend/unchanged-file evidence and original nonpasses;117\u2013121guest source uncompiled,accepted116retained. Not immutable SDK/kernel/host/product/four-host closure.",
+    "path": ".context/node26-implementation-snapshots/warning-staging-20261105T205029Z.tar.gz",
+    "sha256": "f3befba23a3e115b7c79619f0428381c91876ef327dfbaffd9c63c0c01e84b46",
+    "bytes": 7240755,
+    "scope": "Selected121source identities and staging whitespace scope;prior snapshot retains full warning/parser/nonpass evidence. Guest117\u2013121uncompiled;not full SDK/toolchain/four-host closure.",
     "stateFileNote": "Archived state precedes injection of this snapshot reference"
   },
   "currentScopedStaticChecks": {
@@ -43438,6 +43438,13 @@
       "bytes": 7259878,
       "scope": "Selected current120runtime plus shared input declarations/preflight,source identities/package checks/preimages;117\u2013120guest source uncompiled. Not immutable SDK/kernel/host/product/four-host closure.",
       "stateFileNote": "Archived state precedes injection of this snapshot reference"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/warning-20261105T204800Z.tar.gz",
+      "sha256": "f2f987143740566c6793059a52d0480f3ed85ae10691d65be304117d5a3145e5",
+      "bytes": 13055850,
+      "scope": "Selected121source/preimages,portable/parser/frontend/unchanged-file evidence and original nonpasses;117\u2013121guest source uncompiled,accepted116retained. Not immutable SDK/kernel/host/product/four-host closure.",
+      "stateFileNote": "Archived state precedes injection of this snapshot reference"
     }
   ],
   "processLifetimeImplementation": {
@@ -47923,7 +47930,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "147e320b8144e43a65bd44830f84d5b5d8452e0d",
+    "pushedThrough": "c4bdcfbe5accd8784422d67a3b7ae25f5d7c0109",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -47934,7 +47941,8 @@
       ".context/node26-push-118.log": "87421106f6b90690c441f585d4d8c0d4c9187cad6f237bfaa073baede68a9b77",
       ".context/node26-push-119.log": "03707e5840353a71faa3fe7328858330df3ce12ad0254ce1e3df10de6e401d80",
       ".context/node26-push-120.log": "10de64a1ffade286fa653938e9f9e7032405752d5894747c7df67900f29b9e78",
-      ".context/node26-push-120-inputs.log": "d08a594707febe8e0b3959c3ae13db1b3e0cfa912df29bd2e816c6b6d3998b41"
+      ".context/node26-push-120-inputs.log": "d08a594707febe8e0b3959c3ae13db1b3e0cfa912df29bd2e816c6b6d3998b41",
+      ".context/node26-push-121.log": "af6c062a760eaa0fb369dc8a7ff833479a3e61e8b1cc052dbf33bee1fd586ce9"
     }
   },
   "sourceLedgerCoverageCorrection": {
@@ -49080,7 +49088,13 @@
     "guestRuntimeValidated": false,
     "fourHostConformance": false,
     "implementationComplete": false,
-    "acceptedPlatformLimits": []
+    "acceptedPlatformLimits": [],
+    "stagingCheck": {
+      "report": ".context/node26-warning-staging-resolution.json",
+      "sha256": "2227e60eecd73486f5ae86f4868ed7eb78303cdf76b4b0b85d3033984d27e5a2",
+      "rawResult": "failed",
+      "resolution": "Two required blank context lines;authored patch additions and all other committed files pass separate whitespace checks;exact patch application already verified"
+    }
   },
   "coreBuildInputClosureHistory": [
     {

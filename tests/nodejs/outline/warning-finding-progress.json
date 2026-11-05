@@ -109,5 +109,11 @@
   "guestRuntimeValidated": false,
   "fourHostConformance": false,
   "implementationComplete": false,
-  "acceptedPlatformLimits": []
+  "acceptedPlatformLimits": [],
+  "stagingCheck": {
+    "report": ".context/node26-warning-staging-resolution.json",
+    "sha256": "2227e60eecd73486f5ae86f4868ed7eb78303cdf76b4b0b85d3033984d27e5a2",
+    "rawResult": "failed",
+    "resolution": "Two required blank context lines;authored patch additions and all other committed files pass separate whitespace checks;exact patch application already verified"
+  }
 }
