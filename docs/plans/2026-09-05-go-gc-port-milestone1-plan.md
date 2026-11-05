@@ -4272,3 +4272,13 @@ invalid shared-memory OPcache configuration exists in the WordPress image
 recipe; PHP and demo configuration must be reconciled before live activation
 can be claimed. The WordPress resolver remains in the long Clang guest-tool
 build, and no WordPress/Chromium result is claimed yet.
+
+The host TypeScript check also exposed a preexisting merge syntax error in
+browser thread-worker teardown: an incomplete `Promise.all(...map(...))`
+closure and a stale `t` reference. Both are corrected. That check also
+found that the earlier thread-exit implementation's `ExecRetirement` class
+was removed by main; the Go import now delegates to the current `kernel_exit`
+path after clearing its wait word, preserving current process retirement.
+The host TypeScript check still reports unrelated existing errors (including
+browser artifact aliases, a kernel-worker symbol, and external TLS sources),
+so it is not claimed as a passing host-wide typecheck.

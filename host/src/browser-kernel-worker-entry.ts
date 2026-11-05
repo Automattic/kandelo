@@ -506,8 +506,8 @@ async function terminateThreadWorkers(
       thread.termination ??
       terminateTrackedWorker(thread.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
     );
-    threadExits.release(pid, t.channelOffset);
-  }
+    threadExits.release(pid, thread.channelOffset);
+  }));
   // After the live threads, so none of them can grow the memory meanwhile.
   await terminateExitedThreadWorkers(pid);
   return allQuiescent;

@@ -498,30 +498,7 @@ function buildKernelImports(
     return encoded.byteLength;
   };
 
-  const publishExit = (status: number): void => {
-    const view = new DataView(memory.buffer);
-    const base = channelOffset;
-    if (isExecRetirementMarker(view, base)) {
-      view.setUint32(base + CH_SIG_SIGNUM, 0, true);
-      view.setUint32(base + CH_SIG_SI_CODE, 0, true);
-      throw new ExecRetirement();
-    }
-    view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
-    view.setBigInt64(base + CH_ARGS, BigInt(status), true);
-    const i32 = new Int32Array(memory.buffer);
-    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-    Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-    while (
-      Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
-      "ok"
-    ) {
-      /* */
-    }
-    onKernelExit?.(status);
-    throw new WebAssembly.RuntimeError("unreachable");
-  };
-
-  return {
+  const imports: KernelImports = {
     // CRT argv support
     kernel_get_argc: (): number => metadata.argv.length,
     kernel_argv_read: (index: number, bufPtr: number | bigint, bufMax: number): number => {
@@ -605,7 +582,7 @@ function buildKernelImports(
         throw new RangeError("kernel_thread_exit: unaligned wait pointer");
       }
       Atomics.store(new Int32Array(memory.buffer), range.offset / 4, 0);
-      publishExit(0);
+      imports.kernel_exit(0);
     },
 
     // Clone dispatches through channel (SYS_CLONE)
@@ -690,6 +667,7 @@ function buildKernelImports(
       return result;
     },
   };
+  return imports;
 }
 
 /** @internal Exported for focused startup import contract tests. */
