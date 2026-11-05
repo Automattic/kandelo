@@ -105,6 +105,22 @@ not allowances or a complete per-case regression conclusion.
 | `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-sampler-kernel-r413/build.sh`; `graphics-sampler-kernel-build-r413-1105-135226-db5f` | PASS3m58: four focused journal controls,3645 workspace Rust tests, normal kernel/image-writer graph and ABI check. Earlier R408 normal SDK32/64 build passes with488 native controls; xtask845 unit/8 integration controls pass in R410 |
 | `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-sampler-final-r414/validate.sh`; `graphics-sampler-final-r414-1105-135657-fbec`, port6174 | Overall FAILED2m08 solely identical24 full compiler diagnostics. Graphics2196/88, Node18/6, all36 three-engine/both-width/ordinary-admitted-automatic/production-fatal browser modes, ABI and evidence checks pass. Frozen source/product hashes match before/after; each GPU cohort checks10 inline,40 uniform,19 matrix and12 query scenarios, values/pixels, native-live0 and no audit divergence |
 
+R415 then refreshes the pushed integration runtime c50 through its own normal
+release xtask, SDK32/64 and kernel/image-writer graph. Command
+`scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-sampler-integration-r415/build.sh`,
+job `graphics-sampler-integration-r415-1105-140143-bb90`, passes4m36 with
+ABI/evidence and exact runtime hashes unchanged. This refreshes SDK/kernel
+products; the full application image rebuild and complete B1 preview remain
+required. It does not change the pinned5693 source or snapshot.
+
+R418 removes only inactive R408 native debug/test intermediates after all
+private jobs finish and process/cwd checks find no users. Observed free space
+increases6.09GiB;2082 manifest-bound source/product/release-tool files still
+match afterwards. Sources, normal artifacts, release xtask, compact judgments
+and unresolved evidence remain. Repeating the native Rust tests or debug-tool
+commands requires rebuilding those intermediates. Exact paths and measured
+before/after disk values are in `.context/graphics-debug-cleanup-r418/`.
+
 Matched admitted wasm32 production cohorts use the same10-scenario fixture
 and engine versions on each side. Each side uses its own coherent normal
 kernel/program contract; the optional Program addition changes that digest.
