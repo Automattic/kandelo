@@ -32,8 +32,8 @@ self.onmessage = ({ data }) => {
     const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
     // The kernel forwards a NativeGlFault to onHostFault (its fatal shutdown
     // in the kernel worker) before the fault is thrown.
-    const hostFaults: Error[] = [];
-    const kernel = createWasmPosixKernelTestHarness({ io: {} as any, callbacks: { getProcessMemory: () => memory, onHostFault: fault => { hostFaults.push(fault); } }, memory, pointerWidth: 4,
+    const hostFaults: Error[] = [], diagnostics: string[] = [];
+    const kernel = createWasmPosixKernelTestHarness({ io: {} as any, callbacks: { getProcessMemory: () => memory, onHostDiagnostic: value => diagnostics.push(JSON.stringify(value)), onHostFault: fault => { hostFaults.push(fault); } }, memory, pointerWidth: 4,
       instance: createKernelScratchTestInstance(4, memory, () => ({}), () => 4096) });
     const api = (kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => number>;
@@ -76,9 +76,12 @@ self.onmessage = ({ data }) => {
       new Uint8Array(memory.buffer, 4096, bytes.length).set(bytes);
       require(api.host_gl_submit(7, 0, bytes.length, session) === 0, `submit ${op}`);
     };
+    let querySequence = 0;
     const query = (op: number, words: number[], length: number, session = 11) => {
       new Uint32Array(memory.buffer, 64, words.length).set(words);
-      require(api.host_gl_query(7, op, 64, words.length * 4, 512, length, session) === length, `query ${op}`);
+      querySequence++;
+      const rc = api.host_gl_query(7, op, 64, words.length * 4, 512, length, session);
+      require(rc === length, `query ${querySequence} op=${op}: rc=${rc}, expected=${length}, words=${words.join(",")}, diagnostics=${diagnostics.join(";")}`);
       return new Uint8Array(memory.buffer, 512, length).slice();
     };
     const checked = (op: number, words: number[], expected = 0, session = 11) => {
@@ -151,7 +154,9 @@ self.onmessage = ({ data }) => {
     new Uint8Array(memory.buffer, 64, input.length).set(input);
     require(api.host_gl_query(7, O.QOP_GET_UNIFORM_LOC, 64, input.length, 512, 4, 11) === 4, "sampler lookup");
     const location = new DataView(memory.buffer).getInt32(512, true);
-    require(location > 0, "sampler location");
+    // D-41 assigns dense per-program locations beginning at zero. Only -1
+    // means inactive; retaining zero is necessary to exercise image cleanup.
+    require(location >= 0, "sampler location");
     send(O.OP_UNIFORM1I, [location, 0]);
     send(O.OP_VIEWPORT, [0, 0, 1, 1]);
     bind(17);

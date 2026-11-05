@@ -3,6 +3,7 @@ import {createKernelScratchTestInstance} from "../../../../host/test/support/ker
 import * as O from "../../../../host/src/webgl/ops";
 
 const commandCapacity=1<<20;
+const CHECKED_QUERY_TRACE=0x100;
 
 // Replay accepted public-C operations. This adapter supplies the kernel's
 // dispatch/identity role; real Rust guest marshalling remains a separate gate.
@@ -270,8 +271,12 @@ self.onmessage = async ({data}) => {
         }
         const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
         if(rc!==16||expected.some((value,index)=>output.getUint32(index*4,true)!==value))throw new Error("C bound image source/revision mismatch");
-      } else if(kind===11) {
-        const op=words.getUint32(0,true),size=words.getUint32(4,true),expected=words.getUint32(8,true),input=bytes.slice(12);
+      } else if(kind===11 || kind===CHECKED_QUERY_TRACE) {
+        const op=words.getUint32(0,true),size=words.getUint32(4,true);
+        const expectedReply=kind===CHECKED_QUERY_TRACE?bytes.slice(12,12+size):null;
+        if(kind===CHECKED_QUERY_TRACE && bytes.length!==12+size+words.getUint32(8,true))throw new Error("C image receipt trace length mismatch");
+        const expected=expectedReply?new DataView(expectedReply.buffer).getUint32(0,true):words.getUint32(8,true);
+        const input=bytes.slice(kind===CHECKED_QUERY_TRACE?12+size:12);
         let restore:(()=>void)|null=null;
         if(data.rawCandidate && expected && op===O.QOP_IMAGE_OBJECT_DELETE) {
           const owner=native!.gl.get(7,fd)!,set=owner.retiredTextures.set;
@@ -287,8 +292,10 @@ self.onmessage = async ({data}) => {
           }
         } finally {restore?.();}
         const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
-        if(rc!==size||output.getUint32(0,true)!==expected||output.getUint32(4,true)!==(expected?0:1)
-            ||output.getUint32(8,true)!==0x47514c33)throw new Error("C image mutation acceptance mismatch");
+        if(rc!==size||output.getUint32(0,true)!==expected||(kind===11&&output.getUint32(4,true)!==(expected?0:1))
+            ||output.getUint32(size-4,true)!==0x47514c33
+            ||(expectedReply&&expectedReply.some((value,index)=>reply[index]!==value)))
+          throw new Error(`C image mutation acceptance mismatch: op=${op} rc=${rc} expected=${expected} reply=${[...new Uint32Array(reply.buffer)]}`);
         if(restore) {
           if(imports!.host_gl_query(7,O.QOP_GET_ERROR,64,0,128,4,fd)!==4 || new DataView(memory!.buffer).getUint32(128,true)!==0x505)
             throw new Error("missing rejected raw cleanup error");

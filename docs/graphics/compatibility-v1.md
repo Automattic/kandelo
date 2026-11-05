@@ -984,6 +984,23 @@ existing controls, no failures. ABI checks pass without changing 56/3/17/21.
 Host TypeScript retains the same 32 diagnostics, so this is not a full
 host-build pass.
 
+**Graphics replay fixture follow-up, 2026-11-05.** The state suite now
+replays checked shader/program creation and mutation instead of omitting
+those operations, and compares complete C receipts, including extended
+container identities. Tests retain valid dense uniform location zero, use
+canonical module URLs, compile mixed cube/2D shaders through the GLES
+translator and compare uploaded source before link-time rewriting. Existing
+pixel, byte-upload and cleanup assertions remain. R326 records 487 native
+passes and 210/234 browser passes across three engines. Its 24 failures are
+a subset of the preceding 57; 33 old failures are resolved and the 12 new
+buffer-copy controls pass. The remaining long image controls still expect
+ordinary API errors after injected native faults, where the production
+contract requires a context reset. They remain failed and require dedicated
+reset coverage and independent healthy/cleanup setup; they are not waived.
+Exact commands, frozen inputs and failure sets are retained in
+`.context/graphics-webgl-contract-main-r326/`. This is not a complete graphics,
+A3, B1, conformance or performance gate.
+
 **A3 fence-query follow-up, 2026-11-03.** Native call-site counters on
 normal r9 found that retained fence queries bypassed the batch wrapper.
 Creation, polling and same-renderer server waits now use the requesting

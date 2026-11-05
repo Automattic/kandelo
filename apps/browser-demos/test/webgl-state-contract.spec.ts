@@ -31,7 +31,7 @@ for (const kind of ["client", "fixed", "max-byte", "max-short", "bound-byte", "b
     } finally { rmSync(temporary,{recursive:true,force:true}); }
     await page.goto("/trap-signal-test.html");
     const result = await page.evaluate(async ({sourceRoot,trace}) => {
-      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const base = `/@fs${sourceRoot}host/src/webgl/`;
       const { GlContextRegistry } = await import(base+"registry.ts");
       const { GlMuxer } = await import(base+"muxer.ts");
       const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -106,7 +106,7 @@ test("actual C display generations keep their command streams and rendered targe
   await installBrowserMemoryBoundaryProbe(page);
   await page.goto("/trap-signal-test.html");
   const result = await page.evaluate(async ({sourceRoot,trace}) => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
     const { GlMuxer } = await import(base+"muxer.ts");
     const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -155,7 +155,7 @@ test("op-table v3 queries preserve logical state, sparse indices and single GL e
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async sourceRoot => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
     const { GlMuxer } = await import(base+"muxer.ts");
     const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -232,7 +232,7 @@ test("remaining GLES2 core object queries retain source and attachment identitie
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async sourceRoot => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts"), { decodeAndDispatch } = await import(base+"bridge.ts");
     const { runGlQuery } = await import(base+"query.ts"), O = await import(base+"ops.ts");
     const canvas = document.createElement("canvas"), gl = canvas.getContext("webgl2");
@@ -298,7 +298,7 @@ for (const cube of [false,true]) {
     await page.goto("/trap-signal-test.html");
     const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
     const result = await page.evaluate(async ({sourceRoot,cube}) => {
-      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const base = `/@fs${sourceRoot}host/src/webgl/`;
       const { GlContextRegistry } = await import(base+"registry.ts"), { GlMuxer } = await import(base+"muxer.ts");
       const { decodeAndDispatch } = await import(base+"bridge.ts"), { runGlQuery } = await import(base+"query.ts"), O = await import(base+"ops.ts");
       const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
@@ -362,7 +362,7 @@ for (const cube of [false,true]) {
       const bindingName = new DataView(query(a,O.QOP_GET_INTEGERV,[cube ? gl.TEXTURE_BINDING_CUBE_MAP : gl.TEXTURE_BINDING_2D],4).buffer).getUint32(0,true);
       const predicate = query(a,O.QOP_IS_OBJECT,[1,0],12), isZero = new DataView(predicate.buffer).getUint32(4,true);
       send(a,O.OP_TEX_PARAMETERI,[target,0x813c,1]);
-      const foreignParameter = [new DataView(query(a,O.QOP_GET_ERROR,[],4).buffer).getUint32(0,true),gl.getTexParameter(target,0x813c)];
+      const foreignParameter = [new DataView(query(a,O.QOP_GET_ERROR,[],4).buffer).getUint32(0,true),gl.getTexParameter(cube ? gl.TEXTURE_2D_ARRAY : target,0x813c)];
       const afterParameter = parameter(a,gl.TEXTURE_MIN_FILTER), errors = [new DataView(query(a,O.QOP_GET_ERROR,[],4).buffer).getUint32(0,true),new DataView(query(b,O.QOP_GET_ERROR,[],4).buffer).getUint32(0,true)];
       const zeroB = b.shadow.defaultTextures.get(target)!; mux.invalidateCurrent(); reg.destroyContext(93,1);
       const retirement = [gl.isTexture(zeroA),gl.isTexture(zeroB)]; pixels.push(render(b));
@@ -387,7 +387,7 @@ test(`actual C shader source upload crosses query chunks and renders after commi
   await installBrowserMemoryBoundaryProbe(page);
   await page.goto("/trap-signal-test.html");
   const result = await page.evaluate(async ({sourceRoot,frames}) => {
-    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`,location.href).href;
+    const base = new URL(`/@fs${sourceRoot}host/src/webgl/`,location.href).href;
     const { GlContextRegistry } = await import(base+"registry.ts"), { GlMuxer } = await import(base+"muxer.ts");
     const { decodeAndDispatch } = await import(base+"bridge.ts"), { runGlQuery } = await import(base+"query.ts"), O = await import(base+"ops.ts");
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
@@ -395,16 +395,26 @@ test(`actual C shader source upload crosses query chunks and renders after commi
     const reg = new GlContextRegistry(), mux = new GlMuxer(gl); reg.bind({pid:94,sessionId:1,cmdbufAddr:0,cmdbufLen:1<<20});
     const b = reg.get(94,1)!; b.gl = gl; b.contextId = 1; b.cmdbufView = new Uint8Array(1<<20); mux.switchTo(b);
     const data = new Uint8Array(frames), view = new DataView(data.buffer);
-    let queries = 0, maximum = 0;
+    let queries = 0, maximum = 0, uploadedNativeSource: string | null = null;
     for (let offset=0; offset<data.length;) {
       const kind = view.getUint32(offset,true), op = view.getUint32(offset+4,true), length = view.getUint32(offset+8,true), cap = view.getUint32(offset+12,true);
       offset += 16; const input = data.slice(offset,offset+length); offset += length;
       if (kind === 1) { b.cmdbufView!.set(input); if (decodeAndDispatch(b,0,input.length)) throw new Error("C command failed"); }
       else if (kind === 2) {
-        const out = new Uint8Array(cap); maximum = Math.max(maximum,length); queries++;
-        if (runGlQuery(b,op,input,out) !== 12) throw new Error("C upload query transport failed");
-        const reply = new DataView(out.buffer);
-        if (reply.getUint32(0,true) || reply.getUint32(4,true) !== new DataView(input.buffer).getUint32(8,true) || reply.getUint32(8,true) !== 0x47514c33) throw new Error("C upload rejected");
+        const out = new Uint8Array(cap);
+        if (runGlQuery(b,op,input,out) !== cap) throw new Error("C query transport failed");
+        if (op === O.QOP_FLUSH) { if (cap !== 0 || length !== 0) throw new Error("malformed flush trace"); continue; }
+        const reply = new DataView(out.buffer), request = new DataView(input.buffer);
+        if (cap !== 12 || reply.getUint32(0,true) || reply.getUint32(8,true) !== 0x47514c33) throw new Error("C query rejected");
+        if (op === O.QOP_SHADER_SOURCE_UPLOAD) {
+          maximum = Math.max(maximum,length); queries++;
+          if (reply.getUint32(4,true) !== request.getUint32(8,true)) throw new Error("C upload token mismatch");
+          if (request.getUint32(0,true) === 3) uploadedNativeSource = gl.getShaderSource(b.shaders.get(2)!);
+        } else if (op === O.QOP_CREATE_SHADER_PROGRAM) {
+          if (reply.getUint32(4,true) !== request.getUint32(8,true)) throw new Error("C creation identity mismatch");
+        } else if (op === O.QOP_PROGRAM_MUTATION) {
+          if (reply.getUint32(4,true) !== 1) throw new Error("C program mutation rejected");
+        } else throw new Error(`unexpected C query ${op}`);
       } else throw new Error("unknown C protocol trace frame");
     }
     const expected = "precision mediump float; /*"+"X".repeat(140000)+"*/ void main(){gl_FragColor=vec4(0.,1.,1.,1.);}";
@@ -418,7 +428,7 @@ test(`actual C shader source upload crosses query chunks and renders after commi
     if (runGlQuery(b,O.QOP_READ_PIXELS,read,pixels) !== 4) throw new Error("readback failed");
     const error = new Uint8Array(4); runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),error);
     const fragment = b.shaders.get(2)!;
-    const result = {queries,maximum,sourceMatches:new TextDecoder().decode(bytes) === expected,nativeMatches:gl.getShaderSource(fragment) === expected,
+    const result = {queries,maximum,sourceMatches:new TextDecoder().decode(bytes) === expected,nativeMatches:uploadedNativeSource === expected,
       retired:false,mailboxes:0,independent:true,compiled:gl.getShaderParameter(fragment,gl.COMPILE_STATUS),pending:b.shaderUpload !== null,pixels:[...pixels],error:new DataView(error.buffer).getUint32(0,true)};
     mux.invalidateCurrent(); reg.destroyContext(94,1); result.retired = !gl.isShader(fragment); return result;
   },{sourceRoot:process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root,frames});
@@ -431,7 +441,7 @@ for (const width of [1,2]) {
     await page.goto("/trap-signal-test.html");
     const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
     const result = await page.evaluate(async ({sourceRoot,width}) => {
-      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const base = `/@fs${sourceRoot}host/src/webgl/`;
       const { GlContextRegistry } = await import(base+"registry.ts");
       const { GlMuxer } = await import(base+"muxer.ts");
       const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -523,7 +533,7 @@ for (const first of ["vertex", "index", "fixed"] as const) {
     await page.goto("/trap-signal-test.html");
     const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
     const result = await page.evaluate(async ({sourceRoot,first}) => {
-      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const base = `/@fs${sourceRoot}host/src/webgl/`;
       const { GlContextRegistry } = await import(base+"registry.ts");
       const { GlMuxer } = await import(base+"muxer.ts");
       const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -638,7 +648,7 @@ for (const kind of ["attribute", "element"] as const) {
     await page.goto("/trap-signal-test.html");
     const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
     const result = await page.evaluate(async ({sourceRoot,kind}) => {
-      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const base = `/@fs${sourceRoot}host/src/webgl/`;
       const { GlContextRegistry } = await import(base+"registry.ts");
       const { GlMuxer } = await import(base+"muxer.ts");
       const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -741,7 +751,7 @@ test("deleted shared renderbuffers retain bindings and unbound framebuffer stora
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
   const result = await page.evaluate(async sourceRoot => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
     const { GlMuxer } = await import(base+"muxer.ts");
     const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -804,7 +814,7 @@ test("internal object groups share textures and programs while context state and
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
   const result = await page.evaluate(async sourceRoot => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
     const { GlMuxer } = await import(base+"muxer.ts");
     const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -906,7 +916,7 @@ test("surfaceless framebuffer zero rejects rendering while user framebuffers rem
   const result = await page.evaluate(async root => {
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
     document.body.replaceChildren(canvas);
-    const worker = new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/surfaceless-worker.ts`,location.href),{type:"module"});
+    const worker = new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/surfaceless-worker.ts`,location.href),{type:"module"});
     try {
       return await new Promise<Record<string, unknown>>((resolve,reject) => {
         const timeout = setTimeout(() => reject(new Error("surfaceless test timed out")),45_000);
@@ -934,7 +944,7 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     ?? fileURLToPath(new URL("../../../", import.meta.url));
   await page.goto("/trap-signal-test.html");
   const result = await page.evaluate(async (sourceRoot) => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base + "registry.ts");
     const { GlMuxer } = await import(base + "muxer.ts");
     const { decodeAndDispatch } = await import(base + "bridge.ts");
@@ -945,34 +955,12 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     document.body.replaceChildren(canvas);
     const gl = canvas.getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
     if (!gl) throw new Error("WebGL2 is required by this rendered contract test");
-    const shader = (type: number, source: string) => {
-      const object = gl.createShader(type)!;
-      gl.shaderSource(object, source); gl.compileShader(object);
-      if (!gl.getShaderParameter(object, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(object)!);
-      return object;
-    };
-    const vertex = shader(gl.VERTEX_SHADER, "attribute vec2 p; void main(){gl_Position=vec4(p,0.,1.);}");
-    const fragment = shader(gl.FRAGMENT_SHADER, `precision mediump float;
-      uniform sampler2D image2d; uniform samplerCube imageCube;
-      void main(){gl_FragColor=vec4(texture2D(image2d,vec2(.5)).rgb+
-        textureCube(imageCube,vec3(1.,0.,0.)).rgb,1.);}`);
-    const program = gl.createProgram()!;
-    gl.attachShader(program, vertex); gl.attachShader(program, fragment);
-    gl.bindAttribLocation(program, 0, "p"); gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program)!);
-    gl.useProgram(program);
-    gl.uniform1i(gl.getUniformLocation(program, "image2d"), 0);
-    gl.uniform1i(gl.getUniformLocation(program, "imageCube"), 1);
-    const vertices = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,3,-1,-1,3]), gl.STATIC_DRAW);
     const registry = new GlContextRegistry();
     const muxer = new GlMuxer(gl);
     const bindings = [1,2].map(pid => {
       registry.bind({ pid, cmdbufAddr: 0, cmdbufLen: 4096 });
       const b = registry.get(pid)!;
       b.gl = gl; b.cmdbufView = new Uint8Array(4096);
-      b.buffers.set(1, vertices); b.programs.set(1, program);
       b.shadow.viewport = [0,0,16,16];
       b.shadow.scissor.rect = [0,0,16,16];
       return b;
@@ -992,6 +980,23 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
       send(b, ops.OP_ACTIVE_TEXTURE, [gl.TEXTURE0+unit]);
       send(b, ops.OP_BIND_TEXTURE, [target,name]);
     };
+    for (const b of bindings) {
+      for (const [name,type,source] of [[11,gl.VERTEX_SHADER,"attribute vec2 p; void main(){gl_Position=vec4(p,0.,1.);}"],
+        [12,gl.FRAGMENT_SHADER,"precision mediump float;uniform sampler2D image2d;uniform samplerCube imageCube;void main(){gl_FragColor=vec4(texture2D(image2d,vec2(.5)).rgb+textureCube(imageCube,vec3(1.,0.,0.)).rgb,1.);}"]] as const) {
+        const bytes = [...new TextEncoder().encode(source)];
+        send(b,ops.OP_CREATE_SHADER,[type,name]); send(b,ops.OP_SHADER_SOURCE,[name,bytes.length],false,bytes); send(b,ops.OP_COMPILE_SHADER,[name]);
+      }
+      send(b,ops.OP_CREATE_PROGRAM,[1]); send(b,ops.OP_ATTACH_SHADER,[1,11]); send(b,ops.OP_ATTACH_SHADER,[1,12]);
+      send(b,ops.OP_BIND_ATTRIB_LOCATION,[1,0,1],false,[112]); send(b,ops.OP_LINK_PROGRAM,[1]); send(b,ops.OP_USE_PROGRAM,[1]);
+      for (const [name,unit] of [["image2d",0],["imageCube",1]] as const) {
+        const bytes = new TextEncoder().encode(name), input = new Uint8Array(8+bytes.length), out = new Uint8Array(4);
+        new DataView(input.buffer).setUint32(0,1,true); new DataView(input.buffer).setUint32(4,bytes.length,true); input.set(bytes,8);
+        if (runGlQuery(b,ops.QOP_GET_UNIFORM_LOC,input,out) !== 4 || new DataView(out.buffer).getInt32(0,true) < 0) throw new Error("sampler lookup failed");
+        send(b,ops.OP_UNIFORM1I,[new DataView(out.buffer).getInt32(0,true),unit]);
+      }
+      const bytes = [...new Uint8Array(new Float32Array([-1,-1,3,-1,-1,3]).buffer)];
+      send(b,ops.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,1]); send(b,ops.OP_BUFFER_DATA,[gl.ARRAY_BUFFER,bytes.length],false,[...bytes,...new Uint8Array(new Uint32Array([gl.STATIC_DRAW]).buffer)]);
+    }
     const configure = (b: typeof bindings[0], color2d: number[], colorCube: number[]) => {
       send(b, ops.OP_GEN_TEXTURES, [2,1,2]);
       for (const [target, name, unit, color] of [
@@ -1074,8 +1079,7 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     gl.deleteFramebuffer(fb);
     registry.dropForeignTexturesForBo(50);
     // These objects belong to this short-lived test realm.
-    gl.deleteBuffer(vertices); gl.deleteProgram(program);
-    gl.deleteShader(vertex); gl.deleteShader(fragment);
+    muxer.invalidateCurrent(); registry.unbind(1); registry.unbind(2);
     return { observations, nameQueries, physicalStatePreserved, importedPixels: [...importedPixels], importError, rejectedPixelStore };
   }, root);
   expect(result.rejectedPixelStore).toBe(true);
@@ -1097,7 +1101,7 @@ test("deleted current programs survive owner switches and retire after their las
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT
     ?? fileURLToPath(new URL("../../../", import.meta.url));
   const result = await page.evaluate(async (sourceRoot) => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base + "registry.ts");
     const { GlMuxer } = await import(base + "muxer.ts");
     const { decodeAndDispatch } = await import(base + "bridge.ts");
@@ -1206,7 +1210,7 @@ test(`a live surface preserves pixels across ${replaceContext ? "context replace
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async ({sourceRoot,replaceContext}) => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
     const { GlMuxer } = await import(base+"muxer.ts");
     const { ensurePresentTarget } = await import(base+"present-target.ts");
@@ -1255,7 +1259,7 @@ test("surface draw/read selectors retain storage across owner retirement and ind
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async sourceRoot => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
     const { GlMuxer } = await import(base+"muxer.ts");
     const { resizeSurfaceTarget } = await import(base+"present-target.ts");
@@ -1320,7 +1324,7 @@ for (const mode of ["native","retarget"] as const) {
     const root = fileURLToPath(new URL("../../../",import.meta.url));
     const result = await page.evaluate(async ({root,mode}) => {
       const canvas = document.createElement("canvas");canvas.width=canvas.height=8;document.body.replaceChildren(canvas);
-      const worker = new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/surface-routing-worker.ts`,location.href),{type:"module"});
+      const worker = new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/surface-routing-worker.ts`,location.href),{type:"module"});
       try {
         const result = await new Promise<any>((resolve,reject) => {
           const timeout=setTimeout(() => reject(new Error("surface routing worker timed out")),35000);
@@ -1358,7 +1362,7 @@ for (const mode of ["native"] as const) {
     await page.goto("/trap-signal-test.html");
     const result=await page.evaluate(async ({root,mode,trace,scenario})=>{
       const canvas=document.createElement("canvas");canvas.width=canvas.height=8;document.body.replaceChildren(canvas);
-      const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/egl-record-worker.ts`,location.href),{type:"module"});
+      const worker=new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/egl-record-worker.ts`,location.href),{type:"module"});
       try {
         const result=await new Promise<any>((resolve,reject)=>{
           const timeout=setTimeout(()=>reject(new Error("EGL record replay timed out")),35000);
@@ -1403,7 +1407,7 @@ for(const mode of ["native"] as const) {
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,mode})=>{
       const canvas=document.createElement("canvas");canvas.width=canvas.height=1;document.body.replaceChildren(canvas);
-      const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
+      const worker=new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
       try {
         const result=await new Promise<any>((resolve,reject)=>{
           const timeout=setTimeout(()=>reject(new Error("shared context worker timed out")),35000);
@@ -1430,7 +1434,7 @@ for(const mode of ["native"] as const) {
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,mode})=>{
       const canvas=document.createElement("canvas");canvas.width=canvas.height=1;document.body.replaceChildren(canvas);
-      const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
+      const worker=new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
       try {
         const result=await new Promise<any>((resolve,reject)=>{
           const timeout=setTimeout(()=>reject(new Error("uniform values worker timed out")),35000);
@@ -1460,7 +1464,7 @@ for(const mode of ["native"] as const) {
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,mode})=>{
       const canvas=document.createElement("canvas");canvas.width=canvas.height=1;document.body.replaceChildren(canvas);
-      const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
+      const worker=new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
       try {
         const result=await new Promise<any>((resolve,reject)=>{
           const timeout=setTimeout(()=>reject(new Error("reservation worker timed out")),35000);
@@ -1487,7 +1491,7 @@ test(`raw ${gpu ? "GPU" : "CPU"} upload whose utility restoration a live rendere
   await installBrowserMemoryBoundaryProbe(page); await page.goto("/trap-signal-test.html");
   const root = fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async ({root,gpu}) => {
-    const base = `/@fs/${root}host/src/webgl/`;
+    const base = `/@fs${root}host/src/webgl/`;
     const {GlContextRegistry} = await import(base+"registry.ts");
     const {bindForeignTexture,bindGpuForeignTexture} = await import(base+"foreign-texture.ts");
     const {NativeGlFault,setNativeGlFaultReporter} = await import(base+"native-recovery.ts");
@@ -1552,7 +1556,7 @@ test(`raw BO revocation whose ${fault} inverse a live renderer refuses is a fata
   const root = fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async ({root,fault}) => {
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 2;
-    const worker = new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/foreign-retirement-worker.ts`,location.href),{type:"module"});
+    const worker = new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/foreign-retirement-worker.ts`,location.href),{type:"module"});
     try { return await new Promise<any>((resolve,reject) => {
       const timeout = setTimeout(() => reject(new Error("foreign retirement timed out")),35000);
       worker.addEventListener("error",event => { clearTimeout(timeout); reject(new Error(event.message)); });
@@ -1573,7 +1577,7 @@ const runImageStorageWorker=async(page:Page,fault?:string)=>{
   const root=process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
   return await page.evaluate(async({root,fault})=>{
     const canvas=document.createElement("canvas");canvas.width=canvas.height=4;document.body.replaceChildren(canvas);
-    const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/image-storage-worker.ts`,location.href),{type:"module"});
+    const worker=new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/image-storage-worker.ts`,location.href),{type:"module"});
     try{return await new Promise<any>((resolve,reject)=>{
       const timeout=setTimeout(()=>reject(new Error("image view replay timed out")),35000);
       worker.addEventListener("error",event=>{clearTimeout(timeout);reject(new Error(event.message));});
@@ -1618,7 +1622,7 @@ test("native fence waiters retain completion and pixels after creator-context de
   await installBrowserMemoryBoundaryProbe(page);
   await page.goto("/trap-signal-test.html");
   const result = await page.evaluate(async (sourceRoot) => {
-    const { GlContextRegistry } = await import(`/@fs/${sourceRoot}host/src/webgl/registry.ts`);
+    const { GlContextRegistry } = await import(`/@fs${sourceRoot}host/src/webgl/registry.ts`);
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
     document.body.replaceChildren(canvas);
     const gl = canvas.getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
@@ -1698,7 +1702,7 @@ for (const mode of ["native"] as const) {
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,mode})=>{
-      const base=new URL(`/@fs/${root}host/src/webgl/`,location.href).href;
+      const base=new URL(`/@fs${root}host/src/webgl/`,location.href).href;
       const {GlContextRegistry}=await import(base+"registry.ts"),{GlMuxer}=await import(base+"muxer.ts");
       const {SubmitFrame,SubmitQueue}=await import(base+"submit-queue.ts"),{drainSubmitQueue}=await import(base+"submit-drain.ts");
       const {decodeAndDispatch}=await import(base+"bridge.ts"),O=await import(base+"ops.ts");
@@ -1971,7 +1975,7 @@ for (const retained of [false,true]) {
     await page.goto("/trap-signal-test.html");
     const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
     const result = await page.evaluate(async ({sourceRoot,retained}) => {
-      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const base = `/@fs${sourceRoot}host/src/webgl/`;
       const {GlContextRegistry} = await import(base+"registry.ts");
       const {runGlQuery} = await import(base+"query.ts");
       const {decodeAndDispatch} = await import(base+"bridge.ts");

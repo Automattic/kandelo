@@ -23,6 +23,7 @@
 #include "gbm_window.h"
 #include "wayland-native.h"
 /* Wire tag is independent of the selected production revision in baseline runs. */
+#define GRAPHICS_EGL_TRACE_CHECKED_QUERY 0x100u
 #define GRAPHICS_SURFACE_CAPABILITIES 0x002du
 #define GRAPHICS_ERROR_OBSERVED 0x001fu
 #define GRAPHICS_TRANSPORT_ERROR_OBSERVED 0x0020u
@@ -1504,6 +1505,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             reply[1]=creation_failure==1 ? 0 : input[2]+(creation_failure==5);
             reply[2]=creation_failure==4 ? 0 : WPK_GL_QUERY_REPLY_MAGIC;
             if (creation_failure==1) query_gl_error=GL_OUT_OF_MEMORY;
+            uint32_t trace[9] = {q->op, 12, 12};
+            memcpy(trace + 3, reply, 12); memcpy(trace + 6, input, 12);
+            egl_trace(GRAPHICS_EGL_TRACE_CHECKED_QUERY, fd, trace, sizeof trace);
+            protocol_trace(2, q->op, input, 12, 12);
             return 0;
         }
         if (q->op == 0x3a) {
@@ -1562,6 +1567,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (failure==5) reply[0]=9;
             if (failure==6) {reply[0]=1;reply[1]=1;}
             reply[2]=failure==4?0:WPK_GL_QUERY_REPLY_MAGIC;
+            uint32_t trace[9] = {q->op, 12, q->in_buf_len};
+            memcpy(trace + 3, reply, 12); memcpy(trace + 6, input, q->in_buf_len);
+            egl_trace(GRAPHICS_EGL_TRACE_CHECKED_QUERY, fd, trace, 24 + q->in_buf_len);
+            protocol_trace(2, q->op, input, q->in_buf_len, 12);
             if (cancel_program_mutation) {
                 cancel_program_mutation=0;assert(pthread_cancel(pthread_self())==0);
             }
@@ -1794,9 +1803,12 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                     orphan_image_source(slot, 2, slot->renderbuffer_binding);
                 }
             }
-            uint32_t trace[13] = {q->op, q->out_buf_len, reply[0]};
-            memcpy(trace + 3, input, q->in_buf_len);
-            egl_trace(11, fd, trace, 12 + q->in_buf_len);
+            // Replay the entire checked receipt, including extended container
+            // identities, rather than treating its third word as the footer.
+            uint32_t trace[18] = {q->op, q->out_buf_len, q->in_buf_len};
+            memcpy(trace + 3, reply, q->out_buf_len);
+            memcpy((uint8_t *)(trace + 3) + q->out_buf_len, input, q->in_buf_len);
+            egl_trace(GRAPHICS_EGL_TRACE_CHECKED_QUERY, fd, trace, 12 + q->out_buf_len + q->in_buf_len);
             protocol_trace(2, q->op, input, q->in_buf_len, q->out_buf_len);
             if (fail_alloc_after_image_mutation) {
                 fail_alloc_after_image_mutation = 0; fail_malloc = fail_calloc = 1;
