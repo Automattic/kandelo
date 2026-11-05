@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { gotoMachine } from "./support/kandelo-machine";
+import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
 import { typePhysicalText } from "./support/physical-typing";
 import { footFrame, menuChange, panelStart, type Frame, type Rect } from "./support/labwc-frame";
 
@@ -7,6 +7,7 @@ import { footFrame, menuChange, panelStart, type Frame, type Rect } from "./supp
 test.use({ headless: true });
 
 async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+  if (label === "Internals") await waitForMachineBootInput(page);
   // Real display clicks capture the browser pointer. Follow the shipped
   // Escape-to-release interaction before selecting controls outside the guest.
   if (await page.evaluate(() => document.pointerLockElement !== null)) {

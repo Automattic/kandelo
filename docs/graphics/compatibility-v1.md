@@ -51,6 +51,38 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Desktop boot-input readiness and combined-source check, 2026-11-05
+
+Desktop fixtures now wait for the machine's actual Running state and the
+modal boot overlay to disappear before their first Internals interaction.
+R304's Firefox Cage trace showed that the dock could mount before that
+modal; a click could be intercepted between pointer down and up. Waiting
+for the dock alone did not establish input readiness. No fixed delay,
+click retry, viewport change or rendering/process assertion was added or
+relaxed. The production application and input behavior are unchanged.
+
+R353 passes Cage on all three engines at the original1280x720 viewport.
+R354 `graphics-desktop-readiness-main-r354-1105-084748-c2de` finishes
+FAILED after31m35:61 passed,1 failed and4 existing skips out of66 tests.
+Chromium passes22; Firefox passes19 with1 failure and2 skips; WebKit
+passes20 with2 skips. Cage, labwc, Sway, both SFWBar compositor cases,
+Wayland and ScummVM desktop checks pass on each engine. The skips are
+existing Chromium-permission host clipboard checks, not new exclusions.
+Firefox's six-game Omarchy sequence fails at the resized SNKRX menu
+interaction; the captured game remains on its menu. The underlying cause
+is still open. A reduced SNKRX-only diagnostic R355 passes on Firefox,
+which does not close the full-sequence failure.
+
+Exact commands, original failures and source/product identities are in
+`.context/graphics-desktop-readiness-main-r354/` and
+`.context/graphics-snkrx-trace-r355/`. R354's normal host build and all
+before/after source hashes pass;313 normal17d+SourceOnly Mako products
+retain their bytes, with unchanged guest/kernel/package sources verified
+against the current host source. This is combined-source browser evidence,
+not a current full-distribution preview, full host type-check pass, final
+stage acceptance or latency/native-feel evidence. Other audit and final
+goal gates remain required.
+
 ## Automatic application-driver admission prototype, 2026-11-05
 
 Ordinary applications now enter the B1 program journal at their first

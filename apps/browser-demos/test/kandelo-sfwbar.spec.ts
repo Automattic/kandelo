@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { gotoMachine } from "./support/kandelo-machine";
+import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
 import { footFrame, type Rect } from "./support/labwc-frame";
 import { typePhysicalText } from "./support/physical-typing";
 import { runTerminalCommand } from "./support/terminal-command";
@@ -40,6 +40,7 @@ async function releasePointer(page: Page) {
 }
 
 async function surface(page: Page, label: "Demo" | "Internals") {
+  if (label === "Internals") await waitForMachineBootInput(page);
   await releasePointer(page);
   const internals = page.getByRole("button", { name: "Internals", exact: true });
   await expect(internals).toBeEnabled({ timeout: 180_000 });

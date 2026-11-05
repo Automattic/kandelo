@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { gotoApp } from "./support/kandelo-machine";
+import { gotoApp, waitForMachineBootInput } from "./support/kandelo-machine";
 
 
 /**
@@ -10,6 +10,7 @@ import { gotoApp } from "./support/kandelo-machine";
  * over the pane and intercept pointer events — and selecting that view.
  */
 async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+  if (label === "Internals") await waitForMachineBootInput(page);
   const internals = page.getByRole("button", { name: "Internals", exact: true });
   await internals.waitFor({ state: "visible", timeout: 30_000 });
   const open = (await internals.getAttribute("aria-pressed")) === "true";

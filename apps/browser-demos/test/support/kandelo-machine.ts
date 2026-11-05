@@ -16,7 +16,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, type FrameLocator, type Page } from "@playwright/test";
+import { expect, test, type FrameLocator, type Page } from "@playwright/test";
 import { parseGalleryRoster } from "../../../../web-libs/kandelo-session/src/gallery-roster";
 import { readLocalSupportedSet } from "../../../../scripts/local-supported-set.mjs";
 
@@ -157,6 +157,15 @@ export async function gotoMachine(
   await page.goto(await machineUrl(page, profileId, options), {
     waitUntil: "domcontentloaded",
   });
+}
+
+/** The dock mounts before the modal machine-switch overlay. A first click
+ * can otherwise be lost when that overlay appears between pointer down/up.
+ * Observe the actual boot and modal completion before using its controls. */
+export async function waitForMachineBootInput(page: Page): Promise<void> {
+  await expect(page.getByRole("button", { name: /^Current computer: .*, Running$/ }))
+    .toBeVisible({ timeout: 180_000 });
+  await expect(page.locator(".kmprogress-overlay")).toBeHidden({ timeout: 180_000 });
 }
 
 /**

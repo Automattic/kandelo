@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { gotoMachine } from "./support/kandelo-machine";
+import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
 import { cageShellTextColumns } from "./support/cage-shell-frame";
 import { screenshotPixelDelta } from "./support/screenshot-pixels";
 
@@ -8,6 +8,7 @@ import { screenshotPixelDelta } from "./support/screenshot-pixels";
  *  Internals is an overlay toggle in the dock; showing another view means
  *  closing it and selecting that view. */
 async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+  if (label === "Internals") await waitForMachineBootInput(page);
   const internals = page.getByRole("button", { name: "Internals", exact: true });
   await internals.waitFor({ state: "visible", timeout: 30_000 });
   const open = (await internals.getAttribute("aria-pressed")) === "true";
