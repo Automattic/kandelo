@@ -32,6 +32,8 @@ import {
   type DinitService,
 } from "./dinit-image-helpers";
 import { prewarmOpcache } from "./opcache-prewarm";
+import { installServiceActivities } from "./service-activities";
+import { parseComputerServices } from "../../../web-libs/kandelo-session/src/computer-services";
 import { writeTrackedDemoConfig } from "./tracked-demo-config";
 import {
   populateSmtpCaptureConfig,
@@ -368,6 +370,7 @@ export interface WordPressVfsImageBuildInputs {
   frankenphpClassic: Uint8Array;
   frankenphpCaddy: Uint8Array;
   msmtpd: Uint8Array;
+  serviceActivityControl: Uint8Array;
   dinit?: DinitBinaryInputs;
   buildPrograms?: {
     kernel: Uint8Array;
@@ -485,6 +488,8 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
   // dependencies ensure wp-config.php is finalized and SMTP is listening
   // before any FastCGI request.
   addDinitInit(fs, buildServices(), { binaries: inputs.dinit });
+  const services = parseComputerServices(readFileSync(resolve(REPO_ROOT, "packages/registry/wordpress/services.json"), "utf8"));
+  installServiceActivities(fs, services.map(service => ({ target: service.id, port: service.port, title: service.title, shortcuts: service.shortcuts })), inputs.serviceActivityControl);
 
   await preinstallWordPressSqlite(fs, inputs.buildPrograms);
 
@@ -519,6 +524,7 @@ async function main(): Promise<void> {
   const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
   const msmtpdRoot = process.env.WASM_POSIX_DEP_MSMTPD_DIR;
   const kernelRoot = process.env.WASM_POSIX_DEP_KERNEL_DIR;
+  const serviceActivityRoot = process.env.WASM_POSIX_DEP_SERVICE_ACTIVITY_TOOLS_DIR;
   await buildWordPressVfsImage({
     shellImage: shellRoot === undefined
       ? undefined
@@ -540,6 +546,9 @@ async function main(): Promise<void> {
     msmtpd: new Uint8Array(readFileSync(msmtpdRoot === undefined
       ? resolveBinary("programs/msmtpd.wasm")
       : join(msmtpdRoot, "msmtpd.wasm"))),
+    serviceActivityControl: new Uint8Array(readFileSync(serviceActivityRoot === undefined
+      ? resolveBinary("programs/service-activity-control.wasm")
+      : join(serviceActivityRoot, "service-activity-control.wasm"))),
     dinit: dinitRoot === undefined
       ? undefined
       : {

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { gotoInPreview, gotoMachine, machineAppPrefix } from "./support/kandelo-machine";
+import { clickDockTool } from "./support/dock";
 
 const soakSeconds = Number(process.env.KANDELO_FRANKENPHP_SOAK_SECONDS ?? "20");
 
@@ -37,10 +38,9 @@ for (const demo of [
     }
     await expect(frame.locator("form#setup, form#language-chooser")).toHaveCount(0);
 
-    if (!(await page.locator("aside.kdemo").count())) {
-      await page.getByRole("button", { name: "Demo guide" }).click();
-    }
-    await page.getByRole("button", { name: /Log in as admin/i }).click();
+    await expect(page.getByRole("button", { name: "Shortcuts", exact: true })).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Shortcuts", exact: true }).click();
+    await page.getByRole("dialog", { name: "Shortcuts", exact: true }).getByRole("button", { name: /^Log in as admin\b/ }).click();
     await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first())
       .toBeVisible({ timeout: 120_000 });
 
@@ -77,7 +77,7 @@ for (const demo of [
     let visibleSyslog = "";
     let processes = "";
     try {
-      await page.getByRole("button", { name: "Internals" }).click({ timeout: 5_000 });
+      await clickDockTool(page, "Internals", { timeout: 5_000 });
       const inspector = page.getByRole("dialog", { name: "Internals" });
       visibleSyslog = (await inspector.locator(".ksys-line").allTextContents()).slice(-100).join("\n");
       await inspector.getByRole("tab", { name: "Procs" }).click({ timeout: 5_000 });
@@ -109,10 +109,9 @@ for (const demo of [
     await gotoMachine(page, demo.profile);
     const frame = page.frameLocator(`iframe[title="${demo.title}"]`);
     await expect(frame.locator("body")).toContainText("WordPress on Kandelo", { timeout: 240_000 });
-    if (!(await page.locator("aside.kdemo").count())) {
-      await page.getByRole("button", { name: "Demo guide" }).click();
-    }
-    await page.getByRole("button", { name: /Log in as admin/i }).click();
+    await expect(page.getByRole("button", { name: "Shortcuts", exact: true })).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Shortcuts", exact: true }).click();
+    await page.getByRole("dialog", { name: "Shortcuts", exact: true }).getByRole("button", { name: /^Log in as admin\b/ }).click();
     await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first())
       .toBeVisible({ timeout: 120_000 });
     await expect.poll(async () => {

@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { createReadStream, statSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
@@ -15,26 +17,56 @@ if (!Number.isSafeInteger(editorBurstRounds) || editorBurstRounds < 0 || editorB
   throw new Error("KANDELO_FRANKENPHP_EDITOR_BURST_ROUNDS must be an integer from 0 to 20");
 }
 
+const artifactTest = test.extend<{ artifactUrls: { imageUrl: string; kernelUrl: string } }>({
+  artifactUrls: async ({ baseURL }, use) => {
+    if (!imagePath) {
+      await use({ imageUrl: "", kernelUrl: "" });
+      return;
+    }
+    expect(baseURL).toBeTruthy();
+    const kernelPath = resolveBinary("kernel.wasm");
+    const artifacts = new Map([
+      ["/__wordpress_frankenphp__.vfs.zst", { path: imagePath!, type: "application/octet-stream" }],
+      ["/__wordpress_frankenphp_kernel__.wasm", { path: kernelPath, type: "application/wasm" }],
+    ]);
+    const server = createServer((request, response) => {
+      const artifact = artifacts.get(request.url ?? "");
+      if (!artifact) {
+        response.writeHead(404).end();
+        return;
+      }
+      response.writeHead(200, {
+        "Content-Type": artifact.type,
+        "Content-Length": statSync(artifact.path).size,
+        "Access-Control-Allow-Origin": new URL(baseURL!).origin,
+        "Cross-Origin-Resource-Policy": "cross-origin",
+      });
+      createReadStream(artifact.path).on("error", (error) => response.destroy(error)).pipe(response);
+    });
+    await new Promise<void>((resolveReady, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveReady);
+    });
+    const address = server.address() as AddressInfo;
+    const imageUrl = `http://127.0.0.1:${address.port}/__wordpress_frankenphp__.vfs.zst`;
+    const kernelUrl = `http://127.0.0.1:${address.port}/__wordpress_frankenphp_kernel__.wasm`;
+    try {
+      await use({ imageUrl, kernelUrl });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolveClosed, reject) => server.close((error) => error ? reject(error) : resolveClosed()));
+    }
+  },
+});
+
 for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
-  test(`WordPress on ${serviceName} serves PHP in the browser kernel host`, async ({ page, baseURL, browserName }) => {
+  artifactTest(`WordPress on ${serviceName} serves PHP in the browser kernel host`, async ({ page, baseURL, browserName, artifactUrls }) => {
     test.setTimeout(serviceName === "frankenphp-caddy" ? 300_000 : 240_000);
     test.skip(serviceName === "frankenphp-classic" && browserName === "webkit", "Classic browser-host gate uses Chromium and Firefox");
     test.skip(!imagePath, "Build the WordPress image and set KANDELO_WORDPRESS_FRANKENPHP_VFS");
     expect(baseURL).toBeTruthy();
-
-    const imageUrl = new URL("/__wordpress_frankenphp__.vfs.zst", baseURL!).href;
-    const kernelUrl = new URL("/__wordpress_frankenphp_kernel__.wasm", baseURL!).href;
+    const { imageUrl, kernelUrl } = artifactUrls;
     const browserKernelUrl = new URL(`/@fs/${resolve(repoRoot, "host/src/browser-kernel-host.ts")}`, baseURL!).href;
-    await page.route(imageUrl, (route) => route.fulfill({
-      status: 200,
-      contentType: "application/octet-stream",
-      body: readFileSync(imagePath!),
-    }));
-    await page.route(kernelUrl, (route) => route.fulfill({
-      status: 200,
-      contentType: "application/wasm",
-      body: readFileSync(resolveBinary("kernel.wasm")),
-    }));
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
     const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, serviceName }) => {

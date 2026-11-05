@@ -4330,3 +4330,23 @@ The server identified itself as FrankenPHP and PHP 8.5.12; dinit reported
 `wp-config-init`, `smtp-capture`, `wordpress-secrets`, and
 `frankenphp-classic` ready. This verifies the Node request path, not the
 editor's browser JavaScript, long-running stability, or a performance gain.
+
+**2026-11-05 — Browser WordPress and service-catalog integration.** The
+ABI-55 revision-30 image passed the browser-kernel host tests in Chromium:
+FrankenPHP classic served WordPress, including 40 request churn iterations
+and 20 editor burst rounds; Caddy passed including restart. The focused
+Firefox classic test also passed. These tests exercise real browser Wasm
+execution and HTTP, but do not run the visible WordPress editor JavaScript.
+The first full Chromium UI run rendered the WordPress homepage and then
+timed out at its obsolete `Demo guide` selector. Latest main's dock exposes
+`Shortcuts` only for running services declared inside the image; the existing
+WordPress image had only profile guide data and an old dinit control socket.
+Revision 31 is being wired to the shared service-activity contract: a guest
+service catalog, service controller, `/sbin/kandelo-init`, and current UI test
+selectors. This integration has not yet been rebuilt or validated.
+
+At the RAM checkpoint, `memory_pressure -Q` reported 79% free on the 36 GiB
+host. The largest observed current process was WebKit content at 1.3 GiB RSS.
+The earlier 10.6 GiB FrankenPHP instrumenter peak was historical; it does
+not describe current memory pressure. Build time and the UI test timeout are
+separate from host RAM scarcity.

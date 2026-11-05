@@ -24,9 +24,16 @@ materialization = "embedded"
 
 [[software.package]]
 name = "php-zts"
-outputs = ["opcache-zts"]
+outputs = []
 source_roles = []
 role = "build"
+
+[[software.package]]
+name = "service-activity-tools"
+outputs = ["service-activity-tools"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
 
 [[software.package]]
 name = "frankenphp-classic"
@@ -90,7 +97,7 @@ gid = 0
 ephemeral = true
 
 [boot]
-argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"]
+argv = ["/bin/sh", "/sbin/kandelo-init", "nginx"]
 cwd = "/root"
 uid = 0
 gid = 0
