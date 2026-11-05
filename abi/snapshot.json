@@ -24,6 +24,7 @@
       "custom_sections",
       "gl_compressed_upload",
       "gl_context_reset_scope",
+      "gl_error_drain_receipt",
       "gl_export_fence",
       "gl_image_container_receipts",
       "gl_inline_client_draw",
@@ -1461,6 +1462,39 @@
       "logical_context_reset": 1,
       "physical_renderer_loss": 2
     }
+  },
+  "gl_error_drain_receipt": {
+    "authority": "own-current-context-and-tid; read-query-no-buffer-dependencies",
+    "custody": "reserve-before-transfer; seal-before-copyout; retain-latest-result",
+    "legacy": "empty/4-byte pop and existing8-byte drain unchanged",
+    "query": 1,
+    "read_query": 61,
+    "read_request_bytes": 4,
+    "read_request_field": "transaction",
+    "recovery": "read-only-no-native-error-drain-replay-or-upload-interruption",
+    "reply_bytes": 52,
+    "reply_fields": [
+      "status",
+      "transaction",
+      "count",
+      "retained",
+      "errors[8]",
+      "magic"
+    ],
+    "reply_magic": 1196510259,
+    "request_bytes": 12,
+    "request_fields": [
+      "client_error_mask",
+      "mode",
+      "transaction"
+    ],
+    "request_mode": 1196573520,
+    "status": {
+      "accepted": 0,
+      "indeterminate": 2,
+      "not_entered": 1
+    },
+    "transaction": "successor-wrapping-u32; one-outstanding-call-per-context"
   },
   "gl_export_fence": {
     "dispositions": {

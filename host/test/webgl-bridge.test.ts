@@ -1,5 +1,5 @@
 import { withNativeBatch } from "../src/webgl/native-batch.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 import {
   decodeAndDispatch,
@@ -342,6 +342,49 @@ describe("ordered client error flags", () => {
     expect(b.errors).toBe(owner); expect(b.errors).toEqual([]);
     expect(runGlQuery(b, O.QOP_GET_ERROR, drainRequest(), out)).toBe(O.GL_ERROR_DRAIN_REPLY_BYTES);
     expect(readDrain(out)).toMatchObject({ count: 0, retained: 0, errors: [0, 0, 0, 0, 0, 0, 0, 0] });
+  });
+
+  const receiptRequest=(tx:number,mask=0)=>new Uint8Array(new Uint32Array([mask,O.GL_ERROR_DRAIN_RECEIPT_REQUEST,tx]).buffer);
+  const readReceipt=(b:ReturnType<typeof setupBinding>["b"],tx:number,out=new Uint8Array(O.GL_ERROR_DRAIN_RECEIPT_BYTES))=>{
+    const rc=runGlQuery(b,O.QOP_ERROR_DRAIN_RECEIPT,new Uint8Array(new Uint32Array([tx]).buffer),out);
+    return {rc,words:[...new Uint32Array(out.buffer,out.byteOffset,out.length/4)]};
+  };
+  it("seals error custody before copyout and recovers without a second native drain",()=>{
+    const gl=new RecordingGl(),{b}=setupBinding(gl);let reads=0;gl.getError=()=>{reads++;return 0;};
+    b.errors.push(0x500,0x501,0x502);const out=new Uint8Array(O.GL_ERROR_DRAIN_RECEIPT_BYTES);
+    const fail=vi.spyOn(out,"set").mockImplementation(()=>{throw new Error("copyout lost");});
+    try{expect(()=>runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(1),out)).toThrow("copyout lost");}finally{fail.mockRestore();}
+    expect(b.errors).toEqual([]);const before=reads;
+    b.errors.push(0x502);const recovered=readReceipt(b,1);
+    expect(recovered.rc).toBe(52);expect(recovered.words).toEqual([0,1,3,0,0x500,0x501,0x502,0,0,0,0,0,0x47514c33]);
+    expect(reads).toBe(before);expect(b.errors).toEqual([0x502]);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(1),out)).toBe(-22);
+    expect(b.errors).toEqual([0x502]);expect(reads).toBe(before);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(2),out)).toBe(52);
+    expect(readReceipt(b,2).words.slice(0,5)).toEqual([0,2,1,0,0x502]);
+  });
+  it("proves nonentry only for the exact successor and permits bounded transaction wrap",()=>{
+    const gl=new RecordingGl(),{b}=setupBinding(gl);gl.getError=()=>{throw new Error("unexpected native read");};
+    expect(readReceipt(b,1).words).toEqual([1,1,0,0,0,0,0,0,0,0,0,0,0x47514c33]);
+    expect(readReceipt(b,0).rc).toBe(-22);expect(readReceipt(b,2).rc).toBe(-22);
+    b.errorDrainReceipt.valid=true;b.errorDrainReceipt.words[1]=0xffff_ffff;
+    expect(readReceipt(b,0).words[0]).toBe(1);
+    gl.getError=()=>0;
+    expect(runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(0),new Uint8Array(52))).toBe(52);
+    expect(readReceipt(b,0).words.slice(0,4)).toEqual([0,0,0,0]);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(1),new Uint8Array(52))).toBe(52);
+  });
+  it("retains indeterminate custody and rejects another drain",()=>{
+    const gl=new RecordingGl(),{b}=setupBinding(gl);b.errors.push(0x500);
+    const fail=vi.spyOn(b.errors,"splice").mockImplementation(()=>{throw new Error("bookkeeping failed");});
+    try{expect(()=>runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(1),new Uint8Array(52))).toThrow(NativeGlFault);}finally{fail.mockRestore();}
+    const before=b.errors.slice();expect(readReceipt(b,1).words.slice(0,2)).toEqual([2,1]);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(2),new Uint8Array(52))).toBe(-22);expect(b.errors).toEqual(before);
+  });
+  it.each([[0,52],[8,52],[4,48],[4,56]])("preflights recovery input%d/output%d before native access",(input,output)=>{
+    const gl=new RecordingGl(),{b}=setupBinding(gl);gl.getError=()=>{throw new Error("unexpected native read");};
+    b.errors.push(0x500);expect(runGlQuery(b,O.QOP_ERROR_DRAIN_RECEIPT,new Uint8Array(input),new Uint8Array(output))).toBe(-22);
+    expect(b.errors).toEqual([0x500]);
   });
 
   it("reports flags beyond the reply capacity as retained", () => {

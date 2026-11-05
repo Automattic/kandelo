@@ -14,7 +14,7 @@ import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer, validSurfaceCapabilitiesLength } from "./webgl/surface-capabilities.js";
-import { QOP_PROGRAM_JOURNAL_BARRIER, QOP_PROGRAM_JOURNAL, QOP_PROGRAM_CAPTURE, QOP_CONTEXT_RESET_SCOPE, QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, QOP_EXPORT_FENCE, QOP_RELEASE_FENCE } from "./webgl/ops.js";
+import { QOP_ERROR_DRAIN_RECEIPT, GL_ERROR_DRAIN_RECEIPT_BYTES, QOP_PROGRAM_JOURNAL_BARRIER, QOP_PROGRAM_JOURNAL, QOP_PROGRAM_CAPTURE, QOP_CONTEXT_RESET_SCOPE, QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, QOP_EXPORT_FENCE, QOP_RELEASE_FENCE } from "./webgl/ops.js";
 import { validProgramCaptureRequest } from "./webgl/program-capture-query.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
@@ -3713,6 +3713,8 @@ export class WasmPosixKernel {
           if(op===QOP_PROGRAM_JOURNAL_BARRIER && !validProgramJournalBarrierRequest(inBuf,outputLength))return -22;
           const journalQuery=op===QOP_PROGRAM_JOURNAL || op===QOP_PROGRAM_JOURNAL_BARRIER;
           if(op===QOP_PROGRAM_JOURNAL_BARRIER && b.contextId===null)return -5;
+          const errorReceiptRead=op===QOP_ERROR_DRAIN_RECEIPT;
+          if(errorReceiptRead&&(inputLength!==4||outputLength!==GL_ERROR_DRAIN_RECEIPT_BYTES||b.contextId===null))return -22;
           const journalRead=journalQuery && (inBuf[0]===6 || inBuf[0]===7);
           let outBuf: Uint8Array;
           let written: number;
@@ -3721,12 +3723,13 @@ export class WasmPosixKernel {
             outBuf = new IntrinsicUint8Array(outputLength);
             // Validate and reserve the complete result before interrupting an
             // API transfer. Journal metadata/recovery is not an upload barrier.
-            if (op !== QOP_CONTEXT_RESET_SCOPE && !journalQuery && interruptUniformUpload(b)) return -5;
-            if (op !== QOP_CONTEXT_RESET_SCOPE && !journalQuery && !this.prepareForeignRetirements(b)) return -5;
+            if (op !== QOP_CONTEXT_RESET_SCOPE && !journalQuery && !errorReceiptRead && interruptUniformUpload(b)) return -5;
+            if (op !== QOP_CONTEXT_RESET_SCOPE && !journalQuery && !errorReceiptRead && !this.prepareForeignRetirements(b)) return -5;
             // Fence creation/waits are guest execution too. Retained foreign
             // contexts keep their exact private checks, while native work on
             // this selected owner shares the same reset/sample policy.
             const queryWork = (): number => {
+            if(errorReceiptRead)return runGlQuery(b,op,inBuf,outBuf);
             if(journalQuery){
               if(journalRead)return runGlQuery(b,op,inBuf,outBuf);
               if(rendererLost(b))return RENDERER_LOST;
@@ -3815,7 +3818,7 @@ export class WasmPosixKernel {
             const retainedCleanup = op === QOP_EXPORT_FENCE || op === QOP_RELEASE_FENCE;
             // Destroying/exporting a retained sync remains possible after its
             // guest context resets. These paths do not execute guest GL work.
-            written = op === QOP_CONTEXT_RESET_SCOPE || journalRead || retainedCleanup && rendererLost(b) ? queryWork()
+            written = op === QOP_CONTEXT_RESET_SCOPE || journalRead || errorReceiptRead || retainedCleanup && rendererLost(b) ? queryWork()
               : withNativeBatch(b, `query 0x${op.toString(16)}`, queryWork,
                 op !== QOP_GET_ERROR && !retainedCleanup);
           } catch (caught) {

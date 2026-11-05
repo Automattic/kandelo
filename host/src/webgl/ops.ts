@@ -105,6 +105,9 @@ export const QOP_GET_ERROR             = 0x01;
  *  [client mask, REQUEST]; checked reply [count, retained,
  *  errors[CAPACITY], GL_QUERY_REPLY_MAGIC]. See error-query.ts. */
 export const GL_ERROR_DRAIN_REQUEST = 0x4744_524e;
+export const GL_ERROR_DRAIN_RECEIPT_REQUEST = 0x4752_4350;
+export const GL_ERROR_DRAIN_RECEIPT_BYTES = 52;
+export const QOP_ERROR_DRAIN_RECEIPT = 0x003D;
 export const GL_ERROR_DRAIN_REQUEST_BYTES = 8;
 export const GL_ERROR_DRAIN_CAPACITY = 8;
 export const GL_ERROR_DRAIN_REPLY_BYTES = 44;

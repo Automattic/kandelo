@@ -55,7 +55,7 @@ import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
 import { checkedGlCall, publicCurrentProgramName, recordGlError, linkedProgramForQuery, attributeLocation } from "./program-objects.js";
 import { captureNativeGlErrors, mergeClientGlErrors } from "./errors.js";
-import { drainGlErrors, readGlErrorQuery } from "./error-query.js";
+import { drainGlErrors, drainGlErrorsWithReceipt, readGlErrorQuery } from "./error-query.js";
 import { boundFramebuffer, isDefaultFramebuffer, validFramebufferTarget, GL_FRAMEBUFFER_UNDEFINED } from "./framebuffer.js";
 
 const GL_VENDOR = 0x1F00;
@@ -269,6 +269,10 @@ export function runGlQuery(
 ): number {
   // Journal control is not guest rendering or an upload barrier. In particular
   // recovery/status must not interrupt a transfer, replay state or drain errors.
+  if(op===O.QOP_ERROR_DRAIN_RECEIPT){
+    if(input.length!==4||out.length!==O.GL_ERROR_DRAIN_RECEIPT_BYTES)return -22;
+    return b.errorDrainReceipt.read(new DataView(input.buffer,input.byteOffset,4).getUint32(0,true),out);
+  }
   if(op===O.QOP_PROGRAM_JOURNAL_BARRIER){
     if(!b.gl || b.contextId===null || !validProgramJournalBarrierRequest(input,out.byteLength))return -22;
     return runProgramJournalQuery(b,input,out);
@@ -276,7 +280,7 @@ export function runGlQuery(
   if(op===O.QOP_PROGRAM_JOURNAL)return runProgramJournalQuery(b,input,out,execution);
   const errorQuery = op === O.QOP_GET_ERROR ? readGlErrorQuery(input) : null;
   if (op === O.QOP_GET_ERROR && (errorQuery === null ||
-      (errorQuery.drain ? out.byteLength !== O.GL_ERROR_DRAIN_REPLY_BYTES : out.byteLength < 4))) return -22;
+      (errorQuery.transaction!==undefined ? out.byteLength!==O.GL_ERROR_DRAIN_RECEIPT_BYTES || !b.errorDrainReceipt.next(errorQuery.transaction) : errorQuery.drain ? out.byteLength !== O.GL_ERROR_DRAIN_REPLY_BYTES : out.byteLength < 4))) return -22;
   if (interruptUniformUpload(b)) return -5;
   if (op !== O.QOP_COMPRESSED_UPLOAD && interruptCompressedUpload(b)) return -5;
   if ((op === O.QOP_FINISH || op === O.QOP_FLUSH) && (input.byteLength !== 0 || out.byteLength !== 0)) return -22;
@@ -452,6 +456,7 @@ export function runGlQuery(
       // Failed command submission can leave C flags for this fallback route.
       // Merge into the same owner as native/trailer flags, without duplicates.
       mergeClientGlErrors(b, errorQuery!.mask);
+      if(errorQuery!.transaction!==undefined)return drainGlErrorsWithReceipt(b,errorQuery!.transaction,out);
       if (errorQuery!.drain) return drainGlErrors(b, out);
       outDv.setUint32(0, b.errors[0] ?? 0, true);
       b.errors.shift();

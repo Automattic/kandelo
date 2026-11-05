@@ -4505,6 +4505,23 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "query_dependencies":"metadata-only-no-buffer-sync",
         "reads":"available-after-reset; no-native-replay-error-drain-or-upload-interruption",
     }));
+    s.add(Program, "gl_error_drain_receipt", json!({
+        "query":shared::gl::QOP_GET_ERROR,
+        "request_mode":shared::gl::error_drain_receipt::REQUEST,
+        "request_bytes":shared::gl::error_drain_receipt::REQUEST_BYTES,
+        "request_fields":["client_error_mask","mode","transaction"],
+        "reply_bytes":shared::gl::error_drain_receipt::REPLY_BYTES,
+        "reply_fields":["status","transaction","count","retained","errors[8]","magic"],
+        "reply_magic":shared::gl::QUERY_REPLY_MAGIC,
+        "read_query":shared::gl::QOP_ERROR_DRAIN_RECEIPT,
+        "read_request_bytes":4,"read_request_field":"transaction",
+        "status":{"accepted":0,"not_entered":1,"indeterminate":2},
+        "transaction":"successor-wrapping-u32; one-outstanding-call-per-context",
+        "custody":"reserve-before-transfer; seal-before-copyout; retain-latest-result",
+        "recovery":"read-only-no-native-error-drain-replay-or-upload-interruption",
+        "authority":"own-current-context-and-tid; read-query-no-buffer-dependencies",
+        "legacy":"empty/4-byte pop and existing8-byte drain unchanged",
+    }));
     s.add(Program, "gl_transport_error_observation", json!({
         "opcode":shared::gl::OP_TRANSPORT_ERROR_OBSERVED,
         "payload_bytes":0,
@@ -8612,6 +8629,7 @@ fn additive_top_level_section(section: &str) -> bool {
             | "gl_program_journal"
             | "gl_program_journal_barrier"
             | "gl_transport_error_observation"
+            | "gl_error_drain_receipt"
             | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
@@ -10295,6 +10313,22 @@ mod tests {
             let mut changed=new.clone();changed["gl_transport_error_observation"][field]=json!("different");
             assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
             changed["gl_transport_error_observation"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn error_drain_receipt_is_additive_but_existing_fields_are_exact() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["gl_error_drain_receipt"]=json!({"query":1,"request_mode":0x47524350u32,
+            "request_bytes":12,"reply_bytes":52,"read_query":0x3d,
+            "custody":"seal-before-copyout"});
+        assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());
+        for field in new["gl_error_drain_receipt"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_error_drain_receipt"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_error_drain_receipt"].as_object_mut().unwrap().remove(field);
             assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
         }
         assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());

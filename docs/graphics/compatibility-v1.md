@@ -42,6 +42,101 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Retain error-drain copyout custody, 2026-11-04
+
+Newly built libGLESv2 callers use an optional 12-byte `QOP_GET_ERROR` form:
+`[client_mask, 0x47524350, transaction]`. A cold context-owned receipt retains
+`[status, transaction, count, retained, errors[8], magic]` (52 bytes). The host
+reserves indeterminate custody before transferring flags, seals every field
+before completion, then copies out. Existing empty/4-byte pop and 8-byte drain
+forms are unchanged. The additive Program snapshot section is
+`gl_error_drain_receipt`; versions remain program56/host3/GL17/fork21.
+Normal kernel, SDK, programs and images must still have matching digests.
+
+On failed or malformed copyout, C keeps the exact transaction. Optional
+`QOP_ERROR_DRAIN_RECEIPT` (0x3d, one transaction word, 52-byte reply) recovers
+the completed receipt or proves nonentry without native replay, error drains,
+upload interruption or buffer dependencies. The kernel retains ordinary
+current-TID/context ownership checks. C never repeats an entered drain;
+a fresh drain after recovery observes subsequent work before local answers
+resume. The failure's already returned `INVALID_OPERATION` consumes only its
+earlier coalesced flag, preserving unrelated flags and later repetitions.
+A single outstanding synchronous call and exact successor checks permit u32
+transaction wrap without a new exhaustion boundary. Unexpected bookkeeping
+faults retain status2 and report an attributed fatal host fault. The cold
+receipt contains only numbers and is reset when its context retires.
+
+R233's two native host-only-error controls fail against578289709f. R236
+`graphics-error-receipt-before-r236-1104-203737-3b20`, port6046, reproduces the
+loss in all8 Chromium cases (both widths/production+fatal) with the normal
+R225 SDK/kernel: a lost or malformed reply loses the host-only ENUM flag.
+Every raw record retains actual guest/kernel hashes and the failed assertion.
+
+The unlanded R234 non-destructive-peek experiment passes2171 graphics tests
+but fails native controls: a rejected/lost consume prefix can re-report an
+already observed flag, and it adds observation-only submissions. That draft
+was removed, preserving the original assertions. Retained destructive-drain
+receipts preserve the existing normal path instead. R235 initially passes
+2173 graphics tests but finds stale receipt state in the test double's reused
+context descriptor. Resetting that cold model at successful context creation
+makes R235-r2 pass481 native controls and2175 graphics tests/88 files; no
+production acceptance rule is weakened.
+
+R237 `graphics-error-receipt-build-r237-1104-203930-716a` passes3m46: normal
+ABI regeneration, release xtask, both SDK ensures, kernel bootstrap and image
+writer build, ABI/evidence709 checks. Only the optional Program section is
+added. Frozen runtime/test inputs and resulting product hashes are retained;
+canonical kernel SHA is
+`46f21423280ac733dc4cd22960c05d8b2412a79e3a93b4ec37d8d7a6ff9f9769`.
+R238 `graphics-error-receipt-after-r238-1104-204108-d224`, port6047, passes3m45
+including its prerequisite wait: graphics2175/88, Node14, strict probe types
+and60 actual-GPU cases on Chromium, Firefox and WebKit, both widths/audit
+modes. Cases include no fault, lost reply, malformed magic/duplicate flags
+and a lost read-only recovery reply. Exact entered transaction identities,
+coalesced/repeated errors, correct rendered pixels and memory boundaries pass.
+Node controls verify honest no-renderer refusal, not GPU execution. Full host
+TypeScript still fails with the exact39 retained diagnostics; it is not a
+compiler pass. A focused native control additionally proves nonentry retry.
+
+R240 `graphics-last-publisher-before-r240-1104-205845-786f`, port6049, is a
+separate FAILED current-tree physical-loss audit control. The owned realm
+invokes `WEBGL_lose_context`; the real guest detects loss, calls destroy,
+release and terminate successfully, and waits for independent sampling. Before
+process exit, publicContexts1/executions1/destroyCalls0 remain. C retirement
+requires publication through an already blocked final metadata publisher and
+never reaches the backend destroy call. This is a platform defect to fix,
+not a successful cleanup inferred from EGL return values. The failure and
+actual guest/kernel hashes remain recorded; it is outside R239's inventory.
+
+R239 `graphics-error-receipt-final-r239-1104-204617-1902`, port6048, passes
+19m16. Exact commands are retained in its frozen `run.sh`: graphics Vitest
+`-c vitest.graphics.config.ts` passes2175 assertions/88 files; the private
+Node fixture configuration passes14; `playwright test -c <private-config>
+--project=chromium --project=firefox --project=webkit --workers=1` passes732.
+`cargo test -p xtask --target aarch64-apple-darwin` passes843 unit+8 integration;
+`cargo test -p runtime-core -p kandelo -p wasm-posix-shared --target
+aarch64-apple-darwin --lib` passes13/2870/96. The native C/UBSan runner passes482,
+including explicit nonentry and the later client-only INVALID_OPERATION after
+recovery of an older same-valued client mask. ABI/evidence709 and five strict
+probe helper checks pass. The shader-rewrite harness retains Chromium/WebKit
+266 pass each and Firefox263 pass/1 inconclusive/2 native controls, zero fails.
+Full host TypeScript retains the exact39 diagnostics; it is not a compiler pass.
+
+All660 routed records retain actual guest/kernel hashes matching normal R237.
+The60 new receipt cases preserve exact transaction sequences, errors and
+pixels; the prior576 successful journal/OOM/render cases have native live0
+before machine teardown, including72 independent pre-process-exit samples.
+The24 intentional fatal controls retain their refusal latch; no native-cleanup
+claim is made for them. Runtime/test/config and normal product hashes remain
+unchanged through the run and post-documentation checks. R240 remains an
+explicit failure outside this passing inventory. Full workspace Rust, host
+inventory and acceptance suites are still required.
+
+Remaining native-loss/failed-prefix and final-
+context audit, B1 hot families/activation, normal complete preview, conformance,
+browser-memory, desktop and benchmark acceptance remain required. No stage,
+new preview or application-performance acceptance is claimed by this fix.
+
 ## Recover interrupted logical publication, 2026-11-04
 
 A pending native OOM in metadata cleanup can reset the submitting context

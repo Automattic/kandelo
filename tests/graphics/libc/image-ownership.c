@@ -268,7 +268,9 @@ static uint32_t client_error_masks[8];
 /* QOP_GET_ERROR accounting and drain-reply fault injection. */
 static unsigned transport_observations;
 static unsigned error_queries, drain_requests, drain_capacity = WPK_GL_ERROR_DRAIN_CAPACITY;
-static unsigned drain_corrupt, drain_lost_reply;
+static unsigned drain_corrupt, drain_lost_reply, drain_lost_before;
+static uint32_t error_receipts[8][13];
+static unsigned error_receipt_valid[8], error_receipt_reads, error_receipt_read_fail;
 static uint32_t drain_extra_error;
 static unsigned creation_queries;
 static int creation_failure;
@@ -1056,6 +1058,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             return -1;
         }
         context_create_calls++;
+        memset(error_receipts[fd-10],0,sizeof error_receipts[fd-10]);error_receipt_valid[fd-10]=0;
         struct gl_context_attrs *attrs = arg;
         assert(attrs->context_id == 0);
         if (attrs->share_context_id) {
@@ -2215,11 +2218,24 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             memcpy(latest_allocation,result,sizeof result);
             return 0;
         }
+        if(q->op==0x003du){
+            assert(q->in_buf_len==4 && q->out_buf_len==52);error_receipt_reads++;
+            uint32_t tx;memcpy(&tx,allocation_for(q->in_buf_ptr,4),4);
+            uint32_t *last=error_receipts[fd-10],reply[13]={0};
+            if(error_receipt_valid[fd-10] && tx==last[1])memcpy(reply,last,52);
+            else {
+                assert(tx==last[1]+1u);reply[0]=1;reply[1]=tx;reply[12]=WPK_GL_QUERY_REPLY_MAGIC;
+            }
+            memcpy(allocation_for(q->out_buf_ptr,52),reply,52);
+            if(error_receipt_read_fail){error_receipt_read_fail=0;errno=EIO;return -1;}return 0;
+        }
         if (numeric_queries == 3) { errno = EINVAL; return -1; }
         if (q->op == QOP_GET_ERROR) {
             if (combined.enabled) combined.error_queries++;
             error_queries++;
-            const int drain = q->in_buf_len == WPK_GL_ERROR_DRAIN_REQUEST_BYTES;
+            if(drain_lost_before){drain_lost_before=0;errno=EIO;return -1;}
+            const int receipt=q->in_buf_len==12;
+            const int drain = q->in_buf_len == WPK_GL_ERROR_DRAIN_REQUEST_BYTES || receipt;
             assert(q->in_buf_len == 0 || q->in_buf_len == 4 || drain);
             if (q->in_buf_len) {
                 uint32_t pending; memcpy(&pending,allocation_for(q->in_buf_ptr,4),4);
@@ -2232,7 +2248,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             }
             if (drain) {
                 uint32_t mode; memcpy(&mode,(const uint8_t *)allocation_for(q->in_buf_ptr,8)+4,4);
-                assert(mode == WPK_GL_ERROR_DRAIN_REQUEST && q->out_buf_len == WPK_GL_ERROR_DRAIN_REPLY_BYTES);
+                assert(mode == (receipt?0x47524350u:WPK_GL_ERROR_DRAIN_REQUEST));
+                assert(q->out_buf_len==(receipt?52:WPK_GL_ERROR_DRAIN_REPLY_BYTES));
+                uint32_t tx=0;if(receipt){memcpy(&tx,(const uint8_t *)allocation_for(q->in_buf_ptr,12)+8,4);assert(tx==error_receipts[fd-10][1]+1u);}
                 drain_requests++;
                 uint32_t reply[WPK_GL_ERROR_DRAIN_REPLY_BYTES/4] = {0}, count = 0;
                 /* Host recording order is modelled as bit order; the extra
@@ -2243,9 +2261,19 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                     reply[2+count++] = GL_INVALID_ENUM + bit; client_error_masks[fd-10] &= ~(1u << bit);
                 }
                 reply[0] = count; reply[2+WPK_GL_ERROR_DRAIN_CAPACITY] = WPK_GL_QUERY_REPLY_MAGIC;
+                if(receipt){
+                    uint32_t *last=error_receipts[fd-10];memset(last,0,52);last[1]=tx;
+                    last[3]=reply[1];last[12]=WPK_GL_QUERY_REPLY_MAGIC;
+                    for(unsigned i=0;i<count;i++){
+                        int duplicate=0;for(unsigned j=0;j<last[2];j++)duplicate|=last[4+j]==reply[2+i];
+                        if(!duplicate)last[4+last[2]++]=reply[2+i];
+                    }
+                    error_receipt_valid[fd-10]=1;
+                }
                 if (drain_corrupt) { reply[drain_corrupt-1] ^= 0x100u; drain_corrupt = 0; }
                 drain_extra_error = 0;
-                memcpy(allocation_for(q->out_buf_ptr,q->out_buf_len),reply,sizeof reply);
+                if(receipt){uint32_t result[13]={0,tx};memcpy(result+2,reply,sizeof reply);memcpy(allocation_for(q->out_buf_ptr,52),result,52);}
+                else memcpy(allocation_for(q->out_buf_ptr,q->out_buf_len),reply,sizeof reply);
                 if (drain_lost_reply) { drain_lost_reply = 0; errno = EIO; return -1; }
                 return 0;
             }
@@ -5315,6 +5343,57 @@ int main(int argc, char **argv) {
         assert(glGetError() == 0x9242u && glGetError() == GL_NO_ERROR && error_queries == queries + 3);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS error-drain-retained"); return 0;
+    }
+    if(!strcmp(argv[1],"error-receipt-nonentry")) {
+        const unsigned queries=error_queries,drains=drain_requests,reads=error_receipt_reads;
+        glClear(GL_COLOR_BUFFER_BIT);query_gl_error=GL_INVALID_ENUM;drain_lost_before=1;
+        assert(glGetError()==GL_INVALID_OPERATION);
+        assert(error_queries==queries+1 && drain_requests==drains);
+        assert(glGetError()==GL_INVALID_ENUM&&glGetError()==GL_NO_ERROR);
+        assert(error_queries==queries+2&&drain_requests==drains+1&&error_receipt_reads==reads+1);
+        assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy));
+        puts("PASS error-receipt-nonentry");return 0;
+    }
+    if (!strcmp(argv[1],"error-receipt-recovery-lost") || !strcmp(argv[1],"error-receipt-new-invalid-operation")) {
+        const int repeat=!strcmp(argv[1],"error-receipt-new-invalid-operation");
+        glClear(GL_COLOR_BUFFER_BIT);
+        if(repeat)glBufferData(GL_ARRAY_BUFFER,0,NULL,GL_STATIC_DRAW);
+        query_gl_error=repeat?GL_INVALID_OPERATION:GL_INVALID_ENUM;
+        drain_lost_reply=1;assert(glGetError()==GL_INVALID_OPERATION);
+        if(repeat){
+            /* A later client-only INVALID_OPERATION must survive recovery's
+             * acknowledgment of an older mask carrying the same value. */
+            glBufferData(GL_ARRAY_BUFFER,0,NULL,GL_STATIC_DRAW);
+            assert(glGetError()==GL_INVALID_OPERATION&&glGetError()==GL_NO_ERROR);
+        }else{
+            const unsigned queries=error_queries,reads=error_receipt_reads;
+            error_receipt_read_fail=1;assert(glGetError()==GL_INVALID_OPERATION);
+            assert(error_queries==queries&&error_receipt_reads==reads+1);
+            assert(glGetError()==GL_INVALID_ENUM&&glGetError()==GL_NO_ERROR);
+            assert(error_queries==queries+1&&error_receipt_reads==reads+2);
+        }
+        assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy));
+        printf("PASS %s\n",argv[1]);return 0;
+    }
+    if (!strcmp(argv[1], "error-snapshot-lost") || !strcmp(argv[1], "error-snapshot-malformed")) {
+        /* This flag exists only in the host, never in client_errors. A lost
+         * or malformed reply must not transfer it out of the live context. */
+        glClear(GL_COLOR_BUFFER_BIT);
+        query_gl_error = GL_INVALID_ENUM;
+        if (!strcmp(argv[1], "error-snapshot-lost")) drain_lost_reply = 1;
+        else drain_corrupt = 11;
+        assert(glGetError() == GL_INVALID_OPERATION);
+        assert(glGetError() == GL_INVALID_ENUM);
+        /* The recovered flag has now been observed. A later repetition is
+         * a new flag; repeating another unobserved value still coalesces. */
+        glEnable(0xdead); glViewport(0,0,-1,1);
+        assert(glGetError() == GL_INVALID_ENUM);
+        glViewport(0,0,-1,1);
+        assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+        glClear(GL_COLOR_BUFFER_BIT);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        printf("PASS %s\n",argv[1]); return 0;
     }
     if (!strcmp(argv[1], "error-drain-malformed")) {
         /* Malformed or lost replies are this call's INVALID_OPERATION and

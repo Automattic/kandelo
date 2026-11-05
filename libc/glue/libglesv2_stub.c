@@ -388,8 +388,10 @@ struct wpk_gles_context {
     uint32_t client_errors;
     /* glGetError's drain request and reply (shared::gl::error_drain) live in
      * the context, so reporting OUT_OF_MEMORY never allocates. */
-    uint32_t error_request[WPK_GL_ERROR_DRAIN_REQUEST_BYTES / 4];
-    uint32_t error_drain[WPK_GL_ERROR_DRAIN_REPLY_BYTES / 4];
+    uint32_t error_request[3];
+    uint32_t error_drain[WPK_GL_ERROR_DRAIN_RECEIPT_BYTES / 4];
+    uint32_t error_transaction, error_pending_transaction, error_pending_mask;
+    int error_pending, error_pending_observed;
     struct gl_submit_query_info error_packet;
     /* Flags a drain moved out of the host context, oldest first, not yet
      * returned. Together with client_errors and the host's flags they are
@@ -1834,7 +1836,8 @@ static GLenum take_held_error(struct wpk_gles_context *state) {
  * At most six distinct values exist (WebGL getError's five ES2 flags and
  * CONTEXT_LOST_WEBGL), so a merge that overflows held_errors is malformed. */
 static int accept_error_drain(struct wpk_gles_context *state, int *retained) {
-    const uint32_t *reply = state->error_drain, capacity = WPK_GL_ERROR_DRAIN_CAPACITY;
+    const uint32_t *reply = state->error_drain+2, capacity = WPK_GL_ERROR_DRAIN_CAPACITY;
+    if(state->error_drain[0] || state->error_drain[1]!=state->error_pending_transaction)return 0;
     const uint32_t count = reply[0];
     if (count > capacity || reply[1] > 1 || reply[2 + capacity] != WPK_GL_QUERY_REPLY_MAGIC) return 0;
     uint32_t fresh = 0;
@@ -1845,12 +1848,40 @@ static int accept_error_drain(struct wpk_gles_context *state, int *retained) {
         for (uint32_t j = 0; j < i; ++j) if (reply[2 + j] == error) return 0;
         int held = 0;
         for (uint32_t j = 0; j < state->held_error_count; ++j) held |= state->held_errors[j] == error;
-        fresh += !held;
+        fresh += !held && !(state->error_pending_observed && error==GL_INVALID_OPERATION);
     }
     if (state->held_error_count + fresh > capacity) return 0;
-    for (uint32_t i = 0; i < count; ++i) (void)hold_error(state, reply[2 + i]);
+    for (uint32_t i = 0; i < count; ++i)
+        if(!(state->error_pending_observed && reply[2+i]==GL_INVALID_OPERATION))
+            (void)hold_error(state, reply[2 + i]);
     *retained = (int)reply[1];
+    /* The failure already returned INVALID_OPERATION. A same-valued client
+     * error recorded since then is new and must not be acknowledged here. */
+    uint32_t acknowledged=state->error_pending_mask;
+    if(state->error_pending_observed)acknowledged &= ~(1u << (GL_INVALID_OPERATION-GL_INVALID_ENUM));
+    state->client_errors &= ~acknowledged;
+    state->error_transaction=state->error_pending_transaction;
+    state->error_pending=state->error_pending_observed=0;
     return 1;
+}
+/* Failure-only recovery never submits a prefix, replays a drain or touches
+ * native error state. A subsequent fresh drain observes work accepted since
+ * the lost reply before this glGetError can establish complete knowledge. */
+static int recover_error_drain(struct wpk_gles_context *state,int fd) {
+    state->error_request[0]=state->error_pending_transaction;
+    memset(state->error_drain,0,sizeof state->error_drain);
+    struct gl_query_info query={.op=QOP_ERROR_DRAIN_RECEIPT,
+        .in_buf_ptr=(uintptr_t)state->error_request,.in_buf_len=4,
+        .out_buf_ptr=(uintptr_t)state->error_drain,.out_buf_len=sizeof state->error_drain};
+    if(gl_device_ioctl(fd,GLIO_QUERY,&query)!=0)return 0;
+    const uint32_t *reply=state->error_drain;
+    if(reply[1]!=state->error_pending_transaction || reply[12]!=WPK_GL_QUERY_REPLY_MAGIC)return 0;
+    if(reply[0]==1){
+        for(unsigned i=2;i<12;i++)if(reply[i])return 0;
+        state->error_pending=state->error_pending_observed=0;return 1;
+    }
+    int retained;
+    return accept_error_drain(state,&retained);
 }
 /* This failure path must neither allocate nor try to submit again. Normal
  * reservations leave one observation header plus the error trailer free.
@@ -1899,6 +1930,9 @@ GLenum glGetError(void) {
     if (!state) return GL_NO_ERROR;
     uint8_t *base = _wpk_gl_cmdbuf_base();
     if (base == NULL) return GL_NO_ERROR;
+    if(state->error_pending && !recover_error_drain(state,_wpk_gl_fd())) {
+        state->error_pending_observed=1;return failed_error_observation(state);
+    }
     if (exact_error_state(state)) {
         if ((!g_cursor || g_cursor == base) && !state->predicted_errors)
             return take_held_error(state);
@@ -1933,23 +1967,27 @@ GLenum glGetError(void) {
     const uint32_t errors = state->client_errors;
     const uint32_t prefix = !g_cursor ? 0 : (uint32_t)(g_cursor-base);
     state->error_request[0] = errors;
-    state->error_request[1] = WPK_GL_ERROR_DRAIN_REQUEST;
+    state->error_pending_transaction=state->error_transaction+1u;
+    state->error_pending_mask=errors;state->error_pending=1;
+    state->error_request[1] = WPK_GL_ERROR_DRAIN_RECEIPT_REQUEST;
+    state->error_request[2] = state->error_pending_transaction;
     memset(state->error_drain, 0, sizeof state->error_drain);
     const uint64_t requests = _wpk_gl_device_requests();
     int retained = 1;
     int rc = query_owned_reply(state,base,fd,QOP_GET_ERROR,state->error_request,
-        WPK_GL_ERROR_DRAIN_REQUEST_BYTES,state->error_drain,WPK_GL_ERROR_DRAIN_REPLY_BYTES,
+        sizeof state->error_request,state->error_drain,sizeof state->error_drain,
         prefix,prefix ? &state->error_packet : NULL,NULL);
     if (rc == 0 && !accept_error_drain(state, &retained)) { errno = EIO; rc = -1; }
     if (rc != 0) {
         /* Report the failed transport as this call's INVALID_OPERATION and
          * clear that one flag wherever the guest holds it. Client flags stay
-         * until a reply proves the host received them, so none is lost; host
-         * flags a failed reply may have carried away are the remaining
-         * copyout custody gap, as for any query whose completion is unknown.
+         * until a reply proves the host received them. The host retains the
+         * exact completed drain; the next call recovers it read-only before
+         * submitting any new work, without repeating the entered query.
          * An ordered transport observation prevents an earlier retained
          * INVALID_OPERATION from being reported twice after recovery.
-         * The next call asks the host again. */
+         * The recovered receipt omits that already observed flag only. */
+        state->error_pending_observed=1;
         return failed_error_observation(state);
     }
     state->client_errors &= ~errors;

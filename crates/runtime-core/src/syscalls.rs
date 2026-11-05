@@ -1652,6 +1652,11 @@ fn capture_gl_query_info(
             return Err(Errno::EINVAL);
         }
         require_gl_current_for_tid(proc, ofd_idx, tid)?;
+    } else if info.op == gl::QOP_ERROR_DRAIN_RECEIPT {
+        if info.in_buf_len!=4 || info.out_buf_len!=gl::error_drain_receipt::REPLY_BYTES {
+            return Err(Errno::EINVAL);
+        }
+        require_gl_current_for_tid(proc,ofd_idx,tid)?;
     } else if info.op == gl::QOP_PROGRAM_JOURNAL || info.op == gl::QOP_PROGRAM_JOURNAL_BARRIER {
         if !(4..=8204).contains(&info.in_buf_len) || info.in_buf_len % 4 != 0 || info.out_buf_len != 48 {
             return Err(Errno::EINVAL);
@@ -1958,7 +1963,8 @@ fn gl_entry_touches_buffers(request: u32, buf: &[u8]) -> bool {
             u32::from_le_bytes(op.try_into().unwrap()),
             gl::QOP_CREATE_FENCE | gl::QOP_FENCE_STATUS | gl::QOP_RELEASE_FENCE
                 | gl::QOP_SERVER_WAIT | gl::QOP_EXPORT_FENCE | gl::QOP_SURFACE_CAPABILITIES
-                | gl::QOP_CONTEXT_RESET_SCOPE | gl::QOP_PROGRAM_JOURNAL | gl::QOP_PROGRAM_JOURNAL_BARRIER)),
+                | gl::QOP_CONTEXT_RESET_SCOPE | gl::QOP_PROGRAM_JOURNAL | gl::QOP_PROGRAM_JOURNAL_BARRIER
+                | gl::QOP_ERROR_DRAIN_RECEIPT)),
         _ => false,
     }
 }
@@ -61028,6 +61034,44 @@ impl HostIO for RelSymlinkMock {
         use wasm_posix_shared::gl;
         assert!(gl_entry_touches_buffers(gl::GLIO_QUERY,&gl::QOP_PROGRAM_CAPTURE.to_le_bytes()));
         assert!(gl_entry_touches_buffers(gl::GLIO_SUBMIT_QUERY,&gl::QOP_PROGRAM_CAPTURE.to_le_bytes()));
+    }
+
+    #[test]
+    fn glio_error_receipt_recovery_requires_exact_shape_current_tid_and_owned_context() {
+        use wasm_posix_shared::gl;
+        assert!(!gl_entry_touches_buffers(gl::GLIO_QUERY,&gl::QOP_ERROR_DRAIN_RECEIPT.to_le_bytes()));
+        assert!(gl_entry_touches_buffers(gl::GLIO_SUBMIT_QUERY,&gl::QOP_ERROR_DRAIN_RECEIPT.to_le_bytes()));
+        for width in [4,8] {
+            let (mut proc,mut host,fd)=glio_query_preflight_fixture();proc.pointer_width=width;
+            host.proc_memory.resize(4096,0xa5);
+            let query=|input_len:u32,output_len:u32|->Vec<u8>{
+                if width==4 {
+                    let q=gl::GlQueryInfo{op:gl::QOP_ERROR_DRAIN_RECEIPT,in_buf_ptr:128,in_buf_len:input_len,
+                        out_buf_ptr:64,out_buf_len:output_len,..Default::default()};
+                    unsafe{core::slice::from_raw_parts((&q as *const gl::GlQueryInfo).cast(),core::mem::size_of_val(&q)).to_vec()}
+                }else{
+                    let q=gl::GlQueryInfo64{op:gl::QOP_ERROR_DRAIN_RECEIPT,in_buf_ptr:128,in_buf_len:input_len,
+                        out_buf_ptr:64,out_buf_len:output_len,..Default::default()};
+                    unsafe{core::slice::from_raw_parts((&q as *const gl::GlQueryInfo64).cast(),core::mem::size_of_val(&q)).to_vec()}
+                }
+            };
+            for len in [0,3,8,12] {assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(len,52)),Err(Errno::EINVAL));}
+            for len in [0,44,48,56] {assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(4,len)),Err(Errno::EINVAL));}
+            assert!(host.gl_query_inputs.is_empty());assert!(host.proc_write_calls.is_empty());
+            let ofd=proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid=2;
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(4,52)),Err(Errno::EACCES));
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid=1;
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().owner_pid=2;
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(4,52)),Err(Errno::EACCES));
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().owner_pid=1;
+            assert!(host.gl_query_inputs.is_empty());
+            for transaction in [0u32,1,u32::MAX] {
+                host.proc_memory[128..132].copy_from_slice(&transaction.to_le_bytes());
+                sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(4,52)).unwrap();
+                assert_eq!(host.gl_query_inputs.last(),Some(&(gl::QOP_ERROR_DRAIN_RECEIPT,transaction.to_le_bytes().to_vec(),52)));
+            }
+        }
     }
 
     #[test]

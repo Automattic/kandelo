@@ -275,7 +275,7 @@ Program selection now has shared C names, current-context references, cold
 native executable captures and checked host-journal transport. Its explicitly
 admitted C prototype connects bounded pending/result custody, generation-token
 caching and ordered shared publication; ordinary application admission remains
-off until the remaining loss, partial-publication and error-reply custody
+off until the remaining native-loss, failed-prefix and final-context
 cases are closed. A positive link-status cache without complete ownership
 fails a newly shared pthread deletion regression; that prototype
 was not landed. This ownership remains required current-iteration work.
@@ -292,8 +292,21 @@ recovers only the snapshot-proven prefix and moves its unentered suffix to a
 healthy publisher. Shader public names retire before fallible cleanup, with
 cold native custody surviving the reset. Multiple-owner and inconsistent-
 snapshot controls preserve healthy rendering and explicit pre-exit cleanup.
-Remaining execution-loss, error-drain reply custody and final-context cases
+Remaining execution-loss, failed-prefix and final-context cases
 still gate ordinary activation; this does not complete B1 or native feel.
+An independent physical-loss control finds the last metadata publisher's
+unsubmitted intents can block backend context destruction. Public context and
+execution ownership remain before process exit despite successful EGL calls.
+Fix that lifecycle path and preserve its independent pre-exit regression.
+
+Error drains now reserve a fixed context receipt and seal each completed
+transfer before copying it to the guest. Lost or malformed replies recover
+read-only without replaying the drain or consuming a later same-valued error.
+The original one-request successful path remains; failure-only recovery must
+then observe fresh queued work before local error knowledge can resume. This
+closes the targeted error-reply custody gap, with native controls and real
+GPU checks on three engines/both widths. Full B1 conformance, loss/final-context
+audit, activation, application measurements and complete preview remain required.
 
 Ordinary link/use no longer pays for an unused selected/prepared executable
 capture cache. Admitted journal caches acquire cold pins only when needed,
@@ -1117,9 +1130,9 @@ retirement controls, including an independent ownership sample before process
 exit. Unexpected exceptions in a preflighted journal transaction now latch a
 fatal host fault before further work, and completion is sealed after all receipt
 fields. Completed-copyout recovery remains available. Automatic admission still
-requires client reconciliation for legitimate context-reset partial publication,
-remaining native-loss and uncertain prefix reconciliation, unknown error-drain reply custody and the complete
-final-context ownership audit. Ordered transport-error markers now prevent an
+requires remaining native-loss and uncertain-prefix reconciliation and the
+complete final-context ownership audit. The focused interrupted logical
+publication case now recovers only its snapshot-proven prefix. Ordered transport-error markers now prevent an
 earlier retained flag from reappearing after successful publication recovery,
 while preserving unrelated flags and later repetitions. Shared dispatch/lifecycle guards now nest on
 the owning thread while retaining peer exclusion and cancellation ordering;

@@ -6157,7 +6157,7 @@ when the answer is already known. Applications that check every call (a
 debug GL wrapper is `glGetError(); call; glGetError()`) otherwise pay a
 synchronous kernel-worker request for each check, most of them with
 nothing queued since the previous answer. `glGetError` sends the
-`QOP_GET_ERROR` drain form (`shared::gl::error_drain`): queued commands
+`QOP_GET_ERROR` retained-drain form (`shared::gl::error_drain_receipt`): queued commands
 ride as the compound submit prefix, the encoder's unacknowledged client
 flags ride in the request mask, and the renderer captures native flags and
 moves every recorded flag, oldest first, into a checked reply that also
@@ -6183,7 +6183,26 @@ operation or another thread's work, void that knowledge, and the next
 whose request produced it, as described above. Reset reporting is
 consulted before any local answer and is still learned from the next
 request's `ENODEV`. A malformed or failed drain reply is reported as one
-`GL_INVALID_OPERATION` and never establishes local knowledge.
+`GL_INVALID_OPERATION` and never establishes local knowledge. Each context
+reserves one fixed receipt before native execution. The new 12-byte request
+adds a wrapping transaction identity; the 52-byte reply seals its status and
+identity before copying out the original count/retained/error-list payload.
+The old empty/4-byte pop and 8-byte drain forms keep their contracts.
+
+On a lost or malformed reply, C retains that transaction and its client-mask
+custody. The next `glGetError` first uses read-only `QOP_ERROR_DRAIN_RECEIPT`
+to recover the exact completed transfer or prove nonentry. It never retries
+an entered drain. Recovery neither selects a native context, captures/drains
+errors, interrupts an upload nor synchronizes buffers; ordinary current-thread
+and context ownership still apply. After recovery a fresh drain observes new
+queued work before local knowledge can resume. The original failed call has
+already returned `INVALID_OPERATION`, so recovery consumes that earlier
+coalesced flag once while preserving other flags and a later repetition.
+Only the successor transaction may enter. Serial context ownership and one
+outstanding call make unsigned 32-bit wrap unambiguous; no exhaustion boundary
+is added. Unexpected drain bookkeeping faults retain indeterminate custody
+and report a fatal attributed host fault. Acknowledged backend retirement clears its numeric receipt. Normal successful checks retain one device request;
+additional read-only recovery occurs only on failure.
 
 The scalar validator also covers viewport/scissor dimensions, capabilities,
 depth/face/line arguments, blend factors/equations, stencil arguments,
@@ -7076,8 +7095,15 @@ caller's pending intent and an inconsistent snapshot retry, on three engines
 and both widths. Healthy rendering, vanished public names, no selector replay
 and native shader/program ownership before process exit are checked. They do
 not establish full native-loss/final-context coverage or desktop performance.
+A separate physical-loss control exposes one remaining C lifecycle failure:
+when its only metadata publisher loses the renderer with unsubmitted intents,
+publication blocks the backend destroy call. EGL reports successful retirement
+while a public host context and execution owner survive until process exit.
+That path remains broken and must retire exact backend custody before freeing
+its C receivers; successful EGL return values do not prove cleanup.
 
 Automatic application admission is still off. Remaining native-loss and
-failed-prefix reconciliation, unknown error-drain reply custody, and the
-complete final-context audit remain required before activation. These are unfinished B1 work. Focused warm device request counts
+failed-prefix reconciliation and the complete final-context audit remain
+required before activation. Lost/malformed error-drain replies now retain
+recoverable custody, with independent three-engine controls. These are unfinished B1 work. Focused warm device request counts
 do not establish application latency or native desktop feel.

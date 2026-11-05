@@ -687,3 +687,23 @@ it.each(["query","present","make-current"])("refuses %s before native effects wh
   expect([...new Uint8Array(memory.buffer,512,4)]).toEqual([0xaa,0xaa,0xaa,0xaa]);
   expect(b.operations.pending).toBe(0);native.mockRestore();kernel.releaseProcessViews(7);
 });
+
+it.each([4,8] as const)("recovers error-drain custody without interrupting uploads or native replay (width%d)",width=>{
+  const {kernel,imports,memory,create}=harness({},width);
+  const {gl}=foreignTextureGl();Object.assign(gl,{isContextLost:()=>false,getExtension:()=>null,deleteProgram:()=>{}});
+  kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+  kernel.gl.attachCanvas(7,{width:4,height:3,getContext:()=>gl} as unknown as OffscreenCanvas);
+  expect(create(7,21,11)).toBe(0);const b=kernel.gl.get(7,11)!;
+  const program={} as WebGLProgram;b.programs.set(20,program);b.currentProgram=b.shadow.currentProgram=program;b.currentProgramId=20;
+  Object.assign(gl,{getProgramParameter:(_p:unknown,q:number)=>q===0x8b86?1:true,
+    getActiveUniform:()=>({name:"value[0]",type:0x1406,size:3}),getUniformLocation:()=>({})});
+  runUniformUpload(b,O.OP_UNIFORM_UPLOAD_BEGIN,new DataView(new Uint32Array([1,O.OP_UNIFORM1FV,1,20000,0]).buffer),()=>{throw new Error("unexpected commit");});
+  const owner=b.uniformUpload;expect(owner).not.toBeNull();
+  b.errorDrainReceipt.valid=true;b.errorDrainReceipt.words.set([0,1,1,0,0x500]);b.errorDrainReceipt.words[12]=0x47514c33;
+  b.errors.push(0x501);const native=vi.spyOn(gl,"getError"),before=native.mock.calls.length;
+  new DataView(memory.buffer).setUint32(128,1,true);const ptr=(n:number)=>width===8?BigInt(n):n;
+  expect(imports.host_gl_query(7,O.QOP_ERROR_DRAIN_RECEIPT,ptr(128),ptr(4),ptr(512),ptr(52),11)).toBe(52);
+  expect([...new Uint32Array(memory.buffer,512,13)]).toEqual([0,1,1,0,0x500,0,0,0,0,0,0,0,0x47514c33]);
+  expect(native.mock.calls).toHaveLength(before);expect(b.uniformUpload).toBe(owner);expect(b.errors).toEqual([0x501]);
+  native.mockRestore();kernel.releaseProcessViews(7);
+});

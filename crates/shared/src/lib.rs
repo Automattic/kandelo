@@ -4217,6 +4217,20 @@ pub mod gl {
         pub const CAPACITY: u32 = 8;
         pub const REPLY_BYTES: u32 = (3 + CAPACITY) * 4;
     }
+    /// Retained drain variant: request [client mask, REQUEST, transaction].
+    /// Reply [status, transaction, count, retained, errors[8], magic]. Status0
+    /// seals the transfer; status1 proves nonentry and status2 retains unknown
+    /// custody. Only the next wrapping u32 identity may enter. One outstanding
+    /// synchronous call per context makes wrap unambiguous. Existing forms
+    /// retain their exact contracts.
+    pub mod error_drain_receipt {
+        pub const REQUEST: u32 = 0x4752_4350;
+        pub const REQUEST_BYTES: u32 = 12;
+        pub const REPLY_BYTES: u32 = 52;
+    }
+    /// Read-only [transaction] recovery of the latest error-drain receipt.
+    /// No native replay, error capture/drain, upload interruption or BO sync.
+    pub const QOP_ERROR_DRAIN_RECEIPT: u32 = 0x003D;
     pub const QOP_GET_STRING: u32 = 0x02;
     pub const QOP_GET_INTEGERV: u32 = 0x03;
     pub const QOP_GET_FLOATV: u32 = 0x04;
@@ -6691,6 +6705,9 @@ mod gl_tests {
         // Mirrored by WPK_GL_ERROR_DRAIN_* (libc/glue/gl_abi.h) and
         // GL_ERROR_DRAIN_* (host/src/webgl/ops.ts).
         assert_eq!(error_drain::REQUEST, 0x4744_524e);
+        assert_eq!(error_drain_receipt::REQUEST,0x4752_4350);
+        assert_eq!(error_drain_receipt::REQUEST_BYTES,12);
+        assert_eq!(error_drain_receipt::REPLY_BYTES,52);
         assert_eq!(error_drain::REQUEST_BYTES, 8);
         assert_eq!(error_drain::CAPACITY, 8);
         assert_eq!(error_drain::REPLY_BYTES, 44);
@@ -6833,6 +6850,7 @@ mod gl_tests {
             QOP_PROGRAM_CAPTURE,
             QOP_PROGRAM_JOURNAL,
             QOP_PROGRAM_JOURNAL_BARRIER,
+            QOP_ERROR_DRAIN_RECEIPT,
             QOP_CREATE_FENCE,
             QOP_FENCE_STATUS,
             QOP_RELEASE_FENCE,
