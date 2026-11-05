@@ -4208,3 +4208,18 @@ FrankenPHP link or runtime activation. Shell syntax and diff checks pass
 for the changed recipes; esbuild parsed the WordPress image builder and
 classic server probe. A direct Node import check could not run because
 this checkout lacks `@noble/hashes`; it is not counted as a pass.
+
+The first FrankenPHP classic link succeeded, then resolver admission
+rejected its program: the pinned Go fork still emitted ABI 50, and the
+package import audit did not declare Go's `kernel.kernel_thread_exit`
+process-worker import. The host already supplies that import on Node and
+browser workers; its declaration now lives in the shared program import
+contract and the SDK-derived resolver audit. The Go fork's linker marker
+was updated to ABI 55 (`b3596ee`), published, and repinned in all four
+Go-consuming recipes. The Go fork bootstrap and focused linker test pass,
+the xtask package-import suite passes 8/8, and the ABI snapshot/digest
+check reports unchanged program surface. The classic revision-26 resolver
+build then completed after 16m22s and published an ABI-55 Wasm executable.
+Much of that run rebuilt PHP-ZTS after the program-contract source changed.
+This verifies the FrankenPHP static-PHP link and package admission, not
+WordPress or live OPcache behavior. Caddy and the WordPress image are next.

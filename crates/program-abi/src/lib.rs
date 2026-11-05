@@ -875,6 +875,16 @@ pub mod abi {
         results: &[I64],
     };
 
+    /// The Go/Wasm runtime releases a retiring M's stack before exiting its
+    /// disposable process worker. The host supplies this import on Node and
+    /// browser workers; it takes the address of Go's free-wait word.
+    pub const PROCESS_WORKER_THREAD_EXIT_IMPORT: ProgramArtifactImport = ProgramArtifactImport {
+        module: "kernel",
+        name: "kernel_thread_exit",
+        params: &[I32],
+        results: &[],
+    };
+
     pub const WPK_FORK_REQUIRED_IMPORTS: &[ProgramArtifactImport] = &[
         ProgramArtifactImport {
             module: WPK_FORK_FRAME_IMPORT_MODULE,

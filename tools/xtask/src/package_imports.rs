@@ -159,6 +159,11 @@ fn sdk_kernel_contract(sysroot: &Path) -> Result<KernelContract, String> {
         safepoint.params.iter().map(value).collect(),
         safepoint.results.iter().map(value).collect(),
     ));
+    let thread_exit = abi::PROCESS_WORKER_THREAD_EXIT_IMPORT;
+    contract.entry(thread_exit.name.into()).or_default().insert((
+        thread_exit.params.iter().map(value).collect(),
+        thread_exit.results.iter().map(value).collect(),
+    ));
     Ok(contract)
 }
 
