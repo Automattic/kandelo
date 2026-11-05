@@ -10,8 +10,8 @@ for(const audit of [false,true])test(`owned buffer snapshots survive shared repl
   const result=await page.evaluate(async({source,audit})=>{
     const load=(name:string)=>import(/* @vite-ignore */ `/@fs${source}${name}.ts`);
     const [{GlContextRegistry},{GlMuxer},{GlProgramJournal},{bindBufferObject,replaceBufferData,updateBufferData},
-      {deleteBufferNames,collectRetiredBuffers},{withNativeBatch},{configureGlAudit,resetGlAuditForTesting},{nativeGlFault}]=await Promise.all([
-      load("registry"),load("muxer"),load("program-journal"),load("buffer-storage"),load("buffer-references"),load("native-batch"),load("native-audit"),load("native-recovery")]);
+      {deleteBufferNames,collectRetiredBuffers},{withNativeBatch},{configureGlAudit,resetGlAuditForTesting},{nativeGlFault},{runGlQuery},{decodeAndDispatch}]=await Promise.all([
+      load("registry"),load("muxer"),load("program-journal"),load("buffer-storage"),load("buffer-references"),load("native-batch"),load("native-audit"),load("native-recovery"),load("query"),load("bridge")]);
     const auditRows:any[]=[];
     if(audit)configureGlAudit({mode:"fatal",sink:(r:unknown)=>auditRows.push(r),fault:(message:string)=>nativeGlFault(message)});
     const canvas=document.createElement("canvas");canvas.width=16;canvas.height=16;
@@ -25,12 +25,16 @@ for(const audit of [false,true])test(`owned buffer snapshots survive shared repl
     const make=(session:number)=>{registry.bind({pid:1,sessionId:session,cmdbufAddr:0,cmdbufLen:128});const b=registry.get(1,session);b.gl=gl;b.contextId=session+1;return b;};
     const b=make(0),execution=registry.retainContextExecution(1,0,muxer);
     if(!execution)throw new Error("Execution owner unavailable");
-    const journal=GlProgramJournal.create(execution,4);
-    if(!journal||journal.prepareBufferSnapshots(2)!==2)throw new Error("Snapshot preparation failed");
+    const query=(words:number[])=>{const out=new Uint8Array(48);if(runGlQuery(b,0x3b,new Uint8Array(new Uint32Array(words).buffer),out,execution)!==48)throw new Error("Wire query rejected");return [...new Uint32Array(out.buffer)];};
+    const reserved=query([1,1,4]),journal=b.programJournal;
+    if(!journal||reserved[0]||query([10,2,journal.id,2])[4]!==2)throw new Error("Snapshot wire preparation failed");
     if(!bindBufferObject(b,ARRAY,7))throw new Error("Buffer binding failed");const original=b.buffers.get(7);
     const triangle=new Float32Array([-1,-1,1,-1,0,1]),bytes=new Uint8Array(triangle.buffer);
     const before=errorReads;
-    if(withNativeBatch(b,"real-snapshot-definition",()=>{if(!journal.defineBufferSnapshot(0,1,ARRAY,bytes,STATIC))throw new Error("Snapshot definition rejected");})!==0)throw new Error("Definition reset context");
+    const command=new Uint8Array(4+24+bytes.byteLength),wire=new DataView(command.buffer);
+    wire.setUint16(0,0x107,true);wire.setUint16(2,command.byteLength-4,true);
+    [journal.id,0,1,ARRAY,bytes.byteLength,STATIC].forEach((word,i)=>wire.setUint32(4+i*4,word,true));command.set(bytes,28);b.cmdbufView=command;
+    if(withNativeBatch(b,"real-snapshot-definition",()=>{if(decodeAndDispatch(b,0,command.byteLength)!==0)throw new Error("Snapshot wire definition rejected");})!==0)throw new Error("Definition reset context");
     const warmNativeChecks=errorReads-before,copy=journal.resolveBufferSnapshot(0,1,original,bytes.byteLength);
     if(!copy||copy===original)throw new Error("Snapshot did not own independent storage");
     const peer=make(12);if(!registry.shareObjects(1,12,0)||!bindBufferObject(peer,ARRAY,7))throw new Error("Shared peer failed");

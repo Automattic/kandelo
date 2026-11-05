@@ -4536,6 +4536,22 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "query_dependencies":"metadata-only-no-buffer-sync",
         "legacy":"action8-unchanged; reserved-word9-stays-zero",
     }));
+    s.add(Program, "gl_program_buffer_snapshots", json!({
+        "query":shared::gl::QOP_PROGRAM_JOURNAL,"prepare_action":10,
+        "prepare_request_bytes":16,"prepare_request_fields":["action","transaction","own_journal","capacity"],
+        "prepare_reply_bytes":48,"prepare_reply":"existing-sealed-journal-receipt; value-is-capacity",
+        "capacity":32,"maximum_definition_bytes":32768,
+        "definition_opcode":shared::gl::OP_BUFFER_DATA_SNAPSHOT,
+        "definition_header_bytes":24,
+        "definition_fields":["own_journal","cell","next_token","target","byte_length","usage"],
+        "definition_tail":"absent-for-zero-initialized-allocation; otherwise-exact-byte-length",
+        "authority":"own-current-context-tid-and-journal; no-lifecycle-barrier-or-peer-execution",
+        "generation":"strict-next-nonzero-u32-per-cell; no-wrap; consume-before-original-api-validation",
+        "recovery":"prepare-read-last-without-mutator-replay; partial-bank-retained-until-exact-retirement",
+        "definition":"independent-original-BufferData-validation; ordinary-storage-and-private-copy",
+        "ownership":"canonical-object-identity-and-byte-span; synchronous-borrow; ordered-cell-reuse",
+        "legacy":"all-existing-journal-actions-and-BufferData-records-unchanged",
+    }));
     s.add(Program, "gl_error_drain_receipt", json!({
         "query":shared::gl::QOP_GET_ERROR,
         "request_mode":shared::gl::error_drain_receipt::REQUEST,
@@ -8663,6 +8679,7 @@ fn additive_top_level_section(section: &str) -> bool {
             | "gl_error_drain_receipt"
             | "gl_program_uniform_signature"
             | "gl_program_uniform_guest_signature"
+            | "gl_program_buffer_snapshots"
             | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
@@ -10400,6 +10417,22 @@ mod tests {
         }
         let mut changed=new.clone();changed["gl_program_uniform_signature"]["reserved_word9"]=json!(1);
         assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty());
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn buffer_snapshot_wire_is_additive_and_existing_fields_are_exact() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["gl_program_buffer_snapshots"]=json!({"query":0x3b,"prepare_action":10,
+            "definition_opcode":0x107,"capacity":32,"maximum_definition_bytes":32768,
+            "authority":"own-current-context","recovery":"read-last-no-replay"});
+        assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());
+        for field in new["gl_program_buffer_snapshots"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_program_buffer_snapshots"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_program_buffer_snapshots"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
         assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
     }
 

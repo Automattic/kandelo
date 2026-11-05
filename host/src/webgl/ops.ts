@@ -36,6 +36,8 @@ export const OP_BUFFER_DATA                 = 0x0103;
 export const OP_BUFFER_SUB_DATA             = 0x0104;
 export const OP_BEGIN_CLIENT_ARRAY           = 0x0105;
 export const OP_END_CLIENT_ARRAY             = 0x0106;
+/** Private journal/cell/token followed by an independently validated definition. */
+export const OP_BUFFER_DATA_SNAPSHOT         = 0x0107;
 
 export const OP_GEN_TEXTURES                = 0x0200;
 export const OP_DELETE_TEXTURES             = 0x0201;

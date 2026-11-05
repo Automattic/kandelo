@@ -38,6 +38,50 @@ function fixture(){
   execution.release();registry.unbind(1);expect(native.size).toBe(0);};
  return {b,gl,program,registry,muxer,execution,capture,selected,native,bind,query,emit,setup,dispose};
 }
+it("snapshot wire recovers cold preparation after copyout loss without native replay",()=>{
+ const f=fixture();f.setup();let created=0;
+ Object.assign(f.gl,{createBuffer:()=>{created++;const buffer={};f.native.add(buffer);return buffer;},deleteBuffer:(buffer:object|null)=>{if(buffer)f.native.delete(buffer);}});
+ const out=new Uint8Array(48),failure=vi.spyOn(out,"set").mockImplementation(()=>{throw new Error("snapshot copyout lost");});
+ try{expect(()=>f.query([10,3,1,2],out)).toThrow("snapshot copyout lost");}finally{failure.mockRestore();}
+ expect(created).toBe(2);expect(f.query([6]).words).toEqual([0,3,10,1,2,0,0,0,0,0,0,magic]);
+ expect(f.query([10,3,1,2]).rc).toBe(-22);expect(created).toBe(2);
+ expect(f.query([10,4,1,2]).words.slice(0,5)).toEqual([0,4,10,1,2]);expect(created).toBe(2);
+ expect(f.query([10,5,1,1]).words.slice(0,5)).toEqual([1,5,10,1,0]);expect(created).toBe(2);f.dispose();
+});
+it("snapshot wire preflights every shape and denies foreign and lifecycle allocation",()=>{
+ const f=fixture();f.setup();let created=0;Object.assign(f.gl,{createBuffer:()=>{created++;return {};}});
+ for(const words of [[10,0,1,2],[10,3,0,2],[10,3,1,0],[10,3,1,33],[10,3,1],[10,3,1,2,0]]){
+   const q=f.query(words);expect(q.rc).toBe(-22);expect([...q.out]).toEqual(Array(48).fill(0xa5));
+ }
+ const out=new Uint8Array(48).fill(0xa5);
+ expect(runGlQuery(f.b,QOP_PROGRAM_JOURNAL_BARRIER,new Uint8Array(new Uint32Array([10,3,1,2]).buffer),out)).toBe(-22);
+ expect([...out]).toEqual(Array(48).fill(0xa5));expect(f.query([10,3,2,2]).words.slice(0,5)).toEqual([1,3,10,1,0]);
+ expect(created).toBe(0);f.dispose();
+});
+it("snapshot wire retains partial native initialization rather than retrying allocation",()=>{
+ const f=fixture();f.setup();let created=0;
+ Object.assign(f.gl,{createBuffer:()=>{if(++created===2)return null;const buffer={};f.native.add(buffer);return buffer;},deleteBuffer:(buffer:object|null)=>{if(buffer)f.native.delete(buffer);}});
+ expect(f.query([10,3,1,3]).words.slice(0,5)).toEqual([1,3,10,1,0]);expect(created).toBe(2);
+ expect(f.query([10,4,1,3]).words.slice(0,5)).toEqual([1,4,10,1,0]);expect(created).toBe(2);f.dispose();
+});
+it("snapshot wire dispatches copied definitions and independently rejects invalid API usage",()=>{
+ const f=fixture();f.setup();let writes=0;
+ Object.assign(f.gl,{createBuffer:()=>{const buffer={};f.native.add(buffer);return buffer;},deleteBuffer:(buffer:object|null)=>{if(buffer)f.native.delete(buffer);},bufferData:()=>{writes++;}});
+ expect(f.query([10,3,1,2]).words[0]).toBe(0);expect(bindBufferObject(f.b,0x8892,7)).toBe(true);
+ const object=f.b.buffers.get(7)!,journal=f.b.programJournal!;
+ const emit=(id:number,token:number,usage:number)=>f.emit([[0x0107,[id,0,token,0x8892,4,usage,0x04030201]]]);
+ expect(decodeAndDispatch(f.b,0,emit(1,1,0x88e4))).toBe(0);expect(writes).toBe(2);expect(journal.resolveBufferSnapshot(0,1,object,4)).not.toBeNull();
+ expect(decodeAndDispatch(f.b,0,emit(1,2,0xdead))).toBe(0);expect(writes).toBe(2);expect(f.b.errors).toEqual([0x500]);
+ expect(journal.resolveBufferSnapshot(0,2,object,4)).toBeNull();expect(journal.resolveBufferSnapshot(0,1,object,4)).toBeNull();
+ expect(decodeAndDispatch(f.b,0,emit(99,3,0x88e4))).toBe(0);expect(writes).toBe(2);expect(f.b.errors).toEqual([0x500,0x502]);f.dispose();
+});
+it("snapshot wire rejects an invalid trailing record before any buffer mutation",()=>{
+ const f=fixture();f.setup();let writes=0;
+ Object.assign(f.gl,{createBuffer:()=>{const buffer={};f.native.add(buffer);return buffer;},deleteBuffer:(buffer:object|null)=>{if(buffer)f.native.delete(buffer);},bufferData:()=>{writes++;}});
+ expect(f.query([10,3,1,2]).words[0]).toBe(0);expect(bindBufferObject(f.b,0x8892,7)).toBe(true);
+ const len=f.emit([[0x0107,[1,0,1,0x8892,4,0x88e4,1]],[0x0107,[1,0,2,0x8892,3,0x88e4,1]]]);
+ expect(validateCommandBuffer(f.b.cmdbufView!,0,len)).toBe(-22);expect(decodeAndDispatch(f.b,0,len)).toBe(-22);expect(writes).toBe(0);f.dispose();
+});
 it("owns cold buffer receivers through journal closure without repeating preparation",()=>{
  const f=fixture();f.setup();let created=0;
  Object.assign(f.gl,{createBuffer:()=>{created++;const buffer={};f.native.add(buffer);return buffer;},deleteBuffer:(buffer:object|null)=>{if(buffer)f.native.delete(buffer);}});

@@ -51,6 +51,60 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Owned buffer-copy wire, 2026-11-05 (R422–R428)
+
+Optional journal action10 cold-prepares a context's bounded copy bank through
+its sealed transaction receipt. Its16-byte request carries transaction,
+owned journal and capacity; the existing48-byte receipt returns capacity.
+Lost copyout recovers with READ_LAST without allocating again. The current-TID,
+context and journal gates remain independent of the metadata-only lifecycle
+barrier, which refuses this native allocation. Both pointer-width kernel
+controls check malformed shapes, output preflight and foreign authority.
+Existing actions1–9 and BufferData layouts remain unchanged.
+
+New optional OP_BUFFER_DATA_SNAPSHOT0x0107 carries journal/cell/next token,
+original ARRAY target, byte length and usage, followed by the exact inline
+bytes or no tail for allocation. The host validates the entire batch before
+mutation, then independently validates the original API. Rejected usage
+cannot expose an older copy under a new token. The restoration receiver is
+now reserved before ordinary storage changes: an injected CPU allocation
+refusal returns OUT_OF_MEMORY with no ordinary write, rather than turning
+an accepted definition into a fatal bookkeeping failure. This introduces no
+new reset boundary. Production copies retain one final native batch sample.
+
+The wire is exercised by a normally built C guest fixture, not activated by
+the ordinary guest-library driver. Static attribute capture, owned VBO draws,
+the C cache/encoder connection and framebuffer-generation authority remain
+required B1 implementation work. Duplicate uploads are unmeasured; no
+application speed or native-feel improvement is claimed. The additive Program
+snapshot section changes the contract digest, requiring coherent normal
+program/image rebuilds under56/3/17/21. The old pinned5693 preview is unchanged;
+all B1 changes still precede the requested new preview notification.
+
+| Exact supervised job | Result and scope |
+| --- | --- |
+| `graphics-buffer-wire-before-r423-1105-162453-e495` | Five new wire controls fail on115cb12b54; selected-only run, not a full gate |
+| `graphics-buffer-receiver-before-r425-1105-163137-d5a0` | New pre-mutation receiver-refusal control fails on115cb12b54 |
+| `graphics-buffer-wire-build-r424-1105-162601-4134` | FAILED16m56 at SDK32 libdrm download: connection/certificate validation fails. Four Rust journal controls,846 xtask unit/eight integration controls, own release tool and snapshot update pass. Source remains frozen |
+| `graphics-buffer-wire-normal-r427-1105-164808-e656` | PASS2m47: normal SourceOnly SDK32/64, kernel/image-writer graph, ABI, evidence710 and graphics2218/89. Uses the cached upstream archive reverified against the manifest checksum; no TLS verification bypass |
+| `graphics-buffer-wire-gpu-r428-1105-165132-2846` | FAILED2m44: wrapper omitted the required SourceOnly root, preventing Node/browser guest execution; graphics2218/89 pass. Full compiler fails the identical24 diagnostics |
+| `graphics-buffer-wire-gpu-r428-r2-1105-165649-fd6a`, port6184 | PASS1m19: Node18/6 and18 actual-GPU cases, including12 guest wire cases on three engines/both widths/production+fatal plus six host-module storage/rendering cases. Default gallery dependency scanning loudly refuses its absent rootfs; this is not a desktop preview |
+| `graphics-buffer-wire-final-r428-r3-1105-165900-408a`, port6185 | PASS1m23: all54 actual-GPU cases, including the above18 plus36 original render/error/receipt-recovery cases. Normal Vite plugins/asset checks retained; dependency scan selects the empty host-fixture page rather than the unbuilt gallery. Frozen source and product hashes match |
+
+Exact scripts, complete failures, program/engine hashes and compact judgment
+are in `.context/graphics-buffer-transport-r422-runs/`; principal commands are
+`scripts/dev-shell.sh bash <evidence>/normal-r2/build.sh` and
+`scripts/dev-shell.sh bash <evidence>/validation-r3/validate.sh`.
+Every guest case uses normal kernel SHA256
+`297ea395fee3d87f03eb2636c194dc7b5dd7e83bba6bd3bb3089088e77f90ba1`.
+Six module cases each retain exact pixels, one native sample, four buffers
+created/four deleted/live0 and empty guest errors across peer replacement and
+name reuse. Guest cases retain native program live0. These counters do not
+prove physical GPU memory reclamation. Compiler output matches R421 after
+normalizing checkout roots; it remains a failed final gate. Full stage and
+final conformance, desktop, browser-memory, POSIX, benchmark and manual checks
+remain required. No acceptance criterion or stage order changes.
+
 ## Owned buffer-copy backend, 2026-11-05 (R420)
 
 The journal now owns an optional cold-prepared bank of private native buffer
@@ -71,8 +125,8 @@ retain the existing context-reset/production-diagnostic and fatal-audit policy.
 Cold preparation and recovery retain exact native bookkeeping. Unused banks
 perform no upload, draw scan or per-frame work.
 
-There is no production wire entry or guest C caller yet. This checkpoint adds
-host/backend ownership and tests, not a working guest fast path or complete B1.
+R420 first landed without a production wire entry or guest C caller. Its
+host/backend ownership and tests did not complete a working guest fast path or B1.
 The ordinary and private uploads are duplicated; their application cost is
 unmeasured. Guest transport, static-buffer capture, owned draw integration and
 offscreen framebuffer authority remain implementation work in B1. No new

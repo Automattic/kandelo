@@ -29,6 +29,7 @@
       "gl_image_container_receipts",
       "gl_inline_client_draw",
       "gl_object_capture",
+      "gl_program_buffer_snapshots",
       "gl_program_capture",
       "gl_program_journal",
       "gl_program_journal_barrier",
@@ -1663,6 +1664,38 @@
     "tokens": "monotonic-per-context-no-query-replay",
     "units": "bytes-except-attached-shaders-u32",
     "value": "original-unit-count,[active-size,active-type],requested-prefix"
+  },
+  "gl_program_buffer_snapshots": {
+    "authority": "own-current-context-tid-and-journal; no-lifecycle-barrier-or-peer-execution",
+    "capacity": 32,
+    "definition": "independent-original-BufferData-validation; ordinary-storage-and-private-copy",
+    "definition_fields": [
+      "own_journal",
+      "cell",
+      "next_token",
+      "target",
+      "byte_length",
+      "usage"
+    ],
+    "definition_header_bytes": 24,
+    "definition_opcode": 263,
+    "definition_tail": "absent-for-zero-initialized-allocation; otherwise-exact-byte-length",
+    "generation": "strict-next-nonzero-u32-per-cell; no-wrap; consume-before-original-api-validation",
+    "legacy": "all-existing-journal-actions-and-BufferData-records-unchanged",
+    "maximum_definition_bytes": 32768,
+    "ownership": "canonical-object-identity-and-byte-span; synchronous-borrow; ordered-cell-reuse",
+    "prepare_action": 10,
+    "prepare_reply": "existing-sealed-journal-receipt; value-is-capacity",
+    "prepare_reply_bytes": 48,
+    "prepare_request_bytes": 16,
+    "prepare_request_fields": [
+      "action",
+      "transaction",
+      "own_journal",
+      "capacity"
+    ],
+    "query": 59,
+    "recovery": "prepare-read-last-without-mutator-replay; partial-bank-retained-until-exact-retirement"
   },
   "gl_program_capture": {
     "commands": {

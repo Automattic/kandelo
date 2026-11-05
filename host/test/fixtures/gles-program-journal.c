@@ -485,6 +485,25 @@ int main(int argc,char **argv) {
         length=emit(length,OP_UNIFORM_UPLOAD_CHUNK,chunk,8);submit(length);
     }
     control(1,4,0);const uint32_t id=reply[3];assert(id&&reply[4]==4);
+    if(!strcmp(argv[1],"buffer-snapshot")) {
+        const uint32_t prepare[]={10,++transaction,id,2};journal(prepare,4);
+        assert(reply[0]==0&&reply[1]==transaction&&reply[2]==10&&reply[3]==id&&reply[4]==2);
+        uint32_t receipt[12];memcpy(receipt,reply,sizeof receipt);memset(reply,0,sizeof reply);
+        const uint32_t read[]={6};journal(read,1);assert(!memcmp(receipt,reply,sizeof receipt));
+        uint32_t denied[12];memset(denied,0xa5,sizeof denied);errno=0;
+        assert(query_at(_wpk_gl_fd(),QOP_PROGRAM_JOURNAL_BARRIER,prepare,4,denied,sizeof denied)==-1&&errno==EINVAL);
+        untouched(denied);
+        const uint32_t repeat[]={10,++transaction,id,2};journal(repeat,4);
+        assert(reply[0]==0&&reply[4]==2);
+        uint32_t definition[12]={id,0,1,GL_ARRAY_BUFFER,sizeof triangle,GL_STATIC_DRAW};
+        memcpy(definition+6,triangle,sizeof triangle);
+        submit(emit(0,OP_BUFFER_DATA_SNAPSHOT,definition,12));assert(glGetError()==GL_NO_ERROR);
+        GLint bytes=0;glGetBufferParameteriv(GL_ARRAY_BUFFER,GL_BUFFER_SIZE,&bytes);assert(bytes==sizeof triangle);
+        definition[2]=2;definition[5]=0xdead;
+        submit(emit(0,OP_BUFFER_DATA_SNAPSHOT,definition,12));assert(glGetError()==GL_INVALID_ENUM&&glGetError()==GL_NO_ERROR);
+        definition[2]=3;definition[5]=GL_STATIC_DRAW;
+        submit(emit(0,OP_BUFFER_DATA_SNAPSHOT,definition,12));assert(glGetError()==GL_NO_ERROR);
+    }
     if(!strcmp(argv[1],"recovery")) {
         /* Discard a successful response locally, then recover its exact receipt.
          * Actual copyout-throw containment is covered by the host unit control. */

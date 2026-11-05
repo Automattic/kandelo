@@ -1331,9 +1331,11 @@ defects or establish a completed stage.
 
 
 R420 adds the host journal's bounded private buffer-copy ownership foundation,
-with focused source and three-engine real-WebGL checks. It is not connected to
-production guest transport. Complete that transport, exact static-buffer
-capture, owned VBO draws and offscreen target authority within B1; do not turn
+with focused source and three-engine real-WebGL checks. Optional action10 and OP_BUFFER_DATA_SNAPSHOT now connect it to the existing
+current-context wire, with raw C guest and three-engine GPU regressions. The
+ordinary C encoder has not activated it. Complete exact static-buffer capture,
+owned VBO draws, the C cache/encoder connection and offscreen target authority
+within B1; do not turn
 the foundation into a new stage boundary or substitute it for application
 measurements. Duplicate upload costs and final machine memory lifecycle remain
 unmeasured. The complete B1 preview still waits for all B1 changes and required

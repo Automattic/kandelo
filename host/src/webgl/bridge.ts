@@ -530,6 +530,12 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_BIND_ATTRIB_LOCATION:
       return tailBytesPayload(v, 12, 8);
 
+    case O.OP_BUFFER_DATA_SNAPSHOT: {
+      if(v.byteLength<24 || !v.getUint32(0,true) || v.getUint32(4,true)>=32 ||
+        !v.getUint32(8,true) || v.getUint32(12,true)!==GL_ARRAY_BUFFER)return false;
+      const bytes=v.getUint32(16,true);
+      return bytes<=32768 && (v.byteLength===24 || v.byteLength===24+bytes);
+    }
     case O.OP_BUFFER_DATA:
       return bufferDataPayload(v);
     case O.OP_UNIFORM_MATRIX4FV:
@@ -991,6 +997,17 @@ function dispatch(
     case O.OP_BIND_BUFFER:
       bindBufferObject(b,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
+    // Private copied definitions retain the original target/length/usage.
+    // The journal is the submitting context's, never a peer's native owner.
+    case O.OP_BUFFER_DATA_SNAPSHOT: {
+      const journal=b.programJournal;
+      if(!journal || journal.id!==v.getUint32(p,true)){recordGlError(b,0x502);return;}
+      const bytes=v.getUint32(p+16,true);
+      const data=v.byteLength===24?bytes:copyBytes(v,p+24,bytes);
+      journal.defineBufferSnapshot(v.getUint32(p+4,true),v.getUint32(p+8,true),
+        v.getUint32(p+12,true),data,v.getUint32(p+20,true));
+      return;
+    }
     // Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage
     case O.OP_BUFFER_DATA: {
       const target = v.getUint32(p, true);

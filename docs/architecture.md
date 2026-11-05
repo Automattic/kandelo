@@ -7280,7 +7280,7 @@ acceptance work. Warm device counts do not establish application latency
 or native desktop feel.
 
 
-The program journal also owns an optional, currently unwired buffer-copy bank.
+The program journal also owns an optional, cold-prepared buffer-copy bank.
 Cold preparation reserves bounded receivers and native deletion custody before
 creating buffers, and retains partial failure until exact retirement. Accepted
 small definitions copy their bytes separately from mutable ordinary storage;
@@ -7289,7 +7289,12 @@ context/renderer authority. Later shared reallocation or public-name reuse
 cannot change an accepted copy. Reusing a cell is synchronous command order,
 not asynchronous job eviction; borrowed native handles must not outlive that
 command stack. Warm uploads use the existing predicted batch and one final
-native sample. No production wire or guest driver invokes this bank yet.
-Guest transport, static source capture, owned draws and framebuffer-generation
-authority remain required integration work. The duplicate-upload cost is
+native sample. Optional journal action10 now prepares it through a sealed mutation receipt;
+OP_BUFFER_DATA_SNAPSHOT0x0107 independently validates and copies original
+ARRAY definitions. Lost preparation replies recover without native replay.
+Restoration metadata is reserved before the original storage mutation, so
+CPU reservation refusal cannot leave an accepted definition without its copy.
+The ordinary C driver does not request these banks or emit copied definitions
+yet. Static source capture, owned draws, C integration and framebuffer-generation
+authority remain required implementation work. The duplicate-upload cost is
 unmeasured. See the graphics compatibility ledger's R420 evidence and limits.

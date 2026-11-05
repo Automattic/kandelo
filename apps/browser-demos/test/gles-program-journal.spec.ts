@@ -18,7 +18,7 @@ test.beforeAll(()=>{
 test.afterAll(()=>{for(const fixture of fixtures.values())fixture.cleanup();});
 const captureModes=(["acquire","release"] as const).flatMap(action=>
   Array.from({length:7},(_,i)=>`capture-${action}-${i+1}`));
-for(const mode of [...captureModes,"cold-failed-link","driver-link-observe","legacy-selection","render","preflight","recovery","errors","abandon","exit-pending","uniform-interleave","lifecycle-unbound","lifecycle-current-peer","driver-dispatch","driver-local","driver-sharing","driver-wrap","driver-errors","driver-relink","driver-retirement","driver-recovery","driver-fork","driver-cache","driver-cold-refusal","driver-failed-link","driver-malformed","driver-indeterminate","driver-error-recovery","driver-error-suffix"] as const) for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
+for(const mode of [...captureModes,"buffer-snapshot","cold-failed-link","driver-link-observe","legacy-selection","render","preflight","recovery","errors","abandon","exit-pending","uniform-interleave","lifecycle-unbound","lifecycle-current-peer","driver-dispatch","driver-local","driver-sharing","driver-wrap","driver-errors","driver-relink","driver-retirement","driver-recovery","driver-fork","driver-cache","driver-cold-refusal","driver-failed-link","driver-malformed","driver-indeterminate","driver-error-recovery","driver-error-suffix"] as const) for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
   test(`${mode} ${arch} checks journal transport and captured execution (${audit??"production"})`,async({page,baseURL,browser})=>{
     test.setTimeout(90_000);
     const image=KandeloImageFs.create();image.mkdir("/bin",0o755);

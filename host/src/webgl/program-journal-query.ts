@@ -21,6 +21,7 @@ export function validProgramJournalRequest(input:Uint8Array,outputBytes:number):
   if(action===7)return n===8 && v.getUint32(4,true)!==0;
   if(n<8 || !v.getUint32(4,true))return false;
   if(action===8 || action===9)return n===16;
+  if(action===10)return n===16 && v.getUint32(8,true)!==0 && v.getUint32(12,true)>0 && v.getUint32(12,true)<=32;
   if(action===1)return n===12 && v.getUint32(8,true)>0 && v.getUint32(8,true)<=256;
   if(action===2)return n===12 && v.getUint32(8,true)!==0;
   if(action===4)return n===16 && v.getUint32(8,true)!==0 && v.getUint32(12,true)!==0;
@@ -109,6 +110,12 @@ export function runProgramJournalQuery(b:GlBinding,input:Uint8Array,out:Uint8Arr
     accepted=!!journal && (journal.flags&1)!==0 && journal.releaseCapture(v.getUint32(12,true));
     value=accepted?v.getUint32(12,true):0;
   }else if(action===5){accepted=!!journal && journal.disable();}
+  else if(action===10){
+    // Native allocation is cold but effectful. Use the sealed mutation ledger,
+    // not the read-only signature reply: copyout loss recovers via READ_LAST.
+    if(journal?.id===v.getUint32(8,true))value=journal.prepareBufferSnapshots(v.getUint32(12,true));
+    accepted=value!==0;
+  }
   if(!accepted && !b.errors.length)recordGlError(b,0x502);
   words[3]=journal?.id??0;words[4]=value;snapshot(words,b,journal);
   // Publish completion only after every progress field is sealed. A failed

@@ -102,17 +102,27 @@ export class GlBufferSnapshots {
     // rejected definition never exposes a preceding copy under its new token.
     cell.token=token;cell.ready=false;cell.object=null;cell.bytes=0;
     const b=this.binding,array=b.shadow.arrayBuffer,object=array&&canonicalBuffer(b,array);
-    if(!replaceBufferData(b,target,data,usage))return false;
-    if(!object)nativeGlFault("Accepted buffer definition lost its bound identity");
+    let originalAccepted=false;
     // Unlike shared storage publication, no peer can consume these copies.
     // Keep guest-batch calls predicted: its one final native sample resets
     // this owner before another query can resolve a failed private upload.
     const copied=applyNativeChanges(b,[{
-      apply:()=>checkedGlCall(b,()=>b.gl!.bindBuffer(ARRAY,cell.native)) &&
-        checkedGlCall(b,()=>{if(typeof data==="number")b.gl!.bufferData(ARRAY,data,usage);else b.gl!.bufferData(ARRAY,data,usage);}),
+      apply:()=>{
+        // The repair receiver must exist BEFORE the original storage mutation.
+        // CPU metadata refusal must leave ordinary bytes untouched, rather than
+        // converting an already accepted definition into a bookkeeping fault.
+        if(!replaceBufferData(b,target,data,usage))return false;
+        originalAccepted=true;
+        if(!object)nativeGlFault("Accepted buffer definition lost its bound identity");
+        return checkedGlCall(b,()=>b.gl!.bindBuffer(ARRAY,cell.native)) &&
+          checkedGlCall(b,()=>{if(typeof data==="number")b.gl!.bufferData(ARRAY,data,usage);else b.gl!.bufferData(ARRAY,data,usage);});
+      },
       restore:nativeInverse(b,[["bindBuffer",ARRAY,array]]),
     }],{finalizer:nativeInverse(b,[["bindBuffer",ARRAY,array]])});
-    if(!copied)nativeGlFault("Accepted buffer definition could not retain its private storage copy");
+    if(!copied){
+      if(originalAccepted)nativeGlFault("Accepted buffer definition could not retain its private storage copy");
+      return false;
+    }
     cell.object=object;cell.bytes=bytes;cell.ready=true;return true;
   }
 

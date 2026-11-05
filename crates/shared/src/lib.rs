@@ -4135,6 +4135,8 @@ pub mod gl {
     /// Both records have an empty payload and are local to the context.
     pub const OP_BEGIN_CLIENT_ARRAY: u16 = 0x0105;
     pub const OP_END_CLIENT_ARRAY: u16 = 0x0106;
+    /// Private retained buffer definition; legacy BufferData is unchanged.
+    pub const OP_BUFFER_DATA_SNAPSHOT: u16 = 0x0107;
 
     pub const OP_GEN_TEXTURES: u16 = 0x0200;
     pub const OP_DELETE_TEXTURES: u16 = 0x0201;
@@ -6737,6 +6739,7 @@ mod gl_tests {
             OP_DELETE_BUFFERS,
             OP_BIND_BUFFER,
             OP_BUFFER_DATA,
+            OP_BUFFER_DATA_SNAPSHOT,
             OP_BUFFER_SUB_DATA,
             OP_GEN_TEXTURES,
             OP_DELETE_TEXTURES,

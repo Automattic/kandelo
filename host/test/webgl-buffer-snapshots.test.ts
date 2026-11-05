@@ -1,4 +1,4 @@
-import {afterEach,expect,it} from "vitest";
+import {afterEach,expect,it,vi} from "vitest";
 import {GlBufferSnapshots,BUFFER_SNAPSHOT_CAPACITY,BUFFER_SNAPSHOT_MAX_BYTES} from "../src/webgl/buffer-snapshots.js";
 import {bindBufferObject,replaceBufferData,updateBufferData} from "../src/webgl/buffer-storage.js";
 import {deleteBufferNames,collectRetiredBuffers} from "../src/webgl/buffer-references.js";
@@ -128,4 +128,17 @@ it("keeps an unexpected private copy flag fatal under the audit",()=>{
   const faults:Error[]=[];setNativeGlFaultReporter(e=>faults.push(e));configureGlAudit({mode:"fatal",sink:()=>{},fault:message=>{throw new NativeGlFault(message);}});
   expect(()=>withNativeBatch(f.b,"snapshot-copy-audit",()=>{f.bank.define(f.b,0,2,ARRAY,new Uint8Array([2]),STATIC);})).toThrow(NativeGlFault);
   expect(faults.length).toBeGreaterThan(0);resetGlAuditForTesting();f.dispose();
+});
+
+it("reserves a copy receiver before ordinary storage changes when metadata allocation refuses",()=>{
+  const f=fixture(1),before=f.native.defineCalls;
+  const map=vi.spyOn(Array.prototype,"map").mockImplementationOnce(()=>{throw new Error("repair receiver allocation refused");});
+  let accepted:boolean|undefined,failure:unknown;
+  try{accepted=f.bank.define(f.b,0,1,ARRAY,new Uint8Array([1,2]),STATIC);}catch(error){failure=error;}
+  finally{map.mockRestore();}
+  try{
+    expect(failure).toBeUndefined();expect(accepted).toBe(false);expect(f.native.defineCalls).toBe(before);
+    expect(f.b.errors).toEqual([0x505]);expect(f.bank.resolve(f.b,0,1,f.object,2)).toBeNull();
+    expect(f.bank.define(f.b,0,2,ARRAY,new Uint8Array([3,4]),STATIC)).toBe(true);
+  }finally{f.dispose();}
 });

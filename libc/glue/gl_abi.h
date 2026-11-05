@@ -72,6 +72,7 @@
 #define OP_BUFFER_SUB_DATA             0x0104u
 #define OP_BEGIN_CLIENT_ARRAY 0x0105u
 #define OP_END_CLIENT_ARRAY 0x0106u
+#define OP_BUFFER_DATA_SNAPSHOT 0x0107u
 
 #define OP_GEN_TEXTURES                0x0200u
 #define OP_DELETE_TEXTURES             0x0201u
