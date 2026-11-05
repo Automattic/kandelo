@@ -1059,9 +1059,8 @@ if [ ! -f Makefile ]; then
         --disable-rpath \
         --disable-cgi \
         --disable-phpdbg \
-        --enable-cli \
-        --enable-fpm \
-        --enable-intl=shared \
+        "${SAPI_CONFIG_FLAGS[@]}" \
+        "${EXTENSION_CONFIG_FLAGS[@]}" \
         --enable-mbstring \
         --disable-mbregex \
         --enable-ctype \
@@ -1252,46 +1251,6 @@ fi
 # the directory PHP's `#include <libxml/parser.h>` resolves against.
 EXTRA_INC_LIBXML="-D_GNU_SOURCE -I${LIBXML2_PREFIX}/include/libxml2"
 
-build_opcache_side_module() {
-    local output="$1"
-    local abi_object="$WORK_DIR/fork-side-module-abi.o"
-    local targets=(
-        ext/opcache/ZendAccelerator.lo
-        ext/opcache/zend_accelerator_blacklist.lo
-        ext/opcache/zend_accelerator_debug.lo
-        ext/opcache/zend_accelerator_hash.lo
-        ext/opcache/zend_accelerator_module.lo
-        ext/opcache/zend_persist.lo
-        ext/opcache/zend_persist_calc.lo
-        ext/opcache/zend_file_cache.lo
-        ext/opcache/zend_shared_alloc.lo
-        ext/opcache/zend_accelerator_util_funcs.lo
-        ext/opcache/shared_alloc_shm.lo
-        ext/opcache/shared_alloc_mmap.lo
-        ext/opcache/shared_alloc_posix.lo
-    )
-    local objects=()
-    local link_flags=()
-    local target
-
-    if [ "$PHP_BUILD_VARIANT" = "zts-embed" ]; then
-        link_flags+=(-Wl,--export=__tls_base)
-    fi
-
-    wasm32posix-cc -fPIC -O2 -I"$REPO_ROOT/libc/glue" -c \
-        "$SCRIPT_DIR/fork-side-module-abi.c" -o "$abi_object"
-    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
-        EXTRA_CFLAGS="$EXTRA_INC_LIBXML" "${targets[@]}"
-    for target in "${targets[@]}"; do
-        objects+=("ext/opcache/.libs/$(basename "${target%.lo}").o")
-    done
-    wasm32posix-cc -shared -fPIC "${link_flags[@]}" \
-        -o "$output" "${objects[@]}" "$abi_object"
-    "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$output" \
-        -o "$output.instr" --entry env.fork
-    mv "$output.instr" "$output"
-}
-
 if [ "$PHP_BUILD_VARIANT" = "zts-embed" ]; then
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
         EXTRA_CFLAGS="$EXTRA_INC_LIBXML" libphp.la
@@ -1300,12 +1259,7 @@ if [ "$PHP_BUILD_VARIANT" = "zts-embed" ]; then
     INSTALL_DIR="${KANDELO_PACKAGE_OUT_DIR:-$WORK_DIR/output}"
     mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
     cp libs/libphp.a "$INSTALL_DIR/lib/libphp.a"
-    build_opcache_side_module "$INSTALL_DIR/lib/opcache-zts.so"
     cp -R "$WORK_DIR/install/usr/include/php" "$INSTALL_DIR/include/php"
-    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-        kandelo_package_project_requested_vfs_output opcache-zts \
-            "$INSTALL_DIR/lib/opcache-zts.so"
-    fi
     exit 0
 fi
 

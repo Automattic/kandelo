@@ -4173,11 +4173,38 @@ then rerun the Node and Chromium/Firefox/WebKit editor, restart, and
 benchmark gates. Main's package registry and SDK changes need a normal
 resolver build, not only source compilation.
 
-**2026-11-05 — Rebuild PHP-ZTS on the same PHP source as FPM.** The
-`php-zts` manifest now uses PHP 8.5.12 and the source digest already
-declared by main's PHP-FPM package. The normal ABI-55 resolver build
-completed after 13m10s, including fresh dependencies, and published
-`libphp.a` (95 MiB) plus `opcache-zts.so` (312 KiB). This establishes
-the embed library and side module as build outputs; it does not prove
-that FrankenPHP 1.11 links against PHP 8.5 or that OPcache activates
-inside its SAPI. Both FrankenPHP recipes now require the 8.5.12 library.
+**2026-11-05 — PHP-ZTS embed rebuild exposed a variant-selection bug and
+a WebAssembly TLS limit.** The first PHP 8.5.12 resolver build published
+`libphp.a` and `opcache-zts.so`, but FrankenPHP could not compile: the
+required `sapi/embed/php_embed.h` was absent. The shared PHP recipe
+declared ZTS/embed configure flags yet still hardcoded CLI/FPM flags, so
+that successful package build did not produce a usable embed library.
+The recipe now passes its selected SAPI and extension flags to configure.
+This also changes the CLI/FPM artifact; its recipe revision was advanced.
+
+The corrected 8.5.12 configure and static embed library build succeeded,
+then the separate OPcache side-module link failed: `wasm-ld` rejects
+`R_WASM_MEMORY_ADDR_TLS_SLEB` against external `_tsrm_ls_cache` in
+`ZendAccelerator.o`. The Wasm toolchain cannot currently resolve that
+cross-module TLS relocation. A local `-femulated-tls` compile probe still
+emitted the same relocation. Do not add a duplicate TLS variable or a
+package-specific linker bypass. An attempted PHP 8.3.36 fallback stopped
+at the first PHP 8.5-specific source patch; adapting that shared patch set
+to an older line would increase maintenance. PHP 8.5's upstream OPcache
+configuration builds the extension into PHP, matching FrankenPHP's static
+binary route. The ZTS recipe now requests PHP 8.5.12 with static OPcache,
+publishes only `libphp.a`, and the FrankenPHP recipes no longer request a
+separate OPcache side module or its export list. The WordPress image was
+reconciled with main's PHP 8.5 FPM package and again declares both
+FrankenPHP executables as dependencies. The new embed output,
+FrankenPHP link, WordPress image, and live OPcache activation still need
+validation.
+
+The normal resolver build of PHP-ZTS 8.5.12 revision 8 succeeded in
+4m40s. Its installed headers contain `sapi/embed/php_embed.h`, and its
+117 MiB `libphp.a` defines `zif_opcache_get_status`. This verifies the
+embed build output and the OPcache symbol in the archive, not the
+FrankenPHP link or runtime activation. Shell syntax and diff checks pass
+for the changed recipes; esbuild parsed the WordPress image builder and
+classic server probe. A direct Node import check could not run because
+this checkout lacks `@noble/hashes`; it is not counted as a pass.
