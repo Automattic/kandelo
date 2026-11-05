@@ -831,6 +831,10 @@ name = "texlive"
 reason = "deferred software"
 
 [[exclusions]]
+name = "caddy"
+reason = "deferred standalone server; FrankenPHP Caddy has its own package"
+
+[[exclusions]]
 name = "erlang"
 reason = "deferred software"
 

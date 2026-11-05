@@ -23,12 +23,6 @@ role = "runtime"
 materialization = "embedded"
 
 [[software.package]]
-name = "php-zts"
-outputs = []
-source_roles = []
-role = "build"
-
-[[software.package]]
 name = "service-activity-tools"
 outputs = ["service-activity-tools"]
 source_roles = []

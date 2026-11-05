@@ -4350,3 +4350,17 @@ host. The largest observed current process was WebKit content at 1.3 GiB RSS.
 The earlier 10.6 GiB FrankenPHP instrumenter peak was historical; it does
 not describe current memory pressure. Build time and the UI test timeout are
 separate from host RAM scarcity.
+
+The revision-31 normal resolver build passed in 2m09s. The visible app test
+could not reach the image because Vite requires one complete provenance tier
+for all its assets and this checkout's source-only projection is absent.
+`./run.sh local-build --plan` initially rejected the supported set because
+standalone `caddy` (an older, separate package from `frankenphp-caddy`) had
+no disposition. It is now explicitly excluded, preserving its dormant status.
+The plan also rejected a `php-zts` product entry that named a nonexistent
+`opcache-zts` output; ZTS is a build library in FrankenPHP's dependency graph,
+not an embedded WordPress image output. The product manifest now omits that
+invalid entry and names the embedded service activity control program. The
+source-only plan validates with 178 nodes to run and estimates about 128
+minutes on the current empty source-only cache. The browser app gate remains
+pending until that projection is materialized.
