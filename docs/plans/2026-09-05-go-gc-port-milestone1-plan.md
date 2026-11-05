@@ -4565,3 +4565,45 @@ with the Vite guard in place (1.9m). An attempted browser TypeScript
 project check returned 181 errors in host and shared dependencies, with
 no diagnostics naming the changed Vite config or test file; this is not
 a passing typecheck.
+
+**2026-11-05 — Capture preview redirect provenance and use visible navigation.**
+The classic WebKit template test now records navigation responses, whether
+the service worker supplied each response, the preview's controller, and
+pending requests when rendering fails. A failing run captured a WordPress
+302 served by the service worker, followed by a same-origin redirect target
+that returned Vite's 503 guard without the service worker. The resulting
+document still reported the expected service-worker controller. This
+establishes where that navigation escaped the bridge; it does not establish
+whether the cause is Kandelo, browser automation, or the browser engine.
+The guard prevented the recursive app boot seen in earlier failures.
+
+The editor tests now navigate through the visible preview address bar and
+Enter key, exercising the app's ordinary navigation path. Classic WebKit
+template edit, Save, and reload passed in a focused run (1.6m) and again
+in a sequential editor-health/Save run (48.3s for Save). The same sequential
+run still failed its separate editor-health case: the editor iframe did not
+appear within 60 seconds and the VFS inspector remained at `Loading…`.
+Consequently neither the request stall nor redirect escape is considered
+fixed by the test interaction change. No compiler, package, or runtime
+workaround was added.
+
+A standalone service-worker fixture containing no Kandelo code passed 20
+same-origin 302 iframe redirects in bundled WebKit 26.6: ten through
+Playwright `Frame.goto` and ten through `location.assign`. Every final
+response came from the service worker and no target reached the static
+server. The fixture used the app's cross-origin isolation headers. This
+simple pattern does not reproduce the observed failure; the live bridge,
+navigation timing, or workload still needs reduction. Evidence and fixture
+are in `.context/sw-redirect-repro.log` and `.context/sw-redirect-repro.mjs`.
+
+A fresh fetch confirmed that `origin/main` at `21cfba152` is already an
+ancestor of this branch: 187 branch commits ahead and zero main commits
+missing at this checkpoint. No additional rebase was necessary.
+
+The visible-address-bar test changes passed all four focused classic
+regression cases under the declared dev shell: Chromium editor rendering
+and 20-second HTTP health (1.7m), Chromium template Save/reload (40.4s),
+Firefox editor rendering and health (1.6m), and Firefox template Save/reload
+(1.2m). The combined run passed 4/4 in 5.3m. These changes affect browser
+test interactions and diagnostics only; kernel, Node host, packages, ABI,
+and the revision-31 image were not changed or rebuilt at this checkpoint.

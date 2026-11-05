@@ -1,5 +1,5 @@
 import { expect, type Request } from "@playwright/test";
-import { gotoInPreview, gotoMachine, machineAppPrefix } from "./support/kandelo-machine";
+import { gotoInPreviewViaDock, gotoMachine, machineAppPrefix } from "./support/kandelo-machine";
 import { clickDockTool } from "./support/dock";
 import { test } from "./support/persistent-page";
 
@@ -63,8 +63,9 @@ for (const demo of [
     await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first())
       .toBeVisible({ timeout: 120_000 });
 
+    await page.getByRole("button", { name: "Close shortcuts", exact: true }).click();
     const appPrefix = await machineAppPrefix(page, demo.title);
-    await gotoInPreview(frame, appPrefix, "wp-admin/site-editor.php");
+    await gotoInPreviewViaDock(page, "/wp-admin/site-editor.php");
     const editorLoaded = await Promise.race([
       expect(frame.locator("iframe").first()).toBeVisible({ timeout: 60_000 }).then(() => true, () => false),
       page.locator('.kdock-status-text[data-status="error"]')
@@ -76,11 +77,8 @@ for (const demo of [
       // still loading. Finish that navigation before opening the template.
       await expect.poll(() => frame.locator("body").evaluate(() => document.readyState),
         { timeout: 120_000 }).toBe("complete");
-      await gotoInPreview(
-        frame,
-        appPrefix,
-        "wp-admin/site-editor.php?postType=wp_template&postId=twentytwentyfive//index&canvas=edit",
-      );
+      await gotoInPreviewViaDock(page,
+        "/wp-admin/site-editor.php?postType=wp_template&postId=twentytwentyfive//index&canvas=edit");
       const canvas = frame.frameLocator('iframe[name="editor-canvas"]');
       await expect(canvas.locator("[data-block]").first()).toBeVisible({ timeout: 180_000 });
     }
@@ -236,17 +234,71 @@ for (const demo of [
   test(`${demo.title} saves a template from the site editor`, async ({ page }) => {
     test.setTimeout(720_000);
     test.skip(process.env.KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS !== "1", "Build and project WordPress, then set KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS=1");
+    const navigation: string[] = [];
+    const pendingRequests = new Map<Request, number>();
+    const record = (line: string) => {
+      navigation.push(line);
+      if (navigation.length > 200) navigation.shift();
+    };
+    page.on("response", (response) => {
+      if (response.request().isNavigationRequest() && new URL(response.url()).pathname.includes("/computer/")) {
+        record(`response ${response.status()} serviceWorker=${response.fromServiceWorker()} ${response.url()}`);
+      }
+    });
+    page.on("framenavigated", (navigated) => {
+      if (navigated !== page.mainFrame()) record(`frame ${navigated.url()}`);
+    });
+    page.on("request", (request) => pendingRequests.set(request, Date.now()));
+    page.on("requestfinished", (request) => pendingRequests.delete(request));
+    page.on("requestfailed", (request) => {
+      pendingRequests.delete(request);
+      if (request.isNavigationRequest()) record(`failed ${request.url()}: ${request.failure()?.errorText ?? "unknown"}`);
+    });
     await gotoMachine(page, demo.profile);
     const frame = page.frameLocator(`iframe[title="${demo.title}"]`);
+    const reportNavigationFailure = async (stage: string, error: unknown): Promise<never> => {
+      const state = await frame.locator("body").evaluate(() => ({
+        url: location.href,
+        controller: navigator.serviceWorker.controller?.scriptURL ?? null,
+        text: document.body.innerText.slice(0, 2000),
+      })).catch((cause) => ({ error: String(cause) }));
+      const pending = [...pendingRequests].map(([request, started]) =>
+        `${Date.now() - started}ms ${request.method()} ${request.url()}`);
+      const detail = `${stage}: ${String(error)}\npreview=${JSON.stringify(state)}` +
+        `\nframes=${JSON.stringify(page.frames().map((item) => item.url()))}` +
+        `\npending=${pending.length}\n${pending.slice(0, 40).join("\n")}` +
+        `\n${navigation.slice(-80).join("\n")}`;
+      await test.info().attach("preview-navigation", { body: detail, contentType: "text/plain" });
+      throw new Error(detail);
+    };
+    const expectPreviewContent = async (assertion: Promise<void>, stage: string): Promise<void> => {
+      try {
+        await Promise.race([
+          assertion,
+          frame.locator(".kdock-status-text").waitFor({ state: "attached", timeout: 180_000 })
+            .then(() => { throw new Error("Kandelo app shell loaded inside WordPress preview"); }),
+          frame.getByText("Kandelo computer unavailable", { exact: false })
+            .waitFor({ state: "visible", timeout: 180_000 })
+            .then(() => { throw new Error("WordPress preview reached the static origin without its service worker"); }),
+        ]);
+      } catch (error) {
+        await reportNavigationFailure(stage, error);
+      }
+    };
     await expect(frame.locator("body")).toContainText("WordPress on Kandelo", { timeout: 240_000 });
     await page.getByRole("button", { name: "Shortcuts", exact: true }).click();
     await page.getByRole("dialog", { name: "Shortcuts", exact: true }).getByRole("button", { name: /^Log in as admin\b/ }).click();
     await expect(frame.locator("body.wp-admin")).toBeVisible({ timeout: 120_000 });
     await page.getByRole("button", { name: "Close shortcuts", exact: true }).click();
-    const appPrefix = await machineAppPrefix(page, demo.title);
-    await gotoInPreview(frame, appPrefix, "wp-admin/site-editor.php?postType=wp_template&postId=twentytwentyfive//index&canvas=edit");
+    record(`before editor ${JSON.stringify(await frame.locator("body").evaluate(() => ({
+      url: location.href,
+      controller: navigator.serviceWorker.controller?.scriptURL ?? null,
+    })))}`);
+    await gotoInPreviewViaDock(page,
+      "/wp-admin/site-editor.php?postType=wp_template&postId=twentytwentyfive//index&canvas=edit");
     const canvas = frame.frameLocator('iframe[name="editor-canvas"]');
-    await expect(canvas.locator("[data-block]").first()).toBeVisible({ timeout: 180_000 });
+    await expectPreviewContent(expect(canvas.locator("[data-block]").first())
+      .toBeVisible({ timeout: 180_000 }), "initial editor navigation");
     const welcome = frame.getByRole("dialog", { name: "Welcome to the site editor" });
     if (await welcome.isVisible()) {
       await welcome.getByRole("button", { name: "Get started", exact: true }).click();
@@ -258,13 +310,11 @@ for (const demo of [
     await frame.getByRole("button", { name: "Save", exact: true }).click({ timeout: 30_000 });
     await expect(frame.getByRole("button", { name: "Save", exact: true }))
       .toHaveCount(0, { timeout: 120_000 });
-    await gotoInPreview(
-      frame,
-      appPrefix,
-      `wp-admin/site-editor.php?postType=wp_template&postId=twentytwentyfive//index&canvas=edit&verify=${Date.now()}`,
+    await gotoInPreviewViaDock(page,
+      `/wp-admin/site-editor.php?postType=wp_template&postId=twentytwentyfive//index&canvas=edit&verify=${Date.now()}`,
     );
-    await expect(canvas.locator('h1[contenteditable="true"]').first())
-      .toContainText(savedHeading, { timeout: 180_000 });
+    await expectPreviewContent(expect(canvas.locator('h1[contenteditable="true"]').first())
+      .toContainText(savedHeading, { timeout: 180_000 }), "saved template verification");
     await expect(page.locator('.kdock-status-text[data-status="error"]')).toHaveCount(0);
   });
 }

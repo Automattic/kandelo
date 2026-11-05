@@ -298,3 +298,11 @@ export async function gotoInPreview(
     await owner.dispose();
   }
 }
+
+/** Navigate through the web pane's visible address bar, as a user does. */
+export async function gotoInPreviewViaDock(page: Page, path: string): Promise<void> {
+  if (!path.startsWith("/")) throw new Error(`preview path must be absolute: ${path}`);
+  const address = page.getByRole("textbox", { name: "Preview URL path" });
+  await address.fill(path);
+  await address.press("Enter");
+}
