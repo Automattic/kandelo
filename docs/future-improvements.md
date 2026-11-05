@@ -287,6 +287,12 @@ B2–B6 and C1–C3 remain current-iteration work; no completed driver stage or
 native-feel result follows from the
 focused scalar controls.
 
+Ordinary link/use no longer pays for an unused selected/prepared executable
+capture cache. Admitted journal caches acquire cold pins only when needed,
+including authoritative unknown-link observations. Focused request-count and
+fault controls cover this increment; application latency, automatic admission
+and the remaining B1 requirements above still need validation.
+
 Native desktop measurement remains current-iteration work alongside the driver.
 The owned-window observer now has bounded pixel matching with six headless
 engine/render-mode control cohorts. First-visibility bounds retain capture

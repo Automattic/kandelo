@@ -329,10 +329,9 @@ struct wpk_array_capture {
     int active;
 };
 
-/* Handles own native executable storage, never public names. Two explicit
- * slots bound the cold cache: the installed generation and one prepared link.
- * A possibly published unknown handle stays in the host context's retirement
- * index; acquisition stops until that context retires, never blindly retries. */
+/* Handles own native executable storage, never public names. Only admitted
+ * journals acquire these cold pins. Unknown publication stays in the host
+ * context's retirement index; acquisition stops until that context retires. */
 struct wpk_program_capture {
     GLuint name;
     uint32_t handle;
@@ -373,7 +372,6 @@ struct wpk_gles_context {
     struct wpk_array_capture array_capture;
     struct wpk_program_record *current_program;
     struct wpk_program_stream *program_stream;
-    struct wpk_program_capture selected_program_capture, prepared_program_capture;
     int program_captures_uncertain;
     /* Embedded owned transport storage: publication/cleanup never allocates C
      * reply metadata after a program mutation was acknowledged. */
@@ -2205,34 +2203,6 @@ static int release_program_capture(struct wpk_gles_context *state,
     if (program_capture_query(state,3,capture->handle,NULL)!=1) return 0;
     *capture=(struct wpk_program_capture){0};return 1;
 }
-/* Cold capture establishes exact native-generation custody, not local API
- * acceptance. Ordinary checked mutation remains the independent authority.
- * Peers cannot read this encoder or release its handles; they acquire their
- * own generation. Selected old links survive a failed/new peer link. */
-static void observe_program_capture(struct wpk_gles_context *state,
-                                    struct wpk_program_record *record, int selected) {
-    if (!record || record->kind!=5 || state->program_captures_uncertain ||
-        !atomic_load_explicit(&state->objects->program_records_known,memory_order_relaxed)) return;
-    struct wpk_program_capture *installed=&state->selected_program_capture;
-    struct wpk_program_capture *prepared=&state->prepared_program_capture;
-    if (installed->handle && installed->name==record->name && installed->link_epoch==record->link_epoch) {
-        if (selected && !release_program_capture(state,prepared)) return;
-        return;
-    }
-    if (!prepared->handle || prepared->name!=record->name || prepared->link_epoch!=record->link_epoch) {
-        if (!release_program_capture(state,prepared)) return;
-        struct wpk_program_capture fresh={.name=record->name,.link_epoch=record->link_epoch};
-        int observed=program_capture_query(state,1,record->name,&fresh);
-        if (!observed) return;
-        record->link_known=1;record->linked=observed==1;
-        if (observed==2) return; /* Keep the older installed executable. */
-        *prepared=fresh;
-    }
-    if (selected) {
-        if (!release_program_capture(state,installed)) return;
-        *installed=*prepared;*prepared=(struct wpk_program_capture){0};
-    }
-}
 static uint64_t program_counter(const uint32_t *words) {
     return (uint64_t)words[0] | ((uint64_t)words[1]<<32);
 }
@@ -2458,6 +2428,7 @@ static uint32_t program_stream_generation(struct wpk_gles_context *state,struct 
     }
     struct wpk_program_capture capture={.name=record->name,.link_epoch=record->link_epoch};
     int observed=program_capture_query(state,1,record->name,&capture);
+    if (observed) {record->link_known=1;record->linked=observed==1;}
     if (observed!=1) return 0;
     *g=(struct wpk_program_generation){.name=record->name,.link_epoch=record->link_epoch,.capture=capture.handle};
     stream->request[2]=capture.handle;
@@ -2479,13 +2450,17 @@ static int try_program_stream_use(struct wpk_gles_context *state,GLuint name) {
     GLenum error=GL_NO_ERROR;
     if (name && !record) error=GL_INVALID_VALUE;
     else if (record && record->kind!=5) error=GL_INVALID_OPERATION;
-    else if (record && !record->link_known) return 0;
-    else if (record && !record->linked) error=GL_INVALID_OPERATION;
+    else if (record && record->link_known && !record->linked) error=GL_INVALID_OPERATION;
     if (!error && record && record!=state->current_program && record->references==UINT_MAX) {
         raise_client_error(GL_OUT_OF_MEMORY);return 1;
     }
     uint32_t token=!error && record ? program_stream_generation(state,record) : 0;
-    if (!error && record && !token) return 0;
+    if (!error && record && !token) {
+        // Cold capture also observes link status. A failed link is an exact
+        // local rejection; uncertain acquisition retains synchronous fallback.
+        if (record->link_known && !record->linked) error=GL_INVALID_OPERATION;
+        else return 0;
+    }
     struct wpk_program_intent *slot=NULL;
     for (unsigned i=0;i<WPK_PROGRAM_SLOTS;i++) if (!stream->slots[i].phase) {slot=&stream->slots[i];break;}
     if (!slot) {
@@ -2555,9 +2530,6 @@ static void mutate_program_record(uint32_t op, GLuint name, GLuint shader_name) 
         }
         if (record) {
             record->link_known=1;record->linked=1;
-            observe_program_capture(state,record,1);
-        } else if (!name) {
-            (void)release_program_capture(state,&state->selected_program_capture);
         }
     } else if (op==OP_ATTACH_SHADER || op==OP_DETACH_SHADER) {
         if (!record || record->kind!=5 || slot<0) {group->program_records_known=0;return;}
@@ -2574,7 +2546,6 @@ static void mutate_program_record(uint32_t op, GLuint name, GLuint shader_name) 
                 atomic_store_explicit(&group->program_records_known,0,memory_order_relaxed);
             } else {
                 record->link_epoch++;
-                observe_program_capture(state,record,record==state->current_program);
             }
         }
         else group->program_records_known=0;
@@ -2753,8 +2724,6 @@ struct wpk_gl_name_scope _wpk_gl_begin_encoder_retirement(struct wpk_gles_contex
 void _wpk_gl_retire_encoder_programs(struct wpk_gles_context *state) {
     // Called with the dispatch guard only AFTER acknowledged host retirement.
     // Its context index already retired known and lost-receipt capture owners.
-    state->selected_program_capture=(struct wpk_program_capture){0};
-    state->prepared_program_capture=(struct wpk_program_capture){0};
     if (state->program_stream) {
         struct wpk_program_stream **p=&state->objects->program_streams;
         while (*p && *p!=state->program_stream) p=&(*p)->next;

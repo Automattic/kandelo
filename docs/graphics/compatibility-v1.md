@@ -42,6 +42,68 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Ordinary program captures become lazy, 2026-11-04
+
+The ordinary checked link/use path no longer acquires unused private native
+captures. The admitted journal obtains its own cold generation pin and token;
+there is no second selected/prepared cache on the ordinary path. Cold capture
+now also observes unknown link status, including failed links, before local
+selection. No ABI, native-error policy or automatic admission change is made.
+
+The R217 native controls fail8/8 against8488618c0d and pass afterward.
+The complete native C/UBSan inventory passes477 controls. The older22 eager-
+cache controls are replaced by8 ordinary-path controls, including zero private
+requests, peer retirement, failed current relink, bounded churn, revocation
+and allocation failure. Their cold acquisition/release fault intent is moved
+to the actual admitted C-journal path:14 receipt-fault variants (nonentry,
+canonical refusal, response loss, bad magic, invalid status, contradictory
+acceptance and invalid handle, for acquire and release). They require exactly
+one private attempt, no retry after uncertainty, healthy shared-peer rendering
+and zero native programs before whole-machine teardown. Existing installed-
+executable/failed-link, OOM and pre-process-exit retirement controls remain.
+
+R218 normally refreshes both SDK widths, retaining the unchanged canonical
+kernel and image writer. ABI verification passes. R219 passes68 real-GPU
+Chromium cases across both widths and production/fatal modes, including all
+cold faults, cold success/failure link-status observations and the ordinary
+request regression. Ordinary20 selection pairs now make40 entries (was80);
+20 links make20 entries (was59). These are measured device-entry counts,
+not an application speedup or a native-feel claim.
+
+R220 `graphics-unused-captures-final-r220-1104-185453-1640`, port6036,
+passes11m16: graphics2162 assertions/88files, Node12, browser636 across
+Chromium/Firefox/WebKit, ABI/evidence709 and strict probe types. All12 ordinary
+selection controls agree with the before/after device-entry measurements:
+
+| Operation | R212 before | R220 after |
+| --- | --- | --- |
+| 20 select/unselect pairs, error check after each mutation | 80 | 40 |
+| 20 relinks, error check after each | 59 | 20 |
+
+All168 cold capture receipt-fault cases pass;24 new cold link-status cases
+cover success/failure without an earlier status getter. All564 routed
+records retain actual guest/kernel hashes;540 successful journal/OOM/render
+cases have native live0 before machine teardown, including the existing36
+explicit-retirement samples before process exit. The24 intentional fatal
+host-fault cases still refuse later work. Source and products are frozen.
+The normal canonical kernel remains
+`124b9ca970ca455b37f2a4a32f0708a616a269f7040db6201625d2f95b07c07f`.
+Full host TypeScript still fails with the exact retained39-diagnostic stream;
+this is not a type-check pass.
+
+Exact entry points, all through `scripts/dev-shell.sh` and `agent-job`:
+R217 `bash tests/graphics/run-libc-unit.sh` (before uses8488618c0d with only
+the8 new cases); R218 `bash scripts/build-musl.sh --ensure --arch` with
+wasm32posix then wasm64posix; ABI `bash scripts/check-abi-version.sh`;
+R220 graphics `vitest run -c vitest.graphics.config.ts`, Node `vitest run`
+with its private configuration, probe `tsc -p` with its private configuration,
+and browser `playwright test` with that configuration on all three engines,
+`--workers=1`. Exact flags, logs, inputs and products are retained in
+`.context/graphics-unused-captures-{r217,build-r218,focused-r219,final-r220}/`.
+Full final conformance, desktop, memory, Rust/xtask and benchmark acceptance
+remain required; those broad suites were not rerun for this increment.
+The public preview is unchanged; automatic journal admission remains off.
+
 ## Physical desktop cursor method, 2026-11-04
 
 R214 `graphics-native-desktop-r214-1104-184050-35db` passes the owned,
@@ -79,7 +141,8 @@ in production and fatal-audit modes, render the expected pixel and reclaim
 all native programs before machine teardown. The native C device double
 independently attributes40 of the80 selection requests to20 unused private
 capture acquisitions and20 releases. This confirms overhead in the
-ordinary path; its removal and application latency effect remain unproven.
+ordinary path at that checkpoint; the later lazy-capture increment above
+removes those entries. The application latency effect remains unproven.
 
 Exact commands: `KANDELO_GRAPHICS_LIBC_CASES=encoder-selection-requests
 bash tests/graphics/run-libc-unit.sh`; Node `vitest run` with the private
@@ -22859,6 +22922,10 @@ introduced by this fixture correction.
 
 
 ## 2026-11-04 C executable capture and serialized retirement (R169–R170)
+
+Historical intermediate implementation: the later ordinary-capture removal
+above retires this eager selected/prepared cache and migrates its fault tests
+to admitted journal captures. The results below describe that older checkpoint.
 
 The C driver now consumes the existing optional capture/release query after
 acknowledged program link/use. A context owns at most two known descriptors

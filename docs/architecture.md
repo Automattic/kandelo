@@ -6887,14 +6887,18 @@ Selection stays synchronous. This is intermediate B1 ownership implementation,
 not native-feel acceptance.
 
 
-The C driver consumes the optional executable-capture receipt after acknowledged
-link/use operations. Each context has two bounded descriptors: its selected
-native executable and one prepared link. Shared link epochs distinguish C
-observations; the opaque host capture handle owns the actual immutable native
-executable. A failed link reports no fresh capture and preserves the older
-selected executable. A peer acquires its own context-owned handle and never
-reads or flushes another encoder. These descriptors do not keep public names
-alive and do not yet own queued selections.
+The ordinary C link/use path does not acquire private executable captures.
+Its checked mutation receipt establishes public-name/current-reference state;
+the host retains the installed executable independently. An explicitly admitted
+journal acquires a native-generation pin only on a cold cache miss, registers
+that pin with its journal token, then releases the temporary capture after the
+exact receipt. The bounded token cache owns queued selection generations.
+Removing the older selected/prepared capture descriptors avoids private device
+queries for applications that never enable journals. A successful checked use
+establishes a linked program; otherwise cold acquisition observes link status
+before local acceptance. A failed link supplies no fresh capture and cannot
+replace an older installed executable. Peer contexts acquire their own handles
+and never read or flush another encoder. Captures do not keep public names alive.
 
 Capture request, reply and compound-packet storage are embedded in the encoder
 before its context is published. Cold capture publication and release therefore

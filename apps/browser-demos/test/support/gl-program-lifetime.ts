@@ -3,8 +3,8 @@ import type {Page} from "@playwright/test";
 /** Count real native programs in the disposable kernel realm. Query before
  * machine teardown: terminating the entire worker must not hide a leaked
  * context, capture or unsubmitted journal owner. No guest memory is relayed. */
-export async function installProgramLifetimeProbe(page:Page,recoverPublication:false|"lost-publication"|"refuse-registration"|"malformed-reserve"|"indeterminate-publication"=false):Promise<void> {
-  await page.evaluate(({bootstrap,recoverPublication})=>{
+export async function installProgramLifetimeProbe(page:Page,recoverPublication:false|"lost-publication"|"refuse-registration"|"malformed-reserve"|"indeterminate-publication"=false,captureFault?:{action:1|3;failure:number}):Promise<void> {
+  await page.evaluate(({bootstrap,recoverPublication,captureFault})=>{
     const ActualWorker=globalThis.Worker,controls:MessagePort[]=[],urls:string[]=[];
     class ControlledWorker extends ActualWorker {
       port!:MessagePort;pending!:MessagePort|null;
@@ -13,8 +13,8 @@ export async function installProgramLifetimeProbe(page:Page,recoverPublication:f
         const entry=new URL(String(url),location.href).href;
         // Fault injection must precede the runtime's captured Wasm intrinsics.
         // Retain init messages until dynamic import installs its real handler.
-        const hold=recoverPublication?"const __early=[];const __hold=e=>{e.stopImmediatePropagation();__early.push(e.data);};addEventListener('message',__hold);\n":"";
-        const load=recoverPublication?"\nawait import("+JSON.stringify(entry)+");removeEventListener('message',__hold);for(const data of __early)dispatchEvent(new MessageEvent('message',{data}));":"\nimport "+JSON.stringify(entry)+";";
+        const hold=(recoverPublication||captureFault)?"const __early=[];const __hold=e=>{e.stopImmediatePropagation();__early.push(e.data);};addEventListener('message',__hold);\n":"";
+        const load=(recoverPublication||captureFault)?"\nawait import("+JSON.stringify(entry)+");removeEventListener('message',__hold);for(const data of __early)dispatchEvent(new MessageEvent('message',{data}));":"\nimport "+JSON.stringify(entry)+";";
         const blob=URL.createObjectURL(new Blob(["const __programWorkerBase=",JSON.stringify(entry),";\n",hold,
           bootstrap,load],{type:"text/javascript"}));
         urls.push(blob);super(blob,options);
@@ -28,7 +28,7 @@ export async function installProgramLifetimeProbe(page:Page,recoverPublication:f
       }
     }
     globalThis.Worker=ControlledWorker;
-    (window as any).__programLifetimeStats=()=>new Promise<{created:number;deleted:number;live:number;recovery:{dropped:number;duplicates:number;reads:number;refused:number;corrupted:number;unreleasedCaptures:number;publications:number;refusedReads:number;duplicateIntents:number}}>((resolve,reject)=>{
+    (window as any).__programLifetimeStats=()=>new Promise<{created:number;deleted:number;live:number;recovery:{dropped:number;duplicates:number;reads:number;refused:number;corrupted:number;unreleasedCaptures:number;publications:number;refusedReads:number;duplicateIntents:number};captureFault:{armed:boolean;injected:number;acquires:number;releases:number}}>((resolve,reject)=>{
       if(controls.length!==1){reject(new Error(`program lifetime kernel count ${controls.length}`));return;}
       const port=controls[0]!,timer=setTimeout(()=>reject(new Error("program lifetime response timeout")),5000);
       port.onmessage=e=>{clearTimeout(timer);resolve(e.data);};port.start();port.postMessage("stats");
@@ -37,13 +37,14 @@ export async function installProgramLifetimeProbe(page:Page,recoverPublication:f
       for(const port of controls)port.close();globalThis.Worker=ActualWorker;
       for(const url of urls)URL.revokeObjectURL(url);
     };
-  },{recoverPublication,bootstrap:`
+  },{recoverPublication,captureFault,bootstrap:`
 const OrdinaryWorker=globalThis.Worker;
 globalThis.Worker=class extends OrdinaryWorker{constructor(url,options){super(new URL(String(url),__programWorkerBase),options);}};
 const live=new Set();let created=0,deleted=0;
 const recovery={dropped:0,duplicates:0,reads:0,refused:0,corrupted:0,publications:0,refusedReads:0,duplicateIntents:0},entered=new Set(),captures=new Set(),intents=new Set();
-const faultMode=${JSON.stringify(recoverPublication)};
-if(faultMode){
+const faultMode=${JSON.stringify(recoverPublication)},captureFault=${JSON.stringify(captureFault)??"null"};
+const captureFaultStats={armed:false,injected:0,acquires:0,releases:0};
+if(faultMode||captureFault){
   const instantiate=WebAssembly.instantiate;
   WebAssembly.instantiate=async function(source,imports){
     if(!imports?.env?.host_gl_query)return Reflect.apply(instantiate,WebAssembly,[source,imports]);
@@ -64,6 +65,14 @@ if(faultMode){
       if(faultMode==='indeterminate-publication'&&action===6&&recovery.dropped&&!recovery.refusedReads){recovery.refusedReads++;return -5;}
       const tx=journal&&length>=8?view.getUint32(pointer+4,true):0;
       if(op!==0x3a&&action===2&&faultMode==='refuse-registration'&&!recovery.refused){recovery.refused++;return -5;}
+      const captureAttempt=op===0x3a&&captureFaultStats.armed;
+      if(captureAttempt){if(action===1)captureFaultStats.acquires++;if(action===3)captureFaultStats.releases++;}
+      const failure=captureAttempt&&captureFault&&action===captureFault.action&&!captureFaultStats.injected?captureFault.failure:0;
+      if(failure){captureFaultStats.injected++;}
+      if(failure===1)return -5; // Definite nonentry.
+      if(failure===2){ // Canonical private refusal, with no invented GL error.
+        const output=Number(args[4]);[1,0,0,0x47514c33].forEach((word,i)=>view.setUint32(output+i*4,word,true));return 16;
+      }
       const result=Reflect.apply(query,imports.env,args);
       if(op===0x3a&&result===16&&view.getUint32(Number(args[4]),true)===0&&view.getUint32(Number(args[4])+4,true)===1){
         if(action===1)captures.add([args[0],args[6],view.getUint32(Number(args[4])+8,true)].join(':'));
@@ -72,6 +81,15 @@ if(faultMode){
       if(journal&&op!==0x3a&&action!==6&&action!==7&&result===48){
         const key=[args[0],args[6],tx].join(':');
         if(entered.has(key))recovery.duplicates++;entered.add(key);
+      }
+      if(captureFault&&op===0x3b&&action===1&&result===48&&view.getUint32(Number(args[4]),true)===0)captureFaultStats.armed=true;
+      if(failure&&result===16){
+        const output=Number(args[4]);
+        if(failure===3)return -5; // Effect happened; the response was lost.
+        if(failure===4)view.setUint32(output+12,0,true);
+        if(failure===5)view.setUint32(output,9,true);
+        if(failure===6)view.setUint32(output,1,true); // Contradictory acceptance.
+        if(failure===7)view.setUint32(output+8,action===1?0:17,true);
       }
       // The real operation and retained ledger complete, but its success
       // response is lost before the kernel copies anything to the guest.
@@ -91,6 +109,6 @@ if(faultMode){
 const proto=WebGL2RenderingContext.prototype,create=proto.createProgram,remove=proto.deleteProgram;
 proto.createProgram=function(...xs){const program=Reflect.apply(create,this,xs);if(program){live.add(program);created++;}return program;};
 proto.deleteProgram=function(program){Reflect.apply(remove,this,[program]);if(program&&live.delete(program))deleted++;};
-addEventListener("message",event=>{if(event.data?.__programLifetimeControl){const port=event.data.__programLifetimeControl;port.onmessage=()=>port.postMessage({created,deleted,live:live.size,recovery:{...recovery,unreleasedCaptures:captures.size}});port.start();}});
+addEventListener("message",event=>{if(event.data?.__programLifetimeControl){const port=event.data.__programLifetimeControl;port.onmessage=()=>port.postMessage({created,deleted,live:live.size,recovery:{...recovery,unreleasedCaptures:captures.size},captureFault:captureFaultStats});port.start();}});
 `});
 }

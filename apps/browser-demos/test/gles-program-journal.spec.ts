@@ -16,7 +16,9 @@ test.beforeAll(()=>{
       ["-pthread","-lEGL","-lGLESv2"],{arch,forkInstrument:true}));
 });
 test.afterAll(()=>{for(const fixture of fixtures.values())fixture.cleanup();});
-for(const mode of ["legacy-selection","render","preflight","recovery","errors","abandon","exit-pending","uniform-interleave","lifecycle-unbound","lifecycle-current-peer","driver-dispatch","driver-local","driver-sharing","driver-wrap","driver-errors","driver-relink","driver-retirement","driver-recovery","driver-fork","driver-cache","driver-cold-refusal","driver-failed-link","driver-malformed","driver-indeterminate","driver-error-recovery","driver-error-suffix"] as const) for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
+const captureModes=(["acquire","release"] as const).flatMap(action=>
+  Array.from({length:7},(_,i)=>`capture-${action}-${i+1}`));
+for(const mode of [...captureModes,"cold-failed-link","driver-link-observe","legacy-selection","render","preflight","recovery","errors","abandon","exit-pending","uniform-interleave","lifecycle-unbound","lifecycle-current-peer","driver-dispatch","driver-local","driver-sharing","driver-wrap","driver-errors","driver-relink","driver-retirement","driver-recovery","driver-fork","driver-cache","driver-cold-refusal","driver-failed-link","driver-malformed","driver-indeterminate","driver-error-recovery","driver-error-suffix"] as const) for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
   test(`${mode} ${arch} checks journal transport and captured execution (${audit??"production"})`,async({page,baseURL,browser})=>{
     test.setTimeout(90_000);
     const image=KandeloImageFs.create();image.mkdir("/bin",0o755);
@@ -31,7 +33,8 @@ for(const mode of ["legacy-selection","render","preflight","recovery","errors","
     const errors:string[]=[];page.on("pageerror",e=>errors.push(e.message));
     await installBrowserMemoryBoundaryProbe(page);
     await page.goto(new URL("/trap-signal-test.html",baseURL).href);
-    await installProgramLifetimeProbe(page,mode==="driver-recovery"?"lost-publication":mode==="driver-cold-refusal"?"refuse-registration":mode==="driver-malformed"?"malformed-reserve":(mode==="driver-indeterminate"||mode==="driver-error-recovery"||mode==="driver-error-suffix")?"indeterminate-publication":false);
+    await installProgramLifetimeProbe(page,mode==="driver-recovery"?"lost-publication":mode==="driver-cold-refusal"?"refuse-registration":mode==="driver-malformed"?"malformed-reserve":(mode==="driver-indeterminate"||mode==="driver-error-recovery"||mode==="driver-error-suffix")?"indeterminate-publication":false,
+      mode.startsWith("capture-")?{action:mode.startsWith("capture-release-")?3:1,failure:Number(mode.split("-").at(-1))}:undefined);
     const source=fileURLToPath(new URL("../../../host/src/browser-kernel-host.ts",import.meta.url));
     const result=await page.evaluate(async({url,audit,mode})=>{
       const {BrowserKernel}=await import(/* @vite-ignore */ url);
@@ -59,8 +62,8 @@ for(const mode of ["legacy-selection","render","preflight","recovery","errors","
       expect(selectionCounters!.pairs).toBe(20);expect(selectionCounters!.links).toBe(20);
       // Each checked mutation needs one entry. Extra entries are measured,
       // never encoded as required behavior of the optional feature.
-      expect(selectionCounters!.selectionDeviceRequests).toBeGreaterThanOrEqual(40);
-      expect(selectionCounters!.linkDeviceRequests).toBeGreaterThanOrEqual(20);
+      expect(selectionCounters!.selectionDeviceRequests).toBe(40);
+      expect(selectionCounters!.linkDeviceRequests).toBe(20);
     }else
     if(mode.startsWith("driver-")&&mode!=="driver-dispatch"&&mode!=="driver-cold-refusal"&&mode!=="driver-indeterminate"&&mode!=="driver-error-recovery"&&mode!=="driver-error-suffix"&&result.status===0) {
       expect(lines).toHaveLength(2);expect(lines[0]).toMatch(/^DRIVER_COUNTERS /);
@@ -94,6 +97,12 @@ for(const mode of ["legacy-selection","render","preflight","recovery","errors","
     if(mode==="driver-indeterminate"||mode==="driver-error-recovery"||mode==="driver-error-suffix") {
       expect(result.native.recovery.dropped).toBe(1);expect(result.native.recovery.refusedReads).toBe(1);
       expect(result.native.recovery.duplicateIntents).toBe(0);expect(result.native.recovery.duplicates).toBe(0);
+    }
+    if(mode.startsWith("capture-")) {
+      expect(result.native.captureFault.armed).toBe(true);
+      expect(result.native.captureFault.injected).toBe(1);
+      expect(result.native.captureFault.acquires).toBe(1);
+      expect(result.native.captureFault.releases).toBe(mode.startsWith("capture-release-")?1:0);
     }
     const auditRows=result.diagnostics.filter((d:any)=>d.source==="gl-audit").map((d:any)=>JSON.parse(d.message));
     expect(auditRows.filter((r:any)=>r.kind==="divergence")).toEqual([]);

@@ -9986,6 +9986,8 @@ int main(int argc, char **argv) {
             glUseProgram(p);assert(glGetError()==GL_NO_ERROR);
             glUseProgram(0);assert(glGetError()==GL_NO_ERROR);
         }
+        assert(_wpk_gl_device_requests()-before==40);
+        assert(program_capture_queries[1]==acquire_before&&program_capture_queries[3]==release_before);
         printf("SELECTION_REQUESTS pairs20 device%llu captures%u releases%u\n",
             (unsigned long long)(_wpk_gl_device_requests()-before),
             program_capture_queries[1]-acquire_before,program_capture_queries[3]-release_before);
@@ -9994,93 +9996,40 @@ int main(int argc, char **argv) {
         assert(!live_program_captures()&&!allocation_count());
         printf("PASS %s\n",argv[1]);return 0;
     }
-    if (!strncmp(argv[1],"encoder-captures-",17)) {
-        const char *mode=argv[1]+17;program_model=1;
-        record_dispatch_lock=1;
-        GLuint p=glCreateProgram(),q=glCreateProgram();assert(p && q && dispatch_lock);
-        if(!strcmp(mode,"failed-link"))program_link_failure=1;
-        unsigned before=program_capture_queries[1];
-        if(!strncmp(mode,"acquire-",8)) {
-            program_capture_action=1;program_capture_failure=(unsigned)strtoul(mode+8,NULL,10);
-        }
-        glLinkProgram(p);
-        assert(program_capture_queries[1]==before+1);
-        if(!strncmp(mode,"acquire-",8)) {
-            unsigned failure=(unsigned)strtoul(mode+8,NULL,10);
-            assert(glGetError()==(failure==2?GL_OUT_OF_MEMORY:GL_INVALID_OPERATION));
-            assert(glGetError()==GL_NO_ERROR);
-            unsigned issued=program_capture_queries[1];
-            glUseProgram(p);glLinkProgram(q);glUseProgram(q);glUseProgram(0);
-            assert(glGetError()==GL_NO_ERROR && program_capture_queries[1]==issued);
-            assert(live_program_captures()<2);
-        } else if(!strcmp(mode,"failed-link")) {
-            assert(glGetError()==GL_NO_ERROR && live_program_captures()==0);
-            glUseProgram(p);assert(glGetError()==GL_INVALID_OPERATION);
-            program_link_failure=0;
-        } else {
-            assert(glGetError()==GL_NO_ERROR && live_program_captures()==1);
-            unsigned acquired=program_capture_queries[1];
-            glUseProgram(p);glUseProgram(p);
-            assert(glGetError()==GL_NO_ERROR && program_capture_queries[1]==acquired);
-            if(!strcmp(mode,"current-failed-link")) {
-                program_link_failure=1;glLinkProgram(p);
-                assert(glGetError()==GL_NO_ERROR && live_program_captures()==1);
-                program_link_failure=0;
-            } else if(!strncmp(mode,"release-",8)) {
-                glLinkProgram(q);assert(glGetError()==GL_NO_ERROR && live_program_captures()==2);
-                program_capture_action=3;program_capture_failure=(unsigned)strtoul(mode+8,NULL,10);
-                glUseProgram(q);
-                unsigned failure=(unsigned)strtoul(mode+8,NULL,10);
-                assert(glGetError()==(failure==2?GL_OUT_OF_MEMORY:GL_INVALID_OPERATION));
+    if (!strncmp(argv[1],"encoder-ordinary-program-",25)) {
+        const char *mode=argv[1]+25;program_model=1;record_dispatch_lock=1;
+        GLuint p=glCreateProgram(),q=glCreateProgram();assert(p&&q&&dispatch_lock);
+        glLinkProgram(p);glUseProgram(p);assert(glGetError()==GL_NO_ERROR);
+        if(!strcmp(mode,"failed-link")) {
+            program_link_failure=1;glLinkProgram(p);assert(glGetError()==GL_NO_ERROR);
+            glUseProgram(p);assert(glGetError()==GL_INVALID_OPERATION);program_link_failure=0;
+        } else if(!strcmp(mode,"bounded")) {
+            for(unsigned i=0;i<96;i++) {
+                glLinkProgram(i%2?p:q);glUseProgram(i%2?p:q);
                 assert(glGetError()==GL_NO_ERROR);
-                unsigned issued=program_capture_queries[1];
-                glLinkProgram(p);glUseProgram(p);glUseProgram(0);
-                assert(glGetError()==GL_NO_ERROR && program_capture_queries[1]==issued);
-            } else if(!strcmp(mode,"relink")) {
-                glLinkProgram(p);
-                assert(glGetError()==GL_NO_ERROR && live_program_captures()==1);
-                assert(program_capture_queries[1]==acquired+1 && program_capture_queries[3]==1);
-            } else if(!strcmp(mode,"bounded")) {
-                for(unsigned i=0;i<96;i++) {
-                    glLinkProgram(i%2?p:q);glUseProgram(i%2?p:q);
-                    assert(glGetError()==GL_NO_ERROR && live_program_captures()==1);
-                }
-            } else if(!strcmp(mode,"peer")) {
-                EGLContext peer=eglCreateContext(dpy,(EGLConfig)1,ctx,attrs);assert(peer);
-                assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
-                glUseProgram(p);assert(glGetError()==GL_NO_ERROR && live_program_captures()==2);
-                glLinkProgram(p);assert(glGetError()==GL_NO_ERROR && live_program_captures()==2);
-                unsigned issued=program_capture_queries[3];observe_program_retirement=1;
-                assert(eglDestroyContext(dpy,ctx));
-                assert(live_program_captures()==1 && program_capture_queries[3]==issued);
-                assert(eglGetCurrentContext()==peer);
-                glUseProgram(p);assert(glGetError()==GL_NO_ERROR && live_program_captures()==1);
-                ctx=peer;
-            } else if(!strcmp(mode,"revoke")) {
-                glClearColor(.2f,.3f,.4f,1);fail_submit=1;glFlush();fail_submit=0;
-                assert(glGetError()==GL_INVALID_OPERATION && glGetError()==GL_NO_ERROR);
-                unsigned issued=program_capture_queries[1];
-                glLinkProgram(q);glUseProgram(q);assert(glGetError()==GL_NO_ERROR);
-                assert(program_capture_queries[1]==issued && live_program_captures()==1);
-            } else if(!strcmp(mode,"malloc")) {
-                /* Checked mutation's two request/reply allocations succeed;
-                 * every later malloc fails. Capture storage was reserved with
-                 * the context, so publication cannot lose its receiver. */
-                malloc_before_failure=2;glLinkProgram(p);malloc_before_failure=-1;
-                assert(glGetError()==GL_NO_ERROR && live_program_captures()==1);
             }
+        } else if(!strcmp(mode,"peer")) {
+            EGLContext peer=eglCreateContext(dpy,(EGLConfig)1,ctx,attrs);assert(peer);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
+            glUseProgram(p);glLinkProgram(p);assert(glGetError()==GL_NO_ERROR);
+            assert(eglDestroyContext(dpy,ctx));ctx=peer;
+            glUseProgram(p);assert(glGetError()==GL_NO_ERROR);
+        } else if(!strcmp(mode,"revoke")) {
+            glClearColor(.2f,.3f,.4f,1);fail_submit=1;glFlush();fail_submit=0;
+            assert(glGetError()==GL_INVALID_OPERATION&&glGetError()==GL_NO_ERROR);
+            glLinkProgram(q);glUseProgram(q);assert(glGetError()==GL_NO_ERROR);
+        } else if(!strcmp(mode,"malloc")) {
+            malloc_before_failure=2;glLinkProgram(p);malloc_before_failure=-1;
+            assert(glGetError()==GL_NO_ERROR);
+        } else {
+            assert(!strcmp(mode,"basic")||!strcmp(mode,"relink"));
+            glUseProgram(p);glLinkProgram(p);glUseProgram(p);
+            assert(glGetError()==GL_NO_ERROR);
         }
-        observe_program_retirement=1;
-        glDeleteProgram(p);glDeleteProgram(q);assert(glGetError()==GL_NO_ERROR);
-        unsigned acquire_queries=program_capture_queries[1], release_queries=program_capture_queries[3];
-        unsigned retained=live_program_captures();
-        assert(eglDestroyContext(dpy,ctx));
-        // EBUSY retirement must keep every C/native receiver until unbinding.
-        assert(live_program_captures()==retained);
-        assert(eglReleaseThread() && eglTerminate(dpy));
-        assert(program_capture_queries[1]==acquire_queries && program_capture_queries[3]==release_queries);
-        assert(live_program_captures()==0 && allocation_count()==0);
-        printf("PASS %s\n",argv[1]);return 0;
+        glUseProgram(0);glDeleteProgram(p);glDeleteProgram(q);assert(glGetError()==GL_NO_ERROR);
+        assert(!program_capture_queries[1]&&!program_capture_queries[3]&&!live_program_captures());
+        assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy));
+        assert(!allocation_count());printf("PASS %s\n",argv[1]);return 0;
     }
     if (!strncmp(argv[1],"encoder-records-",16)) {
         const char *mode=argv[1]+16;assert(glGetError()==GL_NO_ERROR);

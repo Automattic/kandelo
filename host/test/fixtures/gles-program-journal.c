@@ -177,7 +177,7 @@ int main(int argc,char **argv) {
         "precision mediump float;void main(){gl_FragColor=vec4(.2,.6,.8,1.);}");
     GLuint program=glCreateProgram();assert(program);glAttachShader(program,vertex);glAttachShader(program,fragment);
     glBindAttribLocation(program,0,"p");glLinkProgram(program);GLint linked=0;
-    glGetProgramiv(program,GL_LINK_STATUS,&linked);assert(linked);
+    if(strcmp(argv[1],"driver-link-observe")){glGetProgramiv(program,GL_LINK_STATUS,&linked);assert(linked);}
     if(!strcmp(argv[1],"driver-dispatch")) {
         struct wpk_gles_context *encoder=_wpk_gl_current_encoder();
         struct wpk_gl_name_scope outer=_wpk_gl_begin_name_scope(encoder);
@@ -199,6 +199,51 @@ int main(int argc,char **argv) {
     glGenBuffers(1,&buffer);glBindBuffer(GL_ARRAY_BUFFER,buffer);glBufferData(GL_ARRAY_BUFFER,sizeof triangle,triangle,GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
     glViewport(0,0,16,16);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);glFinish();assert(glGetError()==GL_NO_ERROR);
+    if(!strcmp(argv[1],"cold-failed-link")) {
+        // Do not query LINK_STATUS: the journal's cold capture must observe
+        // failure itself, without keeping an eager pin on every ordinary link.
+        glDetachShader(program,vertex);glLinkProgram(program);assert(glGetError()==GL_NO_ERROR);
+        assert(_wpk_gl_enable_program_journal());
+        glUseProgram(program);assert(glGetError()==GL_INVALID_OPERATION);
+        assert(glGetError()==GL_NO_ERROR);
+        glUseProgram(0);glFinish();assert(glGetError()==GL_NO_ERROR);
+        glAttachShader(program,vertex);glLinkProgram(program);assert(glGetError()==GL_NO_ERROR);
+        assert(_wpk_gl_enable_program_journal());
+        glUseProgram(program);assert(glGetError()==GL_NO_ERROR);
+        glDrawArrays(GL_TRIANGLES,0,3);check_color(51,153,204);
+        glUseProgram(0);glDeleteProgram(program);glDeleteShader(vertex);glDeleteShader(fragment);
+        glDeleteBuffers(1,&buffer);assert(glGetError()==GL_NO_ERROR);
+        assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
+        assert(eglDestroySurface(display,surface)&&eglDestroyContext(display,context)&&eglTerminate(display)&&eglReleaseThread());
+        printf("PASS journal wire %s\n",argv[1]);return 0;
+    }
+    if(!strncmp(argv[1],"capture-",8)) {
+        const int releasing=!strncmp(argv[1],"capture-release-",16);
+        const unsigned failure=(unsigned)strtoul(strrchr(argv[1],'-')+1,NULL,10);
+        assert(failure>=1&&failure<=7);
+        glUseProgram(0);assert(glGetError()==GL_NO_ERROR);
+        assert(_wpk_gl_enable_program_journal());
+        glUseProgram(program);
+        assert(glGetError()==(!releasing&&failure==2?GL_NO_ERROR:GL_INVALID_OPERATION));
+        assert(glGetError()==GL_NO_ERROR);
+        glUseProgram(program);
+        assert(glGetError()==(releasing?GL_INVALID_OPERATION:GL_NO_ERROR));
+        assert(glGetError()==GL_NO_ERROR);
+        // A lost/corrupt private capture stays with its exact context. Retire
+        // it while a healthy shared peer still owns and renders the program.
+        EGLContext peer=eglCreateContext(display,config,context,attrs);assert(peer!=EGL_NO_CONTEXT);
+        assert(eglMakeCurrent(display,surface,surface,peer));
+        assert(eglDestroyContext(display,context));
+        glUseProgram(program);assert(glGetError()==GL_NO_ERROR);
+        glBindBuffer(GL_ARRAY_BUFFER,buffer);glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);glViewport(0,0,16,16);
+        glDrawArrays(GL_TRIANGLES,0,3);check_color(51,153,204);
+        glUseProgram(0);glDeleteProgram(program);glDeleteShader(vertex);glDeleteShader(fragment);
+        glDeleteBuffers(1,&buffer);assert(glGetError()==GL_NO_ERROR);
+        assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
+        assert(eglDestroySurface(display,surface)&&eglDestroyContext(display,peer)&&eglTerminate(display)&&eglReleaseThread());
+        printf("PASS journal wire %s\n",argv[1]);return 0;
+    }
     if(!strcmp(argv[1],"legacy-selection")) {
         // Never admit a journal: ordinary applications must not pay for its
         // private generation cache. Record device entries, not inferred FPS.
