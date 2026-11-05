@@ -317,6 +317,92 @@ Commands and original failures:
 `.context/graphics-pointer-injection-r385/probe.ts` and
 `.context/graphics-framebuffer-retirement-r386/run.sh`.
 
+## Combined regression and refreshed normal preview, 2026-11-05
+
+R387 `graphics-framebuffer-full-r387-1105-112034-a193` finishes overall
+FAILED14m08 solely because full host compilation retains the same24
+diagnostics. The complete compiler stream matches R369 after dev-shell
+preamble removal. Graphics2193 tests/88 files, Node18/6, all378 browser
+cases (126 per engine, zero skips), ABI and evidence checks pass. Shader
+rewriting passes266 Chromium/263 Firefox/266 WebKit with zero failures
+and the retained Firefox one inconclusive/two native controls. Every
+frozen source/configuration/prepared-kernel hash matches afterward. This
+expanded run replaces the earlier15 failing native/image cases with
+independent early-refusal, late-reset and healthy-lifecycle coverage;
+no original acceptance requirement is waived.
+
+R387 uses prepared normal kernel386b220c. Current preview kernel269ef309
+has a different normal build identity. Binary inspection finds identical
+executable/other standard sections, with DATA equal after replacing five
+embedded resolver-work diagnostic paths; the custom build-key section
+also differs. Both widths' libc/EGL/GLES archives and the ABI snapshot
+match byte-for-byte. This is an artifact comparison, not permission to
+label distinct kernels byte-identical or promote prepared-kernel evidence
+into final current-normal-artifact validation. The current normal
+application checks below execute269ef309.
+
+R388 `graphics-current-preview-r388-1105-112035-f1b3` builds frozen
+c635a84b44 normally in9m21: host58s, complete canonical bootstrap473s,
+SourceOnly Mako23s, ABI1s and freshness3s all pass. R390 checks an
+immutable313-file snapshot with the original Cage/ScummVM assertions:
+all six browser cases pass in2m09 across three engines. R391 then passes
+the six normal Node controls, actual served-kernel ABI, strict snapshot
+routes and source/product identity checks in53s. The snapshot includes
+leftover unselected files; only products admitted by the projection's
+metadata may resolve. A file inventory does not admit those other files.
+
+The maintainer preview on port5693 now serves this frozen current
+**partial B1** runtime and the verified normal kernel SHA256
+`269ef309983eccbd3db50795a8230714649cebc3f6f893a91f588d7370e6c4a3`.
+Availability is announced separately from validation. Complete B1 and
+native-feel acceptance remain open; no B2/C code is included. The old6075
+preview remains available. Only the verified owned old5693 and temporary
+6143 servers were stopped. The current source producer stays frozen while
+serving. A native visual check is pending a freshly verified locked Mac;
+no display timing or application-performance improvement is claimed.
+The original intermittent R367 Firefox shutdown failure remains recorded;
+this successful admission does not establish its cause or close it.
+
+The initial R392 conformance selections plan642 GLES2 negative/state-query
+cases and1524 EGL negative/sharing/image cases per engine. All six runners
+fail before guest execution because SourceOnly correctly refuses the
+unadmitted optional CTS package despite leftover executables being on
+disk. All6498 planned outcomes remain Missing; none is executed coverage.
+R393 provisions that package normally in its own frozen CTS worktree.
+Full three-engine conformance, audit/per-case comparisons and the other
+stage/goal gates remain required. Exact commands and compact results:
+`.context/graphics-framebuffer-full-r387/`,
+`.context/graphics-current-preview-r388/`,
+`.context/graphics-current-admission-r390/`,
+`.context/graphics-product-preview-r391/` and
+`.context/graphics-cts-current-r392-runs/`.
+
+## Private B2 cold preparation and local-source rebase, 2026-11-05
+
+The private B2 draft is rebased onto currentc635a84b44. A new control
+refuses restoration of the saved ELEMENT selector during cold capture.
+Before the correction, a prepared binding is returned before the final
+batch sample resets its context:1 failure/28 passes. The cold finalizer
+now uses the existing exact bookkeeping inverse, so publication waits
+for restoration; warm execution gains no new check. This is still private
+source work, not a connected guest transport or landed B2 stage.
+
+The first new gate stops on the draft's unsorted appended evidence rows.
+After sorting,2222 tests pass but one pin suite does not load: inherited
+imports point to Vitest and runtime modules in oldR311. The fixture now
+imports its current checkout. R389-r3 passes all2229 source controls in90
+files and the711-file evidence inventory. Its overall command still fails
+the identical24 compiler diagnostics after only root/preamble normalization.
+Earlier R366 results cannot establish complete rebased pin coverage while
+that fixture referenced oldR311. The corrected current private gate does.
+
+The selected nine-file patch and exact final sources are frozen in
+`.context/graphics-b2-cold-restore-r389/` and apply-check against current
+integration, but are not applied. C shared queue/cache integration,
+implicit first bindings, other binding families, complete pre-admission,
+normal builds, GPU/conformance and measurements remain required. No B2
+preview or completion follows from source controls.
+
 ## Automatic application-driver admission prototype, 2026-11-05
 
 Ordinary applications now enter the B1 program journal at their first

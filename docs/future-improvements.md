@@ -232,6 +232,16 @@ Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a p
 
 ## Graphics
 
+The current normal partial B1 preview now includes the private-selector and
+framebuffer-retirement corrections. The combined prepared-kernel matrix passes
+378 native browser cases on three engines; the current normal application
+snapshot separately passes six browser and six Node admission controls.
+Full compiler checking still fails24 diagnostics. Optional CTS provisioning,
+complete B1 validation and current-tree physical latency/overhead measurements
+remain required. The private B2 cold-preparation draft passes2229 local source
+controls after correcting a refused finalizer and old-checkout fixture imports;
+it is neither landed nor guest-connected. These are current-iteration tasks.
+
 Framebuffer deletion now reserves native cleanup ownership before reversible
 selector changes and commits retirement after logical deletion. A refused live
 native deletion reports a fatal fault and retains its cleanup receiver; it no
