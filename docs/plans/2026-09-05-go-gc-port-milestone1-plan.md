@@ -4322,3 +4322,11 @@ publishing `wordpress.vfs.zst` as an ABI-55 package. The compressed image is
 This establishes package publication only; Node boot, Chromium editor flow,
 OPcache behavior inside WordPress, and comparative performance are still
 pending.
+The published image booted the real FrankenPHP classic dinit service in the
+Node kernel host on localhost:3129. HTTP returned 200 for the WordPress
+homepage and login form, 302 for the admin login POST, and 200 for
+`/wp-admin/site-editor.php` with the actual WordPress editor document.
+The server identified itself as FrankenPHP and PHP 8.5.12; dinit reported
+`wp-config-init`, `smtp-capture`, `wordpress-secrets`, and
+`frankenphp-classic` ready. This verifies the Node request path, not the
+editor's browser JavaScript, long-running stability, or a performance gain.
