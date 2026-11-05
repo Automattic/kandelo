@@ -144,6 +144,72 @@ describe("BrowserWorkerAdapter", () => {
     });
   });
 
+  // ---- spare Workers ------------------------------------------------------
+
+  describe("spare Workers", () => {
+    let constructed: MockBrowserWorker[];
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      constructed = [];
+      vi.stubGlobal("Worker", function (url: string | URL, options?: any) {
+        const instance = new OriginalMockBrowserWorker(url, options);
+        constructed.push(instance);
+        return instance;
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("posts a later launch's init to a Worker started before the launch", () => {
+      const adapter = new BrowserWorkerAdapter("worker.js");
+      adapter.createWorker({ pid: 1 });
+      vi.runAllTimers();
+      expect(constructed).toHaveLength(3);
+      const spare = constructed[1];
+      expect(spare.url).toBe("worker.js");
+      expect(spare.options).toEqual({ type: "module" });
+      expect(spare.sentMessages).toEqual([]);
+
+      const handle = adapter.createWorker({ pid: 2 });
+      expect(constructed).toHaveLength(3);
+      expect(spare.sentMessages).toEqual([{ pid: 2 }]);
+      const messages: unknown[] = [];
+      handle.on("message", (message) => messages.push(message));
+      spare.simulateMessage({ type: "ready", pid: 2 });
+      expect(messages).toEqual([{ type: "ready", pid: 2 }]);
+    });
+
+    it("skips and terminates a spare that failed before a launch took it", () => {
+      const adapter = new BrowserWorkerAdapter("worker.js");
+      adapter.createWorker({ pid: 1 });
+      vi.runAllTimers();
+      const [, failed, ready] = constructed;
+      failed.simulateError("worker entry failed to load");
+
+      adapter.createWorker({ pid: 2 });
+      expect(failed.terminated).toBe(true);
+      expect(failed.sentMessages).toEqual([]);
+      expect(ready.sentMessages).toEqual([{ pid: 2 }]);
+    });
+
+    it("terminates its spares on dispose and starts no more", () => {
+      const adapter = new BrowserWorkerAdapter("worker.js");
+      adapter.createWorker({ pid: 1 });
+      vi.runAllTimers();
+      adapter.dispose();
+
+      expect(constructed[0].terminated).toBe(false);
+      expect(constructed.slice(1).every((worker) => worker.terminated)).toBe(true);
+      adapter.createWorker({ pid: 2 });
+      vi.runAllTimers();
+      expect(constructed).toHaveLength(4);
+      expect(constructed[3].sentMessages).toEqual([{ pid: 2 }]);
+    });
+  });
+
   // ---- BrowserWorkerHandle message routing --------------------------------
 
   describe("message event routing", () => {

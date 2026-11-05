@@ -3383,6 +3383,8 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 // --- Destroy ---
 
 async function performDestroy() {
+  // Destroy can run before init constructs the adapter.
+  workerAdapter?.dispose();
   await repoLazyAssetResolver?.close();
   // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
   // WORKAROUND, remove when the engine bug is fixed; see

@@ -196,6 +196,11 @@ describe("wlcompositor — theme system", () => {
         expect(out.value.indexOf("KBAR_LISTENING"), dump()).toBeLessThan(
           out.value.indexOf("KBAR_THEME name=aaa-wide"),
         );
+        // The bar's exclusive zone counts once the compositor processes its
+        // first commit and prints LAYER, strictly after kbar's KBAR_READY.
+        // The theme switch below arrives on another socket and can win that
+        // race.
+        await waitFor(out, /LAYER ns=bar /, 20_000, dump);
 
         // 2) Cycle to the next installed theme without a restart.
         out.value = "";

@@ -70,6 +70,11 @@ const C_TEST_FIXTURES = [
     out: join(fixturesDir, "fork-memory-clone.wasm"),
     forkInstrument: true,
   },
+  {
+    src: join(fixturesDir, "fork-churn.c"),
+    out: join(fixturesDir, "fork-churn.wasm"),
+    forkInstrument: true,
+  },
 ];
 
 /** Program fixtures resolved through the normal local-binaries contract. */
