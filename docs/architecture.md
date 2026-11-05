@@ -5791,7 +5791,13 @@ refuse, and the refusal means host state no longer matches the renderer. It
 is a fatal host fault (`NativeGlFault`, `host/src/webgl/native-recovery.ts`),
 reported through the kernel's `onHostFault` before it is thrown, so the
 kernel worker stops exactly as for a trapped kernel export on Node and in
-the browser. A lost renderer is the exception and a normal event: its
+the browser. The reporter latches the original fatal cause before invoking
+shutdown callbacks. Reentrant reporting or a second failure during final
+cleanup rethrows that same cause without reporting another transition.
+A kernel-export failure raised by the reporter retains its exact branded
+identity through cleanup. Installing a new kernel's reporter clears this
+latch; ordinary per-context resets do not enter this fatal path.
+A lost renderer is the exception and a normal event: its
 objects and state are gone with it (including after a restoration of the
 same context object, detected through the renderer's loss count), so cleanup
 completes without native calls, pending restorations are dropped, and the

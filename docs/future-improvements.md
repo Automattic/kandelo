@@ -1236,6 +1236,7 @@ from binds alone. The maintainer is resolving the B1/B2 stage dependency;
 no order or acceptance gate changes while that question is pending. The
 frozenb45 host observer excludes later host correctness fixes. These are
 client-front request counts, not physical latency, display FPS, overhead,
-main or native-feel acceptance. Full producer and final-tree checks remain
-required. Desktop R291 remains36 pass/2 fail/4 existing skips,
+main or native-feel acceptance. The frozen17d normal producer completes3h25;
+normal admission and final combined-tree checks remain required. Desktop
+R291 remains36 pass/2 fail/4 existing skips,
 with Firefox Cage cursor readiness and Sway's missing startup syslog still open.

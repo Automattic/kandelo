@@ -17,6 +17,8 @@ import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativ
 import { SubmitFrame, SubmitQueue } from "../src/webgl/submit-queue.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
+import { createKernelEntryGatedInstance, KernelEntryGate, isKernelExportFailure } from "../src/kernel-entry-gate.js";
+import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
 
 type Fault = Error & { name: string };
 const setReporter = (reporter: ((fault: Error) => void) | null) =>
@@ -239,4 +241,55 @@ it("detects a second physical loss on Node renderers without canvas events", () 
   r.restore(); r.refuse(true);
   const retirement = reserveNativeRetirement(next,[["deleteTexture",object]])!;
   expect(caught(() => retireNativeRetirement(retirement))).toBeUndefined();
+});
+
+it("retains the first reported native fault when finally cleanup fails too", () => {
+  const reported: Error[] = [];
+  setReporter(fault => reported.push(fault));
+  let first: unknown;
+  const thrown = caught(() => {
+    try { R.nativeGlFault("first native invariant failure"); }
+    catch (error) { first = error; throw error; }
+    finally { R.nativeGlFault("secondary cleanup failure"); }
+  });
+  expect(reported).toEqual([first]);
+  expect(thrown).toBe(first);
+  expect(thrown?.message).toBe("first native invariant failure");
+});
+
+it("latches a native fault before its reporter can reenter and restores a new reporter", () => {
+  const reported: Error[] = [];
+  setReporter(fault => {
+    reported.push(fault);
+    if (reported.length === 1) R.nativeGlFault("reporter follow-up failure");
+  });
+  const thrown = caught(() => R.nativeGlFault("original native failure"));
+  expect(reported).toEqual([thrown]);
+  const next: Error[] = [];
+  setReporter(fault => next.push(fault));
+  const replacement = caught(() => R.nativeGlFault("new kernel failure"));
+  expect(next).toEqual([replacement]);
+  expect(replacement?.message).toBe("new kernel failure");
+  expect(replacement).not.toBe(thrown);
+});
+
+it("preserves an actual kernel-export failure raised by the fatal reporter through finally cleanup", () => {
+  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const rawTrap = new WebAssembly.RuntimeError("fatal shutdown export failed");
+  const raw = createKernelScratchTestInstance(4,memory,() => ({
+    kernel_transfer_scratch_cancel: () => { throw rawTrap; },
+  }),() => 4096);
+  const instance = createKernelEntryGatedInstance(raw,new KernelEntryGate());
+  let reports = 0, first: unknown;
+  setReporter(() => { reports++; (instance.exports.kernel_transfer_scratch_cancel as (token:bigint)=>number)(1n); });
+  const thrown = caught(() => {
+    try { R.nativeGlFault("native failure starts shutdown"); }
+    catch (error) { first=error; throw error; }
+    finally { R.nativeGlFault("cleanup after shutdown failed"); }
+  });
+  expect(reports).toBe(1);
+  expect(isKernelExportFailure(first)).toBe(true);
+  expect((first as Error).cause).toBe(rawTrap);
+  expect(thrown).toBe(first);
+  expect(isKernelExportFailure(thrown)).toBe(true);
 });

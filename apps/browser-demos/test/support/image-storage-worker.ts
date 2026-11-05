@@ -44,10 +44,10 @@ self.onmessage = ({ data }) => {
     };
     // Decision D-29: a native restoration or deletion of host-owned state
     // that the live renderer refuses is a fatal host fault, never a repair
-    // retried before later GL work. A rejected forward change is still rolled
-    // back and reported as a GL error. Each refusal scenario runs only when
-    // data.fault selects it and ends the run: nothing after a fatal fault is
-    // defined, so the remaining checks belong to the run without a refusal.
+    // retried before later GL work. An unpredicted forward error resets its
+    // context (D-49), so unrelated setup cannot inject one before the named
+    // refusal. Each selected fatal scenario ends the run: nothing after a
+    // fatal fault is defined. Forward-error checks need independent contexts.
     const scenario: string | undefined = data.fault;
     const refusal = (run: () => unknown) => {
       const first = hostFaults.length;
@@ -86,7 +86,7 @@ self.onmessage = ({ data }) => {
     };
     const checked = (op: number, words: number[], expected = 0, session = 11) => {
       const reply = new DataView(query(op, words, 12, session).buffer);
-      require(reply.getUint32(0, true) === expected && reply.getUint32(8, true) === 0x47514c33, `checked ${op}`);
+      require(reply.getUint32(0, true) === expected && reply.getUint32(8, true) === 0x47514c33, `checked ${op}: status=${reply.getUint32(0,true)}, expected=${expected}, words=${words.join(",")}, diagnostics=${diagnostics.join(";")}`);
       return reply.getUint32(4, true);
     };
     const error = (session = 11) => new DataView(query(O.QOP_GET_ERROR, [], 4, session).buffer).getUint32(0, true);
@@ -217,7 +217,7 @@ self.onmessage = ({ data }) => {
       gl.getError = () => { if (allocationFlag) { const value = allocationFlag; allocationFlag = 0; return value; } return nativeGetError(); };
     }
     gl.framebufferTexture2D = (target, point, textarget, texture, level) => {
-      if (scenario !== "allocationReset" && scenario !== "refreshReset" && !injected && target === 0x8ca9 && gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === ownedFbo) {
+      if ((!scenario || scenario === "retargetReset") && !injected && target === 0x8ca9 && gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === ownedFbo) {
         injected = true;
         attach(target, point, 0xdead, texture, level);
       }
@@ -229,7 +229,7 @@ self.onmessage = ({ data }) => {
       if ((scenario === "retargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
         new Uint32Array(memory.buffer,64,3).set([1,17,source]);
         resetRc = api.host_gl_query(7,O.QOP_IMAGE_TARGET,64,12,512,12,11);
-      } else checked(O.QOP_IMAGE_TARGET, [1, 17, source], 1);
+      } else if (!scenario) checked(O.QOP_IMAGE_TARGET, [1, 17, source], 1);
     }
     finally {
       gl.framebufferTexture2D = attach;
@@ -251,7 +251,7 @@ self.onmessage = ({ data }) => {
         nativeError:gl.getError(),diagnostics});
       return;
     }
-    require(injected && error() === 0x500, "retarget rejection");
+    if (!scenario) require(injected && error() === 0x500, "retarget rejection");
     const retargetRejected = pixels(71);
     require(checked(O.QOP_IMAGE_SOURCE_STATE, [1, 17]) === 0, "retarget source rollback");
     // A bound peer and an inactive container retain the old identity at reuse.
@@ -282,6 +282,9 @@ self.onmessage = ({ data }) => {
     const mutationRollback: number[][] = [];
     const mutate = (op: number, words: number[], expected = 0) => checked(op, words, expected, 12);
     const inject = (method: string, fault: (original: (...args: any[]) => any, args: any[]) => void, run: () => void) => {
+      // A fatal-refusal case needs healthy setup until its named injection.
+      // Forward-fault coverage needs separate contexts, before reset.
+      if (scenario) return;
       const renderer = gl as any, original = renderer[method].bind(gl);
       let fired = false;
       renderer[method] = (...args: any[]) => {
@@ -422,18 +425,24 @@ self.onmessage = ({ data }) => {
     };
     geometry([0, 1, 0, 1]); require(error(12) === 0, "buffer deletion render setup");
     const bufferDeleteRollback: number[][] = [];
-    const createForDelete = gl.createBuffer; gl.createBuffer = () => null;
-    try { mutate(O.QOP_DELETE_BUFFER, [200], 1); } finally { gl.createBuffer = createForDelete; }
-    require(error(12) === 0x505, "buffer delete allocation rejection"); bufferDeleteRollback.push(renderBuffer());
+    // Deletion now clears native attributes directly. Its fallible reserve
+    // is the logical map clone, not a synthetic replacement WebGL buffer.
+    const deletionNames = kernel.gl.get(7,12)!.buffers, iterateNames = deletionNames[Symbol.iterator];
+    let refusedDeletionReserve = false;
+    deletionNames[Symbol.iterator] = () => { refusedDeletionReserve = true; throw new RangeError("buffer deletion metadata reserve"); };
+    try { mutate(O.QOP_DELETE_BUFFER, [200], 1); } finally { deletionNames[Symbol.iterator] = iterateNames; }
+    require(refusedDeletionReserve && error(12) === 0x505, "buffer delete allocation rejection"); bufferDeleteRollback.push(renderBuffer());
     inject("vertexAttribPointer", (original, args) => original(args[0], args[1], 0xdead, ...args.slice(3)), () => mutate(O.QOP_DELETE_BUFFER, [200], 1));
     bufferDeleteRollback.push(renderBuffer());
-    const bindForDelete = gl.bindBuffer.bind(gl); let rejectedElement = false;
-    gl.bindBuffer = (target, buffer) => {
-      if (target === 0x8893 && buffer === null && !rejectedElement) { rejectedElement = true; bindForDelete(0xdead, null); }
-      else bindForDelete(target, buffer);
-    };
-    try { mutate(O.QOP_DELETE_BUFFER, [200], 1); } finally { gl.bindBuffer = bindForDelete; }
-    require(rejectedElement && error(12) === 0x500, "buffer delete late selector rejection"); bufferDeleteRollback.push(renderBuffer());
+    if (!scenario) {
+      const bindForDelete = gl.bindBuffer.bind(gl); let rejectedElement = false;
+      gl.bindBuffer = (target, buffer) => {
+        if (target === 0x8893 && buffer === null && !rejectedElement) { rejectedElement = true; bindForDelete(0xdead, null); }
+        else bindForDelete(target, buffer);
+      };
+      try { mutate(O.QOP_DELETE_BUFFER, [200], 1); } finally { gl.bindBuffer = bindForDelete; }
+      require(rejectedElement && error(12) === 0x500, "buffer delete late selector rejection"); bufferDeleteRollback.push(renderBuffer());
+    }
     if (scenario === "deleteBuffer") {
       // The logical deletion commits; deleting its native buffers is cleanup
       // of host-owned objects, so a refusal is fatal rather than rolled back.

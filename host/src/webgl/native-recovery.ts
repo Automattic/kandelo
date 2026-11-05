@@ -28,17 +28,28 @@ export class NativeGlFault extends Error {
   }
 }
 let faultReporter: ((fault: Error) => void) | null = null;
+let reportedFault: Error | null = null;
 /** The kernel installs its fatal host-fault callback here. One kernel owns
  * the renderers of a worker realm. */
 export function setNativeGlFaultReporter(reporter: ((fault: Error) => void) | null): void {
   faultReporter = reporter;
+  reportedFault = null;
 }
 /** Report a NativeGlFault, then throw it. Reporting first latches the fatal
  * shutdown even if a caller's catch swallows the exception. */
 export function nativeGlFault(message: string, cause?: unknown): never {
+  if (reportedFault) throw reportedFault;
   const fault = new NativeGlFault(message, cause);
+  // Shutdown and finally cleanup can reenter this path. The kernel owns one
+  // fatal transition; latch its exact cause before invoking its reporter.
+  if (faultReporter) reportedFault = fault;
   try { faultReporter?.(fault); }
-  catch (error) { if (isKernelExportFailure(error)) throw error; }
+  catch (error) {
+    if (isKernelExportFailure(error)) {
+      reportedFault = error;
+      throw error;
+    }
+  }
   throw fault;
 }
 /** Rethrow what a catch must never convert into an error result: a

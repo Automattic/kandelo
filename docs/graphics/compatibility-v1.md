@@ -186,10 +186,14 @@ client-front intervals, respectively, the13 ARRAY_BUFFER queries always select
 `4,5,6,0,4,5,0,4,5,0,4,5,0`. Each changes its preceding numeric selector;
 no redundant-bind optimization was implemented. These old-b45 diagnostic inputs
 identify required binding work but do not prove the new driver's application
-budget or latency. R299 is the one live normal producer at frozen17d1b52e8a;
-R304 queues normal app/four-client admission, and R305 queues checked/automatic
-application request inventories with actual fetched-kernel SHA checks. Prototype
-availability will remain separate from validation and acceptance.
+budget or latency. The later R340 inventory below measures rebuilt17d products.
+R299's frozen17d1b52e8a normal producer passes3h25: setup9417s, Mako498s,
+programs2304s, ABI2s and freshness3s, with both SDK checks and own xtask.
+R304 then runs normal app/four-client admission. R305 fails before application
+execution because its producer manifest uses relative paths from the observer
+checkout; no products are missing in the producer. R340's independent snapshot
+inventory is retained separately. Prototype availability remains separate from
+validation and acceptance.
 
 R291 `graphics-b1-desktop-r291-1105-043003-bd45` on frozenb45 completes in30m47
 and remains FAILED: Node Foot/GTK3/QtGui smokes pass, but Mako's file fails to load because
@@ -244,7 +248,9 @@ been asked to resolve that stage dependency. No gate, boundary or order
 has changed while that question is pending. Counts describe client front
 production, not Wayland commits, physical display, latency, display FPS,
 instrumentation overhead, a main comparison or native feel. R299's full
-program/ABI/freshness completion and R304/R305 remain separately required.
+producer subsequently passes; normal admission and final-tree checks remain
+separately required. R305's manifest-path failure provides no application
+coverage and is not reclassified as a pass.
 
 ## Host audit and browser declaration checks, 2026-11-05
 
@@ -289,6 +295,40 @@ The private comparison's Node/browser bundle SHA256 is
 on both sides. This is focused source/type evidence, not a full host,
 browser, conformance or performance result.
 
+## Preserve the first fatal native cause, 2026-11-05
+
+The native fault reporter now latches before invoking its callback.
+Reentrant reporting and a second cleanup failure rethrow the same cause
+without reporting another shutdown transition. A branded kernel-export
+failure raised during that callback keeps its exact identity through final
+cleanup. Installing a new kernel reporter starts a fresh latch. Ordinary
+D-49/D-50 per-context resets retain their existing independent policy.
+
+R343's two new source controls fail before this fix, with19 prior controls
+passing. A third control catches cleanup replacing an actual kernel-export
+failure; the corrected fixture invokes the exact scratch-cancel signature
+and checks its injected RuntimeError cause. All22 native-fault controls
+pass after the fix. Original failures and fixture corrections are retained.
+
+The image worker now keeps healthy setup until each named fatal injection.
+Earlier unrelated native faults otherwise reset the context before those
+checks can run. Its deletion-allocation control targets the actual logical
+map reserve rather than an obsolete replacement native buffer. All final
+pixel, cleanup and fatal assertions remain; forward-error controls still
+run separately and remain open.
+
+R346 `graphics-native-fault-regression-r346-1105-080330-d7e4` remains
+FAILED11m18: source2190/88, Node18/6, evidence, normal-kernel ABI snapshot
+and shader266/263/266 pass, with the existing Firefox controls retained.
+The339-case browser run has321 pass/18 fail. All18 belong to the prior24
+failure set; the six deletion-refusal cases now pass. All96 real guest
+reset-retirement cases retain zero-owner assertions before guest exit;
+all9 image-reset controls pass. Full host compilation still fails the
+same24 diagnostics. Frozen inputs pass after the complete run. Exact
+commands, comparison and logs are in
+`.context/graphics-native-fault-regression-r346/`. This is focused fatal-
+cause and regression evidence, not full A3/B1 or native-feel acceptance.
+
 ## Isolated B2/B3 drafting, 2026-11-05
 
 These are private draft foundations under the maintainer's approved
@@ -325,6 +365,23 @@ failed reads, older GL errors and independent context values. Dynamic
 state and unknown queries retain host validation; optional cache
 allocation failure retains the ordinary query. Neither draft introduces
 a wire entry, ABI bump or unused-feature draw/frame scan.
+
+The later R347–R349 draft applies that limit cache to current17d C source
+and adds only known ARRAY_BUFFER_BINDING queries from its existing exact
+context mirror. Integer, float and Boolean conversions remain distinct,
+including large unsigned names and output tails. Lost receipts, failed
+numeric reads and resets retain conservative behavior; a successful read
+does not promote an uncertain name. An inherited known cache with a foreign
+fork epoch is refused locally before taking a parent-owned dispatch mutex.
+R347's new nine-case baseline has6 failures/3 passes. R348 exposes one
+remaining fork-owner fallback; R349's causal fork control fails before the
+local refusal and passes afterward. All18 combined focused controls and487
+existing native controls pass, with source hashes and a driver-only patch
+apply check retained in `.context/graphics-b3-binding-owner-r349/`.
+This remains unlanded, unlinked into normal SDKs and unmeasured on actual
+applications or browsers. Port its new fixture cases into the current test
+source without undoing later complete-receipt tracing. Full B3 query/audit
+authority and all normal-build, cross-host and stage gates remain required.
 
 | Evidence / exact supervised jobs | Result | Scope |
 | --- | --- | --- |
