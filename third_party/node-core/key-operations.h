@@ -3,6 +3,7 @@
 #include <climits>
 #include <cstring>
 #include <ncrypto.h>
+#include <mutex>
 #include <openssl/buffer.h>
 #include <openssl/core_names.h>
 #include <string>
@@ -63,7 +64,70 @@ struct KeyMaterial {
     if (!parsed) ParseFailure(parsed, true);
     result->asymmetric = std::move(parsed.value); return result;
   }
+  // Match the pinned crypto_keys.cc raw importer. Decoding and EC public-key
+  // derivation operate on actual ncrypto/OpenSSL material, never metadata.
+  static std::unique_ptr<KeyMaterial> Raw(const Bytes& bytes, Format format,
+                                          const std::string& type,
+                                          const std::string& curve) {
+    if (bytes.value.size() > INT_MAX)
+      throw KeyError("keyData is too big", "ERR_OUT_OF_RANGE");
+    const auto* algorithm = ncrypto::KeyAlgorithm::FromName(type.c_str());
+    if (!algorithm || !algorithm->keyTypeName() || type != algorithm->keyTypeName()) {
+      const auto message = "Invalid asymmetricKeyType: " + type;
+      throw KeyError(message.c_str(), "ERR_INVALID_ARG_VALUE");
+    }
+    if (algorithm->isPqc() && !algorithm->isAvailable())
+      throw KeyError("Unsupported key type", "ERR_INVALID_ARG_VALUE");
+    const auto privateFormat = algorithm->seedSize() != 0 ? Format::RAW_SEED : Format::RAW_PRIVATE;
+    if (!(algorithm == &ncrypto::KeyAlgorithm::EC || algorithm->supportsRawPublic()) ||
+        (format != Format::RAW_PUBLIC && format != privateFormat))
+      throw KeyError("The selected key encoding is incompatible with the key type",
+                     "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS");
+    auto invalid = []() -> void {
+      throw KeyError("Invalid key data", "ERR_INVALID_ARG_VALUE");
+    };
+    auto result = std::make_unique<KeyMaterial>();
+    ncrypto::Buffer<const unsigned char> input{bytes.value.data(), bytes.value.size()};
+    if (algorithm == &ncrypto::KeyAlgorithm::EC) {
+      const int nid = ncrypto::Ec::GetCurveIdFromName(curve.c_str());
+      if (nid == NID_undef)
+        throw KeyError("Invalid EC curve name", "ERR_CRYPTO_INVALID_CURVE");
+      auto ec = ncrypto::ECKeyPointer::NewByCurveName(nid);
+      if (!ec) invalid();
+      const auto group = ec.getGroup();
+      auto point = ncrypto::ECPointPointer::New(group);
+      if (!point) invalid();
+      if (format == Format::RAW_PUBLIC) {
+        if (!point.setFromBuffer(input, group) || !ec.setPublicKey(point)) invalid();
+      } else {
+        auto order = ncrypto::BignumPointer::New();
+        if (!order || !EC_GROUP_get_order(group, order.get(), nullptr)) invalid();
+        if (bytes.value.size() != order.byteLength()) invalid();
+        ncrypto::BignumPointer scalar(input.data, input.len);
+        if (!scalar || !ec.setPrivateKey(scalar) || !point.mul(group, scalar.get()) ||
+            !ec.setPublicKey(point)) invalid();
+      }
+      result->asymmetric = Key::New();
+      if (!result->asymmetric || !result->asymmetric.assign(ec)) invalid();
+#if NCRYPTO_USE_LEGACY_KEY_TYPES
+      ec.release();
+#endif
+    } else if (format == Format::RAW_PUBLIC) {
+      result->asymmetric = Key::NewRawPublic(*algorithm, input);
+    } else if (algorithm->seedSize() != 0) {
+      result->asymmetric = Key::NewRawSeed(*algorithm, input);
+    } else {
+      result->asymmetric = Key::NewRawPrivate(*algorithm, input);
+    }
+    if (!result->asymmetric) invalid();
+    return result;
+  }
   ncrypto::DataPointer Export(Config config, bool privateKey) const {
+    // Import has loaded the actual provider. Node configures its PQC encoding
+    // policy once during crypto initialization; do the same before this owner's
+    // first serialization. Concurrent exports must not mutate provider options.
+    static std::once_flag encodingPolicy;
+    std::call_once(encodingPolicy, ncrypto::ConfigurePqcEncoding);
     auto result = privateKey ? asymmetric.writePrivateKey(config) : asymmetric.writePublicKey(config);
     if (!result) Fail(privateKey ? "Failed to encode private key" : "Failed to encode public key");
     BUF_MEM* memory = result.value;

@@ -50,7 +50,7 @@
     "third_party/node-core/incremental-crypto-adapter.js": "1666d1666a748ce01b1a14321ed975af70d279b068193eed648b3edb063747ab",
     "third_party/node-core/inspection-adapter.js": "c090c337276d93d5dc4762c932666ed18232400904d331bb3444a3b28a9b6eb7",
     "third_party/node-core/kdf-platform-adapter.js": "74cafdd780cce9587d5fb2169f28ce0b4fa74ecffb6727e6ead640c2642716d4",
-    "third_party/node-core/keys-platform-adapter.js": "2d38cd6aca89a5f23437f0aca3ff52fac7847991b192dc869def8b85c9fa9417",
+    "third_party/node-core/keys-platform-adapter.js": "e068384fc2fb9b7844abd19ceb4200c5112c2a074457d2a937a7cfe42a9f793f",
     "third_party/node-core/module-record-platform-adapter.js": "0b81a87fca2f64de278f21dc26ff1e67416ba7dc9704875f03d4982c1398d154",
     "third_party/node-core/module-syntax-platform-adapter.js": "814bc3e41ca6381a86c897d2fe7f12d6eec88d5c8a2a08236ecfc8681e27b62a",
     "third_party/node-core/network-ip-adapter.js": "5e34e498fc85f4485d941780175c52676e84743b6bc91f649ed215769dd6912b",

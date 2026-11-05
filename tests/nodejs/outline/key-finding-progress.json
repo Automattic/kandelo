@@ -98,5 +98,10 @@
     "sha256": "a76e2d94124b2681aff5779639a0b2cd772e82b702bc0e9b6cbfc3232e8a4121",
     "engineRevision": 103,
     "meaning": "Source101 comparison and102 HKDF/common operation followups now compiled; no new runtime/API/four-host evidence inferred."
+  },
+  "rawImportFollowup": {
+    "recipeRevision": 123,
+    "ledger": "tests/nodejs/outline/raw-key-finding-progress.json",
+    "scope": "Previous source100/101/103 fields and runtime evidence above remain historical. Source123raw import/provider policy followup uncompiled;no current guest/four-host closure."
   }
 }

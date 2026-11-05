@@ -1,5 +1,15 @@
 # Node 26 core implementation outline
 
+Source123 adds actual EC/OKP/PQC raw-key imports, exact algorithm spelling,
+point/scalar/seed validation, public-role projection and pinned provider
+encoding initialization. Four new frontend comparisons and23 affected controls
+pass, alongside92 portable byte/error comparisons,18 affected material-owner
+comparisons and two runs of one unchanged upstream file. The614-input source
+guard and12 package checks pass. These are separate evidence scopes, not API
+closure. Guest source117–123 is uncompiled; accepted116 is not current. All19
+families remain partial; overall suites/full product rebuild remain deferred.
+See [raw key ownership and evidence](raw-key-implementation-dependencies.md).
+
 Source122 adds pinned logical/native realpath, readlink and full glob traversal
 using real POSIX byte results/queued requests and shared Dirent/stat owners.
 The private URL-or-path converter now serves filesystem consumers. Sixteen new

@@ -27,6 +27,24 @@ int main(int argc, char** argv) {
       if (!bytes.value.empty()) bytes.value[0] ^= 1;
       Hex(key->secret.get(), key->secret.size()); return 0;
     }
+    if (argc == 9 && std::string(argv[1]) == "raw") {
+      // raw algorithm format curve input-file role export-format
+      auto input = Read(argv[5]);
+      const auto format = KeyMaterial::Format(std::stoi(argv[3]));
+      std::string type;
+      const std::string hex(argv[2]);
+      if (hex.size() % 2) throw std::runtime_error("Expected hex algorithm name");
+      for (size_t i = 0; i < hex.size(); i += 2)
+        type.push_back(char(std::stoul(hex.substr(i, 2), nullptr, 16)));
+      auto key = KeyMaterial::Raw(input, format, type, argv[4]);
+      auto output = key->Export(KeyMaterial::Configuration(0, std::stoi(argv[6]) == 2 ? 1 : 2, nullptr),
+                                std::stoi(argv[6]) == 2);
+      // The role projection retains the actual private material just as the
+      // guest handle does; serialize only the requested role.
+      if (std::string(argv[7]) != "der" || std::string(argv[8]) != "check")
+        throw std::runtime_error("Expected der check");
+      Hex(output.get(), output.size()); return 0;
+    }
     if (argc != 10) throw std::runtime_error("Expected role, format, encoding, key file, passphrase file or -, export format, encoding, cipher or -, export passphrase file or -");
     const bool privateKey = std::stoi(argv[1]) == 2;
     auto input = Read(argv[4]);

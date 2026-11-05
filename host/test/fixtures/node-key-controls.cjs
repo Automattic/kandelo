@@ -11,6 +11,58 @@ function snapshot(value) {
   return value;
 }
 exports.controls = {
+  'raw EC imports derive actual public points and preserve role projections'(api) {
+    return ['P-256','P-384','P-521','secp256k1'].map((namedCurve, index) => {
+      const size = [32,48,66,32][index], scalar = Buffer.alloc(size); scalar[size-1] = 7;
+      const options = {key:scalar,format:'raw-private',asymmetricKeyType:'ec',namedCurve};
+      const key = api.createPrivateKey(options), derived = api.createPublicKey(options);
+      const compressed = derived.export({format:'raw-public',type:'compressed'});
+      const publicKey = api.createPublicKey({key:compressed,format:'raw-public',asymmetricKeyType:'ec',namedCurve});
+      scalar.fill(0);
+      return snapshot({role:key.type,publicRole:derived.type,type:key.asymmetricKeyType,
+        details:key.asymmetricKeyDetails,private:key.export({format:'raw-private'}),
+        public:publicKey.export({format:'raw-public'}),equal:derived.equals(publicKey),
+        der:key.export({format:'der',type:'pkcs8'})});
+    });
+  },
+  'raw OKP imports copy material and serialize through actual providers'(api) {
+    return [['ed25519',32],['ed448',57],['x25519',32],['x448',56]].map(([asymmetricKeyType,size]) => {
+      const input=Buffer.alloc(size,7), options={key:input,format:'raw-private',asymmetricKeyType};
+      const key=api.createPrivateKey(options), pub=api.createPublicKey(options);
+      const bytes=pub.export({format:'raw-public'});
+      const roundtrip=api.createPublicKey({key:bytes,format:'raw-public',asymmetricKeyType});
+      input.fill(8); bytes.fill(9);
+      return snapshot({type:key.asymmetricKeyType,private:key.export({format:'raw-private'}),
+        public:pub.export({format:'raw-public'}),same:pub.equals(roundtrip),
+        der:key.export({format:'der',type:'pkcs8'}),spki:pub.export({format:'der',type:'spki'})});
+    });
+  },
+  'raw PQC material imports through the linked provider and projects public roles'(api) {
+    return [['ml-dsa-44',32,'raw-seed'],['ml-kem-512',64,'raw-seed'],['slh-dsa-sha2-128s',64,'raw-private']].map(([asymmetricKeyType,size,format])=> {
+      const key=Buffer.alloc(size,7), options={key,format,asymmetricKeyType};
+      const privateKey=api.createPrivateKey(options), publicKey=api.createPublicKey(options);
+      const bytes=publicKey.export({format:'raw-public'});
+      const roundtrip=api.createPublicKey({key:bytes,format:'raw-public',asymmetricKeyType});
+      key.fill(8);
+      return snapshot({type:privateKey.asymmetricKeyType,role:privateKey.type,publicRole:publicKey.type,
+        private:privateKey.export({format}),public:bytes,same:publicKey.equals(roundtrip)});
+    });
+  },
+  'raw format validation retains exact names lengths curves and error classes'(api) {
+    const cases=[
+      ...['RSA','EC','sm2','unknown','ed25519\0suffix','rsa\0suffix'].map(asymmetricKeyType=>({asymmetricKeyType,format:'raw-public'})),
+      ...['rsa','rsa-pss','dsa','dh'].map(asymmetricKeyType=>({asymmetricKeyType,format:'raw-public'})),
+      {asymmetricKeyType:'ec',namedCurve:'missing',format:'raw-private'},
+      {asymmetricKeyType:'ec',namedCurve:'P-256',format:'raw-seed'},
+      {asymmetricKeyType:'ed25519',format:'raw-seed'},
+      {asymmetricKeyType:'ml-dsa-44',format:'raw-private'},
+      {asymmetricKeyType:'x448',format:'raw-private'},
+      {asymmetricKeyType:'ec',namedCurve:'P-384',format:'raw-private'},
+      {asymmetricKeyType:'ec',namedCurve:'P-256',format:'raw-public'},
+    ];
+    return cases.map(options=>error(()=>api.createPublicKey({key:Buffer.alloc(32),...options})));
+  },
+
   'secret material is copied and independent exports cannot mutate it'(api) {
     const input = Buffer.from([1, 2, 3, 4]); const key = api.createSecretKey(input);
     input.fill(9); const exported = key.export(); exported.fill(8);

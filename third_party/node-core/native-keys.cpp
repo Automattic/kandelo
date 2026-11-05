@@ -53,11 +53,26 @@ static bool KandeloKeyOwn(JSContext* cx, HandleObject handle, int role,
 static bool KandeloKeyString(JSContext* cx, HandleValue value, std::string* result) {
   if (!value.isString()) { JS_ReportErrorASCII(cx, "Key option requires a string"); return false; }
   RootedString text(cx, value.toString());
+  JSLinearString* linear = JS_EnsureLinearString(cx, text); if (!linear) return false;
+  const size_t length = JS::GetDeflatedUTF8StringLength(linear);
+  if (length == SIZE_MAX) { JS_ReportOutOfMemory(cx); return false; }
   JS::UniqueChars bytes = JS_EncodeStringToUTF8(cx, text); if (!bytes) return false;
-  result->assign(bytes.get()); return true;
+  result->assign(bytes.get(), length); return true;
 }
 static bool KandeloKeyCopy(JSContext* cx, HandleValue value, kandelo::crypto::Bytes* bytes) {
   return KandeloCryptoInput(cx, value, bytes);
+}
+// Raw key sources are already validated as buffers by the pinned public
+// wrapper. Reject the target's size bound before allocating/copying storage.
+static bool KandeloKeyCopyRaw(JSContext* cx, HandleValue value, kandelo::crypto::Bytes* bytes) {
+  SharedMem<uint8_t*> data; size_t length;
+  JS::AutoCheckCannotGC nogc;
+  if (!KandeloCryptoSpan(cx, value, &data, &length)) {
+    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Raw key requires a real buffer source");
+    return false;
+  }
+  if (length > INT_MAX) throw kandelo::crypto::KeyError("keyData is too big", "ERR_OUT_OF_RANGE");
+  KandeloCryptoCopy(data, length, bytes); return true;
 }
 static bool KandeloKeyDetails(JSContext* cx, kandelo::crypto::KeyMaterial& material,
                               HandleObject object, MutableHandleValue result) {
@@ -206,6 +221,18 @@ static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandl
     }
     int64_t format = 1, encoding = 1;
     if (!args.get(4).isNullOrUndefined() && !KandeloFsInteger(cx, args[4], 0, 6, &format)) return false;
+    using Key = kandelo::crypto::KeyMaterial;
+    const auto rawFormat = Key::Format(format);
+    if (rawFormat == Key::Format::RAW_PUBLIC || rawFormat == Key::Format::RAW_PRIVATE ||
+        rawFormat == Key::Format::RAW_SEED) {
+      kandelo::crypto::Bytes bytes; if (!KandeloKeyCopyRaw(cx, args.get(3), &bytes)) return false;
+      std::string type, curve;
+      if (!KandeloKeyString(cx, args.get(5), &type)) return false;
+      if (args.get(7).isString() && !KandeloKeyString(cx, args[7], &curve)) return false;
+      const int importedRole = rawFormat == Key::Format::RAW_PUBLIC ? 1 : 2;
+      return KandeloKeyOwn(cx, handle, role == 1 ? 1 : importedRole,
+          Key::Raw(bytes, rawFormat, type, curve));
+    }
     if (!args.get(5).isNullOrUndefined() && !KandeloFsInteger(cx, args[5], 0, 3, &encoding)) return false;
     if (format != 0 && format != 1) throw kandelo::crypto::KeyError("Key format native owner is not implemented", "ERR_METHOD_NOT_IMPLEMENTED");
     kandelo::crypto::Bytes bytes, passphrase; if (!KandeloKeyCopy(cx, args.get(3), &bytes)) return false;

@@ -6,7 +6,9 @@ inventory identified 305 files; a conservative scan also found the domain,
 network-IP and TLS identity adapters. That checkpoint guarded601
 files, including already-declared production owners and references. Source121
 adds the warning owner/references; that checkpoint guarded606 files. Source122 adds path/glob references and
-owners; the current guard covers614 files.
+owners; the current guard covers614 files. Source123 changes the existing key
+material/dispatch/adapter inputs without adding new source owners;614 remain
+guarded, with a fresh source check and12 passing package-contract controls.
 
 `third_party/node-core/check-build-inputs.py` checks root production files,
 recursive manifest file paths, literal Python generator paths, the native

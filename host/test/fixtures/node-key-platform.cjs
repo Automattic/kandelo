@@ -61,7 +61,8 @@ exports.create = function create() {
       }
       return { value, error: undefined };
     } catch (error) {
-      const record = { message: error.message, name: error.name };
+      // Match the guest native error packet: constructor names are not carried.
+      const record = { message: error.message };
       for (const key of ['code', 'library', 'reason', 'opensslErrorStack'])
         if (Object.hasOwn(error, key)) record[key] = error[key];
       return { error: record, value: undefined };

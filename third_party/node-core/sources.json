@@ -4595,7 +4595,7 @@
       "length": 278,
       "sha256": "5e39c3d62043ed5ae41ff5141134376eaff8b40570489f65e90aaf22acc615a1"
     },
-    "scope": "Full pinned KeyObject/CryptoKey wrappers over real native material. Secret and PEM/DER key owners; raw/JWK/PKCS12/WebCrypto/transfer gaps remain implementations, not exclusions."
+    "scope": "Full pinned KeyObject/CryptoKey wrappers over real native material. Secret,PEM/DER and actual ncrypto EC/OKP/PQC raw import/export owners;asymmetric JWK/store/PKCS12/WebCrypto/transfer and provider/lifecycle/guest conformance remain implementation gaps,not exclusions."
   },
   "moduleSyntax": {
     "sources": {

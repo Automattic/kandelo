@@ -1,5 +1,11 @@
 # Native key material and upstream public wrappers
 
+Source123 subsequently implements real raw import owners and provider encoding
+policy. See [the current raw-key checkpoint](raw-key-implementation-dependencies.md).
+The source100/101 evidence below remains historical; it does not validate
+source123 or close any full API/family. Asymmetric JWK/store/PKCS12/WebCrypto,
+transfer/provider policies and guest/four-host obligations remain open.
+
 Source100 connects the complete unchanged pinned
 `lib/internal/crypto/keys.js` public wrappers to private engine key owners.
 This is a partial implementation of C-001/C-007/C-009/C-011/C-015, not

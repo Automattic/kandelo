@@ -1,0 +1,207 @@
+{
+  "at": "2026-11-05T22:04:28.830436+00:00",
+  "recipeRevision": 123,
+  "lastAcceptedEngine": 116,
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto-contracts.md",
+    "findingIds": [
+      "C-001",
+      "C-007",
+      "C-009",
+      "C-011",
+      "C-015"
+    ],
+    "relatedFamilies": [
+      "crypto",
+      "secure-network",
+      "values",
+      "workers"
+    ],
+    "retainedRows": [
+      {
+        "rowIndex": 881,
+        "id": "crypto.createPrivateKey"
+      },
+      {
+        "rowIndex": 882,
+        "id": "crypto.createPublicKey"
+      },
+      {
+        "rowIndex": 3614,
+        "id": "crypto.KeyObject"
+      },
+      {
+        "rowIndex": 3623,
+        "id": "crypto.KeyObject.prototype.asymmetricKeyDetails"
+      },
+      {
+        "rowIndex": 3624,
+        "id": "crypto.KeyObject.prototype.asymmetricKeyType"
+      },
+      {
+        "rowIndex": 3625,
+        "id": "crypto.KeyObject.prototype.symmetricKeySize"
+      },
+      {
+        "rowIndex": 3626,
+        "id": "crypto.KeyObject.prototype.export"
+      },
+      {
+        "rowIndex": 3629,
+        "id": "crypto.[KeyObject/CryptoKey/X509 clone and lifetime]"
+      },
+      {
+        "rowIndex": 3645,
+        "id": "crypto.createPrivateKey.prototype"
+      },
+      {
+        "rowIndex": 3646,
+        "id": "crypto.createPublicKey.prototype"
+      },
+      {
+        "rowIndex": 3742,
+        "id": "crypto.KeyObject.prototype"
+      },
+      {
+        "rowIndex": 3743,
+        "id": "crypto.KeyObject.prototype.type"
+      },
+      {
+        "rowIndex": 3744,
+        "id": "crypto.KeyObject.prototype.toCryptoKey"
+      },
+      {
+        "rowIndex": 3745,
+        "id": "crypto.KeyObject.prototype.equals"
+      },
+      {
+        "rowIndex": 3746,
+        "id": "crypto.KeyObject.prototype.Symbol(Symbol.toStringTag)"
+      },
+      {
+        "rowIndex": 3747,
+        "id": "crypto.KeyObject.from"
+      },
+      {
+        "rowIndex": 3848,
+        "id": "crypto.[doc] KeyObject @133"
+      },
+      {
+        "rowIndex": 3903,
+        "id": "crypto.[doc] Class: `KeyObject` @2257"
+      },
+      {
+        "rowIndex": 3904,
+        "id": "crypto.[doc] Static method: `KeyObject.from(key)` @2290"
+      },
+      {
+        "rowIndex": 3907,
+        "id": "crypto.[doc] `keyObject.equals(otherKeyObject)` @2415"
+      },
+      {
+        "rowIndex": 3966,
+        "id": "crypto.[doc] `crypto.createPrivateKey(key)` @4194"
+      },
+      {
+        "rowIndex": 3968,
+        "id": "crypto.[doc] `crypto.createPublicKey(key)` @4301"
+      }
+    ],
+    "scope": "Raw import/material/export and error prerequisites only;no full API/finding/family closure"
+  },
+  "sourceImplemented": [
+    "Pinned full public KeyObject wrappers now dispatch actual EC/OKP/PQC raw-public/private/seed imports to existing native material owners",
+    "Actual ncrypto/OpenSSL EC group/point/scalar/public derivation and real raw private/public/seed provider imports;public role projection shares actual material",
+    "Exact public algorithm spelling including embedded-NUL rejection,provider availability,format/seed/curve/length checks,pre-copy INT_MAX bound and full-length JSAPI string handling",
+    "Pinned ncrypto ConfigurePqcEncoding policy applied once before material serialization to match seed-preserving ML-DSA/ML-KEM PKCS8 exports",
+    "Native key error packet mapping preserves target TypeError for invalid argument/curve;native-boundary fixture no longer injects constructor names unavailable in guest packets"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-raw-keys-source-r1/report.json",
+    "sha256": "c6206fd157e813cd9e5350e0c7657dfe08e5db1b1eb83bab231aa2f5c3a74276",
+    "selectedIdentities": 16,
+    "completeKeyReferences": 4,
+    "ncryptoArchiveInputs": 5,
+    "guardedInputs": 614,
+    "scope": "Selected source identities,4complete key source references,5ncrypto archive inputs,614guarded inputs,bundle/bootstrap generation and syntax. Portable owner compiled;guest JSAPI/combined source123uncompiled."
+  },
+  "frontendAndAffected": {
+    "report": ".context/node26-raw-keys-frontend-r2.json",
+    "sha256": "167d06c2a35efcd009214bed42356ebcba020b6fe398176995dae87a93e67a6d",
+    "newPassed": 4,
+    "affectedPassed": 23,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Pinned candidate key/digest/HKDF/cipher JS over actual native26 material/request dependencies. Key error packets omit constructor names just like guest;not guest JSAPI or four-host conformance"
+  },
+  "portableNative": {
+    "report": ".context/node26-raw-keys-native-controls-r2/report.json",
+    "sha256": "c101dd2caff2a755050f10692f179d21d08a8b6d17cc96ad61e03a94cb6c2678",
+    "passed": 92,
+    "failed": 0,
+    "nativeHelperCompileAttempts": 3,
+    "scope": "Actual portable key-material owner with unchanged pinned ncrypto/OpenSSL3.5.9 vs exact native26.13.0 DER bytes/errors. Not guest JSAPI,exception packets,GC,full crypto/provider policy or four-host conformance."
+  },
+  "affectedPortableNative": {
+    "report": ".context/node26-raw-keys-affected-r1/report.json",
+    "sha256": "3d3953b832ea8881ebb155faa7ce2daaeefb63b5036494264ea75d115204af71",
+    "passed": 18,
+    "failed": 0,
+    "scope": "Portable material owner and unchanged pinned ncrypto against native OpenSSL3.5.9 plus exact Node26.13 reference. Does not exercise guest bindings, key slots, async scheduling or any host conformance."
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-raw-keys-upstream-r2/report.json",
+    "sha256": "ae7e88318d3ecc849bcd690f8cd3407c07d6d3cf93f98df30576546ad9d28d73",
+    "files": 1,
+    "candidatePassed": 1,
+    "nativePassed": 1,
+    "failed": 0,
+    "scope": "One unchanged full upstream test in candidate/native modes. Candidate pinned JS uses actual native26 handle/material boundary. Guest raw owner is separately checked by portable native controls;no guest JSAPI/four-host conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-raw-keys-package-r1.json",
+    "sha256": "8c52ed37043ca80037f2fa216d609de44a802f3025cc47ea61ecb3be17c9fb57",
+    "passed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "614-input source closure guard positive/negative controls;not runtime API conformance"
+  },
+  "historicalPositiveControls": [
+    {
+      "report": ".context/node26-raw-keys-frontend-r1.json",
+      "sha256": "3bca7585d85f5cd64d76fd399b2504a992b1babe251335b7dfed4cdff5d8f101",
+      "passed": 11,
+      "scope": "Key frontend before removing constructor-name assistance from native boundary"
+    }
+  ],
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-raw-keys-native-controls-r1/report.json",
+      "sha256": "2f269e42abd5dfcc31a34b466487d519ec74460f7862d373707c01998888ddf3",
+      "passed": 90,
+      "failed": 2,
+      "kind": "native-differential-failures",
+      "reason": "ML-DSA/ML-KEM private PKCS8 lacked pinned Node provider encoding initialization;raw bytes/initial helper and pre-correction header retained"
+    },
+    {
+      "report": ".context/node26-raw-keys-upstream-r1/report.json",
+      "sha256": "ab5386602796763a40d95df6c9801db1a4881d5cd46cf90bae024434daec5e23",
+      "candidateHarnessErrors": 1,
+      "nativePassed": 1,
+      "kind": "harness-error",
+      "reason": "internal/test/binding development helper polluted realm globals;preload restores previous descriptors before unchanged common assertions;not an API pass"
+    }
+  ],
+  "remaining": [
+    "Compile pending117\u2013123guest source through normal resolver;accepted116is not current and native crypto exception boundary remains unresolved",
+    "Actual guest slots/bytes/GC/OOM/error packets,ref/exit/cancellation,bootstrap order,worker/realm ownership and all four hosts",
+    "Asymmetric JWK and secret-JWK property definitions,store/URI/PKCS11/PKCS12,full provider/FIPS/activation transitions and exact allocation accounting",
+    "WebCrypto,key generation/exchange/signing/certificates/TLS consumers and all other audited public API/family obligations"
+  ],
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
