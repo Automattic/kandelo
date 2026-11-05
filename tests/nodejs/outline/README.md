@@ -1,6 +1,15 @@
 # Node 26 core implementation outline
 
-Source revision 114 adds pinned temporary-directory and disposal APIs over
+Revision 115 compiles real named broadcast groups and owned shared engine
+message storage, including revision 114 temporary-directory owners. Normal
+artifact admission succeeds; four same-source exact-native/Node-host guest
+controls pass, including a real worker exchange and temporary-dir disposal.
+Four-host and whole-family conformance remain unestablished; all 19 families
+are incomplete and overall suites/full product rebuild remain deferred. See
+[broadcast ownership and scoped evidence](broadcast-implementation-dependencies.md).
+
+
+Earlier source revision 114 adds pinned temporary-directory and disposal APIs over
 real libc creation, native FS requests and existing removal owners. Seven
 new frontend controls, twelve affected controls, nine portable native-owner
 scenarios and four unchanged upstream files pass within their documented

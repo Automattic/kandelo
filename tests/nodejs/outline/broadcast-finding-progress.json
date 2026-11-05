@@ -1,0 +1,91 @@
+{
+  "at": "2026-11-05T16:46:15.992914+00:00",
+  "recipeRevision": 115,
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/worker-contracts.md",
+    "section": "Ports, broadcast, routing and event/ref state",
+    "surface": "BroadcastChannel and shared structured message ownership;partial worker/clone obligations"
+  },
+  "sourceImplemented": [
+    "Actual process-wide named group membership,ordered fanout,per-member disconnect/name reuse and context/GC teardown over real endpoint queues",
+    "One serialized engine graph with independent consume-once delivery envelopes and shared owned transfer-free clone data;no byte copying or getter reserialization",
+    "Pinned public BroadcastChannel source now obtains real native handles and retains events/validation/ref/close;MessagePort preserves false versus undefined",
+    "Worker input/error packet owners use the shared native storage type while preserving their single-consumer lifecycle",
+    "Pinned UTF8/C-string key policy and source/native-confirmed empty-key surviving-peer close rule"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-broadcast-source-r2/report.json",
+    "sha256": "c96be7ed25b1a4b897d7d0817b65eb5a67a72b2a94c2f4862e8ae890c6c39e65",
+    "checks": 4,
+    "selectedIdentities": 12,
+    "scope": "Two Node files archive-verified;held Mozilla reference identities recorded without a new full archive-closure claim"
+  },
+  "frontend": {
+    "report": ".context/node26-broadcast-frontend-r1.json",
+    "sha256": "76f13d0c86b63d92c77b965251a460c757fdd5145d4a41beeae98f780fa2bc97",
+    "newPassed": 4,
+    "affectedPassed": 7,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Candidate public/port/event factories with actual native Node engine/queue/worker boundaries,not guest C++"
+  },
+  "portableNative": {
+    "report": ".context/node26-broadcast-native/report.json",
+    "sha256": "cdd1282b848d594f61e2a8efd01fe4eff2b0d28b34cc0c9171ebfa080cebc6ce",
+    "passed": true,
+    "nativeHelperCompilationAttempts": 2,
+    "scope": "One final portable native control:6000threaded deliveries/1000racing publications are operations,not7000API cases"
+  },
+  "nativeReferenceObservation": {
+    "report": ".context/node26-broadcast-empty-reference.json",
+    "sha256": "40bf2a3e75bc5733d891cd6569255059b3e29aacf784f455b873da7d0d8de005",
+    "scope": "Exact native empty-key/private-close/public-post observation,not extra candidate conformance"
+  },
+  "targetedEngine": {
+    "report": ".context/node26-engine-r115-accepted/report.json",
+    "sha256": "7da23e66a61cf956494dbeb5262af1f1e6450ffb757b232d2f1e923909af6827",
+    "recipeRevision": 115,
+    "exitCode": 0
+  },
+  "focusedGuest": {
+    "report": ".context/node26-broadcast-guest-candidate/report.json",
+    "sha256": "d71900bcb7d896543a8927d43943a18b253e719609329d37a713bae007a56046",
+    "counts": {
+      "pass": 4,
+      "fail": 0,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "nativePassed": 4,
+    "nativeFailed": 0,
+    "matchedCases": [
+      "fanout",
+      "events",
+      "worker",
+      "tempdir"
+    ],
+    "scope": "Actual selected Node-host guest behavior only,including one actual worker;not whole family/four-host/overall conformance"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-broadcast-source.log",
+      "sha256": "65b8792367912217a5ed87fd896ecd083a09db29ef974c483f80198e8ed60251",
+      "kind": "source-check harness error",
+      "reason": "Initial checker incorrectly required build.toml to list itself as an explicit input;manifest identity is resolver-owned"
+    }
+  ],
+  "remaining": [
+    "Concurrent engine readers across several guest workers,custom host clone/reentry/GC/OOM/teardown and partial-publication allocation failures",
+    "Exact native payload/GC-pressure accounting,port transfer/context/close/error/descriptor contracts and broader clone/host objects",
+    "Complete worker options/stdio/lifecycle/metadata,nested routing,postMessageToThread/locks and other audited worker APIs",
+    "Historical113SQLiteconstructor/error/session failures are not rerun or causally explained by these unrelated four positive controls",
+    "Individual API closure,all19incomplete families and identified-artifact validation across Chromium/Firefox/WebKit remain"
+  ],
+  "guestCompiled": true,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

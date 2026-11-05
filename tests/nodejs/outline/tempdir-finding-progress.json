@@ -80,5 +80,33 @@
   "guestRuntimeValidated": false,
   "fourHostConformance": false,
   "implementationComplete": false,
-  "acceptedPlatformLimits": []
+  "acceptedPlatformLimits": [],
+  "currentEngineFollowup": {
+    "recipeRevision": 115,
+    "guestCompiled": true,
+    "scopedGuestCase": "tempdir",
+    "result": "pass",
+    "evidence": {
+      "report": ".context/node26-broadcast-guest-candidate/report.json",
+      "sha256": "d71900bcb7d896543a8927d43943a18b253e719609329d37a713bae007a56046",
+      "counts": {
+        "pass": 4,
+        "fail": 0,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      },
+      "nativePassed": 4,
+      "nativeFailed": 0,
+      "matchedCases": [
+        "fanout",
+        "events",
+        "worker",
+        "tempdir"
+      ],
+      "scope": "Actual selected Node-host guest behavior only,including one actual worker;not whole family/four-host/overall conformance"
+    },
+    "scope": "Actual guest sync/promise disposable directories,file contents and repeated removal;not complete tempdir/filesystem/four-host conformance."
+  }
 }

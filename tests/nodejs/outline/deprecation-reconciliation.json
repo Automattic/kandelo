@@ -59,7 +59,7 @@
     "third_party/node-core/path-metadata-adapter.js": "9644e03d5e5fa979d344a325d97508b95a08d03ec3c8d5958a565aa523643388",
     "third_party/node-core/path-platform-adapter.js": "ea6f20759e080a0128db19ee90913e5a0cecc07b94da5751c121db1706886c88",
     "third_party/node-core/performance-observer-adapter.js": "2d5092b103b7d75e5c7da2b936da1c4d46703c753f6b1f6a9dd32734a3b3e16e",
-    "third_party/node-core/ports-platform-adapter.js": "28426f0f0ca744b31d64fc3fdff500a225be74dd272461a585eff903153b1629",
+    "third_party/node-core/ports-platform-adapter.js": "78ce9062fe07a24fff35326eea22b461d84b32beab78edd50547e79e3d97fedf",
     "third_party/node-core/process-clock-adapter.js": "f88ea5cdc9890104bf5ff8075a586cad55da60f41bfafebdb9de199748baaeca",
     "third_party/node-core/process-lifetime-adapter.js": "c10aa4e4f2c8e1701f5fd6d6958cf32ec6870070d46e9f33b7b5ca7947f16fff",
     "third_party/node-core/process-state-adapter.js": "44aaeb3cb8504ff1f7c7fcf94954d9874e283df6668bc75ebcc78dd7414d8792",

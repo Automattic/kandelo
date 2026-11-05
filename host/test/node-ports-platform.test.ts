@@ -9,7 +9,9 @@ const fixture = fileURLToPath(new URL('./fixtures/node-ports-platform.cjs', impo
 describe.skipIf(process.versions.node !== target.version)('port source with explicit native queue boundary', () => {
   for (const name of ['graphQueueAndReceive', 'eventsRefAndClose', 'byteTransferAndClosedValidation',
     'markingExportsAndOwnPolicy', 'privateMarksDoNotInvokeTrapsOrInherit',
-    'transferMarkValidatesBeforeGraphAndDetachment', 'cloneMarkUsesNativeBuiltinAndHostDispatch']) {
+    'transferMarkValidatesBeforeGraphAndDetachment', 'cloneMarkUsesNativeBuiltinAndHostDispatch',
+    'broadcastSoloAndValidation', 'broadcastFanoutAndReceive', 'broadcastNamesAndCoercion',
+    'broadcastAcrossNativeWorker']) {
     it(name, () => {
       const result = spawnSync(process.execPath, ['--expose-internals', fixture, name], {
         encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024,

@@ -60,6 +60,7 @@ inputs = [
   "third_party/node-core/upstream/module-syntax",
   "third_party/node-core/native-sqlite.cpp",
   "third_party/node-core/native-ports.cpp",
+  "third_party/node-core/ports-platform-adapter.js",
   "third_party/node-core/monotonic-clock.h",
   "third_party/node-core/performance-clock.h",
   "third_party/node-core/process-state.h",
@@ -162,4 +163,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 114
+revision = 115

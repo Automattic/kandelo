@@ -1,6 +1,15 @@
 # Breadth-first implementation after the core audit
 
-Source revision 114 adds pinned temporary-directory and disposal APIs over
+Revision 115 compiles real named broadcast groups and owned shared engine
+message storage, including revision 114 temporary-directory owners. Normal
+artifact admission succeeds; four same-source exact-native/Node-host guest
+controls pass, including a real worker exchange and temporary-dir disposal.
+Four-host and whole-family conformance remain unestablished; all 19 families
+are incomplete and overall suites/full product rebuild remain deferred. See
+[broadcast ownership and scoped evidence](broadcast-implementation-dependencies.md).
+
+
+Earlier source revision 114 adds pinned temporary-directory and disposal APIs over
 real libc creation, native FS requests and existing removal owners. Seven
 new frontend controls, twelve affected controls, nine portable native-owner
 scenarios and four unchanged upstream files pass within their documented
@@ -83,7 +92,7 @@ failed build identities, source checks and remaining validation gates.
 | Web | Started: File/FormData/Headers, private guard/list consumers and shared-buffer Blob copying | Complete Blob/body/WebIDL/transfer/global/Fetch/encoding policies and guest integration |
 | Loading | Started: Module records/graphs, require/lookup/extension/JSON/package policy and full pinned SourceMap decoder/query owner | Actual source-map capture/cache/support/stack integration; remaining ESM/hooks/format/CLI/cache, metadata/diagnostics and guest lifecycle |
 | Terminal | Started: actual callback/promise Interface/input/key/history source, cursor/transaction and isatty owners | Actual TTY/stdio/raw/resize/Unicode width, persistent history/permissions, REPL and guest lifecycle validation |
-| Workers | Started: entangled local endpoint and pinned IO/event owners | Cross-worker bootstrap/transfer/broadcast and exact lifecycle/metadata |
+| Workers | Started: actual thread/bootstrap, entangled endpoints, named broadcast groups and pinned IO/event owners | Full transfer/context/worker options/lifecycle/metadata, thread routing/locks, engine ownership/accounting and four-host validation |
 | Compression | Started: exact native codec and conversion owners | Native codec/work/byte/stream/file ownership and modes |
 | Observability | Started: pinned Console/diagnostics, real Performance timeline/entry/resource/timerify algorithms and shared observer buffers | Native milestones/loop measurements/histograms, GC/HTTP/net/QUIC/Fetch producers, report/tracing/inspector and exact guest/realm/global lifecycle |
 | Engine | Started: pinned VM frontend and native compiler owner | VM contexts/options/modules, inspector and real engine metadata |

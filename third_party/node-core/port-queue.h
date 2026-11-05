@@ -6,8 +6,11 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
+#include <string>
 #include <utility>
 
 namespace kandelo::ports {
@@ -114,6 +117,79 @@ template<class Message> class Endpoint {
   bool WaitForReady(const std::chrono::duration<Rep, Period>& timeout) {
     std::unique_lock<std::mutex> lock(channel_->mutex);
     return channel_->changed.wait_for(lock, timeout, [&] { return Ready(false); });
+  }
+};
+
+// Named process-wide groups reuse the endpoint queue for actual delivery and
+// liveness. Registry entries never own a Member: its destructor removes its
+// pointer under the same mutex used for dispatch before destroying its fields.
+// Named close leaves other members connected. The pinned Node owner also
+// applies its anonymous-pair close rule to the empty string group key.
+template<class Message> class BroadcastRegistry {
+ public:
+  using Port = Endpoint<Message>;
+  class Member;
+  enum class Posted { Closed, NoDestinations, Delivered };
+ private:
+  struct State {
+    std::mutex mutex;
+    std::map<std::string, std::set<Member*>> groups;
+  };
+  std::shared_ptr<State> state_ = std::make_shared<State>();
+ public:
+  class Member {
+    friend class BroadcastRegistry;
+    std::shared_ptr<State> state_;
+    const std::string name_;
+    std::shared_ptr<Port> receiver_, ingress_;
+    bool attached_ = false;  // Protected by the registry mutex.
+    Member(std::shared_ptr<State> state, const std::string& name)
+        : state_(std::move(state)), name_(name) {
+      auto pair = Port::Pair();
+      receiver_ = std::move(pair.first); ingress_ = std::move(pair.second);
+    }
+   public:
+    ~Member() { Close(true); }
+    Member(const Member&) = delete;
+    Member& operator=(const Member&) = delete;
+    const std::shared_ptr<Port>& Receiver() const { return receiver_; }
+    void Close(bool abandon = false) noexcept {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      auto found = state_->groups.find(name_);
+      if (found != state_->groups.end()) {
+        found->second.erase(this);
+        if (found->second.empty()) state_->groups.erase(found);
+        else if (name_.empty() && found->second.size() == 1)
+          (*found->second.begin())->receiver_->Close();
+      }
+      attached_ = false;
+      if (abandon) receiver_->Abandon(); else receiver_->Close();
+      ingress_->Abandon();
+    }
+    // The factory allocates a native delivery envelope only; it must never
+    // enter JS or invoke external callbacks while the membership lock is held.
+    // Each recipient gets a separate consume-once envelope over shared,
+    // immutable, transfer-free serialized data. No reserialization of getters.
+    template<class Factory> Posted Post(Factory&& makeMessage) {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      if (!attached_ || receiver_->IsClosed()) return Posted::Closed;
+      const auto& members = state_->groups.at(name_);
+      if (members.size() <= 1) return Posted::NoDestinations;
+      bool sent = false;
+      for (auto* member : members) {
+        if (member != this) sent = member->ingress_->Send(makeMessage()) || sent;
+      }
+      return sent ? Posted::Delivered : Posted::NoDestinations;
+    }
+  };
+  std::shared_ptr<Member> Join(const std::string& name) {
+    auto member = std::shared_ptr<Member>(new Member(state_, name));
+    {
+      // Keep allocation outside Member teardown's lock lifetime on failure.
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      state_->groups[name].insert(member.get()); member->attached_ = true;
+    }
+    return member;
   }
 };
 }  // namespace kandelo::ports

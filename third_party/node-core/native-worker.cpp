@@ -49,7 +49,7 @@ static void KandeloCaptureWorkerException(JSContext* cx) {
   JS_ClearPendingException(cx);
   try {
     auto packet = std::make_shared<KandeloPortPacket>();
-    if (packet->data.write(cx, error, UndefinedHandleValue, KandeloMessageClonePolicy())) owner->error = std::move(packet);
+    if (packet->content->data.write(cx, error, UndefinedHandleValue, KandeloMessageClonePolicy())) owner->error = std::move(packet);
     else { JS_ClearPendingException(cx); owner->failure = "Worker exception could not be cloned"; }
   } catch (...) { JS_ClearPendingException(cx); owner->failure = "Worker exception allocation failed"; }
 }
@@ -111,9 +111,9 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
     auto input = bootstrap ? std::move(kandeloCurrentWorker->bootstrap) : std::move(kandeloCurrentWorker->input);
     if (!input) { JS_ReportErrorASCII(cx, "Worker environment already consumed"); return false; }
     if (input->consumed.exchange(true)) return cx->reportKandeloCloneError("Worker input already consumed");
-    auto clear = mozilla::MakeScopeExit([&] { input->data.clear(); });
+    auto clear = mozilla::MakeScopeExit([&] { input->content.reset(); });
     RootedValue config(cx);
-    if (!input->data.read(cx, &config, KandeloMessageClonePolicy()) || !config.isObject()) return false;
+    if (!input->content->data.read(cx, &config, KandeloMessageClonePolicy()) || !config.isObject()) return false;
     if (!bootstrap) { args.rval().set(config); return true; }
     RootedObject object(cx, &config.toObject());
     RootedValue port(cx);

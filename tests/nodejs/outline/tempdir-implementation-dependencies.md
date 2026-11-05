@@ -1,5 +1,11 @@
 # Temporary-directory creation and disposal
 
+The later revision-115 targeted build compiles this owner. Its identified
+Node-host guest disposal/file-content/repeated-removal control passes against
+the exact native reference; see [the broadcast integration checkpoint](broadcast-implementation-dependencies.md).
+The source-only statements below describe the earlier revision-114 checkpoint.
+Full temporary-directory and four-host conformance remain unestablished.
+
 Source revision 114 addresses parts of FS-013 and FS-016. The frozen audit,
 Node 26.13.0 source/native pin and all 19 incomplete family dispositions
 remain unchanged. This slice has no new guest compilation or execution.

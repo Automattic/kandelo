@@ -8,9 +8,15 @@
 #include <map>
 #include <vector>
 namespace {
-struct KandeloPortPacket {
+struct KandeloPortMessageData {
   JSAutoStructuredCloneBuffer data{JS::StructuredCloneScope::SameProcess, nullptr, nullptr};
+};
+struct KandeloPortPacket {
+  std::shared_ptr<KandeloPortMessageData> content;
   std::atomic<bool> enqueued{false}, consumed{false};
+  KandeloPortPacket() : content(std::make_shared<KandeloPortMessageData>()) {}
+  explicit KandeloPortPacket(std::shared_ptr<KandeloPortMessageData> content)
+      : content(std::move(content)) {}
 };
 using KandeloPortPacketHandle = std::shared_ptr<KandeloPortPacket>;
 static void KandeloPortPacketFinalize(JS::GCContext*, JSObject* object) {
@@ -55,8 +61,8 @@ static bool KandeloNativeSerializeMessage(JSContext* cx, unsigned argc, Value* v
     RootedValue wrapper(cx);
     // Allocate its opaque owner before serialization can detach backing stores.
     if (!KandeloPortPacketObject(cx, packet, &wrapper)) return false;
-    if (!packet->data.write(cx, args.get(0), args.get(1), KandeloMessageClonePolicy())) {
-      packet->data.clear(); return false;
+    if (!packet->content->data.write(cx, args.get(0), args.get(1), KandeloMessageClonePolicy())) {
+      packet->content.reset(); return false;
     }
     args.rval().set(wrapper); return true;
   } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
@@ -69,14 +75,26 @@ static bool KandeloNativeDeserializeMessage(JSContext* cx, unsigned argc, Value*
   // No lock is held over deserializer hooks, which may reenter JS or collect.
   if (packet->consumed.exchange(true))
     return cx->reportKandeloCloneError("Message packet has already been consumed");
-  auto clear = mozilla::MakeScopeExit([&] { packet->data.clear(); });
-  return packet->data.read(cx, args.rval(), KandeloMessageClonePolicy());
+  auto clear = mozilla::MakeScopeExit([&] { packet->content.reset(); });
+  return packet->content->data.read(cx, args.rval(), KandeloMessageClonePolicy());
 }
 using KandeloPortEndpoint = kandelo::ports::Endpoint<KandeloPortPacket>;
-struct KandeloPortHandle { JSContext* cx; std::shared_ptr<KandeloPortEndpoint> endpoint; };
+using KandeloBroadcastRegistry = kandelo::ports::BroadcastRegistry<KandeloPortPacket>;
+using KandeloBroadcastMember = KandeloBroadcastRegistry::Member;
+static KandeloBroadcastRegistry& KandeloBroadcastGroups() {
+  // First-use construction stays inside the native operation's OOM guard.
+  static KandeloBroadcastRegistry groups;
+  return groups;
+}
+struct KandeloPortHandle {
+  JSContext* cx;
+  std::shared_ptr<KandeloPortEndpoint> endpoint;
+  std::shared_ptr<KandeloBroadcastMember> broadcast;
+};
 // Shell contexts are thread-confined. Shutdown clears every queued root before
 // destroying the context, even if an opaque JS handle outlives ShellContext.
 static thread_local std::map<JSContext*, std::vector<std::weak_ptr<KandeloPortEndpoint>>> kandeloPortRegistries;
+static thread_local std::map<JSContext*, std::vector<std::weak_ptr<KandeloBroadcastMember>>> kandeloBroadcastRegistries;
 static void KandeloPortFinalize(JS::GCContext*, JSObject* object) {
   const auto slot = JS::GetReservedSlot(object, 0);
   if (!slot.isUndefined()) delete static_cast<KandeloPortHandle*>(slot.toPrivate());
@@ -95,13 +113,19 @@ static KandeloPortHandle* KandeloPortOwner(JSContext* cx, HandleValue value) {
   if (!handle || handle->cx != cx) { JS_ReportErrorASCII(cx, "Port context movement is not implemented"); return nullptr; }
   return handle;
 }
-static bool KandeloPortNew(JSContext* cx, std::shared_ptr<KandeloPortEndpoint> endpoint, MutableHandleValue result) {
-  auto handle = std::make_unique<KandeloPortHandle>(KandeloPortHandle{cx, std::move(endpoint)});
+static bool KandeloPortNew(JSContext* cx, std::shared_ptr<KandeloPortEndpoint> endpoint, MutableHandleValue result,
+                           std::shared_ptr<KandeloBroadcastMember> broadcast = {}) {
+  auto handle = std::make_unique<KandeloPortHandle>(KandeloPortHandle{cx, std::move(endpoint), std::move(broadcast)});
   RootedObject object(cx, JS_NewObject(cx, &KandeloPortClass));
   if (!object) return false;
   auto& entries = kandeloPortRegistries[cx];
   entries.erase(std::remove_if(entries.begin(), entries.end(), [](const auto& p) { return p.expired(); }), entries.end());
   entries.emplace_back(handle->endpoint);
+  if (handle->broadcast) {
+    auto& groups = kandeloBroadcastRegistries[cx];
+    groups.erase(std::remove_if(groups.begin(), groups.end(), [](const auto& p) { return p.expired(); }), groups.end());
+    groups.emplace_back(handle->broadcast);
+  }
   JS::SetReservedSlot(object, 0, PrivateValue(handle.release())); result.setObject(*object); return true;
 }
 static bool KandeloPortsHaveReferences(JSContext* cx) {
@@ -111,6 +135,11 @@ static bool KandeloPortsHaveReferences(JSContext* cx) {
   return false;
 }
 static void KandeloShutdownPorts(JSContext* cx) {
+  const auto groups = kandeloBroadcastRegistries.find(cx);
+  if (groups != kandeloBroadcastRegistries.end()) {
+    for (const auto& weak : groups->second) if (auto member = weak.lock()) member->Close(true);
+    kandeloBroadcastRegistries.erase(groups);
+  }
   const auto it = kandeloPortRegistries.find(cx);
   if (it == kandeloPortRegistries.end()) return;
   for (const auto& weak : it->second) if (auto endpoint = weak.lock()) endpoint->Abandon();
@@ -122,6 +151,16 @@ static bool KandeloPortDispatch(JSContext* cx, unsigned argc, Value* vp) {
   RootedString name(cx, args[0].toString());
   JS::UniqueChars operation(JS_EncodeStringToUTF8(cx, name));
   if (!operation) return false;
+  if (!strcmp(operation.get(), "broadcast")) {
+    if (!args.get(1).isString()) { JS_ReportErrorASCII(cx, "Broadcast channel name must be a string"); return false; }
+    RootedString name(cx, args[1].toString());
+    JS::UniqueChars encoded(JS_EncodeStringToUTF8(cx, name));
+    if (!encoded) return false;
+    // Match pinned Utf8Value -> SiblingGroup::Get(*name), including its
+    // C-string group-key boundary. Public .name retains the original string.
+    auto member = KandeloBroadcastGroups().Join(encoded.get());
+    return KandeloPortNew(cx, member->Receiver(), args.rval(), member);
+  }
   if (!strcmp(operation.get(), "pair")) {
     const auto pair = KandeloPortEndpoint::Pair();
     auto cleanup = mozilla::MakeScopeExit([&] { pair.first->Abandon(); pair.second->Abandon(); });
@@ -139,8 +178,28 @@ static bool KandeloPortDispatch(JSContext* cx, unsigned argc, Value* vp) {
     if (packet->enqueued.exchange(true) || packet->consumed.load())
       return cx->reportKandeloCloneError("Message packet has already been published or consumed");
     auto discard = mozilla::MakeScopeExit([&] {
-      packet->consumed.store(true); packet->data.clear();
+      packet->consumed.store(true); packet->content.reset();
     });
+    if (endpoint->IsClosed()) { args.rval().setUndefined(); return true; }
+    if (owner->broadcast) {
+      bool hasTransferables;
+      if (!JS_StructuredCloneHasTransferables(packet->content->data.data(), &hasTransferables)) {
+        JS_ReportErrorASCII(cx, "Invalid broadcast clone data"); return false;
+      }
+      if (hasTransferables)
+        return cx->reportKandeloCloneError("Broadcast messages cannot contain transferred objects");
+      // The pinned JS_ReadStructuredClone contract permits repeated reads
+      // only without transferables. Retain the one immutable engine buffer;
+      // never bitwise-copy SameProcess data or serialize user getters again.
+      const auto posted = owner->broadcast->Post([&] {
+        auto delivery = std::make_shared<KandeloPortPacket>(packet->content);
+        delivery->enqueued.store(true);
+        return delivery;
+      });
+      if (posted == KandeloBroadcastRegistry::Posted::Closed) args.rval().setUndefined();
+      else args.rval().setBoolean(posted == KandeloBroadcastRegistry::Posted::Delivered);
+      return true;
+    }
     const bool sent = endpoint->Send(packet);
     if (sent) discard.release();
     args.rval().setBoolean(sent); return true;
@@ -156,8 +215,13 @@ static bool KandeloPortDispatch(JSContext* cx, unsigned argc, Value* vp) {
   else if (!strcmp(operation.get(), "hasRef")) {
     if (endpoint->IsClosed()) args.rval().setUndefined(); else args.rval().setBoolean(endpoint->HasRef());
     return true;
-  } else if (!strcmp(operation.get(), "close")) endpoint->Close();
-  else if (!strcmp(operation.get(), "ackClose")) endpoint->AcknowledgeClose();
+  } else if (!strcmp(operation.get(), "close")) {
+    if (owner->broadcast) owner->broadcast->Close(); else endpoint->Close();
+  }
+  else if (!strcmp(operation.get(), "ackClose")) {
+    endpoint->AcknowledgeClose();
+    if (owner->broadcast) owner->broadcast->Close(true);
+  }
   else { JS_ReportErrorASCII(cx, "Unknown port operation"); return false; }
   args.rval().setUndefined(); return true;
 }

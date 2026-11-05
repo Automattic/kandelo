@@ -5,6 +5,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'); const path = require('node:path');
 const v8 = require('node:v8'); const wt = require('node:worker_threads');
 const nativeMarks = { clone: wt.markAsUncloneable, transfer: wt.markAsUntransferable, markedTransfer: wt.isMarkedAsUntransferable };
+const bindingGlobals = ['internalBinding', 'primordials'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]);
+const nativeMessaging = require('internal/test/binding').internalBinding('messaging');
+for (const [key, descriptor] of bindingGlobals) {
+  if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key];
+}
 const { AsyncResource } = require('node:async_hooks');
 const { createNativeAdapter } = require('./node-native-adapter.cjs');
 const bundle = fs.readFileSync(path.resolve(__dirname, '../../../third_party/node-core/node-core.js'), 'utf8');
@@ -22,6 +27,12 @@ const native = {
   serializeMessage(value, transfer) { return v8.serialize(structuredClone(value, { transfer })); },
   deserializeMessage: packet => v8.deserialize(packet),
   port(op, handle, value) {
+    if (op === 'broadcast') {
+      const port = nativeMessaging.broadcastChannel(handle);
+      handles.set(port, { started: false, closing: false, closeReady: false, acknowledged: false });
+      port.on('close', () => { info(port).closeReady = true; });
+      return port;
+    }
     if (op === 'pair') {
       const pair = new wt.MessageChannel();
       for (const port of [pair.port1, pair.port2]) {
@@ -63,6 +74,97 @@ web = factories.web({ Blob, File, ReadableStream, URL, URLSearchParams, AbortSig
 async function turn() { await new Promise(resolve => setImmediate(resolve)); ports.dispatch(); }
 async function close(pair) { pair.port1.close(); pair.port2.close(); await turn(); await turn(); }
 const cases = {
+  async broadcastSoloAndValidation() {
+    const { BroadcastChannel } = io;
+    for (const constructor of [BroadcastChannel, wt.BroadcastChannel]) {
+      assert.throws(() => new constructor(), { code: 'ERR_MISSING_ARGS' });
+      assert.throws(() => new constructor(Symbol('name')), { name: 'TypeError' });
+      const channel = new constructor('solo-' + process.pid);
+      try {
+        assert.equal(channel.name, 'solo-' + process.pid);
+        assert.equal(channel.ref(), channel); assert.equal(channel.unref(), channel);
+        assert.throws(() => channel.postMessage(), { code: 'ERR_MISSING_ARGS' });
+        let getters = 0;
+        assert.equal(channel.postMessage({ get value() { getters++; return 1; } }), undefined);
+        assert.equal(getters, 1, 'even a group with no recipients serializes once');
+        assert.throws(() => channel.postMessage(() => {}), { name: 'DataCloneError' });
+        channel.close(); channel.close();
+        assert.throws(() => channel.postMessage(1), { name: 'InvalidStateError' });
+        assert.equal(channel.ref(), channel); assert.equal(channel.unref(), channel);
+      } finally { channel.close(); }
+    }
+  },
+  async broadcastFanoutAndReceive() {
+    const name = 'fanout-' + process.pid;
+    const channels = [new io.BroadcastChannel(name), new io.BroadcastChannel(name),
+      new io.BroadcastChannel(name), new io.BroadcastChannel(name + '-other')];
+    const [a, b, c, other] = channels;
+    try {
+      const seen = [];
+      c.onmessage = event => seen.push(event);
+      other.onmessage = () => assert.fail('different named group');
+      let getters = 0;
+      const graph = { get value() { getters++; return { nested: [1, 2], map: new Map([['x', 3n]]) }; } };
+      graph.self = graph;
+      a.postMessage(graph); assert.equal(getters, 1); assert.equal(seen.length, 0);
+      assert.equal(io.receiveMessageOnPort(a), undefined);
+      const synchronous = io.receiveMessageOnPort(b).message;
+      assert.equal(synchronous.self, synchronous);
+      synchronous.value.nested.push(9);
+      ports.dispatch(); assert.equal(seen.length, 1);
+      const event = seen[0]; assert.equal(event.target, c);
+      assert(event instanceof web.messageEvents.MessageEvent);
+      assert.equal(event.data.self, event.data);
+      assert.deepEqual(event.data.value.nested, [1, 2]);
+      assert.equal(event.data.value.map.get('x'), 3n);
+      assert.equal(io.receiveMessageOnPort(b), undefined);
+      b.close(); a.postMessage('survivor'); ports.dispatch();
+      assert.equal(seen.at(-1).data, 'survivor');
+      a.close(); c.postMessage('no recipients');
+    } finally { channels.forEach(channel => channel.close()); }
+  },
+  async broadcastNamesAndCoercion() {
+    let coerced = 0;
+    const prefix = 'names-' + process.pid;
+    const a = new io.BroadcastChannel({ toString() { coerced++; return prefix + '\0a'; } });
+    const b = new io.BroadcastChannel(prefix + '\0b');
+    try {
+      assert.equal(coerced, 1); assert.equal(a.name, prefix + '\0a');
+      assert.equal(b.name, prefix + '\0b');
+      // The pinned native Utf8Value/C-string group key stops at NUL; public
+      // name getters preserve the complete coerced JS string independently.
+      a.postMessage('same native group');
+      assert.deepEqual(io.receiveMessageOnPort(b), { message: 'same native group' });
+    } finally { a.close(); b.close(); }
+  },
+  async broadcastAcrossNativeWorker() {
+    const name = 'worker-group-' + process.pid;
+    const channel = new io.BroadcastChannel(name);
+    const worker = new wt.Worker(`
+      const { parentPort, workerData } = require('node:worker_threads');
+      const v8 = require('node:v8');
+      const port = require('internal/test/binding').internalBinding('messaging').broadcastChannel(workerData);
+      port.on('message', packet => {
+        const value = v8.deserialize(packet);
+        port.postMessage(v8.serialize({ ack: value.payload }));
+        port.close(); parentPort.postMessage('done');
+      });
+      parentPort.postMessage('ready');
+    `, { eval: true, workerData: name, execArgv: ['--expose-internals'] });
+    try {
+      function message(expected) {
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(Error('worker handshake timeout')), 5000);
+          worker.once('error', reject);
+          worker.once('message', value => { clearTimeout(timer); assert.equal(value, expected); resolve(); });
+        });
+      }
+      await message('ready'); const done = message('done');
+      channel.postMessage({ payload: ['actual worker', 42] });
+      await done;
+      assert.deepEqual(io.receiveMessageOnPort(channel), { message: { ack: ['actual worker', 42] } });
+    } finally { channel.close(); await worker.terminate(); }
+  },
   markingExportsAndOwnPolicy() {
     const source = fs.readFileSync(path.resolve(__dirname, '../../../packages/registry/node-compat/bootstrap.js'), 'utf8');
     const begin = source.indexOf('Object.assign(_builtinModules.worker_threads, {');

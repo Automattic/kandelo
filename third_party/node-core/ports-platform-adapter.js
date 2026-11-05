@@ -50,7 +50,7 @@ function _createNodePortsPlatform(platform) {
             // The engine owns graph identity/getters and byte detachment now;
             // deserialization remains deferred until receive/delivery.
             const serialized = platform.native.serializeMessage(value, transferList(transfer));
-            return native('post', owner.handle, serialized) ? true : undefined;
+            return native('post', owner.handle, serialized);
         },
         start() { native('start', state(this).handle, true); },
         ref() { const owner = state(this); if (!owner.closed && !owner.closing) { native('ref', owner.handle, true); roots.add(this); } return this; },
@@ -141,7 +141,7 @@ function _createNodePortsPlatform(platform) {
                 stopMessagePort: port => native('start', state(port).handle, false),
                 drainMessagePort: port => { while (receive(port, true, true) !== symbols.no_message_symbol) {} },
                 moveMessagePortToContext: () => unavailable('Port context movement'),
-                broadcastChannel: () => unavailable('Broadcast group transport'),
+                broadcastChannel: name => wrap(native('broadcast', name)),
             };
             return unavailable('Worker IO binding ' + name);
         }
