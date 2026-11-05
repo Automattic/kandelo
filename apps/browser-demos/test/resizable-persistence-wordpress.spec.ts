@@ -27,6 +27,7 @@ function imageReady(image: string): boolean {
 for (const storageMode of ["experimental", "library"] as const) {
 for (const { profile, title: machineTitle, image } of [
   { profile: "wordpress-sqlite", title: "WordPress SQLite", image: "wordpress" },
+  { profile: "wordpress-frankenphp", title: "WordPress on FrankenPHP", image: "wordpress" },
   { profile: "wordpress-mariadb", title: "WordPress MariaDB", image: "lamp" },
 ]) {
 test(`${machineTitle} posts and uploads survive OPFS restart without checkpointing or the source image (${storageMode})`, async ({ playwright, browserName }, testInfo) => {

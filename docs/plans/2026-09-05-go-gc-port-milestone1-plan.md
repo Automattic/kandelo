@@ -4464,3 +4464,15 @@ persistence case passed under the declared dev shell in 2.3m with the same
 edit, Save, and reload assertions. These are browser UI and same-machine
 persistence checks; they do not establish cross-session browser storage
 durability or production uptime.
+
+The existing Chromium OPFS recovery test now includes the
+`wordpress-frankenphp` profile. Its saved-computer (`library`) case passed
+in 1.7m, and its experimental resizable-storage case passed in 1.7m. In
+each case it published a post, uploaded an image, embedded the image in the
+post, disabled the original VFS image source, crashed the Chromium process,
+relaunched the persistent browser context, and verified the post, image bytes,
+admin login, and post-editor readiness after recovery. The source image was
+requested once and not requested during recovery. This verifies browser
+process recovery for posts and media on the classic profile. It does not
+separately verify that the edited site template survives a browser crash, or
+establish durability if browser storage is cleared.
