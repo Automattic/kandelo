@@ -4405,3 +4405,17 @@ probe passed in Chromium, Firefox, and WebKit (3/3). This proves embedded
 registration, not accelerated requests; the separate FrankenPHP SAPI and
 WordPress browser-host tests cover the file-cache request path. The visible
 WordPress editor and full source-only app projection remain pending.
+
+**2026-11-05 — Full source-only projection and visible classic app gate.**
+The revision-31 source-only local build completed in 2h41m: 178/178 nodes,
+11/11 products, 23 cache hits, 155 builds, and the consumer check passed.
+It published the complete `local-binaries/source-only-v1` projection,
+including the current WordPress image. The opt-in visible Chromium app test
+then used that projection to load the FrankenPHP classic profile, reach the
+preinstalled homepage, log in through the Shortcuts UI, open Appearance →
+Editor, and keep editor HTML requests at HTTP 200 through a 20-second soak.
+The case passed in 3.8m. Its editor assertion checks a visible iframe, so
+this result establishes navigation and server health, not that editing and
+saving through the site editor JavaScript work. Authenticated post-edit
+persistence, the equivalent Caddy app flow, longer stability, and comparative
+performance remain separate gates.
