@@ -308,13 +308,13 @@ validates, fork-instruments, and runs as an ABI-stamped Kandelo process on Node 
 Chromium with exit 0 and no diagnostics. This is narrow Go-to-C coverage,
 not general cgo support: Go-owned and C-created-pthread callbacks pass focused
 process probes, but secure startup and broader PHP behavior remain incomplete.
-The `php-zts` package now builds a static ZTS embed library and a separate
-instrumented OPcache side module. The
-`tests/go/cgo/php-embed` probe executes PHP initialization, a script string,
-and shutdown; its opt-in `opcache` mode also requests all side-module C
-exports and `dlopen`s the real module. Both modes pass on Node and all three
-browser engines. A successful `dlopen` is not Zend extension registration,
-OPcache acceleration, or a request-level gate.
+The `php-zts` package builds a static ZTS embed library with OPcache linked
+into it. The `tests/go/cgo/php-embed` probe executes PHP initialization, a
+script string, and shutdown. Its opt-in `opcache` mode checks that the static
+Zend extension and its configuration API register inside the Go cgo
+executable. The earlier side-module `dlopen` gate applied to revision 6;
+the current revision 8 has no `opcache-zts.so` output. Registration alone
+does not prove acceleration or request-level behavior.
 
 The `frankenphp-classic` package is a separate request-level gate. Its
 resolver-built binary serves a PHP request and a static asset through
@@ -323,22 +323,22 @@ Kandelo HTTP on Node and Chromium. It does not by itself prove WordPress:
 ```sh
 scripts/dev-shell.sh bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh frankenphp-classic wasm32
 scripts/dev-shell.sh bash -c 'prefix=$(cargo xtask build-deps --arch wasm32 resolve frankenphp-classic); npx tsx packages/registry/frankenphp-classic/test/run.ts "$prefix/frankenphp-classic.wasm" "$(scripts/resolve-binary.sh kernel.wasm)"'
-scripts/dev-shell.sh bash -c 'prefix=$(cargo xtask build-deps --arch wasm32 resolve frankenphp-classic); php_prefix=$(cargo xtask build-deps --arch wasm32 resolve php-zts); npx tsx packages/registry/frankenphp-classic/test/run.ts "$prefix/frankenphp-classic.wasm" "$(scripts/resolve-binary.sh kernel.wasm)" "$php_prefix/lib/opcache-zts.so"'
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_FRANKENPHP_CLASSIC_WASM="$(cd ../.. && cargo xtask build-deps --arch wasm32 resolve frankenphp-classic)/frankenphp-classic.wasm" npx playwright test test/frankenphp-classic.spec.ts --project=chromium'
 ```
 
-The optional third argument tests OPcache in the real FrankenPHP SAPI: it
-loads the ZTS module, compiles a separate PHP file, and checks that the file
-is cached. The WordPress browser-host test makes the same request-level
-check for classic and Caddy with a rebuilt WordPress VFS image. Neither
-gate has run on the new package revisions yet.
+The classic SAPI test checks static OPcache registration, compiles a PHP
+file, and checks that file-cache-only mode wrote its cache file. The
+WordPress browser-host test makes the same request-level check for classic
+and Caddy with the revision-31 VFS image. Both gates have run on the current
+package revisions in Node and Chromium; visible WordPress editor JavaScript
+remains a separate app gate.
 
 ```sh
 scripts/dev-shell.sh bash tests/go/cgo/php-embed/build.sh
 scripts/dev-shell.sh bash -c 'node --import tsx tests/go/cgo/php-embed/run.ts .context/go-php-embed/probe-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
-scripts/dev-shell.sh bash -c 'node --import tsx tests/go/cgo/php-embed/run.ts .context/go-php-embed/probe-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)" .context/go-php-embed/opcache-zts.so'
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/cgo/php-embed/run.ts .context/go-php-embed/probe-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)" --opcache'
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep "PHP ZTS embed"'
-scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --project=firefox --project=webkit --workers=1 --grep "PHP ZTS OPcache side module loads"'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --project=firefox --project=webkit --workers=1 --grep "PHP ZTS static OPcache registers"'
 ```
 
 ```sh
@@ -374,7 +374,7 @@ Declare C archive paths in `#cgo LDFLAGS`; pass requested export names via
 Go's `-ldflags` `-extldflags` value, as the fixture does. Do not put the
 export requests in `CGO_LDFLAGS`: that can select unsupported external
 linking. `-ldl` selects the SDK's real Wasm dynamic-loader glue. This small
-probe does not prove the PHP ZTS OPcache module's much larger import closure.
+probe does not prove PHP ZTS embedding or static OPcache request behavior.
 
 `cgo/mixed-struct` checks a C struct containing a pointer and a fixed
 pointer array, returned from C and passed back by value. On Kandelo/Wasm,

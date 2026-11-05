@@ -4388,3 +4388,20 @@ passed its separate browser-host case including restart (15.8s). Both used
 the actual revision-31 resolver image. These are browser Wasm/HTTP results;
 they do not yet verify the visible site editor JavaScript in the app. The
 source-only projection required for that app test remains in progress.
+
+**2026-11-05 — Align Go/PHP embed gates with static ZTS OPcache.** The
+revision-8 `php-zts` package publishes `libphp.a` with built-in OPcache;
+the old Go embed fixture still copied the removed `opcache-zts.so`, requested
+its dynamic exports, and used `dlopen`. The fixture now links the static
+library and, in its opt-in mode, loads a guest `PHPRC` INI that enables
+file-cache-only OPcache and asks PHP whether the Zend extension and its
+configuration API registered. The first check failed because its
+`zend_eval_string` expression contained a literal `return`; Zend returned
+`FAILURE` before evaluating the extension query. Removing that keyword
+corrected the probe without changing the PHP package or Go compiler. The
+normal fixture build passed in 2m12s; both Node modes then exited 0 with
+empty stderr and host diagnostics. The focused static-registration browser
+probe passed in Chromium, Firefox, and WebKit (3/3). This proves embedded
+registration, not accelerated requests; the separate FrankenPHP SAPI and
+WordPress browser-host tests cover the file-cache request path. The visible
+WordPress editor and full source-only app projection remain pending.

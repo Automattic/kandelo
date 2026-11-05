@@ -563,15 +563,16 @@ if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
     stdout: ["PHP EMBED PASS", "GO PHP EMBED PASS"],
   });
   probes.push({
-    name: "PHP ZTS OPcache side module loads into a Go cgo executable",
+    name: "PHP ZTS static OPcache registers in a Go cgo executable",
     file: "../go-php-embed/probe-instrumented.wasm",
     argv: ["go-php-embed", "opcache"],
-    directories: ["/lib"],
-    dataFiles: () => [{
-      path: "/lib/opcache-zts.so",
-      data: Array.from(readFileSync(resolve(fixtureDir, "../go-php-embed/opcache-zts.so"))),
+    directories: ["/etc/frankenphp", "/var", "/var/cache", "/var/cache/opcache"],
+    dataFiles: [{
+      path: "/etc/frankenphp/php.ini",
+      data: Array.from(Buffer.from("[opcache]\nopcache.enable=1\nopcache.enable_cli=1\nopcache.file_cache=/var/cache/opcache\nopcache.file_cache_only=1\nopcache.validate_timestamps=0\n")),
     }],
-    stdout: ["PHP EMBED PASS", "GO PHP EMBED PASS", "PHP OPCACHE DLOPEN PASS"],
+    env: ["PHPRC=/etc/frankenphp", "HOME=/tmp", "TMPDIR=/tmp"],
+    stdout: ["PHP EMBED PASS", "GO PHP EMBED PASS", "PHP OPCACHE STATIC PASS", "GO PHP OPCACHE PASS"],
   });
   probes.push({
     name: "cgo links a declared C static archive",
