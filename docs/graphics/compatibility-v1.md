@@ -250,6 +250,20 @@ idempotent release, failed acquisition and final context retirement.
 This tests a prospective asynchronous-lifetime hazard; current B1 binds
 remain checked and synchronous.
 
+The later R311/R313/R315 private buffer draft adds exact retained-identity
+selection, cold target-view preparation, prepared zero bindings and a bounded
+local journal with monotonic tokens/tickets, FIFO execution, repeatable scalar
+completion receipts, acknowledgement, eviction and retirement. Its source
+controls pass 2,216 cases in 90 files after inheriting the private-copy reset
+fix; earlier causal name-based and logical-reset controls fail as recorded.
+The patch and complete source snapshot are preserved relative to
+`f10964e823` in `.context/graphics-b2-queue-r315/`, with an apply check.
+This is still a local prototype: stale views retain a checked allocating
+fallback, and no guest asynchronous acceptance reaches it. Joining the shared
+cross-family stream, guest cache/transport, first-bind realization, the other
+binding families and full Node/browser/conformance/performance acceptance
+remain required. These controls do not establish B2 completion or speed.
+
 The B3 draft lazily caches immutable numeric implementation limits in
 16 context-owned cells, keyed by query kind and complete value width.
 It preserves fractional float-to-Boolean conversion, caller output on
@@ -955,7 +969,20 @@ renderer refusing that restoration remains fatal (D-29); native OOM still
 resets only the guilty logical context (D-50). Guest error queues remain
 independent. This closes a demonstrated storage-publication failure; complete
 A3 and B1 acceptance still require the remaining conformance, application,
-memory and performance evidence.
+memory and performance evidence. Evidence in
+`.context/graphics-buffer-copy-oom-r314/` records 2,184 graphics controls,
+18 Node controls and 96 real-GPU reset-retirement cases passing. The new
+copy control fails all 12 cases against the preceding source (R318) and
+passes all 12 on the integration candidate with its canonical module URL
+(R320), across three engines and production/audit modes. The broader state
+suite still has the same 57 failures as the preceding source; they remain
+open, with the complete failure-set comparison retained. Its first new
+controls also exposed a doubled-URL module-state split in their harness;
+the failed run is preserved. The rewrite harness reports Chromium/WebKit
+266 passes each, Firefox 263 passes with its one inconclusive and two
+existing controls, no failures. ABI checks pass without changing 56/3/17/21.
+Host TypeScript retains the same 32 diagnostics, so this is not a full
+host-build pass.
 
 **A3 fence-query follow-up, 2026-11-03.** Native call-site counters on
 normal r9 found that retained fence queries bypassed the batch wrapper.
