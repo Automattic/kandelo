@@ -4247,3 +4247,12 @@ matching the existing manifest. HarfBuzz now fetches that verified mirror
 without changing its source contents or its build procedure. The new URL
 and recipe revision passed a focused normal resolver build in 35 seconds.
 The WordPress image has not been published yet.
+
+The next WordPress resolver attempt passed HarfBuzz and spent CPU time
+instrumenting large shell applications, then failed after 35m35s on
+`libmad@0.16.4`: Debian's rolling pool URL now returns HTTP 404. The
+same `libmad_0.16.4.orig.tar.xz` from an Ubuntu archive mirror has
+SHA-256 `cd4c3aa4bf894c957b9b8662eca109927b43b19adafc4ff67eb5349d29d45198`,
+exactly the pinned digest. The package now uses that URL without changing
+the source bytes or build procedure. The focused normal resolver build
+passed in 14 seconds. WordPress still needs a completed resolver build.
