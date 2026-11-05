@@ -4314,3 +4314,11 @@ The focused normal NetHack resolver build then passed in 4m23s on the fixed
 kernel worker, including its guest `makedefs` execution. This closes the
 specific `EIO` path observed in the prior WordPress image attempt; the
 whole image must still be rebuilt and booted.
+
+The WordPress revision-30 normal resolver build then succeeded in 26m46s,
+publishing `wordpress.vfs.zst` as an ABI-55 package. The compressed image is
+76 MiB and has SHA-256
+`04b320c8d2e2535e17e59e8d69416c30a2561c2beeebec3e2904016769c45a63`.
+This establishes package publication only; Node boot, Chromium editor flow,
+OPcache behavior inside WordPress, and comparative performance are still
+pending.
