@@ -4226,3 +4226,24 @@ WordPress or live OPcache behavior. The FrankenPHP+Caddy revision-5
 resolver build also completed successfully in 4m35s on the same ABI-55
 Go fork and PHP-ZTS archive. Both executables are published; the
 WordPress image and live OPcache behavior remain unverified.
+
+**2026-11-05 — Refresh local image-build prerequisites.** The first
+WordPress revision-29 resolver attempt ran 25m46s and reached the rootfs
+package, which failed because the worktree's staged image-module Wasm
+lacked the current loaded-capacity export. `crates/kandelo-image-module/
+build-wasm.sh` rebuilt both modules; `--verify-fresh` confirms their
+source keys match. The next attempt reached `modeset` but found DRI/EGL/
+GLES sysroot archives absent. `scripts/build-musl.sh --ensure` restored
+those documented graphics stubs, and their libraries are present in
+`sysroot/lib`. The byacc fetch emitted transient HTTP 403 retries but
+verified and built the archive; no source URL change was needed. The
+WordPress resolver is now retrying against these refreshed local inputs.
+
+The subsequent WordPress resolve built more shell packages but failed after
+48m53s when GitHub's HarfBuzz 10.1.0 release download returned repeated
+HTTP 504 responses. The OmniOS mirror serves a byte-identical archive:
+the downloaded SHA-256 is `6ce3520f2d089a33cef0fc48321334b8e0b72141f6a763719aaaecd2779ecb82`,
+matching the existing manifest. HarfBuzz now fetches that verified mirror
+without changing its source contents or its build procedure. The new URL
+and recipe revision passed a focused normal resolver build in 35 seconds.
+The WordPress image has not been published yet.
