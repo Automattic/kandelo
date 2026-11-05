@@ -4607,3 +4607,35 @@ Firefox editor rendering and health (1.6m), and Firefox template Save/reload
 (1.2m). The combined run passed 4/4 in 5.3m. These changes affect browser
 test interactions and diagnostics only; kernel, Node host, packages, ABI,
 and the revision-31 image were not changed or rebuilt at this checkpoint.
+
+**2026-11-05 — Reduce redirects and locate the stalled worker.** Added a
+bridge-only iframe redirect test using the actual service worker and a
+message-port HTTP fixture, without PHP or a guest kernel. Both Playwright
+navigation and `location.assign` follow the WordPress-shaped 302 URL and
+render the guest-only destination body in Chromium, Firefox, and WebKit
+(6/6 in 5.9s). The initial test's service-worker protocol flag returned
+false in Firefox despite successful bridge content; the final assertion
+uses the actual guest-only response body in every engine instead.
+
+A focused full-app WebKit editor/health retry passed in 1.8m. The subsequent
+three-run diagnostic series failed all three cases in 5m49s: two waited
+over 65 seconds for the editor document, and one rendered the canvas before
+its health request stalled with ten other requests outstanding. A bounded
+read-only evaluation in the dedicated kernel worker timed out in every
+failure. This narrows the stall beyond the service worker: the kernel
+worker's event loop was not answering the diagnostic either. It does not
+identify the blocking operation or establish an engine defect. Structured
+attachments are retained in `.context/webkit-editor-reduction.json`.
+
+The 31 core Go fixtures were rebuilt and stamped for current ABI 55 from
+the pinned `b3596ee` fork. The full image-backed Node `os` run completed
+with 213 top-level passes, two failures, and 21 skips, empty stderr, and no
+host diagnostics. `TestExecutable` and `TestStartProcess/relative` fail
+because the kernel's spawn precheck resolves the executable against the
+parent CWD before the requested child `chdir` action. The kernel must
+validate launch paths in the context where they will execute; fixing the
+Go test or canonicalizing its arguments in the Go port would hide the
+platform error. The old ABI-50 fixture instructions and stale standalone
+Caddy limitation in `tests/go/README.md` were corrected. Evidence is in
+`.context/go-os-current-vfs.log`. The spawn fix and its Node/browser
+regressions are the next checkpoint.

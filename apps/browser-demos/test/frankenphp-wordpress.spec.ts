@@ -130,6 +130,16 @@ for (const demo of [
     const pending = [...pendingRequests].map(([request, started]) =>
       `${Date.now() - started}ms ${request.method()} ${request.url()}`);
     if (!editorLoaded || editorResult.status !== 200) {
+      // A bounded read-only probe distinguishes a worker whose event loop is
+      // blocked from a responsive worker waiting on a guest or bridge result.
+      const workers = await Promise.all(page.workers().map(async worker => ({
+        url: worker.url(),
+        state: await Promise.race([
+          worker.evaluate(() => ({ now: performance.now() }))
+            .catch(error => ({ error: String(error) })),
+          new Promise(resolve => setTimeout(() => resolve("event-loop probe timed out"), 1000)),
+        ]),
+      })));
       await test.info().attach("guest-service-log", { body: serviceLog, contentType: "text/plain" });
       await test.info().attach("browser-state", {
         body: JSON.stringify({
@@ -137,6 +147,7 @@ for (const demo of [
           body: (await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "unavailable")).slice(-64_000),
           diagnostics: browserDiagnostics.slice(-100),
           pending,
+          workers,
         }),
         contentType: "application/json",
       });

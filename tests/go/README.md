@@ -2,11 +2,12 @@
 
 These probes run binaries built from the `kandelo-port` branch of
 [`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-port) through
-Kandelo's real Chromium, Firefox, and WebKit process workers and target
-the ABI-50 kernel. Rebuild old `.context/go-browser/` fixtures before
-running them against ABI 50. Use fork commit
-`a0117086e5ac481bc3a65d2c61f6023f19e7c44e`
-or later, built with the dev shell's Go 1.25.8 as `GOROOT_BOOTSTRAP`.
+Kandelo's real Chromium, Firefox, and WebKit process workers. Their program
+ABI and ABI-contract digest must match the selected kernel. Rebuild
+`.context/go-browser/` fixtures after either changes instead of restamping
+old binaries. Use the Go fork revision pinned in
+`packages/registry/go-hello/build.toml`, built with the declared dev shell's
+Go as `GOROOT_BOOTSTRAP`.
 By default the fork is checked out beside this repository as
 `../go-kandelo`.
 
@@ -125,9 +126,13 @@ smoke, copy the resolved 99 MB `caddy.wasm` into `.context/` and pass
 that path as `KANDELO_CADDY_WASM` to `test/caddy.spec.ts`; direct
 Playwright route fulfillment exceeds its 100 MB protocol message cap,
 and Vite deliberately blocks arbitrary package-cache paths. Node,
-Chromium, and Firefox serve the VFS file; WebKit currently exits before
-readiness with a native Wasm call-stack overflow in regexp compilation.
-Keep the WebKit test enabled so the limitation remains visible.
+Chromium, and Firefox have served the VFS file. Earlier WebKit builds
+exited during recursive regexp compilation; the pinned Go fork includes
+the general iterative compiler fix described in
+`docs/agent-guidance/go-runtime.md`. Rebuild and run the resolved standalone
+Caddy artifact in WebKit before claiming that executable is validated.
+The current FrankenPHP+Caddy WordPress editor-health flow has passed a
+focused WebKit run, which is a separate executable and workload.
 
 The VFS-backed `run-full-vfs.ts` runner supplies Go source/testdata, account
 files, `/bin/pwd`, and a non-root CWD. With `-test.run=^Test`, the available
