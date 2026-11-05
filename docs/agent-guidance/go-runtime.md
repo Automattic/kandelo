@@ -207,7 +207,33 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   process-wide Go `exit` wrapper first: that can repark the retired worker.
   The `tests/go/retirement` probes require pure-Go and cgo guests to finish
   the host's cooperative drain before forced termination on Node and all
-  three browsers. General Go signal notification remains a separate gap.
+  three browsers. Those probes do not establish ordinary signal notification.
+- Cooperative Go signal notification uses the target runtime's
+  `signal_kandelo.go`, with real kernel dispositions and Go's normal signal
+  queue. Signal numbers must match the SDK, including the reserved
+  `SIGSTKFLT` slot 16; omitting it shifts `SIGCHLD` and every later signal.
+  Preserve Go's nonfatal asynchronous defaults and inherited ignores.
+  `Reset` only promises to undo `Notify`, not to clear an explicit `Ignore`.
+  Restore fatal defaults using a real kernel signal so wait status retains
+  the signal identity, including the `Stop`/delivery race.
+  In cgo, Go's public syscalls use the typed
+  `<kandelo/syscall.h>` completion API through the ordinary cgo transition.
+  libc owns C handler dispatch, `SA_SIGINFO`, alternate stacks, masks,
+  restart classification, and timeout accounting; do not copy that state
+  machine into Go. The API keeps a 64-bit result separate from errno,
+  including valid negative results. Internal Go runtime syscalls still run
+  without a scheduler P; the shared pending-signal dispatcher and C adapter
+  collect notifications before queuing them on the Go system stack.
+  An arbitrary Go callback must not enter through an invented active cgo
+  call. C-created pthreads use their existing foreign callback transition.
+  `tests/go/signal-basic` covers plain-Go/cgo notifications, SIGTERM defaults
+  after Reset/Stop, real C handlers, an 8 GiB logical seek, and in-flight HTTP
+  shutdown on Node and all three browsers. Its restart probe observes the
+  blocked read dispatch and the retry, rather than guessing with a delay.
+  These are cooperative asynchronous signals: native signal-context
+  unwinding, preemption, and management of inherited blocked masks remain
+  gaps. Rebuild consumers and validate actual Caddy/PHP shutdown before
+  claiming the demo drains in-flight requests.
 - Go `syscall.StartProcess` uses non-forking `SYS_SPAWN`; descriptor
   inheritance must be serialized with `ForkLock`. The existing spawn
   attribute supports child-atomic process groups. Requested child

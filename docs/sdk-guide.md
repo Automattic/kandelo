@@ -12,6 +12,17 @@ post-link job is decided by the same code.
 
 ## Installation
 
+Foreign runtimes that issue syscalls can use `<kandelo/syscall.h>` and
+`__wasm_posix_syscall6`. This enters libc's normal transport and signal
+dispatcher, including handler masks, alternate stacks, restart rules, and
+deadline accounting. Its result contains a full 64-bit value and a separate
+errno; wasm32's ordinary `long` syscall interface cannot represent every
+Go integer result. Existing musl entry points retain their normal negative
+errno convention. A runtime that has already completed a raw channel call
+can consume its pending C signal through `<kandelo/signal.h>` after saving
+the result and resetting the channel to idle. That dispatcher alone does
+not restart the original syscall.
+
 ### Prerequisites
 
 1. **LLVM 21+** with clang and wasm-ld:

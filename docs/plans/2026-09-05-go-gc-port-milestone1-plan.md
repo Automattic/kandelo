@@ -6,6 +6,11 @@ The work now extends beyond the original hello-world milestone below.
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
 on ABI 55, with Go fork `c925e9c9ca8c63c549053fd07d3fe0799473d4e0`.
 
+The next source pin is `70f6cbfdb602c4fddefc9145334772a3757b9248`, which
+adds cooperative Go signals and shared libc cgo syscall dispatch. The
+revision-33 WordPress rebuild and actual Caddy/PHP shutdown validation are
+pending; the revision-32 app evidence below remains tied to `c925e9c`.
+
 - The revision-32 WordPress image runs actual embedded PHP through both
   FrankenPHP classic and Caddy. Six visible Chromium cases prove
   homepage/admin/editor behavior, post writes, and real template saves.
@@ -4984,3 +4989,55 @@ worker controller. This is intermittent; the isolated health run passed.
 Neither that routing failure nor the separate browser-host page-context
 loss has an established browser-engine cause. The primary Caddy profile's
 visible workflows now pass in Chromium, Firefox, and WebKit.
+
+**2026-11-05 — Port cooperative Go signals through shared libc.**
+Go fork `70f6cbfdb602c4fddefc9145334772a3757b9248` is pushed. It replaces
+the target's signal-enable/disable/ignore stubs with real dispositions and
+Go signal-queue delivery. Upstream tests exposed a preexisting omitted
+`SIGSTKFLT` slot: Go's `SIGWINCH` was incorrectly signal 27. Target constants
+now match the SDK. Nonfatal asynchronous Go defaults are retained; fatal
+Stop/delivery races re-raise the actual kernel signal instead of losing it.
+Native signal-context unwinding, asynchronous preemption, and management
+of inherited blocked masks remain unsupported.
+
+The SDK adds typed syscall completion and an already-pending C-signal
+dispatcher. Go's cgo public syscalls enter libc through the normal cgo
+transition, preserving libc's handler info, alternate stack, masks,
+restart classification, and deadline accounting. The result keeps its
+64-bit value separate from errno. Existing C syscall entry points retain
+their negative-errno/long convention. Internal Go calls with no scheduler P
+collect C-delivered Go notifications before queuing them on the system
+stack. This is target-runtime/C integration, not a compiler or Caddy patch.
+
+- The final focused browser run passes 33/33 in 1m47s
+  (`go-signals-libc-bridge-browsers-1105-175333-6f4a`). Both Go modes cover
+  notifications, Ignore, default SIGTERM after Reset/Stop, an 8 GiB logical
+  seek, and graceful HTTP shutdown. Cgo additionally covers a C pthread
+  entering Go, SA_SIGINFO/SA_ONSTACK, mask restoration, and SA_RESTART.
+  The restart probe signals an observed blocked read and requires two read
+  dispatches. Each mode/engine also runs ten selected upstream signal tests.
+- The broader Node upstream run passes 14 top-level cases per mode,
+  including concurrent Stop, the ten-child atomic Stop race, SIGCONT, and
+  timing (`.context/go-signals-upstream-broader.log`). Guest stderr and
+  diagnostic callbacks are empty. Focused Node restart and HTTP probes pass.
+- Full standard-library compilation passes for Kandelo cgo off/on and
+  upstream js/wasm and wasip1/wasm. The ABI snapshot check passes: program
+  digest unchanged, ABI 55 retained. These are compile/ABI gates, not full
+  Go conformance or proof of Caddy/PHP request draining.
+- Node Sortix signal/I/O has 88 passes, two existing skips, and one missing
+  built fixture. The one-case default-usr1-exec rerun passes. The browser
+  runner first failed all 34 executable cases before guest startup while
+  loading the stale October rootfs. After rebuilding the canonical rootfs
+  normally, its signal suite passes 34 cases with two existing skips and no
+  failures/errors (`go-signals-libc-sortix-browser-current-r-1105-175744-75b9`).
+  An earlier browser build was canceled to avoid overlapping its shared
+  fixture outputs with the Node build; do not run those two builders together.
+
+Pin go-hello revision 21, classic revision 28, FrankenPHP+Caddy revision 7,
+and standalone Caddy revision 5 to the pushed fork; WordPress revision 33
+will refresh the image. The verified revision-32 image is preserved for
+comparison at `.context/wordpress-before-signals-rev32.vfs.zst`, SHA-256
+`9dbe6dc206daf91f6831c21e4b3908cc7ad859d7a67f64a98308b8515e1fe88b`.
+Next: rebuild source products, validate actual Caddy/PHP SIGTERM draining,
+then perform the required syscall/application benchmark comparisons on Node
+and browser. No performance result is claimed for this syscall-path change.

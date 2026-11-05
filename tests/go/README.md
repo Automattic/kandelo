@@ -46,6 +46,23 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/retirement/run.ts .cont
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 npx playwright test test/go-retirement.spec.ts --project=chromium --project=firefox --project=webkit --workers=1'
 ```
 
+The separate signal fixtures cover `Notify`, `Ignore`, default `SIGTERM`
+after `Reset`/`Stop`, C-pthread delivery, C handlers with signal info and
+alternate stacks, mask restoration, 64-bit seek results, and graceful Go
+HTTP shutdown. The cgo restart case waits for the actual blocked read,
+sends a signal, and requires a second read dispatch before success.
+The upstream `os/signal` binary also runs ten selected tests in each
+browser/mode. This does not establish inherited blocked-mask management,
+native signal-context unwinding, or complete Go signal conformance.
+
+```sh
+scripts/dev-shell.sh bash tests/go/signal-basic/build.sh
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/signal-basic/run.ts .context/go-signals/cgo.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/signal-basic/run-http-drain.ts .context/go-signals/cgo.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/signal-basic/run-http-drain.ts .context/go-signals/cgo.wasm "$(scripts/resolve-binary.sh kernel.wasm)" restart'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_SIGNAL_TESTS=1 npx playwright test test/go-signals.spec.ts --workers=1'
+```
+
 To run the exec probe in Node after building the fixtures:
 
 ```sh
