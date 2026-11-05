@@ -1,0 +1,567 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/parallel/test-primitive-timer-leak.js",
+      "sha256": "c77d69bb210c138d8ae7b92630cd46eecc1474da1277662a0f149c2f0547b604",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-api-refs.js",
+      "sha256": "2f60485a2f6f24034858095452d70d4f663d228b757570eb0987847fa2173dc4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-args.js",
+      "sha256": "3bc16003ca227c09d25437231cb6975914257b60e925f63fa293fef036e7debe",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-async-store-leak.js",
+      "sha256": "d93d5e6130378261324fd980537c2216fc689e4718a3586811dd37f5b67edb75",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --expose-gc"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-clear-null-does-not-throw-error.js",
+      "sha256": "008d0bf2329718c7600f1a74d5b4b0ffad2591f6cd6176dcc54bc2d9389c19a6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-clear-object-does-not-throw-error.js",
+      "sha256": "13a1ef81ca3bb637f13ae8efccfcfef91ce056318b56924f943e41e66171fb18",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-clear-timeout-interval-equivalent.js",
+      "sha256": "6601f3f0927fa3bb85b910098ecb8e9f252cef90413d37f97df1ad2bdcc62506",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-clearImmediate-als.js",
+      "sha256": "68664021104932cdefa27224cd199e0ff0f45b0856776d32808868266e99fab5",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-clearImmediate.js",
+      "sha256": "8c3519b4e3c87b605e4ae27865930871221d5cb85622228e0b73b06f02105575",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-destroyed.js",
+      "sha256": "94f2c69c03fe8a62150e8581e44b6f6d94894999fca0278d51f22f69e0e884b5",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-dispose.js",
+      "sha256": "7ea0a0f2ff4c8f71c388d7f206c98e376cb6528388cd2870229dbb73e9334473",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-fast-calls.js",
+      "sha256": "3e5594a6cd4e979bde93fa2fed47854a5f767c84105a8f6f8c368e06108ea968",
+      "category": "parallel",
+      "declaredFlags": [
+        "--allow-natives-syntax --expose-internals --no-warnings"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-immediate-promisified.js",
+      "sha256": "685c1f5a13472681b3a8bb487da50eee5c6b70181e834fa7aca7b35e173005d8",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings --expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-immediate-queue-throw.js",
+      "sha256": "48ce3cea36a09fa1a7b94eea07b9b68eca549f7b7448e37a2bf1d9d46785056a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-immediate-queue.js",
+      "sha256": "a858440734b26c60c866dc113258f11b80838f669318835ee1e5f1dc24dab3ac",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-warnings"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-immediate-unref-nested-once.js",
+      "sha256": "3368875a3db2b14e8ba4f7c0419783a2e933c112e3b3ff16dcf875fb2e328cbf",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-immediate-unref-simple.js",
+      "sha256": "5c7c6166012c183dd80ef5d0b9ca37005263add0b6f5eac12a272d7b05e09a38",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-immediate-unref.js",
+      "sha256": "16ebb1f9c72516553ede2d81b491715afa76f9ab523f45fb1c8ca523fd906142",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-immediate.js",
+      "sha256": "1b1632cb6181d9118a251130661366e0371086b5e565f6fbf571b4ddbd85a714",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-interval-promisified.js",
+      "sha256": "de3e786eebf9d2584adccb307e28957f5a9150a1670cf618cca0f920d0687361",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings --expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-interval-throw.js",
+      "sha256": "164cd786907a8a0e86e83f242f3578bc7fb7bb363354f6c49a3ca4720a9dd456",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-invalid-clear.js",
+      "sha256": "030b6beedd8f0fb4efe5b8169bbfa099d7b9d75b02725264ea6c972a03ba2992",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-linked-list.js",
+      "sha256": "9174651a522863b52f97904d89191a4d2336da669568ac6568cf473634574114",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-max-duration-warning.js",
+      "sha256": "d43fcf273adfeeb8a73060610dce502391a9a136f93b73482c03bbba9411763c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-nan-duration-emit-once-per-process.js",
+      "sha256": "1fb07c94ac704736c379b6e721d420b20e41d3ff1f4d1f9ce9ad24556f6827d2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-nan-duration-warning-promises.js",
+      "sha256": "d4023910494b0736544033000ac29b8df8e9c171b92eba9d423f9dbace0ae8f2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-nan-duration-warning.js",
+      "sha256": "e20407c926a014e0cb186e35459b6ff2443513c0937b52c3b6c3fbb449e57e44",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-negative-duration-warning-emit-once-per-process.js",
+      "sha256": "f0dcbd3f51794e62ea79df589c6679c0c9022405e42544199435193ca4bfa676",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-negative-duration-warning.js",
+      "sha256": "a367bb7a9bb1c377dad0cadde8c5f82b3248d2504755b210ca0c707e0e61473c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-nested.js",
+      "sha256": "97eaf33c1fba0b2ed691a87eed968f9491c5cbbfde6c080dd038fd311e65dfad",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-next-tick.js",
+      "sha256": "31b60a2a802ebcabb07c5426ddb1e0e7ea7cfcafeb870516ccf7f03d9f0b3f20",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-non-integer-delay.js",
+      "sha256": "27dcc61734a7bd821e2a6a3a82bd778cabe3f8ad41f68ecf39d1748a888d6082",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-not-emit-duration-zero.js",
+      "sha256": "134443953c37b0f5b7b53e7f4cc0e530d8cfcab4aa93aa1baba9fa52377e4f6e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-now.js",
+      "sha256": "369b545a2d28ac9faeb6fef6b10911806cf5aee059d3a60aadb4223e4f351b1d",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-warnings --allow-natives-syntax"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-ordering.js",
+      "sha256": "be2f5734e6b275cd010898a8e26ad0c0b0f11528641e8a7b052b460c0ef0eae0",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-process-tampering.js",
+      "sha256": "a62a3110455311fd29ca6b30c6005b14019d659d8ea6bd4d40917afe80ae69aa",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-promises-scheduler.js",
+      "sha256": "d7d411435764b86e7966a487d39529450bf7f12014865a91537be2d146c4c384",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-promises.js",
+      "sha256": "5c2c3a41ba07c9fcf6db95a3f7327df0d3eef56a4a645e8534917c7633da6132",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-refresh-in-callback.js",
+      "sha256": "5f1512c53037e3b9a2109d727b4b26c5c15bff079cb8ff02dc317603406b0329",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-refresh.js",
+      "sha256": "b79a3e913607b3ee092b6379ac25817fd207dd236c9808fc08c3701a4952d092",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-reset-process-domain-on-throw.js",
+      "sha256": "66f42e633cfc7e0c18abce2e00130170ee3fd3917728821cd5cedcf29933ffb7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-same-timeout-wrong-list-deleted.js",
+      "sha256": "b88abb5696a3e2c3e08882b81ba2b8ee5a23d1d1bcf765d729991c2f1b2f413c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-setimmediate-infinite-loop.js",
+      "sha256": "a14148ef7b20d8db0903a5a8b6ac55facc70405cc28bf481877214465829a67c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-socket-timeout-removes-other-socket-unref-timer.js",
+      "sha256": "5fc42baf5b5c27a541f7d21bb958369b9e859698b14599ced9c43a6897540b30",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-this.js",
+      "sha256": "34dd8c86a36911151bcc3afc463b41f2ac44b9bb592e6a6dc0dab316fb0faff0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-throw-when-cb-not-function.js",
+      "sha256": "6e2cc77b976ba965183cab383d0d6025b97eb56d732c61dc9eb9a14d657fe32b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-timeout-promisified.js",
+      "sha256": "7526c3e69ef2b1966b4254d74fa82712876091c243d25fc8642eec36b5252652",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings --expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-timeout-to-interval.js",
+      "sha256": "735a8bd6b1546cf7d32976632556e52d12dc395ddf01ec3f00bf3b86af914998",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-timeout-with-non-integer.js",
+      "sha256": "ab26ce75765657ca43023e0a0b1cadc1dbe59ac4fe8eb282700356966ebce1ff",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-to-primitive.js",
+      "sha256": "11d4ba9f204b5bcbcb28306cfa62791ef27cd352c253e8fd5cf6b406d65d632a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-uncaught-exception.js",
+      "sha256": "57742299913628af3368b92aa3b75d93b984426f803d3c0de6d22e9b638143b4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-unenroll-unref-interval.js",
+      "sha256": "9db75df1d1156c17cee963f86a6c8ecd91504a5d3e5a94f3316e6e78d87b01c3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-unref-throw-then-ref.js",
+      "sha256": "4e1c5d60b69122ea21f6af804196daac8185c65075e296711e99771a1a48e9da",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-unref.js",
+      "sha256": "4683dcf4477badfa9ec4e9c75675c97607f556c500c290c559dd063d4649cf1f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-unrefd-interval-still-fires.js",
+      "sha256": "a51163cdb4046d049799b3d4605832864b1a8f6e55c6be9f1f3d94ec022b6b63",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-unrefed-in-beforeexit.js",
+      "sha256": "6ed3f9b43375db2485d15f89f1bf909d017a2277b4232ec59de0d6613456b55a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-unrefed-in-callback.js",
+      "sha256": "74f9d9c773fd4203eb73910ac960b36734ea849462e04d18ecc50e7a79edad42",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-user-call.js",
+      "sha256": "1819a069ceba8603175c4f643f6c665eedc2d52960cd01ecee83235cb5532bbf",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers-zero-timeout.js",
+      "sha256": "4964ab6286da0f6d77571d6a6fdbebf32689c0fffe9e276810a4698d152133e3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/parallel/test-timers.js",
+      "sha256": "abdc0764a6007998bb65d3077f243dec9a20743c5f5e50f27f187c004e1f9203",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/sequential/test-timers-block-eventloop.js",
+      "sha256": "b4583c008a4b5bd7843ff52e404718e4a2818542abfe7e654f5a38f3c39493e6",
+      "category": "sequential",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/sequential/test-timers-set-interval-excludes-callback-duration.js",
+      "sha256": "b3ce645913bceeb3cef33732d91222efc1b04899adee118eb998e6453c99aef6",
+      "category": "sequential",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/async-hooks/test-graph.timeouts.js",
+      "sha256": "c7c364c9f47a649ffa7343f5fb738a0b3017e0cd223d6bd21071a9bcc1e2d577",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/async-hooks/test-immediate.js",
+      "sha256": "1b81fb3c80ca1b15795a994731c93057a4362d7b3e76f79696fd52d23dd2f154",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/async-hooks/test-timers.setInterval.js",
+      "sha256": "8e044b8a481548112c27c8e7cc4fd2c495a3472de21f2bab82967a992800f51d",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    },
+    {
+      "path": "test/async-hooks/test-timers.setTimeout.js",
+      "sha256": "84b4d181ab49cbd59f00c86ae2a258c2e88a23451d85f365be723c967779eab8",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run or assertion-coverage signoff",
+      "requirements": "Original common helpers, GC/memory/internal flags, category and all assertions retained"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

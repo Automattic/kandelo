@@ -1,0 +1,1886 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "memberRequirements": {
+    "node:worker_threads": {
+      "Worker": "Class requiring new; EventEmitter inheritance; independent native handle/environment, validated filename/options, real bootstrap, ports, stdio and startup rollback. Candidate launches shell thread with minimal prelude; no normal Node environment.",
+      "Worker.[constructor options]": "Path or file:/data: URL, eval string, argv coercion, execArgv/permission inheritance, env copy/SHARE_ENV, transferList, name trim, engine resource limits and inherited trackUnmanagedFds; source-specific getters/validation order. Candidate mostly ignores these.",
+      "Worker.[EventEmitter inheritance]": "All public EventEmitter instance/static inherited APIs, aliases/settings/symbols and metadata apply via the real superclass. See event-emitter-contracts.md; candidate inherits that implementation but child lifecycle is not connected.",
+      "Worker.online event": "Acknowledge child environment/port/loader setup before script execution; candidate emits from parent microtask with no ready acknowledgement, even after terminate.",
+      "Worker.error/exit events": "Serialize real uncaught errors/could-not-serialize, deliver queued messages, dispose resources, emit actual final exit code and remove listeners. Candidate has no child status/error bridge and terminate fabricates code 0.",
+      "Worker.message/messageerror events": "Actual child public-port data/deserialization errors, Node payloads, ordering before final exit; absent candidate transport.",
+      "Worker.prototype.postMessage": "Serialize/transfer through this worker public port; post-exit target returns undefined without forwarding. Candidate throws plain not-implemented Error.",
+      "Worker.prototype.terminate": "Stop this worker asynchronously, await actual exit event/status, normally forced code 1; already-gone target resolves undefined. Candidate synchronously joins ALL workers, clears shared mailbox, emits/resolves 0.",
+      "Worker.prototype.ref": "Ref actual native worker and public port; idempotent and post-exit no-op, returns undefined. Candidate returns this with no ownership change.",
+      "Worker.prototype.unref": "Unref actual native worker and public port; actual loop exit ownership, idempotent/post-exit no-op, returns undefined. Candidate returns this without state.",
+      "Worker.prototype.threadId": "Unique environment thread ID; -1 after exit; not guest kernel TID. Missing.",
+      "Worker.prototype.threadName": "Actual configured/default thread name, null after exit; readonly accessor. Missing.",
+      "Worker.prototype.stdin": "Null by default or a real writable stream when stdin option selected, acknowledgement/backpressure/finalization ownership. Missing.",
+      "Worker.prototype.stdout": "Real readable worker stdout, default parent piping or manual consumption according to option; callbacks/ref/chunk order and shutdown. Missing.",
+      "Worker.prototype.stderr": "Real readable worker stderr, default parent piping or manual consumption; separate stream ownership. Missing.",
+      "Worker.prototype.resourceLimits": "Actual effective four-field engine limits, {} after exit; numeric parsing/clamping and external memory scope follow target. Missing.",
+      "Worker.prototype.cpuUsage": "Promise for real per-thread user/system microseconds with validated nonnegative previous delta record; stopped rejects, SunOS explicit unsupported branch. Missing.",
+      "Worker.prototype.getHeapSnapshot": "Promise for actual engine snapshot Readable, validated exposeInternals/exposeNumericValues, native completion and stopped/error cleanup. Exact V8 format requires engine-specific assessment; missing portable bridge.",
+      "Worker.prototype.getHeapStatistics": "Promise for actual thread heap statistics, stopped/error rejection; exact engine fields separately assessed, no fabricated constants. Missing.",
+      "Worker.prototype.performance": "Per-instance performance object with bound eventLoopUtilization, actual child timing and lifecycle. Missing.",
+      "Worker.performance.eventLoopUtilization": "Worker loop idle/active/utilization and previous-sample overloads; zero only offline/stopped/no loop-start; actual native idle timing. Missing.",
+      "Worker.prototype.startCpuProfile": "Validate options before native Promise request; sampleInterval milliseconds to bounded/floored microseconds (positive submicrosecond rounds to 1), maxBufferSize number floored. Real profile handle or rejection. Missing; prose/source questions R-014.",
+      "Worker.prototype.startHeapProfile": "Validate positive integer sampleInterval default 524288, nonnegative int32 stackDepth default 16, actual boolean GC flags; native profile handle or rejection, lifecycle. Missing.",
+      "Worker.prototype.Symbol.asyncDispose": "Async named symbol method awaits terminate; rejection/lifetime and descriptor matter. Missing.",
+      "CPUProfileHandle": "Returned class instance, not own namespace export; actual worker/private profile ID and cached stop Promise.",
+      "CPUProfileHandle.prototype.stop": "Stop real CPU profile once; reuse cached Promise; reject stopped worker/native error; return actual profile payload, not a success marker. Missing.",
+      "CPUProfileHandle.prototype.Symbol.asyncDispose": "Await stop and discard its payload; preserve error. Missing.",
+      "HeapProfileHandle": "Returned class instance, not own namespace export; actual worker and cached stop Promise.",
+      "HeapProfileHandle.prototype.stop": "Stop actual heap sampler, cache same Promise and propagate gone-worker/native errors; real payload. Missing.",
+      "HeapProfileHandle.prototype.Symbol.asyncDispose": "Await actual stop; no fabricated completion. Missing.",
+      "isInternalThread": "Actual internal loader-thread identity. Missing; ordinary child prelude cannot model internal thread.",
+      "isMainThread": "True in main environment, false for workers; candidate main true/child false only, no complete per-environment state.",
+      "parentPort": "Null in main, actual entangled parent endpoint in worker; candidate null also in child, so communication missing.",
+      "workerData": "Null in main; undefined in worker without data, otherwise HTML structured-cloned constructor data, transfer list and owned shared stores. Candidate main null matches; child JSON/source insertion or global mailbox is partial.",
+      "SHARE_ENV": "Symbol.for('nodejs.worker_threads.SHARE_ENV'), recognized by actual shared environment backend. Candidate uses different kandelo registry key and ignores env semantics.",
+      "setEnvironmentData": "Current environment Map.set, undefined deletes; cloneable keys/values copied to each new worker, including nested workers. Missing.",
+      "getEnvironmentData": "Read current environment Map value; inherited new-worker clone, same-environment identity and arbitrary cloneable key matching. Missing.",
+      "resourceLimits": "Main {}, worker actual four-field limits; actual engine constraint/stack budgets and lifecycle. Missing.",
+      "threadId": "Actual unique numeric environment ID, main 0; process routing uses ID, not presumed kernel TID. Missing.",
+      "threadName": "Actual current environment name/default; main native-capture value is context-specific metadata. Missing.",
+      "MessageChannel": "Native function requiring new; allocate and entangle endpoints, failure cleanup, prototype tag and module/global identity. Candidate constructs disconnected ports.",
+      "MessageChannel.port1": "Own writable/enumerable/configurable endpoint connected to port2; actual per-endpoint queue/owner. Candidate disconnected.",
+      "MessageChannel.port2": "Own writable/enumerable/configurable endpoint connected to port1; actual per-endpoint queue/owner. Candidate disconnected.",
+      "MessagePort": "Illegal public new with ERR_CONSTRUCT_CALL_INVALID; internal native creation, NodeEventTarget inheritance/brands, module/global identity. Candidate constructible EventEmitter; global different throwing class.",
+      "MessagePort.prototype.postMessage": "Required value and transfer options; immediate structured clone/validation, detach/host adoption and queue delivery, even closed validation semantics. Candidate no-op.",
+      "MessagePort.prototype.start": "Actual receiving state/queued delivery; on(message)/onmessage auto-start, browser-style addEventListener needs explicit start. Candidate no-op.",
+      "MessagePort.prototype.close": "Disconnect/close once, async close event, optional callback compatibility, actual queue/ref/peer cleanup. Candidate repeated synchronous emit.",
+      "MessagePort.prototype.ref": "Ref native endpoint/process loop ownership, target native receiver checks, returns undefined; candidate only returns this.",
+      "MessagePort.prototype.unref": "Unref native endpoint/process loop ownership, native receiver checks and undefined return; listener first/last transitions also matter. Candidate only returns this.",
+      "MessagePort.prototype.hasRef": "Boolean of native handle state; close/inspection/receiver behavior. Missing.",
+      "MessagePort.prototype.onmessage": "Enumerable configurable event handler accessor; MessageEvent with data/ports and actual auto-start, replacement/removal/ref state. Missing.",
+      "MessagePort.prototype.onmessageerror": "Enumerable configurable handler for actual deserialize error event. Missing.",
+      "MessagePort.[inherited contracts]": "All public NodeEventTarget/EventTarget methods, Node payload versus Event dispatch, once/AbortSignal/brands and listener/ref ownership; use event-target-abort-contracts.md. Candidate has different EventEmitter model.",
+      "MessagePort.[events]": "Async close, message payload and messageerror; clone/receiver errors and ordering, peer close/queue drain. No transport.",
+      "MessagePort.prototype.Symbol(nodejs.util.inspect.custom)": "Inspect actual active/refed state; native unwrapping failures on prototype return receiver; exact nonenumerable/nonwritable/nonconfigurable descriptor.",
+      "MessagePort.prototype.Symbol(Symbol.toStringTag)": "Readonly nonenumerable configurable 'MessagePort'; missing candidate tag.",
+      "MessageChannel.prototype.Symbol(Symbol.toStringTag)": "Readonly nonenumerable configurable 'MessageChannel'; missing candidate tag.",
+      "markAsUntransferable": "Primitive no-op; uninherited private mark, irreversible ArrayBuffer detach key; reject transfer list and AB transfer; target Buffer pool uses same policy. Missing active candidate binding.",
+      "isMarkedAsUntransferable": "Primitive/null handling and own private mark test only, not a general capability predicate. Missing.",
+      "markAsUncloneable": "Primitive no-op; remove host clone mode, reject graph cloning of marked ordinary object; AB/Buffer exception and host validation follow actual serializer. Missing.",
+      "moveMessagePortToContext": "Validate port and contextified realm, reject closed; detach old wrapper, reconstruct in target context with target Object/message prototypes and different EventTarget support. Missing.",
+      "receiveMessageOnPort": "Validate MessagePort or unwrap BroadcastChannel; synchronously consume oldest value into {message}, undefined when empty, no later event for consumed record. Missing.",
+      "postMessageToThread": "Async target-ID route/ack via process workerMessage; number-third-argument timeout overload, nonnegative validation, transfer list, reject same/missing/no-listener/listener-error/timeout distinctly. Missing.",
+      "BroadcastChannel": "Class requiring name/new, template-string coercion, real process-wide named group, EventTarget inheritance/brands; own namespace/global shared identity. Missing module/global throws.",
+      "BroadcastChannel.prototype.name": "Readonly enumerable accessor for converted name, actual brand check. Missing.",
+      "BroadcastChannel.prototype.close": "Brand check and idempotent unregister/close, detach message listeners, actual resource release. Missing.",
+      "BroadcastChannel.prototype.postMessage": "Brand/argument checks before closed InvalidStateError; actual structured clone broadcast, no fake completion. Missing.",
+      "BroadcastChannel.prototype.ref": "Actual handle ref, idempotent post-close no-op and returns this; receiver check. Missing.",
+      "BroadcastChannel.prototype.unref": "Actual handle unref and returns this, post-close no-op; receiver check. Missing.",
+      "BroadcastChannel.prototype.onmessage": "Enumerable event-handler accessor; actual MessageEvent dispatch with clone result. Missing.",
+      "BroadcastChannel.prototype.onmessageerror": "Enumerable event-handler accessor for actual deserialize errors. Missing.",
+      "BroadcastChannel.[EventTarget inheritance]": "All EventTarget public dispatch/listener/handler/AbortSignal contracts; candidate cannot replace with host navigator APIs. See event-target-abort-contracts.md.",
+      "BroadcastChannel.prototype.Symbol(nodejs.util.inspect.custom)": "Actual brand/name/active/depth inspection, nonenumerable configurable writable method. Missing.",
+      "BroadcastChannel.prototype.Symbol(Symbol.toStringTag)": "Readonly nonenumerable configurable 'BroadcastChannel'. Missing.",
+      "locks": "Lazy public LockManager instance, one actual process-wide native manager across worker environments, not an own Lock/LockManager constructor export. Missing.",
+      "Lock": "Returned type, constructor requires private symbol or ERR_ILLEGAL_CONSTRUCTOR; readonly name/mode and tag. Missing.",
+      "Lock.prototype.name": "Enumerable readonly accessor, instanceof-based ERR_INVALID_THIS on wrong receiver. Missing.",
+      "Lock.prototype.mode": "Enumerable readonly shared/exclusive accessor, actual receiver checks. Missing.",
+      "Lock.prototype.Symbol(Symbol.toStringTag)": "Readonly nonenumerable configurable 'Lock'. Missing.",
+      "LockManager": "Returned type, illegal public construction; prototype methods and tag, lazy singleton identity. Missing.",
+      "LockManager.prototype.request": "Async overload/name WebIDL conversion/callback/options; shared/exclusive, FIFO compatibility, ifAvailable null, steal, pending abort, callback Promise holding/release and errors; no universal this brand in target. Native process queue/wakeups/teardown missing.",
+      "LockManager.prototype.query": "Promise {held,pending} with name/mode/clientId, instanceof check, actual native snapshot; target per-env filter vs process prose question. Missing.",
+      "LockManager.prototype.Symbol(Symbol.toStringTag)": "Readonly nonenumerable configurable 'LockManager'. Missing.",
+      "[clone and buffer considerations]": "HTML clone graph/types, prototype/accessor loss, Buffer to Uint8Array, pool/nonpooled/resizable/detached/shared memory and host-object adoption, serialization vs transfer failure stages. JSON/global mailbox cannot substitute.",
+      "[environment and process constraints]": "Full per-worker bootstrap, cwd synchronization, env copy/share, restrictions on process mutation/signals/trace_events/addons/IPC and thread-only process.exit; candidate child does not have Node environment.",
+      "[stdio/preload narratives]": "Actual stream/backpressure/ref ownership and parent synchronous blocking; inherited --require/--import may recursively launch workers, use actual isMainThread/execArgv rather than suppressing software behavior.",
+      "[host identity and reclamation]": "Guest pthread clone/TLS/CTID, native JSContext and kernel identity, outer host registry/generation/channel/memory; Node awaited termination vs browser quiescence before reclaim. Public handle missing; no blanket engine exclusion.",
+      "[target questions]": "R-014 profiling error/rejection and fractional maxBufferSize, already-exited terminate undefined, per-env lock snapshots and abort/teardown queue cleanup require exact native controls later.",
+      "Worker.prototype.Symbol(Symbol.asyncDispose)": "Async named symbol method awaits terminate; rejection/lifetime and descriptor matter. Missing. Captured spelling aliases the same public well-known symbol; not another API.",
+      "MessagePort.prototype": "Captured prototype object/descriptor: preserve actual constructor/prototype linkage and flags; ordinary function prototype alone is incidental metadata, not proof of constructed public behavior.",
+      "MessagePort.prototype.Symbol(kCreateEvent)": "Captured private implementation hook, retained descriptor metadata; not a separate public API requirement. Target native lifecycle/event hooks must still implement public behavior; candidate lacks corresponding ownership.",
+      "MessagePort.prototype.Symbol(oninit)": "Captured private implementation hook, retained descriptor metadata; not a separate public API requirement. Target native lifecycle/event hooks must still implement public behavior; candidate lacks corresponding ownership.",
+      "MessagePort.prototype.Symbol(handle_onclose)": "Captured private implementation hook, retained descriptor metadata; not a separate public API requirement. Target native lifecycle/event hooks must still implement public behavior; candidate lacks corresponding ownership.",
+      "MessageChannel.prototype": "Captured prototype object/descriptor: preserve actual constructor/prototype linkage and flags; ordinary function prototype alone is incidental metadata, not proof of constructed public behavior.",
+      "markAsUncloneable.prototype": "Captured prototype object/descriptor: preserve actual constructor/prototype linkage and flags; ordinary function prototype alone is incidental metadata, not proof of constructed public behavior.",
+      "markAsUntransferable.prototype": "Captured prototype object/descriptor: preserve actual constructor/prototype linkage and flags; ordinary function prototype alone is incidental metadata, not proof of constructed public behavior.",
+      "isMarkedAsUntransferable.prototype": "Captured prototype object/descriptor: preserve actual constructor/prototype linkage and flags; ordinary function prototype alone is incidental metadata, not proof of constructed public behavior.",
+      "receiveMessageOnPort.prototype": "Captured prototype object/descriptor: preserve actual constructor/prototype linkage and flags; ordinary function prototype alone is incidental metadata, not proof of constructed public behavior.",
+      "Worker.prototype": "Captured prototype object/descriptor: preserve actual constructor/prototype linkage and flags; ordinary function prototype alone is incidental metadata, not proof of constructed public behavior.",
+      "Worker.prototype.Symbol(kOnExit)": "Captured private implementation hook, retained descriptor metadata; not a separate public API requirement. Target native lifecycle/event hooks must still implement public behavior; candidate lacks corresponding ownership.",
+      "Worker.prototype.Symbol(kOnCouldNotSerializeErr)": "Captured private implementation hook, retained descriptor metadata; not a separate public API requirement. Target native lifecycle/event hooks must still implement public behavior; candidate lacks corresponding ownership.",
+      "Worker.prototype.Symbol(kOnErrorMessage)": "Captured private implementation hook, retained descriptor metadata; not a separate public API requirement. Target native lifecycle/event hooks must still implement public behavior; candidate lacks corresponding ownership.",
+      "Worker.prototype.Symbol(kOnMessage)": "Captured private implementation hook, retained descriptor metadata; not a separate public API requirement. Target native lifecycle/event hooks must still implement public behavior; candidate lacks corresponding ownership.",
+      "Worker.prototype.Symbol(kDispose)": "Captured private implementation hook, retained descriptor metadata; not a separate public API requirement. Target native lifecycle/event hooks must still implement public behavior; candidate lacks corresponding ownership.",
+      "BroadcastChannel.prototype": "Captured prototype object/descriptor: preserve actual constructor/prototype linkage and flags; ordinary function prototype alone is incidental metadata, not proof of constructed public behavior.",
+      "setEnvironmentData.prototype": "Captured prototype object/descriptor: preserve actual constructor/prototype linkage and flags; ordinary function prototype alone is incidental metadata, not proof of constructed public behavior.",
+      "getEnvironmentData.prototype": "Captured prototype object/descriptor: preserve actual constructor/prototype linkage and flags; ordinary function prototype alone is incidental metadata, not proof of constructed public behavior."
+    }
+  },
+  "sections": [
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1,
+      "endLine": 110,
+      "title": "Worker threads",
+      "sha256": "0428237956239dabfc8c7fe9d370f82b8077720c46b5e7755d84940c280e9c1c",
+      "normativeRequirements": "# Worker threads\n\n\n\n\n\n> Stability: 2 - Stable\n\n\n\nThe `node:worker_threads` module enables the use of threads that execute\nJavaScript in parallel. To access it:\n\n\n\n\n\nWorkers (threads) are useful for performing CPU-intensive JavaScript operations.\nThey do not help much with I/O-intensive work. The Node.js built-in\nasynchronous I/O operations are more efficient than Workers can be.\n\nUnlike `child_process` or `cluster`, `worker_threads` can share memory. They do\nso by transferring `ArrayBuffer` instances or sharing `SharedArrayBuffer`\ninstances.\n\n\n\n\n\nThe above example spawns a Worker thread for each `parseJSAsync()` call. In\npractice, use a pool of Workers for these kinds of tasks. Otherwise, the\noverhead of creating Workers would likely exceed their benefit.\n\nWhen implementing a worker pool, use the [`AsyncResource`][] API to inform\ndiagnostic tools (e.g. to provide asynchronous stack traces) about the\ncorrelation between tasks and their outcomes. See\n[\"Using `AsyncResource` for a `Worker` thread pool\"][async-resource-worker-pool]\nin the `async_hooks` documentation for an example implementation.\n\nWorker threads inherit non-process-specific options by default. Refer to\n[`Worker constructor options`][] to know how to customize worker thread options,\nspecifically `argv` and `execArgv` options.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 111,
+      "endLine": 165,
+      "title": "`worker_threads.getEnvironmentData(key)`",
+      "sha256": "6fa18167b83e43883560c06e1fbf246e48d6c4cc32215012a6abe80c2c228990",
+      "normativeRequirements": "## `worker_threads.getEnvironmentData(key)`\n\n\n\n* `key` {any} Any arbitrary, cloneable JavaScript value that can be used as a\n  {Map} key.\n* Returns: {any}\n\nWithin a worker thread, `worker.getEnvironmentData()` returns a clone\nof data passed to the spawning thread's `worker.setEnvironmentData()`.\nEvery new `Worker` receives its own copy of the environment data\nautomatically.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 166,
+      "endLine": 205,
+      "title": "`worker_threads.isInternalThread`",
+      "sha256": "2970ba5838ed182468866f40b261835ad6cc3aad26e22029db9d0e1ddd38da28",
+      "normativeRequirements": "## `worker_threads.isInternalThread`\n\n\n\n* Type: {boolean}\n\nIs `true` if this code is running inside of an internal [`Worker`][] thread (e.g the loader thread).\n\n\n\n\n\n\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 206,
+      "endLine": 239,
+      "title": "`worker_threads.isMainThread`",
+      "sha256": "a283e637c4c7ba3e4b678e4562523e9d3cd6294aa67c81ee89cfdc9770830518",
+      "normativeRequirements": "## `worker_threads.isMainThread`\n\n\n\n* Type: {boolean}\n\nIs `true` if this code is not running inside of a [`Worker`][] thread.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 240,
+      "endLine": 316,
+      "title": "`worker_threads.markAsUntransferable(object)`",
+      "sha256": "de59da2401b425fd22bb2feacca46cfe73a2da9e603ee7a803c68fa9a8b6be6b",
+      "normativeRequirements": "## `worker_threads.markAsUntransferable(object)`\n\n\n\n* `object` {any} Any arbitrary JavaScript value.\n\nMark an object as not transferable. If `object` occurs in the transfer list of\na [`port.postMessage()`][] call, an error is thrown. This is a no-op if\n`object` is a primitive value.\n\nIn particular, this makes sense for objects that can be cloned, rather than\ntransferred, and which are used by other objects on the sending side.\nFor example, Node.js marks the `ArrayBuffer`s it uses for its\n[`Buffer` pool][`Buffer.allocUnsafe()`] with this.\n`ArrayBuffer.prototype.transfer()` is disallowed on such array buffer\ninstances.\n\nThis operation cannot be undone.\n\n\n\n\n\nThere is no equivalent to this API in browsers.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 317,
+      "endLine": 348,
+      "title": "`worker_threads.isMarkedAsUntransferable(object)`",
+      "sha256": "38d2bb52b2854a816691999d18926df721598e10218eac081e7afbb4073eab69",
+      "normativeRequirements": "## `worker_threads.isMarkedAsUntransferable(object)`\n\n\n\n* `object` {any} Any JavaScript value.\n* Returns: {boolean}\n\nCheck if an object is marked as not transferable with\n[`markAsUntransferable()`][].\n\n\n\n\n\nThere is no equivalent to this API in browsers.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 349,
+      "endLine": 396,
+      "title": "`worker_threads.markAsUncloneable(object)`",
+      "sha256": "60a48bfc120a8ca6ef82a18cb8ee75d3423f7b48598072ca258b817d6fd9900c",
+      "normativeRequirements": "## `worker_threads.markAsUncloneable(object)`\n\n\n\n* `object` {any} Any arbitrary JavaScript value.\n\nMark an object as not cloneable. If `object` is used as [`message`](#event-message) in\na [`port.postMessage()`][] call, an error is thrown. This is a no-op if `object` is a\nprimitive value.\n\nThis has no effect on `ArrayBuffer`, or any `Buffer` like objects.\n\nThis operation cannot be undone.\n\n\n\n\n\nThere is no equivalent to this API in browsers.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 397,
+      "endLine": 422,
+      "title": "`worker_threads.moveMessagePortToContext(port, contextifiedSandbox)`",
+      "sha256": "da67a1144c949a31d403e52250bf81d5c7bbc1b95da62e9950b05597bd538963",
+      "normativeRequirements": "## `worker_threads.moveMessagePortToContext(port, contextifiedSandbox)`\n\n\n\n* `port` {MessagePort} The message port to transfer.\n\n* `contextifiedSandbox` {Object} A [contextified][] object as returned by the\n  `vm.createContext()` method.\n\n* Returns: {MessagePort}\n\nTransfer a `MessagePort` to a different [`vm`][] Context. The original `port`\nobject is rendered unusable, and the returned `MessagePort` instance\ntakes its place.\n\nThe returned `MessagePort` is an object in the target context and\ninherits from its global `Object` class. Objects passed to the\n[`port.onmessage()`][] listener are also created in the target context\nand inherit from its global `Object` class.\n\nHowever, the created `MessagePort` no longer inherits from\n{EventTarget}, and only [`port.onmessage()`][] can be used to receive\nevents using it.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 423,
+      "endLine": 471,
+      "title": "`worker_threads.parentPort`",
+      "sha256": "3f191ed250777238318f4f88c1c775945555500bf7421c90c6c71e34e807d38e",
+      "normativeRequirements": "## `worker_threads.parentPort`\n\n\n\n* Type: {null|MessagePort}\n\nIf this thread is a [`Worker`][], this is a [`MessagePort`][]\nallowing communication with the parent thread. Messages sent using\n`parentPort.postMessage()` are available in the parent thread\nusing `worker.on('message')`, and messages sent from the parent thread\nusing `worker.postMessage()` are available in this thread using\n`parentPort.on('message')`.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 472,
+      "endLine": 580,
+      "title": "`worker_threads.postMessageToThread(threadId, value[, transferList][, timeout])`",
+      "sha256": "e80f876581a0c1f994384274fd013a75c0919e453a767e0775c93ba92feb46a4",
+      "normativeRequirements": "## `worker_threads.postMessageToThread(threadId, value[, transferList][, timeout])`\n\n\n\n> Stability: 1.1 - Active development\n\n* `threadId` {number} The target thread ID. If the thread ID is invalid, a\n  [`ERR_WORKER_MESSAGING_FAILED`][] error will be thrown. If the target thread ID is the current thread ID,\n  a [`ERR_WORKER_MESSAGING_SAME_THREAD`][] error will be thrown.\n* `value` {any} The value to send.\n* `transferList` {Object\\[]} If one or more `MessagePort`-like objects are passed in `value`,\n  a `transferList` is required for those items or [`ERR_MISSING_MESSAGE_PORT_IN_TRANSFER_LIST`][] is thrown.\n  See [`port.postMessage()`][] for more information.\n* `timeout` {number} Time to wait for the message to be delivered in milliseconds.\n  By default it's `undefined`, which means wait forever. If the operation times out,\n  a [`ERR_WORKER_MESSAGING_TIMEOUT`][] error is thrown.\n* Returns: {Promise} A promise which is fulfilled if the message was successfully processed by destination thread.\n\nSends a value to another worker, identified by its thread ID.\n\nIf the target thread has no listener for the `workerMessage` event, then the operation will throw\na [`ERR_WORKER_MESSAGING_FAILED`][] error.\n\nIf the target thread threw an error while processing the `workerMessage` event, then the operation will throw\na [`ERR_WORKER_MESSAGING_ERRORED`][] error.\n\nThis method should be used when the target thread is not the direct\nparent or child of the current thread.\nIf the two threads are parent-children, use the [`require('node:worker_threads').parentPort.postMessage()`][]\nand the [`worker.postMessage()`][] to let the threads communicate.\n\nThe example below shows the use of `postMessageToThread`: it creates 10 nested threads,\nthe last one will try to communicate with the main thread.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 581,
+      "endLine": 624,
+      "title": "`worker_threads.receiveMessageOnPort(port)`",
+      "sha256": "fef19c45b962183403702eac9ec04618b8eee82b0231673cd917b08ac7285e8f",
+      "normativeRequirements": "## `worker_threads.receiveMessageOnPort(port)`\n\n\n\n* `port` {MessagePort|BroadcastChannel}\n\n* Returns: {Object|undefined}\n\nReceive a single message from a given `MessagePort`. If no message is available,\n`undefined` is returned, otherwise an object with a single `message` property\nthat contains the message payload, corresponding to the oldest message in the\n`MessagePort`'s queue.\n\n\n\n\n\nWhen this function is used, no `'message'` event is emitted and the\n`onmessage` listener is not invoked.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 625,
+      "endLine": 644,
+      "title": "`worker_threads.resourceLimits`",
+      "sha256": "fdb6b8e8e19bf5129d30c6c5b44e1a232ed662ee70f8e233e042b53d2a0e3ac7",
+      "normativeRequirements": "## `worker_threads.resourceLimits`\n\n\n\n* Type: {Object}\n  * `maxYoungGenerationSizeMb` {number}\n  * `maxOldGenerationSizeMb` {number}\n  * `codeRangeSizeMb` {number}\n  * `stackSizeMb` {number}\n\nProvides the set of JS engine resource constraints inside this Worker thread.\nIf the `resourceLimits` option was passed to the [`Worker`][] constructor,\nthis matches its values.\n\nIf this is used in the main thread, its value is an empty object.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 645,
+      "endLine": 673,
+      "title": "`worker_threads.SHARE_ENV`",
+      "sha256": "568e88a1cc2615ee338828eef8eca711b7a8d121365450df82384caedf1ef50c",
+      "normativeRequirements": "## `worker_threads.SHARE_ENV`\n\n\n\n* Type: {symbol}\n\nA special value that can be passed as the `env` option of the [`Worker`][]\nconstructor, to indicate that the current thread and the Worker thread should\nshare read and write access to the same set of environment variables.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 674,
+      "endLine": 697,
+      "title": "`worker_threads.setEnvironmentData(key[, value])`",
+      "sha256": "e47ad753fcfebd00a4cdc007dfffbc2549b403348e3fbf7e2c24d844b5425044",
+      "normativeRequirements": "## `worker_threads.setEnvironmentData(key[, value])`\n\n\n\n* `key` {any} Any arbitrary, cloneable JavaScript value that can be used as a\n  {Map} key.\n* `value` {any} Any arbitrary, cloneable JavaScript value that will be cloned\n  and passed automatically to all new `Worker` instances. If `value` is passed\n  as `undefined`, any previously set value for the `key` will be deleted.\n\nThe `worker.setEnvironmentData()` API sets the content of\n`worker.getEnvironmentData()` in the current thread and all new `Worker`\ninstances spawned from the current context.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 698,
+      "endLine": 709,
+      "title": "`worker_threads.threadId`",
+      "sha256": "b884aa4047dd60049d84d3e14b943290ace0b5007bd46ef4de8b5421b589264c",
+      "normativeRequirements": "## `worker_threads.threadId`\n\n\n\n* Type: {integer}\n\nAn integer identifier for the current thread. On the corresponding worker object\n(if there is any), it is available as [`worker.threadId`][].\nThis value is unique for each [`Worker`][] instance inside a single process.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 710,
+      "endLine": 722,
+      "title": "`worker_threads.threadName`",
+      "sha256": "bfb3ee6879b3ae3f6dd32d5c35cff2987eec9d62937914412672968f2ab720c1",
+      "normativeRequirements": "## `worker_threads.threadName`\n\n\n\n* {string|null}\n\nA string identifier for the current thread or null if the thread is not running.\nOn the corresponding worker object (if there is any), it is available as [`worker.threadName`][].\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 723,
+      "endLine": 754,
+      "title": "`worker_threads.workerData`",
+      "sha256": "e02979b75e9c6b48bad63d31f05af538f066f3aac9dbd2cb12813cc15abe1f0a",
+      "normativeRequirements": "## `worker_threads.workerData`\n\n\n\nAn arbitrary JavaScript value that contains a clone of the data passed\nto this thread's `Worker` constructor.\n\nThe data is cloned as if using [`postMessage()`][`port.postMessage()`],\naccording to the [HTML structured clone algorithm][].\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 755,
+      "endLine": 769,
+      "title": "`worker_threads.locks`",
+      "sha256": "a7c125e543996136efcd7d7f764548337952bdc220860f0ed4c290e9bc8e36be",
+      "normativeRequirements": "## `worker_threads.locks`\n\n\n\n> Stability: 1 - Experimental\n\n* {LockManager}\n\nAn instance of a [`LockManager`][LockManager] that can be used to coordinate\naccess to resources that may be shared across multiple threads within the same\nprocess. The API mirrors the semantics of the\n[browser `LockManager`][]\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 770,
+      "endLine": 778,
+      "title": "Class: `Lock`",
+      "sha256": "dac95a453436f53d6d208aa21d62f6b66f37d468c1ce589240a103952040cb3e",
+      "normativeRequirements": "### Class: `Lock`\n\n\n\nThe `Lock` interface provides information about a lock that has been granted via\n[`locks.request()`][locks.request()]\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 779,
+      "endLine": 788,
+      "title": "`lock.name`",
+      "sha256": "7af528185a1a890732b57f6fad5f554992ea47e51ff5cf19f5274a824ad58100",
+      "normativeRequirements": "#### `lock.name`\n\n\n\n* {string}\n\nThe name of the lock.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 789,
+      "endLine": 798,
+      "title": "`lock.mode`",
+      "sha256": "c96cdaefd49ddefe4df389155739e1d3729b2e9ab51edf7694e4a5a0bbaf8dd7",
+      "normativeRequirements": "#### `lock.mode`\n\n\n\n* {string}\n\nThe mode of the lock. Either `shared` or `exclusive`.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 799,
+      "endLine": 817,
+      "title": "Class: `LockManager`",
+      "sha256": "c6138216ad8fde8670774f2d72c6f93383d14984bae512f6b5b2c9056bfa8579",
+      "normativeRequirements": "### Class: `LockManager`\n\n\n\nThe `LockManager` interface provides methods for requesting and introspecting\nlocks. To obtain a `LockManager` instance use\n\n\n\n\n\nThis implementation matches the [browser `LockManager`][] API.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 818,
+      "endLine": 859,
+      "title": "`locks.request(name[, options], callback)`",
+      "sha256": "29d4e9970b5f519b72a7f37afbdb4c67b4b5093f513652c4e1f698520d87fd5c",
+      "normativeRequirements": "#### `locks.request(name[, options], callback)`\n\n\n\n* `name` {string}\n* `options` {Object}\n  * `mode` {string} Either `'exclusive'` or `'shared'`. **Default:** `'exclusive'`.\n  * `ifAvailable` {boolean} If `true`, the request will only be granted if the\n    lock is not already held. If it cannot be granted, `callback` will be\n    invoked with `null` instead of a `Lock` instance. **Default:** `false`.\n  * `steal` {boolean} If `true`, any existing locks with the same name are\n    released and the request is granted immediately, pre-empting any queued\n    requests. **Default:** `false`.\n  * `signal` {AbortSignal} that can be used to abort a\n    pending (but not yet granted) lock request.\n* `callback` {Function} Invoked once the lock is granted (or immediately with\n  `null` if `ifAvailable` is `true` and the lock is unavailable). The lock is\n  released automatically when the function returns, or—if the function returns\n  a promise—when that promise settles.\n* Returns: {Promise} Resolves once the lock has been released.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 860,
+      "endLine": 895,
+      "title": "`locks.query()`",
+      "sha256": "a18c8fca48663291dd0a1e1da5a06e60a8281c327f6ebe43094d2d7832856028",
+      "normativeRequirements": "#### `locks.query()`\n\n\n\n* Returns: {Promise}\n\nResolves with a `LockManagerSnapshot` describing the currently held and pending\nlocks for the current process.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 896,
+      "endLine": 954,
+      "title": "Class: `BroadcastChannel extends EventTarget`",
+      "sha256": "96e8c761ee627f282f6c43488462e8f78a8276c6891e91c97bb5b86904d1c380",
+      "normativeRequirements": "## Class: `BroadcastChannel extends EventTarget`\n\n\n\nInstances of `BroadcastChannel` allow asynchronous one-to-many communication\nwith all other `BroadcastChannel` instances bound to the same channel name.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 955,
+      "endLine": 963,
+      "title": "`new BroadcastChannel(name)`",
+      "sha256": "c69d9462880de5228a712491774146489def976f2ca8900bf448dbbbd9d01427",
+      "normativeRequirements": "### `new BroadcastChannel(name)`\n\n\n\n* `name` {any} The name of the channel to connect to. Any JavaScript value\n  that can be converted to a string using `` `${name}` `` is permitted.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 964,
+      "endLine": 971,
+      "title": "`broadcastChannel.close()`",
+      "sha256": "f45d15233eada1e38f803f8f6612eb71ff71afd1a1bd04504c8b54a4ae8df7ae",
+      "normativeRequirements": "### `broadcastChannel.close()`\n\n\n\nCloses the `BroadcastChannel` connection.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 972,
+      "endLine": 980,
+      "title": "`broadcastChannel.onmessage`",
+      "sha256": "2ed76834515a1738cbf8e3e9ca7271033f0b3f68609707a040f1e9eeaab4bd89",
+      "normativeRequirements": "### `broadcastChannel.onmessage`\n\n\n\n* Type: {Function} Invoked with a single `MessageEvent` argument\n  when a message is received.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 981,
+      "endLine": 989,
+      "title": "`broadcastChannel.onmessageerror`",
+      "sha256": "e5970ec16b133f2ab28677a76d15dbb1cafb752d9c7f3d0434e1c550c0fc13d5",
+      "normativeRequirements": "### `broadcastChannel.onmessageerror`\n\n\n\n* Type: {Function} Invoked with a received message cannot be\n  deserialized.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 990,
+      "endLine": 997,
+      "title": "`broadcastChannel.postMessage(message)`",
+      "sha256": "80951513e3b890a0cff69c4f6dfa312b5ed99d3428f38c8fdc3b8c905d003005",
+      "normativeRequirements": "### `broadcastChannel.postMessage(message)`\n\n\n\n* `message` {any} Any cloneable JavaScript value.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 998,
+      "endLine": 1008,
+      "title": "`broadcastChannel.ref()`",
+      "sha256": "e585e2247e2645c6434cbad448f2ff8609b53e90e45ac8bbb6f3415731391093",
+      "normativeRequirements": "### `broadcastChannel.ref()`\n\n\n\nOpposite of `unref()`. Calling `ref()` on a previously `unref()`ed\nBroadcastChannel does _not_ let the program exit if it's the only active handle\nleft (the default behavior). If the port is `ref()`ed, calling `ref()` again\nhas no effect.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1009,
+      "endLine": 1018,
+      "title": "`broadcastChannel.unref()`",
+      "sha256": "155647786d6e9205e2738930134e2563a2d4c584dc5140d6838b06464d91c0a7",
+      "normativeRequirements": "### `broadcastChannel.unref()`\n\n\n\nCalling `unref()` on a BroadcastChannel allows the thread to exit if this\nis the only active handle in the event system. If the BroadcastChannel is\nalready `unref()`ed calling `unref()` again has no effect.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1019,
+      "endLine": 1048,
+      "title": "Class: `MessageChannel`",
+      "sha256": "4ee934454fbe9a421a200da248ac9737fd4deebd6bf774d5229b31a62c711a5b",
+      "normativeRequirements": "## Class: `MessageChannel`\n\n\n\nInstances of the `worker.MessageChannel` class represent an asynchronous,\ntwo-way communications channel.\nThe `MessageChannel` has no methods of its own. `new MessageChannel()`\nyields an object with `port1` and `port2` properties, which refer to linked\n[`MessagePort`][] instances.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1049,
+      "endLine": 1069,
+      "title": "Class: `MessagePort`",
+      "sha256": "8b5e099179922f7e08c4fa07f039dbe9db4d815ba51c49018cc0dede65052d3d",
+      "normativeRequirements": "## Class: `MessagePort`\n\n\n\n* Extends: {EventTarget}\n\nInstances of the `worker.MessagePort` class represent one end of an\nasynchronous, two-way communications channel. It can be used to transfer\nstructured data, memory regions and other `MessagePort`s between different\n[`Worker`][]s.\n\nThis implementation matches [browser `MessagePort`][]s.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1070,
+      "endLine": 1106,
+      "title": "Event: `'close'`",
+      "sha256": "ad8169fcee01203347cc5a9fb6400bedb8722b566e135807a07557340fd9db82",
+      "normativeRequirements": "### Event: `'close'`\n\n\n\nThe `'close'` event is emitted once either side of the channel has been\ndisconnected.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1107,
+      "endLine": 1120,
+      "title": "Event: `'message'`",
+      "sha256": "22fbc364720ba5dba9391141a7c8f3ccad72bd0828b8fcb38e350deb07f9afec",
+      "normativeRequirements": "### Event: `'message'`\n\n\n\n* `value` {any} The transmitted value\n\nThe `'message'` event is emitted for any incoming message, containing the cloned\ninput of [`port.postMessage()`][].\n\nListeners on this event receive a clone of the `value` parameter as passed\nto `postMessage()` and no further arguments.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1121,
+      "endLine": 1138,
+      "title": "Event: `'messageerror'`",
+      "sha256": "a5f53d1f7d347ae60571208871d2dee07ef7f99aa7c36cabb8573e0ed866d7d0",
+      "normativeRequirements": "### Event: `'messageerror'`\n\n\n\n* `error` {Error} An Error object\n\nThe `'messageerror'` event is emitted when deserializing a message failed.\n\nCurrently, this event is emitted when there is an error occurring while\ninstantiating the posted JS object on the receiving end. Such situations\nare rare, but can happen, for instance, when certain Node.js API objects\nare received in a `vm.Context` (where Node.js APIs are currently\nunavailable).\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1139,
+      "endLine": 1151,
+      "title": "`port.close()`",
+      "sha256": "3c9fbfce0e07dcffe2cebc1c0bfba063fa145b7a8a08219da8a1d2315ee285b8",
+      "normativeRequirements": "### `port.close()`\n\n\n\nDisables further sending of messages on either side of the connection.\nThis method can be called when no further communication will happen over this\n`MessagePort`.\n\nThe [`'close'` event][] is emitted on both `MessagePort` instances that\nare part of the channel.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1152,
+      "endLine": 1315,
+      "title": "`port.postMessage(value[, transferList])`",
+      "sha256": "5ee8fd912cc1f0515b0f1c79502f9b33e7a6d96e549a8a2022ce2c0e2c070c80",
+      "normativeRequirements": "### `port.postMessage(value[, transferList])`\n\n\n\n* `value` {any}\n* `transferList` {Object\\[]}\n\nSends a JavaScript value to the receiving side of this channel.\n`value` is transferred in a way which is compatible with\nthe [HTML structured clone algorithm][].\n\nIn particular, the significant differences to `JSON` are:\n\n* `value` may contain circular references.\n* `value` may contain instances of builtin JS types such as `RegExp`s,\n  `BigInt`s, `Map`s, `Set`s, etc.\n* `value` may contain typed arrays, both using `ArrayBuffer`s\n  and `SharedArrayBuffer`s.\n* `value` may contain [`WebAssembly.Module`][] instances.\n* `value` may not contain native (C++-backed) objects other than:\n  * {CryptoKey}s,\n  * {FileHandle}s,\n  * {Histogram}s,\n  * {KeyObject}s,\n  * {MessagePort}s,\n  * {net.BlockList}s,\n  * {net.Server}s (TCP only, when listed in `transferList`),\n  * {net.Socket}s (TCP only, when listed in `transferList`),\n  * {net.SocketAddress}es,\n  * {X509Certificate}s.\n\n\n\n\n\n`transferList` may be a list of {ArrayBuffer}, [`MessagePort`][],\n[`FileHandle`][], {net.Server}, {net.Socket}, and {net.BoundSocket} objects.\nAfter transferring, they are not usable on the sending side of the channel\nanymore (even if they are not contained in `value`).\n\nTransferring a {net.Server} moves its listening socket — together with any\npending connections in the accept queue — to the receiving thread's event loop.\nTransferring a {net.Socket} moves a single connection; the socket must be a\nfreshly accepted or created TCP connection that has not yet started reading and\nhas no buffered data, otherwise `postMessage()` throws\n`ERR_WORKER_HANDLE_NOT_TRANSFERABLE`. This makes it possible to accept\nconnections on one thread and distribute them across a pool of worker threads.\nTransferring a {net.BoundSocket} moves an un-adopted pre-bound socket, so a\nport can be reserved synchronously on one thread and adopted on another.\nOnly TCP handles are supported.\n\nIf `value` contains {SharedArrayBuffer} instances, those are accessible\nfrom either thread. They cannot be listed in `transferList`.\n\n`value` may still contain `ArrayBuffer` instances that are not in\n`transferList`; in that case, the underlying memory is copied rather than moved.\n\n\n\n\n\nThe message object is cloned immediately, and can be modified after\nposting without having side effects.\n\nFor more information on the serialization and deserialization mechanisms\nbehind this API, see the [serialization API of the `node:v8` module][v8.serdes].\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1316,
+      "endLine": 1363,
+      "title": "Considerations when transferring TypedArrays and Buffers",
+      "sha256": "6f7f9e28c4ffd07998d1ac72ba45595f895a1dfd90f14fd585175300bf0bf95d",
+      "normativeRequirements": "#### Considerations when transferring TypedArrays and Buffers\n\nAll {TypedArray|Buffer} instances are views over an underlying\n{ArrayBuffer}. That is, it is the `ArrayBuffer` that actually stores\nthe raw data while the `TypedArray` and `Buffer` objects provide a\nway of viewing and manipulating the data. It is possible and common\nfor multiple views to be created over the same `ArrayBuffer` instance.\nGreat care must be taken when using a transfer list to transfer an\n`ArrayBuffer` as doing so causes all `TypedArray` and `Buffer`\ninstances that share that same `ArrayBuffer` to become unusable.\n\n\n\nFor `Buffer` instances, specifically, whether the underlying\n`ArrayBuffer` can be transferred or cloned depends entirely on how\ninstances were created, which often cannot be reliably determined.\n\nAn `ArrayBuffer` can be marked with [`markAsUntransferable()`][] to indicate\nthat it should always be cloned and never transferred.\n\nDepending on how a `Buffer` instance was created, it may or may\nnot own its underlying `ArrayBuffer`. An `ArrayBuffer` must not\nbe transferred unless it is known that the `Buffer` instance\nowns it. In particular, for `Buffer`s created from the internal\n`Buffer` pool (using, for instance `Buffer.from()` or `Buffer.allocUnsafe()`),\ntransferring them is not possible and they are always cloned,\nwhich sends a copy of the entire `Buffer` pool.\nThis behavior may come with unintended higher memory\nusage and possible security concerns.\n\nSee [`Buffer.allocUnsafe()`][] for more details on `Buffer` pooling.\n\nThe `ArrayBuffer`s for `Buffer` instances created using\n`Buffer.alloc()` or `Buffer.allocUnsafeSlow()` can always be\ntransferred but doing so renders all other existing views of\nthose `ArrayBuffer`s unusable.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1364,
+      "endLine": 1403,
+      "title": "Considerations when cloning objects with prototypes, classes, and accessors",
+      "sha256": "f0141eb20b1dfe56d725894dae16469ed178dca35ef123db7446904d1600d34f",
+      "normativeRequirements": "#### Considerations when cloning objects with prototypes, classes, and accessors\n\nBecause object cloning uses the [HTML structured clone algorithm][],\nnon-enumerable properties, property accessors, and object prototypes are\nnot preserved. In particular, {Buffer} objects will be read as\nplain {Uint8Array}s on the receiving side, and instances of JavaScript\nclasses will be cloned as plain JavaScript objects.\n\n\n\nSome built-in objects cannot be cloned at all. For example, posting a\n`URL` object throws a `DataCloneError`:\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1404,
+      "endLine": 1421,
+      "title": "`port.hasRef()`",
+      "sha256": "ca10c33f3157e02748fad26b34a727f485dfeb6f5a89d8f06bfd30298e7ee629",
+      "normativeRequirements": "### `port.hasRef()`\n\n\n\n* Returns: {boolean}\n\nIf true, the `MessagePort` object will keep the Node.js event loop active.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1422,
+      "endLine": 1435,
+      "title": "`port.ref()`",
+      "sha256": "a2791fc5c107b5c82073e213d1ba6fe395acda77e19cb0829e92afa6fe44dafa",
+      "normativeRequirements": "### `port.ref()`\n\n\n\nOpposite of `unref()`. Calling `ref()` on a previously `unref()`ed port does\n_not_ let the program exit if it's the only active handle left (the default\nbehavior). If the port is `ref()`ed, calling `ref()` again has no effect.\n\nIf listeners are attached or removed using `.on('message')`, the port\nis `ref()`ed and `unref()`ed automatically depending on whether\nlisteners for the event exist.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1436,
+      "endLine": 1451,
+      "title": "`port.start()`",
+      "sha256": "8783bfe12899932bdf2999288feee3a4ad24426be834903ce3db92cb680f4552",
+      "normativeRequirements": "### `port.start()`\n\n\n\nStarts receiving messages on this `MessagePort`. When using this port\nas an event emitter, this is called automatically once `'message'`\nlisteners are attached.\n\nThis method exists for parity with the Web `MessagePort` API. In Node.js,\nit is only useful for ignoring messages when no event listener is present.\nNode.js also diverges in its handling of `.onmessage`. Setting it\nautomatically calls `.start()`, but unsetting it lets messages queue up\nuntil a new handler is set or the port is discarded.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1452,
+      "endLine": 1465,
+      "title": "`port.unref()`",
+      "sha256": "335119395a1ea12a6c75cc8e1a5182c0b8d730734bf4721f08d9c5e51ef3551f",
+      "normativeRequirements": "### `port.unref()`\n\n\n\nCalling `unref()` on a port allows the thread to exit if this is the only\nactive handle in the event system. If the port is already `unref()`ed calling\n`unref()` again has no effect.\n\nIf listeners are attached or removed using `.on('message')`, the port is\n`ref()`ed and `unref()`ed automatically depending on whether\nlisteners for the event exist.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1466,
+      "endLine": 1563,
+      "title": "Class: `Worker`",
+      "sha256": "90725bbe19f3ec14b195df99b27e2a043368627934f62a642c918c240309a0cd",
+      "normativeRequirements": "## Class: `Worker`\n\n\n\n* Extends: {EventEmitter}\n\nThe `Worker` class represents an independent JavaScript execution thread.\nMost Node.js APIs are available inside of it.\n\nNotable differences inside a Worker environment are:\n\n* The [`process.stdin`][], [`process.stdout`][], and [`process.stderr`][]\n  streams may be redirected by the parent thread.\n* The [`require('node:worker_threads').isMainThread`][] property is set to `false`.\n* The [`require('node:worker_threads').parentPort`][] message port is available.\n* [`process.exit()`][] does not stop the whole program, just the single thread,\n  and [`process.abort()`][] is not available.\n* [`process.chdir()`][] and `process` methods that set group or user ids\n  are not available.\n* [`process.env`][] is a copy of the parent thread's environment variables,\n  unless otherwise specified. Changes to one copy are not visible in other\n  threads, and are not visible to native add-ons (unless\n  [`worker.SHARE_ENV`][] is passed as the `env` option to the\n  [`Worker`][] constructor). On Windows, unlike the main thread, a copy of the\n  environment variables operates in a case-sensitive manner.\n* [`process.title`][] cannot be modified.\n* Signals are not delivered through [`process.on('...')`][Signals events].\n* Execution may stop at any point as a result of [`worker.terminate()`][]\n  being invoked.\n* IPC channels from parent processes are not accessible.\n* The [`trace_events`][] module is not supported.\n* Native add-ons can only be loaded from multiple threads if they fulfill\n  [certain conditions][Addons worker support].\n\nCreating `Worker` instances inside of other `Worker`s is possible.\n\nLike [Web Workers][] and the [`node:cluster` module][], two-way communication\ncan be achieved through inter-thread message passing. Internally, a `Worker` has\na built-in pair of [`MessagePort`][]s that are already associated with each\nother when the `Worker` is created. While the `MessagePort` object on the parent\nside is not directly exposed, its functionalities are exposed through\n[`worker.postMessage()`][] and the [`worker.on('message')`][] event\non the `Worker` object for the parent thread.\n\nTo create custom messaging channels (which is encouraged over using the default\nglobal channel because it facilitates separation of concerns), users can create\na `MessageChannel` object on either thread and pass one of the\n`MessagePort`s on that `MessageChannel` to the other thread through a\npre-existing channel, such as the global one.\n\nSee [`port.postMessage()`][] for more information on how messages are passed,\nand what kind of JavaScript values can be successfully transported through\nthe thread barrier.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1564,
+      "endLine": 1691,
+      "title": "`new Worker(filename[, options])`",
+      "sha256": "a02c50c6fabeb34710d8b3121649f2a9ac7fa0522a62308e28a6b9cdd9664127",
+      "normativeRequirements": "### `new Worker(filename[, options])`\n\n\n\n* `filename` {string|URL} The path to the Worker's main script or module. Must\n  be either an absolute path or a relative path (i.e. relative to the\n  current working directory) starting with `./` or `../`, or a WHATWG `URL`\n  object using `file:` or `data:` protocol.\n  When using a [`data:` URL][], the data is interpreted based on MIME type using\n  the [ECMAScript module loader][].\n  If `options.eval` is `true`, this is a string containing JavaScript code\n  rather than a path.\n* `options` {Object}\n  * `argv` {any\\[]} List of arguments which would be stringified and appended to\n    `process.argv` in the worker. This is mostly similar to the `workerData`\n    but the values are available on the global `process.argv` as if they\n    were passed as CLI options to the script.\n  * `env` {Object} If set, specifies the initial value of `process.env` inside\n    the Worker thread. As a special value, [`worker.SHARE_ENV`][] may be used\n    to specify that the parent thread and the child thread should share their\n    environment variables; in that case, changes to one thread's `process.env`\n    object affect the other thread as well. **Default:** `process.env`.\n  * `eval` {boolean} If `true` and the first argument is a `string`, interpret\n    the first argument to the constructor as a script that is executed once the\n    worker is online.\n  * `execArgv` {string\\[]} List of node CLI options passed to the worker.\n    V8 options (such as `--max-old-space-size`) and options that affect the\n    process (such as `--title`) are not supported. If set, this is provided\n    as [`process.execArgv`][] inside the worker. By default, options are\n    inherited from the parent thread.\n    Passing an explicit `execArgv` (including an empty array) replaces that\n    inheritance: the worker receives only the listed flags. Under the\n    [Permission Model](permissions.md#permission-model), that means an explicit\n    `execArgv` can drop the parent's `--permission` / `--allow-*` grants.\n    Omit `execArgv` to keep the parent's CLI flags. This is intended. See\n    [Permission Model limitations](permissions.md#limitations-and-known-issues).\n  * `stdin` {boolean} If this is set to `true`, then `worker.stdin`\n    provides a writable stream whose contents appear as `process.stdin`\n    inside the Worker. By default, no data is provided.\n  * `stdout` {boolean} If this is set to `true`, then `worker.stdout` is\n    not automatically piped through to `process.stdout` in the parent.\n  * `stderr` {boolean} If this is set to `true`, then `worker.stderr` is\n    not automatically piped through to `process.stderr` in the parent.\n  * `workerData` {any} Any JavaScript value that is cloned and made\n    available as [`require('node:worker_threads').workerData`][]. The cloning\n    occurs as described in the [HTML structured clone algorithm][], and an error\n    is thrown if the object cannot be cloned (e.g. because it contains\n    `function`s).\n  * `trackUnmanagedFds` {boolean} If this is set to `true`, then the Worker\n    tracks raw file descriptors managed through [`fs.open()`][] and\n    [`fs.close()`][], and closes them when the Worker exits, similar to other\n    resources like network sockets or file descriptors managed through\n    the [`FileHandle`][] API. This option is automatically inherited by all\n    nested `Worker`s. **Default:** `true`.\n  * `transferList` {Object\\[]} If one or more `MessagePort`-like objects\n    are passed in `workerData`, a `transferList` is required for those\n    items or [`ERR_MISSING_MESSAGE_PORT_IN_TRANSFER_LIST`][] is thrown.\n    See [`port.postMessage()`][] for more information.\n  * `resourceLimits` {Object} An optional set of resource limits for the new JS\n    engine instance. Reaching these limits leads to termination of the `Worker`\n    instance. These limits only affect the JS engine, and no external data,\n    including no `ArrayBuffer`s. Even if these limits are set, the process may\n    still abort if it encounters a global out-of-memory situation.\n    * `maxOldGenerationSizeMb` {number} The maximum size of the main heap in\n      MB. If the command-line argument [`--max-old-space-size`][] is set, it\n      overrides this setting.\n    * `maxYoungGenerationSizeMb` {number} The maximum size of a heap space for\n      recently created objects. If the command-line argument\n      [`--max-semi-space-size`][] is set, it overrides this setting.\n    * `codeRangeSizeMb` {number} The size of a pre-allocated memory range\n      used for generated code.\n    * `stackSizeMb` {number} The default maximum stack size for the thread.\n      Small values may lead to unusable Worker instances. **Default:** `4`.\n  * `name` {string} An optional `name` to be replaced in the thread name\n    and to the worker title for debugging/identification purposes,\n    making the final title as `[worker ${id}] ${name}`.\n    This parameter has a maximum allowed size, depending on the operating\n    system. If the provided name exceeds the limit, it will be truncated\n    * Maximum sizes:\n      * Windows: 32,767 characters\n      * macOS: 64 characters\n      * Linux: 16 characters\n      * NetBSD: limited to `PTHREAD_MAX_NAMELEN_NP`\n      * FreeBSD and OpenBSD: limited to `MAXCOMLEN`\n        **Default:** `'WorkerThread'`.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1692,
+      "endLine": 1702,
+      "title": "Event: `'error'`",
+      "sha256": "036a8d8cc7533be37dc9db1726b5e1b052ba971d304d787a149f0f6fae2f7172",
+      "normativeRequirements": "### Event: `'error'`\n\n\n\n* `err` {any}\n\nThe `'error'` event is emitted if the worker thread throws an uncaught\nexception. In that case, the worker is terminated.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1703,
+      "endLine": 1717,
+      "title": "Event: `'exit'`",
+      "sha256": "c666b1d03771f92958395526fca9f6a78cfd43d5c343c17c759eb4d5928f0229",
+      "normativeRequirements": "### Event: `'exit'`\n\n\n\n* `exitCode` {integer}\n\nThe `'exit'` event is emitted once the worker has stopped. If the worker\nexited by calling [`process.exit()`][], the `exitCode` parameter is the\npassed exit code. If the worker was terminated, the `exitCode` parameter is\n`1`.\n\nThis is the final event emitted by any `Worker` instance.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1718,
+      "endLine": 1732,
+      "title": "Event: `'message'`",
+      "sha256": "0a8741d3ec854074e8af562d884d9c21cdd8867b897faf6dc1b0151a7cb73635",
+      "normativeRequirements": "### Event: `'message'`\n\n\n\n* `value` {any} The transmitted value\n\nThe `'message'` event is emitted when the worker thread has invoked\n[`require('node:worker_threads').parentPort.postMessage()`][].\nSee the [`port.on('message')`][] event for more details.\n\nAll messages sent from the worker thread are emitted before the\n[`'exit'` event][] is emitted on the `Worker` object.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1733,
+      "endLine": 1744,
+      "title": "Event: `'messageerror'`",
+      "sha256": "7f102cb834c78a87715ef3adcc886c5c5dd171448f8036018d479cb9797d5a6f",
+      "normativeRequirements": "### Event: `'messageerror'`\n\n\n\n* `error` {Error} An Error object\n\nThe `'messageerror'` event is emitted when deserializing a message failed.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1745,
+      "endLine": 1753,
+      "title": "Event: `'online'`",
+      "sha256": "c17b059ec0ab7387e86b7e3db79eff7a43137829ababadbc8fd1e1ee8ac51272",
+      "normativeRequirements": "### Event: `'online'`\n\n\n\nThe `'online'` event is emitted when the worker thread has started executing\nJavaScript code.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1754,
+      "endLine": 1767,
+      "title": "`worker.cpuUsage([prev])`",
+      "sha256": "f7fdf1c11317cae04721b73b1580ab17dcc05606a5484b4f33f106d36185d493",
+      "normativeRequirements": "### `worker.cpuUsage([prev])`\n\n\n\n* Returns: {Promise}\n\nThis method returns a `Promise` that will resolve to an object identical to [`process.threadCpuUsage()`][],\nor reject with an [`ERR_WORKER_NOT_RUNNING`][] error if the worker is no longer running.\nThis methods allows the statistics to be observed from outside the actual thread.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1768,
+      "endLine": 1794,
+      "title": "`worker.getHeapSnapshot([options])`",
+      "sha256": "e9639a607566fe937b6581d2f9455d8191a8dc2640bd9624a1e31678a38ae076",
+      "normativeRequirements": "### `worker.getHeapSnapshot([options])`\n\n\n\n* `options` {Object}\n  * `exposeInternals` {boolean} If true, expose internals in the heap snapshot.\n    **Default:** `false`.\n  * `exposeNumericValues` {boolean} If true, expose numeric values in\n    artificial fields. **Default:** `false`.\n* Returns: {Promise} A promise for a Readable Stream containing\n  a V8 heap snapshot\n\nReturns a readable stream for a V8 snapshot of the current state of the Worker.\nSee [`v8.getHeapSnapshot()`][] for more details.\n\nIf the Worker thread is no longer running, which may occur before the\n[`'exit'` event][] is emitted, the returned `Promise` is rejected\nimmediately with an [`ERR_WORKER_NOT_RUNNING`][] error.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1795,
+      "endLine": 1808,
+      "title": "`worker.getHeapStatistics()`",
+      "sha256": "02e64f4b66c41d0503380dac98160c1a49c996ec5b96b2cd03c13b7e4a528ad6",
+      "normativeRequirements": "### `worker.getHeapStatistics()`\n\n\n\n* Returns: {Promise}\n\nThis method returns a `Promise` that will resolve to an object identical to [`v8.getHeapStatistics()`][],\nor reject with an [`ERR_WORKER_NOT_RUNNING`][] error if the worker is no longer running.\nThis methods allows the statistics to be observed from outside the actual thread.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1809,
+      "endLine": 1820,
+      "title": "`worker.performance`",
+      "sha256": "b51c65ad1bcdce99fbfeb6fe6d3ef9d6ed507962d7bdc79355894e7d0c830da6",
+      "normativeRequirements": "### `worker.performance`\n\n\n\nAn object that can be used to query performance information from a worker\ninstance.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1821,
+      "endLine": 1894,
+      "title": "`performance.eventLoopUtilization([utilization1[, utilization2]])`",
+      "sha256": "51cf41bf26cf4062bb6985ab6d3e79e9865eecd86681602bb132aec57d48e340",
+      "normativeRequirements": "#### `performance.eventLoopUtilization([utilization1[, utilization2]])`\n\n\n\n* `utilization1` {Object} The result of a previous call to\n  `eventLoopUtilization()`.\n* `utilization2` {Object} The result of a previous call to\n  `eventLoopUtilization()` prior to `utilization1`.\n* Returns: {Object}\n  * `idle` {number}\n  * `active` {number}\n  * `utilization` {number}\n\nThe same call as [`perf_hooks` `eventLoopUtilization()`][], except the values\nof the worker instance are returned.\n\nOne difference is that, unlike the main thread, bootstrapping within a worker\nis done within the event loop. So the event loop utilization is\nimmediately available once the worker's script begins execution.\n\nAn `idle` time that does not increase does not indicate that the worker is\nstuck in bootstrap. The following example shows how the worker's entire\nlifetime never accumulates any `idle` time, but is still able to process\nmessages.\n\n\n\n\n\nThe event loop utilization of a worker is available only after the [`'online'`\nevent][] emitted, and if called before this, or after the [`'exit'`\nevent][], then all properties have the value of `0`.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1895,
+      "endLine": 1907,
+      "title": "`worker.postMessage(value[, transferList])`",
+      "sha256": "234b733cf525760fce0a2e4a687c1b134dcb833a0df888e0d554f4d9d90263bf",
+      "normativeRequirements": "### `worker.postMessage(value[, transferList])`\n\n\n\n* `value` {any}\n* `transferList` {Object\\[]}\n\nSend a message to the worker that is received via\n[`require('node:worker_threads').parentPort.on('message')`][].\nSee [`port.postMessage()`][] for more details.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1908,
+      "endLine": 1918,
+      "title": "`worker.ref()`",
+      "sha256": "a56b262acdf1f48cc11a84de932e074446af18c3579fe2ad043db4053eba95eb",
+      "normativeRequirements": "### `worker.ref()`\n\n\n\nOpposite of `unref()`, calling `ref()` on a previously `unref()`ed worker does\n_not_ let the program exit if it's the only active handle left (the default\nbehavior). If the worker is `ref()`ed, calling `ref()` again has\nno effect.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1919,
+      "endLine": 1938,
+      "title": "`worker.resourceLimits`",
+      "sha256": "ebd46121a0e5abb68e5b49946f057fbd7242a8093ea915859927a9d4a8ec87b5",
+      "normativeRequirements": "### `worker.resourceLimits`\n\n\n\n* Type: {Object}\n  * `maxYoungGenerationSizeMb` {number}\n  * `maxOldGenerationSizeMb` {number}\n  * `codeRangeSizeMb` {number}\n  * `stackSizeMb` {number}\n\nProvides the set of JS engine resource constraints for this Worker thread.\nIf the `resourceLimits` option was passed to the [`Worker`][] constructor,\nthis matches its values.\n\nIf the worker has stopped, the return value is an empty object.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1939,
+      "endLine": 1985,
+      "title": "`worker.startCpuProfile([options])`",
+      "sha256": "e798816a54aa86dff7851f36bc55b3eb8a1990e71b2432ecc59d81994fbd207b",
+      "normativeRequirements": "### `worker.startCpuProfile([options])`\n\n\n\n* `options` {Object}\n  * `sampleInterval` {number} Requested sampling interval in milliseconds. **Default:** `0`.\n  * `maxBufferSize` {integer} Maximum number of samples to retain.\n    **Default:** `4294967295`.\n* Returns: {Promise}\n\nStarting a CPU profile then return a Promise that fulfills with an error\nor an `CPUProfileHandle` object. This API supports `await using` syntax.\n\n\n\n`await using` example.\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 1986,
+      "endLine": 2071,
+      "title": "`worker.startHeapProfile([options])`",
+      "sha256": "fefc61e835866846ed2e73e5872a5752b5f9b88c7f868b5325154beb63765820",
+      "normativeRequirements": "### `worker.startHeapProfile([options])`\n\n\n\n* `options` {Object}\n  * `sampleInterval` {number} The average sampling interval in bytes.\n    **Default:** `524288` (512 KiB).\n  * `stackDepth` {integer} The maximum stack depth for samples.\n    **Default:** `16`.\n  * `forceGC` {boolean} Force garbage collection before taking the profile.\n    **Default:** `false`.\n  * `includeObjectsCollectedByMajorGC` {boolean} Include objects collected\n    by major GC. **Default:** `false`.\n  * `includeObjectsCollectedByMinorGC` {boolean} Include objects collected\n    by minor GC. **Default:** `false`.\n* Returns: {Promise}\n\nStarting a Heap profile then return a Promise that fulfills with an error\nor an `HeapProfileHandle` object. This API supports `await using` syntax.\n\n\n\n\n\n`await using` example.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 2072,
+      "endLine": 2084,
+      "title": "`worker.stderr`",
+      "sha256": "7b7f6345cce9971931c10015a0a448752a869e90ffafe90591ace6eaca6846c6",
+      "normativeRequirements": "### `worker.stderr`\n\n\n\n* Type: {stream.Readable}\n\nThis is a readable stream which contains data written to [`process.stderr`][]\ninside the worker thread. If `stderr: true` was not passed to the\n[`Worker`][] constructor, then data is piped to the parent thread's\n[`process.stderr`][] stream.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 2085,
+      "endLine": 2096,
+      "title": "`worker.stdin`",
+      "sha256": "53bd6f0a051c2876cfd3e97307f316a36284151fc52884dbace0e0063ef5d7eb",
+      "normativeRequirements": "### `worker.stdin`\n\n\n\n* Type: {null|stream.Writable}\n\nIf `stdin: true` was passed to the [`Worker`][] constructor, this is a\nwritable stream. The data written to this stream will be made available in\nthe worker thread as [`process.stdin`][].\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 2097,
+      "endLine": 2109,
+      "title": "`worker.stdout`",
+      "sha256": "3cfffe4a9576f9b6ea69e9bc93e8aee2f851a513eca2b0b212c26cf8819fc0cb",
+      "normativeRequirements": "### `worker.stdout`\n\n\n\n* Type: {stream.Readable}\n\nThis is a readable stream which contains data written to [`process.stdout`][]\ninside the worker thread. If `stdout: true` was not passed to the\n[`Worker`][] constructor, then data is piped to the parent thread's\n[`process.stdout`][] stream.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 2110,
+      "endLine": 2128,
+      "title": "`worker.terminate()`",
+      "sha256": "92d3746f9648fa5d20ab319a5f73143fa49724225a94c93f105cb7e02ae8c458",
+      "normativeRequirements": "### `worker.terminate()`\n\n\n\n* Returns: {Promise}\n\nStop all JavaScript execution in the worker thread as soon as possible.\nReturns a Promise for the exit code that is fulfilled when the\n[`'exit'` event][] is emitted.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 2129,
+      "endLine": 2140,
+      "title": "`worker.threadId`",
+      "sha256": "ac4240fed311e629bb8e6d0931d481dba6d1eff4523d0a97afe71fc11a728924",
+      "normativeRequirements": "### `worker.threadId`\n\n\n\n* Type: {integer}\n\nAn integer identifier for the referenced thread. Inside the worker thread,\nit is available as [`require('node:worker_threads').threadId`][].\nThis value is unique for each `Worker` instance inside a single process.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 2141,
+      "endLine": 2153,
+      "title": "`worker.threadName`",
+      "sha256": "9a34191241858fcd98937ac5ea887c4a872d62f650ebf847e864df50458ce8a1",
+      "normativeRequirements": "### `worker.threadName`\n\n\n\n* {string|null}\n\nA string identifier for the referenced thread or null if the thread is not running.\nInside the worker thread, it is available as [`require('node:worker_threads').threadName`][].\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 2154,
+      "endLine": 2163,
+      "title": "`worker.unref()`",
+      "sha256": "ce3285af24592bf5d836ba75065b7e2abba7a08fd6b5d8b7e28d71342575e446",
+      "normativeRequirements": "### `worker.unref()`\n\n\n\nCalling `unref()` on a worker allows the thread to exit if this is the only\nactive handle in the event system. If the worker is already `unref()`ed calling\n`unref()` again has no effect.\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 2164,
+      "endLine": 2180,
+      "title": "`worker[Symbol.asyncDispose]()`",
+      "sha256": "0cb1cdeda579004ce5025d53615f00dce3ef21b2236eaa8971da3b5ec554d728",
+      "normativeRequirements": "### `worker[Symbol.asyncDispose]()`\n\n\n\nCalls [`worker.terminate()`][] when the dispose scope is exited.\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 2181,
+      "endLine": 2182,
+      "title": "Notes",
+      "sha256": "f25a4574032ca37ee3c3ad4fc7e378d4e6e326bc5df4bc1f4fae894f08abd315",
+      "normativeRequirements": "## Notes\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 2183,
+      "endLine": 2223,
+      "title": "Synchronous blocking of stdio",
+      "sha256": "beef58f6fa4c64efe9769085fd06e22e017c0ed0111045b200ec186f94118c11",
+      "normativeRequirements": "### Synchronous blocking of stdio\n\n`Worker`s utilize message passing via {MessagePort} to implement interactions\nwith `stdio`. This means that `stdio` output originating from a `Worker` can\nget blocked by synchronous code on the receiving end that is blocking the\nNode.js event loop.\n\n\n\n\n\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    },
+    {
+      "document": "doc/api/worker_threads.md",
+      "line": 2224,
+      "endLine": 2298,
+      "title": "Launching worker threads from preload scripts",
+      "sha256": "7b63fa6996dc07bedb61c57900d8329d4b7850a44ab28d81ba4f0ed198e75364",
+      "normativeRequirements": "### Launching worker threads from preload scripts\n\nTake care when launching worker threads from preload scripts (scripts loaded\nand run using the `-r` command line flag). Unless the `execArgv` option is\nexplicitly set, new Worker threads automatically inherit the command line flags\nfrom the running process and will preload the same preload scripts as the main\nthread. If the preload script unconditionally launches a worker thread, every\nthread spawned will spawn another until the application crashes.\n\n[Addons worker support]: addons.md#worker-support\n[ECMAScript module loader]: esm.md#data-imports\n[HTML structured clone algorithm]: https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm\n[LockManager]: #class-lockmanager\n[Signals events]: process.md#signal-events\n[Web Workers]: https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API\n[`'close'` event]: #event-close\n[`'exit'` event]: #event-exit\n[`'online'` event]: #event-online\n[`--max-old-space-size`]: cli.md#--max-old-space-sizesize-in-mib\n[`--max-semi-space-size`]: cli.md#--max-semi-space-sizesize-in-mib\n[`AsyncResource`]: async_hooks.md#class-asyncresource\n[`Buffer.allocUnsafe()`]: buffer.md#static-method-bufferallocunsafesize-alignment\n[`ERR_MISSING_MESSAGE_PORT_IN_TRANSFER_LIST`]: errors.md#err_missing_message_port_in_transfer_list\n[`ERR_WORKER_MESSAGING_ERRORED`]: errors.md#err_worker_messaging_errored\n[`ERR_WORKER_MESSAGING_FAILED`]: errors.md#err_worker_messaging_failed\n[`ERR_WORKER_MESSAGING_SAME_THREAD`]: errors.md#err_worker_messaging_same_thread\n[`ERR_WORKER_MESSAGING_TIMEOUT`]: errors.md#err_worker_messaging_timeout\n[`ERR_WORKER_NOT_RUNNING`]: errors.md#err_worker_not_running\n[`FileHandle`]: fs.md#class-filehandle\n[`MessagePort`]: #class-messageport\n[`WebAssembly.Module`]: https://developer.mozilla.org/en-US/docs/WebAssembly/Reference/JavaScript_interface/Module\n[`Worker constructor options`]: #new-workerfilename-options\n[`Worker`]: #class-worker\n[`data:` URL]: https://developer.mozilla.org/en-US/docs/Web/URI/Reference/Schemes/data\n[`fs.close()`]: fs.md#fsclosefd-callback\n[`fs.open()`]: fs.md#fsopenpath-flags-mode-callback\n[`markAsUntransferable()`]: #worker_threadsmarkasuntransferableobject\n[`node:cluster` module]: cluster.md\n[`perf_hooks` `eventLoopUtilization()`]: perf_hooks.md#perf_hookseventlooputilizationutilization1-utilization2\n[`port.on('message')`]: #event-message\n[`port.onmessage()`]: https://developer.mozilla.org/en-US/docs/Web/API/MessagePort/message_event\n[`port.postMessage()`]: #portpostmessagevalue-transferlist\n[`process.abort()`]: process.md#processabort\n[`process.chdir()`]: process.md#processchdirdirectory\n[`process.env`]: process.md#processenv\n[`process.execArgv`]: process.md#processexecargv\n[`process.exit()`]: process.md#processexitcode\n[`process.stderr`]: process.md#processstderr\n[`process.stdin`]: process.md#processstdin\n[`process.stdout`]: process.md#processstdout\n[`process.threadCpuUsage()`]: process.md#processthreadcpuusagepreviousvalue\n[`process.title`]: process.md#processtitle\n[`require('node:worker_threads').isMainThread`]: #worker_threadsismainthread\n[`require('node:worker_threads').parentPort.on('message')`]: #event-message\n[`require('node:worker_threads').parentPort.postMessage()`]: #workerpostmessagevalue-transferlist\n[`require('node:worker_threads').parentPort`]: #worker_threadsparentport\n[`require('node:worker_threads').threadId`]: #worker_threadsthreadid\n[`require('node:worker_threads').threadName`]: #worker_threadsthreadname\n[`require('node:worker_threads').workerData`]: #worker_threadsworkerdata\n[`trace_events`]: tracing.md\n[`v8.getHeapSnapshot()`]: v8.md#v8getheapsnapshotoptions\n[`v8.getHeapStatistics()`]: v8.md#v8getheapstatistics\n[`vm`]: vm.md\n[`worker.SHARE_ENV`]: #worker_threadsshare_env\n[`worker.on('message')`]: #event-message_1\n[`worker.postMessage()`]: #workerpostmessagevalue-transferlist\n[`worker.terminate()`]: #workerterminate\n[`worker.threadId`]: #workerthreadid\n[`worker.threadName`]: #workerthreadname\n[async-resource-worker-pool]: async_context.md#using-asyncresource-for-a-worker-thread-pool\n[browser `LockManager`]: https://developer.mozilla.org/en-US/docs/Web/API/LockManager\n[browser `MessagePort`]: https://developer.mozilla.org/en-US/docs/Web/API/MessagePort\n[contextified]: vm.md#what-does-it-mean-to-contextify-an-object\n[locks.request()]: #locksrequestname-options-callback\n[v8.serdes]: v8.md#serialization-api\n",
+      "review": "Completed public/narrative source contract and actual candidate/owning-layer review; target source/prose questions R-014 remain explicit, no runtime validation"
+    }
+  ],
+  "capturedDescriptors": [
+    {
+      "obligationId": "export:node:worker_threads:0",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "isInternalThread",
+        "kind": "boolean",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.isInternalThread",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:1",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "isMainThread",
+        "kind": "boolean",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.isMainThread",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:2",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.MessagePort",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:3",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:4",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.postMessage",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.postMessage",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:5",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.start",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.start",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:6",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.ref",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.ref",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:7",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.unref",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.unref",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:8",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.hasRef",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.hasRef",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:9",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.onmessage",
+        "kind": "accessor",
+        "enumerable": true,
+        "configurable": true,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.onmessage",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:10",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.onmessageerror",
+        "kind": "accessor",
+        "enumerable": true,
+        "configurable": true,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.onmessageerror",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:11",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.close",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.close",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:12",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.Symbol(kCreateEvent)",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": false,
+        "writable": false
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.Symbol(kCreateEvent)",
+      "sourceAuditComplete": true,
+      "applicability": "private hook metadata, not independently public"
+    },
+    {
+      "obligationId": "export:node:worker_threads:13",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.Symbol(oninit)",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": false,
+        "writable": false
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.Symbol(oninit)",
+      "sourceAuditComplete": true,
+      "applicability": "private hook metadata, not independently public"
+    },
+    {
+      "obligationId": "export:node:worker_threads:14",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.Symbol(handle_onclose)",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": false,
+        "writable": false
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.Symbol(handle_onclose)",
+      "sourceAuditComplete": true,
+      "applicability": "private hook metadata, not independently public"
+    },
+    {
+      "obligationId": "export:node:worker_threads:15",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.Symbol(nodejs.util.inspect.custom)",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": false,
+        "writable": false
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.Symbol(nodejs.util.inspect.custom)",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:16",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessagePort.prototype.Symbol(Symbol.toStringTag)",
+        "kind": "string",
+        "enumerable": false,
+        "configurable": true,
+        "writable": false
+      },
+      "apiObservationId": "worker_threads.MessagePort.prototype.Symbol(Symbol.toStringTag)",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:17",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessageChannel",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.MessageChannel",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:18",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessageChannel.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.MessageChannel.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:19",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "MessageChannel.prototype.Symbol(Symbol.toStringTag)",
+        "kind": "string",
+        "enumerable": false,
+        "configurable": true,
+        "writable": false
+      },
+      "apiObservationId": "worker_threads.MessageChannel.prototype.Symbol(Symbol.toStringTag)",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:20",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "markAsUncloneable",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.markAsUncloneable",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:21",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "markAsUncloneable.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.markAsUncloneable.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:22",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "markAsUntransferable",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.markAsUntransferable",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:23",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "markAsUntransferable.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.markAsUntransferable.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:24",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "isMarkedAsUntransferable",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.isMarkedAsUntransferable",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:25",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "isMarkedAsUntransferable.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.isMarkedAsUntransferable.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:26",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "moveMessagePortToContext",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.moveMessagePortToContext",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:27",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "receiveMessageOnPort",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.receiveMessageOnPort",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:28",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "receiveMessageOnPort.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.receiveMessageOnPort.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:29",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "resourceLimits",
+        "kind": "object",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.resourceLimits",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:30",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "postMessageToThread",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.postMessageToThread",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:31",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "threadId",
+        "kind": "number",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.threadId",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:32",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "threadName",
+        "kind": "string",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.threadName",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:33",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "SHARE_ENV",
+        "kind": "symbol",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.SHARE_ENV",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:34",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:35",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": false
+      },
+      "apiObservationId": "worker_threads.Worker.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:36",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.postMessage",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.postMessage",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:37",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.terminate",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.terminate",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:38",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.ref",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.ref",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:39",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.unref",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.unref",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:40",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.threadId",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": true,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.threadId",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:41",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.threadName",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": true,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.threadName",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:42",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.stdin",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": true,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.stdin",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:43",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.stdout",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": true,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.stdout",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:44",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.stderr",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": true,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.stderr",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:45",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.resourceLimits",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": true,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.resourceLimits",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:46",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.getHeapSnapshot",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.getHeapSnapshot",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:47",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.getHeapStatistics",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.getHeapStatistics",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:48",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.cpuUsage",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.cpuUsage",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:49",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.startCpuProfile",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.startCpuProfile",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:50",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.startHeapProfile",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.startHeapProfile",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:51",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.Symbol(kOnExit)",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.Symbol(kOnExit)",
+      "sourceAuditComplete": true,
+      "applicability": "private hook metadata, not independently public"
+    },
+    {
+      "obligationId": "export:node:worker_threads:52",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.Symbol(kOnCouldNotSerializeErr)",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.Symbol(kOnCouldNotSerializeErr)",
+      "sourceAuditComplete": true,
+      "applicability": "private hook metadata, not independently public"
+    },
+    {
+      "obligationId": "export:node:worker_threads:53",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.Symbol(kOnErrorMessage)",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.Symbol(kOnErrorMessage)",
+      "sourceAuditComplete": true,
+      "applicability": "private hook metadata, not independently public"
+    },
+    {
+      "obligationId": "export:node:worker_threads:54",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.Symbol(kOnMessage)",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.Symbol(kOnMessage)",
+      "sourceAuditComplete": true,
+      "applicability": "private hook metadata, not independently public"
+    },
+    {
+      "obligationId": "export:node:worker_threads:55",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.Symbol(kDispose)",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.Symbol(kDispose)",
+      "sourceAuditComplete": true,
+      "applicability": "private hook metadata, not independently public"
+    },
+    {
+      "obligationId": "export:node:worker_threads:56",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "Worker.prototype.Symbol(Symbol.asyncDispose)",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.Worker.prototype.Symbol(Symbol.asyncDispose)",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:57",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "parentPort",
+        "kind": "object",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.parentPort",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:58",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "workerData",
+        "kind": "object",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.workerData",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:59",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "BroadcastChannel",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.BroadcastChannel",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:60",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "BroadcastChannel.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": false
+      },
+      "apiObservationId": "worker_threads.BroadcastChannel.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:61",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "BroadcastChannel.prototype.close",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.BroadcastChannel.prototype.close",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:62",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "BroadcastChannel.prototype.postMessage",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.BroadcastChannel.prototype.postMessage",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:63",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "BroadcastChannel.prototype.ref",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.BroadcastChannel.prototype.ref",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:64",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "BroadcastChannel.prototype.unref",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.BroadcastChannel.prototype.unref",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:65",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "BroadcastChannel.prototype.onmessage",
+        "kind": "accessor",
+        "enumerable": true,
+        "configurable": true,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "worker_threads.BroadcastChannel.prototype.onmessage",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:66",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "BroadcastChannel.prototype.onmessageerror",
+        "kind": "accessor",
+        "enumerable": true,
+        "configurable": true,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "worker_threads.BroadcastChannel.prototype.onmessageerror",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:67",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "BroadcastChannel.prototype.Symbol(nodejs.util.inspect.custom)",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.BroadcastChannel.prototype.Symbol(nodejs.util.inspect.custom)",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:68",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "BroadcastChannel.prototype.Symbol(Symbol.toStringTag)",
+        "kind": "string",
+        "enumerable": false,
+        "configurable": true,
+        "writable": false
+      },
+      "apiObservationId": "worker_threads.BroadcastChannel.prototype.Symbol(Symbol.toStringTag)",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:69",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "setEnvironmentData",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.setEnvironmentData",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:70",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "setEnvironmentData.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.setEnvironmentData.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:71",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "getEnvironmentData",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.getEnvironmentData",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:72",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "getEnvironmentData.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.getEnvironmentData.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    },
+    {
+      "obligationId": "export:node:worker_threads:73",
+      "module": "node:worker_threads",
+      "descriptor": {
+        "path": "locks",
+        "kind": "object",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "worker_threads.locks",
+      "sourceAuditComplete": true,
+      "applicability": "Public member or observable prototype/descriptor metadata; source behavior requirements retained separately"
+    }
+  ],
+  "referenceCaptureIdentity": {
+    "sha256": "4347ae958d25d7cb760cd974e58d379ed2c48a76aea271bc29ef7780302b03fd",
+    "generatedAt": "2026-10-31T21:20:46.234Z",
+    "native": {
+      "version": "v26.13.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "executableSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+    },
+    "limitations": [
+      "Own properties and class prototypes only; inherited APIs require review",
+      "Option-gated modules are included from the pinned exposure policy; their flagged reference exports still require collection",
+      "Getters are recorded without invoking them",
+      "No exported primitive values or environment entries are recorded",
+      "Code-bearing documentation headings are review candidates, not an automatically classified public API list",
+      "Exports and documentation presence never count as implemented or passing behavior"
+    ]
+  },
+  "sourceFiles": {
+    "lib/worker_threads.js": "6b5a54b8b7d6b279d62b829240dc3a10c6ea5e4156d414d9b70192056269fa60",
+    "lib/internal/worker.js": "ec51175904198c6f09e2cad40d1ec158b8624148a9bb82812ac02c9290a94cd3",
+    "lib/internal/worker/io.js": "2ea7672fa2a7b32ad536ff0bf9ce64b467415a948b9b39a2116782b3f7b7bd32",
+    "lib/internal/worker/messaging.js": "65fea9368be820a66dc7d14573d0efcd9c0d77ce968a32cc510a853b68744519",
+    "lib/internal/main/worker_thread.js": "747b4d8fb9df3452bde13c5647daa6d39d879c2d71d6f5bdd602c6e710c74eeb",
+    "lib/internal/locks.js": "a14a6a26b00f8a26dcf33469f12c020947626a0b84cb4bee3e16f44a3fbe0b68",
+    "lib/internal/buffer.js": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+    "lib/internal/v8/cpu_profiler.js": "a7f70c5b8cb2f665ff6b7124ceb28e7302969cc42694bbbd485b135f212ce047",
+    "lib/internal/v8/heap_profile.js": "55da093a13cac105c552901a2318a37508f702d40ece6f95f7283a3232ffc304",
+    "lib/internal/bootstrap/switches/does_not_own_process_state.js": "3cc0d582c196f255992cd6733eafc9a30b0b27b176b1aaf811e416a4cb482800",
+    "lib/internal/process/worker_thread_only.js": "a9a11c45980d03c804c21ef766e1817a5a112406f889d8f66f5ea6f2a8c9b004",
+    "src/node_worker.cc": "947f09b9626c3657fb9e1c314a5d2ba17404f29cba36da08d9c19ba439f9c042",
+    "src/node_worker.h": "61deaeef7bf7a5ef0ba37beba652b71d3777a460eb902f6b1af7fcb4bab8ed68",
+    "src/handle_wrap.cc": "20f94b3dc1569f2b90116500dc6c7546b0b92b38f1398281f7b90d5b37f6751b",
+    "src/node_messaging.cc": "49d5cf1e5d5319a932a2bf378b53a7f2c584d960383043b75c199726598d3697",
+    "src/node_messaging.h": "ea3cb5c12fae90b87b0f01f33371d6747c9300c94611231c74f58af91587967f",
+    "src/node_locks.cc": "28f2a9cbffb561a4535031331025bcab15a9065ca1432800c2d8f9b5875c4666",
+    "src/node_locks.h": "2039fed85f34a3ac3eba928499fb1f32e66532fdd0c7ddf06fb5263b15876690",
+    "doc/api/worker_threads.md": "788dc2f1edd14ce53405495db77077a6b8e7e9fceb6ee58cb434aef241af1de5"
+  },
+  "candidateSourceFiles": {
+    "packages/registry/spidermonkey/node-compat/adapter.js": "b4675b108af0bdf2aaa3e2b068d36cc2e581514fd6e047bf843daed3792531cb",
+    "packages/registry/node-compat/bootstrap.js": "fb2949c121ca33d4922d1a0cd2523e37abb1a47077b61023c6d1ca73f13bbb17",
+    ".context/node45-fs-readfile-engine-reference/js/src/shell/js.cpp": "6d3f7bfa88a1359765bcdbd7c2dcb9604b82450f3ecf4814f69747e365b49b06",
+    "packages/registry/spidermonkey/patches/0042-kandelo-node-clone-boundary.patch": "e0800939d1db4aa4b5cc9794ddda95211fc9677f958d2529959a7b8673c5ba6e",
+    "third_party/node-core/clone-platform-adapter.js": "3885c8d5adb151cb2d8ab48a2a1bd5ffd135db4f63e4151bb41d178b56e6efc0",
+    "third_party/node-core/native-buffer.cpp": "e9d8edffacd8c0d829a19ad73f3247d49b33f6d53fdff0a076566c79a30aa85e",
+    "third_party/node-core/buffer-numeric-adapter.js": "effd6c36613a73490521cdd7e2ee80057800174d8677af9c7278a78e28416ecd",
+    "third_party/node-core/buffer-unpooled-adapter.js": "f292227c0149ec06ef7f8b27fb77202599723b4b5b7066dfbd88d9fdee8a17ef",
+    "third_party/node-core/build.py": "364c7d017e55da9663d9a53304fd7081d93fb1dc75043019b3ca88077b0e87c5",
+    "libc/musl-overlay/src/thread/wasm32posix/clone.c": "142f8f152c97de693c06c6b449569c3e1a6b428354d3f4ffc4c03569ab1c446a",
+    "host/src/worker-main.ts": "3ee74491c065e559b60bb007e1da56161cace35f2cbd6265281374ac4cdc78ad",
+    "host/src/kernel-worker.ts": "d44d502f049a869c1004e256f2c3cca3b3d002a8ffe8056be61d046b38f1a2ea",
+    "crates/runtime-core/src/syscalls.rs": "53b3ca6211ab98fd4fa6c5a1851ff7fbb0f91b99b9cb7be793f5a8f22710e713",
+    "host/src/thread-allocator.ts": "27127fdc1fa3ca26b72e550526727efe0e1d51debfa839f86cfee1f28b2dd703",
+    "host/src/thread-exit-coordinator.ts": "49b1a6d3c264f7ec70465d32fb8652bdf35153caa3257c862aac79c9fd90d31a",
+    "host/src/thread-worker-disposition.ts": "5c98e74ba71e4cf2c067d241051ae32fbc784c9eb2954feb0d60808aa276e612",
+    "host/src/node-kernel-worker-entry.ts": "bced65b94c66fbedac99564339afd760b98c1d5c49c82abca67f7e3da43cb0fc",
+    "host/src/browser-kernel-worker-entry.ts": "82a58d9542060d46c0dcb4a85d34f46781c3e97e764fa4402e52393a4c423cdf",
+    "host/src/runtime-memory-profile.ts": "08920fb5393f60c7901bca7a57d2cad42972ea73cfe99ecb12cae61fa1802df4"
+  },
+  "scope": "Completed 147 original workers obligations plus returned/inherited/source-discovered contracts; private metadata retained, target questions explicit; no runtime signoff",
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

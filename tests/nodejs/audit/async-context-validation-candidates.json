@@ -1,0 +1,1359 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/addons/callback-scope/test-async-hooks.js",
+      "sha256": "89d09ad4cbd76566e87421c4ee7d82f501148087a1801865bec17b43bd30f0c5",
+      "category": "addons",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/addons/callback-scope/test-async-local-storage.js",
+      "sha256": "863830bfbeff53dd1b8f9d04da5e210e1027a78b78334519fb3f9925506fcb24",
+      "category": "addons",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/hook-checks.js",
+      "sha256": "c2f78b9bfca5ce7e089e11ac6fa2f7553188b1dec54daae608df0466b3ce3b31",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/init-hooks.js",
+      "sha256": "40dd54924376cd1c42543c05ef428aaea5c9ae452c9b9ee34e1351b2ea41c8db",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-await.js",
+      "sha256": "661c9b9d7113e03e95fc6bf48eafe10774c0683abd27931f885957c117a771d1",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-exec-resource-http-32060.js",
+      "sha256": "ca442ff2ed8e72154e913452908d87ab48b522868bf76aa4999e5cdf2753c98c",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-exec-resource-http-agent.js",
+      "sha256": "79cde4bf53f3ec8d39c0b5a290654fad1e7297a92bef2408fbe6ad955c6f7772",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-exec-resource-http.js",
+      "sha256": "294a4a847b238a44e8f84aa4046219f83da663c07791c640d3b80dd919f50a59",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-exec-resource-match.js",
+      "sha256": "274cd8dfd73ff51126393b5485d042a33201a86fa9217fd859bc42574ceafb5a",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-args.js",
+      "sha256": "cd9e4359ca53f962e2984bafa533ab42b01017f7f22e65fe27c19d2c48109c22",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-async-await.js",
+      "sha256": "9cacfdd514bdddc373db020a3a4a8dd4394a8f06d64287a61468d9541e60cc25",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-async-functions.js",
+      "sha256": "9aa957926808cbd25954186942644c0965b9a0415060656df0f39b0b1b7d2204",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-dgram.js",
+      "sha256": "86488f96cb9507481f5a98d3f02a338a96546d0051f039c84bcf69d31b370bb6",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-enable-disable.js",
+      "sha256": "7b2a98c201379b6dc9764b07cfaf8038973b8c8da83203a1b31871e746fe7b8a",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-enter-with.js",
+      "sha256": "a5f24425f0103b982d5ac8c09695da2a367a0716efdc43cea359b58e89ca27a2",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-errors.js",
+      "sha256": "a0c23dc822dca01dd2878eca599557b0e8adf779b636f3b6a9314a1d630b3ef2",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-gcable.js",
+      "sha256": "a3c5e197b17676a9bcf2606d20f2abb8c053475096d10e58265df92a62902bc2",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose_gc --expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-http-agent.js",
+      "sha256": "1227604970b193dd05ace502b4ad1946fac996ea58ac18a92bef89479bc8f737",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-http.js",
+      "sha256": "d802882538a07eadce2064505adc6ed5fd73f4cfa8bf55b92d89f464a6f37c8f",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-misc-stores.js",
+      "sha256": "f70002de485052c0a57c7aaa3f18722a1cbf67b714d6a029ddf12bf57cdfd8c3",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-nested.js",
+      "sha256": "29d46867c149380f5cddc594dfa8568f79e7bc5ffce1099028de09676205a730",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-no-mix-contexts.js",
+      "sha256": "30d8e3a3c5875ccf5474840a94189e9c2a505d00fba2d67ab29409c02ac01d91",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-promises.js",
+      "sha256": "2e52f92d75a95b46b6644b42bfd7d4176bd6a479fded93a298bff884cbf0c57d",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-socket.js",
+      "sha256": "d9cde4f0da99d2438fb00a0a1eb7a6a2ca78a657bfc298343395c1113d4684bd",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-stream-finished.js",
+      "sha256": "043e72b138ae9f22b1e371f8bbf2f12c669134bb5d8a6d0b0c8c6907da806de2",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-thenable.js",
+      "sha256": "db1db17a75f6e4f7f7a53d5d126316370ff5f79a1b01c78ad42493ff1a9afc0a",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-local-storage-tlssocket.js",
+      "sha256": "11776328e306624acfdc6c6deb811ace70ec0c57104b0b15ff8823efb7aca971",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-async-wrap-providers.js",
+      "sha256": "24ca84e92e1a881dd629b7d36032655ec015e6226f7e6f0f1894ef9e15c0f83f",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-callback-error.js",
+      "sha256": "a605d8157cf1547bb18ba928c53571db7ca04d3686dc15be057a7da3cd1fd1a9",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-crypto-pbkdf2.js",
+      "sha256": "be7c48d04d12779e5f470064eeab584cd574b36073069b14ac7ca229b22a3ff0",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-crypto-randomBytes.js",
+      "sha256": "565ea0ddd1d35846936119d988a67eea60ecef2d8d286514c2d0bcc7acbf0ba0",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-destroy-not-blocked.js",
+      "sha256": "acdfceef746b1adfd641e835704134dd96daafbe99c6ee362a3ebe2171633cf7",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose_gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-disable-in-init.js",
+      "sha256": "f0aff2cceb8904eef7327455146e48eb2a9a124d00b65cdf978212a8135424fb",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-embedder.api.async-resource-no-type.js",
+      "sha256": "dbba2d523d83eb208949faae5c56b61ddb038b08774550aa5ee5069787bdebf1",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-embedder.api.async-resource.js",
+      "sha256": "4c9173d8bf678480dc5b92b64c4656518a025fe5f16c095272cfc0a24fcff1be",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-embedder.api.async-resource.runInAsyncScope.js",
+      "sha256": "621d7752dc6f9e41e976959f1888866bdf7b65d3e5f649936caf58372efa199a",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-emit-after-on-destroyed.js",
+      "sha256": "f4f88ff32cd7755e32f40f8b1ad4ccdc7e7c090226d3fcf794496c9d1f3b9436",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-emit-before-after.js",
+      "sha256": "1e0433b2ec134ffc16f3e116a46cd3d41e7aab30e400aad864944597e919fa60",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-emit-before-on-destroyed.js",
+      "sha256": "dccdba304cae2dca93cd5ef130bd22c07567202e7816097b71b8bc937753a783",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-emit-init.js",
+      "sha256": "1315078a04981c1dcb957e383e3333e1d71e421d7f257271fe13b7d55cdbdf83",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-enable-disable.js",
+      "sha256": "da7e44a8a44daeebfc2729aeb9c3c785a7971d91f1d2359e3a9747ad7fdef1f0",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-enable-in-init.js",
+      "sha256": "23511eec51975b55b0dd225a60a68de8fe944d1395374161e9209579b4bc1ca3",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-filehandle-no-reuse.js",
+      "sha256": "199a74c6ddc3d83ade73ed8b5ab3f8e7d34e32f56893c25803a11fa77fdcf60e",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-fseventwrap.js",
+      "sha256": "3b0fd07b00ba9a5bfb68f05c4f8aaf0f24345ec280592712e27572ff3d3c1df3",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-fsreqcallback-access.js",
+      "sha256": "0a9863a4fa1b25b7d445315779a526ce940ca52034dba4bd6405a22a40af7c18",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-fsreqcallback-readFile.js",
+      "sha256": "3a564758587847147c7ab12d62e42e44c010970f60cad8ffb3bcea27e1acc66f",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-getaddrinforeqwrap.js",
+      "sha256": "14ddd6992c2f47eca9e9c023920271f38c4e9c10eb7bbbb4c0037180f20bf6aa",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-getnameinforeqwrap.js",
+      "sha256": "d8a9dda12c80b6d27b00dcb122510e849a8c0f30facccb52368e4a992ce7c4ae",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-graph.fsreq-readFile.js",
+      "sha256": "bf50317919003f3b82f626f95f7e725e6356f07cd49df4e77db55dba3134840f",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-graph.http.js",
+      "sha256": "140f1ca24ea28a1343e8e00acdaa4256775c8b45f032bc758a7b9892b8cfd58a",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-graph.intervals.js",
+      "sha256": "651c3676152bfc5220cb6a308202dd4feb94ee2bc80db7a6f2f5208d94714a3a",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-graph.pipe.js",
+      "sha256": "aa71d21f33ffce68dfc3547311ceb0fbcdcdd25c988e14f36e5284b17be8b5c0",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-graph.pipeconnect.js",
+      "sha256": "c6d09854d0759d60e7f6fbced2b90af12f65b1eacb3ea91f2e6571b19cde582a",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-graph.shutdown.js",
+      "sha256": "f15bb1d723e4783f73daf863a989bf62403040aba3009427c32a3ff5e602c579",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-graph.signal.js",
+      "sha256": "000132c3de6ad6c2bac5ec9a9ecb97081aaaace4a2e341800dfd339d3f85c3b5",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-graph.statwatcher.js",
+      "sha256": "9abace93e8f32f93fd55f968aada99f690e40c6f4146d4afe56db1a981bafc2f",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-graph.tcp.js",
+      "sha256": "d1288150494547ccbff9ce76477aa2051bef63bf00ff93ea9aa714d1fd76f7ef",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-graph.timeouts.js",
+      "sha256": "c7c364c9f47a649ffa7343f5fb738a0b3017e0cd223d6bd21071a9bcc1e2d577",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-graph.tls-write-12.js",
+      "sha256": "15d0f0141844f0ceb51cce058c5c40ecdb71403c6a9a6bc322ba8ef99fa917d6",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-graph.tls-write.js",
+      "sha256": "0b9eeec3382ca4711a339eb03c685f87a45166904b4868d02ead1d63e8338644",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-http-agent-handle-reuse-parallel.js",
+      "sha256": "bf159241ce2e86f8569272f355b10ccc6907940b40715fa845778ee13e16c8e5",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-http-agent-handle-reuse-serial.js",
+      "sha256": "9d7d679e1c7da9a2a779bb561f50a059ca7c6f11ec539b4ea9eae5b7e363c0a6",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-httpparser-reuse.js",
+      "sha256": "e55afc002007b4c0ccf2865a3745a95b2d3c540c889e1f856dd2d19eda3d10ca",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-httpparser.request.js",
+      "sha256": "58f8085e97f7fb38287f6a0ad65674e395bbe19bba7fb4bc4230d89af26ebdc3",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-httpparser.response.js",
+      "sha256": "69fcb2565d973812587978d39258b7c55b18dea157982e60fe030e297e781853",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-immediate.js",
+      "sha256": "1b81fb3c80ca1b15795a994731c93057a4362d7b3e76f79696fd52d23dd2f154",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-improper-order.js",
+      "sha256": "2fad27542cd2ac66714fb50b1373a8399b5f1f236a7b98166a71b06f53fe71da",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-improper-unwind.js",
+      "sha256": "d6bfa8c3a454da46143e495176b6852baab0f968c78b21136e87d9e36afa143d",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-late-hook-enable.js",
+      "sha256": "466c1334a8a6f3e03c09f8a25629ebd048a89ccf8a600cda693da2a93042422d",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-net-get-connections.js",
+      "sha256": "f870c0994ee4a010d5e04d7bac385f38cf84c23b844ec93de579fed535ff158d",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-nexttick-default-trigger.js",
+      "sha256": "b56379f04a9d140902186fb3e37508dd53650ed8690245ed0895657bdb50e839",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-no-assert-when-disabled.js",
+      "sha256": "2a8b64785a0aa68dfd47439801b01165e98b156d933258bdf18dbf14db1c1936",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--no-force-async-hooks-checks --expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-pipeconnectwrap.js",
+      "sha256": "2c58c5d1cc49337b4e7f9f027e60ea7d9af6b6da31895cd08137b721761c5600",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-pipewrap.js",
+      "sha256": "5222b1bccbfa490d89282e4618c9ea578169b3944061321bfecb6f1947303123",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-promise.chain-promise-before-init-hooks.js",
+      "sha256": "e4b10db19af337b9a29e25e3642b4fb3aa5d741500dff7cdb51680f724300ae7",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-promise.js",
+      "sha256": "f657ea088f8dd0931f1254a5c7d36ddcc19d2678bb18bc054d7383c87be094ed",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-promise.promise-before-init-hooks.js",
+      "sha256": "d9df28948fd31613ddd64c6759d2465d58ed00e9e4d03f4d7f8325c348dd71c5",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-querywrap.js",
+      "sha256": "38609c72dd5610f85fb5010e5fa34f373cd09305e5a219ad4cef49112fcb5964",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-queue-microtask.js",
+      "sha256": "deac50dcea24a4dc0dadf0804c0de73fc84eea87a1d3debbf441525609285f4f",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-shutdownwrap.js",
+      "sha256": "303bf817bb2c3b9f4fdf5dc574d51b18205954d2a223c3e8990fd7a5607f8d15",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-signalwrap.js",
+      "sha256": "b03d88e6f3a1d903eb2310ceded18052a27978ae06889a2be85ecbe3ca8f79a2",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-statwatcher.js",
+      "sha256": "abd39af4507c8f3de52938600e11376dacdce9721f0a8b81fb3ac49b867291a4",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-tcpwrap.js",
+      "sha256": "2be24c023903f8237775b99f6c1976a2de9b5f0470277433c5f72d0a01f0edcb",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-timers.setInterval.js",
+      "sha256": "8e044b8a481548112c27c8e7cc4fd2c495a3472de21f2bab82967a992800f51d",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-timers.setTimeout.js",
+      "sha256": "84b4d181ab49cbd59f00c86ae2a258c2e88a23451d85f365be723c967779eab8",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-tlswrap.js",
+      "sha256": "a3532b8986fd8e40ed82674ba52a084ef90b4fea7917d6851fb81d3a056fcfb3",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-track-promises-default.js",
+      "sha256": "045528fa894bf2a277a85dfd66b9e5c5fc7ca6beb2b1041a6f1c5690ac1af556",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-track-promises-false-check.js",
+      "sha256": "301ce236cc8dc7dc5d0cec1c5a4592f86c5687e5efcb300cdd097bd20cc62f78",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-track-promises-false.js",
+      "sha256": "4e356d7f72a74bba3a93b043b8c25a4727e6c49f0efbe13789489ac4a8c54e9f",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-track-promises-true.js",
+      "sha256": "10c8db40f861636a6af381904e69b0a0f9317a7cf9e3bb0292ad6e103b41ca13",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-track-promises-validation.js",
+      "sha256": "65c34d11a2a28e23d1e1f2df3e123712461391a8bcaf8de4c51a8062bc522d83",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-ttywrap.readstream.js",
+      "sha256": "f200d15e8bc7c9c78fd928735fdeaddba5c1f180b26f16d585b7161444dceb05",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-udpsendwrap.js",
+      "sha256": "4fb92bb7de9a67028ec305f76f84497484e7823861dc06d9b65454e1f9deb071",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--test-udp-no-try-send"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-udpwrap.js",
+      "sha256": "0038378f932d776f7f2b1ceb0b95170a97c145ecf3e3b5df8fa2649d7886226e",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-unhandled-exception-valid-ids.js",
+      "sha256": "762a36946620fdb1c5daceb01cbb4643e1e8df779d3e26b2b124b9964c5fc293",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-unhandled-rejection-context.js",
+      "sha256": "80ab9746534a19c05b4cbeccb2f4e8cf8d9cb44d18501f2d0253e4b558ade323",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-writewrap.js",
+      "sha256": "31b0585624cd62825185c1662660ef9b332bc4f998e554e81984dac4dcd7ec54",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/test-zlib.zlib-binding.deflate.js",
+      "sha256": "5826e9bab394888d483ad5dbe483291804f997e1fbed7d6fddce5df84bc0ba89",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/async-hooks/verify-graph.js",
+      "sha256": "a5a95b1c97d9922a40a21a5883bce2086acea767450f835113198c26eccec6bb",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/benchmark/test-benchmark-async-hooks.js",
+      "sha256": "e3b33a650ea6a951777ecdc9b3cec1badfda6751aab25451c94cf94ef20eb94e",
+      "category": "benchmark",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/node-api/test_async/test-async-hooks.js",
+      "sha256": "8ad832cd4378ae59643e12f908ce407d3d236b3d187777f1015214d0d3efa33e",
+      "category": "node-api",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/node-api/test_callback_scope/test-async-hooks.js",
+      "sha256": "79e3a6afc0c99d7f050d2d1fb0dbd1ebd8e54804f8f4e20f36d08916b3710677",
+      "category": "node-api",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/node-api/test_make_callback/test-async-hooks.js",
+      "sha256": "06492b05713288c66c0dcc901c0e51aac1a95958b8e9e6b023f564688a801548",
+      "category": "node-api",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-async-await.js",
+      "sha256": "07aae38c4f3a470d84e1f444f2f4dc81f9b5fe71428ba20be99ce521703f04f4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-asyncresource-constructor.js",
+      "sha256": "ac419c2e7ac7bdd9426a16545308497cfc39be6dcab581764a7e5260fd35ae8e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-close-during-destroy.js",
+      "sha256": "675302d09a49a030c2c2631aa49bbb15b748cb7e8247a858244404c2676ebbe3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-constructor.js",
+      "sha256": "978f15de99d61f57c3c9148eecf009a220067b5ebcfba4288f53a9e596430ef8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-correctly-switch-promise-hook.js",
+      "sha256": "ce0c0e46f4a6187de1ad9892c3d8dd11f7fdc9c92eb0c77d001d328d69666367",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-destroy-on-gc.js",
+      "sha256": "6a1870bbd5054f9c912b240c13d91ff5bab4ba4f920b6994f618d291970c7431",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose_gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-disable-during-promise.js",
+      "sha256": "af98c63fd65252e8cdbbea08b7ba39ca4a6e1711cec9741583b8066209d3a644",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-disable-gc-tracking.js",
+      "sha256": "cee19c3abf88d37f7f53e40ae116db2524f242e8a280ccbb79b6de1e8a86bac8",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose_gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-enable-before-promise-resolve.js",
+      "sha256": "068d0899c6cdc88ab532df1eb7251d5dfd61fb8eb14f5252d9f4a4449463bf9e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-enable-disable-enable.js",
+      "sha256": "a49efc2dbf40d438aa24fe95b547aef0cf89157207a402a2802b33d2c0a2dad6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-enable-disable.js",
+      "sha256": "75453ddc8279add8fb3c89b4ddf87e4f00b87eff6fff40e1d4352be8ac679845",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-enable-during-promise.js",
+      "sha256": "5480fc15b754997eeef15761d0fde1f53b1c477306aceef83afebdf56f219cae",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-enable-recursive.js",
+      "sha256": "5d485fbaccaac566ea5e4e4ad7bd0aa018ca9d64c949c4cdd802db30a7843424",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-enabledhooksexits.js",
+      "sha256": "fcf359168ce8b7b6561080c455397a21cb6143e7c515c9e4be4dd6ee25c3bf28",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-execution-async-resource-await.js",
+      "sha256": "d3456ff398eab4afaa57c596f79bad6a13d6d2292d9ee1399e3840a2096924d8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-execution-async-resource.js",
+      "sha256": "a0da479d8d328c47f1de56004afb20c8b4081896901d7bc3f5490da25a18ab0a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-fatal-error.js",
+      "sha256": "b3ce6ba2c5ab40bcef73d080c5bca4e46cb314fba08b3ce493b8ff8cd0dd02f1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-http-agent-destroy.js",
+      "sha256": "a2a5ceb624edcba9b6df3ca1e62d2c9c84142430f43911ce501178edb4f1b54c",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-http-agent.js",
+      "sha256": "504328bb5547cf11a79ae3058870ca2b75bc58b97de28887f93640e592424d6e",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-http-parser-destroy.js",
+      "sha256": "a9de3ee726d61d2a0524db0bcf524f60ff50128713ce8c12b3024e6cdc5711ce",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-prevent-double-destroy.js",
+      "sha256": "46576bb15f52fb5b06291192208e1acc96cc053d9e794cbd69db7f1e52c65d1c",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose_gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-promise-enable-disable.js",
+      "sha256": "4dd5c9972a821e9a71d96afaec25564c78bae2b6115939a5be79d5d1c7c49389",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-promise-triggerid.js",
+      "sha256": "5797a33c7f0d2be8fdf75601a6a1ae2680462a129daed4d0b02169bab3e51c16",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-promise.js",
+      "sha256": "555b44d024d5186b1246cbe3ee18285ea92fb7fb843c765b45896fd370820674",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-recursive-stack-runInAsyncScope.js",
+      "sha256": "948db5dbb143248de9cf8d18b9faa69b1532800137f6ee1cde72d8cd7c48f645",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-run-in-async-scope-caught-exception.js",
+      "sha256": "0114998e30f930326b0c739def9e58dd32c843627e1113e898a268521e853f39",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-run-in-async-scope-this-arg.js",
+      "sha256": "ce0e2666d3ac2d752d745c0e2e6009fef7b3bf557c6e9c388130c42a0eb3b56f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-stack-overflow-nested-async.js",
+      "sha256": "89abce5b1aa55cb76d144a9004e3970d214c6fafe2cfdf6804abc6671cd66592",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-stack-overflow-try-catch.js",
+      "sha256": "311eef9756c01e47e1508599e478dd954bcecfa80e6e72033ad35934a2d4ba36",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-stack-overflow.js",
+      "sha256": "8c2a9c400d61bf613c406760be4498aba2663c1bd5187c1cc42df5e4ce017635",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-top-level-clearimmediate.js",
+      "sha256": "e24d5806a25ed82bbf04d2297a926d46f93a217d479717de6e81619c59b831ab",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-vm-gc.js",
+      "sha256": "c2d41d7ed703e8fca473835426322118af12a9fabb3dceaeea5b68897a72723b",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-worker-asyncfn-terminate-1.js",
+      "sha256": "4e7e6d9bfb7d7f1ca9fcfdc2702d33ff7c1eea9540ae025e830f842a7deb951b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-worker-asyncfn-terminate-2.js",
+      "sha256": "0ee4f0c7c693e27a0633bada62065da0e3b8d5addebb20518e1236fca0888c79",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-worker-asyncfn-terminate-3.js",
+      "sha256": "604908a104fb6c247e939fe017a5a73435f5ea7f50b99475994416c84e0f295e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-hooks-worker-asyncfn-terminate-4.js",
+      "sha256": "d981d492a426fa57a93266cd044acf70781988992c84d98c309f4fe655ebc57c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-local-storage-bind.js",
+      "sha256": "861947ce8b994042045b70b6179c5c4325dd0273dff695fb3652f4f3587b6e4c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-local-storage-contexts.js",
+      "sha256": "84e28588294a17c1b3d1bed4ed1a692e775696237acd1d9d57c4d55f65c70047",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-local-storage-deep-stack.js",
+      "sha256": "2a078949e1058ed4c2cefb2c145825a2b322d701de6354b83249ebe9ebc84860",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-local-storage-enter-with.js",
+      "sha256": "270f18f158138a227baa0c2e5e6a52b7c77be6d640fe493765992206b15b1a24",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-local-storage-exit-does-not-leak.js",
+      "sha256": "6f136016e64270e99e563a3be7e6df2b6ed8b1cc0be16f4406fc7dae00170e67",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-local-storage-http-agent.js",
+      "sha256": "ac5a1a0fe55e99e72cda71357d833a2146662fa8183221c4e4946649c0d107e2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-local-storage-http-multiclients.js",
+      "sha256": "9ebd85ffdf8df745c0d917c0ba4108eb6f3dd57d307a8eddb2a29edefcfec905",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-local-storage-http-parser-leak.js",
+      "sha256": "667dd325c59bdcfba6f632d623006cfb843c749e6f6e8f291e68f223a07c64cc",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-local-storage-isolation.js",
+      "sha256": "89ad9557069c1e1b04e7b509dce154ad1bfabd5210a161731bffa5fe072f3ca6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-local-storage-run-scope.js",
+      "sha256": "2db687e48ca62828feb208f303e8fdee3868a8da0e05d2679ff9a2638e179aec",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-local-storage-snapshot.js",
+      "sha256": "e8a0b98670abe28a72a180292cb6821fc40d0c784d3d10f3694213a30977e81a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-async-local-storage-weak-asyncwrap-leak.js",
+      "sha256": "cca97ce3ae2d1588de90b912c6ee998c597e50825de6bf84c4e276b9b61d6a90",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-heapdump-async-hooks-init-promise.js",
+      "sha256": "785a97f9d929973732dc1e4ac74afe3a390879658b10b6dbc28ba8b7078d31a6",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-http2-async-local-storage.js",
+      "sha256": "4fed6d1cc224bc9cf82ac038d82f98cc40107795c9c757102e60ef7869d067a1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-inspector-async-context-brk.js",
+      "sha256": "e28c386cc81027005655881b74683c0e9c96d249f6c6692b03d0d26ae6574d08",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-internal-async-context-frame-disable.js",
+      "sha256": "a537e261cae3745580a45eb92036f17d377f2b50f234b5dc2a2c79171d5bd503",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-async-context-frame"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-internal-async-context-frame-enabled.js",
+      "sha256": "8d9c6bae65ddcfc4c92e03eea87b85b0215582107f201a9a9c8fb2c5e3815a97",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-stream-finished-async-local-storage.js",
+      "sha256": "86518b2a3449f1ff198a444b82b957c423319816e9b7513ac23592008d432cc7",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/parallel/test-trace-events-async-hooks-dynamic.js",
+      "sha256": "57340531034a4ce0f31e1a97e75c9b3b8ad8e6327ebd8326e952fd639c7e1ba8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/sequential/test-without-async-context-frame.mjs",
+      "sha256": "9471c8e659fdfe4359ef53aa0956197c4123df9370ebd89f29bc7bff51654f75",
+      "category": "sequential",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-async-hooks-worker.js",
+      "sha256": "f897612b12b38b0a79859adbc463fefad1189ed36faf27eec578b5ee9eadbcd1",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-async-hooks.js",
+      "sha256": "5b75669831422b8e7dd63a057224fad76ff7e30edcc6c8203ff0b65745bc28f4",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Original GC/async-context/native/internal/abort flags and real I/O/worker/death/message/expected-output fixtures; preserve missing flags, skips, failures and harness statuses"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

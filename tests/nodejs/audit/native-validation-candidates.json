@@ -1,0 +1,697 @@
+{
+  "schema": 1,
+  "kind": "Source-only future validation inventory; no execution",
+  "targetSourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": {
+    "test/ffi/test-ffi-callback-abort-cross-thread.js": {
+      "sha256": "d108c9f877bd18a60b7ac5a93f61739c128c496901687b6ca972c105222e5ed6",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-callback-abort-fractional-return.js": {
+      "sha256": "159d906e7b9cdc04a301e758272eacaf6a43fdaa7ca7b8e2db7e579248675ed2",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-callback-abort-out-of-range-return.js": {
+      "sha256": "c236a9c880f6960437dce830dc002908eecc17d4f7f1d3dd93cdccaa626245fa",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-callback-abort-promise.js": {
+      "sha256": "267bea6aaadcda5d5175d360eed085efca7f2cd5632c8952c65772d4e8e71be6",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-callback-abort-throw.js": {
+      "sha256": "d5f43776416236cb398311d2bcb4f135c31c01ebe35582ebb17e9f3b2a53fd74",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-callback-worker-termination.js": {
+      "sha256": "2b7433919366109bb7cb77c5543a50d6786cb275332701dc4a2e35ebe1baefc1",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-callbacks.js": {
+      "sha256": "f69888e22f2570747342426b07e7599283a009fb9605115652e36d2c3c7d75bb",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-calls.js": {
+      "sha256": "fc36ccecd047504764486e3d18e26cacbc75b9888c87703d4b1facc9674a9d24",
+      "declaredFlags": "--allow-natives-syntax",
+      "containsPrivateV8IntrinsicSyntax": true,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-dynamic-library.js": {
+      "sha256": "1e9b4c114cfde6c399523366b43ba63ebb70c6c6e52bb991c1b5b7ec3ffcb605",
+      "declaredFlags": "--expose-gc --allow-natives-syntax",
+      "containsPrivateV8IntrinsicSyntax": true,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-fast-buffer.js": {
+      "sha256": "a2fbf3c79d73d42614fb2700608cfd10cce1fb146673dee37622acaf91a65084",
+      "declaredFlags": "--expose-internals --allow-natives-syntax",
+      "containsPrivateV8IntrinsicSyntax": true,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-fast-integer-validation.js": {
+      "sha256": "4c92ce2b29e0d201e744335ca4c83e411b50ec25cd9f1fccda30b6b8fd570d4a",
+      "declaredFlags": "--allow-natives-syntax",
+      "containsPrivateV8IntrinsicSyntax": true,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-invoke-string-storage.js": {
+      "sha256": "4717de154aea06f3a58cea2100e6cc36d99ab0b70830788aa67b815f15c26eae",
+      "declaredFlags": "--expose-internals",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-jitless.js": {
+      "sha256": "4404623818ec387b30620b9c8358f287493463b604932dba9fc99c9b0fe51c19",
+      "declaredFlags": "--jitless",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-memory.js": {
+      "sha256": "70b9af3065335b659bf522cc8bda229fc62158c899a41f8e0237ebd758d66ee3",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-module.js": {
+      "sha256": "9a897a23ec1857454a106c6fd0e2a6c6bc3014ec7a3725197671ab359fab9cbc",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-no-rx-memory.js": {
+      "sha256": "eabb75dbfc0123d8c2f19b8f383c285eefdc2b73e3727158cbfbce834db5d251",
+      "declaredFlags": "--jitless",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-permission-allow-cli.js": {
+      "sha256": "e84712bfc76b3f67f3cc718d4f20304f2cd5c15e99fe51c77a0ff092792dc2c4",
+      "declaredFlags": "--permission --allow-ffi --allow-child-process --allow-fs-read=* --allow-fs-write=*",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-permission-audit.js": {
+      "sha256": "8014edc0c97bf1a29ab436e3e4806d2072b664407b354f02c9bfce0a66c76651",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-permission-drop.js": {
+      "sha256": "28d681383e79bf90a6659ac2db770f741b42269e72d5979b3e95c7ebbe2282cd",
+      "declaredFlags": "--permission --allow-ffi --allow-fs-read=*",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-permissions.js": {
+      "sha256": "8540a6598726c59a730585ed3bbca89e5d32a717509d1011535ffe9c05b7985f",
+      "declaredFlags": "--permission --allow-fs-read=*",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-readonly-write.js": {
+      "sha256": "61ba60038d1a7510e483cfddba484c5dbf00d3c95dde1ca1564a8a4723eeeaa1",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-shared-buffer.js": {
+      "sha256": "eaa54699806213d4d9977f78f61c26fcadb3ce5301c80b2a299a0ac638b3dc4e",
+      "declaredFlags": "--expose-internals",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-vfs.js": {
+      "sha256": "1d07900b2b814466b7e64c95a73cc2756e7d1f4d8ac0a5a9ddb66b5f587f46a9",
+      "declaredFlags": "--experimental-vfs",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-void-parameter.js": {
+      "sha256": "f4650c34419b91344d2580fd4e40b4b62565f69a3dd37f189208f5514d7a2e43",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/ffi/test-ffi-weakref-calls.js": {
+      "sha256": "c3abffefb704808ab9552734bf6a57dbf7c71c1a6ede0007727bc1b88540cb53",
+      "declaredFlags": "--expose-gc",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-authz.js": {
+      "sha256": "76e2603eb5b1df2edeb9016d091d91d6606418daea66dda55cc9c8644c033f4d",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-config.js": {
+      "sha256": "06e83cbf954e78b95ebefc8501889e3d39b2fe30573b9db570c8661a8a6e7f4f",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-custom-functions.js": {
+      "sha256": "c77ccb8fa31b15d65af69f5610671d6c403c46f3b4524cc7cc237a958af0f1ce",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-data-types.js": {
+      "sha256": "352fc99bf7c779636e0fa8cd08b41c28dd58ff7a3d01429ea14e41d86d30dcb3",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-database.js": {
+      "sha256": "6de7aada5657f56c9083045e13a28475f0e611633b0c8a4ebb92bd5deb6f13e0",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-diagnostic-channel.js": {
+      "sha256": "406e2f80e45f50edcc37ec82191afc14aa171751b7506e87dafa6638dc444473",
+      "declaredFlags": "--expose-gc",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-limits.js": {
+      "sha256": "f86e9e6052ad776c40d6ade8533ee577e1c0f3740635c210d6defe9e7acc8509",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-named-parameters.js": {
+      "sha256": "da5587080874cff8b420109be554be23bcb48c0f1d5ecd8e2e27bb0e7feceae8",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-options-getter-reentry.js": {
+      "sha256": "a7fc5664cccd72982a3e1952dfc92f9df8c570aaf95e04677c53365ab23b2827",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-serialize.js": {
+      "sha256": "200b0a5229b5473d71051a106c2f9bf6adfc465a2d82e34da440007000756e99",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-session.js": {
+      "sha256": "6a065d5b075b6ce12184c6fead7348f4492fc939e5a779404a4b5ecdecdcddae",
+      "declaredFlags": "--expose-gc --experimental-sqlite",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-statement-binding-reentry.js": {
+      "sha256": "efae99966124705733dc70e2f25882745d13aca7ba6a3cdd8e8e04de6c034a7c",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-statement-columns.js": {
+      "sha256": "3665e78f393348df305ffef0bf97a6f65ec18472aaed7c89de2a8fdb306c6b14",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-statement.js": {
+      "sha256": "48c6e593099f408cd4476045a02ecef267a277bd67d5eff882ba8fb795cbcc86",
+      "declaredFlags": "--expose-gc",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-template-tag.js": {
+      "sha256": "7299ed05726d5399256581a9fb4ede81cb7394ed18306506f4fea80e2a8b6293",
+      "declaredFlags": "--expose-gc",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-timeout.js": {
+      "sha256": "81ddb50013311699b04fb584459b445f1a89fe1afebd8509f0aceddbb539e23c",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-transactions.js": {
+      "sha256": "0e98f98a5681e513b45a1f22393e5f552200a5da8ad8abfcea3567224e6fb850",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-typed-array-and-data-view.js": {
+      "sha256": "2ccb0a7bb0460ce1144bb188212ce5be02165aba8419256310f5fe5ddbfb7a80",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-udf-close.js": {
+      "sha256": "0645120acd98a3264a96944c77050c4783c9be34cbb9580c6710b3d5707cc328",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite-virtual-table.js": {
+      "sha256": "823a65c2696272c192faa6ee1aa9704262d409cf87e142be126520ca3f989461",
+      "declaredFlags": "--expose-gc",
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/parallel/test-sqlite.js": {
+      "sha256": "cadd612a582ae3a2f23023befdf3029a30ce7ccd30ca1923d7f2493d887af516",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-already-exists.js": {
+      "sha256": "3fee31c39f00b3a17100e827d9c69ce94d82cb45aa80f42abee7378027b6e8db",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-config-not-found.js": {
+      "sha256": "f6a07d47253f1edb4edf38dff5c4391966cc9e88a206b207d7adf6d7593d72b5",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-custom-argv0.js": {
+      "sha256": "b3d4706c2ae66112d27b6db42e802d3e7f2fad458fb83ffefc64d9303051b1df",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-elf-segments.js": {
+      "sha256": "398dfd3b9a1c26150f0c4f2ec775880931cbd5b6c4448ce00eb9f2258c5a0185",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-executable-field.js": {
+      "sha256": "897688abebce38797845280afd7db3e98b2cdee1f3c3317d5b2c81e7751db5f3",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-invalid-assets.js": {
+      "sha256": "3a04b620324cbdaec8b4bca6cb4478793a798b1fee843ca4e00b2d12c5d24e8b",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-invalid-boolean-fields.js": {
+      "sha256": "3c5c21235f989f235dff1f2a8b0d824fbc5faf58bd6323d7229d1bb81feef88d",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-invalid-exec-argv.js": {
+      "sha256": "b64a1afedb9858e2dee1d8ce7496c57fcbda916199c6d60c5546150e207c3809",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-invalid-executable.js": {
+      "sha256": "5b3785729a4308e4a15dd7fbfd98ab8cd99a9c45e60e0ff51fc7642b1a4f3231",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-invalid-json.js": {
+      "sha256": "e1ed1857ea040f0992b594172915a02836caaea921bf242bed8c3c68bb93aee3",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-missing-main.js": {
+      "sha256": "34bb516a7f7f7e89624d65c99b4575a2adb0af9a7c0800be4325dc0c613294ec",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-missing-output.js": {
+      "sha256": "700d1bda68fb9cfa086aba621554e137ef4279b1bf651f8179fd6e3b2024b5f6",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea-vfs-incompatible-options.js": {
+      "sha256": "8ddbefc9799668353dd782cffae3c0073df387e535ab6857e87a5e7b5d7c8ca1",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-build-sea.js": {
+      "sha256": "c8e1b4d753933d07316f2dbdd7c787d2b9b35440081b66d9b52b6b0a6c43f8ca",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-asset-keys-empty.js": {
+      "sha256": "738d7d15c50edbef28fb6d8cb873d75f45cf6b578eab4f123dcff420efc52e5d",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-asset-keys.js": {
+      "sha256": "1de2a005b0a580614434d203db1a98f0e4237b06d4ddd62339033a535f0798ce",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-assets-invalid-type.js": {
+      "sha256": "19b1911fea2427ba5b91bd54bb48edc90752feaf61cc475770f0d54c0feeea5b",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-assets-nonexistent-file.js": {
+      "sha256": "b8bd575d6aa1cfe3f94821ea8fa2e37df42e8ad320761a0ed5c74cf9160a86dd",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-assets-raw.js": {
+      "sha256": "cd1f568b95963247413ce9c238d598633b1113b4865e5573bae4532fbb5f5008",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-assets.js": {
+      "sha256": "6172163d697a889d0121883e18b85ac29cf54691d630a5fb51a616c3e582dbf4",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-disable-experimental-sea-warning.js": {
+      "sha256": "85beab907bfc525e96e69382684b5bb62b6a560aefdb5b7511fe52bf25fbee59",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-empty.js": {
+      "sha256": "cf9bc029cdef9d51fd68247361dec14aaaa87e8f15bdc70dba20dd884ee51076",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-esm-code-cache.js": {
+      "sha256": "e92ca02a8d89bf0d5fcb410e5e2ddfd8d9b8c745d7be59b15aa453b6077afd5f",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-esm.js": {
+      "sha256": "3d5cfbacf9e581245a986de433d5888d7856602870f3d5c1e2851bde555a5188",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-exec-argv-empty.js": {
+      "sha256": "2c0d4c2a43c92d17692f1282731078a10705b41c05137c37c1e0924d02d22217",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-exec-argv-extension-cli.js": {
+      "sha256": "f2b39de189a6b157c612114d802adc9fb5d2cedbadc23de94c851dada7ed1025",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-exec-argv-extension-env.js": {
+      "sha256": "8fe30473ca77de9f7130862b7def068579fe0064620097c12db045819b16eee8",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-exec-argv-extension-none.js": {
+      "sha256": "f7dfcd069c5ae0e0cb4340fa249994a2461d7370db010934273a0463ebb7e90a",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-exec-argv.js": {
+      "sha256": "0979d77b960d1e7f80f9ca4524ad1ac7ca24edcc2a2738324636e75e29080f3a",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-inspect-in-sea-flags.js": {
+      "sha256": "0b443c5592f8d154b17bc12cb9a315189b1d699f3f83d57c895e25b6b618e19a",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-inspect.js": {
+      "sha256": "ec3d9b78997513585d853b103f821c0dd024cced5944265a868198c7e2ff9fcc",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-snapshot-and-code-cache.js": {
+      "sha256": "df553f37cf02b21ff713cadb75a62dc086e6567682ee33ac8c0326cc209bcb3d",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-snapshot-worker.js": {
+      "sha256": "90e0d74622eb806ec1530f0bbb8276b108e792621eb72d1216bfd99fa39105ff",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-snapshot.js": {
+      "sha256": "7174d66dfdfedd03dc37d75d1a2ddd8697805037e46ef74f1e9e00ab9cbe8952",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-use-code-cache-dynamic-import.js": {
+      "sha256": "638ce593c2c6c0a650bff28965888b475097aade831aff102a22a493458c324b",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-use-code-cache.js": {
+      "sha256": "8904866d378295b4e5ba89f85a63a7caccc12ebd529efa707a77ab79ee0bfee6",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-vfs-esm.js": {
+      "sha256": "a9f75b989cab181d12f899ebde46f52ac4d504a2a9b4637db2d79f35b31ff262",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-vfs-zip.js": {
+      "sha256": "cab31395f5f7be5d6b1c5fa21cd495522d87a4e878b32e4027c94602c423400c",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application-vfs.js": {
+      "sha256": "8e25fac0aa775094c8d15a5292c8a20e0028641e4695ff6f9506a8394281f77c",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-application.js": {
+      "sha256": "5f9561e45bf48e548da5047aae8112a354afe0a34addf900e75ef44b7edd3a03",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-blob-config-errors.js": {
+      "sha256": "81e46cd29dab28f71b83d258beb4f577d7245c1d14b9749ecfa264996d21f931",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/sea/test-single-executable-blob-config.js": {
+      "sha256": "a2d2b8e40da0da9c832dc01b8cf203bf8cc23c09f5cbff2be25f2ae4904eebc8",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-return-on-exit.js": {
+      "sha256": "b4c2fda5554da35ab6942395cfe0f66d934fd5603a3f335dcfc534b4c770e801",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-cant_dotdot.js": {
+      "sha256": "7206b6dd6b7a759b026d5aa0533ce5929267f549cc3b594173e1e8a66d41d84f",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-clock_getres.js": {
+      "sha256": "74a874f6c9b33f4bbb475c5d86c98e3b1aad564389a22166f336ce189ad6537b",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-exitcode.js": {
+      "sha256": "779d2f78f36bc6d4357fce29934418e98fd97d050f5b36c30dd3415a86032def",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-fd_prestat_get_refresh.js": {
+      "sha256": "f897dc91f5c0df5601474cef6dd107fb3f0f81dedb52b636a2624c47ccb40242",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-ftruncate.js": {
+      "sha256": "99299b0a73f30c2c6ede7afbfd06c8bb2a95aaa228498254f173d20c092b25de",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-getentropy.js": {
+      "sha256": "4ea69ba826b71cb67e20865e3610ce91b931f25de7a5de26dde4de9e6e3d6834",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-getrusage.js": {
+      "sha256": "7910834b99d8ef9182b0dda8cc6ebdefe78c2ec4ed87d38d5b729d598463bc83",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-gettimeofday.js": {
+      "sha256": "bb8a98917360e42af33b94236cae1a847137f78cb83bb6a90e2bb6afaee83b47",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-initialize-validation.js": {
+      "sha256": "1849d112333221469fa11ba68e7d5b3f47f727fd69ae57f1ad275ab307b64560",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-io.js": {
+      "sha256": "dff45a30cea5ea39e035cdbb7187e4294d54d40324d02515470aa6a59417cab2",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-main_args.js": {
+      "sha256": "cec284f69611657a89a28870dd6596958cd0ac923cfd5ed93163851471b85d5c",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-not-started.js": {
+      "sha256": "a784b4a43736d16dfde74d9c0847918249aea062128afffb28daca98156edb7d",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-notdir.js": {
+      "sha256": "3664fe2b2a70e771f025b01eb4475e0bb3489cec85ee84cfa5da9861260a9e1c",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-options-validation.js": {
+      "sha256": "33e88ae1b565d5d9bf6f32a1333f8f17f8fecd4a2cade96b365e67bf840de134",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-poll.js": {
+      "sha256": "2f40fcafb39927b25252ab03c8c18d08291fe0e22074d8767124587113811a33",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-preopen_populates.js": {
+      "sha256": "6736ff3275936ffc72f5ac379004eb7c61df4896ae64b0d955528048880f3682",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-pthread.js": {
+      "sha256": "fb8f843d9c08506dfd90109743db00b89192f84431fa8742f31db0fb7a77a735",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-readdir.js": {
+      "sha256": "eef54a5656a05a468f4bd3d1ed3eb3d0e7574cb74a1833721261c42cbf0e8c4a",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-sock.js": {
+      "sha256": "a5e031c811c5a80b338a1cd441e5fa3614299c5acf9ca515040247d7171c8bec",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-start-validation.js": {
+      "sha256": "fd3186a413d846631a80a9c19eb2068690707f4b056f6ff4cd859dc68dc22bf6",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-stat.js": {
+      "sha256": "53cb6974700a53b37899b356f54cb20117463105e0701a606651721265e7b833",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-stdio.js": {
+      "sha256": "1c5054b890d8ddf67800152eae0300c1803050968f66477901e90ae82f6eacc1",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-symlinks.js": {
+      "sha256": "4947f3e82e24c7dc31f5293ecaf5edb545ed0eba6dee5c1fd54f6c279bac6427",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-worker-terminate.js": {
+      "sha256": "ccc741f87ef3085a8c6bd37d874a2eb8c408d58b8763e19c240f2700c3ec9c24",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    },
+    "test/wasi/test-wasi-write_file.js": {
+      "sha256": "311fee788649370f891fd1d48a782a4cae976149d40230783c30b2a9a4a863ae",
+      "declaredFlags": null,
+      "containsPrivateV8IntrinsicSyntax": false,
+      "scope": "Future unchanged candidate only; full launcher/fixtures/subtest/native applicability required"
+    }
+  },
+  "limitations": [
+    "Do not drop private V8 flags/syntax or native build requirements to call a test unchanged",
+    "Private engine-specific test requirements do not exclude portable public FFI APIs",
+    "Node feature/versions-based skips remain nonpassing guest compatibility",
+    "No new test discovery that executes wrappers was run"
+  ]
+}

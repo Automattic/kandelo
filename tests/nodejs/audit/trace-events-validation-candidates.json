@@ -1,0 +1,465 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/embedding/test-embedding-trace-events-unavailable.js",
+      "sha256": "274e203cb34934f24d5a8d06f9b66d62d4a4a8bff8b1a72eca4791f4094a4c76",
+      "category": "embedding",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/internet/test-trace-events-dns.js",
+      "sha256": "591810246b4fcf00e3a9ad14296858750ddced22e264ed06fd4f1fb92a1bc5a2",
+      "category": "internet",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-args-types.js",
+      "sha256": "0ef9e7beefec489a6f26039433e0033e0282ea03f47239238cd4e0230f4ce6bf",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-callback-default-context.js",
+      "sha256": "d67762c77af4dcbd26e2e043877f0598b4dd898af83d4727605c5137ad9381a5",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-callback-early-exit.js",
+      "sha256": "8f0c3d59290adfcc4cad0ffb1538e8d9f9d6da02c0ea771e6031bbccd0c0221b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-callback-error.js",
+      "sha256": "a8782e29365cff05e1683173340ac58687311261bb554451192f434e7e57a81e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-callback-run-stores.js",
+      "sha256": "5e3fe6cd5b4054e9d997b4c5800cc4c8920a1a3ac4c18fa3b4121f4d2224cef2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-callback.js",
+      "sha256": "8dd2f7203d3e6da2942691ea6c4f984c3cafa6d6e5a57cb8dd5850694d691111",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-context.js",
+      "sha256": "6ba7bf23c78e5157d311f881816a7b8eee5be472c254db0441a7b04f21ccc512",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-has-subscribers.js",
+      "sha256": "ec43281869a3ad497d68f0037769b0096be63241accd35289627ab00353aac98",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-early-exit.js",
+      "sha256": "9a543a53172539c815f7efb7b952dfa3091bd41c3208c501770ef652ac862d7f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-error.js",
+      "sha256": "02b97c3c1d645bbddba39b041a0fcf08cd1d1b5ceedc1d3c95841bd7edc79ca9",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-non-thenable.js",
+      "sha256": "f9c35fd66cff5fd5604d36b5deab6ecbbc45f85932b9464eaca3902cf4f4ba10",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-run-stores.js",
+      "sha256": "29a2d0c6131ef63cd8b706e2e9cba6b38e9cdd869b69a615e95d64c1c4b92d00",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-spoofed-constructor.js",
+      "sha256": "8a055ceb9edd800300c8c55d55e52f681ba9c0eaf80ba634691dd37e32bb65f8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-thenable.js",
+      "sha256": "902fb41b5c5c3b7ab30a5bc13cfbf4a01013b67e5e275c594e565b33ed7c33a3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-unhandled.js",
+      "sha256": "bf9b3825c98a89d47dfb477ea046433dfed760443245ada9dfa44a8cd47cd5ff",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise.js",
+      "sha256": "e3695a1a51a7ef40ba41c25430877a2682e2059cf566d6641d05ba2795262a69",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-sync-early-exit.js",
+      "sha256": "36d2ce09dc97acd61c9c3bd630b05ca4204e991f2ec259fe760b8d627c2ed07b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-sync-error.js",
+      "sha256": "c9e8b641f961707356ef00c2943b3d948eaa741be5dbb7805cb7dd60ad98c10c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-sync-run-stores.js",
+      "sha256": "3d54d2674fcc699f81cdc3da8d5deaf0c805a9e745cb8184684acb82eb0b2e13",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-sync.js",
+      "sha256": "f6386797eb0f1792d6b4ca5b9dfed8374619ec178542c458e1fac8f263716391",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-inspector-tracing-domain.js",
+      "sha256": "d83db66dadbf836dc5d7edf5684008257700ca3de03ce78d401f9bed362749d8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-permission-fs-write-trace-events.js",
+      "sha256": "6869b1c1ab4636949fe9338f87aaa627f86344f40c4e3e63ca344a550bd162c0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-api-worker-disabled.js",
+      "sha256": "2c2c6547085abbf4ee675224ec84cdca98ebcff9afc1c0a2b2edcc189180cabb",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-async-hooks-dynamic.js",
+      "sha256": "57340531034a4ce0f31e1a97e75c9b3b8ad8e6327ebd8326e952fd639c7e1ba8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-binding.js",
+      "sha256": "1f25486b0117f37924844c0e64e1a8f632847c1f20750b0047d011d3fc42dd55",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-category-used.js",
+      "sha256": "5a63867977d2cd5aea515c6155dc8081f6d61a0265e70a20ce69bd378f899ac6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-console.js",
+      "sha256": "58648ac32d96951a13141e1d0a94adadf5395b498972384120c8df9aa231f433",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-dynamic-enable-workers-disabled.js",
+      "sha256": "4c353f4b53afc76bdaee7bc6933a1d1e4fb34ff5eac89b5f88374263cb55fcab",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-dynamic-enable.js",
+      "sha256": "e4255ff5e98b1c3995d4d67549d9dcef9c14a29f0fff65f55d4a0adaae875bb1",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-fs-async.js",
+      "sha256": "130794ca302e34b6a1d3ef4c01a130d3b56bc7b8f1c37b82995ca3f4fefb05d3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-get-category-enabled-buffer.js",
+      "sha256": "388411d7b93611313e001b62361fdc233d32ce8b8530f4746f544f409343599e",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-metadata.js",
+      "sha256": "bc8538e06fab9841341a9bb4da6901e017d05434f4cd6a75e71da243811b163c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-perfetto-pftrace.js",
+      "sha256": "f13f90266486b8860909caccd9c5861e0a29657c44ed205382d195a31fe16c73",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-worker-metadata-with-name.js",
+      "sha256": "dd4bb14e1a54f73c7756d4ad4aca10743fc20d41584e21c9cbadc4af827ecd3b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-trace-events-worker-metadata.js",
+      "sha256": "6880ff1c5b0845c88f7482241811b9aa85dd1feec2cc7f6d8568746b71b1e65a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/parallel/test-tracing-no-crash.js",
+      "sha256": "0d44764590ec887544df961ae7f7e9528b2c6c0881a369e9d8df8a1428756b88",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-all.js",
+      "sha256": "f426233aac54dcd21e24dce1f2a259e7c988d317a6d950449bead8aebcd0f354",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-api.js",
+      "sha256": "256e2059eb20409f46a6333b5675da42a6ea7481682054cb1484d48df6dda835",
+      "category": "trace_events",
+      "declaredFlags": [
+        "--expose-gc --no-warnings --expose-internals"
+      ],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-async-hooks-worker.js",
+      "sha256": "f897612b12b38b0a79859adbc463fefad1189ed36faf27eec578b5ee9eadbcd1",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-async-hooks.js",
+      "sha256": "5b75669831422b8e7dd63a057224fad76ff7e30edcc6c8203ff0b65745bc28f4",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-bootstrap.js",
+      "sha256": "db5738e2f2cf47e0c71185e60bd32c9d4b3a23ceefe5c7c6e97cd2fd5aedc0fa",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-environment.js",
+      "sha256": "77ebe35663c78d8af073370b5e2e33ee4f0041a68f6731cf08a93c861400230b",
+      "category": "trace_events",
+      "declaredFlags": [
+        "--no-warnings"
+      ],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-file-pattern.js",
+      "sha256": "8757c6fdbdc51080fb04b19b3394ebd2c54a2455cfa59fc89f13a0d180161733",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-fs-sync.js",
+      "sha256": "401dbfeb8e3cbe002d820688be7cf5b65846c7f796dea80cb0aa5430c05826b6",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-http.js",
+      "sha256": "2bcce77c9b1a3419770ba986a8ad415cec79fc573b8d9dce85a785b4544fd4c4",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-net-abstract-socket.js",
+      "sha256": "10ef54beb0cd46d90b55f0fad530c5e9d3ea006642bb0f4c3a94e33b53f7c402",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-net.js",
+      "sha256": "afe51b56a84613f20dd89e1de02e54ff9c21bcb66b2d868579e13352abce0b82",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-none.js",
+      "sha256": "106a6319d57d369dad0fe36941f8a3bd379f6beee2c2c1f527e994b444e03223",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-process-exit.js",
+      "sha256": "bf74c9909b97460a3ed3799b0a4cbb94f13a68f6700a7492cd0526443285cbeb",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-promises.js",
+      "sha256": "338f8dfb6eea5e9e72645cc0dd02c4f6251c1ef84550f41bcfdc6bd3fae1d5e8",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-threadpool.js",
+      "sha256": "107a13ccb5f7dc18b24cba3dbdcdc1a8db2b89b449be064846b14a5fa818f460",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-v8.js",
+      "sha256": "7a1dce161e3bf9ce5c66817c1f713f8b9be76428936ec5755357621ba3e2941e",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/test-trace-events-vm.js",
+      "sha256": "e9338005a36a2b0a2e5490e501882c1d199a280faa3ca7ad1510ae0aff3ecfc8",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    },
+    {
+      "path": "test/trace_events/testcfg.py",
+      "sha256": "9ec28aa6a0b502555ca09eb9e34e1e4ed880a8f347cc34f8b22352dac21a1301",
+      "category": "trace_events",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, not run; selection is not assertion applicability signoff",
+      "requirements": "Original flags, child launch, common helpers, real fixtures; trace_processor_shell required if common.hasPerfetto; preserve native/worker feature skips"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

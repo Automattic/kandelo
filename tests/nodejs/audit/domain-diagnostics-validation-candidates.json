@@ -1,0 +1,995 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/parallel/test-diagnostics-channel-bind-store.js",
+      "sha256": "03dd91c934c8607745f3aff5c5ecf74fef24e2521f5e5dd3d36f89cc306db590",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-bounded-channel-run-transform-error.js",
+      "sha256": "b7abb9f49de346a1a0e138f86e49f52ad9c502aec86c3322a9e8f852c1923606",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-bounded-channel-run.js",
+      "sha256": "c2937a058774e2fe10d685790439453f92d2589a9b837991433a35cbb7530d41",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-bounded-channel-scope-error.js",
+      "sha256": "23acf2d8d388db576ce054ea3a79641a0033185f0fb9a7772364fb918740f974",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-bounded-channel-scope-nested.js",
+      "sha256": "295a344f925623ea9ee9f27796cc2b9e19338cc04ac581f98bf7e70b6495a561",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-bounded-channel-scope-transform-error.js",
+      "sha256": "31d878495b4f9647a9f9197cac8cfe77550f4ce278d669418c3fee79c85116b9",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-bounded-channel-scope.js",
+      "sha256": "4622e9e298ac08a2cdda03bf064c0343d468c504ce5cd1bc176e5f96cc5ac632",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-bounded-channel.js",
+      "sha256": "193727cc3e020b2556137346be958be1bd28c31c8adfc89654262e5353f5ed8c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-child-process.js",
+      "sha256": "b88eaa6096bd9597ab1bc6ad3c6a426a77be22f890a9584fabd02b6ae63c03e7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-crypto-fips-indicator.js",
+      "sha256": "863dddd5388cc566eaabd622dc00445d5a370a4912d13e2886f33f211e2d6c0e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-gc-maintains-subcriptions.js",
+      "sha256": "9cbabf559726f1341df8d6162df9afe3189dd89383bc4b40189c29b8d089b726",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-gc-race-condition.js",
+      "sha256": "024ef02b318f75bad7b3af1d282510ba84c76323d63906b7f84b95a3afdd773e",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-has-subscribers.js",
+      "sha256": "f45355d6191bbbcef10fa8693727c0db02bf5e8505f87e05b1ada609fa9c67f6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http-server-start.js",
+      "sha256": "23ca6fec9d9517c6b85690e96adfc659088d9f2b49501e31ced077eaf1f6b153",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http.js",
+      "sha256": "c8638182b68a09758da0bac386d965a020812cf89dd9b899eddc788a62fc0d33",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-client-stream-body-multiple-buffers-and-strings.js",
+      "sha256": "199869b3e9379005a101e39f34ea6e08ca1d64be3ad222c6718fccf06eb24435",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-client-stream-body-multiple-buffers.js",
+      "sha256": "e4aa50eded83e53e4bdf476688f24279444bbf6a2773a888857cf39899b8d92c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-client-stream-body-no-chunks.js",
+      "sha256": "5fd1b920c281c9c369df5fe4aa47891209045f411fe210a066ce2830d4b85158",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-client-stream-body-single-buffer.js",
+      "sha256": "1081627821443bc2d34b529b71f26908e44284bd9e3aa88dff9b68ca0526b0d1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-client-stream-body-single-string.js",
+      "sha256": "f3b2266f69bf3f7c292fa765f7ca6210ef26706ecf3a9889deb6cade33a470d2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-client-stream-close-error.js",
+      "sha256": "2a3084ede87176d6c89fd0e73c49c11636982cf006bd7e33fd5e130f18efea5c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-client-stream-close.js",
+      "sha256": "f4ec26334b3991e122e487ef5bbba733e3e32def09855a60330de600776be11e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-client-stream-created.js",
+      "sha256": "7c133153cad47b6cb7daebedb04a05c55fecc8c1a186b70765ff6c68913620fe",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-client-stream-error.js",
+      "sha256": "a72d11bd64e564ef02970ff1364e5e0e4afbebf7384ed193ddd65a045ec52ad7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-client-stream-finish.js",
+      "sha256": "0184357938fe538e207c6cf5e51fba6b0acb9a2c87170bf9162a8480eb7b614d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-client-stream-start.js",
+      "sha256": "a7966cdbc7a38572132f427715fe135912802576429b9c48bdef280e9000f34a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-server-stream-close-error.js",
+      "sha256": "e9c72c52446bc99e62d738638a68c933704eb477b718fbf96d0799d68c883c45",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-server-stream-close.js",
+      "sha256": "f2aa38717296f4d1f019e12f4b750f3bccc0c8a3afd9bb31537d5b7ae51409c6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-server-stream-created-start-timing.js",
+      "sha256": "b3a92cebaeb04c1fc76e19044bd5c08749aa8959ce63d734c88f3f5980e9e18e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-server-stream-created.js",
+      "sha256": "0bd86a113095228b8866802943b2b2f916717197a41f108b184bb91e1bc620dd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-server-stream-error.js",
+      "sha256": "b489ee7bf00a361295c4306ed861147d98df954f7ed3796c51d274eb14a4dda0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-server-stream-finish.js",
+      "sha256": "c2be5071758c90a2cdb7990e0d236f4050307163edb4949dd3c1275a3f6ce2de",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-http2-server-stream-start.js",
+      "sha256": "c03905cbfee9e650be946b7caf212686d46e2807f17a0b75fda8a41a475fb257",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-many-channels.js",
+      "sha256": "0ac1e09b01c633f1e79508d6bae036d3ad57acf869807f641bb646c73f68c915",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-memory-leak.js",
+      "sha256": "6946a40b1ce0fad28fe4232457e33c91d2ce13cdf6643ca3d2c50032347b9e03",
+      "category": "parallel",
+      "declaredFlags": [
+        "--max-old-space-size=16"
+      ],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-module-import-error.js",
+      "sha256": "c4483f725bcf68f42dead83193fda93c1d7932dfa1cd2de812ce275e01f298dd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-module-import.js",
+      "sha256": "a2d2ba3ede2fbbe6daa79066078ba2d44ee5eb95f9f86292dc723226638f4dcb",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-module-require-error.js",
+      "sha256": "d4ef618508ab8c444b4963956cc5bbb8f4534301090772100a09545bcfc714a6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-module-require.js",
+      "sha256": "d1fa9d4d07ac3823ff93161b195f4d657086a7016d781531461277c1b43fbdc1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-net-client-socket-tls.js",
+      "sha256": "c28edc5e502561f06eee2faf626015bc4555a9a591e929a93867d4aa51634e7d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-net.js",
+      "sha256": "b7eacf4440cf35b166e00d1076bcab021cb011b48cddd38464407e25781a7d91",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-object-channel-pub-sub.js",
+      "sha256": "5fde2ccd25def931fdc701c1ffd43635bf551f517b03277874d69c994c0255ff",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-process.js",
+      "sha256": "95ffdeb4d865918a3f4b1af9f68537e96e43e77a3595881053f7cfa72043581a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-pub-sub.js",
+      "sha256": "2e370322949406c61b658d615d7670072bca48a15360f8e4f09842832ac1c698",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-run-stores-scope-transform-error.js",
+      "sha256": "de1d0a567fa012763a7e78bbb996c677f90d39b972bb0ae735f90a7f1aef36fa",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-run-stores-scope.js",
+      "sha256": "45c54615c85ec0e1131dde38881a78c7f1a43d62e79a3529fc3a206c24fb6d9d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-safe-subscriber-errors.js",
+      "sha256": "061f3ffb5d453148b8f2e400be2c8e32b03781e16a88ef27c310b95e4ed47ad5",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-symbol-named.js",
+      "sha256": "2fd5e8312995283ac34b5a9c4e3360d14637a2ac86dc6d24e87d1e6d4833af60",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-sync-unsubscribe.js",
+      "sha256": "82d5d60ffd0439ae6064039a79d7ad27309a1e6286b0bdc9cafe54bb4d912158",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-args-types.js",
+      "sha256": "0ef9e7beefec489a6f26039433e0033e0282ea03f47239238cd4e0230f4ce6bf",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-callback-default-context.js",
+      "sha256": "d67762c77af4dcbd26e2e043877f0598b4dd898af83d4727605c5137ad9381a5",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-callback-early-exit.js",
+      "sha256": "8f0c3d59290adfcc4cad0ffb1538e8d9f9d6da02c0ea771e6031bbccd0c0221b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-callback-error.js",
+      "sha256": "a8782e29365cff05e1683173340ac58687311261bb554451192f434e7e57a81e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-callback-run-stores.js",
+      "sha256": "5e3fe6cd5b4054e9d997b4c5800cc4c8920a1a3ac4c18fa3b4121f4d2224cef2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-callback.js",
+      "sha256": "8dd2f7203d3e6da2942691ea6c4f984c3cafa6d6e5a57cb8dd5850694d691111",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-context.js",
+      "sha256": "6ba7bf23c78e5157d311f881816a7b8eee5be472c254db0441a7b04f21ccc512",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-has-subscribers.js",
+      "sha256": "ec43281869a3ad497d68f0037769b0096be63241accd35289627ab00353aac98",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-early-exit.js",
+      "sha256": "9a543a53172539c815f7efb7b952dfa3091bd41c3208c501770ef652ac862d7f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-error.js",
+      "sha256": "02b97c3c1d645bbddba39b041a0fcf08cd1d1b5ceedc1d3c95841bd7edc79ca9",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-non-thenable.js",
+      "sha256": "f9c35fd66cff5fd5604d36b5deab6ecbbc45f85932b9464eaca3902cf4f4ba10",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-run-stores.js",
+      "sha256": "29a2d0c6131ef63cd8b706e2e9cba6b38e9cdd869b69a615e95d64c1c4b92d00",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-spoofed-constructor.js",
+      "sha256": "8a055ceb9edd800300c8c55d55e52f681ba9c0eaf80ba634691dd37e32bb65f8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-thenable.js",
+      "sha256": "902fb41b5c5c3b7ab30a5bc13cfbf4a01013b67e5e275c594e565b33ed7c33a3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise-unhandled.js",
+      "sha256": "bf9b3825c98a89d47dfb477ea046433dfed760443245ada9dfa44a8cd47cd5ff",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-promise.js",
+      "sha256": "e3695a1a51a7ef40ba41c25430877a2682e2059cf566d6641d05ba2795262a69",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-sync-early-exit.js",
+      "sha256": "36d2ce09dc97acd61c9c3bd630b05ca4204e991f2ec259fe760b8d627c2ed07b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-sync-error.js",
+      "sha256": "c9e8b641f961707356ef00c2943b3d948eaa741be5dbb7805cb7dd60ad98c10c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-sync-run-stores.js",
+      "sha256": "3d54d2674fcc699f81cdc3da8d5deaf0c805a9e745cb8184684acb82eb0b2e13",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-tracing-channel-sync.js",
+      "sha256": "f6386797eb0f1792d6b4ca5b9dfed8374619ec178542c458e1fac8f263716391",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-udp.js",
+      "sha256": "3b3b373569ac88c81df6282f7c1a82bb81b3df6960f3761af5682b95c466a214",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-web-locks.js",
+      "sha256": "3515acb296cb948d4c8141dc541b76f214db62b931b315f655bae91ab628c7d0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-diagnostics-channel-worker-threads.js",
+      "sha256": "b8636b353d25a08656b18562587b00eb9591031b33ba10a22545d8c9892ab428",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-abort-on-uncaught.js",
+      "sha256": "9ce11957d8c18042dc9e4376d827beda5ab7b83d8cd86d612ad18d54063eef19",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-add-remove.js",
+      "sha256": "6f38c16e534647a25756df7d518c9c9df49371d41f7f6e8aee2dddca7cea1864",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-async-id-map-leak.js",
+      "sha256": "4be6271a21cff1b580b093c72c1a63932c6e107784b7e46ff8e60c0ebf908a9d",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-bind-timeout.js",
+      "sha256": "aaf52ff8ba924b600282961efbfd94ef7447310758fd603d97321bf975263b77",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-crypto.js",
+      "sha256": "9ce48b9a7ccebfd0cb3a0d5f8d273e9a7c510467133c7ec62d6c348abdb9dc94",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-dep0097.js",
+      "sha256": "3d2ab1718ac725d5941c6ba441c60fa7167d828ee6e72463e3263da094db020d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-ee-error-listener.js",
+      "sha256": "43e878299f5e29f1023254a6d9af4e9de3cc2406f30137db6777a716e12dfe1e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-ee-implicit.js",
+      "sha256": "4ba1ac8576e9679e985b364c5e8f869d8551071dd8eced12264e31796457152c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-ee.js",
+      "sha256": "ac22812f9eed10f6846ac463a2503e3dcfd7a4a10d92722a4a2fd6c04cfcac16",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-emit-error-handler-stack.js",
+      "sha256": "e676505d55c1749dc8faecaaf3a0499560d573e30689d775cabd859195cc500f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-enter-exit.js",
+      "sha256": "45b8b332feefdc419c0b75f9ab295989747fff8b6864633019248d90113bc6b1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-error-types.js",
+      "sha256": "c2ff03de2b046b9181fe97cb853aadb5995738bebe74e56e11ecfb331de6472e",
+      "category": "parallel",
+      "declaredFlags": [
+        "--gc-interval=100 --stress-compaction"
+      ],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-from-timer.js",
+      "sha256": "1eee27be302727b6e29b2baa9bff8c12cbb80ea196b873a21b1a5b99abc7f67a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-fs-enoent-stream.js",
+      "sha256": "c40bf4200908aaffd93f8a726b39e51ddd24a2655e5832e1571ddf5b52fddfa2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-http-server.js",
+      "sha256": "431a4a79f420e87a7d2a77d39ea9a1e42911828d4a3bdced818e2acd6850d4d8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-implicit-binding.js",
+      "sha256": "1ef1fa00d528e4f6f12bd0eb503d2abaa6aabca7a58ede93f185a0623e2b389d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-implicit-fs.js",
+      "sha256": "fe7e4c640a8170b9b6433d1695f27dd4f83f20d4ae979921a4001ada446e31c6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-intercept.js",
+      "sha256": "773c04beabc0ff99c6b1af6f20735a1e83b483f7dedbfb05984d45c5d37b81c0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-load-after-set-uncaught-exception-capture.js",
+      "sha256": "fe3e8d191dc683f27c0f6ff6d0256068a5f201d965a7771b0e4de0bb53d89f5a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-multi.js",
+      "sha256": "bd680290db88ccc5b2821d5c30c3af802ce9b44ec055dec931b7e8f9aa8d4ca1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-multiple-errors.js",
+      "sha256": "c7e2ff092bc42d29bc4429b063cbbaf37b8b7aee9af8dd8fd2594552e9ab2b22",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-nested-throw.js",
+      "sha256": "cacbe97ae78c5a76bd0bc8c329e74abd3645243b48bbdc1918fdf2f6042024fe",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-nested.js",
+      "sha256": "89d028654b05ec0fe6608c653de51e436cf6f55b76db320fe00456336626c0b7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-nexttick.js",
+      "sha256": "0fe80b7ca1bd8000c5b3d4f2c54c0adef97ab81d0c6aad88e2d4011a51366215",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-no-error-handler-abort-on-uncaught-0.js",
+      "sha256": "6202da74885881c3af00ec823fae0f97da9feb1bab88ad226ac3d86ae6d0dd44",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-no-error-handler-abort-on-uncaught-1.js",
+      "sha256": "6852ec13666f720afdde06a13511979285acee21fb736d7c34d9d7ca90279b2c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-no-error-handler-abort-on-uncaught-2.js",
+      "sha256": "947acb76847ecd327d99109e6c31eb574a6183b1f27fa4caeb2131012e0cb7cf",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-no-error-handler-abort-on-uncaught-3.js",
+      "sha256": "57dc161a9ccb8c778b4fd1a85456c93883eaa605f28cb49e0b80f3eb1f0763b0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-no-error-handler-abort-on-uncaught-4.js",
+      "sha256": "8e5a9419bfc4ac224e926923c5d8932a4b39664d54695562de03fd96ad8b9e91",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-no-error-handler-abort-on-uncaught-5.js",
+      "sha256": "793254c18a47006b96cd63013e8d7931fd3bc8a02661472e93b88be7e58bdb19",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-no-error-handler-abort-on-uncaught-6.js",
+      "sha256": "202208d9fd19b525fb9363492edbf70546e88ebb37404ee0628530aac1ff4726",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-no-error-handler-abort-on-uncaught-7.js",
+      "sha256": "537433cc90d712e941622e865e48fd47723d83c0e6e9f054617cba3bdc03046a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-no-error-handler-abort-on-uncaught-8.js",
+      "sha256": "544dbc7ba58805da31298fc30e6b78135463e39f8c04682fd519fe14f0d56706",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-no-error-handler-abort-on-uncaught-9.js",
+      "sha256": "e4511b8f3b98456bbc3d53c3e3b8902b124933caee34a572c92b7bcc2507f2f5",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-promise.js",
+      "sha256": "ef4b54e9f000931477a2ecfe005a305b53936b019d043c7bc6c75226fd2c8199",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-run.js",
+      "sha256": "2d18b42801e1993da0cf1addbd9d29f2294cf447c7c6dca0aac04a6ca22100bd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-safe-exit.js",
+      "sha256": "263529c585a65aa59e50358ce4de8d33282f8ff62bddc1f808672c723e7c3526",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-set-uncaught-exception-capture-after-load.js",
+      "sha256": "37a2351dbdfa17ee867a356aba618b76fc7a79dbe7696da8f02a0d53bf15a304",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-stack-empty-in-process-uncaughtexception.js",
+      "sha256": "f722223251479ccadbea10aea5fd298131317c810a4bf7335e97df0c7f21f030",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-stack.js",
+      "sha256": "53f685f6fd6478ecf47ebea6ed4ef38f708f2b6c74b3b85af744d7461760f3d7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-throw-error-then-throw-from-uncaught-exception-handler.js",
+      "sha256": "629cbff22689cc94d27907a02b580442af05a58bc2da86fb34dc28b14b5b11f3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-thrown-error-handler-stack.js",
+      "sha256": "d1a94cacca0b6463537637599acfb65fe1bde5ef709d890dcc81bdb60b96f59a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-timer.js",
+      "sha256": "d5f9c8d7011b09a71989722b45d98bdbf0ebe0c5a6686bb428e2b0ed7552f3b7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-timers-uncaught-exception.js",
+      "sha256": "cb571afb53ea0fa27cac96c4487a7d1bbeaf2f0f4c6ef6a0aad85f088a0b78d2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-timers.js",
+      "sha256": "a3627f849d43e2301f1e79d1316a9f0437e5d2b15956e394e3c40b5b1f39ca26",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-top-level-error-handler-clears-stack.js",
+      "sha256": "b6866fae6d0db1ae34be120bb6d033497f08f00312a1d69dbaf1fb48642aebe3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-top-level-error-handler-throw.js",
+      "sha256": "2e5b9895e9144ef03e87573fcd963a2e5fb02ef265b54de84f2e9502ec8fab86",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-uncaught-exception.js",
+      "sha256": "f4f16a63c5d579b48ca3083e9a32fe09955ea8322a09d73b99bf4c6249f9a6d8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-vm-promise-isolation.js",
+      "sha256": "36171b180d92171c3dbaf2ae6bc10f3a695037c8633354fe486503a1ed2ee0f4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    },
+    {
+      "path": "test/parallel/test-domain-with-abort-on-uncaught-exception.js",
+      "sha256": "0ecb45ab707e241cebd0efb484d832c6e92c9222897477162a880a490afb63fb",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; not executed or assertion-coverage signoff",
+      "requirements": "Retain actual common helpers, async/native/GC/private flags, category rules, fixtures and all assertions"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

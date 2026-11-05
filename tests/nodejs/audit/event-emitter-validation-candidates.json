@@ -1,0 +1,259 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/parallel/test-event-emitter-add-listeners.js",
+      "sha256": "aa761a66b093ded5a97103197b3fd18e8453ca64c4ede0c8e4e246870f9a8ac0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-check-listener-leaks.js",
+      "sha256": "3fe09efa1bacc79472f57a4c7766dae781368cd115fa15bae4281ecb9ab37fed",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-emit-context.js",
+      "sha256": "47d91c5e3bb54a5c13bacbf30e048d6c46eb4ff2e18e60f5d10e5d3c18dd4ee5",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-error-monitor.js",
+      "sha256": "2ec4c0483eae65c36820ff49493f90a18541e03128b7347498e5654ac4b427ef",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-errors.js",
+      "sha256": "a5e661fb4d457568a2946f18c1b2040923bc002e31547a73221803fe093cc06e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-get-max-listeners.js",
+      "sha256": "8c1e179c08ca0565afe0fdf71b7ea68a573a0f67403936d476eb5bf969793a83",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-invalid-listener.js",
+      "sha256": "6fcb231ee34695212b65291e8d98b0af62503db47b4ab9a86414568d4557ef20",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-listener-count.js",
+      "sha256": "9eccf4618c92542560325706bebec4df028e36f5f804c3b4968345cce6f09819",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-listeners-side-effects.js",
+      "sha256": "0fb5ae6cec417749e32ce8ec24e37b861e7baef88826903eb567a0a58b10520d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-listeners.js",
+      "sha256": "5d8cb66aa9f2c11274ca3f56cc7c92006ac92125b09f5d92d861602a47a87339",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-max-listeners-warning-for-null.js",
+      "sha256": "ce09c1f6d2f69847216fe39043b9a751dd0b023debf90d7c38c5d798d7a2dbda",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings"
+      ],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-max-listeners-warning-for-symbol.js",
+      "sha256": "7cf4ed92313dcad1a2a5ef4a3d6585e509481155fd7fb65e81d40c7308b8fdaf",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings"
+      ],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-max-listeners-warning.js",
+      "sha256": "a9eda9ffca45f7649018f9b770ec05bda6413d822622d590346cb45c4167e1cc",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings"
+      ],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-max-listeners.js",
+      "sha256": "43289b0cb40debab3108f2aaed60753dfa8075f9c95f4bad3199402b4a0c4781",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-method-names.js",
+      "sha256": "0ff88393dc7430303900a1e99a6f078ab6b34c7c319384f75f4169c91a440c45",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-modify-in-emit.js",
+      "sha256": "d42dd719fa4136b0fc1ed39224486f7ade1d3f820e2048924ec82f755a60c482",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-no-error-provided-to-error-event.js",
+      "sha256": "b0c25f537470457b63078f3e925ba52b1ae68c2fd76cb983b4877a601377c7aa",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-num-args.js",
+      "sha256": "55371276e991669db27be6fdf26d98b62bad2a1b20fdfb50d36470d001298635",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-once.js",
+      "sha256": "0eaa75b1102a47f307f9004a60fb9a48b0968e94a4e484e07436228abc4241fd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-prepend.js",
+      "sha256": "fc27f21546934d85991f4b1da8a80fd1db14078ab3e67d7a38a7125c59847269",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-remove-all-listeners.js",
+      "sha256": "c2c89b253b8a2c78086f22d32e0cd5c2e4ac270719c7a35c4ec23180f7476a90",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-remove-listeners.js",
+      "sha256": "bff357c57b08e6a50da834877ea7fb403280e8324941d70c78da7fedf5ac1cf6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-set-max-listeners-side-effects.js",
+      "sha256": "67e23affec4884b9abaceb321efbe2918b7a938757efccaf7fc085777b05ef7b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-special-event-names.js",
+      "sha256": "f256d4fd4415b56aaf388ed46ad94a1ac362d6d7c8f7809161186be9f01738cf",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-subclass.js",
+      "sha256": "39f5540b651035f18a240ec10555f103991e44006cd5193769ea6ec98b457610",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-event-emitter-symbols.js",
+      "sha256": "f2bfdda106b67234f09e3e47bd2fcbf68f26b5538313628d7698578d28ad48ca",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-eventemitter-asyncresource.js",
+      "sha256": "c326af2291cbb337233271442f829575253b469ab2f909dd015ea60b69205615",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-events-add-abort-listener.mjs",
+      "sha256": "c3e79648b3004c5d3a185f4c8d8069975b6f6cd8a56bf5dfe08091f9cff41104",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-events-on-async-iterator.js",
+      "sha256": "81631ed0a10c0896a0b856d42b776ab344bac895ccd7f045db52143fb0175c38",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-warnings"
+      ],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    },
+    {
+      "path": "test/parallel/test-events-once.js",
+      "sha256": "9e89e78df87e9e204e8ddc2e3a86445d5e830a2c3686b4d41dd9f9e436b4357a",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings"
+      ],
+      "status": "Unchanged future candidate, not run; assertion applicability/fixture coverage separate",
+      "requirements": "Original flags/common helpers/expected message output, real async/GC/Abort/worker/context/error fixtures; preserve all skips, failures and harness outcomes"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

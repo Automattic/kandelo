@@ -1,0 +1,1068 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "kind": "Public requirements/source negative or stub audit; no conformance",
+  "sections": [
+    {
+      "document": "doc/api/domain.md",
+      "line": 1,
+      "endLine": 37,
+      "title": "Domain",
+      "sha256": "cc882a950ad323a9dc48b91f651de885519c3f8a3435df208517f3345237da14",
+      "normativeRequirements": "> Stability: 0 - Deprecated\n\n\n\n**This module is pending deprecation.** Once a replacement API has been\nfinalized, this module will be fully deprecated. Most developers should\n**not** have cause to use this module. Users who absolutely must have\nthe functionality that domains provide may rely on it for the time being\nbut should expect to have to migrate to a different solution\nin the future.\n\nDomains provide a way to handle multiple different IO operations as a\nsingle group. If any of the event emitters or callbacks registered to a\ndomain emit an `'error'` event, or throw an error, then the domain object\nwill be notified, rather than losing the context of the error in the\n`process.on('uncaughtException')` handler, or causing the program to\nexit immediately with an error code.",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 38,
+      "endLine": 191,
+      "title": "Warning: Don't ignore errors!",
+      "sha256": "2d4553c2ad0a33e3e0a05ad064261faf13ed4657af94ceb5f9b9935afcb6d7b6",
+      "normativeRequirements": "Domain error handlers are not a substitute for closing down a\nprocess when an error occurs.\n\nBy the very nature of how [`throw`][] works in JavaScript, there is almost\nnever any way to safely \"pick up where it left off\", without leaking\nreferences, or creating some other sort of undefined brittle state.\n\nThe safest way to respond to a thrown error is to shut down the\nprocess. Of course, in a normal web server, there may be many\nopen connections, and it is not reasonable to abruptly shut those down\nbecause an error was triggered by someone else.\n\nThe better approach is to send an error response to the request that\ntriggered the error, while letting the others finish in their normal\ntime, and stop listening for new requests in that worker.\n\nIn this way, `domain` usage goes hand-in-hand with the cluster module,\nsince the primary process can fork a new worker when a worker\nencounters an error. For Node.js programs that scale to multiple\nmachines, the terminating proxy or service registry can take note of\nthe failure, and react accordingly.\n\nFor example, this is not a good idea:\n\n\n\nBy using the context of a domain, and the resilience of separating our\nprogram into multiple worker processes, we can react more\nappropriately, and handle errors with much greater safety.",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 192,
+      "endLine": 206,
+      "title": "Additions to `Error` objects",
+      "sha256": "4e25247b254f88c98d5a05986f8450db693bd81b1ef26963cf7f64c7d4d62d74",
+      "normativeRequirements": "Any time an `Error` object is routed through a domain, a few extra fields\nare added to it.\n\n* `error.domain` The domain that first handled the error.\n* `error.domainEmitter` The event emitter that emitted an `'error'` event\n  with the error object.\n* `error.domainBound` The callback function which was bound to the\n  domain, and passed an error as its first argument.\n* `error.domainThrown` A boolean indicating whether the error was\n  thrown, emitted, or passed to a bound callback function.",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 207,
+      "endLine": 232,
+      "title": "Implicit binding",
+      "sha256": "e1de08cd92480e8bda63f8ebba9422ea94cf02218d99db54ac47f6a3f66ed033",
+      "normativeRequirements": "If domains are in use, then all **new** `EventEmitter` objects (including\nStream objects, requests, responses, etc.) will be implicitly bound to\nthe active domain at the time of their creation.\n\nAdditionally, callbacks passed to low-level event loop requests (such as\nto `fs.open()`, or other callback-taking methods) will automatically be\nbound to the active domain. If they throw, then the domain will catch\nthe error.\n\nIn order to prevent excessive memory usage, `Domain` objects themselves\nare not implicitly added as children of the active domain. If they\nwere, then it would be too easy to prevent request and response objects\nfrom being properly garbage collected.\n\nTo nest `Domain` objects as children of a parent `Domain` they must be\nexplicitly added.\n\nImplicit binding routes thrown errors and `'error'` events to the\n`Domain`'s `'error'` event, but does not register the `EventEmitter` on the\n`Domain`.\nImplicit binding only takes care of thrown errors and `'error'` events.",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 233,
+      "endLine": 274,
+      "title": "Explicit binding",
+      "sha256": "9f6a853082affbdce6896ba5acb2e06147c265968ccb277a7a88b3909e6a1333",
+      "normativeRequirements": "Sometimes, the domain in use is not the one that ought to be used for a\nspecific event emitter. Or, the event emitter could have been created\nin the context of one domain, but ought to instead be bound to some\nother domain.\n\nFor example, there could be one domain in use for an HTTP server, but\nperhaps we would like to have a separate domain to use for each request.\n\nThat is possible via explicit binding.",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 275,
+      "endLine": 278,
+      "title": "`domain.create()`",
+      "sha256": "73f4272791483440803681ecd80d0424db69620d0cf27bbb63f5e3882f1036d2",
+      "normativeRequirements": "* Returns: {Domain}",
+      "apiObservationId": "domain.create"
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 279,
+      "endLine": 287,
+      "title": "Class: `Domain`",
+      "sha256": "6833af47c4ce460fc030a9606063786ce1e57d9bec53b8f3356c2ef13329ef45",
+      "normativeRequirements": "* Extends: {EventEmitter}\n\nThe `Domain` class encapsulates the functionality of routing errors and\nuncaught exceptions to the active `Domain` object.\n\nTo handle the errors that it catches, listen to its `'error'` event.",
+      "apiObservationId": "domain.Domain"
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 288,
+      "endLine": 293,
+      "title": "`domain.members`",
+      "sha256": "87d23187d8722318ce7affe3af9df74f80c492c6907b89e4a55fb4ab35573ab7",
+      "normativeRequirements": "* Type: {Array}\n\nAn array of event emitters that have been explicitly added to the domain.",
+      "apiObservationId": "domain.Domain.prototype.members"
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 294,
+      "endLine": 312,
+      "title": "`domain.add(emitter)`",
+      "sha256": "cc826bdeb4705c11a15adc00e294762f639f98c767f8c2ccd4a0e2b74b94db85",
+      "normativeRequirements": "* `emitter` {EventEmitter} emitter to be added to the domain\n\nExplicitly adds an emitter to the domain. If any event handlers called by\nthe emitter throw an error, or if the emitter emits an `'error'` event, it\nwill be routed to the domain's `'error'` event, just like with implicit\nbinding.\n\nIf the `EventEmitter` was already bound to a domain, it is removed from that\none, and bound to this one instead.",
+      "apiObservationId": "domain.Domain.prototype.add"
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 313,
+      "endLine": 337,
+      "title": "`domain.bind(callback)`",
+      "sha256": "60660a1eb771c84d7b5b65124f4baea1770daa1b374ba7589984e31e2ba81be9",
+      "normativeRequirements": "* `callback` {Function} The callback function\n* Returns: {Function} The bound function\n\nThe returned function will be a wrapper around the supplied callback\nfunction. When the returned function is called, any errors that are\nthrown will be routed to the domain's `'error'` event.",
+      "apiObservationId": "domain.Domain.prototype.bind"
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 338,
+      "endLine": 350,
+      "title": "`domain.enter()`",
+      "sha256": "01438d5516d4ae37ebdb39a264cef301cb08e35dd3739e626c4f3408b5b7b868",
+      "normativeRequirements": "The `enter()` method is plumbing used by the `run()`, `bind()`, and\n`intercept()` methods to set the active domain. It sets `domain.active` and\n`process.domain` to the domain, and implicitly pushes the domain onto the domain\nstack managed by the domain module (see [`domain.exit()`][] for details on the\ndomain stack). The call to `enter()` delimits the beginning of a chain of\nasynchronous calls and I/O operations bound to a domain.\n\nCalling `enter()` changes only the active domain, and does not alter the domain\nitself. `enter()` and `exit()` can be called an arbitrary number of times on a\nsingle domain.",
+      "apiObservationId": "domain.Domain.prototype.enter"
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 351,
+      "endLine": 365,
+      "title": "`domain.exit()`",
+      "sha256": "057142e7970f1a2ac62dbad3f2dcfb86fdc1b3b970ed18f1c1b4ba009cdcafde",
+      "normativeRequirements": "The `exit()` method exits the current domain, popping it off the domain stack.\nAny time execution is going to switch to the context of a different chain of\nasynchronous calls, it's important to ensure that the current domain is exited.\nThe call to `exit()` delimits either the end of or an interruption to the chain\nof asynchronous calls and I/O operations bound to a domain.\n\nIf there are multiple, nested domains bound to the current execution context,\n`exit()` will exit any domains nested within this domain.\n\nCalling `exit()` changes only the active domain, and does not alter the domain\nitself. `enter()` and `exit()` can be called an arbitrary number of times on a\nsingle domain.",
+      "apiObservationId": "domain.Domain.prototype.exit"
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 366,
+      "endLine": 400,
+      "title": "`domain.intercept(callback)`",
+      "sha256": "5ee9e97fb8b49062dc18a9b9d6b7cdd86c93a95f362d71702c41488048c313fb",
+      "normativeRequirements": "* `callback` {Function} The callback function\n* Returns: {Function} The intercepted function\n\nThis method is almost identical to [`domain.bind(callback)`][]. However, in\naddition to catching thrown errors, it will also intercept [`Error`][]\nobjects sent as the first argument to the function.\n\nIn this way, the common `if (err) return callback(err);` pattern can be replaced\nwith a single error handler in a single place.",
+      "apiObservationId": "domain.Domain.prototype.intercept"
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 401,
+      "endLine": 407,
+      "title": "`domain.remove(emitter)`",
+      "sha256": "e46f5e7689f4466095ef00b8e7f5a06e02d11f43726f48f5d6883c1db1f0df2e",
+      "normativeRequirements": "* `emitter` {EventEmitter} emitter to be removed from the domain\n\nThe opposite of [`domain.add(emitter)`][]. Removes domain handling from the\nspecified emitter.",
+      "apiObservationId": "domain.Domain.prototype.remove"
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 408,
+      "endLine": 441,
+      "title": "`domain.run(fn[, ...args])`",
+      "sha256": "62cd331a0d78309d07d4ff0dd9ea67ad73f2a5a48797cf80f0f5b261fab7c7c8",
+      "normativeRequirements": "* `fn` {Function}\n* `...args` {any}\n\nRun the supplied function in the context of the domain, implicitly\nbinding all event emitters, timers, and low-level requests that are\ncreated in that context. Optionally, arguments can be passed to\nthe function.\n\nThis is the most basic way to use a domain.\n\n\n\nIn this example, the `d.on('error')` handler will be triggered, rather\nthan crashing the program.",
+      "apiObservationId": "domain.Domain.prototype.run"
+    },
+    {
+      "document": "doc/api/domain.md",
+      "line": 442,
+      "endLine": 489,
+      "title": "Domains and promises",
+      "sha256": "16b73638dd53dccf5f975bae9bc0bb644f47a0e0028aa06cdd9ea865515423ff",
+      "normativeRequirements": "As of Node.js 8.0.0, the handlers of promises are run inside the domain in\nwhich the call to `.then()` or `.catch()` itself was made:\n\n\n\nA callback may be bound to a specific domain using [`domain.bind(callback)`][]:\n\n\n\nDomains will not interfere with the error handling mechanisms for\npromises. In other words, no `'error'` event will be emitted for unhandled\n`Promise` rejections.",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1,
+      "endLine": 45,
+      "title": "Diagnostics Channel",
+      "sha256": "1d0f71ef05d1018f7439af628efa84366c8f9bcfa62a406b7ec2f5c713750cc8",
+      "normativeRequirements": "> Stability: 2 - Stable\n\n\n\nThe `node:diagnostics_channel` module provides an API to create named channels\nto report arbitrary message data for diagnostics purposes.\n\nIt can be accessed using:\n\n\n\n\n\nIt is intended that a module writer wanting to report diagnostics messages\nwill create one or many top-level channels to report messages through.\nChannels may also be acquired at runtime but it is not encouraged\ndue to the additional overhead of doing so. Channels may be exported for\nconvenience, but as long as the name is known it can be acquired anywhere.\n\nIf you intend for your module to produce diagnostics data for others to\nconsume it is recommended that you include documentation of what named\nchannels are used along with the shape of the message data. Channel names\nshould generally include the module name to avoid collisions with data from\nother modules.",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 46,
+      "endLine": 47,
+      "title": "Public API",
+      "sha256": "e8de7e3c3b50175a3aa8fd2a0de0cd3a58b1d27b80e9807b0990f4e358f6b032",
+      "normativeRequirements": "",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 48,
+      "endLine": 101,
+      "title": "Overview",
+      "sha256": "46bce4001e1faae8806d854e09bab32cdd1f21a287a7a75c83cf6499f8b5ea13",
+      "normativeRequirements": "Following is a simple overview of the public API.",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 102,
+      "endLine": 134,
+      "title": "`diagnostics_channel.hasSubscribers(name)`",
+      "sha256": "dd831443d348983f7ae308a59e6609653835faed984b414358a0383f7a99b272",
+      "normativeRequirements": "* `name` {string|symbol} The channel name\n* Returns: {boolean} If there are active subscribers\n\nCheck if there are active subscribers to the named channel. This is helpful if\nthe message you want to send might be expensive to prepare.\n\nThis API is optional but helpful when trying to publish messages from very\nperformance-sensitive code.",
+      "apiObservationId": "diagnostics_channel.hasSubscribers"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 135,
+      "endLine": 161,
+      "title": "`diagnostics_channel.channel(name)`",
+      "sha256": "ae94a8e0730c711f848440801af4ad8346b514d24c27689381d63122a70a1de3",
+      "normativeRequirements": "* `name` {string|symbol} The channel name\n* Returns: {Channel} The named channel object\n\nThis is the primary entry-point for anyone wanting to publish to a named\nchannel. It produces a channel object which is optimized to reduce overhead at\npublish time as much as possible.",
+      "apiObservationId": "diagnostics_channel.channel"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 162,
+      "endLine": 194,
+      "title": "`diagnostics_channel.subscribe(name, onMessage)`",
+      "sha256": "c16ea89f2c3537b33a354bcf16e45169cef785d93b3f297e9f38dfa902853cfc",
+      "normativeRequirements": "* `name` {string|symbol} The channel name\n* `onMessage` {Function} The handler to receive channel messages\n  * `message` {any} The message data\n  * `name` {string|symbol} The name of the channel\n\nRegister a message handler to subscribe to this channel. This message handler\nwill be run synchronously whenever a message is published to the channel. Any\nerrors thrown in the message handler will trigger an [`'uncaughtException'`][].",
+      "apiObservationId": "diagnostics_channel.subscribe"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 195,
+      "endLine": 233,
+      "title": "`diagnostics_channel.unsubscribe(name, onMessage)`",
+      "sha256": "90eb5340c72691f18575b553066596e699721847a2664aa2e5d4720b27fe75da",
+      "normativeRequirements": "* `name` {string|symbol} The channel name\n* `onMessage` {Function} The previous subscribed handler to remove\n* Returns: {boolean} `true` if the handler was found, `false` otherwise.\n\nRemove a message handler previously registered to this channel with\n[`diagnostics_channel.subscribe(name, onMessage)`][].",
+      "apiObservationId": "diagnostics_channel.unsubscribe"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 234,
+      "endLine": 288,
+      "title": "`diagnostics_channel.tracingChannel(nameOrChannels)`",
+      "sha256": "6c071a1175836ca0eeaa41592f6a24908c38fd0c162e0f8f3368b6c27b6e9e12",
+      "normativeRequirements": "> Stability: 2 - Stable\n\n* `nameOrChannels` {string|TracingChannel} Channel name or\n  object containing all the [TracingChannel Channels][]\n* Returns: {TracingChannel} Collection of channels to trace with\n\nCreates a [`TracingChannel`][] wrapper for the given\n[TracingChannel Channels][]. If a name is given, the corresponding tracing\nchannels will be created in the form of `tracing:${name}:${eventType}` where\n`eventType` corresponds to the types of [TracingChannel Channels][].",
+      "apiObservationId": "diagnostics_channel.tracingChannel"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 289,
+      "endLine": 335,
+      "title": "`diagnostics_channel.boundedChannel(nameOrChannels)`",
+      "sha256": "73779b3266fac2fe7e242bb594f3b8ce52109c64e44c339945c17ad4fd3c051f",
+      "normativeRequirements": "> Stability: 1 - Experimental\n\n* `nameOrChannels` {string|BoundedChannel} Channel name or\n  object containing all the [BoundedChannel Channels][]\n* Returns: {BoundedChannel} Collection of channels to trace with\n\nCreates a [`BoundedChannel`][] wrapper for the given channels. If a name is\ngiven, the corresponding channels will be created in the form of\n`tracing:${name}:${eventType}` where `eventType` is `start` or `end`.\n\nA `BoundedChannel` is a simplified version of [`TracingChannel`][] that only\ntraces synchronous operations. It only has `start` and `end` events, without\n`asyncStart`, `asyncEnd`, or `error` events, making it suitable for tracing\noperations that don't involve asynchronous continuations or error handling.",
+      "apiObservationId": "diagnostics_channel.boundedChannel"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 336,
+      "endLine": 351,
+      "title": "Class: `Channel`",
+      "sha256": "a349ffd530b3ca2dcc24cca5c3674b38b18638973189c1dedcdf007ec519f16d",
+      "normativeRequirements": "The class `Channel` represents an individual named channel within the data\npipeline. It is used to track subscribers and to publish messages when there\nare subscribers present. It exists as a separate object to avoid channel\nlookups at publish time, enabling very fast publish speeds and allowing\nfor heavy use while incurring very minimal cost. Channels are created with\n[`diagnostics_channel.channel(name)`][], constructing a channel directly\nwith `new Channel(name)` is not supported.",
+      "apiObservationId": "diagnostics_channel.Channel"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 352,
+      "endLine": 387,
+      "title": "`channel.hasSubscribers`",
+      "sha256": "7e29ebba450f187c4e82b57037a65385b3d2224612fa36455790fda51882f044",
+      "normativeRequirements": "* Returns: {boolean} If there are active subscribers\n\nCheck if there are active subscribers to this channel. This is helpful if\nthe message you want to send might be expensive to prepare.\n\nThis API is optional but helpful when trying to publish messages from very\nperformance-sensitive code.",
+      "apiObservationId": "diagnostics_channel.channel.hasSubscribers"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 388,
+      "endLine": 420,
+      "title": "`channel.publish(message)`",
+      "sha256": "7e6b7f3ee02f6319c348e1dae94ba3afe7f31978278924b8c77ab8b9e9fb9545",
+      "normativeRequirements": "* `message` {any} The message to send to the channel subscribers\n\nPublish a message to any subscribers to the channel. This will trigger\nmessage handlers synchronously so they will execute within the same context.",
+      "apiObservationId": "diagnostics_channel.channel.publish"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 421,
+      "endLine": 467,
+      "title": "`channel.subscribe(onMessage)`",
+      "sha256": "701d19772bf911ae10c8dafee7d43253aca76d8fdd295619a946012ff1a2c354",
+      "normativeRequirements": "* `onMessage` {Function} The handler to receive channel messages\n  * `message` {any} The message data\n  * `name` {string|symbol} The name of the channel\n\nRegister a message handler to subscribe to this channel. This message handler\nwill be run synchronously whenever a message is published to the channel. Any\nerrors thrown in the message handler will trigger an [`'uncaughtException'`][].",
+      "apiObservationId": "diagnostics_channel.channel.subscribe"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 468,
+      "endLine": 526,
+      "title": "`channel.unsubscribe(onMessage)`",
+      "sha256": "959eafbc24238c35a848ca87b49010b35ecef750a84fb1fd36c29715394202f0",
+      "normativeRequirements": "* `onMessage` {Function} The previous subscribed handler to remove\n* Returns: {boolean} `true` if the handler was found, `false` otherwise.\n\nRemove a message handler previously registered to this channel with\n[`channel.subscribe(onMessage)`][].",
+      "apiObservationId": "diagnostics_channel.channel.unsubscribe"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 527,
+      "endLine": 571,
+      "title": "`channel.bindStore(store[, transform])`",
+      "sha256": "8d8d89bd01834db54b7481efa2f22d1d1a69b173924748f65de810a8b8cf0f9e",
+      "normativeRequirements": "> Stability: 1 - Experimental\n\n* `store` {AsyncLocalStorage} The store to which to bind the context data\n* `transform` {Function} Transform context data before setting the store context\n\nWhen [`channel.runStores(context, ...)`][] is called, the given context data\nwill be applied to any store bound to the channel. If the store has already been\nbound the previous `transform` function will be replaced with the new one.\nThe `transform` function may be omitted to set the given context data as the\ncontext directly.",
+      "apiObservationId": "diagnostics_channel.channel.bindStore"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 572,
+      "endLine": 611,
+      "title": "`channel.unbindStore(store)`",
+      "sha256": "cad1a5594aae67658ea781f7692870382a28030289bc36b8a1327467c7629e64",
+      "normativeRequirements": "> Stability: 1 - Experimental\n\n* `store` {AsyncLocalStorage} The store to unbind from the channel.\n* Returns: {boolean} `true` if the store was found, `false` otherwise.\n\nRemove a message handler previously registered to this channel with\n[`channel.bindStore(store)`][].",
+      "apiObservationId": "diagnostics_channel.channel.unbindStore"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 612,
+      "endLine": 673,
+      "title": "`channel.runStores(context, fn[, thisArg[, ...args]])`",
+      "sha256": "25ba901e39e89a75325eb285ebf12542013ad52604ea44b1955e441439443844",
+      "normativeRequirements": "> Stability: 1 - Experimental\n\n* `context` {any} Message to send to subscribers and bind to stores\n* `fn` {Function} Handler to run within the entered storage context\n* `thisArg` {any} The receiver to be used for the function call.\n* `...args` {any} Optional arguments to pass to the function.\n\nApplies the given data to any AsyncLocalStorage instances bound to the channel\nfor the duration of the given function, then publishes to the channel within\nthe scope of that data is applied to the stores.\n\nIf a transform function was given to [`channel.bindStore(store)`][] it will be\napplied to transform the message data before it becomes the context value for\nthe store. The prior storage context is accessible from within the transform\nfunction in cases where context linking is required.\n\nThe context applied to the store should be accessible in any async code which\ncontinues from execution which began during the given function, however\nthere are some situations in which [context loss][] may occur.",
+      "apiObservationId": "diagnostics_channel.channel.runStores"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 674,
+      "endLine": 730,
+      "title": "`channel.withStoreScope(data)`",
+      "sha256": "1b6f47655c5275db9c18cea308a74d82dfb2a4606b1268e4fbe751c7525e8bbd",
+      "normativeRequirements": "> Stability: 1 - Experimental\n\n* `data` {any} Message to bind to stores\n* Returns: {RunStoresScope} Disposable scope object\n\nCreates a disposable scope that binds the given data to any AsyncLocalStorage\ninstances bound to the channel and publishes it to subscribers. The scope\nautomatically restores the previous storage contexts when disposed.\n\nThis method enables the use of JavaScript's explicit resource management\n(`using` syntax with `Symbol.dispose`) to manage store contexts without\nclosure wrapping.",
+      "apiObservationId": "diagnostics_channel.channel.withStoreScope"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 731,
+      "endLine": 744,
+      "title": "Class: `RunStoresScope`",
+      "sha256": "8772d4aba20993db308b6e0adb66dda6dc25bb6a9bde20bc13ac69ff39a66afd",
+      "normativeRequirements": "> Stability: 1 - Experimental\n\nThe class `RunStoresScope` represents a disposable scope created by\n[`channel.withStoreScope(data)`][]. It manages the lifecycle of store\ncontexts and ensures they are properly restored when the scope exits.\n\nThe scope must be used with the `using` syntax to ensure proper disposal.",
+      "apiObservationId": "diagnostics_channel.RunStoresScope"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 745,
+      "endLine": 766,
+      "title": "Class: `TracingChannel`",
+      "sha256": "fc762718510c360756afaa14f4c912ae4a4b6cb3a56b14095d61ff0fe58c4369",
+      "normativeRequirements": "> Stability: 2 - Stable\n\nThe class `TracingChannel` is a collection of [TracingChannel Channels][] which\ntogether express a single traceable action. It is used to formalize and\nsimplify the process of producing events for tracing application flow.\n[`diagnostics_channel.tracingChannel()`][] is used to construct a\n`TracingChannel`. As with `Channel` it is recommended to create and reuse a\nsingle `TracingChannel` at the top-level of the file rather than creating them\ndynamically.",
+      "apiObservationId": "diagnostics_channel.TracingChannel"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 767,
+      "endLine": 833,
+      "title": "`tracingChannel.subscribe(subscribers)`",
+      "sha256": "9a7d7d880601ef5cd5b9502f46cc45d72079d059adadade7282ca78658eeed10",
+      "normativeRequirements": "* `subscribers` {Object} Set of [TracingChannel Channels][] subscribers\n  * `start` {Function} The [`start` event][] subscriber\n  * `end` {Function} The [`end` event][] subscriber\n  * `asyncStart` {Function} The [`asyncStart` event][] subscriber\n  * `asyncEnd` {Function} The [`asyncEnd` event][] subscriber\n  * `error` {Function} The [`error` event][] subscriber\n\nHelper to subscribe a collection of functions to the corresponding channels.\nThis is the same as calling [`channel.subscribe(onMessage)`][] on each channel\nindividually.",
+      "apiObservationId": "diagnostics_channel.tracingChannel.subscribe"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 834,
+      "endLine": 902,
+      "title": "`tracingChannel.unsubscribe(subscribers)`",
+      "sha256": "4a434b5b77774bcb768f5ee6e26aea89e826b867c2e097db713ad448f68d4790",
+      "normativeRequirements": "* `subscribers` {Object} Set of [TracingChannel Channels][] subscribers\n  * `start` {Function} The [`start` event][] subscriber\n  * `end` {Function} The [`end` event][] subscriber\n  * `asyncStart` {Function} The [`asyncStart` event][] subscriber\n  * `asyncEnd` {Function} The [`asyncEnd` event][] subscriber\n  * `error` {Function} The [`error` event][] subscriber\n* Returns: {boolean} `true` if all handlers were successfully unsubscribed,\n  and `false` otherwise.\n\nHelper to unsubscribe a collection of functions from the corresponding channels.\nThis is the same as calling [`channel.unsubscribe(onMessage)`][] on each channel\nindividually.",
+      "apiObservationId": "diagnostics_channel.tracingChannel.unsubscribe"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 903,
+      "endLine": 951,
+      "title": "`tracingChannel.traceSync(fn[, context[, thisArg[, ...args]]])`",
+      "sha256": "e3fbe6c07efc26fb0700dca6160c42ab7d289f1a4279e0cf50f4c6363b749599",
+      "normativeRequirements": "* `fn` {Function} Function to wrap a trace around\n* `context` {Object} Shared object to correlate events through\n* `thisArg` {any} The receiver to be used for the function call\n* `...args` {any} Optional arguments to pass to the function\n* Returns: {any} The return value of the given function\n\nTrace a synchronous function call. This will always produce a [`start` event][]\nand [`end` event][] around the execution and may produce an [`error` event][]\nif the given function throws an error. This will run the given function using\n[`channel.runStores(context, ...)`][] on the `start` channel which ensures all\nevents should have any bound stores set to match this trace context.\n\nTo ensure only correct trace graphs are formed, events will only be published\nif subscribers are present prior to starting the trace. Subscriptions which are\nadded after the trace begins will not receive future events from that trace,\nonly future traces will be seen.",
+      "apiObservationId": "diagnostics_channel.tracingChannel.traceSync"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 952,
+      "endLine": 1019,
+      "title": "`tracingChannel.tracePromise(fn[, context[, thisArg[, ...args]]])`",
+      "sha256": "49946737f14fbb29255a070da58d4148dbf22df42dbc1095ae837fa01bd64f26",
+      "normativeRequirements": "* `fn` {Function} Function to wrap a trace around\n* `context` {Object} Shared object to correlate trace events through\n* `thisArg` {any} The receiver to be used for the function call\n* `...args` {any} Optional arguments to pass to the function\n* Returns: {any} The return value of the given function. If the return value\n  is a Promise or thenable, tracing events will be published when it settles.\n  If the return value is not a Promise or thenable, it is returned as-is and\n  a warning is emitted.\n\nTrace an asynchronous function call which returns a {Promise} or\n[thenable object][]. This will always produce a [`start` event][] and\n[`end` event][] around the synchronous portion of the function execution, and\nwill produce an [`asyncStart` event][] and [`asyncEnd` event][] when the\nreturned promise is resolved or rejected. It may also produce an\n[`error` event][] if the given function throws an error or the returned promise\nis rejected. This will run the given function using\n[`channel.runStores(context, ...)`][] on the `start` channel which ensures all\nevents should have any bound stores set to match this trace context.\n\nIf the value returned by `fn` is not a Promise or thenable, then it will be\nreturned with a warning, and no `asyncStart` or `asyncEnd` events will be\nproduced.\n\nTo ensure only correct trace graphs are formed, events will only be published\nif subscribers are present prior to starting the trace. Subscriptions which are\nadded after the trace begins will not receive future events from that trace,\nonly future traces will be seen.",
+      "apiObservationId": "diagnostics_channel.tracingChannel.tracePromise"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1020,
+      "endLine": 1122,
+      "title": "`tracingChannel.traceCallback(fn[, position[, context[, thisArg[, ...args]]]])`",
+      "sha256": "84e2c56063a849ce862201edc9d8b9c214d3d93064ff7f91c0fad3610b471aed",
+      "normativeRequirements": "* `fn` {Function} callback using function to wrap a trace around\n* `position` {number} Zero-indexed argument position of expected callback\n  (defaults to last argument if `undefined` is passed)\n* `context` {Object} Shared object to correlate trace events through (defaults\n  to `{}` if `undefined` is passed)\n* `thisArg` {any} The receiver to be used for the function call\n* `...args` {any} arguments to pass to the function (must include the callback)\n* Returns: {any} The return value of the given function\n\nTrace a callback-receiving function call. The callback is expected to follow\nthe error as first arg convention typically used. This will always produce a\n[`start` event][] and [`end` event][] around the synchronous portion of the\nfunction execution, and will produce a [`asyncStart` event][] and\n[`asyncEnd` event][] around the callback execution. It may also produce an\n[`error` event][] if the given function throws or the first argument passed to\nthe callback is set. This will run the given function using\n[`channel.runStores(context, ...)`][] on the `start` channel which ensures all\nevents should have any bound stores set to match this trace context.\n\nTo ensure only correct trace graphs are formed, events will only be published\nif subscribers are present prior to starting the trace. Subscriptions which are\nadded after the trace begins will not receive future events from that trace,\nonly future traces will be seen.\n\n\n\n\n\nThe callback will also be run with [`channel.runStores(context, ...)`][] which\nenables context loss recovery in some cases.",
+      "apiObservationId": "diagnostics_channel.tracingChannel.traceCallback"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1123,
+      "endLine": 1157,
+      "title": "`tracingChannel.hasSubscribers`",
+      "sha256": "4b3a912ddf374ff08c16a0c02bf984f8d68d62d7ebd35b04c1aae0c79e8b496e",
+      "normativeRequirements": "* Returns: {boolean} `true` if any of the individual channels has a subscriber,\n  `false` if not.\n\nThis is a helper method available on a [`TracingChannel`][] instance to check if\nany of the [TracingChannel Channels][] have subscribers. A `true` is returned if\nany of them have at least one subscriber, a `false` is returned otherwise.",
+      "apiObservationId": "diagnostics_channel.tracingChannel.hasSubscribers"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1158,
+      "endLine": 1175,
+      "title": "Class: `BoundedChannel`",
+      "sha256": "161454d34da2dcf2074174760ec5f6e6da4f5b323301014cd0ca386b17d8a1cf",
+      "normativeRequirements": "> Stability: 1 - Experimental\n\nThe class `BoundedChannel` is a simplified version of [`TracingChannel`][] that\nonly traces synchronous operations. It consists of two channels (`start` and\n`end`) instead of five, omitting the `asyncStart`, `asyncEnd`, and `error`\nevents. This makes it suitable for tracing operations that don't involve\nasynchronous continuations or error handling.\n\nLike `TracingChannel`, it is recommended to create and reuse a single\n`BoundedChannel` at the top-level of the file rather than creating them\ndynamically.",
+      "apiObservationId": "diagnostics_channel.BoundedChannel"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1176,
+      "endLine": 1206,
+      "title": "`boundedChannel.hasSubscribers`",
+      "sha256": "49e15092cff240681aa40b22b5750cfa3f2d46e51e28e59c3ddba5e459bdc480",
+      "normativeRequirements": "* Returns: {boolean} `true` if any of the individual channels has a subscriber,\n  `false` if not.\n\nCheck if any of the `start` or `end` channels have subscribers.",
+      "apiObservationId": "diagnostics_channel.boundedChannel.hasSubscribers"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1207,
+      "endLine": 1249,
+      "title": "`boundedChannel.subscribe(handlers)`",
+      "sha256": "e1e573024cd2bb6ee8b10e215757646d812efdc4335ee2d4837e8f1a89063f54",
+      "normativeRequirements": "* `handlers` {Object} Set of channel subscribers\n  * `start` {Function} The start event subscriber\n  * `end` {Function} The end event subscriber\n\nSubscribe to the bounded channel events. This is equivalent to calling\n[`channel.subscribe(onMessage)`][] on each channel individually.",
+      "apiObservationId": "diagnostics_channel.boundedChannel.subscribe"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1250,
+      "endLine": 1292,
+      "title": "`boundedChannel.unsubscribe(handlers)`",
+      "sha256": "0b64bc55869d329560a959fccf079d617d48d1418a1c37ff9d95b57b5bf52534",
+      "normativeRequirements": "* `handlers` {Object} Set of channel subscribers\n  * `start` {Function} The start event subscriber\n  * `end` {Function} The end event subscriber\n* Returns: {boolean} `true` if all handlers were successfully unsubscribed,\n  `false` otherwise.\n\nUnsubscribe from the bounded channel events. This is equivalent to calling\n[`channel.unsubscribe(onMessage)`][] on each channel individually.",
+      "apiObservationId": "diagnostics_channel.boundedChannel.unsubscribe"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1293,
+      "endLine": 1331,
+      "title": "`boundedChannel.run(context, fn[, thisArg[, ...args]])`",
+      "sha256": "18e3f8073832be6794e9889698657f46c8f844667f6db914bfd64836b4fedb42",
+      "normativeRequirements": "* `context` {Object} Shared object to correlate events through\n* `fn` {Function} Function to wrap a trace around\n* `thisArg` {any} The receiver to be used for the function call\n* `...args` {any} Optional arguments to pass to the function\n* Returns: {any} The return value of the given function\n\nTrace a synchronous function call. This will produce a `start` event and `end`\nevent around the execution. This runs the given function using\n[`channel.runStores(context, ...)`][] on the `start` channel which ensures all\nevents have any bound stores set to match this trace context.",
+      "apiObservationId": "diagnostics_channel.boundedChannel.run"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1332,
+      "endLine": 1376,
+      "title": "`boundedChannel.withScope([context])`",
+      "sha256": "b1743ff4a505ca205b7435c2b3a45ff35e2ac7296ad4858ec51f5ee9b0c3a919",
+      "normativeRequirements": "* `context` {Object} Shared object to correlate events through\n* Returns: {BoundedChannelScope} Disposable scope object\n\nCreate a disposable scope for tracing a synchronous operation using JavaScript's\nexplicit resource management (`using` syntax). The scope automatically publishes\n`start` and `end` events, enters bound stores, and handles cleanup when disposed.",
+      "apiObservationId": "diagnostics_channel.boundedChannel.withScope"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1377,
+      "endLine": 1418,
+      "title": "Class: `BoundedChannelScope`",
+      "sha256": "82ad2245122dc9ee8c07073cbd1a6f497a837225e7df98325639612c72434283",
+      "normativeRequirements": "> Stability: 1 - Experimental\n\nThe class `BoundedChannelScope` represents a disposable scope created by\n[`boundedChannel.withScope(context)`][]. It manages the lifecycle of a traced\noperation, automatically publishing events and managing store contexts.\n\nThe scope must be used with the `using` syntax to ensure proper disposal.",
+      "apiObservationId": "diagnostics_channel.BoundedChannelScope"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1419,
+      "endLine": 1432,
+      "title": "BoundedChannel Channels",
+      "sha256": "b29e0c7934647168e615bff0f6dc6292744c33db1a3c7d4aec988c9d56bdd53f",
+      "normativeRequirements": "A `BoundedChannel` consists of two diagnostics channels representing the\nlifecycle of a scope created with the `using` syntax:\n\n* `tracing:${name}:start` - Published when the `using` statement executes (scope creation)\n* `tracing:${name}:end` - Published when exiting the block (scope disposal)\n\nWhen using the `using` syntax with \\[`boundedChannel.withScope([context])`]\\[], the `start`\nevent is published immediately when the statement executes, and the `end` event\nis automatically published when disposal occurs at the end of the block. All\nevents share the same context object, which can be extended with additional\nproperties like `result` during scope execution.",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1433,
+      "endLine": 1462,
+      "title": "TracingChannel Channels",
+      "sha256": "ae975181a56a112a03f296d3794a7350158309e85f1050df5c407391f02fda64",
+      "normativeRequirements": "A TracingChannel is a collection of several diagnostics\\_channels representing\nspecific points in the execution lifecycle of a single traceable action. The\nbehavior is split into five diagnostics\\_channels consisting of `start`,\n`end`, `asyncStart`, `asyncEnd`, and `error`. A single traceable action will\nshare the same event object between all events, this can be helpful for\nmanaging correlation through a weakmap.\n\nThese event objects will be extended with `result` or `error` values when\nthe task \"completes\". In the case of a synchronous task the `result` will be\nthe return value and the `error` will be anything thrown from the function.\nWith callback-based async functions the `result` will be the second argument\nof the callback while the `error` will either be a thrown error visible in the\n`end` event or the first callback argument in either of the `asyncStart` or\n`asyncEnd` events.\n\nTo ensure only correct trace graphs are formed, events should only be published\nif subscribers are present prior to starting the trace. Subscriptions which are\nadded after the trace begins should not receive future events from that trace,\nonly future traces will be seen.\n\nTracing channels should follow a naming pattern of:\n\n* `tracing:module.class.method:start` or `tracing:module.function:start`\n* `tracing:module.class.method:end` or `tracing:module.function:end`\n* `tracing:module.class.method:asyncStart` or `tracing:module.function:asyncStart`\n* `tracing:module.class.method:asyncEnd` or `tracing:module.function:asyncEnd`\n* `tracing:module.class.method:error` or `tracing:module.function:error`",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1463,
+      "endLine": 1470,
+      "title": "`start(event)`",
+      "sha256": "9f4920bd3d84aec36ddb8d6a1bcb385804a62532e52d8d63d25abd72c252980c",
+      "normativeRequirements": "* Name: `tracing:${name}:start`\n\nThe `start` event represents the point at which a function is called. At this\npoint the event data may contain function arguments or anything else available\nat the very start of the execution of the function.",
+      "apiObservationId": "diagnostics_channel.start"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1471,
+      "endLine": 1486,
+      "title": "`end(event)`",
+      "sha256": "0c7f211333daa37540f25aae387dd4d99b5f2eeb5448dacb9282a72def1f1efc",
+      "normativeRequirements": "* Name: `tracing:${name}:end`\n\nThe `end` event represents the point at which a function call returns a value.\nIn the case of an async function this is when the promise returned not when the\nfunction itself makes a return statement internally. At this point, if the\ntraced function was synchronous the `result` field will be set to the return\nvalue of the function. Alternatively, the `error` field may be present to\nrepresent any thrown errors.\n\nIt is recommended to listen specifically to the `error` event to track errors\nas it may be possible for a traceable action to produce multiple errors. For\nexample, an async task which fails may be started internally before the sync\npart of the task then throws an error.",
+      "apiObservationId": "diagnostics_channel.end"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1487,
+      "endLine": 1506,
+      "title": "`asyncStart(event)`",
+      "sha256": "655fcd3cd2f23351b597c0855cceb33b3d9f2340eefdd6fa3ffd2d082edd64b1",
+      "normativeRequirements": "* Name: `tracing:${name}:asyncStart`\n\nThe `asyncStart` event represents the callback or continuation of a traceable\nfunction being reached. At this point things like callback arguments may be\navailable, or anything else expressing the \"result\" of the action.\n\nFor callbacks-based functions, the first argument of the callback will be\nassigned to the `error` field, if not `undefined` or `null`, and the second\nargument will be assigned to the `result` field.\n\nFor promises, the argument to the `resolve` path will be assigned to `result`\nor the argument to the `reject` path will be assign to `error`.\n\nIt is recommended to listen specifically to the `error` event to track errors\nas it may be possible for a traceable action to produce multiple errors. For\nexample, an async task which fails may be started internally before the sync\npart of the task then throws an error.",
+      "apiObservationId": "diagnostics_channel.asyncStart"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1507,
+      "endLine": 1514,
+      "title": "`asyncEnd(event)`",
+      "sha256": "b3b57e32a08dfae2b71af2a59ce5f05550fdf573c5207b1bfcb1600411e78c0a",
+      "normativeRequirements": "* Name: `tracing:${name}:asyncEnd`\n\nThe `asyncEnd` event represents the callback of an asynchronous function\nreturning. It's not likely event data will change after the `asyncStart` event,\nhowever it may be useful to see the point where the callback completes.",
+      "apiObservationId": "diagnostics_channel.asyncEnd"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1515,
+      "endLine": 1531,
+      "title": "`error(event)`",
+      "sha256": "326db56ab6dccaa60d8ec5aff2042aaba367f5c55e4e533169309b82de4aa6a8",
+      "normativeRequirements": "* Name: `tracing:${name}:error`\n\nThe `error` event represents any error produced by the traceable function\neither synchronously or asynchronously. If an error is thrown in the\nsynchronous portion of the traced function the error will be assigned to the\n`error` field of the event and the `error` event will be triggered. If an error\nis received asynchronously through a callback or promise rejection it will also\nbe assigned to the `error` field of the event and trigger the `error` event.\n\nIt is possible for a single traceable function call to produce errors multiple\ntimes so this should be considered when consuming this event. For example, if\nanother async task is triggered internally which fails and then the sync part\nof the function then throws and error two `error` events will be emitted, one\nfor the sync error and one for the async error.",
+      "apiObservationId": "diagnostics_channel.error"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1532,
+      "endLine": 1533,
+      "title": "Built-in Channels",
+      "sha256": "72e90605cc60e805223e8aa53ffcca7422a47b0696ae3c23c55c27d803dafe29",
+      "normativeRequirements": "",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1534,
+      "endLine": 1537,
+      "title": "Console",
+      "sha256": "498f597d91facf23d143e3ccd9ca389890d17cd3c8c9883e10634f7b23b1c268",
+      "normativeRequirements": "> Stability: 1 - Experimental",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1538,
+      "endLine": 1544,
+      "title": "Event: `'console.log'`",
+      "sha256": "b58d48529cb423fa0ca7e2c1ee0ed1358fc7c9990f1e683ba542289b4737a8bd",
+      "normativeRequirements": "* `args` {any\\[]}\n\nEmitted when `console.log()` is called. Receives and array of the arguments\npassed to `console.log()`.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:console.log"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1545,
+      "endLine": 1551,
+      "title": "Event: `'console.info'`",
+      "sha256": "4f3d4a10ae35c959eb60c67d01af5d5a21a15ce549211ad5b1d8e1476cd254a1",
+      "normativeRequirements": "* `args` {any\\[]}\n\nEmitted when `console.info()` is called. Receives and array of the arguments\npassed to `console.info()`.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:console.info"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1552,
+      "endLine": 1558,
+      "title": "Event: `'console.debug'`",
+      "sha256": "f7da4686609e73caab359a4c3f7fa260106bd03e61133ac72a6837e553c3e36b",
+      "normativeRequirements": "* `args` {any\\[]}\n\nEmitted when `console.debug()` is called. Receives and array of the arguments\npassed to `console.debug()`.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:console.debug"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1559,
+      "endLine": 1565,
+      "title": "Event: `'console.warn'`",
+      "sha256": "1b635d4e164fde2cb7cb8ffd27f86a7b8cf2e0573f4c1c16d38d8c0f9f96d8bb",
+      "normativeRequirements": "* `args` {any\\[]}\n\nEmitted when `console.warn()` is called. Receives and array of the arguments\npassed to `console.warn()`.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:console.warn"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1566,
+      "endLine": 1572,
+      "title": "Event: `'console.error'`",
+      "sha256": "282597137e31ff749c7e8fe46ab75a3fb04268540846a80059e7b7e68dfa634f",
+      "normativeRequirements": "* `args` {any\\[]}\n\nEmitted when `console.error()` is called. Receives and array of the arguments\npassed to `console.error()`.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:console.error"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1573,
+      "endLine": 1580,
+      "title": "Crypto",
+      "sha256": "5313edece843626a94e7bfeba7c8dd49fa5b9ad0de97b8e9d863b92f1a8be481",
+      "normativeRequirements": "> Stability: 1 - Experimental",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1581,
+      "endLine": 1638,
+      "title": "Event: `'crypto.fips.indicator'`",
+      "sha256": "bf8722de9b90e047383335af3bcecbd7ae4bbab5189ddb521b732b89b3a46b3c",
+      "normativeRequirements": "* `operation` {string} The provider-defined operation type.\n* `reason` {string} The provider-defined description of why the operation is\n  not approved.\n* `blocked` {boolean} Whether an indicator callback blocked the operation.\n* `count` {number} The number of matching pending indicator invocations\n  represented by this message.\n* `dropped` {number} The number of additional indicator invocations dropped\n  before this message was delivered.\n\nEmitted when the OpenSSL FIPS provider used by Node.js detects an operation that\nis not FIPS approved after the corresponding provider check was relaxed. Such\noperations are possible when the provider is configured for backwards\ncompatibility. The `operation` and `reason` values come from the provider and\nshould be treated as opaque strings rather than stable enumerations.\n\nStart Node.js with [`--enable-fips-indicator-events`][] to enable this channel.\nWithout the option, subscribing does not install the OpenSSL callback and no\nmessages are published.\n\nSubscribing to the channel is observation-only and never changes the result of\nan operation. Node.js preserves the result from any native indicator callback\ninstalled before Node.js initializes its crypto support. When\n[`--force-fips=strict`][] is used, Node.js rejects callback-indicated\nnon-approved operations whether or not indicator events are enabled or the\nchannel has subscribers.\n\nMessages are published asynchronously on the main thread because OpenSSL\nindicators can originate from Workers or other threads. Only subscriptions on\nthe main thread receive messages. Delivery order relative to the originating\noperation is not defined, and a message cannot be correlated with a particular\ncall or Worker.\n\nOne cryptographic operation can invoke the OpenSSL indicator more than once.\nMatching pending invocations are coalesced and reflected in `count`, which does\nnot necessarily represent a number of cryptographic operations. At most 256\ndistinct messages are queued. Additional invocations are reported in `dropped`\non the first queued message. Queued messages do not keep the event loop active,\nso this channel is best-effort diagnostics rather than an authoritative audit\nlog.\n\nThis channel observes the default OpenSSL library context used by Node.js. It\ndoes not observe native addons or other code that uses another `OSSL_LIB_CTX`\nor another copy of `libcrypto`. It is active with OpenSSL 3.4 and later and is\nnot available with BoringSSL. A provider configured to reject a check directly,\nincluding a pedantic OpenSSL FIPS provider, can reject an operation without\nemitting an indicator. Receiving or not receiving a message does not establish\nthat Node.js or a cryptographic operation is FIPS validated.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:crypto.fips.indicator"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1639,
+      "endLine": 1642,
+      "title": "HTTP",
+      "sha256": "307fbc760134fa211933bad180ba4b88dbfc86b7743db6f249486038ecbbb00a",
+      "normativeRequirements": "> Stability: 1 - Experimental",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1643,
+      "endLine": 1649,
+      "title": "Event: `'http.client.request.created'`",
+      "sha256": "bd27ace0bd044e8a2d2a3ded084271b083b59b6690841add2fb72a13695288ae",
+      "normativeRequirements": "* `request` {http.ClientRequest}\n\nEmitted when client creates a request object.\nUnlike `http.client.request.start`, this event is emitted before the request has been sent.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http.client.request.created"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1650,
+      "endLine": 1655,
+      "title": "Event: `'http.client.request.start'`",
+      "sha256": "7a066147b556f58aa20a0c8ac37762d04775cfedf55f64c0f0c1386c335004b2",
+      "normativeRequirements": "* `request` {http.ClientRequest}\n\nEmitted when client starts a request.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http.client.request.start"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1656,
+      "endLine": 1662,
+      "title": "Event: `'http.client.request.error'`",
+      "sha256": "564ae2228d60e581b6e0d89c3e9677bc4a97e2e2442acf0effc82efa192e90d9",
+      "normativeRequirements": "* `request` {http.ClientRequest}\n* `error` {Error}\n\nEmitted when an error occurs during a client request.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http.client.request.error"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1663,
+      "endLine": 1669,
+      "title": "Event: `'http.client.response.finish'`",
+      "sha256": "786016bfcf2ce6afa18647d1b9a25461f763280cce2e839829e4a92192e9b5fc",
+      "normativeRequirements": "* `request` {http.ClientRequest}\n* `response` {http.IncomingMessage}\n\nEmitted when client receives a response.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http.client.response.finish"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1670,
+      "endLine": 1678,
+      "title": "Event: `'http.server.request.start'`",
+      "sha256": "cb1851f39788fb3b936a6908ce2f8875c1a759b73ef98a487c896eb2174c5dda",
+      "normativeRequirements": "* `request` {http.IncomingMessage}\n* `response` {http.ServerResponse}\n* `socket` {net.Socket}\n* `server` {http.Server}\n\nEmitted when server receives a request.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http.server.request.start"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1679,
+      "endLine": 1686,
+      "title": "Event: `'http.server.response.created'`",
+      "sha256": "02778810ffef4d3a4d77d58e6d2be431245f4508ddc5d8d25aa869d5fdf71ec3",
+      "normativeRequirements": "* `request` {http.IncomingMessage}\n* `response` {http.ServerResponse}\n\nEmitted when server creates a response.\nThe event is emitted before the response is sent.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http.server.response.created"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1687,
+      "endLine": 1695,
+      "title": "Event: `'http.server.response.finish'`",
+      "sha256": "2510e09d9ca1aca2bafe86d7b449953889911102c03dd8c7ad9a5de35d68a175",
+      "normativeRequirements": "* `request` {http.IncomingMessage}\n* `response` {http.ServerResponse}\n* `socket` {net.Socket}\n* `server` {http.Server}\n\nEmitted when server sends a response.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http.server.response.finish"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1696,
+      "endLine": 1699,
+      "title": "HTTP/2",
+      "sha256": "4dee88af917ccf3074764953a100d442f76ca7abe42974f559b64f7cac22bf2e",
+      "normativeRequirements": "> Stability: 1 - Experimental",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1700,
+      "endLine": 1706,
+      "title": "Event: `'http2.client.stream.created'`",
+      "sha256": "51259be40c2e89f6992235f5835b3faa6b5f88112657cd4f5e63a5bcff015942",
+      "normativeRequirements": "* `stream` {ClientHttp2Stream}\n* `headers` {HTTP/2 Headers Object}\n\nEmitted when a stream is created on the client.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http2.client.stream.created"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1707,
+      "endLine": 1713,
+      "title": "Event: `'http2.client.stream.start'`",
+      "sha256": "f997f7bb09cc3b4834a72bbd5cf11f0017565c5fcc8a91381ab7074e8ee166a4",
+      "normativeRequirements": "* `stream` {ClientHttp2Stream}\n* `headers` {HTTP/2 Headers Object}\n\nEmitted when a stream is started on the client.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http2.client.stream.start"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1714,
+      "endLine": 1720,
+      "title": "Event: `'http2.client.stream.error'`",
+      "sha256": "5b2b175142f5d866217a37b01c41a0deaa6df6d986900c8082a50e91a93e17e3",
+      "normativeRequirements": "* `stream` {ClientHttp2Stream}\n* `error` {Error}\n\nEmitted when an error occurs during the processing of a stream on the client.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http2.client.stream.error"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1721,
+      "endLine": 1728,
+      "title": "Event: `'http2.client.stream.finish'`",
+      "sha256": "c9b114f2cd176faca875343f881df9ea00b9d6282f500cf7840a75b2163d9f25",
+      "normativeRequirements": "* `stream` {ClientHttp2Stream}\n* `headers` {HTTP/2 Headers Object}\n* `flags` {number}\n\nEmitted when a stream is received on the client.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http2.client.stream.finish"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1729,
+      "endLine": 1739,
+      "title": "Event: `'http2.client.stream.bodyChunkSent'`",
+      "sha256": "86b00ca8e1110007750ecc5ac25bf472444b835571ebad3686296eb1b59697a7",
+      "normativeRequirements": "* `stream` {ClientHttp2Stream}\n* `writev` {boolean}\n* `data` {Buffer | string | Buffer\\[] | Object\\[]}\n  * `chunk` {Buffer|string}\n  * `encoding` {string}\n* `encoding` {string}\n\nEmitted when a chunk of the client stream body is being sent.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http2.client.stream.bodyChunkSent"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1740,
+      "endLine": 1745,
+      "title": "Event: `'http2.client.stream.bodySent'`",
+      "sha256": "6e2bdc3d023c0c0830dc4e7224912d110fb90952707f3651924d907b4e99c0a3",
+      "normativeRequirements": "* `stream` {ClientHttp2Stream}\n\nEmitted after the client stream body has been fully sent.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http2.client.stream.bodySent"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1746,
+      "endLine": 1752,
+      "title": "Event: `'http2.client.stream.close'`",
+      "sha256": "b148e644e2142b7e1d32eeb296e0af893a911839b16a8c0a1795f493608d85cc",
+      "normativeRequirements": "* `stream` {ClientHttp2Stream}\n\nEmitted when a stream is closed on the client. The HTTP/2 error code used when\nclosing the stream can be retrieved using the `stream.rstCode` property.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http2.client.stream.close"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1753,
+      "endLine": 1759,
+      "title": "Event: `'http2.server.stream.created'`",
+      "sha256": "ff58b17703357542256cff500227f65f410a78626789d32ff183e79cb07ea524",
+      "normativeRequirements": "* `stream` {ServerHttp2Stream}\n* `headers` {HTTP/2 Headers Object}\n\nEmitted when a stream is created on the server.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http2.server.stream.created"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1760,
+      "endLine": 1766,
+      "title": "Event: `'http2.server.stream.start'`",
+      "sha256": "4f006e7e03cd02499fe228dd3fb11851e55caa5b1c1eb82d555be6c771ddb1b3",
+      "normativeRequirements": "* `stream` {ServerHttp2Stream}\n* `headers` {HTTP/2 Headers Object}\n\nEmitted when a stream is started on the server.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http2.server.stream.start"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1767,
+      "endLine": 1773,
+      "title": "Event: `'http2.server.stream.error'`",
+      "sha256": "ce45d394b7d155e6da1f5548b53704fc8e5257cc5094eda22dffd88d243d68d4",
+      "normativeRequirements": "* `stream` {ServerHttp2Stream}\n* `error` {Error}\n\nEmitted when an error occurs during the processing of a stream on the server.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http2.server.stream.error"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1774,
+      "endLine": 1781,
+      "title": "Event: `'http2.server.stream.finish'`",
+      "sha256": "2dd769f95e3a72b97c3bf20d177f1c9902e29c71e2cd9979a04c74bc33b9f02d",
+      "normativeRequirements": "* `stream` {ServerHttp2Stream}\n* `headers` {HTTP/2 Headers Object}\n* `flags` {number}\n\nEmitted when a stream is sent on the server.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http2.server.stream.finish"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1782,
+      "endLine": 1788,
+      "title": "Event: `'http2.server.stream.close'`",
+      "sha256": "b8dd21805a243c1abd4f9cb8a57a82fe67e932e6e42aae7a957afbc8cdeb23c2",
+      "normativeRequirements": "* `stream` {ServerHttp2Stream}\n\nEmitted when a stream is closed on the server. The HTTP/2 error code used when\nclosing the stream can be retrieved using the `stream.rstCode` property.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:http2.server.stream.close"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1789,
+      "endLine": 1792,
+      "title": "Modules",
+      "sha256": "acc6ef860f3c4537cac1af887109d36f1ae36c611e06ec4b684c48ba78c79107",
+      "normativeRequirements": "> Stability: 1 - Experimental",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1793,
+      "endLine": 1800,
+      "title": "Event: `'tracing:module.require:start'`",
+      "sha256": "fcee08802267545f1f6b6b023c5ff00e7949f4b85fdb5e54920e32b727240a7e",
+      "normativeRequirements": "* `event` {Object} containing the following properties\n  * `id` Argument passed to `require()`. Module name.\n  * `parentFilename` Name of the module that attempted to require(id).\n\nEmitted when `require()` is executed. See [`start` event][].",
+      "apiObservationId": "diagnostics_channel.builtin-channel:tracing:module.require:start"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1801,
+      "endLine": 1808,
+      "title": "Event: `'tracing:module.require:end'`",
+      "sha256": "0fd189dac13427479656678dcfa41c2613de9b6529249abfba75c8aaf1f13649",
+      "normativeRequirements": "* `event` {Object} containing the following properties\n  * `id` Argument passed to `require()`. Module name.\n  * `parentFilename` Name of the module that attempted to require(id).\n\nEmitted when a `require()` call returns. See [`end` event][].",
+      "apiObservationId": "diagnostics_channel.builtin-channel:tracing:module.require:end"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1809,
+      "endLine": 1817,
+      "title": "Event: `'tracing:module.require:error'`",
+      "sha256": "1938a9b7f9524ae4dc5e200bd3a393fd90e8feb424f8f5b2c3fb025f16e57f95",
+      "normativeRequirements": "* `event` {Object} containing the following properties\n  * `id` Argument passed to `require()`. Module name.\n  * `parentFilename` Name of the module that attempted to require(id).\n* `error` {Error}\n\nEmitted when a `require()` throws an error. See [`error` event][].",
+      "apiObservationId": "diagnostics_channel.builtin-channel:tracing:module.require:error"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1818,
+      "endLine": 1825,
+      "title": "Event: `'tracing:module.import:asyncStart'`",
+      "sha256": "8ded37c132da6c16e101cc132961bdebd44a0ba918dfd32d4bc4589764ce941f",
+      "normativeRequirements": "* `event` {Object} containing the following properties\n  * `id` Argument passed to `import()`. Module name.\n  * `parentURL` URL object of the module that attempted to import(id).\n\nEmitted when `import()` is invoked. See [`asyncStart` event][].",
+      "apiObservationId": "diagnostics_channel.builtin-channel:tracing:module.import:asyncStart"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1826,
+      "endLine": 1833,
+      "title": "Event: `'tracing:module.import:asyncEnd'`",
+      "sha256": "5ec622c7a899e8f905f6ddb0a1bf24565d5fbb9c499bc0bff1a2084e13782042",
+      "normativeRequirements": "* `event` {Object} containing the following properties\n  * `id` Argument passed to `import()`. Module name.\n  * `parentURL` URL object of the module that attempted to import(id).\n\nEmitted when `import()` has completed. See [`asyncEnd` event][].",
+      "apiObservationId": "diagnostics_channel.builtin-channel:tracing:module.import:asyncEnd"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1834,
+      "endLine": 1842,
+      "title": "Event: `'tracing:module.import:error'`",
+      "sha256": "dd6fca89f1b5d854f8e52777676fde680073a38836d83a46b1268eefb4b2bff6",
+      "normativeRequirements": "* `event` {Object} containing the following properties\n  * `id` Argument passed to `import()`. Module name.\n  * `parentURL` URL object of the module that attempted to import(id).\n* `error` {Error}\n\nEmitted when a `import()` throws an error. See [`error` event][].",
+      "apiObservationId": "diagnostics_channel.builtin-channel:tracing:module.import:error"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1843,
+      "endLine": 1846,
+      "title": "NET",
+      "sha256": "f8bfd5f037e8aa59b4cf9c0ef2a666e808895441cdb5f06bb0e67a077663f18f",
+      "normativeRequirements": "> Stability: 1 - Experimental",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1847,
+      "endLine": 1852,
+      "title": "Event: `'net.client.socket'`",
+      "sha256": "9e77292bdf4fda7c5bc65b59932b0997c5ccff1e1ce86587fdc9aabe979d7489",
+      "normativeRequirements": "* `socket` {net.Socket|tls.TLSSocket}\n\nEmitted when a new TCP or pipe client socket connection is created.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:net.client.socket"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1853,
+      "endLine": 1858,
+      "title": "Event: `'net.server.socket'`",
+      "sha256": "9d37c7c0f0e12a95ce4793a1f3a9690a38c708def8bd756ca85d43c93c8ad579",
+      "normativeRequirements": "* `socket` {net.Socket}\n\nEmitted when a new TCP or pipe connection is received.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:net.server.socket"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1859,
+      "endLine": 1865,
+      "title": "Event: `'tracing:net.server.listen:asyncStart'`",
+      "sha256": "17f1b47d157a78f11027094788f171818ae0a0fff7e9e48d8c2ac8f81a7ed982",
+      "normativeRequirements": "* `server` {net.Server}\n* `options` {Object}\n\nEmitted when [`net.Server.listen()`][] is invoked, before the port or pipe is actually setup.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:tracing:net.server.listen:asyncStart"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1866,
+      "endLine": 1871,
+      "title": "Event: `'tracing:net.server.listen:asyncEnd'`",
+      "sha256": "550ca193dc8f7e6cebf6632770b1d3bcf09939532fbeea821cd0d8c1fdfe1065",
+      "normativeRequirements": "* `server` {net.Server}\n\nEmitted when [`net.Server.listen()`][] has completed and thus the server is ready to accept connection.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:tracing:net.server.listen:asyncEnd"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1872,
+      "endLine": 1878,
+      "title": "Event: `'tracing:net.server.listen:error'`",
+      "sha256": "6f7f3f9bdc8bad1a05f265d753ac0e6b02151c2177215143d03c1d30c20fb8d5",
+      "normativeRequirements": "* `server` {net.Server}\n* `error` {Error}\n\nEmitted when [`net.Server.listen()`][] is returning an error.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:tracing:net.server.listen:error"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1879,
+      "endLine": 1882,
+      "title": "UDP",
+      "sha256": "cc5b12fc66c495075126d209f9eea21fa8342fba25b5c910858d4bd09df980b4",
+      "normativeRequirements": "> Stability: 1 - Experimental",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1883,
+      "endLine": 1888,
+      "title": "Event: `'udp.socket'`",
+      "sha256": "3696e6d3c0124ea3f0b1e024d41853cba9e29d21efa942354ea57d597e03053c",
+      "normativeRequirements": "* `socket` {dgram.Socket}\n\nEmitted when a new UDP socket is created.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:udp.socket"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1889,
+      "endLine": 1896,
+      "title": "Process",
+      "sha256": "db5e7d13900e53fd149a94084954e976c792773ac25abb3d2b7ab3184f117860",
+      "normativeRequirements": "> Stability: 1 - Experimental",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1897,
+      "endLine": 1924,
+      "title": "Event: `'child_process'`",
+      "sha256": "af5bd36b5d0baa8bcd6fa75eb0dc52062a0572bbf21a73a310c8fd32031b997f",
+      "normativeRequirements": "* `process` {ChildProcess}\n\nEmitted when a new process is created.\n\n`tracing:child_process.spawn:start`\n\n* `process` {ChildProcess}\n* `options` {Object}\n\nEmitted when [`child_process.spawn()`][] is invoked, before the process is\nactually spawned.\n\n`tracing:child_process.spawn:end`\n\n* `process` {ChildProcess}\n\nEmitted when [`child_process.spawn()`][] has completed successfully and the\nprocess has been created.\n\n`tracing:child_process.spawn:error`\n\n* `process` {ChildProcess}\n* `error` {Error}\n\nEmitted when [`child_process.spawn()`][] encounters an error.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:child_process"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1925,
+      "endLine": 1932,
+      "title": "Event: `'process.execve'`",
+      "sha256": "3ce98d995931023ff86626d1d50d45043de4ebeacfdcab66db1c8e14cea5a37c",
+      "normativeRequirements": "* `execPath` {string}\n* `args` {string\\[]}\n* `env` {string\\[]}\n\nEmitted when [`process.execve()`][] is invoked.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:process.execve"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1933,
+      "endLine": 1942,
+      "title": "Test Runner",
+      "sha256": "78041784963b9493904113536bdbbe09115854f6eefdf27d533509945f0ed37d",
+      "normativeRequirements": "See [Test instrumentation and OpenTelemetry][] for details.",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1943,
+      "endLine": 1953,
+      "title": "Web Locks",
+      "sha256": "8d9219428ad97e5f02ebe436ae97be1d819c18af565ad3d3da697c633a362189",
+      "normativeRequirements": "> Stability: 1 - Experimental\n\n\n\nThese channels are emitted for each [`locks.request()`][] call. See\n[`worker_threads.locks`][] for details on Web Locks.",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1954,
+      "endLine": 1960,
+      "title": "Event: `'locks.request.start'`",
+      "sha256": "8b0dcb0bd7b2c529230f21c1c607524f04c4bf41df13fc4cdfda6b9a886b697f",
+      "normativeRequirements": "* `name` {string} The name of the requested lock resource.\n* `mode` {string} The lock mode: `'exclusive'` or `'shared'`.\n\nEmitted when a lock request is initiated, before the lock is granted.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:locks.request.start"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1961,
+      "endLine": 1967,
+      "title": "Event: `'locks.request.grant'`",
+      "sha256": "93bc06a9f6d6148dbad97a1a3682f4d608aed5c99390d18ff1b6e14a2eeeab35",
+      "normativeRequirements": "* `name` {string} The name of the requested lock resource.\n* `mode` {string} The lock mode: `'exclusive'` or `'shared'`.\n\nEmitted when a lock is successfully granted and the callback is about to run.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:locks.request.grant"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1968,
+      "endLine": 1975,
+      "title": "Event: `'locks.request.miss'`",
+      "sha256": "58eb8f8c2a8792f308792829998b8b5908bd71ef02ce5e644468d741bc37f48b",
+      "normativeRequirements": "* `name` {string} The name of the requested lock resource.\n* `mode` {string} The lock mode: `'exclusive'` or `'shared'`.\n\nEmitted when `ifAvailable` is `true` and the lock is not immediately available,\nand the request callback is invoked with `null` instead of a `Lock` object.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:locks.request.miss"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1976,
+      "endLine": 1986,
+      "title": "Event: `'locks.request.end'`",
+      "sha256": "73807d2cb144dee839f0014371504abd18d15e8ae2d5b7c57792d5c0863b0cce",
+      "normativeRequirements": "* `name` {string} The name of the requested lock resource.\n* `mode` {string} The lock mode: `'exclusive'` or `'shared'`.\n* `steal` {boolean} Whether the request uses steal semantics.\n* `ifAvailable` {boolean} Whether the request uses ifAvailable semantics.\n* `error` {Error|undefined} The error thrown by the callback, if any.\n\nEmitted when a lock request has finished, whether the callback succeeded,\nthrew an error, or the lock was stolen.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:locks.request.end"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1987,
+      "endLine": 1994,
+      "title": "Worker Thread",
+      "sha256": "7d9170a51c51f9a8f6796f5d4d2cfbb6ca55c025b0f42c7d48ff76909adc4833",
+      "normativeRequirements": "> Stability: 1 - Experimental",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 1995,
+      "endLine": 2000,
+      "title": "Event: `'worker_threads'`",
+      "sha256": "b91cd28a469ea1811c7c5369bc6849b06467bdea4d302dcde5550da9b7fa2680",
+      "normativeRequirements": "* `worker` {Worker}\n\nEmitted when a new thread is created.",
+      "apiObservationId": "diagnostics_channel.builtin-channel:worker_threads"
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 2001,
+      "endLine": 2008,
+      "title": "SQLite",
+      "sha256": "40b84b6572abe66d227a1e458e3822f51438c583c2747b4d36fe451e24c47ca8",
+      "normativeRequirements": "> Stability: 1 - Experimental",
+      "apiObservationId": null
+    },
+    {
+      "document": "doc/api/diagnostics_channel.md",
+      "line": 2009,
+      "endLine": 2068,
+      "title": "Event: `'sqlite.db.query'`",
+      "sha256": "148870f95b3b5b72be920b7e29a67a7ffa90e65cbe3062bbd5c91298635a0a94",
+      "normativeRequirements": "* `sql` {string} The expanded SQL with bound parameter values substituted.\n  If expansion fails, the source SQL with unsubstituted placeholders is used\n  instead.\n* `database` {Database} The [`Database`][] instance that executed the\n  statement.\n* `duration` {number} SQLite's internal estimate of the statement run time in\n  nanoseconds. This reflects C-layer execution time only and does not include\n  JavaScript binding overhead such as argument marshaling or result-row\n  construction.\n\nEmitted after a SQL statement finishes executing against a [`Database`][]\ninstance. This is a **profiling** event: it fires once per statement upon\ncompletion and reports an estimated duration from SQLite's internal profiler.\nIt is not a distributed-tracing span. There is no corresponding start event,\nno async context propagation, and no parent-span linkage. If you need\nOpenTelemetry-compatible spans or async context propagation, wrap your SQLite\ncalls with a [`TracingChannel`][] at the JavaScript layer instead.\n\nPublishing is zero-overhead when there are no subscribers.\n\nNo event is emitted for a statement that is abandoned mid-iteration and later\nfinalized, either explicitly through [`statement.close()`][] or when the\nstatement is garbage collected. Subscribers must not close the database or the\nstatement, since both are still in use while the event is being delivered; see\n[`database.close()`][] and [`statement.close()`][].",
+      "apiObservationId": "diagnostics_channel.builtin-channel:sqlite.db.query"
+    }
+  ],
+  "sourceAuditComplete": true,
+  "targetNamespaceExports": {
+    "node:domain": [
+      "Domain",
+      "create",
+      "createDomain",
+      "active"
+    ],
+    "node:diagnostics_channel": [
+      "channel",
+      "hasSubscribers",
+      "subscribe",
+      "tracingChannel",
+      "unsubscribe",
+      "boundedChannel",
+      "Channel",
+      "BoundedChannel"
+    ]
+  },
+  "privateRetainedObservations": [
+    "node:domain._stack",
+    "Domain.prototype._errorHandler"
+  ],
+  "returnedNotNamespaceClasses": [
+    "TracingChannel",
+    "RunStoresScope",
+    "BoundedChannelScope"
+  ],
+  "unresolved": [
+    "Exact pinned native mid-trace subscription behavior against contradictory prose; audit records both branches",
+    "Bundled dependency diagnostics beyond the documented Node built-in list remain cross-family discovery obligations; absent public registry blocks observability regardless"
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

@@ -1,0 +1,275 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/message/console_assert.js",
+      "sha256": "2a54a9801d3d4bc8d0d66f843751d185e576cdfee73143aa91079b59399b05b0",
+      "category": "message",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-assign-undefined.js",
+      "sha256": "6af240534c9ed440b1704631b506daa2db30a6cc4a9aa04660fc6b78eca809d2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-async-write-error.js",
+      "sha256": "a0e62d7bd0c834b381ac648af55eff1fdbc9cefb876ec513393e9cbd7839eab8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-clear.js",
+      "sha256": "30f179966e828fd8494fa691057e063e3cc5a4bddd99257872bb4b124cd529a1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-count.js",
+      "sha256": "03e51b19aeef2667a0168fb4592515ebb6999bb31e945e5e438afcb3f08a2b8b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-diagnostics-channels.js",
+      "sha256": "b4d2702bf25a2f513a088517e28d8f2b23c8f573b2011fa8b12c95c7d0f80cd2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-formatTime.js",
+      "sha256": "78db60c0d411e25ea46ba6d3b6998cf6f444c326550632e5b2ae95b0a05b6279",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-group.js",
+      "sha256": "a25f43d186fc3b45030cb7538ce3313feb549e13d933c1bd13c8aa1b30fb23eb",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-instance.js",
+      "sha256": "a59cde4495bc0dfacd6bf1d241323a6f369fb29982df2dc06122a8cb71c84839",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-issue-43095.js",
+      "sha256": "7385db11b8a913eaaa6957bbc9716b81ec6ecf5c4ea4277e0a956d8220da4c10",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-log-stdio-broken-dest.js",
+      "sha256": "6ecff4702acbcf5b8d4fe52e7ae8d0dd84e38153286536ece70714d77124e070",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-log-throw-primitive.js",
+      "sha256": "488c375fa39447990470de8f7e430d38c64549917bb18fb5c3b610a1c615a4d1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-methods.js",
+      "sha256": "371c7a2203dd8d97947f1491d9bec87176725e7985a4895e2928269e6a930456",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-no-swallow-stack-overflow.js",
+      "sha256": "52cd91cab2e1573a4a91a63afd50649202f8ea983933d1e792186ad984c119f4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-not-call-toString.js",
+      "sha256": "f6f7a3062ea51cd8c6aae06d1ac8e39dda10c52b1fc1e35002459c2f3795ef2e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-self-assign.js",
+      "sha256": "90a57208ca23be1c43db58879e19cb123c8ed824be0ad3733a91e74435694f87",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-stdio-setters.js",
+      "sha256": "2494847bdce867ec74e63f716318fea44d774c2998e3aba12f4b222fe321d3fe",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-sync-write-error.js",
+      "sha256": "99f1800b990d1d09b117733abe2f3ffcdcbb501cd4f6f1c2b993df3b0e76c547",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-table.js",
+      "sha256": "3fbe7c86bda0f99f764ca145d4f4af60b9c00b3a066ec99431f508df9af58244",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-tty-colors-per-stream.js",
+      "sha256": "a82eb89bd8a0e018b5316f2c546d6164d376ef60d287a7960dcf5684a3828706",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-tty-colors.js",
+      "sha256": "76d4a9d300c62e7f2b0bddf89a674b133a5e6a57b06f18c6167f1150eee7d4c1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console-with-frozen-intrinsics.js",
+      "sha256": "e756abcb4138c66dcd3502c84e28f86ebc3c8d1902d3c72276abd89e9ef987b0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-console.js",
+      "sha256": "9b21ec8c9dca922fc209a49ead847f66ab25f0fb0729adfc300c838bd1be2769",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-global-console-exists.js",
+      "sha256": "444b1c93dd23ee7250c309f84e171a359c0b219fb893907a02671dbeff1e9ad0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-inspector-console-top-frame.js",
+      "sha256": "7c7589db86adb2ad5b3970f81be7a9432d7be23cc532e0d0be3edecf922cd7a7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-inspector-console.js",
+      "sha256": "a5fe709bedb0bcc191d51974f8aef618de2a1e1d6ae590c644a000920bd1869e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-node-output-console.mjs",
+      "sha256": "e10dde26be72be9ddbb0bf46f3056055411e6f333660e2f4f9a3192189d0cdd3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-snapshot-console.js",
+      "sha256": "8a64e08eeeb9bad795499370b489cfbba3c786ae389a565107df1200769a5858",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-trace-events-console.js",
+      "sha256": "58648ac32d96951a13141e1d0a94adadf5395b498972384120c8df9aa231f433",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/parallel/test-worker-console-listeners.js",
+      "sha256": "7fe56bfb5c155c24feac12189cc4d03b9094fcb73c6308da4ea3b55bb9cf84e1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/pseudo-tty/console-dumb-tty.js",
+      "sha256": "2686ed16df27b65e9238511ffeb4eb1554e56064ae30d2d53e5ca138cb643432",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/pseudo-tty/console_colors.js",
+      "sha256": "422573924cab7a85f7a419e2c9112f24ce01195b12a71b350c50bfdd7f962911",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    },
+    {
+      "path": "test/wpt/test-console.js",
+      "sha256": "4076c315c97c48b21e18fc87ee6e74d1005a7c956dd85e6e5305f920f9006dad",
+      "category": "wpt",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; not assertion applicability signoff",
+      "requirements": "Preserve expected-output message files, fixtures/real streams/PTYs/child launch and inspector/trace flags; no exit-code-only substitution"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

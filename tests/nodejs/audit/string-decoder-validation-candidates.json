@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/parallel/test-string-decoder-end.js",
+      "sha256": "7c7a2001863059594d112a8450e3808e891f6c8e06d0f62e57920411545a8cb9",
+      "declaredFlags": [],
+      "status": "Future unchanged source candidate; not run",
+      "requirements": "Preserve common helpers, all assertions, memory flags/gates and original skips; no large allocation probe authorized"
+    },
+    {
+      "path": "test/parallel/test-string-decoder-fuzz.js",
+      "sha256": "a3e665a923c69dcfe39c0992ec670adcd4d418b53a91aa93d8957f59666b0c28",
+      "declaredFlags": [],
+      "status": "Future unchanged source candidate; not run",
+      "requirements": "Preserve common helpers, all assertions, memory flags/gates and original skips; no large allocation probe authorized"
+    },
+    {
+      "path": "test/parallel/test-string-decoder-utf8-large.js",
+      "sha256": "09ceb86f330939b5c1169377554ca7ba0b7ab4dedfddfaa685a56ee6ddab5b6e",
+      "declaredFlags": [],
+      "status": "Future unchanged source candidate; not run",
+      "requirements": "Preserve common helpers, all assertions, memory flags/gates and original skips; no large allocation probe authorized"
+    },
+    {
+      "path": "test/parallel/test-string-decoder.js",
+      "sha256": "f556e3745ae83dd118dc38f740fcf23da9b8db9a2c7c301d1938e38f97884393",
+      "declaredFlags": [],
+      "status": "Future unchanged source candidate; not run",
+      "requirements": "Preserve common helpers, all assertions, memory flags/gates and original skips; no large allocation probe authorized"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

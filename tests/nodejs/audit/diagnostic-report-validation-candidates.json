@@ -1,0 +1,187 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/report/test-report-config.js",
+      "sha256": "d251ac388a0f56faaf125cb33ef0370a34662f411d854e1680259ea31ee8d9ea",
+      "category": "report",
+      "declaredFlags": [
+        "--report-on-fatalerror --report-on-signal --report-uncaught-exception --report-compact"
+      ],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-exclude-network.js",
+      "sha256": "f7c60cb7ea71ecdbcf9c56b9b10aeddc63b8afb99976c1a0b19ffd5dde939f29",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-fatalerror-oomerror-compact.js",
+      "sha256": "9c0432c6276e7861ca8465d14d500a080f233154167f6cce7fcf36cf8bc16c91",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-fatalerror-oomerror-directory.js",
+      "sha256": "967d71d6e97934da190defc3666dfc17c2a519225a883aa4b144b4382a1e7479",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-fatalerror-oomerror-filename.js",
+      "sha256": "106c0ff89014d4595b088db399bd885c59808a8ece630c26c5dc69b683504bcb",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-fatalerror-oomerror-not-set.js",
+      "sha256": "86dea12e56035915520580972d4a96f2a99f19748f9e8ac57de212ae05f23530",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-fatalerror-oomerror-set.js",
+      "sha256": "64dfea3b62e8c85195ea6127ae418374650b9af924e6b8e8110e933c8927bdb4",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-getreport.js",
+      "sha256": "32f9877b35b950779507fc04e447fc0cdd61cfe23f3304dfc36b5256de37e8c4",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-process-timeout-worker.js",
+      "sha256": "5ee2b897778b7c9523a07f4836e92aca8abd67f0da4aef75fea73f0db023ef60",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-process-timeout.js",
+      "sha256": "ffb2643f4757767ca3299a7cd815b289de2e811f702f5c9e7e87b37091b45527",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-signal.js",
+      "sha256": "583e0ebfd42528884c006badf68535b81676f8c81d8e962eec306fef5d4231d5",
+      "category": "report",
+      "declaredFlags": [
+        "--report-on-signal"
+      ],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-uncaught-exception-compat.js",
+      "sha256": "9cbc429686845970d28780bf51d5112ceb9d95bf722084f78fbb93e899a5585b",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-uncaught-exception-handled.js",
+      "sha256": "3312bba1cae91f3980e7d46ce57c03995333fe5ec6f4c05c871b0204351b0510",
+      "category": "report",
+      "declaredFlags": [
+        "--report-uncaught-exception"
+      ],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-uncaught-exception-override.js",
+      "sha256": "92eb1db426ffd512a07806df40f9d377dcd0df7198accabe18289fce14b8ad05",
+      "category": "report",
+      "declaredFlags": [
+        "--report-uncaught-exception"
+      ],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-uncaught-exception-primitives.js",
+      "sha256": "e4a992eae64fb222a62f848ed186bc482f5b3323c2c53acf308ac44c03ce9cda",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-uncaught-exception-symbols.js",
+      "sha256": "04e7ea363772e232968e83ceacd5f1bf234869129e2380fcee3504acc87c2f5b",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-uncaught-exception.js",
+      "sha256": "f98b47e1fc5469d89075f8b9d91d4eac7badb22a40ff238caa18fb6aa76cf977",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-uv-handles.js",
+      "sha256": "0455743f54a4616b5ed976686f7adca97d55ebf15875b6d8607f2826d6d73fd2",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-worker.js",
+      "sha256": "82ab3b5f63e4a57fd497a2d9c014edc531ce066fbe7043a896277e3f344fb509",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-writereport-exclude-env.js",
+      "sha256": "188ef40fff04cec31bab6b89fa4caa04597affc25132c70203948b325c898bec",
+      "category": "report",
+      "declaredFlags": [
+        "--report-exclude-env"
+      ],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    },
+    {
+      "path": "test/report/test-report-writereport.js",
+      "sha256": "4f44284cba41278c9a3b9c6a5ad228ffa38d867f691b501f201c3b09274e537f",
+      "category": "report",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source; unrun, assertion applicability pending",
+      "requirements": "Original report/common schema validators, native fixtures, permission/death/signal/worker/timeout launch semantics; preserve skip and expected outputs"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

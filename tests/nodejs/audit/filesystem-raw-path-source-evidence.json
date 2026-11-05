@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "finding": "FS-022",
+  "records": [
+    {
+      "path": "host/src/kernel.ts",
+      "fileSha256": "48acfe47a6d3258ce47b8b0def408a1bffc63f52c950774aa6f6b51d0fbb5d5e",
+      "line": 3856,
+      "endLine": 3867,
+      "excerpt": "   * Read a single path component from Wasm memory.\n   *\n   * Under the handle-only kernel contract this is never a path: the kernel\n   * resolves mount routing, `..`, and symlink chains itself and hands this\n   * host exactly one component, relative to a directory handle this host\n   * previously issued. `\".\"` names the directory itself, which is how a mount\n   * root is addressed. The only exception is a symlink *target*, which is\n   * opaque data stored verbatim and never resolved here.\n   */\n  #readComponentFromMemory(ptr: KernelPointer, len: number): string {\n    return new TextDecoder().decode(this.#readKernelBytes(ptr, len));\n  }\n",
+      "sha256": "66148f416adc663b091ad7e60b626235797d4ae7389de08705a2d1c89464cee1"
+    },
+    {
+      "path": "host/src/kernel.ts",
+      "fileSha256": "48acfe47a6d3258ce47b8b0def408a1bffc63f52c950774aa6f6b51d0fbb5d5e",
+      "line": 3876,
+      "endLine": 3895,
+      "excerpt": "  #hostOpenat(\n    dir: bigint,\n    namePtr: KernelPointer,\n    nameLen: number,\n    flags: number,\n    mode: number,\n  ): bigint {\n    try {\n      const name = this.#readComponentFromMemory(namePtr, nameLen);\n      const handle = this.io.openat(Number(dir), name, flags, mode);\n      // Backends may reuse numeric handles after close. Never let an entry\n      // staged for an older iterator leak into a new handle with the same id.\n      this.pendingDirectoryEntries.delete(handle);\n      return BigInt(handle);\n    } catch (e) {\n      return BigInt(negErrno(e));\n    }\n  }\n\n  #hostFstatat(\n",
+      "sha256": "e4770a7e6512e123616f06e04c05a23d9b2f91b0204afa5e917cb42b058c23c4"
+    },
+    {
+      "path": "host/src/vfs/vfs.ts",
+      "fileSha256": "c5fdf4dd4e1c64d667bb9c1086241fe253d665029b039f19e596de778d89ee8d",
+      "line": 586,
+      "endLine": 612,
+      "excerpt": "\n  /**\n   * Open one component relative to a directory handle this host issued.\n   *\n   * `O_DIRECTORY` yields another anchor; anything else yields a file handle.\n   * Both come from the same id space and are released by `close`.\n   */\n  openat(dirHandle: number, name: string, flags: number, mode: number): number {\n    const dir = this.getDirHandle(dirHandle);\n    const path = joinComponent(dir.path, name);\n    const globalHandle = this.nextHandle++;\n    if ((flags & OPEN_FLAGS.O_DIRECTORY) !== 0) {\n      // Confirm it is a directory before handing back an anchor, so a\n      // non-directory component fails here rather than at first use.\n      const st = dir.backend.stat(path);\n      if ((st.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFDIR) {\n        throw new Error(`ENOTDIR: not a directory: ${path}`);\n      }\n      this.dirHandles.set(globalHandle, {\n        backend: dir.backend,\n        backendId: dir.backendId,\n        path,\n        nosuid: dir.nosuid,\n        statfs: this.mountStatfs(dir.backend, path, dir.nosuid),\n        iterator: null,\n      });\n      return globalHandle;\n",
+      "sha256": "d78f68eaecf85817199adee64b7b044dc20fb35553f2fa2cb5a431e02611b456"
+    },
+    {
+      "path": "crates/kernel/src/wasm_api.rs",
+      "fileSha256": "a2b93f2008b57576090cd6308d3fefd210e2bdb66a5f22e239647cb00893fbd1",
+      "line": 575,
+      "endLine": 586,
+      "excerpt": "    fn host_openat(\n        &mut self,\n        dir: i64,\n        name: &[u8],\n        flags: u32,\n        mode: u32,\n    ) -> Result<i64, Errno> {\n        let result =\n            unsafe { host_openat(dir, name.as_ptr(), name.len() as u32, flags, mode) };\n        checked_host_i64_result(result)\n    }\n\n",
+      "sha256": "1d22944b7e885c932e55528e708b57bed482f712b9cd454555f894bf7519f3b6"
+    },
+    {
+      "path": "crates/runtime-core/src/tmpfs.rs",
+      "fileSha256": "422c943ea1747d1e691faa3a22762ea585cf03bab47dca02120be5cea838a758",
+      "line": 155,
+      "endLine": 168,
+      "excerpt": "};\n\n/// A directory's entries. Each entry gets a getdents cookie when it is\n/// created and keeps it until it is removed, so removing entries while a\n/// reader walks the directory never shifts the others (POSIX: every entry\n/// not removed is returned exactly once), and a listing resumes from its\n/// cookie without rebuilding the directory.\n#[derive(Default)]\nstruct DirEntries {\n    /// Child inode index and cookie, by name.\n    by_name: BTreeMap<Vec<u8>, (u32, u64)>,\n    /// Names in creation order, by cookie.\n    by_cookie: BTreeMap<u64, Vec<u8>>,\n    next_cookie: u64,\n",
+      "sha256": "5668b2ef511ba69b5313e9d732419d8f57d3ad8043d44d6854de0b5dfcf2ae11"
+    }
+  ],
+  "conclusion": "FS-022: guest kernel passes raw component bytes, but host Kernel.#readComponentFromMemory uses default nonfatal TextDecoder and VirtualPlatformIO/backend interfaces take string components. Invalid UTF8 can be reinterpreted as replacement-character names on host-backed routes. Native raw path copying is not end-to-end byte identity; kernel tmpfs uses byte-name maps and is a separate route. This is a host/interface implementation gap, not proof all kernel paths or a browser engine cannot support bytes.",
+  "scope": "Read-only source excerpts and identity; no executed path probe or native/runtime evidence",
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

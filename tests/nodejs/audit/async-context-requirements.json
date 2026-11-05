@@ -1,0 +1,1137 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sections": [
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 1,
+      "endLine": 34,
+      "title": "Async hooks",
+      "sha256": "e339057d2519dd741dda435a56154f3ee006c9d9d708ddcd353432db7cf70d63",
+      "normativeRequirements": "# Async hooks\n\n\n\n> Stability: 1 - Experimental. Please migrate away from this API, if you can.\n> We do not recommend using the [`createHook`][], [`AsyncHook`][], and\n> [`executionAsyncResource`][] APIs as they have usability issues, safety risks,\n> and performance implications. Async context tracking use cases are better\n> served by the stable [`AsyncLocalStorage`][] API. If you have a use case for\n> `createHook`, `AsyncHook`, or `executionAsyncResource` beyond the context\n> tracking need solved by [`AsyncLocalStorage`][] or diagnostics data currently\n> provided by [Diagnostics Channel][], please open an issue at\n> <https://github.com/nodejs/node/issues> describing your use case so we can\n> create a more purpose-focused API.\n\n\n\nWe strongly discourage the use of the `async_hooks` API.\nOther APIs that can cover most of its use cases include:\n\n* [`AsyncLocalStorage`][] tracks async context\n* [`process.getActiveResourcesInfo()`][] tracks active resources\n\nThe `node:async_hooks` module provides an API to track asynchronous resources.\nIt can be accessed using:\n\n\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 35,
+      "endLine": 46,
+      "title": "Terminology",
+      "sha256": "e242743833c28c1a767cab8ee2b6ddcfa7ee9840da0f5e1fdb88b33b07a02454",
+      "normativeRequirements": "## Terminology\n\nAn asynchronous resource represents an object with an associated callback.\nThis callback may be called multiple times, such as the `'connection'`\nevent in `net.createServer()`, or just a single time like in `fs.open()`.\nA resource can also be closed before the callback is called. `AsyncHook` does\nnot explicitly distinguish between these different cases but will represent them\nas the abstract concept that is a resource.\n\nIf [`Worker`][]s are used, each thread has an independent `async_hooks`\ninterface, and each thread will use a new set of async IDs.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 47,
+      "endLine": 146,
+      "title": "Overview",
+      "sha256": "754274c2ce40bfd9d96b6af36bfeddc4d8c0cc0ff04b85903724d12fe01ce0d5",
+      "normativeRequirements": "## Overview\n\nFollowing is a simple overview of the public API.\n\n\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 147,
+      "endLine": 211,
+      "title": "`async_hooks.createHook(options)`",
+      "sha256": "ae2209bb241fea07641d58ff36a66a36e1fde626c596313921493c04f22e3c41",
+      "normativeRequirements": "## `async_hooks.createHook(options)`\n\n\n\n* `options` {Object} The [Hook Callbacks][] to register\n  * `init` {Function} The [`init` callback][].\n  * `before` {Function} The [`before` callback][].\n  * `after` {Function} The [`after` callback][].\n  * `destroy` {Function} The [`destroy` callback][].\n  * `promiseResolve` {Function} The [`promiseResolve` callback][].\n  * `trackPromises` {boolean} Whether the hook should track `Promise`s. Cannot be `false` if\n    `promiseResolve` is set. **Default**: `true`.\n* Returns: {AsyncHook} Instance used for disabling and enabling hooks\n\nRegisters functions to be called for different lifetime events of each async\noperation.\n\nThe callbacks `init()`/`before()`/`after()`/`destroy()` are called for the\nrespective asynchronous event during a resource's lifetime.\n\nAll callbacks are optional. For example, if only resource cleanup needs to\nbe tracked, then only the `destroy` callback needs to be passed. The\nspecifics of all functions that can be passed to `callbacks` is in the\n[Hook Callbacks][] section.\n\n\n\n\n\nThe callbacks will be inherited via the prototype chain:\n\n\n\nBecause promises are asynchronous resources whose lifecycle is tracked\nvia the async hooks mechanism, the `init()`, `before()`, `after()`, and\n`destroy()` callbacks _must not_ be async functions that return promises.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 212,
+      "endLine": 228,
+      "title": "Error handling",
+      "sha256": "325668540bdba645d542389625e362bd9ab1d85307efa4259e2977b1c5b11254",
+      "normativeRequirements": "### Error handling\n\nIf any `AsyncHook` callbacks throw, the application will print the stack trace\nand exit. The exit path does follow that of an uncaught exception, but\nall `'uncaughtException'` listeners are removed, thus forcing the process to\nexit. The `'exit'` callbacks will still be called unless the application is run\nwith `--abort-on-uncaught-exception`, in which case a stack trace will be\nprinted and the application exits, leaving a core file.\n\nThe reason for this error handling behavior is that these callbacks are running\nat potentially volatile points in an object's lifetime, for example during\nclass construction and destruction. Because of this, it is deemed necessary to\nbring down the process quickly in order to prevent an unintentional abort in the\nfuture. This is subject to change in the future if a comprehensive analysis is\nperformed to ensure an exception can follow the normal control flow without\nunintentional side effects.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 229,
+      "endLine": 264,
+      "title": "Printing in `AsyncHook` callbacks",
+      "sha256": "0c42629ae3b7b440c6f10d05df871071faf2108401ad668887a24610c8ab8cdc",
+      "normativeRequirements": "### Printing in `AsyncHook` callbacks\n\nBecause printing to the console is an asynchronous operation, `console.log()`\nwill cause `AsyncHook` callbacks to be called. Using `console.log()` or\nsimilar asynchronous operations inside an `AsyncHook` callback function will\ncause an infinite recursion. An easy solution to this when debugging is to use a\nsynchronous logging operation such as `fs.writeFileSync(file, msg, flag)`.\nThis will print to the file and will not invoke `AsyncHook` recursively because\nit is synchronous.\n\n\n\n\n\nIf an asynchronous operation is needed for logging, it is possible to keep\ntrack of what caused the asynchronous operation using the information\nprovided by `AsyncHook` itself. The logging should then be skipped when\nit was the logging itself that caused the `AsyncHook` callback to be called. By\ndoing this, the otherwise infinite recursion is broken.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 265,
+      "endLine": 269,
+      "title": "Class: `AsyncHook`",
+      "sha256": "1cbdf32c9b1596cf4f8e3c5051fbe209d2fbdc34dc20a371eeaafba63db294a4",
+      "normativeRequirements": "## Class: `AsyncHook`\n\nThe class `AsyncHook` exposes an interface for tracking lifetime events\nof asynchronous operations.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 270,
+      "endLine": 291,
+      "title": "`asyncHook.enable()`",
+      "sha256": "d2ad19be1bff261e9d11aa98a80727b6b357a939bc2fc929069aab7297688b4f",
+      "normativeRequirements": "### `asyncHook.enable()`\n\n* Returns: {AsyncHook} A reference to `asyncHook`.\n\nEnable the callbacks for a given `AsyncHook` instance. If no callbacks are\nprovided, enabling is a no-op.\n\nThe `AsyncHook` instance is disabled by default. If the `AsyncHook` instance\nshould be enabled immediately after creation, the following pattern can be used.\n\n\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 292,
+      "endLine": 301,
+      "title": "`asyncHook.disable()`",
+      "sha256": "1bbc60b25a74a955d1c29b1f98d3a06f4faae4fc990847bea9f684db89a87e1f",
+      "normativeRequirements": "### `asyncHook.disable()`\n\n* Returns: {AsyncHook} A reference to `asyncHook`.\n\nDisable the callbacks for a given `AsyncHook` instance from the global pool of\n`AsyncHook` callbacks to be executed. Once a hook has been disabled it will not\nbe called again until enabled.\n\nFor API consistency `disable()` also returns the `AsyncHook` instance.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 302,
+      "endLine": 307,
+      "title": "Hook callbacks",
+      "sha256": "061a8da01b33f0fce43c6736e8477c6e7991b020d55845d419a8039770e53793",
+      "normativeRequirements": "### Hook callbacks\n\nKey events in the lifetime of asynchronous events have been categorized into\nfour areas: instantiation, before/after the callback is called, and when the\ninstance is destroyed.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 308,
+      "endLine": 342,
+      "title": "`init(asyncId, type, triggerAsyncId, resource)`",
+      "sha256": "5e15e1572eeb3a23ebd470a4e74b74fa57bff4711b509e2dbd7e6f80560b186b",
+      "normativeRequirements": "#### `init(asyncId, type, triggerAsyncId, resource)`\n\n* `asyncId` {number} A unique ID for the async resource.\n* `type` {string} The type of the async resource.\n* `triggerAsyncId` {number} The unique ID of the async resource in whose\n  execution context this async resource was created.\n* `resource` {Object} Reference to the resource representing the async\n  operation, needs to be released during _destroy_.\n\nCalled when a class is constructed that has the _possibility_ to emit an\nasynchronous event. This _does not_ mean the instance must call\n`before`/`after` before `destroy` is called, only that the possibility\nexists.\n\nThis behavior can be observed by doing something like opening a resource then\nclosing it before the resource can be used. The following snippet demonstrates\nthis.\n\n\n\n\n\nEvery new resource is assigned an ID that is unique within the scope of the\ncurrent Node.js instance.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 343,
+      "endLine": 367,
+      "title": "`type`",
+      "sha256": "68d560dbfe4e084d07050598344b101c2f720004e41e2bca1b654186eeb8f264",
+      "normativeRequirements": "##### `type`\n\nThe `type` is a string identifying the type of resource that caused\n`init` to be called. Generally, it will correspond to the name of the\nresource's constructor.\n\nThe `type` of resources created by Node.js itself can change in any Node.js\nrelease. Valid values include `TLSWRAP`,\n`TCPWRAP`, `TCPSERVERWRAP`, `GETADDRINFOREQWRAP`, `FSREQCALLBACK`,\n`Microtask`, and `Timeout`. Inspect the source code of the Node.js version used\nto get the full list.\n\nFurthermore users of [`AsyncResource`][] create async resources independent\nof Node.js itself.\n\nThere is also the `PROMISE` resource type, which is used to track `Promise`\ninstances and asynchronous work scheduled by them. The `Promise`s are only\ntracked when `trackPromises` option is set to `true`.\n\nUsers are able to define their own `type` when using the public embedder API.\n\nIt is possible to have type name collisions. Embedders are encouraged to use\nunique prefixes, such as the npm package name, to prevent collisions when\nlistening to the hooks.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 368,
+      "endLine": 429,
+      "title": "`triggerAsyncId`",
+      "sha256": "406e99d76b417457b05ae4b4a724c9edffd6310b399241b1e9fc29561a9a5eb0",
+      "normativeRequirements": "##### `triggerAsyncId`\n\n`triggerAsyncId` is the `asyncId` of the resource that caused (or \"triggered\")\nthe new resource to initialize and that caused `init` to call. This is different\nfrom `async_hooks.executionAsyncId()` that only shows _when_ a resource was\ncreated, while `triggerAsyncId` shows _why_ a resource was created.\n\nThe following is a simple demonstration of `triggerAsyncId`:\n\n\n\n\n\nOutput when hitting the server with `nc localhost 8080`:\n\n\n\nThe `TCPSERVERWRAP` is the server which receives the connections.\n\nThe `TCPWRAP` is the new connection from the client. When a new\nconnection is made, the `TCPWrap` instance is immediately constructed. This\nhappens outside of any JavaScript stack. (An `executionAsyncId()` of `0` means\nthat it is being executed from C++ with no JavaScript stack above it.) With only\nthat information, it would be impossible to link resources together in\nterms of what caused them to be created, so `triggerAsyncId` is given the task\nof propagating what resource is responsible for the new resource's existence.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 430,
+      "endLine": 439,
+      "title": "`resource`",
+      "sha256": "84c779ca3401e125bf1f31fd43f1642a1824e4b596979880a5eb2f5b3fa16839",
+      "normativeRequirements": "##### `resource`\n\n`resource` is an object that represents the actual async resource that has\nbeen initialized. The API to access the object may be specified by the\ncreator of the resource. Resources created by Node.js itself are internal\nand may change at any time. Therefore no API is specified for these.\n\nIn some cases the resource object is reused for performance reasons, it is\nthus not safe to use it as a key in a `WeakMap` or add properties to it.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 440,
+      "endLine": 588,
+      "title": "Asynchronous context example",
+      "sha256": "db7a22f161a14455e428a4a450815e5dd745ff436efec8d20c8c6f3fea751f92",
+      "normativeRequirements": "##### Asynchronous context example\n\nThe context tracking use case is covered by the stable API [`AsyncLocalStorage`][].\nThis example only illustrates async hooks operation but [`AsyncLocalStorage`][]\nfits better to this use case.\n\nThe following is an example with additional information about the calls to\n`init` between the `before` and `after` calls, specifically what the\ncallback to `listen()` will look like. The output formatting is slightly more\nelaborate to make calling context easier to see.\n\n\n\n\n\nOutput from only starting the server:\n\n\n\nAs illustrated in the example, `executionAsyncId()` and `execution` each specify\nthe value of the current execution context; which is delineated by calls to\n`before` and `after`.\n\nOnly using `execution` to graph resource allocation results in the following:\n\n\n\nThe `TCPSERVERWRAP` is not part of this graph, even though it was the reason for\n`console.log()` being called. This is because binding to a port without a host\nname is a _synchronous_ operation, but to maintain a completely asynchronous\nAPI the user's callback is placed in a `process.nextTick()`. Which is why\n`TickObject` is present in the output and is a 'parent' for `.listen()`\ncallback.\n\nThe graph only shows _when_ a resource was created, not _why_, so to track\nthe _why_ use `triggerAsyncId`. Which can be represented with the following\ngraph:\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 589,
+      "endLine": 605,
+      "title": "`before(asyncId)`",
+      "sha256": "dede13c992ac1e5ff841f61739e9b898cbc543fe5f7518218fdbde9cd5ebae95",
+      "normativeRequirements": "#### `before(asyncId)`\n\n* `asyncId` {number}\n\nWhen an asynchronous operation is initiated (such as a TCP server receiving a\nnew connection) or completes (such as writing data to disk) a callback is\ncalled to notify the user. The `before` callback is called just before said\ncallback is executed. `asyncId` is the unique identifier assigned to the\nresource about to execute the callback.\n\nThe `before` callback will be called 0 to N times. The `before` callback\nwill typically be called 0 times if the asynchronous operation was cancelled\nor, for example, if no connections are received by a TCP server. Persistent\nasynchronous resources like a TCP server will typically call the `before`\ncallback multiple times, while other operations like `fs.open()` will call\nit only once.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 606,
+      "endLine": 615,
+      "title": "`after(asyncId)`",
+      "sha256": "e47617efcee8c03ace504193820b2e2e291f35141bc30de7e4f52bb31fb2d7f1",
+      "normativeRequirements": "#### `after(asyncId)`\n\n* `asyncId` {number}\n\nCalled immediately after the callback specified in `before` is completed.\n\nIf an uncaught exception occurs during execution of the callback, then `after`\nwill run _after_ the `'uncaughtException'` event is emitted or a `domain`'s\nhandler runs.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 616,
+      "endLine": 630,
+      "title": "`destroy(asyncId)`",
+      "sha256": "9c8d7ce69de7d49b42e51d4c0ea5dc47fda3f5b930a8b415b48d5575a3bb499d",
+      "normativeRequirements": "#### `destroy(asyncId)`\n\n* `asyncId` {number}\n\nCalled after the resource corresponding to `asyncId` is destroyed. It is also\ncalled asynchronously from the embedder API `emitDestroy()`.\n\nSome resources depend on garbage collection for cleanup, so if a reference is\nmade to the `resource` object passed to `init` it is possible that `destroy`\nwill never be called, causing a memory leak in the application. If the resource\ndoes not depend on garbage collection, then this will not be an issue.\n\nUsing the destroy hook results in additional overhead because it enables\ntracking of `Promise` instances via the garbage collector.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 631,
+      "endLine": 661,
+      "title": "`promiseResolve(asyncId)`",
+      "sha256": "961c629b447a16f4fe35b37f6c67dd0dc429efb910dd01c75897db80756a19ed",
+      "normativeRequirements": "#### `promiseResolve(asyncId)`\n\n\n\n* `asyncId` {number}\n\nCalled when the `resolve` function passed to the `Promise` constructor is\ninvoked (either directly or through other means of resolving a promise).\n\n`resolve()` does not do any observable synchronous work.\n\nThe `Promise` is not necessarily fulfilled or rejected at this point if the\n`Promise` was resolved by assuming the state of another `Promise`.\n\n\n\ncalls the following callbacks:\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 662,
+      "endLine": 755,
+      "title": "`async_hooks.executionAsyncResource()`",
+      "sha256": "297e36f64bed49f72c2f0035b971620bb47a71eb3ccd68216f00ffd2b9f262cc",
+      "normativeRequirements": "### `async_hooks.executionAsyncResource()`\n\n\n\n* Returns: {Object} The resource representing the current execution.\n  Useful to store data within the resource.\n\nResource objects returned by `executionAsyncResource()` are most often internal\nNode.js handle objects with undocumented APIs. Using any functions or properties\non the object is likely to crash your application and should be avoided.\n\nUsing `executionAsyncResource()` in the top-level execution context will\nreturn an empty object as there is no handle or request object to use,\nbut having an object representing the top-level can be helpful.\n\n\n\n\n\nThis can be used to implement continuation local storage without the\nuse of a tracking `Map` to store the metadata:\n\n\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 756,
+      "endLine": 809,
+      "title": "`async_hooks.executionAsyncId()`",
+      "sha256": "15532f6a7a7b9700fcbb1db8cda028f88af3fc55e81017da89a2aa830ea54841",
+      "normativeRequirements": "### `async_hooks.executionAsyncId()`\n\n\n\n* Returns: {number} The `asyncId` of the current execution context. Useful to\n  track when something calls.\n\n\n\n\n\nThe ID returned from `executionAsyncId()` is related to execution timing, not\ncausality (which is covered by `triggerAsyncId()`):\n\n\n\nPromise contexts may not get precise `executionAsyncIds` by default.\nSee the section on [promise execution tracking][].\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 810,
+      "endLine": 832,
+      "title": "`async_hooks.triggerAsyncId()`",
+      "sha256": "51278360fc2969737594f3ec0ce92f44531a861f9812d685b5c0852467836306",
+      "normativeRequirements": "### `async_hooks.triggerAsyncId()`\n\n* Returns: {number} The ID of the resource responsible for calling the callback\n  that is currently being executed.\n\n\n\nPromise contexts may not get valid `triggerAsyncId`s by default. See\nthe section on [promise execution tracking][].\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 833,
+      "endLine": 846,
+      "title": "`async_hooks.asyncWrapProviders`",
+      "sha256": "62bf155829d0e6cd3feba0716d049e7ee4a785205320d0e67a428054f45786cf",
+      "normativeRequirements": "### `async_hooks.asyncWrapProviders`\n\n\n\n* Returns: A map of provider types to the corresponding numeric id.\n  This map contains all the event types that might be emitted by the `async_hooks.init()` event.\n\nThis feature suppresses the deprecated usage of `process.binding('async_wrap').Providers`.\nSee: [DEP0111][]\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 847,
+      "endLine": 915,
+      "title": "Promise execution tracking",
+      "sha256": "cf8114dfe15f0ae9245d11d40426cbf320ba91477fff65089b84334e9fc7d7b1",
+      "normativeRequirements": "## Promise execution tracking\n\nBy default, promise executions are not assigned `asyncId`s due to the relatively\nexpensive nature of the [promise introspection API][PromiseHooks] provided by\nV8. This means that programs using promises or `async`/`await` will not get\ncorrect execution and trigger ids for promise callback contexts by default.\n\n\n\n\n\nObserve that the `then()` callback claims to have executed in the context of the\nouter scope even though there was an asynchronous hop involved. Also,\nthe `triggerAsyncId` value is `0`, which means that we are missing context about\nthe resource that caused (triggered) the `then()` callback to be executed.\n\nInstalling async hooks via `async_hooks.createHook` enables promise execution\ntracking:\n\n\n\n\n\nIn this example, adding any actual hook function enabled the tracking of\npromises. There are two promises in the example above; the promise created by\n`Promise.resolve()` and the promise returned by the call to `then()`. In the\nexample above, the first promise got the `asyncId` `6` and the latter got\n`asyncId` `7`. During the execution of the `then()` callback, we are executing\nin the context of promise with `asyncId` `7`. This promise was triggered by\nasync resource `6`.\n\nAnother subtlety with promises is that `before` and `after` callbacks are run\nonly on chained promises. That means promises not created by `then()`/`catch()`\nwill not have the `before` and `after` callbacks fired on them. For more details\nsee the details of the V8 [PromiseHooks][] API.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 916,
+      "endLine": 947,
+      "title": "Disabling promise execution tracking",
+      "sha256": "4740785900b4fd3e51ee38d5c75215567786c58ab453714c0663610606ce7eae",
+      "normativeRequirements": "### Disabling promise execution tracking\n\nTracking promise execution can cause a significant performance overhead.\nTo opt out of promise tracking, set `trackPromises` to `false`:\n\n\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 948,
+      "endLine": 953,
+      "title": "JavaScript embedder API",
+      "sha256": "274d7b906864004b34a8327948a255da9aee61eb0b9fb178abfc250c3ebed330",
+      "normativeRequirements": "## JavaScript embedder API\n\nLibrary developers that handle their own asynchronous resources performing tasks\nlike I/O, connection pooling, or managing callback queues may use the\n`AsyncResource` JavaScript API so that all the appropriate callbacks are called.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 954,
+      "endLine": 957,
+      "title": "Class: `AsyncResource`",
+      "sha256": "6fda3305926e08229abcc59a6e1bd6a31d43a2ebc2f109cd2cc37bab4f996368",
+      "normativeRequirements": "### Class: `AsyncResource`\n\nThe documentation for this class has moved [`AsyncResource`][].\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_hooks.md",
+      "line": 958,
+      "endLine": 978,
+      "title": "Class: `AsyncLocalStorage`",
+      "sha256": "62bd4acb6b5912453abe45b8072ba0b212d287973a15c7e2029d8e20ec443724",
+      "normativeRequirements": "## Class: `AsyncLocalStorage`\n\nThe documentation for this class has moved [`AsyncLocalStorage`][].\n\n[DEP0111]: deprecations.md#dep0111-processbinding\n[Diagnostics Channel]: diagnostics_channel.md\n[Hook Callbacks]: #hook-callbacks\n[PromiseHooks]: https://docs.google.com/document/d/1rda3yKGHimKIhg5YeoAmCOtyURgsbTH_qaYR79FELlk/edit\n[`AsyncHook`]: #class-asynchook\n[`AsyncLocalStorage`]: async_context.md#class-asynclocalstorage\n[`AsyncResource`]: async_context.md#class-asyncresource\n[`Worker`]: worker_threads.md#class-worker\n[`after` callback]: #afterasyncid\n[`before` callback]: #beforeasyncid\n[`createHook`]: #async_hookscreatehookoptions\n[`destroy` callback]: #destroyasyncid\n[`executionAsyncResource`]: #async_hooksexecutionasyncresource\n[`init` callback]: #initasyncid-type-triggerasyncid-resource\n[`process.getActiveResourcesInfo()`]: process.md#processgetactiveresourcesinfo\n[`promiseResolve` callback]: #promiseresolveasyncid\n[promise execution tracking]: #promise-execution-tracking\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 1,
+      "endLine": 8,
+      "title": "Asynchronous context tracking",
+      "sha256": "60a59f0cb183c70877769036dd8f92f342c19dc41681451990746fe24fdd1616",
+      "normativeRequirements": "# Asynchronous context tracking\n\n\n\n> Stability: 2 - Stable\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 9,
+      "endLine": 27,
+      "title": "Introduction",
+      "sha256": "49b5a0823a7d5368235c2385f2e857a03d59867cd784a00c8de34e25e8ecd54d",
+      "normativeRequirements": "## Introduction\n\nThese classes are used to associate state and propagate it throughout\ncallbacks and promise chains.\nThey allow storing data throughout the lifetime of a web request\nor any other asynchronous duration. It is similar to thread-local storage\nin other languages.\n\nThe `AsyncLocalStorage` and `AsyncResource` classes are part of the\n`node:async_hooks` module:\n\n\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 28,
+      "endLine": 118,
+      "title": "Class: `AsyncLocalStorage`",
+      "sha256": "2034b60f95922859d779bc58e7cc9a6606dc86fa844e12730816f3f2371e4157",
+      "normativeRequirements": "## Class: `AsyncLocalStorage`\n\n\n\nThis class creates stores that stay coherent through asynchronous operations.\n\nWhile you can create your own implementation on top of the `node:async_hooks`\nmodule, `AsyncLocalStorage` should be preferred as it is a performant and memory\nsafe implementation that involves significant optimizations that are non-obvious\nto implement.\n\nThe following example uses `AsyncLocalStorage` to build a simple logger\nthat assigns IDs to incoming HTTP requests and includes them in messages\nlogged within each request.\n\n\n\n\n\nEach instance of `AsyncLocalStorage` maintains an independent storage context.\nMultiple instances can safely exist simultaneously without risk of interfering\nwith each other's data.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 119,
+      "endLine": 147,
+      "title": "`new AsyncLocalStorage([options])`",
+      "sha256": "8c679d381e6837d7cd8a04478cbf6dffaba6956cccf4778f2fb55895a815c16c",
+      "normativeRequirements": "### `new AsyncLocalStorage([options])`\n\n\n\n* `options` {Object}\n  * `defaultValue` {any} The default value to be used when no store is provided.\n  * `name` {string} A name for the `AsyncLocalStorage` value.\n\nCreates a new instance of `AsyncLocalStorage`. Store is only provided within a\n`run()` call or after an `enterWith()` call.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 148,
+      "endLine": 167,
+      "title": "Static method: `AsyncLocalStorage.bind(fn)`",
+      "sha256": "d6f6c24940e84d267f1f15b501fa3be4824ae6184aff5bbeb4bf6a127d804963",
+      "normativeRequirements": "### Static method: `AsyncLocalStorage.bind(fn)`\n\n\n\n* `fn` {Function} The function to bind to the current execution context.\n* Returns: {Function} A new function that calls `fn` within the captured\n  execution context.\n\nBinds the given function to the current execution context.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 168,
+      "endLine": 209,
+      "title": "Static method: `AsyncLocalStorage.snapshot()`",
+      "sha256": "956cc6b730db46a4562adba427e2d6681bb425ca816ea3f1a7c9aa059d4759e6",
+      "normativeRequirements": "### Static method: `AsyncLocalStorage.snapshot()`\n\n\n\n* Returns: {Function} A new function with the signature\n  `(fn: (...args) : R, ...args) : R`.\n\nCaptures the current execution context and returns a function that accepts a\nfunction as an argument. Whenever the returned function is called, it\ncalls the function passed to it within the captured context.\n\n\n\nAsyncLocalStorage.snapshot() can replace the use of AsyncResource for simple\nasync context tracking purposes, for example:\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 210,
+      "endLine": 234,
+      "title": "`asyncLocalStorage.disable()`",
+      "sha256": "d825bd8566082376c3a0e36924e409a5c8ed1f82825c862f822d1527154212e6",
+      "normativeRequirements": "### `asyncLocalStorage.disable()`\n\n\n\n> Stability: 1 - Experimental\n\nDisables the instance of `AsyncLocalStorage`. All subsequent calls\nto `asyncLocalStorage.getStore()` will return `undefined` until\n`asyncLocalStorage.run()` or `asyncLocalStorage.enterWith()` is called again.\n\nWhen calling `asyncLocalStorage.disable()`, all current contexts linked to the\ninstance will be exited.\n\nCalling `asyncLocalStorage.disable()` is required before the\n`asyncLocalStorage` can be garbage collected. This does not apply to stores\nprovided by the `asyncLocalStorage`, as those objects are garbage collected\nalong with the corresponding async resources.\n\nUse this method when the `asyncLocalStorage` is not in use anymore\nin the current process.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 235,
+      "endLine": 249,
+      "title": "`asyncLocalStorage.getStore()`",
+      "sha256": "6974518a7444de9a4e0669838621f8784aa0ed0fc1dfb21b49739cdd95ccb8db",
+      "normativeRequirements": "### `asyncLocalStorage.getStore()`\n\n\n\n* Returns: {any}\n\nReturns the current store.\nIf called outside of an asynchronous context initialized by\ncalling `asyncLocalStorage.run()` or `asyncLocalStorage.enterWith()`, it\nreturns `undefined`.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 250,
+      "endLine": 299,
+      "title": "`asyncLocalStorage.enterWith(store)`",
+      "sha256": "06e6fec2f6a55ce6395edd592be2fd3fa555bfc167288b43b0d48f9653060eff",
+      "normativeRequirements": "### `asyncLocalStorage.enterWith(store)`\n\n\n\n> Stability: 1 - Experimental\n\n* `store` {any}\n\nTransitions into the context for the remainder of the current\nsynchronous execution and then persists the store through any following\nasynchronous calls.\n\nExample:\n\n\n\nThis transition will continue for the _entire_ synchronous execution.\nThis means that if, for example, the context is entered within an event\nhandler subsequent event handlers will also run within that context unless\nspecifically bound to another context with an `AsyncResource`. That is why\n`run()` should be preferred over `enterWith()` unless there are strong reasons\nto use the latter method.\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 300,
+      "endLine": 309,
+      "title": "`asyncLocalStorage.name`",
+      "sha256": "f42d1e065ae9e3e84afc4ed7263e96ba1b028ac2ab7991e912a7e71849ee8bf9",
+      "normativeRequirements": "### `asyncLocalStorage.name`\n\n\n\n* Type: {string}\n\nThe name of the `AsyncLocalStorage` instance if provided.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 310,
+      "endLine": 349,
+      "title": "`asyncLocalStorage.run(store, callback[, ...args])`",
+      "sha256": "8022e3f9ca62e0bffe90c8d0757ab168f5e5c63c962dad5edcadbec5143ddfc7",
+      "normativeRequirements": "### `asyncLocalStorage.run(store, callback[, ...args])`\n\n\n\n* `store` {any}\n* `callback` {Function}\n* `...args` {any}\n\nRuns a function synchronously within a context and returns its\nreturn value. The store is not accessible outside of the callback function.\nThe store is accessible to any asynchronous operations created within the\ncallback.\n\nThe optional `args` are passed to the callback function.\n\nIf the callback function throws an error, the error is thrown by `run()` too.\nThe stacktrace is not impacted by this call and the context is exited.\n\nExample:\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 350,
+      "endLine": 388,
+      "title": "`asyncLocalStorage.exit(callback[, ...args])`",
+      "sha256": "f28b1a66483fc95e0e21b8f3487d0ae1e7d698725aa28bd28d30b3cfdd1d8aa2",
+      "normativeRequirements": "### `asyncLocalStorage.exit(callback[, ...args])`\n\n\n\n> Stability: 1 - Experimental\n\n* `callback` {Function}\n* `...args` {any}\n\nRuns a function synchronously outside of a context and returns its\nreturn value. The store is not accessible within the callback function or\nthe asynchronous operations created within the callback. Any `getStore()`\ncall done within the callback function will always return `undefined`.\n\nThe optional `args` are passed to the callback function.\n\nIf the callback function throws an error, the error is thrown by `exit()` too.\nThe stacktrace is not impacted by this call and the context is re-entered.\n\nExample:\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 389,
+      "endLine": 492,
+      "title": "`asyncLocalStorage.withScope(store)`",
+      "sha256": "55335156cf002e0853226cf1bd31a92164c167e6f2cc34c29f8da71f8ab81242",
+      "normativeRequirements": "### `asyncLocalStorage.withScope(store)`\n\n\n\n> Stability: 1 - Experimental\n\n* `store` {any}\n* Returns: {RunScope}\n\nCreates a disposable scope that enters the given store and automatically\nrestores the previous store value when the scope is disposed. This method is\ndesigned to work with JavaScript's explicit resource management (`using` syntax).\n\nExample:\n\n\n\n\n\nThe `withScope()` method is particularly useful for managing context in\nsynchronous code where you want to ensure the previous store value is restored\nwhen exiting a block, even if an error is thrown.\n\n\n\n\n\n**Important:** When using `withScope()` in async functions before the first\n`await`, be aware that the scope change will affect the caller's context. The\nsynchronous portion of an async function (before the first `await`) runs\nimmediately when called, and when it reaches the first `await`, it returns the\npromise to the caller. At that point, the scope change becomes visible in the\ncaller's context and will persist in subsequent synchronous code until something\nelse changes the scope value. For async operations, prefer using `run()` which\nproperly isolates context across async boundaries.\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 493,
+      "endLine": 510,
+      "title": "Usage with `async/await`",
+      "sha256": "03e60d15174213f1e2aa2ab0bcc5067cce4522abc0caff45f505d5ac5e043fbc",
+      "normativeRequirements": "### Usage with `async/await`\n\nIf, within an async function, only one `await` call is to run within a context,\nthe following pattern should be used:\n\n\n\nIn this example, the store is only available in the callback function and the\nfunctions called by `foo`. Outside of `run`, calling `getStore` will return\n`undefined`.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 511,
+      "endLine": 526,
+      "title": "Troubleshooting: Context loss",
+      "sha256": "6b82a683101baf2dbb4e36aca2e95395f56c652b9a7f895bae24306379cbd3ea",
+      "normativeRequirements": "### Troubleshooting: Context loss\n\nIn most cases, `AsyncLocalStorage` works without issues. In rare situations, the\ncurrent store is lost in one of the asynchronous operations.\n\nIf your code is callback-based, it is enough to promisify it with\n[`util.promisify()`][] so it starts working with native promises.\n\nIf you need to use a callback-based API or your code assumes\na custom thenable implementation, use the [`AsyncResource`][] class\nto associate the asynchronous operation with the correct execution context.\nFind the function call responsible for the context loss by logging the content\nof `asyncLocalStorage.getStore()` after the calls you suspect are responsible\nfor the loss. When the code logs `undefined`, the last callback called is\nprobably responsible for the context loss.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 527,
+      "endLine": 542,
+      "title": "Class: `RunScope`",
+      "sha256": "f2556cbbfce1ca71019588277114c92910c99c3d3e50bbf34a3f5c682ca624c1",
+      "normativeRequirements": "## Class: `RunScope`\n\n\n\n> Stability: 1 - Experimental\n\nA disposable scope returned by [`asyncLocalStorage.withScope()`][] that\nautomatically restores the previous store value when disposed. This class\nimplements the [Explicit Resource Management][] protocol and is designed to work\nwith JavaScript's `using` syntax.\n\nThe scope automatically restores the previous store value when the `using` block\nexits, whether through normal completion or by throwing an error.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 543,
+      "endLine": 584,
+      "title": "`scope.dispose()`",
+      "sha256": "a2cc5473df47309a27529e0fec21553c41fef27bec03a67bbe1abd847363aabe",
+      "normativeRequirements": "### `scope.dispose()`\n\n\n\nExplicitly ends the scope and restores the previous store value. This method\nis idempotent: calling it multiple times has the same effect as calling it once.\n\nThe `[Symbol.dispose]()` method defers to `dispose()`.\n\nIf `withScope()` is called without the `using` keyword, `dispose()` must be\ncalled manually to restore the previous store value. Forgetting to call\n`dispose()` will cause the store value to persist for the remainder of the\ncurrent execution context:\n\n\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 585,
+      "endLine": 657,
+      "title": "Class: `AsyncResource`",
+      "sha256": "4a58842896a5d339357d804356e989ed9629b9c9fc27d3fb31a447362c3783f8",
+      "normativeRequirements": "## Class: `AsyncResource`\n\n\n\nThe class `AsyncResource` is designed to be extended by the embedder's async\nresources. Using this, users can easily trigger the lifetime events of their\nown resources.\n\nThe `init` hook will trigger when an `AsyncResource` is instantiated.\n\nThe following is an overview of the `AsyncResource` API.\n\n\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 658,
+      "endLine": 693,
+      "title": "`new AsyncResource(type[, options])`",
+      "sha256": "6fdecbdddb1b310fb8132e42abd07d473608c88d4c94d2b4afc4481dffb5d749",
+      "normativeRequirements": "### `new AsyncResource(type[, options])`\n\n* `type` {string} The type of async event.\n* `options` {Object}\n  * `triggerAsyncId` {number} The ID of the execution context that created this\n    async event. **Default:** `executionAsyncId()`.\n  * `requireManualDestroy` {boolean} If set to `true`, disables `emitDestroy`\n    when the object is garbage collected. This usually does not need to be set\n    (even if `emitDestroy` is called manually), unless the resource's `asyncId`\n    is retrieved and the sensitive API's `emitDestroy` is called with it.\n    When set to `false`, the `emitDestroy` call on garbage collection\n    will only take place if there is at least one active `destroy` hook.\n    **Default:** `false`.\n\nExample usage:\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 694,
+      "endLine": 723,
+      "title": "Static method: `AsyncResource.bind(fn[, type[, thisArg]])`",
+      "sha256": "739507ec114b9dc7e05e1246959018e91ae29bf6962a29dbab075acb646ba9fe",
+      "normativeRequirements": "### Static method: `AsyncResource.bind(fn[, type[, thisArg]])`\n\n\n\n* `fn` {Function} The function to bind to the current execution context.\n* `type` {string} An optional name to associate with the underlying\n  `AsyncResource`.\n* `thisArg` {any}\n\nBinds the given function to the current execution context.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 724,
+      "endLine": 751,
+      "title": "`asyncResource.bind(fn[, thisArg])`",
+      "sha256": "5879d494b444be47f3a9b74c6ba0dfc119ed74fbc53455df55f737dc672e6622",
+      "normativeRequirements": "### `asyncResource.bind(fn[, thisArg])`\n\n\n\n* `fn` {Function} The function to bind to the current `AsyncResource`.\n* `thisArg` {any}\n\nBinds the given function to execute to this `AsyncResource`'s scope.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 752,
+      "endLine": 767,
+      "title": "`asyncResource.runInAsyncScope(fn[, thisArg, ...args])`",
+      "sha256": "0add8f2fc7fada45c2ff539b18b116c4e8cf199b8872b3768436ab9cd4fa12a2",
+      "normativeRequirements": "### `asyncResource.runInAsyncScope(fn[, thisArg, ...args])`\n\n\n\n* `fn` {Function} The function to call in the execution context of this async\n  resource.\n* `thisArg` {any} The receiver to be used for the function call.\n* `...args` {any} Optional arguments to pass to the function.\n\nCall the provided function with the provided arguments in the execution context\nof the async resource. This will establish the context, trigger the AsyncHooks\nbefore callbacks, call the function, trigger the AsyncHooks after callbacks, and\nthen restore the original execution context.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 768,
+      "endLine": 776,
+      "title": "`asyncResource.emitDestroy()`",
+      "sha256": "a89ac2dce980eb3aa7f064aa15310810c7107eec169da08afe68efb57aa5a6a8",
+      "normativeRequirements": "### `asyncResource.emitDestroy()`\n\n* Returns: {AsyncResource} A reference to `asyncResource`.\n\nCall all `destroy` hooks. This should only ever be called once. An error will\nbe thrown if it is called more than once. This **must** be manually called. If\nthe resource is left to be collected by the GC then the `destroy` hooks will\nnever be called.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 777,
+      "endLine": 780,
+      "title": "`asyncResource.asyncId()`",
+      "sha256": "6fb47038e3d108b53514b93f20cb7c888899a7432a45a848710a217692fb0d54",
+      "normativeRequirements": "### `asyncResource.asyncId()`\n\n* Returns: {number} The unique `asyncId` assigned to the resource.\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 781,
+      "endLine": 787,
+      "title": "`asyncResource.triggerAsyncId()`",
+      "sha256": "e7ad62dcb9df46ee7d490cde438ee0feabf042327cc3c865e5955071d36919c5",
+      "normativeRequirements": "### `asyncResource.triggerAsyncId()`\n\n* Returns: {number} The same `triggerAsyncId` that is passed to the\n  `AsyncResource` constructor.\n\n<a id=\"async-resource-worker-pool\"></a>\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 788,
+      "endLine": 1029,
+      "title": "Using `AsyncResource` for a `Worker` thread pool",
+      "sha256": "fb8076f584a96e96c00b289d3da4f2978f9bad373a7f926d04535f24421e90c3",
+      "normativeRequirements": "### Using `AsyncResource` for a `Worker` thread pool\n\nThe following example shows how to use the `AsyncResource` class to properly\nprovide async tracking for a [`Worker`][] pool. Other resource pools, such as\ndatabase connection pools, can follow a similar model.\n\nAssuming that the task is adding two numbers, using a file named\n`task_processor.js` with the following content:\n\n\n\n\n\na Worker pool around it could use the following structure:\n\n\n\n\n\nWithout the explicit tracking added by the `WorkerPoolTaskInfo` objects,\nit would appear that the callbacks are associated with the individual `Worker`\nobjects. However, the creation of the `Worker`s is not associated with the\ncreation of the tasks and does not provide information about when tasks\nwere scheduled.\n\nThis pool could be used as follows:\n\n\n\n\n\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/async_context.md",
+      "line": 1030,
+      "endLine": 1076,
+      "title": "Integrating `AsyncResource` with `EventEmitter`",
+      "sha256": "b697a8a8855e0d56ba34e6a122b3222626ddbc04908a0cabf17ca3f17589acc0",
+      "normativeRequirements": "### Integrating `AsyncResource` with `EventEmitter`\n\nEvent listeners triggered by an [`EventEmitter`][] may be run in a different\nexecution context than the one that was active when `eventEmitter.on()` was\ncalled.\n\nThe following example shows how to use the `AsyncResource` class to properly\nassociate an event listener with the correct execution context. The same\napproach can be applied to a [`Stream`][] or a similar event-driven class.\n\n\n\n\n\n[Explicit Resource Management]: https://github.com/tc39/proposal-explicit-resource-management\n[`AsyncResource`]: #class-asyncresource\n[`EventEmitter`]: events.md#class-eventemitter\n[`Stream`]: stream.md#stream\n[`Worker`]: worker_threads.md#class-worker\n[`asyncLocalStorage.withScope()`]: #asynclocalstoragewithscopestore\n[`util.promisify()`]: util.md#utilpromisifyoriginal\n",
+      "review": "Source-reconciled public requirement/owner/gap; target questions explicit, no runtime conformance"
+    }
+  ],
+  "memberRequirements": {
+    "createHook": "Ordinary target factory function and prototype metadata, constructor reads inherited callbacks, validation order/types and trackPromises combination; returned disabled AsyncHook",
+    "AsyncHook.prototype.enable": "Returned class method idempotent registration/receiver/return, callback counts/order and deferred mutation across nested dispatch, exact native Promise activation",
+    "AsyncHook.prototype.disable": "Idempotent deregistration/return, deferred registry/count/native tracking changes and eventual Promise hook shutdown",
+    "executionAsyncId": "Actual current thread/JS/native resource scope, default/activated Promise modes and startup boundaries; native/public function metadata",
+    "triggerAsyncId": "Actual causal trigger distinct from execution ID, default override scopes, Promise-parent and native creation metadata",
+    "executionAsyncResource": "Actual public-resource mapping/current object, stable ordinary top-level resource and thread/realm ownership, not synthetic root for every callback",
+    "asyncWrapProviders": "Frozen null-prototype full target provider map with source-defined conditional crypto additions; metadata not per-resource implementation proof",
+    "AsyncLocalStorage": "Lazy cached class, options/defaultValue/name validation/coercion/brand/descriptor and separate instances; actual target frame or fallback option selection",
+    "AsyncLocalStorage.bind": "Static bound function uses real captured AsyncResource/context and callback receiver/result/error",
+    "AsyncLocalStorage.snapshot": "Captures execution context; returns invoking fn/args in that context through real resource",
+    "asyncLocalStorage.disable": "Actual selected algorithm: current frame delete or global legacy storage deregistration; default/captured-frame prose/source question retained",
+    "asyncLocalStorage.getStore": "Method-specific receiver behavior; missing entry returns defaultValue, explicit undefined remains undefined, per-storage frame/resource lookup",
+    "asyncLocalStorage.enterWith": "Synchronous remainder/current frame or resource store, propagation to actual later async resources",
+    "asyncLocalStorage.name": "Private name getter/default empty, string-coerced constructor value and prototype descriptor",
+    "asyncLocalStorage.run": "ObjectIs equal-store fast path, null receiver callback args/return/throw; actual own-store context restored in finally",
+    "asyncLocalStorage.exit": "Explicit undefined active frame or temporary legacy disable; callback/throw restoration and propagation",
+    "asyncLocalStorage.withScope": "Actual returned RunScope enters synchronously and retains previous value, no manufactured independent async context",
+    "RunScope.dispose": "Idempotent restore through storage.enterWith, captured prior store and method-specific receiver; no invented LIFO guard",
+    "RunScope.Symbol.dispose": "Class prototype symbol delegates dispose, actual explicit-resource support; returned class not namespace export",
+    "AsyncResource": "Exact pinned class, string/trigger options or number overload, safe IDs/conditional empty type, actual frame/ID/init and GC/manual destroy registration",
+    "AsyncResource.bind": "Static fn/type/thisArg overload, derived/fallback type and actual resource bound callback metadata",
+    "asyncResource.bind": "Fixed or dynamic receiver, original function return/throw and args, own bound length descriptor",
+    "asyncResource.runInAsyncScope": "Real resource/ID and before, captured frame exchange, ReflectApply fn and finally restoration/after; error and nested owner behavior",
+    "asyncResource.emitDestroy": "Return this, mark GC metadata/enqueue actual destroy with target filter; repeated/manual/GC prose conflicts and receiver controls retained",
+    "asyncResource.asyncId": "Return actual resource async symbol field, no invented unconditional private class brand",
+    "asyncResource.triggerAsyncId": "Return actual creation trigger symbol field, resource causality",
+    "[hook lifecycle and fatal exit]": "Real callback init/before/after/destroy/promiseResolve events and exact warning/exit/abort policy; native quitting currently bypasses finalizer/exit callbacks",
+    "[native context and Promise activation]": "Actual JSContext frames/reaction registration snapshots, parent/resource IDs, native hook mode and rooted lifetime/cross-realm cleanup; unconditional candidate tracking differs",
+    "[native resource integration]": "All actual native resource owners/provider types/default triggers/public resources/cancel/destroy/thread scope; existing codec/fs/timer/tick integration does not cover all I/O",
+    "[metadata and receiver differences]": "Target ordinary functions/own keys/returned callback symbols versus arrows/WeakMap, invalid or borrowed receiver and failure-state controls",
+    "[target storage and destruction questions]": "ALS default/disable/captured frames and alternate branch, emitter/resource repeated/GC destruction and empty-hook activation prose/source questions",
+    "asyncWrapProviders.NONE": "Exact target provider enum id 0; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.DIRHANDLE": "Exact target provider enum id 1; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.DNSCHANNEL": "Exact target provider enum id 2; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.ELDHISTOGRAM": "Exact target provider enum id 3; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.FILEHANDLE": "Exact target provider enum id 4; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.FILEHANDLECLOSEREQ": "Exact target provider enum id 5; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.BLOBREADER": "Exact target provider enum id 6; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.FSEVENTWRAP": "Exact target provider enum id 7; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.FSREQCALLBACK": "Exact target provider enum id 8; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.FSREQPROMISE": "Exact target provider enum id 9; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.GETADDRINFOREQWRAP": "Exact target provider enum id 10; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.GETNAMEINFOREQWRAP": "Exact target provider enum id 11; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.HEAPSNAPSHOT": "Exact target provider enum id 12; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.HTTP2SESSION": "Exact target provider enum id 13; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.HTTP2STREAM": "Exact target provider enum id 14; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.HTTP2PING": "Exact target provider enum id 15; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.HTTP2SETTINGS": "Exact target provider enum id 16; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.HTTPINCOMINGMESSAGE": "Exact target provider enum id 17; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.HTTPCLIENTREQUEST": "Exact target provider enum id 18; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.LOCKS": "Exact target provider enum id 19; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.DTLS_ENDPOINT": "Exact target provider enum id 20; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.DTLS_SESSION": "Exact target provider enum id 21; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.JSSTREAM": "Exact target provider enum id 22; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.MESSAGEPORT": "Exact target provider enum id 23; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.PIPECONNECTWRAP": "Exact target provider enum id 24; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.PIPESERVERWRAP": "Exact target provider enum id 25; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.PIPEWRAP": "Exact target provider enum id 26; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.PROCESSWRAP": "Exact target provider enum id 27; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.PROMISE": "Exact target provider enum id 28; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.QUERYWRAP": "Exact target provider enum id 29; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.QUIC_ENDPOINT": "Exact target provider enum id 30; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.QUIC_LOGSTREAM": "Exact target provider enum id 31; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.QUIC_SESSION": "Exact target provider enum id 32; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.QUIC_STREAM": "Exact target provider enum id 33; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.QUIC_UDP": "Exact target provider enum id 34; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.SHUTDOWNWRAP": "Exact target provider enum id 35; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.SIGNALWRAP": "Exact target provider enum id 36; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.STATWATCHER": "Exact target provider enum id 37; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.STREAMPIPE": "Exact target provider enum id 38; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.TCPCONNECTWRAP": "Exact target provider enum id 39; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.TCPSERVERWRAP": "Exact target provider enum id 40; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.TCPWRAP": "Exact target provider enum id 41; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.TTYWRAP": "Exact target provider enum id 42; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.UDPSENDWRAP": "Exact target provider enum id 43; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.UDPWRAP": "Exact target provider enum id 44; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.SIGINTWATCHDOG": "Exact target provider enum id 45; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.WORKER": "Exact target provider enum id 46; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.WORKERCPUPROFILE": "Exact target provider enum id 47; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.WORKERCPUUSAGE": "Exact target provider enum id 48; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.WORKERHEAPPROFILE": "Exact target provider enum id 49; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.WORKERHEAPSNAPSHOT": "Exact target provider enum id 50; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.WORKERHEAPSTATISTICS": "Exact target provider enum id 51; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.WRITEWRAP": "Exact target provider enum id 52; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.ZLIB": "Exact target provider enum id 53; Noncrypto public provider metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.CHECKPRIMEREQUEST": "Exact target provider enum id 54; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.PBKDF2REQUEST": "Exact target provider enum id 55; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.KEYPAIRGENREQUEST": "Exact target provider enum id 56; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.KEYGENREQUEST": "Exact target provider enum id 57; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.KEYEXPORTREQUEST": "Exact target provider enum id 58; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.ARGON2REQUEST": "Exact target provider enum id 59; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.CIPHERREQUEST": "Exact target provider enum id 60; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.DERIVEBITSREQUEST": "Exact target provider enum id 61; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.HASHREQUEST": "Exact target provider enum id 62; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.RANDOMBYTESREQUEST": "Exact target provider enum id 63; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.RANDOMPRIMEREQUEST": "Exact target provider enum id 64; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.SCRYPTREQUEST": "Exact target provider enum id 65; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.SIGNREQUEST": "Exact target provider enum id 66; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.TLSWRAP": "Exact target provider enum id 67; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing",
+    "asyncWrapProviders.VERIFYREQUEST": "Exact target provider enum id 68; HAVE_OPENSSL-gated crypto metadata; actual native owner is separate and may be missing"
+  },
+  "providers": [
+    {
+      "name": "NONE",
+      "id": 0,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "DIRHANDLE",
+      "id": 1,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "DNSCHANNEL",
+      "id": 2,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "ELDHISTOGRAM",
+      "id": 3,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "FILEHANDLE",
+      "id": 4,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": true,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "FILEHANDLECLOSEREQ",
+      "id": 5,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": true,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "BLOBREADER",
+      "id": 6,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "FSEVENTWRAP",
+      "id": 7,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "FSREQCALLBACK",
+      "id": 8,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": true,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "FSREQPROMISE",
+      "id": 9,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": true,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "GETADDRINFOREQWRAP",
+      "id": 10,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "GETNAMEINFOREQWRAP",
+      "id": 11,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "HEAPSNAPSHOT",
+      "id": 12,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "HTTP2SESSION",
+      "id": 13,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "HTTP2STREAM",
+      "id": 14,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "HTTP2PING",
+      "id": 15,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "HTTP2SETTINGS",
+      "id": 16,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "HTTPINCOMINGMESSAGE",
+      "id": 17,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "HTTPCLIENTREQUEST",
+      "id": 18,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "LOCKS",
+      "id": 19,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "DTLS_ENDPOINT",
+      "id": 20,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "DTLS_SESSION",
+      "id": 21,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "JSSTREAM",
+      "id": 22,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "MESSAGEPORT",
+      "id": 23,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "PIPECONNECTWRAP",
+      "id": 24,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "PIPESERVERWRAP",
+      "id": 25,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "PIPEWRAP",
+      "id": 26,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "PROCESSWRAP",
+      "id": 27,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "PROMISE",
+      "id": 28,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": true,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "QUERYWRAP",
+      "id": 29,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "QUIC_ENDPOINT",
+      "id": 30,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "QUIC_LOGSTREAM",
+      "id": 31,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "QUIC_SESSION",
+      "id": 32,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "QUIC_STREAM",
+      "id": 33,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "QUIC_UDP",
+      "id": 34,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "SHUTDOWNWRAP",
+      "id": 35,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "SIGNALWRAP",
+      "id": 36,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "STATWATCHER",
+      "id": 37,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "STREAMPIPE",
+      "id": 38,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "TCPCONNECTWRAP",
+      "id": 39,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "TCPSERVERWRAP",
+      "id": 40,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "TCPWRAP",
+      "id": 41,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "TTYWRAP",
+      "id": 42,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "UDPSENDWRAP",
+      "id": 43,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "UDPWRAP",
+      "id": 44,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "SIGINTWATCHDOG",
+      "id": 45,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "WORKER",
+      "id": 46,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "WORKERCPUPROFILE",
+      "id": 47,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "WORKERCPUUSAGE",
+      "id": 48,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "WORKERHEAPPROFILE",
+      "id": 49,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "WORKERHEAPSNAPSHOT",
+      "id": 50,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "WORKERHEAPSTATISTICS",
+      "id": 51,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "WRITEWRAP",
+      "id": 52,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "ZLIB",
+      "id": 53,
+      "condition": "noncrypto macro unconditional",
+      "candidateMetadataPresent": true,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "CHECKPRIMEREQUEST",
+      "id": 54,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "PBKDF2REQUEST",
+      "id": 55,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "KEYPAIRGENREQUEST",
+      "id": 56,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "KEYGENREQUEST",
+      "id": 57,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "KEYEXPORTREQUEST",
+      "id": 58,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "ARGON2REQUEST",
+      "id": 59,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "CIPHERREQUEST",
+      "id": 60,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "DERIVEBITSREQUEST",
+      "id": 61,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "HASHREQUEST",
+      "id": 62,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "RANDOMBYTESREQUEST",
+      "id": 63,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "RANDOMPRIMEREQUEST",
+      "id": 64,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "SCRYPTREQUEST",
+      "id": 65,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "SIGNREQUEST",
+      "id": 66,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "TLSWRAP",
+      "id": 67,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    },
+    {
+      "name": "VERIFYREQUEST",
+      "id": 68,
+      "condition": "HAVE_OPENSSL",
+      "candidateMetadataPresent": false,
+      "resourceImplementation": "Separate owning-module audit; metadata does not establish implemented resource"
+    }
+  ],
+  "sourceComparisons": {
+    "upstream/async-local-storage.js": {
+      "exactPinnedFile": true,
+      "presentInGeneratedBundle": true,
+      "sha256": "69bc40fdca2cddf39b8fd8cb632288f85de8a39f04affd249598f13a3efebaf3"
+    },
+    "upstream/async-run-scope.js": {
+      "exactPinnedFile": true,
+      "presentInGeneratedBundle": true,
+      "sha256": "b90752745991b6372b12e64e01037bc0a03fde4daeb23e21b146fe4839a7ba8a"
+    },
+    "upstream/async-context-frame.js": {
+      "exactPinnedFile": true,
+      "presentInGeneratedBundle": true,
+      "sha256": "d8f8b52582fed7e01207e6a541b057a60ef05d78128b1f5c540cc4bb1bb4a667"
+    },
+    "upstream/async-resource.js": {
+      "exactPinnedExcerpt": true,
+      "presentInGeneratedBundle": true,
+      "sha256": "1ceb2f6daebfd182371e0471c452f62647788c356b7a5c3f88906acd57295015"
+    }
+  },
+  "sourceFiles": {
+    "lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
+    "lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
+    "doc/api/async_hooks.md": "0223b3ff07ed34f71d2b2a6c59a1c7f759145ed8f264b98a8f15edfaf2a8ba84",
+    "doc/api/async_context.md": "f1bf118e83d5fdbbf55be48b52b30bc26cea59a6f5638495f9f3f7e4351d1bf6",
+    "lib/internal/async_context_frame.js": "d8f8b52582fed7e01207e6a541b057a60ef05d78128b1f5c540cc4bb1bb4a667",
+    "lib/internal/async_local_storage/async_context_frame.js": "69bc40fdca2cddf39b8fd8cb632288f85de8a39f04affd249598f13a3efebaf3",
+    "lib/internal/async_local_storage/async_hooks.js": "1cb819e7580f2d7e8795149a91190db281a54ee92309836d410fd7510c112852",
+    "lib/internal/async_local_storage/run_scope.js": "b90752745991b6372b12e64e01037bc0a03fde4daeb23e21b146fe4839a7ba8a",
+    "src/async_context_frame.cc": "6de1a1e6c0eb2abf910628ffcb5722e5e33234d3725a2df27ce36349e091f9cc",
+    "src/async_wrap.h": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6",
+    "src/async_wrap.cc": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709",
+    "src/env.cc": "1b300917d1ec6e7c93d67638f28e88eda68157f08c22f884e6c4e464750cede8",
+    "src/node_options.h": "4241ccbfddad1f227888204f998427fa79e8c8332e9ea3f19b93b7a433ea3046"
+  },
+  "candidateSourceFiles": {
+    "third_party/node-core/upstream/async-native-providers.h": "d94f634cad45a98fe6604b38db30b343c208e2ae7b5cb0b0cd7129405c3c61d7",
+    "third_party/node-core/generate-codec-contexts.py": "a8f8712f964446fd3201b761a54db35ad65814a79dd633e85eca414381ec2f2e",
+    "third_party/node-core/async-platform-adapter.js": "e783a1276ec487b345b515abf4e2104552eff96fc79fc4167442f09ea56dc7e5",
+    "third_party/node-core/native-async.cpp": "f150ffc494ad831ef5343396ec32dc6e2c97ac414b6c6b92eb2959426974fb5b",
+    "packages/registry/spidermonkey/patches/0040-kandelo-node-async-context.patch": "67ab8eb03adcafdc2499701fb24aa01f94a1688740cc4feb7d933d57d356e231",
+    "packages/registry/spidermonkey/patches/0041-kandelo-node-async-lifecycle.patch": "54dda09f5b467d12d1a0851e63cb600456af653b850b01764e9075ac96d9b094"
+  },
+  "scope": "Scoped module source audit, not all cross-family native integration or runtime validation",
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

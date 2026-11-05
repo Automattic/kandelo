@@ -1,0 +1,553 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "memberRequirements": {
+    "isatty": "Integer 0..int32max filter before native actual terminal test; invalid inputs return false without coercion",
+    "ReadStream": "Callable/new signed-int32 fd constructor, native handle/error and inherited net.Socket constructor/prototype; options override defaults in source order",
+    "WriteStream": "Callable/new fd constructor, actual TTY/native handle, net.Socket inheritance, blocking writes and dimensions on successful query",
+    "ReadStream.isRaw": "Own false initially regardless of actual initial terminal mode; only change with successful setRawMode",
+    "ReadStream.rawMode": "Own false initially then false/raw/io according to native operation, separate from boolean isRaw",
+    "ReadStream.isTTY": "Own true; not just generic stream metadata",
+    "ReadStream.prototype.setRawMode": "Mode strings raw/io or nonstring truthiness, invalid string error, native errno emits error before state change, returns this",
+    "WriteStream.prototype.isTTY": "Inherited true property, ordinary assignment descriptor",
+    "WriteStream.columns": "Own successful native window width, update only actual resize success",
+    "WriteStream.rows": "Own successful native height, real changes",
+    "WriteStream.prototype.getWindowSize": "New [this.columns,this.rows] array of cached values",
+    "WriteStream.prototype.getColorDepth": "Full target env/guest-platform policy, FORCE_COLOR/disable warning and terminal/CI precedence",
+    "WriteStream.prototype.hasColors": "Count/env overload/default16/mininteger2 and 2**depth comparison",
+    "WriteStream.prototype._refreshSize": "Retained native descriptor; actual size/error query, emit resize only on changed dimensions",
+    "WriteStream.prototype.cursorTo": "Lazy public readline delegation with write return/callback validation and full coordinate semantics",
+    "WriteStream.prototype.moveCursor": "Lazy public readline and actual writable callback/backpressure",
+    "WriteStream.prototype.clearLine": "Lazy public readline callback/return/control direction semantics",
+    "WriteStream.prototype.clearScreenDown": "Lazy public readline callback/return, real control output",
+    "WriteStream.[resize event]": "No arguments, only actual dimensions changes, actual signal/native query lifetime",
+    "[stdio and descriptor ownership]": "Actual detected TTY stdio classes but process-specific paused/end/destroy rules; adopted/reopened fd/native raw restore/cleanup and native pending read ownership",
+    "[inherited Socket/stream/event contracts]": "Correct Socket/Duplex/event prototype and constructor chain, brands, I/O/ref/cancel/iterator/disposal/encoding/error behavior through actual TTY handle; downstream audits still incomplete",
+    "[lower layer questions]": "Real guest termios/PTY/ioctl exists; TCSADRAIN wait and failed PTY default dimensions need owner/lifetime adjudication, not support-by-syscall-name"
+  },
+  "sections": [
+    {
+      "document": "doc/api/tty.md",
+      "line": 1,
+      "endLine": 34,
+      "title": "TTY",
+      "sha256": "c72272ad3bc11891d805cc211783ca09cdcd0056e669b72be3bb95be66dd7292",
+      "normativeRequirements": "# TTY\n\n\n\n> Stability: 2 - Stable\n\n\n\nThe `node:tty` module provides the `tty.ReadStream` and `tty.WriteStream`\nclasses. In most cases, it will not be necessary or possible to use this module\ndirectly. However, it can be accessed using:\n\n\n\nWhen Node.js detects that it is being run with a text terminal (\"TTY\")\nattached, [`process.stdin`][] will, by default, be initialized as an instance of\n`tty.ReadStream` and both [`process.stdout`][] and [`process.stderr`][] will, by\ndefault, be instances of `tty.WriteStream`. The preferred method of determining\nwhether Node.js is being run within a TTY context is to check that the value of\nthe `process.stdout.isTTY` property is `true`:\n\n\n\nIn most cases, there should be little to no reason for an application to\nmanually create instances of the `tty.ReadStream` and `tty.WriteStream`\nclasses.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 35,
+      "endLine": 46,
+      "title": "Class: `tty.ReadStream`",
+      "sha256": "9a8a09c812636a716b35c62abe5c83c65e7f840b15f8a31f8ed8d4ec8b4c7a98",
+      "normativeRequirements": "## Class: `tty.ReadStream`\n\n\n\n* Extends: {net.Socket}\n\nRepresents the readable side of a TTY. In normal circumstances\n[`process.stdin`][] will be the only `tty.ReadStream` instance in a Node.js\nprocess and there should be no reason to create additional instances.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 47,
+      "endLine": 59,
+      "title": "`readStream.isRaw`",
+      "sha256": "f5b2c28aee22f4e031b44b124c26a3978a9ede69f3540baed970bfc138867231",
+      "normativeRequirements": "### `readStream.isRaw`\n\n\n\nA `boolean` that is `true` if the TTY is currently configured to operate as a\nraw device.\n\nThis flag is always `false` when a process starts, even if the terminal is\noperating in raw mode. Its value will change with subsequent calls to\n`setRawMode`.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 60,
+      "endLine": 67,
+      "title": "`readStream.isTTY`",
+      "sha256": "10581ca11a30e5c770a902fbf856a1c17ed33a9db386593fe7a61a57750e5808",
+      "normativeRequirements": "### `readStream.isTTY`\n\n\n\nA `boolean` that is always `true` for `tty.ReadStream` instances.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 68,
+      "endLine": 103,
+      "title": "`readStream.setRawMode(mode)`",
+      "sha256": "2978e8da7c64e1483f870cb84e08dcee445dde0af8e1ea5b7a796462890a5f34",
+      "normativeRequirements": "### `readStream.setRawMode(mode)`\n\n\n\n* `mode` {boolean|string} If `true` or `'raw'`, configures the\n  `tty.ReadStream` to operate as a raw device. If `'io'`, configures the\n  `tty.ReadStream` to operate in binary-safe I/O mode. If `false`, configures\n  the `tty.ReadStream` to operate in its default mode. The `readStream.isRaw`\n  property will be set to whether the stream is in raw mode, and the\n  `readStream.rawMode` property will be set to the resulting mode.\n* Returns: {this} The read stream instance.\n\nAllows configuration of `tty.ReadStream` so that it operates as a raw device.\n\nWhen in raw mode, input is always available character-by-character, not\nincluding modifiers. Additionally, all special processing of input characters\nby the terminal is disabled, including echoing input\ncharacters. <kbd>Ctrl</kbd>+<kbd>C</kbd> will no longer cause a `SIGINT` when\nin this mode. This mode does not affect terminal output processing, such as\nnewline translation on Unix terminals.\n\nOn Windows, `setRawMode()` requires write permission to the console input\nbuffer. When opening `\"\\\\\\\\.\\\\CONIN$\"` with the [`fs.open()`][] family of APIs\n(for passing into `new tty.ReadStream()`), be sure to use a read/write flag\nsuch as `'r+'`.\n\nWhen in binary-safe I/O mode, terminal output processing is also disabled.\nThis corresponds to libuv's `UV_TTY_MODE_IO` mode and is not supported on\nWindows.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 104,
+      "endLine": 115,
+      "title": "`readStream.rawMode`",
+      "sha256": "2766c3719792a1d15a9d03b1762778c871d53ded7d954df0a3b637a97f70b6bd",
+      "normativeRequirements": "### `readStream.rawMode`\n\n\n\n* {boolean|string}\n\nThe current raw mode for the `tty.ReadStream`. This is `false` when the stream\nis in its default mode, `'raw'` when raw input mode is enabled, and `'io'` when\nbinary-safe I/O mode is enabled.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 116,
+      "endLine": 128,
+      "title": "Class: `tty.WriteStream`",
+      "sha256": "d4f483b283b16284c601c2540937a7a46b7dca45e5f11fb28817fd0af5fa5ab8",
+      "normativeRequirements": "## Class: `tty.WriteStream`\n\n\n\n* Extends: {net.Socket}\n\nRepresents the writable side of a TTY. In normal circumstances,\n[`process.stdout`][] and [`process.stderr`][] will be the only\n`tty.WriteStream` instances created for a Node.js process and there\nshould be no reason to create additional instances.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 129,
+      "endLine": 144,
+      "title": "`new tty.ReadStream(fd[, options])`",
+      "sha256": "5c20bb5dd79dc44bd106100a0139628e7f149e3d47f86a5c70c8bf5a2b7fb18e",
+      "normativeRequirements": "### `new tty.ReadStream(fd[, options])`\n\n\n\n* `fd` {number} A file descriptor associated with a TTY.\n* `options` {Object} Options passed to parent `net.Socket`,\n  see `options` of [`net.Socket` constructor][].\n* Returns: {tty.ReadStream}\n\nCreates a `ReadStream` for `fd` associated with a TTY.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 145,
+      "endLine": 155,
+      "title": "`new tty.WriteStream(fd)`",
+      "sha256": "134b849381b0a07b4d876f56904af4e474f5b2e2009df554931919e8b5e6f226",
+      "normativeRequirements": "### `new tty.WriteStream(fd)`\n\n\n\n* `fd` {number} A file descriptor associated with a TTY.\n* Returns: {tty.WriteStream}\n\nCreates a `WriteStream` for `fd` associated with a TTY.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 156,
+      "endLine": 172,
+      "title": "Event: `'resize'`",
+      "sha256": "e096fee52f44137d3d8bb21d914eb8cc0a5cdb7f0a89e94414df87d61358a578",
+      "normativeRequirements": "### Event: `'resize'`\n\n\n\nThe `'resize'` event is emitted whenever either of the `writeStream.columns`\nor `writeStream.rows` properties have changed. No arguments are passed to the\nlistener callback when called.\n\n\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 173,
+      "endLine": 194,
+      "title": "`writeStream.clearLine(dir[, callback])`",
+      "sha256": "38ce926fb4b150607a0dfc62420e4cf1b8fac0fee3778c6aa40c697109b0165e",
+      "normativeRequirements": "### `writeStream.clearLine(dir[, callback])`\n\n\n\n* `dir` {number}\n  * `-1`: to the left from cursor\n  * `1`: to the right from cursor\n  * `0`: the entire line\n* `callback` {Function} Invoked once the operation completes.\n* Returns: {boolean} `false` if the stream wishes for the calling code to wait\n  for the `'drain'` event to be emitted before continuing to write additional\n  data; otherwise `true`.\n\n`writeStream.clearLine()` clears the current line of this `WriteStream` in a\ndirection identified by `dir`.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 195,
+      "endLine": 212,
+      "title": "`writeStream.clearScreenDown([callback])`",
+      "sha256": "4b6ee02033eb833846a5b15eb27b727891469b87ad904e7b2213afa2627caf4e",
+      "normativeRequirements": "### `writeStream.clearScreenDown([callback])`\n\n\n\n* `callback` {Function} Invoked once the operation completes.\n* Returns: {boolean} `false` if the stream wishes for the calling code to wait\n  for the `'drain'` event to be emitted before continuing to write additional\n  data; otherwise `true`.\n\n`writeStream.clearScreenDown()` clears this `WriteStream` from the current\ncursor down.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 213,
+      "endLine": 221,
+      "title": "`writeStream.columns`",
+      "sha256": "9310522f1b825601f08ded7a67360167abfcb8a9626333208b1717e7e0bf1502",
+      "normativeRequirements": "### `writeStream.columns`\n\n\n\nA `number` specifying the number of columns the TTY currently has. This property\nis updated whenever the `'resize'` event is emitted.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 222,
+      "endLine": 241,
+      "title": "`writeStream.cursorTo(x[, y][, callback])`",
+      "sha256": "487d19ba8ea7becc82f521213f12ce4bd26c775648b4058559aaafd1a922cee2",
+      "normativeRequirements": "### `writeStream.cursorTo(x[, y][, callback])`\n\n\n\n* `x` {number}\n* `y` {number}\n* `callback` {Function} Invoked once the operation completes.\n* Returns: {boolean} `false` if the stream wishes for the calling code to wait\n  for the `'drain'` event to be emitted before continuing to write additional\n  data; otherwise `true`.\n\n`writeStream.cursorTo()` moves this `WriteStream`'s cursor to the specified\nposition.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 242,
+      "endLine": 276,
+      "title": "`writeStream.getColorDepth([env])`",
+      "sha256": "fe0569161d6c7edb5d15a93cffd086c94bd15c7dcb0e27f8c692cb7a46fe576e",
+      "normativeRequirements": "### `writeStream.getColorDepth([env])`\n\n\n\n* `env` {Object} An object containing the environment variables to check. This\n  enables simulating the usage of a specific terminal. **Default:**\n  `process.env`.\n* Returns: {number}\n\nReturns:\n\n* `1` for 2,\n* `4` for 16,\n* `8` for 256,\n* `24` for 16,777,216 colors supported.\n\nUse this to determine what colors the terminal supports. Due to the nature of\ncolors in terminals it is possible to either have false positives or false\nnegatives. It depends on process information and the environment variables that\nmay lie about what terminal is used.\nIt is possible to pass in an `env` object to simulate the usage of a specific\nterminal. This can be useful to check how specific environment settings behave.\n\nTo enforce a specific color support, use one of the below environment settings.\n\n* 2 colors: `FORCE_COLOR = 0` (Disables colors)\n* 16 colors: `FORCE_COLOR = 1`\n* 256 colors: `FORCE_COLOR = 2`\n* 16,777,216 colors: `FORCE_COLOR = 3`\n\nDisabling color support is also possible by using the `NO_COLOR` and\n`NODE_DISABLE_COLORS` environment variables.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 277,
+      "endLine": 289,
+      "title": "`writeStream.getWindowSize()`",
+      "sha256": "d9abac484ff4b62ebb2866f89b558a58707c46b5d48186df7f0646531ea22f5d",
+      "normativeRequirements": "### `writeStream.getWindowSize()`\n\n\n\n* Returns: {number\\[]}\n\n`writeStream.getWindowSize()` returns the size of the TTY\ncorresponding to this `WriteStream`. The array is of the type\n`[numColumns, numRows]` where `numColumns` and `numRows` represent the number\nof columns and rows in the corresponding TTY.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 290,
+      "endLine": 321,
+      "title": "`writeStream.hasColors([count][, env])`",
+      "sha256": "f51a7a0167be85dea2bab69ce31e0a6e962d54ea7bfbd52cd7eeff15c17180b7",
+      "normativeRequirements": "### `writeStream.hasColors([count][, env])`\n\n\n\n* `count` {integer} The number of colors that are requested (minimum 2).\n  **Default:** 16.\n* `env` {Object} An object containing the environment variables to check. This\n  enables simulating the usage of a specific terminal. **Default:**\n  `process.env`.\n* Returns: {boolean}\n\nReturns `true` if the `writeStream` supports at least as many colors as provided\nin `count`. Minimum support is 2 (black and white).\n\nThis has the same false positives and negatives as described in\n[`writeStream.getColorDepth()`][].\n\n\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 322,
+      "endLine": 329,
+      "title": "`writeStream.isTTY`",
+      "sha256": "bebb4f687a0c3c91cc80dbe6c8e933edefc0e7a29f44f0bfb90f76b0a48a7866",
+      "normativeRequirements": "### `writeStream.isTTY`\n\n\n\nA `boolean` that is always `true`.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 330,
+      "endLine": 349,
+      "title": "`writeStream.moveCursor(dx, dy[, callback])`",
+      "sha256": "c83d7c877ed7e9ca91b1e8c416a3f5c6c9d5e86944c41df793ed2ecfa69c27e7",
+      "normativeRequirements": "### `writeStream.moveCursor(dx, dy[, callback])`\n\n\n\n* `dx` {number}\n* `dy` {number}\n* `callback` {Function} Invoked once the operation completes.\n* Returns: {boolean} `false` if the stream wishes for the calling code to wait\n  for the `'drain'` event to be emitted before continuing to write additional\n  data; otherwise `true`.\n\n`writeStream.moveCursor()` moves this `WriteStream`'s cursor _relative_ to its\ncurrent position.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 350,
+      "endLine": 358,
+      "title": "`writeStream.rows`",
+      "sha256": "8f160804db09259bf253b700223741d4cc29ce01525b60f26f1a256c953d8565",
+      "normativeRequirements": "### `writeStream.rows`\n\n\n\nA `number` specifying the number of rows the TTY currently has. This property\nis updated whenever the `'resize'` event is emitted.\n\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    },
+    {
+      "document": "doc/api/tty.md",
+      "line": 359,
+      "endLine": 377,
+      "title": "`tty.isatty(fd)`",
+      "sha256": "f29132b9cb047c7edf515137812deb518bc78a4e4734874a4b59c3f98924f603",
+      "normativeRequirements": "## `tty.isatty(fd)`\n\n\n\n* `fd` {number} A numeric file descriptor\n* Returns: {boolean}\n\nThe `tty.isatty()` method returns `true` if the given `fd` is associated with\na TTY and `false` if it is not, including whenever `fd` is not a non-negative\ninteger.\n\n[`fs.open()`]: fs.md#fsopenpath-flags-mode-callback\n[`net.Socket` constructor]: net.md#new-netsocketoptions\n[`process.stderr`]: process.md#processstderr\n[`process.stdin`]: process.md#processstdin\n[`process.stdout`]: process.md#processstdout\n[`writeStream.getColorDepth()`]: #writestreamgetcolordepthenv\n",
+      "review": "Scoped source contract reviewed, missing/partial TTY wrapper; dependencies and lower questions retained"
+    }
+  ],
+  "inheritedSocketOwnerRequirements": [
+    {
+      "document": "doc/api/net.md",
+      "line": 893,
+      "title": "## Class: `net.Socket`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 914,
+      "title": "### Transferring TCP handles to other threads",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 954,
+      "title": "### `new net.Socket([options])`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1019,
+      "title": "### Event: `'close'`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1030,
+      "title": "### Event: `'connect'`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1039,
+      "title": "### Event: `'connectionAttempt'`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1054,
+      "title": "### Event: `'connectionAttemptFailed'`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1070,
+      "title": "### Event: `'connectionAttemptTimeout'`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1086,
+      "title": "### Event: `'data'`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1100,
+      "title": "### Event: `'drain'`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1110,
+      "title": "### Event: `'end'`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1127,
+      "title": "### Event: `'error'`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1138,
+      "title": "### Event: `'lookup'`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1156,
+      "title": "### Event: `'ready'`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1166,
+      "title": "### Event: `'timeout'`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1177,
+      "title": "### `socket.address()`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1196,
+      "title": "### `socket.autoSelectFamilyAttemptedAddresses`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1212,
+      "title": "### `socket.bufferSize`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1239,
+      "title": "### `socket.bytesRead`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1249,
+      "title": "### `socket.bytesWritten`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1259,
+      "title": "### `socket.connect()`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1283,
+      "title": "#### `socket.connect(options[, connectListener])`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1366,
+      "title": "#### `socket.connect(path[, connectListener])`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1380,
+      "title": "#### `socket.connect(port[, host][, connectListener])`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1398,
+      "title": "### `socket.connecting`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1414,
+      "title": "### `socket.destroy([error])`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1428,
+      "title": "### `socket.destroyed`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1435,
+      "title": "### `socket.destroySoon()`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1445,
+      "title": "### `socket.end([data[, encoding]][, callback])`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1461,
+      "title": "### `socket.localAddress`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1474,
+      "title": "### `socket.localPort`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1484,
+      "title": "### `socket.localFamily`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1496,
+      "title": "### `socket.pause()`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1503,
+      "title": "### `socket.pending`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1517,
+      "title": "### `socket.ref()`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1529,
+      "title": "### `socket.remoteAddress`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1541,
+      "title": "### `socket.remoteFamily`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1552,
+      "title": "### `socket.remotePort`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1563,
+      "title": "### `socket.server`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1574,
+      "title": "### `socket.resetAndDestroy()`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1589,
+      "title": "### `socket.resume()`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1595,
+      "title": "### `socket.setEncoding([encoding])`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1607,
+      "title": "### `socket.setKeepAlive()`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1650,
+      "title": "#### `socket.setKeepAlive([options])`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1670,
+      "title": "#### `socket.setKeepAlive([enable][, initialDelay][, interval][, count])`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1695,
+      "title": "### `socket.setNoDelay([noDelay])`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1715,
+      "title": "### `socket.setTimeout(timeout[, callback])`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1751,
+      "title": "### `socket.getTypeOfService()`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1770,
+      "title": "### `socket.setTypeOfService(tos)`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1790,
+      "title": "### `socket.timeout`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1801,
+      "title": "### `socket.unref()`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1813,
+      "title": "### `socket.write(data[, encoding][, callback])`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    },
+    {
+      "document": "doc/api/net.md",
+      "line": 1837,
+      "title": "### `socket.readyState`",
+      "review": "Inherited owner requirement, candidate TTY hierarchy mismatches; full Socket semantics remain network-family audit"
+    }
+  ],
+  "sourceFiles": {
+    "doc/api/tty.md": "a80c79b7b8a52c54ba1eb7242d00d28c5c4fd510bc842f9bfb5424c5875cce85",
+    "lib/tty.js": "119d25f6e820b3a082a17fde3e242207604149614c6f421be8c83dfb0631b0d2",
+    "lib/internal/tty.js": "996ae301ee60854817401545811fd908c332cd3ed071c6a498d211ccdd9a932d",
+    "src/tty_wrap.cc": "09de3d949b5ad557e3ca1167a2e87a0a4f4fa4dd20c049d53eba9a1026764428",
+    "deps/uv/src/unix/tty.c": "65b98df1215c32ddd87e7b89e2d8d78c7e79a02e2bf4a53e1860f61d00bf431a",
+    "lib/internal/bootstrap/switches/is_main_thread.js": "da6d9350b7f2284dfc3613e43fd295c521d51aacc3674d79df76290f74cd55ab",
+    "lib/internal/readline/callbacks.js": "af9b691f147976bca019361b7be1095c7ef8c059353cd948e518327f2b3d6f8f",
+    "doc/api/net.md": "936b2c80963b118b4c7359c1730b36d5a552019d2d534515b3c4630912d4bba8"
+  },
+  "scope": "TTY-specific constructor/metadata/member/handle gap review, inherited dependency semantics not signed off",
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

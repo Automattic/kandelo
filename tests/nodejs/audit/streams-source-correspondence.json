@@ -1,0 +1,1295 @@
+{
+  "schema": 1,
+  "kind": "Static source/manifest/generated-factory and adapter dependency correspondence; no build/runtime test/probe",
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sourceManifest": {
+    "path": "third_party/node-core/sources.json",
+    "sha256": "aa9167d53e24a7d4cc3f6764006ea4cc5a211b4431bd5c6bff712066b56ffd1d"
+  },
+  "generatedBundle": {
+    "path": "third_party/node-core/node-core.js",
+    "sha256": "440912e0ba50c6bbfc982be45335d4f11100dc62f17071aa8040677437813205",
+    "meaning": "Existing generated source bytes only, not compiled product or conformance"
+  },
+  "providedDependencyIds": [
+    "async_hooks",
+    "buffer",
+    "events",
+    "fs",
+    "internal/abort_controller",
+    "internal/assert",
+    "internal/async_context_frame",
+    "internal/async_hooks",
+    "internal/blob",
+    "internal/buffer",
+    "internal/encoding",
+    "internal/errors",
+    "internal/event_target",
+    "internal/events/abort_listener",
+    "internal/fixed_queue",
+    "internal/fs/promises",
+    "internal/fs/utils",
+    "internal/options",
+    "internal/per_context/domexception",
+    "internal/process/task_queues",
+    "internal/url",
+    "internal/util",
+    "internal/util/debuglog",
+    "internal/util/types",
+    "internal/validators",
+    "internal/webidl",
+    "internal/worker/io",
+    "internal/worker/js_transferable",
+    "string_decoder",
+    "util"
+  ],
+  "records": [
+    {
+      "factory": "internal/streams/add-abort-signal",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/add-abort-signal.js",
+      "candidateSha256": "d794b3292b60220df681ee1523ac2207f9caf467bb64fa602251c0865f686706",
+      "targetPath": "lib/internal/streams/add-abort-signal.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "d794b3292b60220df681ee1523ac2207f9caf467bb64fa602251c0865f686706"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/events/abort_listener",
+        "internal/streams/end-of-stream",
+        "internal/streams/utils"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/compose",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/compose.js",
+      "candidateSha256": "89aff34359d6f6d28a8939a9250fdc56c26faacc27f9f276ee5cb38709ec4e39",
+      "targetPath": "lib/internal/streams/compose.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "89aff34359d6f6d28a8939a9250fdc56c26faacc27f9f276ee5cb38709ec4e39"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/streams/destroy",
+        "internal/streams/duplex",
+        "internal/streams/end-of-stream",
+        "internal/streams/pipeline",
+        "internal/streams/utils"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/destroy",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/destroy.js",
+      "candidateSha256": "b5b1e75d39cf6c4b1bfc4d07891d22ae42077dce33c08ac1722ac4d7d2e63985",
+      "targetPath": "lib/internal/streams/destroy.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "b5b1e75d39cf6c4b1bfc4d07891d22ae42077dce33c08ac1722ac4d7d2e63985"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/streams/utils"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/duplex",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/duplex.js",
+      "candidateSha256": "e2b5d781357dff0e742517a3fb451750477a394d2306186ca119b671f71261d5",
+      "targetPath": "lib/internal/streams/duplex.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "e2b5d781357dff0e742517a3fb451750477a394d2306186ca119b671f71261d5"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/streams/add-abort-signal",
+        "internal/streams/destroy",
+        "internal/streams/duplexify",
+        "internal/streams/legacy",
+        "internal/streams/readable",
+        "internal/streams/utils",
+        "internal/streams/writable",
+        "internal/webstreams/adapters"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/duplexify",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/duplexify.js",
+      "candidateSha256": "d25869b26e3bf39f6c0f0e3aa7928599650e774ace181129f37d5514b5cad8ba",
+      "targetPath": "lib/internal/streams/duplexify.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "d25869b26e3bf39f6c0f0e3aa7928599650e774ace181129f37d5514b5cad8ba"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/abort_controller",
+        "internal/blob",
+        "internal/errors",
+        "internal/streams/destroy",
+        "internal/streams/duplex",
+        "internal/streams/end-of-stream",
+        "internal/streams/from",
+        "internal/streams/readable",
+        "internal/streams/utils",
+        "internal/streams/writable"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/duplexpair",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/duplexpair.js",
+      "candidateSha256": "693d2e9525a62d7847cf4e4a35990eea34fe5f065e6357ecb3b1c8504a42f4bc",
+      "targetPath": "lib/internal/streams/duplexpair.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "693d2e9525a62d7847cf4e4a35990eea34fe5f065e6357ecb3b1c8504a42f4bc"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/assert",
+        "stream"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/end-of-stream",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/end-of-stream.js",
+      "candidateSha256": "a206f4206b803529910fec9fcf62569621adb5689f39ec82a47641383de42c09",
+      "targetPath": "lib/internal/streams/end-of-stream.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "a206f4206b803529910fec9fcf62569621adb5689f39ec82a47641383de42c09"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "async_hooks",
+        "internal/async_context_frame",
+        "internal/async_hooks",
+        "internal/errors",
+        "internal/events/abort_listener",
+        "internal/streams/utils",
+        "internal/util",
+        "internal/validators"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/from",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/from.js",
+      "candidateSha256": "4999ebb66e39a5aac7c246c6a521a7832159dc6436c1d5a1f0756a700d82e286",
+      "targetPath": "lib/internal/streams/from.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "4999ebb66e39a5aac7c246c6a521a7832159dc6436c1d5a1f0756a700d82e286"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "internal/errors"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/classic",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/classic.js",
+      "candidateSha256": "f2e28011ea438161d7b635faf153a5b3c715cb2b1d1cc2246f4daf716bd553af",
+      "targetPath": "lib/internal/streams/iter/classic.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "f2e28011ea438161d7b635faf153a5b3c715cb2b1d1cc2246f4daf716bd553af"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "internal/errors",
+        "internal/process/task_queues",
+        "internal/streams/add-abort-signal",
+        "internal/streams/destroy",
+        "internal/streams/end-of-stream",
+        "internal/streams/iter/from",
+        "internal/streams/iter/ringbuffer",
+        "internal/streams/iter/types",
+        "internal/streams/iter/utils",
+        "internal/streams/readable",
+        "internal/streams/writable",
+        "internal/util",
+        "internal/util/types",
+        "internal/validators"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/from",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/from.js",
+      "candidateSha256": "b4731125dfaf17d9eff3de8d057accc7d00cc0c88b2d20af92bf9eaa3f8bebdd",
+      "targetPath": "lib/internal/streams/iter/from.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "b4731125dfaf17d9eff3de8d057accc7d00cc0c88b2d20af92bf9eaa3f8bebdd"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/streams/iter/types",
+        "internal/streams/iter/utils",
+        "internal/util",
+        "internal/util/types"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/ringbuffer",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/ringbuffer.js",
+      "candidateSha256": "93e005367d1c3d240f8a57ba8f85b93fe747b3014a1f35b1408f1e45b0551717",
+      "targetPath": "lib/internal/streams/iter/ringbuffer.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "93e005367d1c3d240f8a57ba8f85b93fe747b3014a1f35b1408f1e45b0551717"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/types",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/types.js",
+      "candidateSha256": "ce46f861feb4165f43543330fe4b690ca7a8b4774f2402915943815361960cda",
+      "targetPath": "lib/internal/streams/iter/types.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "ce46f861feb4165f43543330fe4b690ca7a8b4774f2402915943815361960cda"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/utils",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/utils.js",
+      "candidateSha256": "5477762f38eb873d599e166a45b0e591ff2e875623bd2796164c2313327e78dd",
+      "targetPath": "lib/internal/streams/iter/utils.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "5477762f38eb873d599e166a45b0e591ff2e875623bd2796164c2313327e78dd"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/encoding",
+        "internal/errors",
+        "internal/streams/iter/types",
+        "internal/streams/iter/webidl",
+        "internal/util/types",
+        "internal/validators"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/webidl",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/webidl.js",
+      "candidateSha256": "1cdf9baf938267c08a39f2b898c5686c33dcaa1f7122f101764eea22f8568477",
+      "targetPath": "lib/internal/streams/iter/webidl.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "1cdf9baf938267c08a39f2b898c5686c33dcaa1f7122f101764eea22f8568477"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/abort_controller",
+        "internal/util/types",
+        "internal/webidl"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/legacy",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/legacy.js",
+      "candidateSha256": "ad4f9ef0255ff525b0248176a021bcdb3ec1fd3b4f302d2a3552af864ee6bcaa",
+      "targetPath": "lib/internal/streams/legacy.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "ad4f9ef0255ff525b0248176a021bcdb3ec1fd3b4f302d2a3552af864ee6bcaa"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "events"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/operators",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/operators.js",
+      "candidateSha256": "656f0f0c3128c77bdc43d0f237eb4531e8d2f085fb2554363aeba854789ac1d9",
+      "targetPath": "lib/internal/streams/operators.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "656f0f0c3128c77bdc43d0f237eb4531e8d2f085fb2554363aeba854789ac1d9"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/abort_controller",
+        "internal/errors",
+        "internal/event_target",
+        "internal/streams/end-of-stream",
+        "internal/validators"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/passthrough",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/passthrough.js",
+      "candidateSha256": "52bed2d31129172fce7fb4d5dd1c0c45f59cc9185964cd6069c63ed4219163ec",
+      "targetPath": "lib/internal/streams/passthrough.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "52bed2d31129172fce7fb4d5dd1c0c45f59cc9185964cd6069c63ed4219163ec"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/streams/transform"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/pipeline",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/pipeline.js",
+      "candidateSha256": "96fcda8c76b24bdd763df8dec9cf5eb02acb2100ca2cf86994e4165022febfb9",
+      "targetPath": "lib/internal/streams/pipeline.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "96fcda8c76b24bdd763df8dec9cf5eb02acb2100ca2cf86994e4165022febfb9"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/abort_controller",
+        "internal/errors",
+        "internal/events/abort_listener",
+        "internal/streams/destroy",
+        "internal/streams/duplex",
+        "internal/streams/end-of-stream",
+        "internal/streams/passthrough",
+        "internal/streams/readable",
+        "internal/streams/utils",
+        "internal/util",
+        "internal/validators"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/readable",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/readable.js",
+      "candidateSha256": "4fccc03c3e5d30aeccfa1879522a0da2f57a2da1d6304d03d2bb66ecdd8c49a2",
+      "targetPath": "lib/internal/streams/readable.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "4fccc03c3e5d30aeccfa1879522a0da2f57a2da1d6304d03d2bb66ecdd8c49a2"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "events",
+        "internal/errors",
+        "internal/fixed_queue",
+        "internal/options",
+        "internal/streams/add-abort-signal",
+        "internal/streams/compose",
+        "internal/streams/destroy",
+        "internal/streams/end-of-stream",
+        "internal/streams/from",
+        "internal/streams/iter/classic",
+        "internal/streams/iter/types",
+        "internal/streams/legacy",
+        "internal/streams/state",
+        "internal/streams/utils",
+        "internal/streams/writable",
+        "internal/util/debuglog",
+        "internal/validators",
+        "internal/webstreams/adapters",
+        "string_decoder"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/state",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/state.js",
+      "candidateSha256": "4b5e014feed92eab8832debc31090ec8a6024226fa147db37a448f89ad157c29",
+      "targetPath": "lib/internal/streams/state.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "4b5e014feed92eab8832debc31090ec8a6024226fa147db37a448f89ad157c29"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/validators"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/transform",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/transform.js",
+      "candidateSha256": "af0424491c8b4de48df33f57955d2d501bbaed8d80393a45a0fae84c62459af9",
+      "targetPath": "lib/internal/streams/transform.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "af0424491c8b4de48df33f57955d2d501bbaed8d80393a45a0fae84c62459af9"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/streams/duplex",
+        "internal/streams/state"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/utils",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/utils.js",
+      "candidateSha256": "76f2a40f2e1b799a575116036549bf5eca5f69b9038a77b1016eee823e51625f",
+      "targetPath": "lib/internal/streams/utils.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "76f2a40f2e1b799a575116036549bf5eca5f69b9038a77b1016eee823e51625f"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/writable",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/writable.js",
+      "candidateSha256": "605aa1ec8eb33401196b21d144f9386b82e366ec2684b8b897a79a71edc03747",
+      "targetPath": "lib/internal/streams/writable.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "605aa1ec8eb33401196b21d144f9386b82e366ec2684b8b897a79a71edc03747"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "events",
+        "internal/errors",
+        "internal/streams/add-abort-signal",
+        "internal/streams/destroy",
+        "internal/streams/end-of-stream",
+        "internal/streams/legacy",
+        "internal/streams/state",
+        "internal/streams/utils",
+        "internal/util",
+        "internal/webstreams/adapters"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "stream",
+      "candidatePath": "third_party/node-core/upstream/streams/stream.js",
+      "candidateSha256": "3dec4d8da73ac37b6fcfd812ed252c12bf8355ccdc71ac6d669e76288f2a1857",
+      "targetPath": "lib/stream.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "3dec4d8da73ac37b6fcfd812ed252c12bf8355ccdc71ac6d669e76288f2a1857"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/buffer",
+        "internal/errors",
+        "internal/streams/add-abort-signal",
+        "internal/streams/compose",
+        "internal/streams/destroy",
+        "internal/streams/duplex",
+        "internal/streams/duplexpair",
+        "internal/streams/end-of-stream",
+        "internal/streams/legacy",
+        "internal/streams/operators",
+        "internal/streams/passthrough",
+        "internal/streams/pipeline",
+        "internal/streams/readable",
+        "internal/streams/state",
+        "internal/streams/transform",
+        "internal/streams/utils",
+        "internal/streams/writable",
+        "internal/util",
+        "internal/util/types",
+        "stream/promises"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "stream/consumers",
+      "candidatePath": "third_party/node-core/upstream/streams/stream/consumers.js",
+      "candidateSha256": "c30b6273efd77b5122d9b01c6dec58ec6d7708e72d49d60a4aa63bd3ba3831a6",
+      "targetPath": "lib/stream/consumers.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "c30b6273efd77b5122d9b01c6dec58ec6d7708e72d49d60a4aa63bd3ba3831a6"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "internal/blob",
+        "internal/encoding"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "stream/promises",
+      "candidatePath": "third_party/node-core/upstream/streams/stream/promises.js",
+      "candidateSha256": "ea37b1b47c46c0c26ffe01a59a51bfc723fcadc6f6779ba91b61fe72b4849b39",
+      "targetPath": "lib/stream/promises.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "ea37b1b47c46c0c26ffe01a59a51bfc723fcadc6f6779ba91b61fe72b4849b39"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/streams/end-of-stream",
+        "internal/streams/pipeline",
+        "internal/streams/utils",
+        "stream"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/webstreams/compression",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/webstreams/compression.js",
+      "candidateSha256": "fbe6af810f448b794af84751e4ec663a4e21b1f31ae0b99f586ef45b2ad44d8a",
+      "targetPath": "lib/internal/webstreams/compression.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "fbe6af810f448b794af84751e4ec663a4e21b1f31ae0b99f586ef45b2ad44d8a"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/util",
+        "internal/util/types",
+        "internal/webidl",
+        "internal/webstreams/adapters",
+        "internal/webstreams/util",
+        "zlib"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/webstreams/encoding",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/webstreams/encoding.js",
+      "candidateSha256": "88ecaf7b67ff16ca999945312d791e31b0c90742f46d13d25c69d01d5450b945",
+      "targetPath": "lib/internal/webstreams/encoding.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "88ecaf7b67ff16ca999945312d791e31b0c90742f46d13d25c69d01d5450b945"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/encoding",
+        "internal/errors",
+        "internal/util",
+        "internal/webstreams/transformstream",
+        "internal/webstreams/util"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/webstreams/queuingstrategies",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/webstreams/queuingstrategies.js",
+      "candidateSha256": "6fb1d6c2e150209c77673e0060eb8f2f9cf222a6cc46fb8cce1ca90ae9e56f37",
+      "targetPath": "lib/internal/webstreams/queuingstrategies.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "6fb1d6c2e150209c77673e0060eb8f2f9cf222a6cc46fb8cce1ca90ae9e56f37"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/util",
+        "internal/validators",
+        "internal/webstreams/util"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/webstreams/readablestream",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/webstreams/readablestream.js",
+      "candidateSha256": "e0846f67d4c4391dbf813d71403ff1a03cd279cbb7da5f2187110227cf282e06",
+      "targetPath": "lib/internal/webstreams/readablestream.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "e0846f67d4c4391dbf813d71403ff1a03cd279cbb7da5f2187110227cf282e06"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "internal/assert",
+        "internal/errors",
+        "internal/events/abort_listener",
+        "internal/process/task_queues",
+        "internal/streams/utils",
+        "internal/util",
+        "internal/util/types",
+        "internal/validators",
+        "internal/webstreams/util",
+        "internal/webstreams/writablestream",
+        "internal/worker/io",
+        "internal/worker/js_transferable"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/webstreams/transfer",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/webstreams/transfer.js",
+      "candidateSha256": "89053e3328060085c2b4396ba06cd4017ca09b0abab85df3bb98c48485d17e29",
+      "targetPath": "lib/internal/webstreams/transfer.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "89053e3328060085c2b4396ba06cd4017ca09b0abab85df3bb98c48485d17e29"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/assert",
+        "internal/webstreams/readablestream",
+        "internal/webstreams/util",
+        "internal/webstreams/writablestream"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/webstreams/transformstream",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/webstreams/transformstream.js",
+      "candidateSha256": "6dc44d2c4d5bb601bd0a6e9a4d4229475f38be3f1f478ed71c5f4be34126984e",
+      "targetPath": "lib/internal/webstreams/transformstream.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "6dc44d2c4d5bb601bd0a6e9a4d4229475f38be3f1f478ed71c5f4be34126984e"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/assert",
+        "internal/errors",
+        "internal/util",
+        "internal/validators",
+        "internal/webstreams/readablestream",
+        "internal/webstreams/util",
+        "internal/webstreams/writablestream",
+        "internal/worker/js_transferable"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/webstreams/util",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/webstreams/util.js",
+      "candidateSha256": "2c47bec7fc6322bdd17d082fd966789e35e524ce7e20a18f92d1f5c99323d46b",
+      "targetPath": "lib/internal/webstreams/util.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "2c47bec7fc6322bdd17d082fd966789e35e524ce7e20a18f92d1f5c99323d46b"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/assert",
+        "internal/errors",
+        "internal/util/types",
+        "internal/validators",
+        "internal/webstreams/transfer",
+        "util"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/webstreams/writablestream",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/webstreams/writablestream.js",
+      "candidateSha256": "50171e6cba9bade99ff2975fbbf832df42b90aec8fbcc4fffbc30a33135e9e9b",
+      "targetPath": "lib/internal/webstreams/writablestream.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "50171e6cba9bade99ff2975fbbf832df42b90aec8fbcc4fffbc30a33135e9e9b"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/abort_controller",
+        "internal/assert",
+        "internal/errors",
+        "internal/process/task_queues",
+        "internal/streams/utils",
+        "internal/util",
+        "internal/validators",
+        "internal/webstreams/util",
+        "internal/worker/io",
+        "internal/worker/js_transferable"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "stream/web",
+      "candidatePath": "third_party/node-core/upstream/streams/stream/web.js",
+      "candidateSha256": "7de6f8ef62effcd9aee45ed6ae1170cde8b4bd3d588e1ae4be759913ff95485f",
+      "targetPath": "lib/stream/web.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "7de6f8ef62effcd9aee45ed6ae1170cde8b4bd3d588e1ae4be759913ff95485f"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/validators",
+        "internal/webstreams/compression",
+        "internal/webstreams/encoding",
+        "internal/webstreams/queuingstrategies",
+        "internal/webstreams/readablestream",
+        "internal/webstreams/transformstream",
+        "internal/webstreams/writablestream"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/webstreams/adapters",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/webstreams/adapters-public.js",
+      "candidateSha256": "9501fef5913f20aaad868695f275d1c4176868ff78de86c333182a4b231dee04",
+      "targetPath": "lib/internal/webstreams/adapters.js",
+      "sourceCorrespondence": {
+        "kind": "Exact ordered unchanged source excerpt; removed native StreamBase adapters outside public six adapters",
+        "upstreamFullFileSha256": "cf68f3906f1f0da8fdccd8594d32033cd90f949215cd4912f89e9cfeb38db2ac",
+        "segments": [
+          {
+            "candidateLine": 1,
+            "upstreamLine": 111,
+            "lineCount": 898,
+            "sha256": "9501fef5913f20aaad868695f275d1c4176868ff78de86c333182a4b231dee04"
+          }
+        ]
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/worker/clone_dom_exception",
+      "candidatePath": "third_party/node-core/upstream/clone-dom-exception.js",
+      "candidateSha256": "ba59ac79fe7331d739bcb9f300b8b392e3148e6bfc680fb55ea71661b2cee6f2",
+      "targetPath": "lib/internal/worker/clone_dom_exception.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "ba59ac79fe7331d739bcb9f300b8b392e3148e6bfc680fb55ea71661b2cee6f2"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/broadcast",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/broadcast.js",
+      "candidateSha256": "32f415a72c8aceb77c42a44ae28429b93d8fb856555e8da17c89d80c7f91fa69",
+      "targetPath": "lib/internal/streams/iter/broadcast.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "32f415a72c8aceb77c42a44ae28429b93d8fb856555e8da17c89d80c7f91fa69"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/abort_controller",
+        "internal/errors",
+        "internal/streams/iter/from",
+        "internal/streams/iter/pull",
+        "internal/streams/iter/ringbuffer",
+        "internal/streams/iter/types",
+        "internal/streams/iter/utils",
+        "internal/streams/iter/webidl",
+        "internal/util"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/consumers",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/consumers.js",
+      "candidateSha256": "de39b364e2b7949555b45df8f3affd522975650e0f1c8d896a8394199fdfa271",
+      "targetPath": "lib/internal/streams/iter/consumers.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "de39b364e2b7949555b45df8f3affd522975650e0f1c8d896a8394199fdfa271"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/encoding",
+        "internal/errors",
+        "internal/streams/iter/from",
+        "internal/streams/iter/types",
+        "internal/streams/iter/utils",
+        "internal/streams/iter/webidl",
+        "internal/util/types",
+        "internal/validators"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/duplex",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/duplex.js",
+      "candidateSha256": "9233dbf541d38bbd1d81b4d4d436f5abf4e67125b7384ffbf5ca74452ea6f005",
+      "targetPath": "lib/internal/streams/iter/duplex.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "9233dbf541d38bbd1d81b4d4d436f5abf4e67125b7384ffbf5ca74452ea6f005"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/streams/iter/push",
+        "internal/streams/iter/webidl"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/pull",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/pull.js",
+      "candidateSha256": "aa1c98622837d5f2ce4e9e16846c316dae770d9a42ffa03202f8ab72a97949b6",
+      "targetPath": "lib/internal/streams/iter/pull.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "aa1c98622837d5f2ce4e9e16846c316dae770d9a42ffa03202f8ab72a97949b6"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/abort_controller",
+        "internal/errors",
+        "internal/streams/iter/from",
+        "internal/streams/iter/types",
+        "internal/streams/iter/utils",
+        "internal/streams/iter/webidl",
+        "internal/util",
+        "internal/util/types"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/push",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/push.js",
+      "candidateSha256": "edf9baeb6db36e6346656fca2fccd7d604156717cdd0579da0eca9d282a0a8d6",
+      "targetPath": "lib/internal/streams/iter/push.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "edf9baeb6db36e6346656fca2fccd7d604156717cdd0579da0eca9d282a0a8d6"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/streams/iter/pull",
+        "internal/streams/iter/ringbuffer",
+        "internal/streams/iter/types",
+        "internal/streams/iter/utils",
+        "internal/streams/iter/webidl"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/share",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/share.js",
+      "candidateSha256": "3e9d0d8972d841d07fee62fd719d70890561d44b4b069a898d6cc8fa84f01053",
+      "targetPath": "lib/internal/streams/iter/share.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "3e9d0d8972d841d07fee62fd719d70890561d44b4b069a898d6cc8fa84f01053"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/streams/iter/from",
+        "internal/streams/iter/pull",
+        "internal/streams/iter/ringbuffer",
+        "internal/streams/iter/types",
+        "internal/streams/iter/utils",
+        "internal/streams/iter/webidl"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/streams/iter/transform",
+      "candidatePath": "third_party/node-core/upstream/streams/internal/streams/iter/transform.js",
+      "candidateSha256": "5cd5ac2887364e16d8f0efaeac3b62a7f3e678a3f47d418f1966dd35a1806808",
+      "targetPath": "lib/internal/streams/iter/transform.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "5cd5ac2887364e16d8f0efaeac3b62a7f3e678a3f47d418f1966dd35a1806808"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "internal/errors",
+        "internal/streams/iter/types",
+        "internal/util/types",
+        "internal/validators"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "stream/iter",
+      "candidatePath": "third_party/node-core/upstream/streams/stream/iter.js",
+      "candidateSha256": "b90e04681c6b4c130b2939ef640ae7a437a757f59e065d64594759c56e01473a",
+      "targetPath": "lib/stream/iter.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "b90e04681c6b4c130b2939ef640ae7a437a757f59e065d64594759c56e01473a"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/streams/iter/broadcast",
+        "internal/streams/iter/classic",
+        "internal/streams/iter/consumers",
+        "internal/streams/iter/duplex",
+        "internal/streams/iter/from",
+        "internal/streams/iter/pull",
+        "internal/streams/iter/push",
+        "internal/streams/iter/share",
+        "internal/streams/iter/types",
+        "internal/util"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "zlib/iter",
+      "candidatePath": "third_party/node-core/upstream/streams/zlib/iter.js",
+      "candidateSha256": "979961ee12e7aa6db9492c787c1f95a2bc7ad11b6a0b83add86f5342a0ffe920",
+      "targetPath": "lib/zlib/iter.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "979961ee12e7aa6db9492c787c1f95a2bc7ad11b6a0b83add86f5342a0ffe920"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/streams/iter/transform",
+        "internal/util"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "zlib",
+      "candidatePath": "third_party/node-core/upstream/compression/zlib.js",
+      "candidateSha256": "53a7296aacb93c3f828a3fe31e71cfec8e1d315a1560e787c133b52e1c2fb729",
+      "targetPath": "lib/zlib.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "53a7296aacb93c3f828a3fe31e71cfec8e1d315a1560e787c133b52e1c2fb729"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "internal/assert",
+        "internal/async_hooks",
+        "internal/buffer",
+        "internal/errors",
+        "internal/util",
+        "internal/util/types",
+        "internal/validators",
+        "internal/zip",
+        "stream"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip.js",
+      "candidateSha256": "1a66317f0e57f2386550e4060c59f3b2dbf62fba4c6e769d6e849cea955e7ee6",
+      "targetPath": "lib/internal/zip.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "1a66317f0e57f2386550e4060c59f3b2dbf62fba4c6e769d6e849cea955e7ee6"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/zip/archive",
+        "internal/zip/buffer",
+        "internal/zip/content-size",
+        "internal/zip/entry",
+        "internal/zip/file"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/archive",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/archive.js",
+      "candidateSha256": "21657bcc48a6e1780a205e439947d610df1cda9722f70485770492f3c42a0876",
+      "targetPath": "lib/internal/zip/archive.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "21657bcc48a6e1780a205e439947d610df1cda9722f70485770492f3c42a0876"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "fs",
+        "internal/errors",
+        "internal/util/types",
+        "internal/validators",
+        "internal/zip/constants",
+        "internal/zip/entry",
+        "internal/zip/fs-util",
+        "internal/zip/header-builders",
+        "stream"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/binary",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/binary.js",
+      "candidateSha256": "6ea9dee19bcefdb2bb6623d3359ef53123c3b8fd2fa0c0cc863352a19b6ef59c",
+      "targetPath": "lib/internal/zip/binary.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "6ea9dee19bcefdb2bb6623d3359ef53123c3b8fd2fa0c0cc863352a19b6ef59c"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "internal/errors",
+        "internal/util/types",
+        "internal/zip/constants"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/buffer",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/buffer.js",
+      "candidateSha256": "3882324524442c13788aaf5c871a8a778105bdbe73a4240131485866b08b870b",
+      "targetPath": "lib/internal/zip/buffer.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "3882324524442c13788aaf5c871a8a778105bdbe73a4240131485866b08b870b"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "internal/errors",
+        "internal/validators",
+        "internal/zip/archive",
+        "internal/zip/binary",
+        "internal/zip/dos",
+        "internal/zip/entry",
+        "internal/zip/headers"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/compression",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/compression.js",
+      "candidateSha256": "ea58524e6832903c8f67e280baa7250750f8957680f0d7b1a1ffa63263165aeb",
+      "targetPath": "lib/internal/zip/compression.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "ea58524e6832903c8f67e280baa7250750f8957680f0d7b1a1ffa63263165aeb"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "internal/errors",
+        "internal/zip/constants",
+        "stream",
+        "zlib"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/constants",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/constants.js",
+      "candidateSha256": "f3827ef87fc7d5e875b75317243b50c1732b5c58f06143ef64b87c1a9953e393",
+      "targetPath": "lib/internal/zip/constants.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "f3827ef87fc7d5e875b75317243b50c1732b5c58f06143ef64b87c1a9953e393"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/buffer"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/content-size",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/content-size.js",
+      "candidateSha256": "4ac06e5f033ec979f1e640b9ae602c067af366b8580bf14cf08581a0c83070a1",
+      "targetPath": "lib/internal/zip/content-size.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "4ac06e5f033ec979f1e640b9ae602c067af366b8580bf14cf08581a0c83070a1"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/validators"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/dos",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/dos.js",
+      "candidateSha256": "d99782317fe052366a183d78dba2d785a79f0d1db046ca1e33388c6373013d76",
+      "targetPath": "lib/internal/zip/dos.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "d99782317fe052366a183d78dba2d785a79f0d1db046ca1e33388c6373013d76"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/zip/constants",
+        "internal/zip/extra-fields"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/entry",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/entry.js",
+      "candidateSha256": "986e499fe35efb61047a893f0e400c15573f16835e32592c0148b519c259b4e9",
+      "targetPath": "lib/internal/zip/entry.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "986e499fe35efb61047a893f0e400c15573f16835e32592c0148b519c259b4e9"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "internal/errors",
+        "internal/util/types",
+        "internal/validators",
+        "internal/zip/binary",
+        "internal/zip/compression",
+        "internal/zip/constants",
+        "internal/zip/content-size",
+        "internal/zip/dos",
+        "internal/zip/extra-fields",
+        "internal/zip/fs-util",
+        "internal/zip/header-builders",
+        "internal/zip/headers"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/extra-fields",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/extra-fields.js",
+      "candidateSha256": "7fd8e395aa0de1aef6f0e0c9ddfee1d969e0358f0e455a82742e0301edf0f477",
+      "targetPath": "lib/internal/zip/extra-fields.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "7fd8e395aa0de1aef6f0e0c9ddfee1d969e0358f0e455a82742e0301edf0f477"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "internal/errors",
+        "internal/zip/binary",
+        "internal/zip/constants"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/file",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/file.js",
+      "candidateSha256": "cea8f36d020dc620b266bcfb3a59a4b85b0861f13b1f882268c394c28f52a26f",
+      "targetPath": "lib/internal/zip/file.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "cea8f36d020dc620b266bcfb3a59a4b85b0861f13b1f882268c394c28f52a26f"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "fs",
+        "internal/errors",
+        "internal/validators",
+        "internal/zip/archive",
+        "internal/zip/constants",
+        "internal/zip/dos",
+        "internal/zip/entry",
+        "internal/zip/fs-util",
+        "internal/zip/header-builders",
+        "internal/zip/headers",
+        "stream"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/fs-util",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/fs-util.js",
+      "candidateSha256": "5f1f433bff13ad49bd282d43644d190efe6d48799355a765f6f32890ead97ee5",
+      "targetPath": "lib/internal/zip/fs-util.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "5f1f433bff13ad49bd282d43644d190efe6d48799355a765f6f32890ead97ee5"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "fs",
+        "internal/errors"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/header-builders",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/header-builders.js",
+      "candidateSha256": "b493e8987a14c7541fa991e4c9e0f116f0a33f7d85432450d94ad441f15d2a1b",
+      "targetPath": "lib/internal/zip/header-builders.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "b493e8987a14c7541fa991e4c9e0f116f0a33f7d85432450d94ad441f15d2a1b"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "internal/errors",
+        "internal/zip/binary",
+        "internal/zip/constants",
+        "internal/zip/dos",
+        "internal/zip/extra-fields"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/zip/headers",
+      "candidatePath": "third_party/node-core/upstream/compression/internal/zip/headers.js",
+      "candidateSha256": "659467086349c79b7f6c281c464d9fb2159180bc15c51a2534b307ca12bef656",
+      "targetPath": "lib/internal/zip/headers.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "659467086349c79b7f6c281c464d9fb2159180bc15c51a2534b307ca12bef656"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "internal/errors",
+        "internal/zip/binary",
+        "internal/zip/constants",
+        "internal/zip/dos",
+        "internal/zip/extra-fields"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    },
+    {
+      "factory": "internal/fs/streams",
+      "candidatePath": "third_party/node-core/upstream/streams/fs-streams.js",
+      "candidateSha256": "ef6e13ec1651618de266e4bf1760a2f6c14f4aee74eb88d6a24b3021a86d7ac7",
+      "targetPath": "lib/internal/fs/streams.js",
+      "sourceCorrespondence": {
+        "kind": "Exact unchanged full source",
+        "sha256": "ef6e13ec1651618de266e4bf1760a2f6c14f4aee74eb88d6a24b3021a86d7ac7"
+      },
+      "generatedFactoryOccurrences": 1,
+      "literalRequires": [
+        "buffer",
+        "fs",
+        "internal/errors",
+        "internal/fs/promises",
+        "internal/fs/utils",
+        "internal/streams/destroy",
+        "internal/url",
+        "internal/util",
+        "internal/validators",
+        "stream"
+      ],
+      "dependencySelectionLimit": "Static literal require selection after comment removal, not AST/control-flow/activation or runtime dependency coverage."
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

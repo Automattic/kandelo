@@ -1,0 +1,391 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/fixtures/wpt/dom/abort/AbortSignal.any.js",
+      "sha256": "04555b5290748ad03511a991fd13196af9692129dce3c85e724affdd9d4f31e8",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/fixtures/wpt/dom/abort/abort-signal-any.any.js",
+      "sha256": "12e161d042d8cc270663eca7eccb80443dc66fc21ce812ad7f2228f379410665",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/fixtures/wpt/dom/abort/resources/abort-signal-any-tests.js",
+      "sha256": "2459485339b8f8096e9c39f280cfa9ea6fdf2e62291ad28681fa2b9da00866f2",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/fixtures/wpt/dom/events/EventTarget-add-remove-listener.any.js",
+      "sha256": "f1c1c806afb2a3fa88e8fc8e8c1fbbe2c1c9d3d5b7a5cc0df96680717f46f830",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/fixtures/wpt/dom/events/EventTarget-addEventListener.any.js",
+      "sha256": "7045782f35952ce90ee537a23a8e19b8623c03c2e42714c2097102b2a029783e",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/fixtures/wpt/dom/events/EventTarget-constructible.any.js",
+      "sha256": "f345e70db0bfcfe8a6a5e0ba4251ad55c79ce6955998991243d6e3277b80ae0e",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/fixtures/wpt/dom/events/EventTarget-removeEventListener.any.js",
+      "sha256": "5575deb3d90c09224a002a78fa398c0b16ca3ec856348467b642bb45bcefd384",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/fixtures/wpt/workers/interfaces/DedicatedWorkerGlobalScope/EventTarget.worker.js",
+      "sha256": "ab3c9051ebd7770ad55055df03e7b0e4dbd90e3009b053caf801a3c2626c3952",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-abort-controller-any-timeout.js",
+      "sha256": "1751890f6f8967603d4b3441a13c3615765a4386200855e8dfa04b9551cabcaf",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-abortcontroller-internal.js",
+      "sha256": "e80ad1e408ee9571ffde3a0e5b3c4bb6d2d1afd5db5d4437e677637dbd5c2c5c",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings --expose-gc --expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-abortcontroller.js",
+      "sha256": "650ab689fff2b272d98dddc8027b1a7dd86a6b576197b71ef02cfc0ea80c599d",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-aborted-util.js",
+      "sha256": "786fe18698515e304564aecf95154a444607ae9f757362b7dcbcc0838cbce3b4",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-abortsignal-any-source-gc.mjs",
+      "sha256": "88d11729e60763e45fdc0d72013788c2573c03d740809a0332eb90e496741fdc",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-abortsignal-any.mjs",
+      "sha256": "85b2314123bb1bf81c6d4dc4db2fef3c8df2ba6f5b6d428fc57195e17107e6da",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-abortsignal-cloneable.js",
+      "sha256": "eafa0a3bc1cb372154f91fd0a292cb09755fa3098d6c30b9cf6efcb5d24c505b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-abortsignal-drop-settled-signals.mjs",
+      "sha256": "7579842ba122903180da754be0adeae51be0a5dea0262479dff00e875206b072",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose_gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-child-process-exec-abortcontroller-promisified.js",
+      "sha256": "a0d5af6c9c4462e5f700cdbdd7e573cd53414a6105634dc958b5173a9c6e9d85",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-child-process-execFile-promisified-abortController.js",
+      "sha256": "f31974646e748c39784011cc37632388ecbc8650890475488a2f7b9efd0b1799",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-child-process-fork-abort-signal.js",
+      "sha256": "5df76530dcecdc82d9f2a5f3af7ba629f660266da5524def42dccd9e965fb62e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-event-target.js",
+      "sha256": "7641065683d4bf70b4258f545db291306ee3e77ac10fc35653dbcffef09cd8a7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-events-add-abort-listener.mjs",
+      "sha256": "c3e79648b3004c5d3a185f4c8d8069975b6f6cd8a56bf5dfe08091f9cff41104",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-events-customevent.js",
+      "sha256": "5c9bd42b2999b43e9ce3b6d81ea0b6585870a243f0c3d3f25fe572ad88921f71",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-eventtarget-brandcheck.js",
+      "sha256": "798e992d97750b662de10058575d5584f011a77251aa5bb1fc368ce7047390d2",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-eventtarget-custom-inspect-does-not-throw.js",
+      "sha256": "8bbe414a9c50b680895c4c70327d6c007de9d4f2a065eb2fd5757ad645cea352",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-eventtarget-memoryleakwarning.js",
+      "sha256": "40b99879c87183a82e038f8e57e7b27bc8f7b95e810a478444d6b833f8ca6e2d",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-warnings --expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-eventtarget-once-twice.js",
+      "sha256": "48cab937315ad283640ddd3031c0f7ff96e205bf17f4df9367330512ce8d06b0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-eventtarget.js",
+      "sha256": "f2a0e391909b93e90853c0b5f0bc83187b58356cde438ea00111ad00381728d2",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-warnings --expose-gc"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-fs-watch-abort-signal.js",
+      "sha256": "e6103d864429c8c5f6567b6412f203ab63d4c6785e27363ce6feecd4ef3d5207",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-http-agent-abort-controller.js",
+      "sha256": "0fccf772dcb987eb72fd03fd5440ed25a38519810d0899b342f33cf596c790bf",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-https-abortcontroller.js",
+      "sha256": "b7c19c5d5d0794cd4640d4de14da4707769f907022dff52013dcbb05479e072b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-https-agent-abort-controller.js",
+      "sha256": "9c2aeeae031c281df795db8440cc9e68a37c4e38dbcbfb1ede5268a4cd6f446c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-mock-timers-abortsignal-timeout.js",
+      "sha256": "60d4af78b900a79317b2574530c27f2d3b8db3a59483957645956740240dfbdd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-net-connect-abort-controller.js",
+      "sha256": "b20f5bc38a0559ba461e34201c426c76474703e623f787667e4914904253e580",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-nodeeventtarget.js",
+      "sha256": "d359ac08ca3b86f6d9c7156f1cebf3c5acc6e810cc9e23b8ba24a034eac8d0dd",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-warnings"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-quic-writer-abort-signal.mjs",
+      "sha256": "7510212467997918da80b88854949c1d80c3ed99811dc90a8ae861d0f84461b5",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-quic --experimental-stream-iter --no-warnings"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-stream-add-abort-signal.js",
+      "sha256": "9c163ba754bfd81d4f0d0e1b01516b5b795213a1b894db696abcf6a040b60fc7",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-tls-connect-abort-controller.js",
+      "sha256": "626f1148b8e638785a8d626d4dda53d03c6aad13ded4c526ad49f1b8722b55c1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-vfs-watch-abort-signal.js",
+      "sha256": "2147df9a33e07c3df00fdd5d316d3490e09ee0e9e8ea3be7c4c5a959dee4139b",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-vfs"
+      ],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-webstreams-abort-controller.js",
+      "sha256": "520370a830229d640ea8235254f69be93eb93bb5f8a3d375b5d825588b6b0b20",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-whatwg-events-add-event-listener-options-passive.js",
+      "sha256": "fb42cfaaecce911239d8d703ae78f7886ce2f36029d71c6d2c0ef643def19940",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-whatwg-events-add-event-listener-options-signal.js",
+      "sha256": "c1302231a2a4565e4693e5df9b5374956aa807b17ebb4fbffd7c7fafb67cd51e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-whatwg-events-customevent.js",
+      "sha256": "037e0da71be86ad71827ce41a3307b3e8ce7bd897e399dd53467f165f59350ae",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-whatwg-events-event-constructors.js",
+      "sha256": "1c2ab1aa2811572e069deb8d6040f60fc06c17e12467747e8beb6608d374e0c9",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    },
+    {
+      "path": "test/parallel/test-whatwg-events-eventtarget-this-of-listener.js",
+      "sha256": "ce56764f5895c89e8fbd9fec167eeb5ad92903d1dc39aea2199b8adfe3b3115f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Unchanged future source candidate, unrun; assertion/fixture applicability not signed off",
+      "requirements": "Preserve actual WPT wrapper/variants/resources, native GC/worker/clone/death/message fixtures and original Flags; no discovery code executed"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

@@ -1,0 +1,481 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/addons/non-node-context/test-perf-hooks-timerify.js",
+      "sha256": "8d6cb2a630ca2dca1b3a16bbed2df0117d45e857ee3ff4ecd4d19de7bf8e151b",
+      "category": "addons",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/client-proxy/test-http-proxy-perf-hooks.mjs",
+      "sha256": "775f90bc61de7043da321573afe883d7ca4f2ec3a3bd44afa5cc941494c17937",
+      "category": "client-proxy",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-eventlooputilization.js",
+      "sha256": "b7035a5e12755f4d68ed9fd2a4dcd5688600b67ade07aa399c268ead9e0ff639",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-histogram-analysis.js",
+      "sha256": "7a79ae86e5e53f79e944519386f10443b455eaeeeb0a4c6829392c8e6feedc8d",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-warnings --allow-natives-syntax"
+      ],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-histogram-diff.js",
+      "sha256": "ede2213d219b20896bcab35b48793f39ee0d841dc6803a5c80b23c3b79116370",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-histogram-external-memory.js",
+      "sha256": "bcc97ef57096dbbaba361731932782c349e12d2a2743ed5325d1c42ffb55aaeb",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-histogram-fast-calls.js",
+      "sha256": "f8aa71782a53db513b3e88a5611a4ecfd38bcbcebdf590430ea2ad41e7e726cb",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-warnings --allow-natives-syntax"
+      ],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-histogram-import.js",
+      "sha256": "9e432ebdfaa196a45bf12b7a31ef7f0c229c90c14b6c491a196d2a93954823fd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-histogram-qrde-oracle.js",
+      "sha256": "17e478e59a4637a520ec8372794f4d72d140de5f88f59c69bb439579a87e4a56",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-histogram-qrde-worker.js",
+      "sha256": "5785f372e881c5659e4a196613181fcebbe232f725841d415ebbde8c6fa6c6fd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-histogram-qrde.js",
+      "sha256": "117bb67bfd1ca75f9350b29792af1ea6182625b806aa1ae92c3c1c312ad672c8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-histogram-record-zero.js",
+      "sha256": "f6ca6d03622d24390bbb9a8cf0358b831b08d364ac284287d56a30a67da7fc14",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-histogram-snapshot.js",
+      "sha256": "d0adfb6d96c22d50746d8db45be9baa0e480883fb93d8b8a42b973f3af2926c4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-histogram-stats.js",
+      "sha256": "094400ab6dffd0e311058e8ccef01cce3a463cce7fd8610dbcc6fd82db7fdcfb",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-warnings"
+      ],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-histogram.js",
+      "sha256": "1ebc11653f228b52cbad5b49aa369424ea3bb77b72393e6d6fa80a66777e30fd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-monitor-event-loop-delay-fast-calls.js",
+      "sha256": "9778b6e5f37f35c843a39baccee6056ffe4a3284f1c3fe9839473c2fee6b5809",
+      "category": "parallel",
+      "declaredFlags": [
+        "--allow-natives-syntax --expose-internals --no-warnings"
+      ],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-monitor-event-loop-delay-options.js",
+      "sha256": "46029dbbea5d4a511f03dcfc0c40ed9331e0b37395cd2c0cdf13317b418e3a0f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-monitor-event-loop-delay-resolution.js",
+      "sha256": "7f73a0aa2e4f9ede5055c7caa20b7e0a5fece784b272e75bb532b372d905803f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-resourcetiming-attributes.js",
+      "sha256": "7002ad55ae3e01cf80c6ab4f725c54563ae77c621d860a6734ac9418988c39b1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-resourcetiming-fetch.mjs",
+      "sha256": "f756d3d32b86bf176b6b1429b326abefeb9ffde303b7cc06337b5422d27f0205",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-resourcetiming.js",
+      "sha256": "1ce42b5a83a949ec851909da63f3dc7dcefbb3c48fe32b8168bd084f51020656",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-sliding-window-histogram-fast-calls.js",
+      "sha256": "961a6c2b81e3ba37790a1bfc3eb10a05e8601ee77f3d830cf2178c11f6e2f2f0",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-warnings --allow-natives-syntax"
+      ],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-sliding-window-histogram.js",
+      "sha256": "2dfa699a78d98ebac2f1a516b246f9db5f9fcbdce9765b76f6855f4b8998a244",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-timerify-basic.js",
+      "sha256": "d9509b41f6c7e7408aac61fc9cea57e7cab32903c570215aae7024ab06a7f92e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-timerify-constructor.js",
+      "sha256": "137a18527beaa78a346ee77f06c5457fe3079c2a652a3565dfb1408422f0f528",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-timerify-error.js",
+      "sha256": "c089c3973e8c266401783cfa9128f934a5cc53c4abb67c3e9773adf2233a0706",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-timerify-histogram-async.mjs",
+      "sha256": "1fecd865e536ceaa3c1683033bafd893f1a91768120caf98c067058fcde5e884",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-timerify-histogram-sync.mjs",
+      "sha256": "4f47b37cea6bf611f19a8c980bd51514d5f55c8dc65d32256ff8aea22ba2f60e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-timerify-invalid-args.js",
+      "sha256": "02c76539616674a917613f557fad3feabd38b8f30bfa512f1cf9d0716b6ebb0e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-timerify-multiple-wrapping.js",
+      "sha256": "fbaa202b7b7de43b9ee137861bbfa5ce707d2b0ace210c5f3334282b37cd6d01",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-timerify-return-value.js",
+      "sha256": "00ade345e8b3eeffb3962c807919c435e6394582adac2dcbdd6ef9cb416ad2ff",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-usertiming.js",
+      "sha256": "167b4c8232487dca2d6e175a0b70583f625dd0b2c5658751698009342be4f06c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-perf-hooks-worker-timeorigin.js",
+      "sha256": "0d9137ebe53d9d150dbe31881e5b084d636687de8df284bb8986839f51d0ed4b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-function-async.js",
+      "sha256": "bcc73ed6ae41cc21bb6e983c9f19265b45317bd092fa37f24fc96b1943a4b48b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-gc-minor-ms.js",
+      "sha256": "c36e6ccdb270f15feb274abc1574da480a3ec26119e1cd89dda23bea4d8247a8",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc --no-warnings --minor-ms"
+      ],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-gc.js",
+      "sha256": "be44737018af985c16af361d111923409059a9fd5d45c8f6e4dff96011fd7a4e",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc --no-warnings"
+      ],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-global.js",
+      "sha256": "f47ccd34ca7f711931f11cb7ff9556af1d84dcb012e1f71c4064d8fe6f71cd00",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-many-marks.js",
+      "sha256": "56bc5f637bd44e7fc6fc898cf386b63aabb1021de82cdc8cf3756d20938b6699",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-measure-detail.js",
+      "sha256": "f87939187ab0e972ee368c0c24f68b3b5b4570b2e1ebf80aedb1c84150ff95c8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-measure.js",
+      "sha256": "4ab713cf832b90adb9428d5a7dc98f2c719f3591cdbfa0caa597af91a27cedbe",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-nodetiming-uvmetricsinfo-buffer.js",
+      "sha256": "5c327c8e8c94119a9ddd69e93c4c3fef08c3eda9223d2ee0285666403ffa3df1",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-nodetiming-uvmetricsinfo-worker.js",
+      "sha256": "b7f063de6bb1208a18755236e721eaf2258c105b9636332b4a4abd6c71fe9465",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-nodetiming-uvmetricsinfo.js",
+      "sha256": "0cf1349f718dd731718af3cff611b8a88bd4fda49df013fcf57c7ac025cb8f32",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-nodetiming.js",
+      "sha256": "1bec52a21bafa8e2456c7854d262793b579bdb6b9622e8442de3cdbdd16dddba",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-resourcetimingbufferfull.js",
+      "sha256": "9e47d0a4168bbfdce6c9989781459e731fa93fdad82877db7930168b235003d4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-resourcetimingbuffersize.js",
+      "sha256": "4da1dfa8466e45b13361da3adeeb5a0e9a53ce2ea0ba166876d8955ea9d3b374",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performance-timeline.mjs",
+      "sha256": "b6b9d304f2ee1862f5059ad5ff5916991913c9b91bf36f24c1235620726bea35",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performanceobserver-gc.js",
+      "sha256": "48ef983d334df1e4d88c9145581f4df5fcffdd9f9d29e92547e35aa90956ae0c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performanceobserver-observer-counts.js",
+      "sha256": "a6c0d8f2ad17b7fb5ef7e8cb35082494e165a4ba351ee30a86e234406d46ad3d",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-performanceobserver.js",
+      "sha256": "c2a2df717772ba6486a8ba71d94892b20ef2618dfff97fe063cf8549da15a062",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-warnings"
+      ],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-quic-perf-hooks.mjs",
+      "sha256": "f06ad3d75e9919ec46b211480d0e25b610c22069e6e8e356a85468543c1c8678",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-quic --experimental-stream-iter --no-warnings"
+      ],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/parallel/test-snapshot-perf-hooks-gc-observer.js",
+      "sha256": "8a7a136eb2a5c5318120f6a5f819c23fca6a7bc3c6beccfcc993d8d80697e6c0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/sequential/test-perf-hooks-histogram-heapdump.js",
+      "sha256": "87bb6f40c1f6b5324a80e67ad6b3281e45164232c1b7be76c8e9693b86c65442",
+      "category": "sequential",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/sequential/test-perf-hooks.js",
+      "sha256": "7c93a03255b0f85615926a3d517a2b40da867c266c28f0862d1d696f46b9cd1a",
+      "category": "sequential",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/sequential/test-performance-eventloopdelay.js",
+      "sha256": "cb86fa7fc81b3424639dfece73d27ab91892a8292993777167c352533606287c",
+      "category": "sequential",
+      "declaredFlags": [
+        "--expose-gc --expose-internals"
+      ],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    },
+    {
+      "path": "test/wpt/test-performance-timeline.js",
+      "sha256": "4d6254d04cafe11e8a3d8a0d670fd3e910c84f0c22a77ce7391f6e5126639343",
+      "category": "wpt",
+      "declaredFlags": [],
+      "status": "Proposed unchanged source, unrun; no assertion applicability signoff",
+      "requirements": "Original flags/GC/internal controls/real I/O/worker fixtures; WPT wrappers require further unchanged variant/resource accounting"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

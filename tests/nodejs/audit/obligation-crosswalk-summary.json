@@ -1,0 +1,235 @@
+{
+  "schema": 1,
+  "complete": true,
+  "kind": "Complete preservation of discovery obligations with explicitly partial reconciliation, not a completed semantic audit",
+  "input": {
+    "path": "tests/nodejs/outline/review-rows.jsonl",
+    "sha256": "f39ff6e6f47066c350e56fdfd74ba3867900d376ced10b12c5ce36fc0fc9ec1b"
+  },
+  "crosswalk": {
+    "path": "tests/nodejs/audit/obligation-crosswalk.jsonl",
+    "sha256": "5730d34a7a58ce10f6a7c9648680cc2d57343f2d57634931e4bf43134914141b"
+  },
+  "obligations": 11199,
+  "sourceAuditCompleteObligations": 11199,
+  "families": {
+    "async": {
+      "obligations": 498,
+      "exactPathObservationLinkedObligations": 44,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 498,
+      "observationLinkedObligations": 498
+    },
+    "compression": {
+      "obligations": 585,
+      "exactPathObservationLinkedObligations": 20,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 585,
+      "observationLinkedObligations": 585
+    },
+    "crypto": {
+      "obligations": 476,
+      "exactPathObservationLinkedObligations": 18,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 476,
+      "observationLinkedObligations": 476
+    },
+    "documentation": {
+      "obligations": 220,
+      "exactPathObservationLinkedObligations": 0,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 220,
+      "observationLinkedObligations": 220
+    },
+    "engine": {
+      "obligations": 361,
+      "exactPathObservationLinkedObligations": 63,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 361,
+      "observationLinkedObligations": 361
+    },
+    "filesystem": {
+      "obligations": 743,
+      "exactPathObservationLinkedObligations": 19,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 743,
+      "observationLinkedObligations": 743
+    },
+    "http": {
+      "obligations": 1084,
+      "exactPathObservationLinkedObligations": 16,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 1084,
+      "observationLinkedObligations": 1084
+    },
+    "loading": {
+      "obligations": 539,
+      "exactPathObservationLinkedObligations": 21,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 539,
+      "observationLinkedObligations": 539
+    },
+    "native-integration": {
+      "obligations": 593,
+      "exactPathObservationLinkedObligations": 54,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 593,
+      "observationLinkedObligations": 593
+    },
+    "network": {
+      "obligations": 503,
+      "exactPathObservationLinkedObligations": 69,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 503,
+      "observationLinkedObligations": 503
+    },
+    "observability": {
+      "obligations": 407,
+      "exactPathObservationLinkedObligations": 40,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 407,
+      "observationLinkedObligations": 407
+    },
+    "processes": {
+      "obligations": 778,
+      "exactPathObservationLinkedObligations": 32,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 778,
+      "observationLinkedObligations": 778
+    },
+    "secure-network": {
+      "obligations": 615,
+      "exactPathObservationLinkedObligations": 5,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 615,
+      "observationLinkedObligations": 615
+    },
+    "streams": {
+      "obligations": 430,
+      "exactPathObservationLinkedObligations": 20,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 430,
+      "observationLinkedObligations": 430
+    },
+    "terminal": {
+      "obligations": 243,
+      "exactPathObservationLinkedObligations": 37,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 243,
+      "observationLinkedObligations": 243
+    },
+    "testing": {
+      "obligations": 226,
+      "exactPathObservationLinkedObligations": 21,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 226,
+      "observationLinkedObligations": 226
+    },
+    "values": {
+      "obligations": 2203,
+      "exactPathObservationLinkedObligations": 17,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 2203,
+      "observationLinkedObligations": 2203
+    },
+    "web": {
+      "obligations": 548,
+      "exactPathObservationLinkedObligations": 8,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 548,
+      "observationLinkedObligations": 548
+    },
+    "workers": {
+      "obligations": 147,
+      "exactPathObservationLinkedObligations": 42,
+      "sourceAuditComplete": true,
+      "sourceAuditCompleteObligations": 147,
+      "observationLinkedObligations": 147
+    }
+  },
+  "rules": [
+    "Linkage is syntactic and does not resolve applicability, aliases, descriptors, inherited behavior or semantics",
+    "No unresolved obligation counts as audited or conformant",
+    "Family reports and grouped API observations cannot replace this reconciliation"
+  ],
+  "observationLinkedObligations": 11199,
+  "observationLinkMeaning": "Includes exact descriptor paths and explicit reviewed-module narrative mappings; not all links are semantic signoff",
+  "reviewedModules": [
+    "node:_http_agent",
+    "node:_http_client",
+    "node:_http_common",
+    "node:_http_incoming",
+    "node:_http_outgoing",
+    "node:_http_server",
+    "node:_tls_common",
+    "node:_tls_wrap",
+    "node:assert",
+    "node:assert/strict",
+    "node:async_hooks",
+    "node:bench",
+    "node:bench/reporters",
+    "node:buffer",
+    "node:child_process",
+    "node:cluster",
+    "node:console",
+    "node:constants",
+    "node:crypto",
+    "node:dgram",
+    "node:diagnostics_channel",
+    "node:dns",
+    "node:dns/promises",
+    "node:domain",
+    "node:dtls",
+    "node:events",
+    "node:ffi",
+    "node:fs",
+    "node:fs/promises",
+    "node:http",
+    "node:http2",
+    "node:https",
+    "node:inspector",
+    "node:inspector/promises",
+    "node:module",
+    "node:net",
+    "node:os",
+    "node:path",
+    "node:path/posix",
+    "node:path/win32",
+    "node:perf_hooks",
+    "node:process",
+    "node:punycode",
+    "node:querystring",
+    "node:quic",
+    "node:readline",
+    "node:readline/promises",
+    "node:repl",
+    "node:sea",
+    "node:sqlite",
+    "node:stream",
+    "node:stream/consumers",
+    "node:stream/iter",
+    "node:stream/promises",
+    "node:stream/web",
+    "node:string_decoder",
+    "node:sys",
+    "node:test",
+    "node:test/reporters",
+    "node:timers",
+    "node:timers/promises",
+    "node:tls",
+    "node:trace_events",
+    "node:tty",
+    "node:url",
+    "node:util",
+    "node:util/types",
+    "node:v8",
+    "node:vfs",
+    "node:vm",
+    "node:wasi",
+    "node:worker_threads",
+    "node:zlib",
+    "node:zlib/iter"
+  ],
+  "resolvedPrivateOrIncidentalObligations": 2,
+  "completionMeaning": "Original discovery obligations source/applicability reviewed and linked; not unique public API denominator, implementation completion or runtime conformance"
+}

@@ -1,0 +1,2714 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "memberRequirements": {
+    "node:readline": {
+      "Interface": "Callable/new callback wrapper over shared InterfaceConstructor/EventEmitter; positional/options, sync/callback completer adaptation, actual state/input/output/raw/history and full metadata; missing public constructor",
+      "createInterface": "Ordinary four-argument factory returning actual Interface; candidate one-arg method ignores options and returns direct EventEmitter without interface owners",
+      "promises": "Same module identity as node:readline/promises, not independent copies or callback Interface alias; missing",
+      "emitKeypressEvents": "Idempotent per-stream UTF8/codepoint/ANSI escape decoder with sequence/name/modifier/code fields, ESC timer and listener-driven attach/detach; paste completion flag and recovery after listener throws; missing",
+      "clearLine": "Direction by sign, validate callback then null-stream nextTick(null) or actual write return/callback; candidate extra overload, immediate callback/true and null-stream mismatch",
+      "clearScreenDown": "Actual CSI 0J and writable completion/backpressure; null-stream nextTick callback(null), exact validation; candidate always true/immediate callback",
+      "cursorTo": "Number/NaN/x-y and callback overload/order, actual untruncated CSI positions, null/no-op nextTick callback and writable backpressure; candidate clamps/int32 coercion and synchronous callback",
+      "moveCursor": "Actual signed numeric displacement CSI, no write for no displacement/null stream and nextTick callback(null), exact callback validation; candidate int32 coercion/empty write/always true",
+      "Interface.prototype.question": "Temporary query prompt and one pending answer-only callback; restore prompt, resume input, close error, protected abort and cleanup; candidate writes global stdout and immediately calls cb(empty)",
+      "Interface.prototype.question.Symbol.for(nodejs.util.promisify.custom)": "Distinct Promise wrapper over actual callback question, abort rejection/cause and disposal; normal and abort error/lookup order, not error-first callback convention",
+      "Interface.prototype.close": "Idempotent pause/raw reset/closed state and owned listener cleanup before close event; candidate emits repeatedly without releasing input",
+      "Interface.prototype.Symbol.dispose": "Named wrapper invoking close, inherited from shared interface; not strict function identity alias; missing",
+      "Interface.prototype.pause": "Closed error, transition input.pause/paused flag/event, already-paused undefined return; missing",
+      "Interface.prototype.resume": "Closed error, actual input.resume transition/event, already-active undefined return; missing",
+      "Interface.prototype.prompt": "Resume if paused, actual stored prompt/configured output/terminal refresh and cursor preservation; inert candidate",
+      "Interface.prototype.setPrompt": "Store prompt without invented eager coercion; callback validation/output dependency occurs at actual write path; inert candidate",
+      "Interface.prototype.getPrompt": "Return actual stored prompt; missing",
+      "Interface.prototype.write": "Feed input decoder or terminal key state, resume if paused, reject after close; not stdout write; missing",
+      "Interface.prototype.getCursorPos": "Prompt plus UTF16 cursor converted to VT-stripped display width/tab/wrap/multiline rows/cols; missing",
+      "Interface.prototype.Symbol.asyncIterator": "Cached EventEmitter.on line iterator, first argument/high watermark1024/close event/inherited iterator; target error and break-close prose/source questions T-013; missing",
+      "Interface.prototype.columns": "Inherited getter reads actual output.columns or Infinity, not hardcoded terminal size; missing",
+      "Interface.prototype.clearLine": "Source-discovered instance edit method clears current line and resets cursor/rows after actual terminal writes; distinct from static helper; missing",
+      "Interface.prototype.setupHistoryManager": "Source-discovered inherited ReplHistory owner with options/validation/initialization and enumerable state accessors; no extra namespace constructor",
+      "Interface.[state and options]": "input/output/terminal/line/cursor/history/historyIndex/historySize/isFlushing/completer/crlfDelay/escapeCodeTimeout/tabSize, getter order and actual per-owner state; no own InterfaceConstructor export",
+      "Interface.[EventEmitter inheritance]": "Real target callback/shared-base/EventEmitter prototype chain and inherited listener APIs; candidate directly EventEmitter, class and interface lifecycle absent; EventEmitter algorithm gaps remain separate",
+      "Interface.[events and keybindings]": "Actual close/error/line/history/pause/resume/SIGINT/SIGTSTP/SIGCONT from input/history/signal owners; full key table and source ANSI parsing; target Windows branches distinct from outer host",
+      "Interface.[target iterator and signal questions]": "Native controls needed for source error-forwarding/iterator-return versus prose and Ctrl-C close versus pause; do not implement guessed prose-only behavior",
+      "Interface.prototype._setRawMode": "Actual input raw-mode transition and previous state; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._onLine": "Route pending question answer versus line event; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._writeToOutput": "Validate string and configured output only; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._addHistory": "Actual history owner/array/event semantics; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._refreshLine": "Real CSI redraw/display widths/rows/cursor; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._normalWrite": "UTF8 partial decoder and chunk/CRLF/Unicode line buffer; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._insertString": "Actual codepoint/editor insert and display; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._tabComplete": "Callback completer pause/error/resume and shared completion application; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._wordLeft": "Source word-boundary cursor movement; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._wordRight": "Source word-boundary cursor movement; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._deleteLeft": "Codepoint-aware deletion/undo/redraw; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._deleteRight": "Codepoint-aware deletion/undo/redraw; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._deleteWordLeft": "Source word boundary deletion; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._deleteWordRight": "Source word boundary deletion; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._deleteLineLeft": "Actual line deletion/kill ring/redraw; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._deleteLineRight": "Actual line deletion/kill ring/redraw; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._line": "History and undo/redo state then actual line/question delivery; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._historyNext": "Actual history navigation/subsequence/cursor/redraw; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._historyPrev": "Actual history navigation/subsequence/cursor/redraw; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._getDisplayPos": "VT stripped/tab/width/wrap/multiline rows and columns; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._getCursorPos": "Same shared getCursorPos algorithm, explicit legacy alias; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._moveCursor": "Clamp UTF16 cursor and actual display movement/redraw; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._ttyWrite": "Key/CRLF/control/undo/history/completion/edit state dispatch; explicitly exposed backward-compatible method forwarding shared symbol algorithm; missing",
+      "Interface.prototype._decoder": "Explicit target getter/setter proxy to shared private symbol state, default nonenumerable/nonconfigurable descriptor; actual state and receiver semantics, missing",
+      "Interface.prototype._line_buffer": "Explicit target getter/setter proxy to shared private symbol state, default nonenumerable/nonconfigurable descriptor; actual state and receiver semantics, missing",
+      "Interface.prototype._oldPrompt": "Explicit target getter/setter proxy to shared private symbol state, default nonenumerable/nonconfigurable descriptor; actual state and receiver semantics, missing",
+      "Interface.prototype._previousKey": "Explicit target getter/setter proxy to shared private symbol state, default nonenumerable/nonconfigurable descriptor; actual state and receiver semantics, missing",
+      "Interface.prototype._prompt": "Explicit target getter/setter proxy to shared private symbol state, default nonenumerable/nonconfigurable descriptor; actual state and receiver semantics, missing",
+      "Interface.prototype._questionCallback": "Explicit target getter/setter proxy to shared private symbol state, default nonenumerable/nonconfigurable descriptor; actual state and receiver semantics, missing",
+      "Interface.prototype._sawKeyPress": "Explicit target getter/setter proxy to shared private symbol state, default nonenumerable/nonconfigurable descriptor; actual state and receiver semantics, missing",
+      "Interface.prototype._sawReturnAt": "Explicit target getter/setter proxy to shared private symbol state, default nonenumerable/nonconfigurable descriptor; actual state and receiver semantics, missing",
+      "Interface.input": "Actual per-interface input state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.output": "Actual per-interface output state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.line": "Actual per-interface line state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.cursor": "Actual per-interface cursor state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.terminal": "Actual per-interface terminal state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.history": "Actual per-interface history state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.historyIndex": "Actual per-interface historyIndex state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.historySize": "Actual per-interface historySize state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.isFlushing": "Actual per-interface isFlushing state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.columns": "Actual per-interface columns state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.completer": "Actual per-interface completer state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.tabSize": "Actual per-interface tabSize state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.escapeCodeTimeout": "Actual per-interface escapeCodeTimeout state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner",
+      "Interface.crlfDelay": "Actual per-interface crlfDelay state/accessor/descriptor and owning input/history/terminal behavior described in full requirements/source report; missing candidate owner"
+    },
+    "node:readline/promises": {
+      "Interface": "Actual class extending shared inherited interface with Promise question; all shared methods/events/state/inheritance/descriptors required, namespace missing",
+      "createInterface": "Ordinary four-argument factory, same positional/options owner selection and asynchronous completer; missing",
+      "Interface.prototype.question": "Promise executor, preabort/invalid signal/error rejection, actual temporary prompt and answer, protected cancel cleanup and stored Ctrl-C/D rejection; reject after close",
+      "Readline": "Separate private-field transactional cursor owner requiring writable stream, optional boolean autoCommit, not an input Interface or source-enforced TTY brand",
+      "Readline.prototype.cursorTo": "Validate integer x and nonnull y, queue CSI or nextTick auto-write, return receiver; private-field receiver errors",
+      "Readline.prototype.moveCursor": "When movement truthy validate both integer deltas; queue CSI or nextTick auto-write; zero/falsy no-op returns receiver without invented eager validation",
+      "Readline.prototype.clearLine": "Validate integer dir -1..1, queue CSI or nextTick auto-write, return receiver",
+      "Readline.prototype.clearScreenDown": "Queue CSI 0J or nextTick auto-write, return receiver",
+      "Readline.prototype.commit": "Promise fulfills from stream.write callback with joined queue (even empty); clears after write call, synchronous throw executor rejection; not an invented error rollback policy",
+      "Readline.prototype.rollback": "Clear pending private action list without output, return receiver; auto-committed queued nextTicks are separate work",
+      "Interface.[inherited contracts]": "Shared close/pause/resume/prompt/getPrompt/setPrompt/write/cursor/history/events/iterator/dispose plus EventEmitter; same real input/raw/decoder/timer/signal owners"
+    },
+    "node:repl": {
+      "REPLServer": "Class requires new, extends actual callback Interface; options/legacy args, per-session context/eval/writer/completion/history/editor/error/result state and inherited contracts; module missing",
+      "start": "Ordinary function forwarding options/prompt or six retained positional arguments into new REPLServer, real I/O/state/liveness",
+      "writer": "Arrow formatter calls inspect with mutable writer.options; showProxy true and target inspection defaults; no invented ordinary prototype",
+      "writer.options": "Shared mutable inspection defaults/options; target standalone inspect.replDefaults getter/setter and colors policy, actual bytes not canned output",
+      "Recoverable": "SyntaxError subclass with .err original value, actual class descriptors and multiline evaluation callback handling",
+      "REPL_MODE_SLOPPY": "Private-per-module symbol identifying ordinary evaluator mode; same source namespace identity, not a string constant",
+      "REPL_MODE_STRICT": "Symbol identifying strict evaluator with source transformation/error offsets, not public platform spoofing",
+      "isValidSyntax": "Source-discovered exported parser helper: Acorn parse input then expression-assignment fallback, await-outside-function allowed, boolean result and actual function metadata",
+      "builtinModules": "Nonenumerable configurable getter/setter over shared mutable REPL builtin list; pending-deprecation warning, not full/static module.builtinModules snapshot",
+      "_builtinLibs": "Retained deprecated nonenumerable configurable alias accessors sharing same mutable internal list, separate warning code/policy",
+      "REPLServer.prototype.defineCommand": "Function or action object, actual function validation, command dictionary lookup and REPL receiver/string remainder",
+      "REPLServer.prototype.displayPrompt": "Initial versus multiline pipe prompt, preserve cursor and resume input; actual terminal writes",
+      "REPLServer.prototype.clearBufferedCommand": "Clear actual pending multiline source, not evaluated session/history/context wholesale",
+      "REPLServer.prototype.setupHistory": "Legacy path or config object/callback, actual per-session history/permission/file/flush/close owner; source/prose error callback question T-015",
+      "REPLServer.prototype.close": "Await terminal history flush and handle close before inherited interface close, nextTick ordinary branch and idempotent lower close",
+      "REPLServer.prototype.createContext": "Global or actual VM context, actual nonbuiltin globals/Console/module/require paths/lazy builtins and inspector context; engine/loader boundary specific",
+      "REPLServer.prototype.resetContext": "Replace actual context, reset history-of-source/underscore ownership and emit reset(context); not merely clear one object field",
+      "REPLServer.prototype.setPrompt": "Update initial prompt plus inherited prompt without confusing continuation/editor prompt",
+      "REPLServer.prototype.complete": "Delegate actual completer with receiver/arguments; normal callback/FS/global/prototype completion ownership",
+      "REPLServer.prototype.completeOnEditorMode": "Return callback filtering/collapsing completions to common prefix in editor mode, preserve callback errors",
+      "REPLServer.prototype._handleError": "Source/captured error owner, synchronous handleError print/ignore/unhandled contract and exact invalid-state errors; error stack/writer/prompt and per-session routing",
+      "REPLServer.context": "Actual VM/global context and mutable property descriptors/module identity; isolated versus shared global sessions",
+      "REPLServer.eval": "Actual custom or default evaluator in per-session ALS, code/context/resource/callback protocol, recoverable syntax/strict/await/dynamic import and SIGINT state restoration",
+      "REPLServer.[events]": "Actual exit/reset and inherited readline/events, buffered close during async evaluation and per-owner teardown",
+      "REPLServer.[commands and editing]": "Real break/clear/exit/help/save/load/editor, dot parsing, reverse and substring search, preview/await buffer, terminal-only editor; actual guest files/VM/input/output",
+      "REPLServer.[underscore results]": "_ and _error actual last results/errors with assignment opt-out accessors/output; independent session and context reset",
+      "REPLServer.[options and errors]": "Actual eval/writer/completer/colors/global/undefined/mode/breakEvalOnSigint/preview/handleError; reject custom eval plus SIGINT break and removed domain option; class/legacy stream metadata",
+      "[standalone CLI and environment]": "No main TTY/-i/eval/external module selection, input-type rejection, global/SIGINT defaults and actual exit; NODE_REPL_HISTORY/SIZE/MODE/NO_READLINE with programmatic distinctions",
+      "[target routing and history questions]": "ALS/additive process capture plus active-domain interaction versus old/new prose; nested uncaughtException registration guard and history callbacks require later controls"
+    }
+  },
+  "legacyMethodAliases": {
+    "_setRawMode": "Actual input raw-mode transition and previous state",
+    "_onLine": "Route pending question answer versus line event",
+    "_writeToOutput": "Validate string and configured output only",
+    "_addHistory": "Actual history owner/array/event semantics",
+    "_refreshLine": "Real CSI redraw/display widths/rows/cursor",
+    "_normalWrite": "UTF8 partial decoder and chunk/CRLF/Unicode line buffer",
+    "_insertString": "Actual codepoint/editor insert and display",
+    "_tabComplete": "Callback completer pause/error/resume and shared completion application",
+    "_wordLeft": "Source word-boundary cursor movement",
+    "_wordRight": "Source word-boundary cursor movement",
+    "_deleteLeft": "Codepoint-aware deletion/undo/redraw",
+    "_deleteRight": "Codepoint-aware deletion/undo/redraw",
+    "_deleteWordLeft": "Source word boundary deletion",
+    "_deleteWordRight": "Source word boundary deletion",
+    "_deleteLineLeft": "Actual line deletion/kill ring/redraw",
+    "_deleteLineRight": "Actual line deletion/kill ring/redraw",
+    "_line": "History and undo/redo state then actual line/question delivery",
+    "_historyNext": "Actual history navigation/subsequence/cursor/redraw",
+    "_historyPrev": "Actual history navigation/subsequence/cursor/redraw",
+    "_getDisplayPos": "VT stripped/tab/width/wrap/multiline rows and columns",
+    "_getCursorPos": "Same shared getCursorPos algorithm, explicit legacy alias",
+    "_moveCursor": "Clamp UTF16 cursor and actual display movement/redraw",
+    "_ttyWrite": "Key/CRLF/control/undo/history/completion/edit state dispatch"
+  },
+  "sections": [
+    {
+      "document": "doc/api/readline.md",
+      "line": 1,
+      "endLine": 67,
+      "title": "Readline",
+      "sha256": "985ad865e01a19a94dffe22388e0ccd4412adb494ceba682dabefd081cfb12db",
+      "normativeRequirements": "# Readline\n\n\n\n> Stability: 2 - Stable\n\n\n\nThe `node:readline` module provides an interface for reading data from a\n[Readable][] stream (such as [`process.stdin`][]) one line at a time.\n\nTo use the promise-based APIs:\n\n\n\n\n\nTo use the callback and sync APIs:\n\n\n\n\n\nThe following simple example illustrates the basic use of the `node:readline`\nmodule.\n\n\n\n\n\nOnce this code is invoked, the Node.js application will not terminate until the\n`readline.Interface` is closed because the interface waits for data to be\nreceived on the `input` stream.\n\n<a id='readline_class_interface'></a>\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 68,
+      "endLine": 82,
+      "title": "Class: `InterfaceConstructor`",
+      "sha256": "41ffabce349fadae0a5deae49bc01ec3a1b249b57266d86d3cbe22f5ba224c25",
+      "normativeRequirements": "## Class: `InterfaceConstructor`\n\n\n\n* Extends: {EventEmitter}\n\nInstances of the `InterfaceConstructor` class are constructed using the\n`readlinePromises.createInterface()` or `readline.createInterface()` method.\nEvery instance is associated with a single `input` [Readable][] stream and a\nsingle `output` [Writable][] stream.\nThe `output` stream is used to print prompts for user input that arrives on,\nand is read from, the `input` stream.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 83,
+      "endLine": 104,
+      "title": "Event: `'close'`",
+      "sha256": "0c830482537a977da7916f36c1e422d4b2f5126e1adbddd4b1e182052f6fd24f",
+      "normativeRequirements": "### Event: `'close'`\n\n\n\nThe `'close'` event is emitted when one of the following occur:\n\n* The `rl.close()` method is called and the `InterfaceConstructor` instance has\n  relinquished control over the `input` and `output` streams;\n* The `input` stream receives its `'end'` event;\n* The `input` stream receives <kbd>Ctrl</kbd>+<kbd>D</kbd> to signal\n  end-of-transmission (EOT);\n* The `input` stream receives <kbd>Ctrl</kbd>+<kbd>C</kbd> to signal `SIGINT`\n  and there is no `'SIGINT'` event listener registered on the\n  `InterfaceConstructor` instance.\n\nThe listener function is called without passing any arguments.\n\nThe `InterfaceConstructor` instance is finished once the `'close'` event is\nemitted.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 105,
+      "endLine": 115,
+      "title": "Event: `'error'`",
+      "sha256": "0db2e81776d0da58526c6f34383ac2cdbb72d1ad8aa4739fe15401a4a097549a",
+      "normativeRequirements": "### Event: `'error'`\n\n\n\nThe `'error'` event is emitted when an error occurs on the `input` stream\nassociated with the `node:readline` `Interface`.\n\nThe listener function is called with an `Error` object passed as the single argument.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 116,
+      "endLine": 137,
+      "title": "Event: `'line'`",
+      "sha256": "8d1b517ff7dca7f02e6b3e36c4ae47d012eeb187e3a3d6617bf2ea3679f83da1",
+      "normativeRequirements": "### Event: `'line'`\n\n\n\nThe `'line'` event is emitted whenever the `input` stream receives an\nend-of-line input (`\\n`, `\\r`, or `\\r\\n`). This usually occurs when the user\npresses <kbd>Enter</kbd> or <kbd>Return</kbd>.\n\nThe `'line'` event is also emitted if new data has been read from a stream and\nthat stream ends without a final end-of-line marker.\n\nThe listener function is called with a string containing the single line of\nreceived input.\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 138,
+      "endLine": 162,
+      "title": "Event: `'history'`",
+      "sha256": "561bd85b94bd58da986c2ae9f084aeca4552fda7dc301c66057b254a4fe28898",
+      "normativeRequirements": "### Event: `'history'`\n\n\n\nThe `'history'` event is emitted whenever the history array has changed.\n\nThe listener function is called with an array containing the history array.\nIt will reflect all changes, added lines and removed lines due to\n`historySize` and `removeHistoryDuplicates`.\n\nThe primary purpose is to allow a listener to persist the history.\nIt is also possible for the listener to change the history object. This\ncould be useful to prevent certain lines to be added to the history, like\na password.\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 163,
+      "endLine": 182,
+      "title": "Event: `'pause'`",
+      "sha256": "3900ce1442c2b4033f3c3ce2446ece6ec15f7a2f0c7bc614a2d67fff237f804f",
+      "normativeRequirements": "### Event: `'pause'`\n\n\n\nThe `'pause'` event is emitted when one of the following occur:\n\n* The `input` stream is paused.\n* The `input` stream is not paused and receives the `'SIGCONT'` event. (See\n  events [`'SIGTSTP'`][] and [`'SIGCONT'`][].)\n\nThe listener function is called without passing any arguments.\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 183,
+      "endLine": 198,
+      "title": "Event: `'resume'`",
+      "sha256": "25d9e50a9b6bc9e1e4a6396497daf58771ebc7626acbdc782fa2e17496416a96",
+      "normativeRequirements": "### Event: `'resume'`\n\n\n\nThe `'resume'` event is emitted whenever the `input` stream is resumed.\n\nThe listener function is called without passing any arguments.\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 199,
+      "endLine": 222,
+      "title": "Event: `'SIGCONT'`",
+      "sha256": "cdeb8decb1cd63f3aa6b621c784aadf0462392e4e9df784e608131cd4e118f46",
+      "normativeRequirements": "### Event: `'SIGCONT'`\n\n\n\nThe `'SIGCONT'` event is emitted when a Node.js process previously moved into\nthe background using <kbd>Ctrl</kbd>+<kbd>Z</kbd> (i.e. `SIGTSTP`) is then\nbrought back to the foreground using fg(1p).\n\nIf the `input` stream was paused _before_ the `SIGTSTP` request, this event will\nnot be emitted.\n\nThe listener function is invoked without passing any arguments.\n\n\n\nThe `'SIGCONT'` event is _not_ supported on Windows.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 223,
+      "endLine": 243,
+      "title": "Event: `'SIGINT'`",
+      "sha256": "c1ae9e24429b6dd88300ce38842324d6ca13c3521e33dc5cfa6c3178d792764f",
+      "normativeRequirements": "### Event: `'SIGINT'`\n\n\n\nThe `'SIGINT'` event is emitted whenever the `input` stream receives\na <kbd>Ctrl+C</kbd> input, known typically as `SIGINT`. If there are no\n`'SIGINT'` event listeners registered when the `input` stream receives a\n`SIGINT`, the `'pause'` event will be emitted.\n\nThe listener function is invoked without passing any arguments.\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 244,
+      "endLine": 272,
+      "title": "Event: `'SIGTSTP'`",
+      "sha256": "096dc7430991e0a72fd71292a344802924212a948f87d05ce5a823d564bf7511",
+      "normativeRequirements": "### Event: `'SIGTSTP'`\n\n\n\nThe `'SIGTSTP'` event is emitted when the `input` stream receives\na <kbd>Ctrl</kbd>+<kbd>Z</kbd> input, typically known as `SIGTSTP`. If there are\nno `'SIGTSTP'` event listeners registered when the `input` stream receives a\n`SIGTSTP`, the Node.js process will be sent to the background.\n\nWhen the program is resumed using fg(1p), the `'pause'` and `'SIGCONT'` events\nwill be emitted. These can be used to resume the `input` stream.\n\nThe `'pause'` and `'SIGCONT'` events will not be emitted if the `input` was\npaused before the process was sent to the background.\n\nThe listener function is invoked without passing any arguments.\n\n\n\nThe `'SIGTSTP'` event is _not_ supported on Windows.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 273,
+      "endLine": 285,
+      "title": "`rl.close()`",
+      "sha256": "df1a6c85b3c52a26e51a95176b5fe0c9a2594ce1ac542964a8fe2c49ea66a57f",
+      "normativeRequirements": "### `rl.close()`\n\n\n\nThe `rl.close()` method closes the `InterfaceConstructor` instance and\nrelinquishes control over the `input` and `output` streams. When called,\nthe `'close'` event will be emitted.\n\nCalling `rl.close()` does not immediately stop other events (including `'line'`)\nfrom being emitted by the `InterfaceConstructor` instance.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 286,
+      "endLine": 295,
+      "title": "`rl[Symbol.dispose]()`",
+      "sha256": "0547a8cad43d6807e277a9f21d524e040acb9ce3d1eb0be420c7dd7cf537a1de",
+      "normativeRequirements": "### `rl[Symbol.dispose]()`\n\n\n\nAlias for `rl.close()`.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 296,
+      "endLine": 307,
+      "title": "`rl.pause()`",
+      "sha256": "8a4c962381ced99fe9bb5d094b0f39fa6997eacc4daa5b384fccf29e92baf978",
+      "normativeRequirements": "### `rl.pause()`\n\n\n\nThe `rl.pause()` method pauses the `input` stream, allowing it to be resumed\nlater if necessary.\n\nCalling `rl.pause()` does not immediately pause other events (including\n`'line'`) from being emitted by the `InterfaceConstructor` instance.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 308,
+      "endLine": 326,
+      "title": "`rl.prompt([preserveCursor])`",
+      "sha256": "4537299ac7082152bdb948e2d9a8c8c3ca8951d986e4c4215f649840a209ab52",
+      "normativeRequirements": "### `rl.prompt([preserveCursor])`\n\n\n\n* `preserveCursor` {boolean} If `true`, prevents the cursor placement from\n  being reset to `0`.\n\nThe `rl.prompt()` method writes the `InterfaceConstructor` instances configured\n`prompt` to a new line in `output` in order to provide a user with a new\nlocation at which to provide input.\n\nWhen called, `rl.prompt()` will resume the `input` stream if it has been\npaused.\n\nIf the `InterfaceConstructor` was created with `output` set to `null` or\n`undefined` the prompt is not written.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 327,
+      "endLine": 334,
+      "title": "`rl.resume()`",
+      "sha256": "483aee2483cdb73de82704abcc9f0f50c9cd1cbb4716f0e365736c9eb2f1df2c",
+      "normativeRequirements": "### `rl.resume()`\n\n\n\nThe `rl.resume()` method resumes the `input` stream if it has been paused.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 335,
+      "endLine": 345,
+      "title": "`rl.setPrompt(prompt)`",
+      "sha256": "ade693c229874f325bba88c92c8dc76da7ae59617333f04f348cf8c247c2dd8d",
+      "normativeRequirements": "### `rl.setPrompt(prompt)`\n\n\n\n* `prompt` {string}\n\nThe `rl.setPrompt()` method sets the prompt that will be written to `output`\nwhenever `rl.prompt()` is called.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 346,
+      "endLine": 357,
+      "title": "`rl.getPrompt()`",
+      "sha256": "c11bece749681d3dffab7e259b2524c67e410ce3920b4fbe774a4d65f5141354",
+      "normativeRequirements": "### `rl.getPrompt()`\n\n\n\n* Returns: {string} the current prompt string\n\nThe `rl.getPrompt()` method returns the current prompt used by `rl.prompt()`.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 358,
+      "endLine": 392,
+      "title": "`rl.write(data[, key])`",
+      "sha256": "674246f8275dd6b42b18fb1ac8690105c359dddbbdf098fc841200643fedd50d",
+      "normativeRequirements": "### `rl.write(data[, key])`\n\n\n\n* `data` {string}\n* `key` {Object}\n  * `ctrl` {boolean} `true` to indicate the <kbd>Ctrl</kbd> key.\n  * `meta` {boolean} `true` to indicate the <kbd>Meta</kbd> key.\n  * `shift` {boolean} `true` to indicate the <kbd>Shift</kbd> key.\n  * `name` {string} The name of the a key.\n\nThe `rl.write()` method will write either `data` or a key sequence identified\nby `key` to the `output`. The `key` argument is supported only if `output` is\na [TTY][] text terminal. See [TTY keybindings][] for a list of key\ncombinations.\n\nIf `key` is specified, `data` is ignored.\n\nWhen called, `rl.write()` will resume the `input` stream if it has been\npaused.\n\nIf the `InterfaceConstructor` was created with `output` set to `null` or\n`undefined` the `data` and `key` are not written.\n\n\n\nThe `rl.write()` method will write the data to the `readline` `Interface`'s\n`input` _as if it were provided by the user_.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 393,
+      "endLine": 438,
+      "title": "`rl[Symbol.asyncIterator]()`",
+      "sha256": "11aaa126716cf326b31c524042bd5a946af01552aad50eb9f77a585908b71c52",
+      "normativeRequirements": "### `rl[Symbol.asyncIterator]()`\n\n\n\n* Returns: {AsyncIterator}\n\nCreate an `AsyncIterator` object that iterates through each line in the input\nstream as a string. This method allows asynchronous iteration of\n`InterfaceConstructor` objects through `for await...of` loops.\n\nErrors in the input stream are not forwarded.\n\nIf the loop is terminated with `break`, `throw`, or `return`,\n[`rl.close()`][] will be called. In other words, iterating over a\n`InterfaceConstructor` will always consume the input stream fully.\n\nPerformance is not on par with the traditional `'line'` event API. Use `'line'`\ninstead for performance-sensitive applications.\n\n\n\n`readline.createInterface()` will start to consume the input stream once\ninvoked. Having asynchronous operations between interface creation and\nasynchronous iteration may result in missed lines.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 439,
+      "endLine": 480,
+      "title": "`rl.line`",
+      "sha256": "e9bd3c9db8cd01996ed65fc486980e945f2b624274bb56d199eb74307c0777fb",
+      "normativeRequirements": "### `rl.line`\n\n\n\n* Type: {string}\n\nThe current input data being processed by node.\n\nThis can be used when collecting input from a TTY stream to retrieve the\ncurrent value that has been processed thus far, prior to the `line` event\nbeing emitted. Once the `line` event has been emitted, this property will\nbe an empty string.\n\nBe aware that modifying the value during the instance runtime may have\nunintended consequences if `rl.cursor` is not also controlled.\n\n**If not using a TTY stream for input, use the [`'line'`][] event.**\n\nOne possible use case would be as follows:\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 481,
+      "endLine": 495,
+      "title": "`rl.cursor`",
+      "sha256": "6d320f0722c6c34204554a41916094df5cff7df0cf7f43f98d2dfd20ba3fef4a",
+      "normativeRequirements": "### `rl.cursor`\n\n\n\n* Type: {number|undefined}\n\nThe cursor position relative to `rl.line`.\n\nThis will track where the current cursor lands in the input string, when\nreading input from a TTY stream. The position of cursor determines the\nportion of the input string that will be modified as input is processed,\nas well as the column where the terminal caret will be rendered.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 496,
+      "endLine": 511,
+      "title": "`rl.getCursorPos()`",
+      "sha256": "a9eaca6daf7a637286ffd65d7edea3e5939346dae224a5ddbe86cf17dc7be378",
+      "normativeRequirements": "### `rl.getCursorPos()`\n\n\n\n* Returns: {Object}\n  * `rows` {number} the row of the prompt the cursor currently lands on\n  * `cols` {number} the screen column the cursor currently lands on\n\nReturns the real position of the cursor in relation to the input\nprompt + string. Long input (wrapping) strings, as well as multiple\nline prompts are included in the calculations.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 512,
+      "endLine": 523,
+      "title": "Promises API",
+      "sha256": "ca301ba0364a798f6aa779f3a13406eeffffe8015c9c9625a6dcb0ef0e685303",
+      "normativeRequirements": "## Promises API\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 524,
+      "endLine": 537,
+      "title": "Class: `readlinePromises.Interface`",
+      "sha256": "6d9685280059ffd82925f60f3002925ade9b416aa09731359098dacb1f93b47c",
+      "normativeRequirements": "### Class: `readlinePromises.Interface`\n\n\n\n* Extends: {readline.InterfaceConstructor}\n\nInstances of the `readlinePromises.Interface` class are constructed using the\n`readlinePromises.createInterface()` method. Every instance is associated with a\nsingle `input` [Readable][] stream and a single `output` [Writable][] stream.\nThe `output` stream is used to print prompts for user input that arrives on,\nand is read from, the `input` stream.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 538,
+      "endLine": 583,
+      "title": "`rl.question(query[, options])`",
+      "sha256": "fa97bc3a89bb42190a4bdebbfebde12b9972a9fe7382f70abaf10420c0ca0154",
+      "normativeRequirements": "#### `rl.question(query[, options])`\n\n\n\n* `query` {string} A statement or query to write to `output`, prepended to the\n  prompt.\n* `options` {Object}\n  * `signal` {AbortSignal} Optionally allows the `question()` to be canceled\n    using an `AbortSignal`.\n* Returns: {Promise} A promise that is fulfilled with the user's\n  input in response to the `query`.\n\nThe `rl.question()` method displays the `query` by writing it to the `output`,\nwaits for user input to be provided on `input`, then invokes the `callback`\nfunction passing the provided input as the first argument.\n\nWhen called, `rl.question()` will resume the `input` stream if it has been\npaused.\n\nIf the `readlinePromises.Interface` was created with `output` set to `null` or\n`undefined` the `query` is not written.\n\nIf the question is called after `rl.close()`, it returns a rejected promise.\n\nExample usage:\n\n\n\nUsing an `AbortSignal` to cancel a question.\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 584,
+      "endLine": 589,
+      "title": "Class: `readlinePromises.Readline`",
+      "sha256": "8301aef31e2e3c04004f66d5800f0f48e044e858fd640f227943bd057d3faf9c",
+      "normativeRequirements": "### Class: `readlinePromises.Readline`\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 590,
+      "endLine": 599,
+      "title": "`new readlinePromises.Readline(stream[, options])`",
+      "sha256": "e2cfe782b6190132db70cab4d6d42397744e3eba1edf826fbd54f88ce2c37926",
+      "normativeRequirements": "#### `new readlinePromises.Readline(stream[, options])`\n\n\n\n* `stream` {stream.Writable} A [TTY][] stream.\n* `options` {Object}\n  * `autoCommit` {boolean} If `true`, no need to call `rl.commit()`.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 600,
+      "endLine": 617,
+      "title": "`rl.clearLine(dir)`",
+      "sha256": "b1919e9c03f9324d67f635ec9014dbb731607fcfbf64c93e1e75f5a3cabd1cd3",
+      "normativeRequirements": "#### `rl.clearLine(dir)`\n\n\n\n* `dir` {integer}\n  * `-1`: to the left from cursor\n  * `1`: to the right from cursor\n  * `0`: the entire line\n* Returns: this\n\nThe `rl.clearLine()` method adds to the internal list of pending action an\naction that clears current line of the associated `stream` in a specified\ndirection identified by `dir`.\nCall `rl.commit()` to see the effect of this method, unless `autoCommit: true`\nwas passed to the constructor.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 618,
+      "endLine": 631,
+      "title": "`rl.clearScreenDown()`",
+      "sha256": "64fd9ffa8a75bff6b92a540ae809c2caf8f1582f846e4b9e264ba3d2e0e29af5",
+      "normativeRequirements": "#### `rl.clearScreenDown()`\n\n\n\n* Returns: this\n\nThe `rl.clearScreenDown()` method adds to the internal list of pending action an\naction that clears the associated stream from the current position of the\ncursor down.\nCall `rl.commit()` to see the effect of this method, unless `autoCommit: true`\nwas passed to the constructor.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 632,
+      "endLine": 642,
+      "title": "`rl.commit()`",
+      "sha256": "2730c60e307db4281fe7abedf2006ecc111f20e4bf2a8c8ba3e979f252dce0a5",
+      "normativeRequirements": "#### `rl.commit()`\n\n\n\n* Returns: {Promise}\n\nThe `rl.commit()` method sends all the pending actions to the associated\n`stream` and clears the internal list of pending actions.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 643,
+      "endLine": 657,
+      "title": "`rl.cursorTo(x[, y])`",
+      "sha256": "6c44ba3eef4e6a2b5f65fd480397dad665c936b8f2b1241ebdb8c1a1c6207de2",
+      "normativeRequirements": "#### `rl.cursorTo(x[, y])`\n\n\n\n* `x` {integer}\n* `y` {integer}\n* Returns: this\n\nThe `rl.cursorTo()` method adds to the internal list of pending action an action\nthat moves cursor to the specified position in the associated `stream`.\nCall `rl.commit()` to see the effect of this method, unless `autoCommit: true`\nwas passed to the constructor.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 658,
+      "endLine": 673,
+      "title": "`rl.moveCursor(dx, dy)`",
+      "sha256": "f2328f1ae53d15b2daf9b8291996b9d804b140dceb1e8a546c52abe69258aa9d",
+      "normativeRequirements": "#### `rl.moveCursor(dx, dy)`\n\n\n\n* `dx` {integer}\n* `dy` {integer}\n* Returns: this\n\nThe `rl.moveCursor()` method adds to the internal list of pending action an\naction that moves the cursor _relative_ to its current position in the\nassociated `stream`.\nCall `rl.commit()` to see the effect of this method, unless `autoCommit: true`\nwas passed to the constructor.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 674,
+      "endLine": 684,
+      "title": "`rl.rollback()`",
+      "sha256": "c7bf2555614494d72a1629fc2ddceb93eaa484ed0536f843df8d0795a298ee7e",
+      "normativeRequirements": "#### `rl.rollback()`\n\n\n\n* Returns: this\n\nThe `rl.rollback` methods clears the internal list of pending actions without\nsending it to the associated `stream`.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 685,
+      "endLine": 762,
+      "title": "`readlinePromises.createInterface(options)`",
+      "sha256": "7c5e8a2851c22b644eaa3999c7d4194d4f3c2266f62e6b5103dd84894d08f0b9",
+      "normativeRequirements": "### `readlinePromises.createInterface(options)`\n\n\n\n* `options` {Object}\n  * `input` {stream.Readable} The [Readable][] stream to listen to. This option\n    is _required_.\n  * `output` {stream.Writable} The [Writable][] stream to write readline data\n    to.\n  * `completer` {Function} An optional function used for Tab autocompletion.\n  * `terminal` {boolean} `true` if the `input` and `output` streams should be\n    treated like a TTY, and have ANSI/VT100 escape codes written to it.\n    **Default:** checking `isTTY` on the `output` stream upon instantiation.\n  * `history` {string\\[]} Initial list of history lines. This option makes sense\n    only if `terminal` is set to `true` by the user or by an internal `output`\n    check, otherwise the history caching mechanism is not initialized at all.\n    **Default:** `[]`.\n  * `historySize` {number} Maximum number of history lines retained. To disable\n    the history set this value to `0`. This option makes sense only if\n    `terminal` is set to `true` by the user or by an internal `output` check,\n    otherwise the history caching mechanism is not initialized at all.\n    **Default:** `30`.\n  * `removeHistoryDuplicates` {boolean} If `true`, when a new input line added\n    to the history list duplicates an older one, this removes the older line\n    from the list. **Default:** `false`.\n  * `prompt` {string} The prompt string to use. **Default:** `'> '`.\n  * `crlfDelay` {number} If the delay between `\\r` and `\\n` exceeds\n    `crlfDelay` milliseconds, both `\\r` and `\\n` will be treated as separate\n    end-of-line input. `crlfDelay` will be coerced to a number no less than\n    `100`. It can be set to `Infinity`, in which case `\\r` followed by `\\n`\n    will always be considered a single newline (which may be reasonable for\n    [reading files][] with `\\r\\n` line delimiter). **Default:** `100`.\n  * `escapeCodeTimeout` {number} The duration `readlinePromises` will wait for a\n    character (when reading an ambiguous key sequence in milliseconds one that\n    can both form a complete key sequence using the input read so far and can\n    take additional input to complete a longer key sequence).\n    **Default:** `500`.\n  * `tabSize` {integer} The number of spaces a tab is equal to (minimum 1).\n    **Default:** `8`.\n  * `signal` {AbortSignal} Allows closing the interface using an AbortSignal.\n* Returns: {readlinePromises.Interface}\n\nThe `readlinePromises.createInterface()` method creates a new `readlinePromises.Interface`\ninstance.\n\n\n\n\n\nOnce the `readlinePromises.Interface` instance is created, the most common case\nis to listen for the `'line'` event:\n\n\n\nIf `terminal` is `true` for this instance then the `output` stream will get\nthe best compatibility if it defines an `output.columns` property and emits\na `'resize'` event on the `output` if or when the columns ever change\n([`process.stdout`][] does this automatically when it is a TTY).\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 763,
+      "endLine": 790,
+      "title": "Use of the `completer` function",
+      "sha256": "1c2c1e0f3738304c7070bdcc8056f637a2981fc55448026de29836ae8d26c800",
+      "normativeRequirements": "#### Use of the `completer` function\n\nThe `completer` function takes the current line entered by the user\nas an argument, and returns an `Array` with 2 entries:\n\n* An `Array` with matching entries for the completion.\n* The substring that was used for the matching.\n\nFor instance: `[[substr1, substr2, ...], originalsubstring]`.\n\n\n\nThe `completer` function can also return a {Promise}, or be asynchronous:\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 791,
+      "endLine": 796,
+      "title": "Callback API",
+      "sha256": "f2949347b77ef6322813763ddd542872fd699f183378219c27df8f9219f7d903",
+      "normativeRequirements": "## Callback API\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 797,
+      "endLine": 814,
+      "title": "Class: `readline.Interface`",
+      "sha256": "6132506a10a4db3ad05b4685c792438f76f7cf1871a8bb93ff2c5d92d07b9d18",
+      "normativeRequirements": "### Class: `readline.Interface`\n\n\n\n* Extends: {readline.InterfaceConstructor}\n\nInstances of the `readline.Interface` class are constructed using the\n`readline.createInterface()` method. Every instance is associated with a\nsingle `input` [Readable][] stream and a single `output` [Writable][] stream.\nThe `output` stream is used to print prompts for user input that arrives on,\nand is read from, the `input` stream.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 815,
+      "endLine": 869,
+      "title": "`rl.question(query[, options], callback)`",
+      "sha256": "1c1b334de087ddeaef0209acf03734d06896536197cc7548195018f799823248",
+      "normativeRequirements": "#### `rl.question(query[, options], callback)`\n\n\n\n* `query` {string} A statement or query to write to `output`, prepended to the\n  prompt.\n* `options` {Object}\n  * `signal` {AbortSignal} Optionally allows the `question()` to be canceled\n    using an `AbortController`.\n* `callback` {Function} A callback function that is invoked with the user's\n  input in response to the `query`.\n\nThe `rl.question()` method displays the `query` by writing it to the `output`,\nwaits for user input to be provided on `input`, then invokes the `callback`\nfunction passing the provided input as the first argument.\n\nWhen called, `rl.question()` will resume the `input` stream if it has been\npaused.\n\nIf the `readline.Interface` was created with `output` set to `null` or\n`undefined` the `query` is not written.\n\nThe `callback` function passed to `rl.question()` does not follow the typical\npattern of accepting an `Error` object or `null` as the first argument.\nThe `callback` is called with the provided answer as the only argument.\n\nAn error will be thrown if calling `rl.question()` after `rl.close()`.\n\nExample usage:\n\n\n\nUsing an `AbortController` to cancel a question.\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 870,
+      "endLine": 897,
+      "title": "`readline.clearLine(stream, dir[, callback])`",
+      "sha256": "d0098946dff4a456045cc5f835b46d74d9785f7a9d0e70734e606270e46cac17",
+      "normativeRequirements": "### `readline.clearLine(stream, dir[, callback])`\n\n\n\n* `stream` {stream.Writable}\n* `dir` {number}\n  * `-1`: to the left from cursor\n  * `1`: to the right from cursor\n  * `0`: the entire line\n* `callback` {Function} Invoked once the operation completes.\n* Returns: {boolean} `false` if `stream` wishes for the calling code to wait for\n  the `'drain'` event to be emitted before continuing to write additional data;\n  otherwise `true`.\n\nThe `readline.clearLine()` method clears current line of given [TTY][] stream\nin a specified direction identified by `dir`.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 898,
+      "endLine": 921,
+      "title": "`readline.clearScreenDown(stream[, callback])`",
+      "sha256": "40ac52988ab13dd27a42148c5e79635d397626cd4acf74dd4f2a0dae2b2dba31",
+      "normativeRequirements": "### `readline.clearScreenDown(stream[, callback])`\n\n\n\n* `stream` {stream.Writable}\n* `callback` {Function} Invoked once the operation completes.\n* Returns: {boolean} `false` if `stream` wishes for the calling code to wait for\n  the `'drain'` event to be emitted before continuing to write additional data;\n  otherwise `true`.\n\nThe `readline.clearScreenDown()` method clears the given [TTY][] stream from\nthe current position of the cursor down.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 922,
+      "endLine": 1032,
+      "title": "`readline.createInterface(options)`",
+      "sha256": "7c49bb4b211014108140f95bcb767a25815f0194c17b46ccac5161492509f912",
+      "normativeRequirements": "### `readline.createInterface(options)`\n\n\n\n* `options` {Object}\n  * `input` {stream.Readable} The [Readable][] stream to listen to. This option\n    is _required_.\n  * `output` {stream.Writable} The [Writable][] stream to write readline data\n    to.\n  * `completer` {Function} An optional function used for Tab autocompletion.\n  * `terminal` {boolean} `true` if the `input` and `output` streams should be\n    treated like a TTY, and have ANSI/VT100 escape codes written to it.\n    **Default:** checking `isTTY` on the `output` stream upon instantiation.\n  * `history` {string\\[]} Initial list of history lines. This option makes sense\n    only if `terminal` is set to `true` by the user or by an internal `output`\n    check, otherwise the history caching mechanism is not initialized at all.\n    **Default:** `[]`.\n  * `historySize` {number} Maximum number of history lines retained. To disable\n    the history set this value to `0`. This option makes sense only if\n    `terminal` is set to `true` by the user or by an internal `output` check,\n    otherwise the history caching mechanism is not initialized at all.\n    **Default:** `30`.\n  * `removeHistoryDuplicates` {boolean} If `true`, when a new input line added\n    to the history list duplicates an older one, this removes the older line\n    from the list. **Default:** `false`.\n  * `prompt` {string} The prompt string to use. **Default:** `'> '`.\n  * `crlfDelay` {number} If the delay between `\\r` and `\\n` exceeds\n    `crlfDelay` milliseconds, both `\\r` and `\\n` will be treated as separate\n    end-of-line input. `crlfDelay` will be coerced to a number no less than\n    `100`. It can be set to `Infinity`, in which case `\\r` followed by `\\n`\n    will always be considered a single newline (which may be reasonable for\n    [reading files][] with `\\r\\n` line delimiter). **Default:** `100`.\n  * `escapeCodeTimeout` {number} The duration `readline` will wait for a\n    character (when reading an ambiguous key sequence in milliseconds one that\n    can both form a complete key sequence using the input read so far and can\n    take additional input to complete a longer key sequence).\n    **Default:** `500`.\n  * `tabSize` {integer} The number of spaces a tab is equal to (minimum 1).\n    **Default:** `8`.\n  * `signal` {AbortSignal} Allows closing the interface using an AbortSignal.\n    Aborting the signal will internally call `close` on the interface.\n* Returns: {readline.Interface}\n\nThe `readline.createInterface()` method creates a new `readline.Interface`\ninstance.\n\n\n\n\n\nOnce the `readline.Interface` instance is created, the most common case is to\nlisten for the `'line'` event:\n\n\n\nIf `terminal` is `true` for this instance then the `output` stream will get\nthe best compatibility if it defines an `output.columns` property and emits\na `'resize'` event on the `output` if or when the columns ever change\n([`process.stdout`][] does this automatically when it is a TTY).\n\nWhen creating a `readline.Interface` using `stdin` as input, the program\nwill not terminate until it receives an [EOF character][]. To exit without\nwaiting for user input, call `process.stdin.unref()`.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 1033,
+      "endLine": 1060,
+      "title": "Use of the `completer` function",
+      "sha256": "4649196dcd7b79ce5c08e34a62fa465a140e0cc21c2f86e981432422228a8b91",
+      "normativeRequirements": "#### Use of the `completer` function\n\nThe `completer` function takes the current line entered by the user\nas an argument, and returns an `Array` with 2 entries:\n\n* An `Array` with matching entries for the completion.\n* The substring that was used for the matching.\n\nFor instance: `[[substr1, substr2, ...], originalsubstring]`.\n\n\n\nThe `completer` function can be called asynchronously if it accepts two\narguments:\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 1061,
+      "endLine": 1086,
+      "title": "`readline.cursorTo(stream, x[, y][, callback])`",
+      "sha256": "d83f3e57218af42cadf82499d85de1de2cc53b24613ec73a7c437c74f3f30ddc",
+      "normativeRequirements": "### `readline.cursorTo(stream, x[, y][, callback])`\n\n\n\n* `stream` {stream.Writable}\n* `x` {number}\n* `y` {number}\n* `callback` {Function} Invoked once the operation completes.\n* Returns: {boolean} `false` if `stream` wishes for the calling code to wait for\n  the `'drain'` event to be emitted before continuing to write additional data;\n  otherwise `true`.\n\nThe `readline.cursorTo()` method moves cursor to the specified position in a\ngiven [TTY][] `stream`.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 1087,
+      "endLine": 1112,
+      "title": "`readline.moveCursor(stream, dx, dy[, callback])`",
+      "sha256": "da779d23fdac642ed98221363493f75f32800af5a9afbfddfe0609fe27a471a2",
+      "normativeRequirements": "### `readline.moveCursor(stream, dx, dy[, callback])`\n\n\n\n* `stream` {stream.Writable}\n* `dx` {number}\n* `dy` {number}\n* `callback` {Function} Invoked once the operation completes.\n* Returns: {boolean} `false` if `stream` wishes for the calling code to wait for\n  the `'drain'` event to be emitted before continuing to write additional data;\n  otherwise `true`.\n\nThe `readline.moveCursor()` method moves the cursor _relative_ to its current\nposition in a given [TTY][] `stream`.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 1113,
+      "endLine": 1139,
+      "title": "`readline.emitKeypressEvents(stream[, interface])`",
+      "sha256": "220631a38fec0e65d69a8be169448e9ca3200f24d51c3811fd0482cf8ce8e7a3",
+      "normativeRequirements": "## `readline.emitKeypressEvents(stream[, interface])`\n\n\n\n* `stream` {stream.Readable}\n* `interface` {readline.InterfaceConstructor}\n\nThe `readline.emitKeypressEvents()` method causes the given [Readable][]\nstream to begin emitting `'keypress'` events corresponding to received input.\n\nOptionally, `interface` specifies a `readline.Interface` instance for which\nautocompletion is disabled when copy-pasted input is detected.\n\nIf the `stream` is a [TTY][], then it must be in raw mode.\n\nThis is automatically called by any readline instance on its `input` if the\n`input` is a terminal. Closing the `readline` instance does not stop\nthe `input` from emitting `'keypress'` events.\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 1140,
+      "endLine": 1197,
+      "title": "Example: Tiny CLI",
+      "sha256": "1b2506e6c6b00292861152aa8dc3142bec6ea0c3685a094ae95358610eaea9af",
+      "normativeRequirements": "## Example: Tiny CLI\n\nThe following example illustrates the use of `readline.Interface` class to\nimplement a small command-line interface:\n\n\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 1198,
+      "endLine": 1332,
+      "title": "Example: Read file stream line-by-Line",
+      "sha256": "2b73a0681c40d7f549ddf3168bc5c5c9d67c4b3af9d3a15bce818ea7981399c5",
+      "normativeRequirements": "## Example: Read file stream line-by-Line\n\nA common use case for `readline` is to consume an input file one line at a\ntime. The easiest way to do so is leveraging the [`fs.ReadStream`][] API as\nwell as a `for await...of` loop:\n\n\n\n\n\nAlternatively, one could use the [`'line'`][] event:\n\n\n\n\n\nCurrently, `for await...of` loop can be a bit slower. If `async` / `await`\nflow and speed are both essential, a mixed approach can be applied:\n\n\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/readline.md",
+      "line": 1333,
+      "endLine": 1495,
+      "title": "TTY keybindings",
+      "sha256": "80a31dfc88cba12533586fdc2e985a648cce076df59f87cca44925631a6794a0",
+      "normativeRequirements": "## TTY keybindings\n\n<table>\n  <tr>\n    <th>Keybindings</th>\n    <th>Description</th>\n    <th>Notes</th>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Backspace</kbd></td>\n    <td>Delete line left</td>\n    <td>Doesn't work on Linux, Mac and Windows</td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Delete</kbd></td>\n    <td>Delete line right</td>\n    <td>Doesn't work on Mac</td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>C</kbd></td>\n    <td>Emit <code>SIGINT</code> or close the readline instance</td>\n    <td></td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>H</kbd></td>\n    <td>Delete left</td>\n    <td></td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>D</kbd></td>\n    <td>Delete right or close the readline instance in case the current line is empty / EOF</td>\n    <td>Doesn't work on Windows</td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>U</kbd></td>\n    <td>Delete from the current position to the line start</td>\n    <td></td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>K</kbd></td>\n    <td>Delete from the current position to the end of line</td>\n    <td></td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>Y</kbd></td>\n    <td>Yank (Recall) the previously deleted text</td>\n    <td>Only works with text deleted by <kbd>Ctrl</kbd>+<kbd>U</kbd> or <kbd>Ctrl</kbd>+<kbd>K</kbd></td>\n  </tr>\n  <tr>\n    <td><kbd>Meta</kbd>+<kbd>Y</kbd></td>\n    <td>Cycle among previously deleted texts</td>\n    <td>Only available when the last keystroke is <kbd>Ctrl</kbd>+<kbd>Y</kbd> or <kbd>Meta</kbd>+<kbd>Y</kbd></td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>A</kbd></td>\n    <td>Go to start of line</td>\n    <td></td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>E</kbd></td>\n    <td>Go to end of line</td>\n    <td></td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>B</kbd></td>\n    <td>Back one character</td>\n    <td></td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>F</kbd></td>\n    <td>Forward one character</td>\n    <td></td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>L</kbd></td>\n    <td>Clear screen</td>\n    <td></td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>N</kbd></td>\n    <td>Next history item</td>\n    <td></td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>P</kbd></td>\n    <td>Previous history item</td>\n    <td></td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>-</kbd></td>\n    <td>Undo previous change</td>\n    <td>Any keystroke that emits key code <code>0x1F</code> will do this action.\n    In many terminals, for example <code>xterm</code>,\n    this is bound to <kbd>Ctrl</kbd>+<kbd>-</kbd>.</td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>6</kbd></td>\n    <td>Redo previous change</td>\n    <td>Many terminals don't have a default redo keystroke.\n    We choose key code <code>0x1E</code> to perform redo.\n    In <code>xterm</code>, it is bound to <kbd>Ctrl</kbd>+<kbd>6</kbd>\n    by default.</td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td>\n    <td>Moves running process into background. Type\n    <code>fg</code> and press <kbd>Enter</kbd>\n    to return.</td>\n    <td>Doesn't work on Windows</td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>W</kbd> or <kbd>Ctrl</kbd>\n   +<kbd>Backspace</kbd></td>\n    <td>Delete backward to a word boundary</td>\n    <td><kbd>Ctrl</kbd>+<kbd>Backspace</kbd> Doesn't\n    work on Linux, Mac and Windows</td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>Delete</kbd></td>\n    <td>Delete forward to a word boundary</td>\n    <td>Doesn't work on Mac</td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>Left arrow</kbd> or\n    <kbd>Meta</kbd>+<kbd>B</kbd></td>\n    <td>Word left</td>\n    <td><kbd>Ctrl</kbd>+<kbd>Left arrow</kbd> Doesn't work\n    on Mac</td>\n  </tr>\n  <tr>\n    <td><kbd>Ctrl</kbd>+<kbd>Right arrow</kbd> or\n    <kbd>Meta</kbd>+<kbd>F</kbd></td>\n    <td>Word right</td>\n    <td><kbd>Ctrl</kbd>+<kbd>Right arrow</kbd> Doesn't work\n    on Mac</td>\n  </tr>\n  <tr>\n    <td><kbd>Meta</kbd>+<kbd>D</kbd> or <kbd>Meta</kbd>\n   +<kbd>Delete</kbd></td>\n    <td>Delete word right</td>\n    <td><kbd>Meta</kbd>+<kbd>Delete</kbd> Doesn't work\n    on windows</td>\n  </tr>\n  <tr>\n    <td><kbd>Meta</kbd>+<kbd>Backspace</kbd></td>\n    <td>Delete word left</td>\n    <td>Doesn't work on Mac</td>\n  </tr>\n</table>\n\n[EOF character]: https://en.wikipedia.org/wiki/End-of-file#EOF_character\n[Readable]: stream.md#readable-streams\n[TTY]: tty.md\n[TTY keybindings]: #tty-keybindings\n[Writable]: stream.md#writable-streams\n[`'SIGCONT'`]: #event-sigcont\n[`'SIGTSTP'`]: #event-sigtstp\n[`'line'`]: #event-line\n[`fs.ReadStream`]: fs.md#class-fsreadstream\n[`process.stdin`]: process.md#processstdin\n[`process.stdout`]: process.md#processstdout\n[`rl.close()`]: #rlclose\n[reading files]: #example-read-file-stream-line-by-line\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 1,
+      "endLine": 20,
+      "title": "REPL",
+      "sha256": "425fb488d8b433657969ec65bb8495db54e7eb889b2d57fb9ae55a29f4503581",
+      "normativeRequirements": "# REPL\n\n\n\n> Stability: 2 - Stable\n\n\n\nThe `node:repl` module provides a Read-Eval-Print-Loop (REPL) implementation\nthat is available both as a standalone program or includible in other\napplications. It can be accessed using:\n\n\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 21,
+      "endLine": 36,
+      "title": "Design and features",
+      "sha256": "d05f3b9dea9b3f80d8495b31307b564ad475663fa418c1aaf71c56f122b83626",
+      "normativeRequirements": "## Design and features\n\nThe `node:repl` module exports the [`repl.REPLServer`][] class. While running,\ninstances of [`repl.REPLServer`][] will accept individual lines of user input,\nevaluate those according to a user-defined evaluation function, then output the\nresult. Input and output may be from `stdin` and `stdout`, respectively, or may\nbe connected to any Node.js [stream][].\n\nInstances of [`repl.REPLServer`][] support automatic completion of inputs,\ncompletion preview, simplistic Emacs-style line editing, multi-line inputs,\n[ZSH][]-like reverse-i-search, [ZSH][]-like substring-based history search,\nANSI-styled output, saving and restoring current REPL session state, error\nrecovery, and customizable evaluation functions. Terminals that do not support\nANSI styles and Emacs-style line editing automatically fall back to a limited\nfeature set.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 37,
+      "endLine": 82,
+      "title": "Commands and special keys",
+      "sha256": "a8746dcaa5c9b2a38d28b8967e2369fa1488d082c4581209a55ceb7c9d02c155",
+      "normativeRequirements": "### Commands and special keys\n\nThe following special commands are supported by all REPL instances:\n\n* `.break`: When in the process of inputting a multi-line expression, enter\n  the `.break` command (or press <kbd>Ctrl</kbd>+<kbd>C</kbd>) to abort\n  further input or processing of that expression.\n* `.clear`: Resets the REPL `context` to an empty object and clears any\n  multi-line expression being input.\n* `.exit`: Close the I/O stream, causing the REPL to exit.\n* `.help`: Show this list of special commands.\n* `.save`: Save the current REPL session to a file:\n  `> .save ./file/to/save.js`\n* `.load`: Load a file into the current REPL session.\n  `> .load ./file/to/load.js`\n* `.editor`: Enter editor mode (<kbd>Ctrl</kbd>+<kbd>D</kbd> to\n  finish, <kbd>Ctrl</kbd>+<kbd>C</kbd> to cancel).\n\n\n\nThe following key combinations in the REPL have these special effects:\n\n* <kbd>Ctrl</kbd>+<kbd>C</kbd>: When pressed once, has the same effect as the\n  `.break` command.\n  When pressed twice on a blank line, has the same effect as the `.exit`\n  command.\n* <kbd>Ctrl</kbd>+<kbd>D</kbd>: Has the same effect as the `.exit` command.\n* <kbd>Tab</kbd>: When pressed on a blank line, displays global and local\n  (scope) variables. When pressed while entering other input, displays relevant\n  autocompletion options.\n\nFor key bindings related to the reverse-i-search, see [`reverse-i-search`][].\nFor all other key bindings, see [TTY keybindings][].\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 83,
+      "endLine": 89,
+      "title": "Default evaluation",
+      "sha256": "6cf8a8be7b2f90d07f47dc4834d14e5b88d8a89f755078f0ca1e5305a6c40290",
+      "normativeRequirements": "### Default evaluation\n\nBy default, all instances of [`repl.REPLServer`][] use an evaluation function\nthat evaluates JavaScript expressions and provides access to Node.js built-in\nmodules. This default behavior can be overridden by passing in an alternative\nevaluation function when the [`repl.REPLServer`][] instance is created.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 90,
+      "endLine": 106,
+      "title": "JavaScript expressions",
+      "sha256": "92b2c59bb1c46c1111a2704ca0533f4991e7d48827edbc343bda8f03d13a38db",
+      "normativeRequirements": "#### JavaScript expressions\n\nThe default evaluator supports direct evaluation of JavaScript expressions:\n\n\n\nUnless otherwise scoped within blocks or functions, variables declared\neither implicitly or using the `const`, `let`, or `var` keywords\nare declared at the global scope.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 107,
+      "endLine": 161,
+      "title": "Global and local scope",
+      "sha256": "42fd6482323fe5b8c55a2f26c2e4c40d9fc95cd9df5e2150ff978279eb4cb4d1",
+      "normativeRequirements": "#### Global and local scope\n\nThe default evaluator provides access to any variables that exist in the global\nscope. It is possible to expose a variable to the REPL explicitly by assigning\nit to the `context` object associated with each `REPLServer`:\n\n\n\n\n\nProperties in the `context` object appear as local within the REPL:\n\n\n\nContext properties are not read-only by default. To specify read-only globals,\ncontext properties must be defined using `Object.defineProperty()`:\n\n\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 162,
+      "endLine": 172,
+      "title": "Accessing core Node.js modules",
+      "sha256": "f1d49d296c7497fa39c437a6394eb66b69512abb1616d1909904e0b2136f29c2",
+      "normativeRequirements": "#### Accessing core Node.js modules\n\nThe default evaluator will automatically load Node.js core modules into the\nREPL environment when used. For instance, unless otherwise declared as a\nglobal or scoped variable, the input `fs` will be evaluated on-demand as\n`global.fs = require('node:fs')`.\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 173,
+      "endLine": 205,
+      "title": "Global uncaught exceptions",
+      "sha256": "7b83056efd929f0f80f5f860ef1d68e53da8b462ca1117fc6acbaca193fc701d",
+      "normativeRequirements": "#### Global uncaught exceptions\n\n\n\nThe REPL uses the [`domain`][] module to catch all uncaught exceptions for that\nREPL session.\n\nThis use of the [`domain`][] module in the REPL has these side effects:\n\n* Uncaught exceptions only emit the [`'uncaughtException'`][] event in the\n  standalone REPL. Adding a listener for this event in a REPL within\n  another Node.js program results in [`ERR_INVALID_REPL_INPUT`][].\n\n  \n\n* Trying to use [`process.setUncaughtExceptionCaptureCallback()`][] throws\n  an [`ERR_DOMAIN_CANNOT_SET_UNCAUGHT_EXCEPTION_CAPTURE`][] error.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 206,
+      "endLine": 242,
+      "title": "Assignment of the `_` (underscore) variable",
+      "sha256": "6c7df437d05e58bfca7ce25fb534196628e71817d200b62b3986af2298f24040",
+      "normativeRequirements": "#### Assignment of the `_` (underscore) variable\n\n\n\nThe default evaluator will, by default, assign the result of the most recently\nevaluated expression to the special variable `_` (underscore).\nExplicitly setting `_` to a value will disable this behavior.\n\n\n\nSimilarly, `_error` will refer to the last seen error, if there was any.\nExplicitly setting `_error` to a value will disable this behavior.\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 243,
+      "endLine": 278,
+      "title": "`await` keyword",
+      "sha256": "845d9031071f9cc3a7995ed8de99d2766ded76fc3f080f71de38d66b50b459c6",
+      "normativeRequirements": "#### `await` keyword\n\nSupport for the `await` keyword is enabled at the top level.\n\n\n\nOne known limitation of using the `await` keyword in the REPL is that\nit will invalidate the lexical scoping of the `const` keywords.\n\nFor example:\n\n\n\n[`--no-experimental-repl-await`][] shall disable top-level await in REPL.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 279,
+      "endLine": 287,
+      "title": "Error handling",
+      "sha256": "ee8c5d6a174ff6ef9f938d78a3d13718b6fab3d3b6e210aba2d3eff73c6d11ae",
+      "normativeRequirements": "### Error handling\n\nBy default, uncaught exceptions in the REPL are printed to the output stream\n(as with `Uncaught Error: REPL await` above). `uncaughtException` listeners\ncan be added freely in both standalone and nested REPLs. The `handleError`\noption of [`repl.start()`][] can customize this behavior, including\nforwarding exceptions to [`'uncaughtException'`][] by returning\n`'unhandled'`.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 288,
+      "endLine": 308,
+      "title": "Reverse-i-search",
+      "sha256": "54f25e55e9c8830a0020c6466a07b6e07907996a23d5c825f1ffa7c788ed8a79",
+      "normativeRequirements": "### Reverse-i-search\n\n\n\nThe REPL supports bi-directional reverse-i-search similar to [ZSH][]. It is\ntriggered with <kbd>Ctrl</kbd>+<kbd>R</kbd> to search backward\nand <kbd>Ctrl</kbd>+<kbd>S</kbd> to search forwards.\n\nDuplicated history entries will be skipped.\n\nEntries are accepted as soon as any key is pressed that doesn't correspond\nwith the reverse search. Cancelling is possible by pressing <kbd>Esc</kbd>\nor <kbd>Ctrl</kbd>+<kbd>C</kbd>.\n\nChanging the direction immediately searches for the next entry in the expected\ndirection from the current position on.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 309,
+      "endLine": 364,
+      "title": "Custom evaluation functions",
+      "sha256": "02d68f447373dda9b9933bad70fce255a38057f8b9c51e9d0005988bc97d0d76",
+      "normativeRequirements": "### Custom evaluation functions\n\nWhen a new [`repl.REPLServer`][] is created, a custom evaluation function may be\nprovided. This can be used, for instance, to implement fully customized REPL\napplications.\n\nAn evaluation function accepts the following four arguments:\n\n* `code` {string} The code to be executed (e.g. `1 + 1`).\n* `context` {Object} The context in which the code is executed. This can either be the JavaScript `global`\n  context or a context specific to the REPL instance, depending on the `useGlobal` option.\n* `replResourceName` {string} An identifier for the REPL resource associated with the current code\n  evaluation. This can be useful for debugging purposes.\n* `callback` {Function} A function to invoke once the code evaluation is complete. The callback takes two parameters:\n  * An error object to provide if an error occurred during evaluation, or `null`/`undefined` if no error occurred.\n  * The result of the code evaluation (this is not relevant if an error is provided).\n\nThe following illustrates an example of a REPL that squares a given number, an error is instead printed\nif the provided input is not actually a number:\n\n\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 365,
+      "endLine": 391,
+      "title": "Recoverable errors",
+      "sha256": "bb9186a0d908090ee30fb1f951b186bb6f3abc37789edeab35c9c72a8ef9f060",
+      "normativeRequirements": "#### Recoverable errors\n\nAt the REPL prompt, pressing <kbd>Enter</kbd> sends the current line of input to\nthe `eval` function. In order to support multi-line input, the `eval` function\ncan return an instance of `repl.Recoverable` to the provided callback function:\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 392,
+      "endLine": 450,
+      "title": "Customizing REPL output",
+      "sha256": "fb6f5825c12cce0481a7abb218d2ebda43c4f1551d355136777a1e078f72e0cb",
+      "normativeRequirements": "### Customizing REPL output\n\nBy default, [`repl.REPLServer`][] instances format output using the\n[`util.inspect()`][] method before writing the output to the provided `Writable`\nstream (`process.stdout` by default). The `showProxy` inspection option is set\nto true by default and the `colors` option is set to true depending on the\nREPL's `useColors` option.\n\nThe `useColors` boolean option can be specified at construction to instruct the\ndefault writer to use ANSI style codes to colorize the output from the\n`util.inspect()` method.\n\nIf the REPL is run as standalone program, it is also possible to change the\nREPL's [inspection defaults][`util.inspect()`] from inside the REPL by using the\n`inspect.replDefaults` property which mirrors the `defaultOptions` from\n[`util.inspect()`][].\n\n\n\nTo fully customize the output of a [`repl.REPLServer`][] instance pass in a new\nfunction for the `writer` option on construction. The following example, for\ninstance, simply converts any input text to upper case:\n\n\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 451,
+      "endLine": 483,
+      "title": "Class: `REPLServer`",
+      "sha256": "8f0e0a9756c500eeec7614a73e0ca4ad97432174b4eef15995956f4aa0b44ad6",
+      "normativeRequirements": "## Class: `REPLServer`\n\n\n\n* `options` {Object|string} See [`repl.start()`][]\n* Extends: {readline.Interface}\n\nInstances of `repl.REPLServer` are created using the [`repl.start()`][] method\nor directly using the JavaScript `new` keyword.\n\n\n\n\n\nCalling `repl.REPLServer()` without the `new` keyword throws a `TypeError`\n(see [DEP0185][]).\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 484,
+      "endLine": 503,
+      "title": "Event: `'exit'`",
+      "sha256": "30678ecb7364f407b2164b61950e7713253929c83aa4a78994dad058039aeecd",
+      "normativeRequirements": "### Event: `'exit'`\n\n\n\nThe `'exit'` event is emitted when the REPL is exited either by receiving the\n`.exit` command as input, the user pressing <kbd>Ctrl</kbd>+<kbd>C</kbd> twice\nto signal `SIGINT`,\nor by pressing <kbd>Ctrl</kbd>+<kbd>D</kbd> to signal `'end'` on the input\nstream. The listener\ncallback is invoked without any arguments.\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 504,
+      "endLine": 562,
+      "title": "Event: `'reset'`",
+      "sha256": "fdb20379a2ab3a619e9113782df725aa4493408bc3cf216c08f83bcff3559574",
+      "normativeRequirements": "### Event: `'reset'`\n\n\n\nThe `'reset'` event is emitted when the REPL's context is reset. This occurs\nwhenever the `.clear` command is received as input _unless_ the REPL is using\nthe default evaluator and the `repl.REPLServer` instance was created with the\n`useGlobal` option set to `true`. The listener callback will be called with a\nreference to the `context` object as the only argument.\n\nThis can be used primarily to re-initialize REPL context to some pre-defined\nstate:\n\n\n\n\n\nWhen this code is executed, the global `'m'` variable can be modified but then\nreset to its initial value using the `.clear` command:\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 563,
+      "endLine": 627,
+      "title": "`replServer.defineCommand(keyword, cmd)`",
+      "sha256": "9cf4dc79db65716ecd59f96f87c3326a3c56953492e202d1bc1bde40358147df",
+      "normativeRequirements": "### `replServer.defineCommand(keyword, cmd)`\n\n\n\n* `keyword` {string} The command keyword (_without_ a leading `.` character).\n* `cmd` {Object|Function} The function to invoke when the command is processed.\n\nThe `replServer.defineCommand()` method is used to add new `.`-prefixed commands\nto the REPL instance. Such commands are invoked by typing a `.` followed by the\n`keyword`. The `cmd` is either a `Function` or an `Object` with the following\nproperties:\n\n* `help` {string} Help text to be displayed when `.help` is entered (Optional).\n* `action` {Function} The function to execute, optionally accepting a single\n  string argument.\n\nThe following example shows two new commands added to the REPL instance:\n\n\n\n\n\nThe new commands can then be used from within the REPL instance:\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 628,
+      "endLine": 648,
+      "title": "`replServer.displayPrompt([preserveCursor])`",
+      "sha256": "035b96c751f76f5dcf1267cfe6f229821ab3628f627ff12b8fbd1da77d59bba1",
+      "normativeRequirements": "### `replServer.displayPrompt([preserveCursor])`\n\n\n\n* `preserveCursor` {boolean}\n\nThe `replServer.displayPrompt()` method readies the REPL instance for input\nfrom the user, printing the configured `prompt` to a new line in the `output`\nand resuming the `input` to accept new input.\n\nWhen multi-line input is being entered, a pipe `'|'` is printed rather than the\n'prompt'.\n\nWhen `preserveCursor` is `true`, the cursor placement will not be reset to `0`.\n\nThe `replServer.displayPrompt` method is primarily intended to be called from\nwithin the action function for commands registered using the\n`replServer.defineCommand()` method.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 649,
+      "endLine": 659,
+      "title": "`replServer.clearBufferedCommand()`",
+      "sha256": "cfb2ff049f24838cfea39e28b096a1948385469718f5cad31b573cb7371c4a7a",
+      "normativeRequirements": "### `replServer.clearBufferedCommand()`\n\n\n\nThe `replServer.clearBufferedCommand()` method clears any command that has been\nbuffered but not yet executed. This method is primarily intended to be\ncalled from within the action function for commands registered using the\n`replServer.defineCommand()` method.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 660,
+      "endLine": 697,
+      "title": "`replServer.setupHistory(historyConfig, callback)`",
+      "sha256": "040be9a4babecbe1e023c020bd85e3a0053be9aad47d9ff75540e9bf2f00f70a",
+      "normativeRequirements": "### `replServer.setupHistory(historyConfig, callback)`\n\n\n\n* `historyConfig` {Object|string} the path to the history file\n  If it is a string, it is the path to the history file.\n  If it is an object, it can have the following properties:\n  * `filePath` {string} the path to the history file\n  * `size` {number} Maximum number of history lines retained. To disable\n    the history set this value to `0`. This option makes sense only if\n    `terminal` is set to `true` by the user or by an internal `output` check,\n    otherwise the history caching mechanism is not initialized at all.\n    **Default:** `30`.\n  * `removeHistoryDuplicates` {boolean} If `true`, when a new input line added\n    to the history list duplicates an older one, this removes the older line\n    from the list. **Default:** `false`.\n  * `onHistoryFileLoaded` {Function} called when history writes are ready or upon error\n    * `err` {Error}\n    * `repl` {repl.REPLServer}\n* `callback` {Function} called when history writes are ready or upon error\n  (Optional if provided as `onHistoryFileLoaded` in `historyConfig`)\n  * `err` {Error}\n  * `repl` {repl.REPLServer}\n\nInitializes a history log file for the REPL instance. When executing the\nNode.js binary and using the command-line REPL, a history file is initialized\nby default. However, this is not the case when creating a REPL\nprogrammatically. Use this method to initialize a history log file when working\nwith REPL instances programmatically.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 698,
+      "endLine": 718,
+      "title": "`repl.builtinModules`",
+      "sha256": "a6028d99fc3209e97e71db0aa8857a0345b35ebd0a36924260380acc69f629aa",
+      "normativeRequirements": "## `repl.builtinModules`\n\n\n\n> Stability: 0 - Deprecated. Use [`module.builtinModules`][] instead.\n\n* Type: {string\\[]}\n\nA list of the names of some Node.js modules, e.g., `'http'`.\n\nAn automated migration is available ([source](https://github.com/nodejs/userland-migrations/tree/main/recipes/repl-builtin-modules)):\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 719,
+      "endLine": 835,
+      "title": "`repl.start([options])`",
+      "sha256": "6cd5219a2e42bc90161d2e6af1ff3120eb04c64c78aafda0ccf1e0b0819870cd",
+      "normativeRequirements": "## `repl.start([options])`\n\n\n\n* `options` {Object|string}\n  * `prompt` {string} The input prompt to display. **Default:** `'> '`\n    (with a trailing space).\n  * `input` {stream.Readable} The `Readable` stream from which REPL input will\n    be read. **Default:** `process.stdin`.\n  * `output` {stream.Writable} The `Writable` stream to which REPL output will\n    be written. **Default:** `process.stdout`.\n  * `terminal` {boolean} If `true`, specifies that the `output` should be\n    treated as a TTY terminal.\n    **Default:** checking the value of the `isTTY` property on the `output`\n    stream upon instantiation.\n  * `eval` {Function} The function to be used when evaluating each given line\n    of input. **Default:** an async wrapper for the JavaScript `eval()`\n    function. An `eval` function can error with `repl.Recoverable` to indicate\n    the input was incomplete and prompt for additional lines. See the\n    [custom evaluation functions][] section for more details.\n  * `useColors` {boolean} If `true`, specifies that the default `writer`\n    function should include ANSI color styling to REPL output. If a custom\n    `writer` function is provided then this has no effect. **Default:** checking\n    color support on the `output` stream if the REPL instance's `terminal` value\n    is `true`.\n  * `useGlobal` {boolean} If `true`, specifies that the default evaluation\n    function will use the JavaScript `global` as the context as opposed to\n    creating a new separate context for the REPL instance. The node CLI REPL\n    sets this value to `true`. **Default:** `false`.\n  * `ignoreUndefined` {boolean} If `true`, specifies that the default writer\n    will not output the return value of a command if it evaluates to\n    `undefined`. **Default:** `false`.\n  * `writer` {Function} The function to invoke to format the output of each\n    command before writing to `output`. **Default:** [`util.inspect()`][].\n  * `completer` {Function} An optional function used for custom Tab auto\n    completion. See [`readline.InterfaceCompleter`][] for an example.\n  * `replMode` {symbol} A flag that specifies whether the default evaluator\n    executes all JavaScript commands in strict mode or default (sloppy) mode.\n    Acceptable values are:\n    * `repl.REPL_MODE_SLOPPY` to evaluate expressions in sloppy mode.\n    * `repl.REPL_MODE_STRICT` to evaluate expressions in strict mode. This is\n      equivalent to prefacing every repl statement with `'use strict'`.\n  * `breakEvalOnSigint` {boolean} Stop evaluating the current piece of code when\n    `SIGINT` is received, such as when <kbd>Ctrl</kbd>+<kbd>C</kbd> is pressed.\n    This cannot be used\n    together with a custom `eval` function. **Default:** `false`.\n  * `preview` {boolean} Defines if the repl prints autocomplete and output\n    previews or not. **Default:** `true` with the default eval function and\n    `false` in case a custom eval function is used. If `terminal` is falsy, then\n    there are no previews and the value of `preview` has no effect.\n  * `handleError` {Function} This function customizes error handling in the REPL.\n    It receives the thrown exception as its first argument and must return one\n    of the following values synchronously:\n    * `'print'` to print the error to the output stream (default behavior).\n    * `'ignore'` to skip all remaining error handling.\n    * `'unhandled'` to treat the exception as fully unhandled. In this case,\n      the error will be passed to process-wide exception handlers, such as\n      the [`'uncaughtException'`][] event.\n      The `'unhandled'` value may or may not be desirable in situations\n      where the `REPLServer` instance has been closed, depending on the particular\n      use case.\n* Returns: {repl.REPLServer}\n\nThe `repl.start()` method creates and starts a [`repl.REPLServer`][] instance.\n\nIf `options` is a string, then it specifies the input prompt:\n\n\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 836,
+      "endLine": 855,
+      "title": "The Node.js REPL",
+      "sha256": "557b095a1f46d71d75c8969b591ef9a6de93a2548ccf0e658b4a980500fb0413",
+      "normativeRequirements": "## The Node.js REPL\n\nNode.js itself uses the `node:repl` module to provide its own interactive\ninterface for executing JavaScript. This can be used by executing the Node.js\nbinary without passing any arguments (or by passing the `-i` argument):\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 856,
+      "endLine": 872,
+      "title": "Environment variable options",
+      "sha256": "a04efd08af7a6f30a81054f518fcf059cf300f8fc24370946f60b923adedeef2",
+      "normativeRequirements": "### Environment variable options\n\nVarious behaviors of the Node.js REPL can be customized using the following\nenvironment variables:\n\n* `NODE_REPL_HISTORY`: When a valid path is given, persistent REPL history\n  will be saved to the specified file rather than `.node_repl_history` in the\n  user's home directory. Setting this value to `''` (an empty string) will\n  disable persistent REPL history. Whitespace will be trimmed from the value.\n  On Windows platforms environment variables with empty values are invalid so\n  set this variable to one or more spaces to disable persistent REPL history.\n* `NODE_REPL_HISTORY_SIZE`: Controls how many lines of history will be\n  persisted if history is available. Must be a positive number.\n  **Default:** `1000`.\n* `NODE_REPL_MODE`: May be either `'sloppy'` or `'strict'`. **Default:**\n  `'sloppy'`, which will allow non-strict mode code to be run.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 873,
+      "endLine": 879,
+      "title": "Persistent history",
+      "sha256": "678d94c496bc48cf19ab7f4795ae22782f429615d08175ce519cbbbfef8d8bbe",
+      "normativeRequirements": "### Persistent history\n\nBy default, the Node.js REPL will persist history between `node` REPL sessions\nby saving inputs to a `.node_repl_history` file located in the user's home\ndirectory. This can be disabled by setting the environment variable\n`NODE_REPL_HISTORY=''`.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 880,
+      "endLine": 891,
+      "title": "Using the Node.js REPL with advanced line-editors",
+      "sha256": "d4066fe6482a7520422c9c5e369ec30a135ac9921432d1ef48339916d7cec373",
+      "normativeRequirements": "### Using the Node.js REPL with advanced line-editors\n\nFor advanced line-editors, start Node.js with the environment variable\n`NODE_NO_READLINE=1`. This will start the main and debugger REPL in canonical\nterminal settings, which will allow use with `rlwrap`.\n\nFor example, the following can be added to a `.bashrc` file:\n\n\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 892,
+      "endLine": 997,
+      "title": "Starting multiple REPL instances in the same process",
+      "sha256": "5c979287f3f0f810964a359a0a9754e63bca62ab9255e17b004f427f83e16fc8",
+      "normativeRequirements": "### Starting multiple REPL instances in the same process\n\nIt is possible to create and run multiple REPL instances against a single\nrunning instance of Node.js that share a single `global` object (by setting\nthe `useGlobal` option to `true`) but have separate I/O interfaces.\n\nThe following example, for instance, provides separate REPLs on `stdin`, a Unix\nsocket, and a TCP socket, all sharing the same `global` object:\n\n\n\n\n\nRunning this application from the command line will start a REPL on stdin.\nOther REPL clients may connect through the Unix socket or TCP socket. `telnet`,\nfor instance, is useful for connecting to TCP sockets, while `socat` can be used\nto connect to both Unix and TCP sockets.\n\nBy starting a REPL from a Unix socket-based server instead of stdin, it is\npossible to connect to a long-running Node.js process without restarting it.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 998,
+      "endLine": 999,
+      "title": "Examples",
+      "sha256": "559f6ae9a8402edfcdafc889243bec3985496989b2852da5977a19870e0a236c",
+      "normativeRequirements": "### Examples\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 1000,
+      "endLine": 1124,
+      "title": "Full-featured \"terminal\" REPL over `net.Server` and `net.Socket`",
+      "sha256": "d730bc4023a87832e70701d6f80c1ee3ac647770dd1164e53d56118a4033ac54",
+      "normativeRequirements": "#### Full-featured \"terminal\" REPL over `net.Server` and `net.Socket`\n\nThis is an example on how to run a \"full-featured\" (terminal) REPL using\n[`net.Server`][] and [`net.Socket`][]\n\nThe following script starts an HTTP server on port `1337` that allows\nclients to establish socket connections to its REPL instance.\n\n\n\n\n\nWhile the following implements a client that can create a socket connection\nwith the above defined server over port `1337`.\n\n\n\n\n\nTo run the example open two different terminals on your machine, start the server\nwith `node repl-server.js` in one terminal and `node repl-client.js` on the other.\n\nOriginal code from <https://gist.github.com/TooTallNate/2209310>.\n\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    },
+    {
+      "document": "doc/api/repl.md",
+      "line": 1125,
+      "endLine": 1204,
+      "title": "REPL over `curl`",
+      "sha256": "8ed00489e768699a8f5c36a53a95c37e767daf9b5271263760072f1f78ab2a01",
+      "normativeRequirements": "#### REPL over `curl`\n\nThis is an example on how to run a REPL instance over [`curl()`][]\n\nThe following script starts an HTTP server on port `8000` that can accept\na connection established via [`curl()`][].\n\n\n\n\n\nWhen the above script is running you can then use [`curl()`][] to connect to\nthe server and connect to its REPL instance by running `curl --no-progress-meter -sSNT. localhost:8000`.\n\n**Warning** This example is intended purely for educational purposes to demonstrate how\nNode.js REPLs can be started using different I/O streams.\nIt should **not** be used in production environments or any context where security\nis a concern without additional protective measures.\nIf you need to implement REPLs in a real-world application, consider alternative\napproaches that mitigate these risks, such as using secure input mechanisms and\navoiding open network interfaces.\n\nOriginal code from <https://gist.github.com/TooTallNate/2053342>.\n\n[DEP0185]: deprecations.md#dep0185-instantiating-noderepl-classes-without-new\n[TTY keybindings]: readline.md#tty-keybindings\n[ZSH]: https://en.wikipedia.org/wiki/Z_shell\n[`'uncaughtException'`]: process.md#event-uncaughtexception\n[`--no-experimental-repl-await`]: cli.md#--no-experimental-repl-await\n[`ERR_DOMAIN_CANNOT_SET_UNCAUGHT_EXCEPTION_CAPTURE`]: errors.md#err_domain_cannot_set_uncaught_exception_capture\n[`ERR_INVALID_REPL_INPUT`]: errors.md#err_invalid_repl_input\n[`curl()`]: https://curl.haxx.se/docs/manpage.html\n[`domain`]: domain.md\n[`module.builtinModules`]: module.md#modulebuiltinmodules\n[`net.Server`]: net.md#class-netserver\n[`net.Socket`]: net.md#class-netsocket\n[`process.setUncaughtExceptionCaptureCallback()`]: process.md#processsetuncaughtexceptioncapturecallbackfn\n[`readline.InterfaceCompleter`]: readline.md#use-of-the-completer-function\n[`repl.ReplServer`]: #class-replserver\n[`repl.start()`]: #replstartoptions\n[`reverse-i-search`]: #reverse-i-search\n[`util.inspect()`]: util.md#utilinspectobject-options\n[custom evaluation functions]: #custom-evaluation-functions\n[stream]: stream.md\n",
+      "review": "Completed source contract and actual dependency/negative candidate disposition; target questions explicit, not runtime conformance"
+    }
+  ],
+  "capturedDescriptors": [
+    {
+      "obligationId": "export:node:readline:0",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:1",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:2",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.question",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype.question",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:3",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._decoder",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "readline.Interface.prototype._decoder",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:4",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._line_buffer",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "readline.Interface.prototype._line_buffer",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:5",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._oldPrompt",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "readline.Interface.prototype._oldPrompt",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:6",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._previousKey",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "readline.Interface.prototype._previousKey",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:7",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._prompt",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "readline.Interface.prototype._prompt",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:8",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._questionCallback",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "readline.Interface.prototype._questionCallback",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:9",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._sawKeyPress",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "readline.Interface.prototype._sawKeyPress",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:10",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._sawReturnAt",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "readline.Interface.prototype._sawReturnAt",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:11",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._setRawMode",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._setRawMode",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:12",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._onLine",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._onLine",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:13",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._writeToOutput",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._writeToOutput",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:14",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._addHistory",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._addHistory",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:15",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._refreshLine",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._refreshLine",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:16",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._normalWrite",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._normalWrite",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:17",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._insertString",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._insertString",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:18",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._tabComplete",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._tabComplete",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:19",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._wordLeft",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._wordLeft",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:20",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._wordRight",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._wordRight",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:21",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._deleteLeft",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._deleteLeft",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:22",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._deleteRight",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._deleteRight",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:23",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._deleteWordLeft",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._deleteWordLeft",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:24",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._deleteWordRight",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._deleteWordRight",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:25",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._deleteLineLeft",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._deleteLineLeft",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:26",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._deleteLineRight",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._deleteLineRight",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:27",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._line",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._line",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:28",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._historyNext",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._historyNext",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:29",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._historyPrev",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._historyPrev",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:30",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._getDisplayPos",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._getDisplayPos",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:31",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._getCursorPos",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._getCursorPos",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:32",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._moveCursor",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._moveCursor",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:33",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype._ttyWrite",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.Interface.prototype._ttyWrite",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:34",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_setRawMode)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_setRawMode)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:35",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_onLine)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_onLine)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:36",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_writeToOutput)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_writeToOutput)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:37",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_addHistory)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_addHistory)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:38",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_refreshLine)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_refreshLine)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:39",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_normalWrite)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_normalWrite)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:40",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_insertString)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_insertString)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:41",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_tabComplete)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_tabComplete)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:42",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_wordLeft)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_wordLeft)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:43",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_wordRight)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_wordRight)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:44",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_deleteLeft)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_deleteLeft)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:45",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_deleteRight)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_deleteRight)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:46",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_deleteWordLeft)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_deleteWordLeft)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:47",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_deleteWordRight)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_deleteWordRight)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:48",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_deleteLineLeft)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_deleteLineLeft)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:49",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_deleteLineRight)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_deleteLineRight)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:50",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_line)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_line)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:51",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_historyNext)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_historyNext)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:52",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_historyPrev)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_historyPrev)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:53",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_getDisplayPos)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_getDisplayPos)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:54",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_moveCursor)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_moveCursor)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:55",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "Interface.prototype.Symbol(_ttyWrite)",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": false,
+        "get": true,
+        "set": false
+      },
+      "apiObservationId": "readline.Interface.prototype.Symbol(_ttyWrite)",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:56",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "clearLine",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.clearLine",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:57",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "clearLine.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "readline.clearLine.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:58",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "clearScreenDown",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.clearScreenDown",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:59",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "clearScreenDown.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "readline.clearScreenDown.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:60",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "createInterface",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.createInterface",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:61",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "createInterface.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "readline.createInterface.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:62",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "cursorTo",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.cursorTo",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:63",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "cursorTo.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "readline.cursorTo.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:64",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "emitKeypressEvents",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.emitKeypressEvents",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:65",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "emitKeypressEvents.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "readline.emitKeypressEvents.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:66",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "moveCursor",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.moveCursor",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:67",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "moveCursor.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "readline.moveCursor.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:68",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "promises",
+        "kind": "object",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.promises",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:69",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "promises.Interface",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.promises.Interface",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:70",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "promises.Interface.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": false
+      },
+      "apiObservationId": "readline.promises.Interface.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:71",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "promises.Readline",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.promises.Readline",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:72",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "promises.Readline.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": false
+      },
+      "apiObservationId": "readline.promises.Readline.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:73",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "promises.createInterface",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline.promises.createInterface",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline:74",
+      "module": "node:readline",
+      "descriptor": {
+        "path": "promises.createInterface.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "readline.promises.createInterface.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:0",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "Interface",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline/promises.Interface",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:1",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "Interface.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": false
+      },
+      "apiObservationId": "readline/promises.Interface.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:2",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "Interface.prototype.question",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline/promises.Interface.prototype.question",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:3",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "Readline",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline/promises.Readline",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:4",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "Readline.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": false
+      },
+      "apiObservationId": "readline/promises.Readline.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:5",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "Readline.prototype.cursorTo",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline/promises.Readline.prototype.cursorTo",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:6",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "Readline.prototype.moveCursor",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline/promises.Readline.prototype.moveCursor",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:7",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "Readline.prototype.clearLine",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline/promises.Readline.prototype.clearLine",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:8",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "Readline.prototype.clearScreenDown",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline/promises.Readline.prototype.clearScreenDown",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:9",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "Readline.prototype.commit",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline/promises.Readline.prototype.commit",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:10",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "Readline.prototype.rollback",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline/promises.Readline.prototype.rollback",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:11",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "createInterface",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "readline/promises.createInterface",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:readline/promises:12",
+      "module": "node:readline/promises",
+      "descriptor": {
+        "path": "createInterface.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "readline/promises.createInterface.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:0",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "start",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.start",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:1",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "start.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "repl.start.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:2",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:3",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options",
+        "kind": "object",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:4",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options.showHidden",
+        "kind": "boolean",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options.showHidden",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:5",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options.depth",
+        "kind": "number",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options.depth",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:6",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options.colors",
+        "kind": "boolean",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options.colors",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:7",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options.customInspect",
+        "kind": "boolean",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options.customInspect",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:8",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options.showProxy",
+        "kind": "boolean",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options.showProxy",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:9",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options.maxArrayLength",
+        "kind": "number",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options.maxArrayLength",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:10",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options.maxStringLength",
+        "kind": "number",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options.maxStringLength",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:11",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options.breakLength",
+        "kind": "number",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options.breakLength",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:12",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options.compact",
+        "kind": "number",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options.compact",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:13",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options.sorted",
+        "kind": "boolean",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options.sorted",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:14",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options.getters",
+        "kind": "boolean",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options.getters",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:15",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "writer.options.numericSeparator",
+        "kind": "boolean",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.writer.options.numericSeparator",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:16",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPLServer",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:17",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": false
+      },
+      "apiObservationId": "repl.REPLServer.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:18",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer.prototype.setupHistory",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPLServer.prototype.setupHistory",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:19",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer.prototype.clearBufferedCommand",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPLServer.prototype.clearBufferedCommand",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:20",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer.prototype._handleError",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPLServer.prototype._handleError",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:21",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer.prototype.close",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPLServer.prototype.close",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:22",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer.prototype.createContext",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPLServer.prototype.createContext",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:23",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer.prototype.resetContext",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPLServer.prototype.resetContext",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:24",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer.prototype.displayPrompt",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPLServer.prototype.displayPrompt",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:25",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer.prototype.setPrompt",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPLServer.prototype.setPrompt",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:26",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer.prototype.complete",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPLServer.prototype.complete",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:27",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer.prototype.completeOnEditorMode",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPLServer.prototype.completeOnEditorMode",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:28",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPLServer.prototype.defineCommand",
+        "kind": "function",
+        "enumerable": false,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPLServer.prototype.defineCommand",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:29",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPL_MODE_SLOPPY",
+        "kind": "symbol",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPL_MODE_SLOPPY",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:30",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "REPL_MODE_STRICT",
+        "kind": "symbol",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.REPL_MODE_STRICT",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:31",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "Recoverable",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.Recoverable",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:32",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "Recoverable.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": false
+      },
+      "apiObservationId": "repl.Recoverable.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:33",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "isValidSyntax",
+        "kind": "function",
+        "enumerable": true,
+        "configurable": true,
+        "writable": true
+      },
+      "apiObservationId": "repl.isValidSyntax",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:34",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "isValidSyntax.prototype",
+        "kind": "object",
+        "enumerable": false,
+        "configurable": false,
+        "writable": true
+      },
+      "apiObservationId": "repl.isValidSyntax.prototype",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:35",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "builtinModules",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": true,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "repl.builtinModules",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    },
+    {
+      "obligationId": "export:node:repl:36",
+      "module": "node:repl",
+      "descriptor": {
+        "path": "_builtinLibs",
+        "kind": "accessor",
+        "enumerable": false,
+        "configurable": true,
+        "get": true,
+        "set": true
+      },
+      "apiObservationId": "repl._builtinLibs",
+      "sourceAuditComplete": true,
+      "applicability": "Source metadata/legacy/private observation separately classified; absence is not passing behavior"
+    }
+  ],
+  "referenceCaptureIdentity": {
+    "sha256": "4347ae958d25d7cb760cd974e58d379ed2c48a76aea271bc29ef7780302b03fd",
+    "generatedAt": "2026-10-31T21:20:46.234Z",
+    "native": {
+      "version": "v26.13.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "executableSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+    },
+    "limitations": [
+      "Own properties and class prototypes only; inherited APIs require review",
+      "Option-gated modules are included from the pinned exposure policy; their flagged reference exports still require collection",
+      "Getters are recorded without invoking them",
+      "No exported primitive values or environment entries are recorded",
+      "Code-bearing documentation headings are review candidates, not an automatically classified public API list",
+      "Exports and documentation presence never count as implemented or passing behavior"
+    ]
+  },
+  "sourceFiles": {
+    "lib/readline.js": "07a2ed16e48bebbd0b999823e68d7995ca36246bcc5f2b6c128f9549ae35391f",
+    "lib/readline/promises.js": "76e9099cebd75a18992a0fef6f2a7f359a347aa2bfdb525739fdfe06f5db1eff",
+    "lib/internal/readline/interface.js": "d410c453245371a56f9accce353ccb45d08467c5cf07b9eee8a0bf5d62e89696",
+    "lib/internal/readline/callbacks.js": "af9b691f147976bca019361b7be1095c7ef8c059353cd948e518327f2b3d6f8f",
+    "lib/internal/readline/promises.js": "8ebe49629da7f7aca5f61754729ecb8f1dcf6b5860c67e83a93807afcccdfd79",
+    "lib/internal/readline/emitKeypressEvents.js": "fbb4e1c5ea19d108e741250dfca5c880d00c6a9ca7ed38100af6bb62518736a6",
+    "lib/internal/readline/utils.js": "a0b8b7cb13da3df61bade053aebdd15d031ca8767399f726f047bcb5692d0faf",
+    "lib/repl.js": "221aed38cf1900d45ed656680c8741e3f4ed0f58c36e343903de0df4d9d750ec",
+    "lib/internal/repl.js": "da46a79d091b7a44730ff99a8e2a9758bfc722a72d92b2a5ad1695c053596988",
+    "lib/internal/repl/history.js": "e32e2308ee985e06afa5c264a14a63bd377c6a6afae509cfde9d0c35477f7fb0",
+    "lib/internal/repl/utils.js": "4990db512da151faeb1df2f17f80b7a071dffc5c0511978ab7da4fcbde526a73",
+    "lib/internal/repl/completion.js": "994b2740443f0bf087fae0eda7e77656200c8823f369458d69118ea687dd8d7c",
+    "lib/internal/main/repl.js": "88884e7770e4e0ae031a57c62634177e612daa347e4d8e623626f5ae757aa951",
+    "lib/events.js": "1e974008f9c43a046124557f170ff1af23d239eb107f883b0420598f465611f3",
+    "doc/api/readline.md": "de3be2b6cfc12fb372092d15fa58ba4b4a4c37b9d0070fc0c06612125bb99b02",
+    "doc/api/repl.md": "f7721eeb17d0ff71e6ac0416076161d330c23e7c9223d45097fc50feed47a38b",
+    "test/pseudo-tty/testcfg.py": "31492db71cab2581552eca49aaa3fe5d13b941d8a30ccd1d5e589adf69b3af7f",
+    "test/known_issues/testcfg.py": "7acc0c236da7ee47f3160ddffddc3e1efcf1f127bae4f9cdec0db7ba0c495f8d"
+  },
+  "candidateSourceFiles": {
+    "packages/registry/node-compat/bootstrap.js": "fb2949c121ca33d4922d1a0cd2523e37abb1a47077b61023c6d1ca73f13bbb17",
+    "host/src/node-kernel-host.ts": "f29a19a0032d7e32dc930cd242b90c3f341819852001163a58e2a26bb0333f4b",
+    "host/src/browser-kernel-host.ts": "c057a948a0f7214fe416caa31356890670079e33fb09695a02e723784e960611",
+    "host/src/kernel-worker.ts": "d44d502f049a869c1004e256f2c3cca3b3d002a8ffe8056be61d046b38f1a2ea",
+    "web-libs/kandelo-session/src/kernel-host.ts": "2467df38119972884ad917c85a925fb208b08d8455f69c32839ab01e92a105aa",
+    "apps/browser-demos/lib/pty-terminal.ts": "6117a8bd0e0f060e04e9e1aa443e5d787b3b3b9dcc69b537d6e3e8c86010b814"
+  },
+  "scope": "Full scoped public/returned/inherited readline/REPL requirements and missing implementation; other family audits and runtime conformance separate",
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

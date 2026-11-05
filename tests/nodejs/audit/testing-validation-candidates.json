@@ -1,0 +1,2111 @@
+{
+  "schema": 1,
+  "kind": "Future unchanged upstream source candidates; no test execution",
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/test-runner/test-output-abort-hooks.mjs",
+      "sha256": "fb863dc36b411501b70adfc7ca79ed419828baba85e1564e0dac10da9270cacd",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-abort-runs-after-hook.mjs",
+      "sha256": "877b3fa9c70624ebeb525ce14a00df03c6de06e18411a406d245eb937c0d51ab",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-abort-suite.mjs",
+      "sha256": "5351b0007a4cef049a62249209e012a53677977e11441d3c343367f05cbc3e1e",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-abort.mjs",
+      "sha256": "d386d899cdb1ed7dbe7f45d0bf3ae0f3997d0fc51552a60e3ef67e230b7e8402",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-arbitrary-output-colored.mjs",
+      "sha256": "3ded5f3e78d0b5132f0a2a4a1e54423a32353da2ec07677a8bbdb91612ba3fff",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-arbitrary-output.mjs",
+      "sha256": "0b744762adf77540adbc2c4826b8088813d7a5e1fffbdb075dd2ab98ff242dad",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-assertion-color-tty.mjs",
+      "sha256": "10dd5fb7500bfdf41745f295154bcd66525692f75fc9f702ba61740238987946",
+      "category": "test-runner",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-async-test-scheduling.mjs",
+      "sha256": "7dd35c74773356850372a9f03931fe9cae6c068a4ae5720e46973f806d466446",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-before-and-after-each-too-many-listeners.mjs",
+      "sha256": "fcfa3b55f8029cdf881f3d66c5336f80560c8aa1af96ecb2067f9032994c01c0",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-before-and-after-each-with-timeout-too-many-listeners.mjs",
+      "sha256": "085a15f40706f3009590180da31ff50862149f6817483e74915991130b380eba",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-failure.mjs",
+      "sha256": "f948ee437b63993e9df2f47d87abaeec6cd392516b8d4831a1c6760e4b2d6778",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-short-filename.mjs",
+      "sha256": "ee238664eebb5ff8c3fb4808e65f60c70f7c50ec6b8fd61d71cbe2bbcf50a8a3",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-width-100-uncovered-lines.mjs",
+      "sha256": "d011aee404ddd1b2528affda60765d0d16c2307b19c6c0806e7b11e4176015fc",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-width-100.mjs",
+      "sha256": "2cacca0c8442beb2ff45b3d09480029710d69931988d59b3f974a7f298a92679",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-width-150-uncovered-lines.mjs",
+      "sha256": "9072c57732fa0bd8710a78787a64ef1196080e38bddf752ebe6cf9320b7a3231",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-width-150.mjs",
+      "sha256": "6983c91cc5e96a0793ea37b41391e57f7dc18d6790a18b3eea2424cadc719ca6",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-width-40.mjs",
+      "sha256": "07dc8be5a51d59df2cf1fc17bfbac72af755071d57fe0e9c8f9e8d5d5207f18d",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-width-80-color.mjs",
+      "sha256": "fe9b09ee5492754d3e882963f89ff9e79435c863f7c9be9a59e88e0f195966a5",
+      "category": "test-runner",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-width-80-uncovered-lines-color.mjs",
+      "sha256": "d1f918e93318831fedd5420d8f3245bcf9eb2ec647bd5e301102940c689a0079",
+      "category": "test-runner",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-width-80-uncovered-lines.mjs",
+      "sha256": "41bf8fda0e571f8e2001493197765e1ce6e4fb0306e71ffd2c91ee020a9ec58e",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-width-80.mjs",
+      "sha256": "5e406a034318cadc3ef6e154b00b55b3298c2785c414e1ec4e3f898c7cea3ddf",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-width-infinity-uncovered-lines.mjs",
+      "sha256": "364c14130538c28e06bccad129b1d7aac1bf23426f44d4aeb0c1356c79378795",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-width-infinity.mjs",
+      "sha256": "18b03bcac84731176a95dfc26ad1f0ca388437cd13c82baf1dd9efd5ba58405d",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-with-mock-cjs.mjs",
+      "sha256": "08e616303846b1fe9ffbdad3f2fd6efa8dfb2f9d8ed82735fc690eb3d6faf867",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-coverage-with-mock.mjs",
+      "sha256": "fcb1e6aa958dddfa7cf8ad4592bcbb65a6900da5fef05c290041285ed7fad4c9",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-default-output.mjs",
+      "sha256": "0f43b1543d104d30ca72c2588ae28ea23e6ca28c2645ee3e395f74335a156d4b",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-describe-it.mjs",
+      "sha256": "59855fb3fb5be7ef6c376d3ec4d11bcbbfc65449f3080b4fdb7d81017542f35b",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-describe-nested.mjs",
+      "sha256": "9211d7d897eb6dbf47daaf6b76f54300ac088259c23f8a14f1ee04ef1810b888",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-dot-output-custom-columns.mjs",
+      "sha256": "a5715c4cab38427ed95dacc0c0022abb518ff8490d9533499928f9d7c2127e6c",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-dot-reporter-coverage-threshold.mjs",
+      "sha256": "66a6698adb65da9981376ce7bbb950739a8fdbcd44cdcc07fea993a42757d614",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-dot-reporter.mjs",
+      "sha256": "b2a6da08f6c38c5c95e666be68b07f7f3cbe561ee1bfe5332e9171c7c3eccba0",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-eval-dot.mjs",
+      "sha256": "5b2eeb5e04672b348e478211ca7114e2fc14a29a3ed1dfe8db09ac54d2edbc51",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-eval-spec.mjs",
+      "sha256": "1aa7d709c9d04bc33b4aabedced167a4d89e8a4a261a5803fa715a9778832448",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-eval-tap.mjs",
+      "sha256": "7bf4dbed14dd184cb629db903c704bbf7eec8ae53ec16c1d4e680494612e78b6",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-filtered-suite-delayed-build.mjs",
+      "sha256": "6ed6311f084c3920c526f73c31bf93d9d1ab61efb04f679b409d1645e9f344b1",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-filtered-suite-order.mjs",
+      "sha256": "7504983b036516f50058c1df80f0252e065a9f16dac3e9d191306f5a2a00caa9",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-filtered-suite-throws.mjs",
+      "sha256": "fc55ca95997a31c5e4f5f8d2caf7d15b86b8b65456513f7027986d76c32db1df",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-force-exit.mjs",
+      "sha256": "1a53d5585edba76b6dbaebc11c75bb778fa9130923dfb25193a4552d131e2781",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-global-after-should-fail-the-test.mjs",
+      "sha256": "501764e0f4a73b223202b524985fc151ed3091170b616bae632110950fb639bd",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-global-hooks-with-no-tests.mjs",
+      "sha256": "f62c7a54a9fc562804d2142681a31232abba2a1703435fe226d6a6e62a37cfd0",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-hooks-spec-reporter.mjs",
+      "sha256": "cc4645a341eb97ceeb1f007b6f9e7b00c234854bd7ca8772782c7fcc38bee2e3",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-hooks-with-no-global-test.mjs",
+      "sha256": "a8a0495bf10011173d467a16ebcb27c87515a0019f07e807e7fe1312819c867f",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-hooks.mjs",
+      "sha256": "1280176402e9fa6b61f470883584e1dd0f338d93a72020277d6e18841ad6c802",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-junit-classname-hierarchy.mjs",
+      "sha256": "15fc7e1fa0340e114a159f37c58dfd3299d216280624d70c6f167ee5c55b25d4",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-junit-empty-diagnostic.mjs",
+      "sha256": "8af21e7d0575b8760488357b5c913c84ce549d2d2258f0e4b9bf32ea6c2f67e2",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-junit-quote.mjs",
+      "sha256": "a437fc2b2ab6d9aa4ceacb788b5072d895cb724b44297255efbd01f8e23dac28",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-junit-reporter.mjs",
+      "sha256": "067b25c2c98b4ba581e5cc6fa0f27c666437b918057585cc677d488093486051",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-lcov-reporter.mjs",
+      "sha256": "a71cb51bd9dfd6b1fbd24ae2757f41d327cdae9e44adf69e9c2f7af34af2f594",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-name-and-skip-patterns.mjs",
+      "sha256": "a87e0621d0c22714c6234da09b9fc8374af9b25e95895c9498e8f36672f25b69",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-name-pattern-with-only.mjs",
+      "sha256": "99e40de4c180b1aada80621e2810ebb54d9574223de5c476b005b8dec310b972",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-name-pattern.mjs",
+      "sha256": "84cabfc58beba035dd9fed718269f2217f96989293ac8a2718b100ae07ce65dc",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-no-refs.mjs",
+      "sha256": "82b8d80602641406aad88ed509ce1f53934106e7b82f7eef9764b6ee231eaf19",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-no-tests.mjs",
+      "sha256": "afd4c95264c84c83f697b0051edcea06aeae8c69c055f4918ede489a1a053193",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-non-tty-forced-color-output.mjs",
+      "sha256": "6427b36b0e951c8d4f184ffb1fbf9a6f37c829539c7f6c5727363a784f2e703b",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-only-tests.mjs",
+      "sha256": "f9e1c38867d862138ce6fb45b7f95f8679801ebc7d9068814bcc263badb92b19",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-output-cli.mjs",
+      "sha256": "789660e45b20a906920807193fb631041e564d77cedfb5a9f6d8bdd84c5a589a",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-output.mjs",
+      "sha256": "84d0ff96b129474b357b6fed0412cfaf946571f831d3da1953065752fedb05af",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-randomize-nested-scenarios-output-cli-none.mjs",
+      "sha256": "69cbc512d6e62a0e7dd05fa3b9671b614ef3795a2e23510693dc6aba9c13c9c2",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-randomize-nested-scenarios-output-cli-process.mjs",
+      "sha256": "58663d953cad31883f35c6f7f66dbd91ff1a19734731fd9398e83cb6cb2678a5",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-randomize-output-cli-none.mjs",
+      "sha256": "d39f450db0c1a4a81f4c6234262dfd8d4fcd51a84ae4d4d7c6cdf4976fd7a4c0",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-randomize-output-cli.mjs",
+      "sha256": "37a27ba2dcf10c89b9b09f08d2a6469e7906588effd05c7957a9e4c89d50bdcc",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-skip-each-hooks.mjs",
+      "sha256": "53e84b0d8a601643c2e93e26deb29351f6520ed2075effd635ac37068f21e784",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-skip-pattern.mjs",
+      "sha256": "bfa61117cb64fec9e04a164c6ee89c36b860e34ee464df0e74201b7e7d4c66d2",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-source-mapped-locations.mjs",
+      "sha256": "637dd959ab38bdcac9fd0810b6d45ac43ded994f7822affe71e1072e33fe7d7b",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-spec-reporter-cli.mjs",
+      "sha256": "6802229306225bb0353ab2c5aa766acd30339122d1197f7fb06535549bb0fc43",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-spec-reporter-successful.mjs",
+      "sha256": "2e9fc36bccbfbaf135ed03e1b82434c342aef71b14a3e54bcbedde42ea3c116a",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-spec-reporter-watch-restart.mjs",
+      "sha256": "07b7b46553f4577275cd15e07060c87052fb4df7b90fc32703c4b210c2eaaf6e",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-spec-reporter.mjs",
+      "sha256": "d81b68590a7f59e69796b130228e6bd493c68eed21561209584c25cf2ab095a6",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-suite-skip-hooks.mjs",
+      "sha256": "e70205658988d70c4f2c460dc8b1e68b5936ee41578b5c81b7fc364c41a574d8",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-tap-escape.mjs",
+      "sha256": "ce66a1ca631e8df2204744daa864f51be1704f373a9d4703225630e793c205fd",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-test-diagnostic-warning-without-test-only-flag.mjs",
+      "sha256": "18e418ffc57fc241a2e7af66e5379cd0914c03286de2f4ad03930bd0f554dafe",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-test-runner-plan-timeout.mjs",
+      "sha256": "c496bbd8fb0069ca2d4778342e2caa75486c5eabb3a266a6f95f68480b7aa80e",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-test-runner-plan.mjs",
+      "sha256": "b7bb608fa2872cb8a50c2a9872c12413d133a8101692f2c945f74717d1db357a",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-test-runner-watch-spec.mjs",
+      "sha256": "4b02c8b4f6c9056f6af0281a4d68fa8cfc742e8967506acdf1b49ab07b1b87fa",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-test-timeout-flag-with-test.mjs",
+      "sha256": "fe3a93a4a832a1d76deb0e67654d5886e79ebbe6a50d73d482de0cec7c64eb6f",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-test-timeout-flag.mjs",
+      "sha256": "3a71940d626a250b0792ee27f4a12d1b02ca3aa5400cf61f6c1747cb8b31d723",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-timeout-in-before-each.mjs",
+      "sha256": "569914c70ecb0b8c4f6a66ba4fcca4011313d1e9755fe1ed506bd97d678cc489",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-typescript-coverage.mjs",
+      "sha256": "37d5c652b094c06cce9a52b5e7e01eaa20cdd8530f2f21eb2bf5bdfd6801e73b",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-output-unfinished-suite-async-error.mjs",
+      "sha256": "27db1bbb422d4a83aed26be1e5164a5cc3eb98ce5b663318925e6c727f9c90c3",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-create.mjs",
+      "sha256": "0460c85bbb9b9e694f183aca324a78677b10e29e1575568350cadb4b3c092335",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-cwd-isolation-none-argv.mjs",
+      "sha256": "478462514c4617c2e6836f686e9fcd1921d99adebc871840cbce4865b9467d24",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-cwd-isolation-none.mjs",
+      "sha256": "609d4e4d53cf42d9f28188fe21dd1531364205466e12da52a6bd06c6ced03ac1",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-cwd-isolation-process.mjs",
+      "sha256": "e465c93c6d279d34d19632b244671db070f3f9ccd76f0d5b9465e9db7b80cacf",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-cwd.mjs",
+      "sha256": "3174548cb4ab64612561fe0fa38e19e92cbd26752dfb12ef1d791ea4f35144d4",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-delete.mjs",
+      "sha256": "a92d939cdf443c6ab815fdf44c00c95bf69e61ffdf2d253570fa7765c76c2f33",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-dependency-repeatedly.mjs",
+      "sha256": "4fe7541974fb4ab75f304bbad8388e9d721093922074e581e737df2042cb3426",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-different-cwd-dependency.mjs",
+      "sha256": "e23aea3f69b0605d33bf22af83940dd9b032252fcc0b88dd9584d9aaf8395ddf",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-different-cwd-rename.mjs",
+      "sha256": "07c30b071b9157b1994f0ecb806c844b585ebbf9355edee8479a1dad64a4cc73",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-different-runner-cwd-isolation-process.mjs",
+      "sha256": "95b12a34257f88cf087c88f014bcdeda15528dbb0a91c7b1293998e0710190cf",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-different-runner-cwd.mjs",
+      "sha256": "4d96956f0678c0e33c166389244df1799d71176b3b043300dcb854d89570f6ee",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-emit-restarted.mjs",
+      "sha256": "60f82878bfbf379d007fbbd9dd7703da8e8793df7c491ffc8b18e124b8b226a1",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-esm-dependency.mjs",
+      "sha256": "7539c558225c12cc98acfb3a0bc571f78b139eed2ac4552c8c064f75a390b7d3",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-no-emit-restarted-disabled.mjs",
+      "sha256": "ee29dec4b7268cde8a2b95b2a3bc40e6fa3524ce07356088cea86731b788708e",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-rename.mjs",
+      "sha256": "1335e4197bf03fcbede0e25f22f9041b09bfa0d3f50fcedfe0189b02d034a55b",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-repeatedly.mjs",
+      "sha256": "7a93982531266028f1e2c6cc71eb4c7ae530ff1152af3e5fde1dd1e4e2fef03a",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-run-duration.mjs",
+      "sha256": "2638edbb15b7c4e30d260e026c731e89cd6907a2d1807175d5b26f920339d18d",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-run-watch-without-file.mjs",
+      "sha256": "be31e800412606963b03220d45ba0ef0a68204583c217f5b294cdd8ea8dc6615",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-create-isolation-none.mjs",
+      "sha256": "e47cea4bea0c652fb7e468bc56d45c09c8e90a3ba7b9f5884dec4251dae049cf",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-create-isolation-process.mjs",
+      "sha256": "9833592bdc1c77830e32d52bffdee3dba41f6655f8556e9954a293f427764d12",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-delete-isolation-none.mjs",
+      "sha256": "aed52e9a7b3eab6de8152dcd65c632da449c38f16131dc3128cbf154bb7eb519",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-delete-isolation-process.mjs",
+      "sha256": "856338e879958d3413de0af22655d14343ffa3d4ee843fc70179248ff3e314ec",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-dependency-isolation-none.mjs",
+      "sha256": "24ed17c380a7b5db0360fd8de4c2f7d9663f4b3dbc961fc3bbe2d22d673a6782",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-dependency-isolation-process.mjs",
+      "sha256": "dd821f022f9e3ae4e5fee89457d8c3da2a280740abe02cb199e80247c790b25d",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-esm-dependency-isolation-none.mjs",
+      "sha256": "b12f82e7f9292093188218b9340212c792306a82b4847b1b6f04bbc8a3533465",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-esm-dependency-isolation-process.mjs",
+      "sha256": "71da6c8a37ab551e96af1f249ab510d1c00e6d15a763066afeeb4c3a184bdb53",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-no-file-isolation-none.mjs",
+      "sha256": "60a0f1e42952607b9957a8b28bde44caa2a3436aeb3d341038df7d62edc67d99",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-no-file-isolation-process.mjs",
+      "sha256": "d91aa6992e3c01bcbc0ccc110f932fdc9ee093bf2bd0640ca1210a15a970d507",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-rename-isolation-none.mjs",
+      "sha256": "d94c4cea4f2284a7e3887973958232669895f16b0f463362637c84df2f29b84c",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-rename-isolation-process.mjs",
+      "sha256": "61663e0fe939405f5cb3d9ea6c2153fe0be8058f521e1a227fa5076a8f3446ef",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-run-repeatedly-isolation-none.mjs",
+      "sha256": "89791341898546b05e1bd1fba05866d627d5ac5b846e1c14dd9a249b7b93b154",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/test-runner/test-watch-run-repeatedly-isolation-process.mjs",
+      "sha256": "e522ecf2f70441a47f547655e066a598dea75436009c4b6c511af7fdab589825",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-auto-run.js",
+      "sha256": "c6e1642bb83fb131ab3701bedce686174db564bd86d883584adfdce378ca0de5",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-cli-ack.js",
+      "sha256": "a46d395c80dbfd5e8b19677f6bb6841c369e94f8385c383594ce3c886cc6c525",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-cli-arguments.js",
+      "sha256": "4fd80f3bf65ffff3b0a31b2a238ab6344a849673bb8975b1b5336f4be3c33d22",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-cli-backpressure.js",
+      "sha256": "a099da5e07f7406142edc1b56fa391240228b1dd6d47b0d2819ebf6c22da7db1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-cli-lifecycle.js",
+      "sha256": "942ecd9d74e536b9e6b4006e311fefaa44ee448b4a2004132b0f2dae0c6627ef",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-cli-reporters.js",
+      "sha256": "895496f968dfc1d450beebef3f591fbba28f4c4e43b6794b1a3551a5217b20f4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-cli.js",
+      "sha256": "9d86754f5748136d775e18ae80f064de8101a722d2deb48786b96201e4310137",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-clock-precision.js",
+      "sha256": "78981e27a2f98ec2c97bcf60624db16008cb3dcf7c1fbdecac830788e591942e",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-context-control.js",
+      "sha256": "8baeac2440b6771ebbb4afbdc6f669474463fe26e3e40dd22717b84acc20d3c5",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-context-errors.js",
+      "sha256": "e653340acfe2e51fa38a513091d9a398dcb0ff0a91f8e5e1b85b6cd9a400a009",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-create-runner.js",
+      "sha256": "4be83384a14f4e0f7c8af71cf20c85ee330aa2141055917379b232fa6aa00d52",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-custom-reporter.js",
+      "sha256": "a2e779f127b1987e1ce513df24b387b21b2780a8a2f1549d3e1504451955ddd7",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-default-warmup.js",
+      "sha256": "87cf488e5022970816b26912d4a49dc16a0d0e192436cb2844d4591ae6ab6bf3",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-diagnostic-channels.js",
+      "sha256": "ca61df9feb7b2a23fdf20b9e48d24cbbf25cd6a541de428a2b1c99d480b59d2c",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-diagnostics.js",
+      "sha256": "8f3fb23e10476f0092f4dc22dcebec464999458356c9b485fee83306915e7c32",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-errors.js",
+      "sha256": "07b3a0bb508cec2011a52c45b5cf2ba23dba3a0ba74157a9017a72815637c71d",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-filtering.js",
+      "sha256": "b93ccead75fea4aec55f9516429ad2851735fe612612e36f5d89f9521472b5d7",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-harness-errors.js",
+      "sha256": "1867b23e032668be175cddfb83589390f43069c9ca6d5a5afae1edb7ae6f7d47",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-hook-errors.js",
+      "sha256": "b8caf13641005c62e75f51b13bfa07f03f8f642db5727917d9ea5b5c5f6786ce",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-module.mjs",
+      "sha256": "20a604a470e927a6c096af6b6621c09f3241a6bf217c3c6480fea878ba94336b",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-reporters.js",
+      "sha256": "9b97593e79c528250b9a16a2ddde591371b3328189e555175d8b809b11b1227b",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-run-exit-code.js",
+      "sha256": "0048d2929b58a4aa0b8ba92a9d65f40b2df6081ecad37d13cc056b0f174b899c",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-run-file.js",
+      "sha256": "c75c99a8ed306f6dd1d5ccc02cf9649d1a1fbeb9227ed65cb649a444fc62d208",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-run-options.js",
+      "sha256": "4768df0aebe6150210a5d8bbf9876bd9d95deaedbcb26d8c83b5bf5c774bfc08",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-run.js",
+      "sha256": "93dc02380f8879e2d0efe2daec023931fca5f94b70a0cb908a4df5801bf1f098",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-stream.js",
+      "sha256": "723435e505fd356888a7de06920f47f87ce94951a2a12715c5af567fa16c8032",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-validation.js",
+      "sha256": "06e56ce8d77565a2a17b13596f99b766c465a9c186b7723b110e489cf1b7ddb4",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-bench-yield-between-samples.js",
+      "sha256": "5f6abe868d99bc1c6bcf631acbb85a4bd471389941caaf986226a1e7c91fcad4",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-bench --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-aftereach-runtime-skip.js",
+      "sha256": "25fe6b00d7cdd18ff4e8fea5e1c45e11d9bb7ecafbe4382d26c9ae60d828c37a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-aliases.js",
+      "sha256": "91f19b133af9743b885dbbdf1adc5c3dc9e9dd8b9acdac0ab2aa7cfb75ea22d7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-assert.js",
+      "sha256": "807ceb70d61d60406b833dcf36ebf12d5572d6f0269cb406892f4d8b7d5d4b7e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-cli-concurrency.js",
+      "sha256": "65bf3f5e73b6303b76e1ed29848f6c36fb87964316b3b6a58e012be48225aee4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-cli-randomize.js",
+      "sha256": "d29861394c154c1447fda93c890fe71195631541d9fd7384b9cc9bdff835f111",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-cli-timeout.js",
+      "sha256": "f164519741af729df22b6e4082562ce3d62f3e7a48a84e6a5af723ce20499049",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-cli.js",
+      "sha256": "2d8281420c94de7905ebe60488789c21eab8618aea60252e91c46ee0bf1fe4db",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-complex-dependencies.mjs",
+      "sha256": "5cd12dd2694fec65839ed24f751d495f9366146fd46f9e25a8c679aa7046f355",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-concurrency.js",
+      "sha256": "8eabbaa76b97bc83ede416b162462f781f0d04422da62b22fef0e99871a53a56",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-coverage-default-exclusion.mjs",
+      "sha256": "ee41a3b9bb39953eb3e985b0d5a7237fcfe8c12df46cfc1ccc1c77e04ea0117a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-coverage-isolation-none-api.mjs",
+      "sha256": "ba81e5cbd43eec5507fbbd690a3848b5367c6e79d96b05e5d6379eb38f27e552",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-coverage-source-map.js",
+      "sha256": "60ff4a410c43d9a41c43794717fee7ec236bf88b00d0b6788090907605125568",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-coverage-thresholds.js",
+      "sha256": "964cb3ed12fa3379601779d6a20af90c7a50fb93e65a2e295d5d86d7363aae70",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-coverage.js",
+      "sha256": "1674b12381d2ab3bbdc8072f844ddaddb90d83863e027397d6e72adb89015ed9",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-custom-assertions.js",
+      "sha256": "a2727c3d467d1e2e52f33d21db84bb390161713170868fd1464db42c91559290",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-diagnostics-channel.js",
+      "sha256": "93fcff51f3265b4e8101509e025fdab44b7240cdc5e60beeb84209b8c06af741",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-enable-source-maps-issue.js",
+      "sha256": "567cf69649160b3304290a88bae2e653d817d1cb7739e7d948a375d030c504d3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-enqueue-file-syntax-error.js",
+      "sha256": "a3335e61ac2e9cb5c6a2b8b328d75111649a42dc4700706cedc15e86be1f43d6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-entry-file.mjs",
+      "sha256": "bcefaf5b82596934acf0404808053b479f0edf1513a2013ae9ba180522eddb61",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-error-reporter.js",
+      "sha256": "fc76e9bdb87afa62c072bef11c916fbc160637de635786e47c707be2d9ab6b1c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-execution-ordered-bypass.mjs",
+      "sha256": "7b7f04d729a2d34c2f95787a814f9565340a7567a4275fb20e99937585b27842",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-exit-code.js",
+      "sha256": "b64114d61868c7df0b3831b04ca52a071470e20348a3560c7767c3223bfecbd4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-expect-error-but-pass.js",
+      "sha256": "bd0d83e2e014d20da5dc1cfe5c452732d442bf28fb0db1506575e5ad6161bf8d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-expect-error.js",
+      "sha256": "529c64ac0b2fb5470a51c1521653c320e79b478655f1bda691834fa74b4e627e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-extraneous-async-activity.js",
+      "sha256": "bf27e8fc4227c99693d5b2e4c2c4676cfec8715bf8fb22c9cc24ba2a3e90b77f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-filetest-location.js",
+      "sha256": "6b4a402fcc625eec4096748de68f0b60bf87b16b63d6482c4ed3c26b087ccd31",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-filter-warning.js",
+      "sha256": "992537e12bbd21b088582c9c16db92f3791c487f5a97a9f949257a836b2e5fdf",
+      "category": "parallel",
+      "declaredFlags": [
+        "--test-only"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-flag-propagation.js",
+      "sha256": "e2f23ca0f135f4b04f269a1a76b80e97bea1ae736305ddfdc16f435ca3bb57f8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-force-exit-failure.js",
+      "sha256": "28199c3b465727760248ecc01019ae594e3d15a6141ba4de9eb6c3c5a8338f56",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-force-exit-flush.js",
+      "sha256": "f4aef68aee872526727fad1d9e55cae57f8ba55bcbc4097f864b775283d467ea",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-get-test-context.js",
+      "sha256": "ea51fe9188e53e4bea07dd19680beb835a2864d7b093720f5248a24a5b32fde6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-global-setup-teardown.mjs",
+      "sha256": "b4a39bec0fd3e28c5e393e6f2c38b033a0113b7db4f88fb0ab8b3de4f55e1d5b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-global-setup-watch-mode.mjs",
+      "sha256": "55db286ab17999e10d618b17ab93c3080bba1d3d93774855b4a97eb31d6cc491",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-import-no-scheme.js",
+      "sha256": "bcb15144fa1a3d34b4e83f5e54cd44cac7e4d63f1ba8d16eba9b8922c5854874",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-inspect.mjs",
+      "sha256": "869eeaa520e268e3633cc0b05769edd82161a662812afc581d3d236b09bbfbf2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-log.mjs",
+      "sha256": "2ed4cfdb1ee4cb2931a1aef8f647e65e81e3beb0c982fb749663eb8a84d2b9e6",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-misc.js",
+      "sha256": "31afe69ee039e5c94461d7fc17e7a65f3f51455717a03a332b81ba858f5b701b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-mock-dual-package.js",
+      "sha256": "2817d74ef4753b9512d1ca41f46d0b52915bbe0b823f0c702190408022b8d299",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-mock-timers-date.js",
+      "sha256": "6857c5b47e803b094f398f7543208b2de9842a59949ad303244845bcd647d12d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-mock-timers-scheduler.js",
+      "sha256": "569d206709c598ae4a486f6b8fc8ba50547b147b7f3f04c19cc8106eaca2bda5",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-mock-timers-with-timeout.js",
+      "sha256": "1343962baa83739de32edba2630c6921cd276a440352100aff0c3894559e4f38",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-mock-timers.js",
+      "sha256": "d2739c4b132704288ad7b4e071ee99902d4502bf63249ce5c2debabffde4e930",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-mocking.js",
+      "sha256": "a2defe87a847342afdb306bbde2b584ba6dbad470ba762fd0452270c690e68a7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-module-mocking.js",
+      "sha256": "8d679c4a39b21a9984e3d0bf76389d97817e8736de1c1406d6c5c8626d11703c",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-test-module-mocks --experimental-require-module"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-no-isolation-different-cwd.mjs",
+      "sha256": "e937d4fa3108e24bfdb25f0eecf2066ae5d92ab906256bb6d91d9051c3e4a85a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-no-isolation-filtering.js",
+      "sha256": "903146114a17a47c4aec5925b80511376fd9a6fa16d59fce270204dcff5de683",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-no-isolation-hooks.mjs",
+      "sha256": "93a15cbad6a81aa551016f38f72ca42f2e13689f6496672e47a1989f5ef2e4ae",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-no-isolation-load-error.js",
+      "sha256": "812effc26fc64afd4afbfe03e2cef4659bd3ee18913fb07c705dab063c3bd3bf",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-no-isolation.mjs",
+      "sha256": "0347d302782ee6486a5729718ea78efa650c79b4589e316c96bb40024e471fbe",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-option-precedence.js",
+      "sha256": "e4db5d5ff45c0cfa5684b6f4864db4b6d8b6c066df5ec9f91d04a6a1a03eada5",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-option-validation.js",
+      "sha256": "20f3e8684fef71f2baa5062e9c5d5c9b0e89a6486fe11f5fcd98c54604dd587c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-plan.mjs",
+      "sha256": "1a7a39d24ee34d3068be521b1a7da34fcb2914fa204cde7688e3d9ba723136fa",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-randomize-first-draw.mjs",
+      "sha256": "2fb832f2b7f36913bfade2aa1ecf4e3eb2d435c1f5b5efa8593f2ad90dede7e3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-reporters.js",
+      "sha256": "80d0b7c50b22db9e6b96ab331ec220737656ea63955081cdc30daa41c399b140",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-root-after-with-refed-handles.js",
+      "sha256": "788ffc254645e04d84b076296a19fa4b21da80b22fd7ce652172a1930f364f7a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-root-duration.js",
+      "sha256": "b9bf84f66d6b2c1292704d4babb87b0379d183adb6c57c23f40bd149f841e164",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-run-coverage.mjs",
+      "sha256": "4716f4e2c8624965f7596c658b50b327b953277ccc7ab763b1db349d3f834104",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-run-files-undefined.mjs",
+      "sha256": "c548e53dd59262b227ab0c11d8b902ea655edb93c28d0d805cf0d89c1337cbb5",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-run-global-hooks.mjs",
+      "sha256": "302a4ad58611984396d40a7ba27c36cc4f1c6c8d2519e5e21e01fd15ec93b1e9",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-run.mjs",
+      "sha256": "e1b6cdba6081fdb11e7cfa2f80db03ebff11485945f561a4df1db5395d96e699",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-seeded-generator.js",
+      "sha256": "70da389fea4dcfdd9ea8a8cd10c278c9d84188aa58f86cf040f7ef76d6dc3039",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-snapshot-file-tests.js",
+      "sha256": "d38690047117593fa3ac7fa14a2d6f0a668c920f29de36b7325cca870964d0b1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-snapshot-tests.js",
+      "sha256": "4b5cac54c1de25216d892dedc0f9d2f84ad1d8e916fc272e091b0ab36bc93b30",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-source-maps-invalid-json.js",
+      "sha256": "2f3ebb3d4e82fcb68e27032c4ac37f802a8df09995e0ef125295e413ee6f1825",
+      "category": "parallel",
+      "declaredFlags": [
+        "--enable-source-maps"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-string-to-regexp.js",
+      "sha256": "5c1ffc740a90b57a9de013d7069b5725bfd52df7ff277bbdbb62b4a7d18f51cb",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-subtest-after-hook.js",
+      "sha256": "be6aace640f724453b860fc68fc4479c4f52b9f11929a8fb1a666c623eec69a4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-tag-filter-cli.mjs",
+      "sha256": "d2cfa036153b3d5544345fc3f6b8560abe766253652a9eb762734ea628cd67db",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-tag-filter-parser.mjs",
+      "sha256": "b7ce26fafeb26f4b4546dddcca46a390a5a2dbc56ee6456769e82b1b1892e549",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-tags-events.mjs",
+      "sha256": "42843d4903d4ffa1d222fda835dafa1253205ccb20bcc09180f61d69b33a9aef",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-tags-experimental-warning.mjs",
+      "sha256": "8295dc9c7df3bf7c7ff1987cea0d9979c6503c7fa6ad42d892a29077aca589a2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-tags-inheritance.mjs",
+      "sha256": "0081e9ced6699a8d50440b0642b768f3c041fa33220dc0aca9f88f63850a52d0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-tags-validation.mjs",
+      "sha256": "dbb60b10c873752cb8248c701cbec9d6faad7eb68a98661788633c3717684a55",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-test-filepath.js",
+      "sha256": "23c8a33aa90db2697b2b88ef5e483e82f514df941581107bf06d45312c0713c0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-test-fullname.js",
+      "sha256": "34ba5dfade74be3f97bc76099cb783c7a9a2c7ed5be699299e41f2507c330c1e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-test-id.js",
+      "sha256": "64837ddbe7c0a76f3682bf87ab357819e84a5dc9e79a0fa92850717d3e0fe094",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-test-rerun-failures.js",
+      "sha256": "b3cc2302fc8bca17f05c04dbecea1e1b6aa97595c46d3544d61b93f5514d65ec",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-todo-skip-tests.js",
+      "sha256": "49466963fbe1ba231f9fd8675917c47f6661600224e4ad8794745a1cd01fcf62",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-todo-suite-hook-failure.js",
+      "sha256": "4386350097da9cf271f30b59dc0fd1663f3e2fed11077d2b04995b7eb8cbaf92",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-typechecking.js",
+      "sha256": "74b8a5de4e5d5a002ac6624a99e98d079c2dd8ce3e16bc8427c36afc46b68af8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-v8-deserializer.mjs",
+      "sha256": "e592d43d591857acf60bf3a197ddbf152ed50868426eea8572f0b9e481c49fe8",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-wait-for.js",
+      "sha256": "cabcd9473e14d4501ffed9045f950d6fe0b9a0fefa6fb9fdb48b5af5e66c0ca9",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-watch-mode-complex.mjs",
+      "sha256": "3c4c705c9b9dab60611898cb00e7437beed483ba818326fed52fe64c375a3f5a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-worker-id.js",
+      "sha256": "eded65cef321cc4a01622e3101f57329ee9128cac654c3fb7100b7175198d089",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/parallel/test-runner-xfail.js",
+      "sha256": "c9b2a9cd1d22751576439b2d1fdecca9ccb26d38a0e46813019862bcd0c31af3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/sequential/test-benchmark-node-bench-tools.js",
+      "sha256": "e9f32f32a2045663d5187a68234291203132e956fc2737f93642356698a77fe4",
+      "category": "sequential",
+      "declaredFlags": [
+        "--no-warnings"
+      ],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    },
+    {
+      "path": "test/sequential/test-runner-run-inspect.mjs",
+      "sha256": "21354885bb2c0eabf4e6bde9fce7ea7107ac5327e24ef222c365049ed83c8693",
+      "category": "sequential",
+      "declaredFlags": [],
+      "privateV8SyntaxTextPresent": false,
+      "status": "Proposed unchanged upstream source; not run and not assertion-coverage signoff",
+      "launcherPrerequisites": "Upstream category/testcfg, flags and common/fixtures/snapshot transforms retained; subprocess/IPC/fs/inspector requirements case-specific"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

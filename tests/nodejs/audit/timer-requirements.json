@@ -1,0 +1,243 @@
+{
+  "schema": 1,
+  "kind": "Timer source audit with concrete gaps; no runtime conformance",
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sections": [
+    {
+      "line": 1,
+      "endLine": 16,
+      "title": "Timers",
+      "sha256": "f1bdfe41aec962514cd4c162ce085f237211ce81e1ea7d79bc00b07d40c594a0",
+      "normativeRequirements": "> Stability: 2 - Stable\n\n\n\nThe `timer` module exposes a global API for scheduling functions to\nbe called at some future period of time. Because the timer functions are\nglobals, there is no need to call `require('node:timers')` to use the API.\n\nThe timer functions within Node.js implement a similar API as the timers API\nprovided by Web Browsers but use a different internal implementation that is\nbuilt around the Node.js [Event Loop][].",
+      "apiObservationId": null
+    },
+    {
+      "line": 17,
+      "endLine": 27,
+      "title": "Class: `Immediate`",
+      "sha256": "80c6412fc8e5604a88eee1352bec90710b0f4a7151308cd80786473626fc7a2c",
+      "normativeRequirements": "This object is created internally and is returned from [`setImmediate()`][]. It\ncan be passed to [`clearImmediate()`][] in order to cancel the scheduled\nactions.\n\nBy default, when an immediate is scheduled, the Node.js event loop will continue\nrunning as long as the immediate is active. The `Immediate` object returned by\n[`setImmediate()`][] exports both `immediate.ref()` and `immediate.unref()`\nfunctions that can be used to control this default behavior.",
+      "apiObservationId": "timers.Immediate"
+    },
+    {
+      "line": 28,
+      "endLine": 37,
+      "title": "`immediate.hasRef()`",
+      "sha256": "a5aa87b412954fb0cc0902d63ec50b4db600ec7df852d971b5789d377f7afb9d",
+      "normativeRequirements": "* Returns: {boolean}\n\nIf true, the `Immediate` object will keep the Node.js event loop active.",
+      "apiObservationId": "timers.Immediate.hasRef"
+    },
+    {
+      "line": 38,
+      "endLine": 52,
+      "title": "`immediate.ref()`",
+      "sha256": "6fb84feea6e9096d4abeb68c8a1d4945cba252b05c9904711dedc57834e5c44d",
+      "normativeRequirements": "* Returns: {Immediate} a reference to `immediate`\n\nWhen called, requests that the Node.js event loop _not_ exit so long as the\n`Immediate` is active. Calling `immediate.ref()` multiple times will have no\neffect.\n\nBy default, all `Immediate` objects are \"ref'ed\", making it normally unnecessary\nto call `immediate.ref()` unless `immediate.unref()` had been called previously.",
+      "apiObservationId": "timers.Immediate.ref"
+    },
+    {
+      "line": 53,
+      "endLine": 65,
+      "title": "`immediate.unref()`",
+      "sha256": "4977d472e4e4eca1bb14457c90755162a33a7e438fa1c257ed514d40eeb8bd6a",
+      "normativeRequirements": "* Returns: {Immediate} a reference to `immediate`\n\nWhen called, the active `Immediate` object will not require the Node.js event\nloop to remain active. If there is no other activity keeping the event loop\nrunning, the process may exit before the `Immediate` object's callback is\ninvoked. Calling `immediate.unref()` multiple times will have no effect.",
+      "apiObservationId": "timers.Immediate.unref"
+    },
+    {
+      "line": 66,
+      "endLine": 79,
+      "title": "`immediate[Symbol.dispose]()`",
+      "sha256": "bccfeca63a662aea9bd8a211f0326bb59a30024485a20d133786f3d02b83d205",
+      "normativeRequirements": "Cancels the immediate. This is similar to calling `clearImmediate()`.",
+      "apiObservationId": "timers.Immediate.Symbol.dispose"
+    },
+    {
+      "line": 80,
+      "endLine": 91,
+      "title": "Class: `Timeout`",
+      "sha256": "f74aecb7437298b45d540ab01eaf7ab2deac1bb2cbba110f5bb644b275873017",
+      "normativeRequirements": "This object is created internally and is returned from [`setTimeout()`][] and\n[`setInterval()`][]. It can be passed to either [`clearTimeout()`][] or\n[`clearInterval()`][] in order to cancel the scheduled actions.\n\nBy default, when a timer is scheduled using either [`setTimeout()`][] or\n[`setInterval()`][], the Node.js event loop will continue running as long as the\ntimer is active. Each of the `Timeout` objects returned by these functions\nexport both `timeout.ref()` and `timeout.unref()` functions that can be used to\ncontrol this default behavior.",
+      "apiObservationId": "timers.Timeout"
+    },
+    {
+      "line": 92,
+      "endLine": 103,
+      "title": "`timeout.close()`",
+      "sha256": "9a137e1822a429bf8b7f368eace9e8cd0b1094cf51fff54cac7fedfc118d6323",
+      "normativeRequirements": "> Stability: 3 - Legacy: Use [`clearTimeout()`][] instead.\n\n* Returns: {Timeout} a reference to `timeout`\n\nCancels the timeout.",
+      "apiObservationId": "timers.Timeout.close"
+    },
+    {
+      "line": 104,
+      "endLine": 113,
+      "title": "`timeout.hasRef()`",
+      "sha256": "16d909bd14f7d96ba41b1e3c88c36a9af823ca9881f85f82c145f1fbba3905bc",
+      "normativeRequirements": "* Returns: {boolean}\n\nIf true, the `Timeout` object will keep the Node.js event loop active.",
+      "apiObservationId": "timers.Timeout.hasRef"
+    },
+    {
+      "line": 114,
+      "endLine": 127,
+      "title": "`timeout.ref()`",
+      "sha256": "660e3403af0f921465abf3fc45533fb356235dc604eabf8b3f7a1c5a05ae35f6",
+      "normativeRequirements": "* Returns: {Timeout} a reference to `timeout`\n\nWhen called, requests that the Node.js event loop _not_ exit so long as the\n`Timeout` is active. Calling `timeout.ref()` multiple times will have no effect.\n\nBy default, all `Timeout` objects are \"ref'ed\", making it normally unnecessary\nto call `timeout.ref()` unless `timeout.unref()` had been called previously.",
+      "apiObservationId": "timers.Timeout.ref"
+    },
+    {
+      "line": 128,
+      "endLine": 143,
+      "title": "`timeout.refresh()`",
+      "sha256": "4fe80ca6350dbd29c28ade81ae5c38137048c47e4fbaf5cddfb96857595b0cb9",
+      "normativeRequirements": "* Returns: {Timeout} a reference to `timeout`\n\nSets the timer's start time to the current time, and reschedules the timer to\ncall its callback at the previously specified duration adjusted to the current\ntime. This is useful for refreshing a timer without allocating a new\nJavaScript object.\n\nUsing this on a timer that has already called its callback will reactivate the\ntimer.",
+      "apiObservationId": "timers.Timeout.refresh"
+    },
+    {
+      "line": 144,
+      "endLine": 156,
+      "title": "`timeout.unref()`",
+      "sha256": "2a9f3e3ce92bcdf04172c4f221833b67460536184c228b015d35621e02ad3ed4",
+      "normativeRequirements": "* Returns: {Timeout} a reference to `timeout`\n\nWhen called, the active `Timeout` object will not require the Node.js event loop\nto remain active. If there is no other activity keeping the event loop running,\nthe process may exit before the `Timeout` object's callback is invoked. Calling\n`timeout.unref()` multiple times will have no effect.",
+      "apiObservationId": "timers.Timeout.unref"
+    },
+    {
+      "line": 157,
+      "endLine": 173,
+      "title": "`timeout[Symbol.toPrimitive]()`",
+      "sha256": "1210ed38bb537164edbbf8302ab4c03562ec7ac53fc028a081ed94c9582d656b",
+      "normativeRequirements": "* Returns: {integer} a number that can be used to reference this `timeout`\n\nCoerce a `Timeout` to a primitive. The primitive can be used to\nclear the `Timeout`. The primitive can only be used in the\nsame thread where the timeout was created. Therefore, to use it\nacross [`worker_threads`][] it must first be passed to the correct\nthread. This allows enhanced compatibility with browser\n`setTimeout()` and `setInterval()` implementations.",
+      "apiObservationId": "timers.Timeout.Symbol.toPrimitive"
+    },
+    {
+      "line": 174,
+      "endLine": 187,
+      "title": "`timeout[Symbol.dispose]()`",
+      "sha256": "b5490af2ddb2a68c4fb5020b1a4a6a5cb4649fa88acf5cb26e79f5ec0e158a2a",
+      "normativeRequirements": "Cancels the timeout.",
+      "apiObservationId": "timers.Timeout.Symbol.dispose"
+    },
+    {
+      "line": 188,
+      "endLine": 194,
+      "title": "Scheduling timers",
+      "sha256": "7353765f10f2c59a2d025d5e1699156d8ff2a184d855b11ae4240aece3e51070",
+      "normativeRequirements": "A timer in Node.js is an internal construct that calls a given function after\na certain period of time. When a timer's function is called varies depending on\nwhich method was used to create the timer and what other work the Node.js\nevent loop is doing.",
+      "apiObservationId": null
+    },
+    {
+      "line": 195,
+      "endLine": 225,
+      "title": "`setImmediate(callback[, ...args])`",
+      "sha256": "95807f1e01492d4b9336f7d5e1aec9f0fd8568306aafc0beec81876f99f6c12e",
+      "normativeRequirements": "* `callback` {Function} The function to call at the end of this turn of\n  the Node.js [Event Loop][]\n* `...args` {any} Optional arguments to pass when the `callback` is called.\n* Returns: {Immediate} for use with [`clearImmediate()`][]\n\nSchedules the \"immediate\" execution of the `callback` after I/O events'\ncallbacks.\n\nWhen multiple calls to `setImmediate()` are made, the `callback` functions are\nqueued for execution in the order in which they are created. The entire callback\nqueue is processed every event loop iteration. If an immediate timer is queued\nfrom inside an executing callback, that timer will not be triggered until the\nnext event loop iteration.\n\nIf `callback` is not a function, a [`TypeError`][] will be thrown.\n\nThis method has a custom variant for promises that is available using\n[`timersPromises.setImmediate()`][].",
+      "apiObservationId": "timers.setImmediate"
+    },
+    {
+      "line": 226,
+      "endLine": 253,
+      "title": "`setInterval(callback[, delay[, ...args]])`",
+      "sha256": "70f4914caad4012340f5d9b43320ef36cc2613e25b51e394cf93b16857b456e1",
+      "normativeRequirements": "* `callback` {Function} The function to call when the timer elapses.\n* `delay` {number} The number of milliseconds to wait before calling the\n  `callback`. **Default:** `1`.\n* `...args` {any} Optional arguments to pass when the `callback` is called.\n* Returns: {Timeout} for use with [`clearInterval()`][]\n\nSchedules repeated execution of `callback` every `delay` milliseconds.\n\nWhen `delay` is larger than `2147483647` or less than `1` or `NaN`, the `delay`\nwill be set to `1`. Non-integer delays are truncated to an integer.\n\nIf `callback` is not a function, a [`TypeError`][] will be thrown.\n\nThis method has a custom variant for promises that is available using\n[`timersPromises.setInterval()`][].",
+      "apiObservationId": "timers.setInterval"
+    },
+    {
+      "line": 254,
+      "endLine": 286,
+      "title": "`setTimeout(callback[, delay[, ...args]])`",
+      "sha256": "62c2cf548de057d24d50c72dae61f8f88e0bf1c48856037391c97444e3446936",
+      "normativeRequirements": "* `callback` {Function} The function to call when the timer elapses.\n* `delay` {number} The number of milliseconds to wait before calling the\n  `callback`. **Default:** `1`.\n* `...args` {any} Optional arguments to pass when the `callback` is called.\n* Returns: {Timeout} for use with [`clearTimeout()`][]\n\nSchedules execution of a one-time `callback` after `delay` milliseconds.\n\nThe `callback` will likely not be invoked in precisely `delay` milliseconds.\nNode.js makes no guarantees about the exact timing of when callbacks will fire,\nnor of their ordering. The callback will be called as close as possible to the\ntime specified.\n\nWhen `delay` is larger than `2147483647` or less than `1` or `NaN`, the `delay`\nwill be set to `1`. Non-integer delays are truncated to an integer.\n\nIf `callback` is not a function, a [`TypeError`][] will be thrown.\n\nThis method has a custom variant for promises that is available using\n[`timersPromises.setTimeout()`][].",
+      "apiObservationId": "timers.setTimeout"
+    },
+    {
+      "line": 287,
+      "endLine": 366,
+      "title": "Cancelling timers",
+      "sha256": "42bfd28de6e5ad22a7c35a4f1b10e5a7d17e3c8820d4e0a3c10e101e7ed21d0d",
+      "normativeRequirements": "The [`setImmediate()`][], [`setInterval()`][], and [`setTimeout()`][] methods\neach return objects that represent the scheduled timers. These can be used to\ncancel the timer and prevent it from triggering.\n\nFor the promisified variants of [`setImmediate()`][] and [`setTimeout()`][],\nan [`AbortController`][] may be used to cancel the timer. When canceled, the\nreturned Promises will be rejected with an `'AbortError'`.\n\nFor `setImmediate()`:\n\n\n\n\n\nFor `setTimeout()`:",
+      "apiObservationId": null
+    },
+    {
+      "line": 367,
+      "endLine": 377,
+      "title": "`clearImmediate(immediate)`",
+      "sha256": "72df4f287c81a6cc0b992424e67beb0d1642398717cd607f3ff19c312c99fd61",
+      "normativeRequirements": "* `immediate` {Immediate} An `Immediate` object as returned by\n  [`setImmediate()`][].\n\nCancels an `Immediate` object created by [`setImmediate()`][].",
+      "apiObservationId": "timers.clearImmediate"
+    },
+    {
+      "line": 378,
+      "endLine": 388,
+      "title": "`clearInterval(timeout)`",
+      "sha256": "1dbdc03e79862796833369304c7bca81c63aa6206de1e13f40d90df72ba6b2e5",
+      "normativeRequirements": "* `timeout` {Timeout|string|number} A `Timeout` object as returned by [`setInterval()`][]\n  or the [primitive][] of the `Timeout` object as a string or a number.\n\nCancels a `Timeout` object created by [`setInterval()`][].",
+      "apiObservationId": "timers.clearInterval"
+    },
+    {
+      "line": 389,
+      "endLine": 399,
+      "title": "`clearTimeout(timeout)`",
+      "sha256": "b4a644c021bdd023aa5f11e4d4c907aa191b766c7b9154797528ce27f8847c84",
+      "normativeRequirements": "* `timeout` {Timeout|string|number} A `Timeout` object as returned by [`setTimeout()`][]\n  or the [primitive][] of the `Timeout` object as a string or a number.\n\nCancels a `Timeout` object created by [`setTimeout()`][].",
+      "apiObservationId": "timers.clearTimeout"
+    },
+    {
+      "line": 400,
+      "endLine": 429,
+      "title": "Timers Promises API",
+      "sha256": "e880f4d0103d725b8d14d20d8424349b7ec9cdbfdf741167aaaed2edfe1154a2",
+      "normativeRequirements": "The `timers/promises` API provides an alternative set of timer functions\nthat return `Promise` objects. The API is accessible via\n`require('node:timers/promises')`.",
+      "apiObservationId": null
+    },
+    {
+      "line": 430,
+      "endLine": 465,
+      "title": "`timersPromises.setTimeout([delay[, value[, options]]])`",
+      "sha256": "4cafac8fbdafaa62d6e327d42f08f1dae4f59838ded05b2e3f2c4e894497cdc2",
+      "normativeRequirements": "* `delay` {number} The number of milliseconds to wait before fulfilling the\n  promise. **Default:** `1`.\n* `value` {any} A value with which the promise is fulfilled.\n* `options` {Object}\n  * `ref` {boolean} Set to `false` to indicate that the scheduled `Timeout`\n    should not require the Node.js event loop to remain active.\n    **Default:** `true`.\n  * `signal` {AbortSignal} An optional `AbortSignal` that can be used to\n    cancel the scheduled `Timeout`.",
+      "apiObservationId": "timers/promises.setTimeout"
+    },
+    {
+      "line": 466,
+      "endLine": 499,
+      "title": "`timersPromises.setImmediate([value[, options]])`",
+      "sha256": "6eff96ba4f6bd7b6c6294a49720065e76e7f0027a123e3f405b644a7a2e757d3",
+      "normativeRequirements": "* `value` {any} A value with which the promise is fulfilled.\n* `options` {Object}\n  * `ref` {boolean} Set to `false` to indicate that the scheduled `Immediate`\n    should not require the Node.js event loop to remain active.\n    **Default:** `true`.\n  * `signal` {AbortSignal} An optional `AbortSignal` that can be used to\n    cancel the scheduled `Immediate`.",
+      "apiObservationId": "timers/promises.setImmediate"
+    },
+    {
+      "line": 500,
+      "endLine": 552,
+      "title": "`timersPromises.setInterval([delay[, value[, options]]])`",
+      "sha256": "09d87b338dba787a2c5650095a675078e12032ef3449ab6e3fd78ec8a40ac46f",
+      "normativeRequirements": "Returns an async iterator that generates values in an interval of `delay` ms.\nIf `ref` is `true`, you need to call `next()` of async iterator explicitly\nor implicitly to keep the event loop alive.\n\n* `delay` {number} The number of milliseconds to wait between iterations.\n  **Default:** `1`.\n* `value` {any} A value with which the iterator returns.\n* `options` {Object}\n  * `ref` {boolean} Set to `false` to indicate that the scheduled `Timeout`\n    between iterations should not require the Node.js event loop to\n    remain active.\n    **Default:** `true`.\n  * `signal` {AbortSignal} An optional `AbortSignal` that can be used to\n    cancel the scheduled `Timeout` between operations.",
+      "apiObservationId": "timers/promises.setInterval"
+    },
+    {
+      "line": 553,
+      "endLine": 584,
+      "title": "`timersPromises.scheduler.wait(delay[, options])`",
+      "sha256": "0ca6d59556a68f8fd32f851fffd66ef2caa9b8954dba15cb44fbfe4d5cbebd5d",
+      "normativeRequirements": "> Stability: 1 - Experimental\n\n* `delay` {number} The number of milliseconds to wait before resolving the\n  promise.\n* `options` {Object}\n  * `ref` {boolean} Set to `false` to indicate that the scheduled `Timeout`\n    should not require the Node.js event loop to remain active.\n    **Default:** `true`.\n  * `signal` {AbortSignal} An optional `AbortSignal` that can be used to\n    cancel waiting.\n* Returns: {Promise}\n\nAn experimental API defined by the [Scheduling APIs][] draft specification\nbeing developed as a standard Web Platform API.\n\nCalling `timersPromises.scheduler.wait(delay, options)` is equivalent\nto calling `timersPromises.setTimeout(delay, undefined, options)`.",
+      "apiObservationId": "timers/promises.scheduler.wait"
+    },
+    {
+      "line": 585,
+      "endLine": 617,
+      "title": "`timersPromises.scheduler.yield()`",
+      "sha256": "839dc8125532569f0883a526e9c8002df89044c7cfc6c6517f0ed7e536ccc299",
+      "normativeRequirements": "> Stability: 1 - Experimental\n\n* Returns: {Promise}\n\nAn experimental API defined by the [Scheduling APIs][] draft specification\nbeing developed as a standard Web Platform API.\n\nCalling `timersPromises.scheduler.yield()` is equivalent to calling\n`timersPromises.setImmediate()` with no arguments.",
+      "apiObservationId": "timers/promises.scheduler.yield"
+    }
+  ],
+  "returnedObjectObligations": "Timeout/Immediate class/symbol descriptors, Scheduler brand, engine async-generator/disposal protocol; not namespace constructors",
+  "engineArchiveSha256": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028",
+  "engineSources": "tests/nodejs/audit/engine-iterator-source.json and engine-source-evidence.json",
+  "sourceAuditComplete": true,
+  "unresolvedValidationQuestions": [
+    "Controlled-ready socket/immediate ordering",
+    "Late first timer coercion followed by clear and refresh",
+    "Option getter/abort listener cleanup ordering and thrown callback continuation"
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

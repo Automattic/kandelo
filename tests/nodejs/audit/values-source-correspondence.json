@@ -1,0 +1,434 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "entries": [
+    {
+      "group": "modules",
+      "name": "assert",
+      "candidatePath": "third_party/node-core/upstream/assert.js",
+      "candidateSha256": "e87a46a29cc96a9bc6025475220ca0c54e083a7d9aa53708919d0971506e87e2",
+      "upstreamPath": "lib/assert.js",
+      "upstreamSha256": "e87a46a29cc96a9bc6025475220ca0c54e083a7d9aa53708919d0971506e87e2",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "modules",
+      "name": "internal/util/comparisons",
+      "candidatePath": "third_party/node-core/upstream/comparisons.js",
+      "candidateSha256": "2b20b2392cf4699d583350e09f7bebc82ea70339ef855952e1eddcbe82f0ce24",
+      "upstreamPath": "lib/internal/util/comparisons.js",
+      "upstreamSha256": "2b20b2392cf4699d583350e09f7bebc82ea70339ef855952e1eddcbe82f0ce24",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "modules",
+      "name": "internal/assert/utils",
+      "candidatePath": "third_party/node-core/upstream/assert-utils.js",
+      "candidateSha256": "ba5e3fb23642dbd2973efac622a9bef88afeba93e25f15d6927fb111251c16d7",
+      "upstreamPath": "lib/internal/assert/utils.js",
+      "upstreamSha256": "ba5e3fb23642dbd2973efac622a9bef88afeba93e25f15d6927fb111251c16d7",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "inspection",
+      "name": "primordials",
+      "candidatePath": "third_party/node-core/upstream/primordials.js",
+      "candidateSha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+      "upstreamPath": "lib/internal/per_context/primordials.js",
+      "upstreamSha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "inspection",
+      "name": "inspect",
+      "candidatePath": "third_party/node-core/upstream/inspect.js",
+      "candidateSha256": "55d054a4f96e664558a0271e2029a31da6e644edca9a224ce05a4de73b425ca9",
+      "upstreamPath": "lib/internal/util/inspect.js",
+      "upstreamSha256": "55d054a4f96e664558a0271e2029a31da6e644edca9a224ce05a4de73b425ca9",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "inspection",
+      "name": "buffer_inspection",
+      "candidatePath": "third_party/node-core/upstream/buffer-inspect.js",
+      "candidateSha256": "4346d0198332ff512ac8100f914b157d347a66ddff91d78e483d3cf210f95559",
+      "upstreamPath": "lib/buffer.js",
+      "upstreamSha256": "9b76f4047cf88f9bc8ce2a097b42aff00dca9d214b306ef48c170abb2e0643f2",
+      "correspondence": "exact contiguous source excerpt",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "valuesPlatform",
+      "name": "internal/errors",
+      "candidatePath": "third_party/node-core/upstream/errors.js",
+      "candidateSha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+      "upstreamPath": "lib/internal/errors.js",
+      "upstreamSha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "valuesPlatform",
+      "name": "internal/validators",
+      "candidatePath": "third_party/node-core/upstream/validators.js",
+      "candidateSha256": "dd61b9cb7af5c18b46f2029c2f06b0fc2638d1cd870fe65934966e840e88e1c2",
+      "upstreamPath": "lib/internal/validators.js",
+      "upstreamSha256": "dd61b9cb7af5c18b46f2029c2f06b0fc2638d1cd870fe65934966e840e88e1c2",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "valuesPlatform",
+      "name": "internal/assert",
+      "candidatePath": "third_party/node-core/upstream/internal-assert.js",
+      "candidateSha256": "03940c9b646255b631d3a95cf2a9ad156d587db8b0ac223d1a87f3fd5531a807",
+      "upstreamPath": "lib/internal/assert.js",
+      "upstreamSha256": "03940c9b646255b631d3a95cf2a9ad156d587db8b0ac223d1a87f3fd5531a807",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "valuesPlatform",
+      "name": "internal/util/colors",
+      "candidatePath": "third_party/node-core/upstream/util-colors.js",
+      "candidateSha256": "f6b6702f24abe359726f05115767142148bcd5f87b84896dab47488db08af516",
+      "upstreamPath": "lib/internal/util/colors.js",
+      "upstreamSha256": "f6b6702f24abe359726f05115767142148bcd5f87b84896dab47488db08af516",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "valuesPlatform",
+      "name": "internal/tty",
+      "candidatePath": "third_party/node-core/upstream/tty-colors.js",
+      "candidateSha256": "996ae301ee60854817401545811fd908c332cd3ed071c6a498d211ccdd9a932d",
+      "upstreamPath": "lib/internal/tty.js",
+      "upstreamSha256": "996ae301ee60854817401545811fd908c332cd3ed071c6a498d211ccdd9a932d",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "valuesPlatform",
+      "name": "internal/util/core_helpers",
+      "candidatePath": "third_party/node-core/upstream/core-value-helpers.js",
+      "candidateSha256": "f5c08ae834530c5ecff64bf6a7334e47ac9f877b3381edf294422b2a8a36a900",
+      "upstreamPath": "lib/internal/util.js",
+      "upstreamSha256": "4aa900feab2a6cdb84060c0358c569578d31b6f0831224792868ece9b8899951",
+      "correspondence": "composition of exact contiguous declaration blocks, with inter-block whitespace not semantic proof",
+      "blocks": [
+        {
+          "line": 99,
+          "length": 276,
+          "sha256": "5900e76bf12ea0f32aba2f49496e5e04a57094ff912d844200f2cbb5de812b67"
+        },
+        {
+          "line": 108,
+          "length": 34,
+          "sha256": "b5887a809f11f298633d88983e073a13551298487f5048311d1acf0c37d678a3"
+        },
+        {
+          "line": 110,
+          "length": 19,
+          "sha256": "44b336cd9c8c1306417cc3e6253e382daeaf40359c4d0eb32a97fbcc8bea596e"
+        },
+        {
+          "line": 111,
+          "length": 18,
+          "sha256": "e4c261dea838d44b20fb765e9d1be00799a054d27ea8da2b7dd1fbf24c67b530"
+        },
+        {
+          "line": 113,
+          "length": 758,
+          "sha256": "b0d3e0e95aad7399cf127d786cc98c33139d1a5b4f9507ac3034918c780f2574"
+        },
+        {
+          "line": 258,
+          "length": 131,
+          "sha256": "20585db5aca540c1c5b612ac2369e926d8dee7232a64e5cecd5564484013024f"
+        },
+        {
+          "line": 263,
+          "length": 1800,
+          "sha256": "d3d40d57ec21424d258aaa36b2791c75027caa1c8f100fcf6586b286d219b50d"
+        },
+        {
+          "line": 575,
+          "length": 339,
+          "sha256": "11d9fb1171ea13ba7742de135d1b3faaef1a09eb7ed90458ad1200496cbc701a"
+        },
+        {
+          "line": 911,
+          "length": 540,
+          "sha256": "58036388c0b882001ca325ec3fa4581d681a778b5f699319246fac2c6a21c864"
+        },
+        {
+          "line": 84,
+          "length": 43,
+          "sha256": "60b60bd82431cacabba69ac77f872ff8ae745c51abce982257dfa0f49af5c2c4"
+        },
+        {
+          "line": 323,
+          "length": 361,
+          "sha256": "5b1c5a04347d5d63e75b21b65445830d5094d79bc67dd9a2ba4491801bb06eb2"
+        },
+        {
+          "line": 220,
+          "length": 264,
+          "sha256": "bfd92642d4c6cbed965559c377d63eca31aa2027b851274a33a0b8e5003a88f7"
+        },
+        {
+          "line": 177,
+          "length": 1303,
+          "sha256": "40081d7ae0394d8846420812d67e0faab62d7e32676557b5aec8eb29510fc0c9"
+        },
+        {
+          "line": 450,
+          "length": 75,
+          "sha256": "35c3b75bcf8a96799f3343c94ec3f8ff1ccefe15e9c78d17bbd4149fdbd66600"
+        },
+        {
+          "line": 451,
+          "length": 65,
+          "sha256": "7d8571ebf79e9ebc9b5f36fb29af119484826c92486152e07dcbc1d5acb6659c"
+        },
+        {
+          "line": 453,
+          "length": 21,
+          "sha256": "9eda4e95f67712aa69cf4151b6ac549dddac4f2739cdc46c148b9bb09d0d7838"
+        },
+        {
+          "line": 455,
+          "length": 2055,
+          "sha256": "db8871acb4da29a82fff95d4a8c0cef613ad292bb03f7b026fb8be7ca2eae3f6"
+        },
+        {
+          "line": 516,
+          "length": 44,
+          "sha256": "7a55e83646139854eb4e1de8dad94b6a5e4e170b472c23743e36127f662c786c"
+        }
+      ],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "valuesPlatform",
+      "name": "internal/util/debuglog",
+      "candidatePath": "third_party/node-core/upstream/debuglog.js",
+      "candidateSha256": "60a3a05fe52225d38f7a58bf41edf5c7485db428e0f554f7f7a6f9d054a2cb22",
+      "upstreamPath": "lib/internal/util/debuglog.js",
+      "upstreamSha256": "60de509a07a474fdf76d8c86dd5103e0126c431e6965a755fef4ccb5843501e8",
+      "correspondence": "exact contiguous source excerpt",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "pathPlatform",
+      "name": "path",
+      "candidatePath": "third_party/node-core/upstream/path.js",
+      "candidateSha256": "f05ab2a1f33102880bb8c5052cb0e634a001112883da897f3498492bef67f3f6",
+      "upstreamPath": "lib/path.js",
+      "upstreamSha256": "f05ab2a1f33102880bb8c5052cb0e634a001112883da897f3498492bef67f3f6",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "pathPlatform",
+      "name": "internal/constants",
+      "candidatePath": "third_party/node-core/upstream/path-constants.js",
+      "candidateSha256": "4548f10f15035b415bfa69a158e7bcf7e320355625d744d7318715c9acc21212",
+      "upstreamPath": "lib/internal/constants.js",
+      "upstreamSha256": "4548f10f15035b415bfa69a158e7bcf7e320355625d744d7318715c9acc21212",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "pathPlatform",
+      "name": "internal/deps/minimatch/index",
+      "candidatePath": "third_party/node-core/upstream/path-minimatch.js",
+      "candidateSha256": "f96315be454e1579bb685f035b015aca6c33d7275f03707f74d6c82089250c30",
+      "upstreamPath": "deps/minimatch/index.js",
+      "upstreamSha256": "f96315be454e1579bb685f035b015aca6c33d7275f03707f74d6c82089250c30",
+      "correspondence": "exact complete file",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "pathPlatform",
+      "name": "internal/fs/glob",
+      "candidatePath": "third_party/node-core/upstream/path-glob-matching.js",
+      "candidateSha256": "f4504431ab258435b3d985ff4048f63ab4e7578a361714ae49031281cadbc3a7",
+      "upstreamPath": "lib/internal/fs/glob.js",
+      "upstreamSha256": "3a116686e3bcff2680fd822b21cc89bb3ff2ec6cda07d856b2230e688aaafddf",
+      "correspondence": "composition of exact contiguous declaration blocks, with inter-block whitespace not semantic proof",
+      "blocks": [
+        {
+          "line": 61,
+          "length": 14,
+          "sha256": "1f47e4eb56e39ed5f8abe59988ca83f9d1cbd994eb3a3bb9db0f10c6c39c35d1"
+        },
+        {
+          "line": 62,
+          "length": 106,
+          "sha256": "d8eb831971a43281c2dd3fc79c3922dcba1abe1eecfce645a4e4e8a44360a11b"
+        },
+        {
+          "line": 119,
+          "length": 367,
+          "sha256": "f40c73a1ece1d2374d7df0e18afae33690198d6ae3bc44cb2ded78deeea135cb"
+        },
+        {
+          "line": 1280,
+          "length": 35,
+          "sha256": "5c948595a68988774a015b6e13e9f47a0fc130b70422249d6a6c5860c902432d"
+        },
+        {
+          "line": 1281,
+          "length": 298,
+          "sha256": "13831b19f250574af94bca99b9587d63a0559c6dc8df7192c89c6fea216ac38a"
+        },
+        {
+          "line": 1290,
+          "length": 627,
+          "sha256": "e136e6dc421da871f72c11dfef724f88919dc1506f56077a6dfff172af00b792"
+        }
+      ],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "pathPlatform",
+      "name": "internal/util/get_lazy",
+      "candidatePath": "third_party/node-core/upstream/get-lazy.js",
+      "candidateSha256": "e370a760c8d025fba0538cb154377b3615d92d2ffa0c4c2adc51af0505c0dbd9",
+      "upstreamPath": "lib/internal/util.js",
+      "upstreamSha256": "4aa900feab2a6cdb84060c0358c569578d31b6f0831224792868ece9b8899951",
+      "correspondence": "exact contiguous source excerpt",
+      "blocks": [],
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "bufferNumeric",
+      "name": "prefix",
+      "candidatePath": "third_party/node-core/upstream/buffer-numeric-source.js",
+      "candidateSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "upstreamPath": "lib/internal/buffer.js",
+      "upstreamSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "selector": {
+        "start": "const {\n  BigInt,",
+        "endExclusive": "const { isArrayBuffer } = require('util/types');",
+        "sha256": "3e5ac654b406fc6023f43190f0c218871e508a98d896abe358d122ed0bd0fa69"
+      },
+      "selectedSha256": "3e5ac654b406fc6023f43190f0c218871e508a98d896abe358d122ed0bd0fa69",
+      "correspondence": "exact selected source bytes",
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "bufferNumeric",
+      "name": "algorithms",
+      "candidatePath": "third_party/node-core/upstream/buffer-numeric-source.js",
+      "candidateSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "upstreamPath": "lib/internal/buffer.js",
+      "upstreamSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "selector": {
+        "start": "// Temporary buffers to convert numbers.",
+        "endExclusive": "class FastBuffer extends Uint8Array {}",
+        "sha256": "191c68c143b30d81bef0c954f018a9f266ad256857dc8d1b62c3c95d74a0c2de"
+      },
+      "selectedSha256": "191c68c143b30d81bef0c954f018a9f266ad256857dc8d1b62c3c95d74a0c2de",
+      "correspondence": "exact selected source bytes",
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "bufferNumeric",
+      "name": "prototype",
+      "candidatePath": "third_party/node-core/upstream/buffer-numeric-source.js",
+      "candidateSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "upstreamPath": "lib/internal/buffer.js",
+      "upstreamSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "selector": {
+        "start": "  proto.readBigUInt64LE = readBigUInt64LE;",
+        "endExclusive": "  proto.asciiSlice = function(start, end) { return asciiSlice(this, start, end); };",
+        "sha256": "148170d4d5224f3fc21b596e6688906f0f1f970a3a50dead478e04a72de0b115"
+      },
+      "selectedSha256": "148170d4d5224f3fc21b596e6688906f0f1f970a3a50dead478e04a72de0b115",
+      "correspondence": "exact selected source bytes",
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "bufferUnpooled",
+      "name": "createUnsafeBuffer",
+      "candidatePath": "third_party/node-core/upstream/buffer-numeric-source.js",
+      "candidateSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "upstreamPath": "lib/internal/buffer.js",
+      "upstreamSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "selector": {
+        "start": "function createUnsafeBuffer(size) {",
+        "length": 287,
+        "sha256": "45fa8f7b6fef53da69f917ccbb32748d8e855f61132b0bbbdbe354610083a648"
+      },
+      "selectedSha256": "45fa8f7b6fef53da69f917ccbb32748d8e855f61132b0bbbdbe354610083a648",
+      "correspondence": "exact selected source bytes",
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "bufferUnpooled",
+      "name": "alignmentPadding",
+      "candidatePath": "third_party/node-core/upstream/buffer-numeric-source.js",
+      "candidateSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "upstreamPath": "lib/internal/buffer.js",
+      "upstreamSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "selector": {
+        "start": "function alignmentPadding(alignment) {",
+        "length": 73,
+        "sha256": "bd346dd63205912c81bf716d8770c0aea23e3e441e5d0cf928f31a774d6e5222"
+      },
+      "selectedSha256": "bd346dd63205912c81bf716d8770c0aea23e3e441e5d0cf928f31a774d6e5222",
+      "correspondence": "exact selected source bytes",
+      "semanticEquivalenceEstablished": false
+    },
+    {
+      "group": "bufferUnpooled",
+      "name": "createUnsafeAlignedBuffer",
+      "candidatePath": "third_party/node-core/upstream/buffer-numeric-source.js",
+      "candidateSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "upstreamPath": "lib/internal/buffer.js",
+      "upstreamSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "selector": {
+        "start": "function createUnsafeAlignedBuffer(size, alignment) {",
+        "length": 260,
+        "sha256": "9415cf1192e5eb55177c73b9e194ccb85214d1839fde7a704705233b8e5c5bf2"
+      },
+      "selectedSha256": "9415cf1192e5eb55177c73b9e194ccb85214d1839fde7a704705233b8e5c5bf2",
+      "correspondence": "exact selected source bytes",
+      "semanticEquivalenceEstablished": false
+    }
+  ],
+  "sourceFactoryTransformations": [
+    "assert-utils innerOk: absent getErrMessage expression becomes empty message argument array",
+    "errors: guard isErrorStackTraceLimitWritable and hideStackFrames recapture when ErrorCaptureStackTrace absent",
+    "path glob/get_lazy and value core_helpers/debuglog: explicit dependency prelude/exports",
+    "inspection Buffer helpers: exact stored excerpt injected into private closure",
+    "Buffer numeric: selected prefix/algorithm/prototype only, excludes codec bindings",
+    "Buffer unpooled: selected allocator/alignment helpers plus separate public allocUnsafeSlow sections"
+  ],
+  "limits": "Static file/excerpt correspondence only. No build.py execution, generated bundle equivalence, AST proof, compilation or runtime validation. Adapter/native semantics reviewed separately.",
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

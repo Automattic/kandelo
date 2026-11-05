@@ -1,0 +1,665 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sections": [
+    {
+      "document": "doc/api/events.md",
+      "line": 2059,
+      "endLine": 2086,
+      "title": "`EventTarget` and `Event` API",
+      "sha256": "221099491e6ab583d84d6621467a19cf8494ec6fd75ab65267efea32a93911fb",
+      "normativeRequirements": "## `EventTarget` and `Event` API\n\n\n\nThe `EventTarget` and `Event` objects are a Node.js-specific implementation\nof the [`EventTarget` Web API][] that are exposed by some Node.js core APIs.\n\n\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2087,
+      "endLine": 2101,
+      "title": "Node.js `EventTarget` vs. DOM `EventTarget`",
+      "sha256": "9ad66e49fe30965c85c944c6cdb6b8b2747894f0c6c6693d3e374ba9e58641a5",
+      "normativeRequirements": "### Node.js `EventTarget` vs. DOM `EventTarget`\n\nThere are two key differences between the Node.js `EventTarget` and the\n[`EventTarget` Web API][]:\n\n1. Whereas DOM `EventTarget` instances _may_ be hierarchical, there is no\n   concept of hierarchy and event propagation in Node.js. That is, an event\n   dispatched to an `EventTarget` does not propagate through a hierarchy of\n   nested target objects that may each have their own set of handlers for the\n   event.\n2. In the Node.js `EventTarget`, if an event listener is an async function\n   or returns a `Promise`, and the returned `Promise` rejects, the rejection\n   is automatically captured and handled the same way as a listener that\n   throws synchronously (see [`EventTarget` error handling][] for details).\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2102,
+      "endLine": 2120,
+      "title": "`NodeEventTarget` vs. `EventEmitter`",
+      "sha256": "3c7052abcb4b0f495ba4903b250363da875733a65e7e8230757375eeb139a04f",
+      "normativeRequirements": "### `NodeEventTarget` vs. `EventEmitter`\n\nThe `NodeEventTarget` object implements a modified subset of the\n`EventEmitter` API that allows it to closely _emulate_ an `EventEmitter` in\ncertain situations. A `NodeEventTarget` is _not_ an instance of `EventEmitter`\nand cannot be used in place of an `EventEmitter` in most cases.\n\n1. Unlike `EventEmitter`, any given `listener` can be registered at most once\n   per event `type`. Attempts to register a `listener` multiple times are\n   ignored.\n2. The `NodeEventTarget` does not emulate the full `EventEmitter` API.\n   Specifically the `prependListener()`, `prependOnceListener()`,\n   `rawListeners()`, and `errorMonitor` APIs are not emulated.\n   The `'newListener'` and `'removeListener'` events will also not be emitted.\n3. The `NodeEventTarget` does not implement any special default behavior\n   for events with type `'error'`.\n4. The `NodeEventTarget` supports `EventListener` objects as well as\n   functions as handlers for all event types.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2121,
+      "endLine": 2172,
+      "title": "Event listener",
+      "sha256": "080672fda352bac1dfea43debe7c41b33152046bceae5f6a7e9e1448605a21c1",
+      "normativeRequirements": "### Event listener\n\nEvent listeners registered for an event `type` may either be JavaScript\nfunctions or objects with a `handleEvent` property whose value is a function.\n\nIn either case, the handler function is invoked with the `event` argument\npassed to the `eventTarget.dispatchEvent()` function.\n\nAsync functions may be used as event listeners. If an async handler function\nrejects, the rejection is captured and handled as described in\n[`EventTarget` error handling][].\n\nAn error thrown by one handler function does not prevent the other handlers\nfrom being invoked.\n\nThe return value of a handler function is ignored.\n\nHandlers are always invoked in the order they were added.\n\nHandler functions may mutate the `event` object.\n\n\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2173,
+      "endLine": 2191,
+      "title": "`EventTarget` error handling",
+      "sha256": "5dc9bd8ceaa9f857114efda2c1472f3ffcdb528683db96dd7b9eb4d5b7980829",
+      "normativeRequirements": "### `EventTarget` error handling\n\nWhen a registered event listener throws (or returns a Promise that rejects),\nby default the error is treated as an uncaught exception on\n`process.nextTick()`. This means uncaught exceptions in `EventTarget`s will\nterminate the Node.js process by default.\n\nThrowing within an event listener will _not_ stop the other registered handlers\nfrom being invoked.\n\nThe `EventTarget` does not implement any special default handling for `'error'`\ntype events like `EventEmitter`.\n\nCurrently errors are first forwarded to the `process.on('error')` event\nbefore reaching `process.on('uncaughtException')`. This behavior is\ndeprecated and will change in a future release to align `EventTarget` with\nother Node.js APIs. Any code relying on the `process.on('error')` event should\nbe aligned with the new behavior.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2192,
+      "endLine": 2204,
+      "title": "Class: `Event`",
+      "sha256": "b2fe3944db788253f4b59f387f8349fc6925cb483c83ae18d6a8f2a51fae8e44",
+      "normativeRequirements": "### Class: `Event`\n\n\n\nThe `Event` object is an adaptation of the [`Event` Web API][]. Instances\nare created internally by Node.js.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2205,
+      "endLine": 2214,
+      "title": "`event.bubbles`",
+      "sha256": "d856f2a28ad83ecbffbb2bf6a7c3a4bc2a22ea148179078bb3ce92e43888143c",
+      "normativeRequirements": "#### `event.bubbles`\n\n\n\n* Type: {boolean} Always returns `false`.\n\nThis is not used in Node.js and is provided purely for completeness.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2215,
+      "endLine": 2227,
+      "title": "`event.cancelBubble`",
+      "sha256": "7333d7f5c44261bbb16a9e1719d20907b5cab7394447495ddc3cb0adc858ebc0",
+      "normativeRequirements": "#### `event.cancelBubble`\n\n\n\n> Stability: 3 - Legacy: Use [`event.stopPropagation()`][] instead.\n\n* Type: {boolean}\n\nAlias for `event.stopPropagation()` if set to `true`. This is not used\nin Node.js and is provided purely for completeness.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2228,
+      "endLine": 2235,
+      "title": "`event.cancelable`",
+      "sha256": "f935b58bad62557168d267e3059bde2501193ae34a04493a5648c07265fc9428",
+      "normativeRequirements": "#### `event.cancelable`\n\n\n\n* Type: {boolean} True if the event was created with the `cancelable` option.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2236,
+      "endLine": 2245,
+      "title": "`event.composed`",
+      "sha256": "a2e56c2296ef46211e6a69d5d9a5ca666ff98b832154aa74c7f5fdb5dc15a844",
+      "normativeRequirements": "#### `event.composed`\n\n\n\n* Type: {boolean} Always returns `false`.\n\nThis is not used in Node.js and is provided purely for completeness.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2246,
+      "endLine": 2255,
+      "title": "`event.composedPath()`",
+      "sha256": "11ab35c9217bd61544932b89601dcbba7ee9c1bf8e739b7c28b4acf784120dd7",
+      "normativeRequirements": "#### `event.composedPath()`\n\n\n\nReturns an array containing the current `EventTarget` as the only entry or\nempty if the event is not being dispatched. This is not used in\nNode.js and is provided purely for completeness.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2256,
+      "endLine": 2265,
+      "title": "`event.currentTarget`",
+      "sha256": "911ea21477d411b947b5ae93918507314e6e6d88636afc5d5b46de35b0109751",
+      "normativeRequirements": "#### `event.currentTarget`\n\n\n\n* Type: {EventTarget} The `EventTarget` dispatching the event.\n\nAlias for `event.target`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2266,
+      "endLine": 2276,
+      "title": "`event.defaultPrevented`",
+      "sha256": "2dfe4e334fac1167c2230fe7a5dd9e596efe9b596a3def8c09303869591082e2",
+      "normativeRequirements": "#### `event.defaultPrevented`\n\n\n\n* Type: {boolean}\n\nIs `true` if `cancelable` is `true` and `event.preventDefault()` has been\ncalled.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2277,
+      "endLine": 2287,
+      "title": "`event.eventPhase`",
+      "sha256": "eae83c46dd3af7e66c4ffe75a0f5f1f70dce01d8611ce6b97b69bfe9c5fde113",
+      "normativeRequirements": "#### `event.eventPhase`\n\n\n\n* Type: {number} Returns `0` while an event is not being dispatched, `2` while\n  it is being dispatched.\n\nThis is not used in Node.js and is provided purely for completeness.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2288,
+      "endLine": 2303,
+      "title": "`event.initEvent(type[, bubbles[, cancelable]])`",
+      "sha256": "ecf102e370c0a7bac241cf15927f578cd6dcf85e8f66c2f432eb755b6cf82eeb",
+      "normativeRequirements": "#### `event.initEvent(type[, bubbles[, cancelable]])`\n\n\n\n> Stability: 3 - Legacy: The WHATWG spec considers it deprecated and users\n> shouldn't use it at all.\n\n* `type` {string}\n* `bubbles` {boolean}\n* `cancelable` {boolean}\n\nRedundant with event constructors and incapable of setting `composed`.\nThis is not used in Node.js and is provided purely for completeness.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2304,
+      "endLine": 2314,
+      "title": "`event.isTrusted`",
+      "sha256": "73731fccad5b1570bf53342965969681f937275de11bc1bf46d43a19b7113037",
+      "normativeRequirements": "#### `event.isTrusted`\n\n\n\n* Type: {boolean}\n\nThe {AbortSignal} `\"abort\"` event is emitted with `isTrusted` set to `true`. The\nvalue is `false` in all other cases.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2315,
+      "endLine": 2322,
+      "title": "`event.preventDefault()`",
+      "sha256": "3259dc45c348c8cbd6a2dfec9bba8cc558ffee7a3f37b95d436afa9668330697",
+      "normativeRequirements": "#### `event.preventDefault()`\n\n\n\nSets the `defaultPrevented` property to `true` if `cancelable` is `true`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2323,
+      "endLine": 2335,
+      "title": "`event.returnValue`",
+      "sha256": "edcee99c25a030f75f114d5df6299a0b9e0b0bbefe7842018193833ac1a5822b",
+      "normativeRequirements": "#### `event.returnValue`\n\n\n\n> Stability: 3 - Legacy: Use [`event.defaultPrevented`][] instead.\n\n* Type: {boolean} True if the event has not been canceled.\n\nThe value of `event.returnValue` is always the opposite of `event.defaultPrevented`.\nThis is not used in Node.js and is provided purely for completeness.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2336,
+      "endLine": 2347,
+      "title": "`event.srcElement`",
+      "sha256": "08db9b89698174b520a955e2db6ad47aacf993ec8fab8708b172a1d61862f516",
+      "normativeRequirements": "#### `event.srcElement`\n\n\n\n> Stability: 3 - Legacy: Use [`event.target`][] instead.\n\n* Type: {EventTarget} The `EventTarget` dispatching the event.\n\nAlias for `event.target`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2348,
+      "endLine": 2355,
+      "title": "`event.stopImmediatePropagation()`",
+      "sha256": "ccc28ad4c2a35ba2d6f349b8ec4d8acdbe7e8dda659b851c2d3071dc6fea5c78",
+      "normativeRequirements": "#### `event.stopImmediatePropagation()`\n\n\n\nStops the invocation of event listeners after the current one completes.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2356,
+      "endLine": 2363,
+      "title": "`event.stopPropagation()`",
+      "sha256": "11d2368e7c778ddc9d365013d849e1593d2850535bc5e374f33a88932f5a9f3c",
+      "normativeRequirements": "#### `event.stopPropagation()`\n\n\n\nThis is not used in Node.js and is provided purely for completeness.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2364,
+      "endLine": 2371,
+      "title": "`event.target`",
+      "sha256": "13ae6b289a8a3027a6321c8d44d9c1134e467677a4f82471dd29c7ec13f4debf",
+      "normativeRequirements": "#### `event.target`\n\n\n\n* Type: {EventTarget} The `EventTarget` dispatching the event.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2372,
+      "endLine": 2381,
+      "title": "`event.timeStamp`",
+      "sha256": "7e7e947bdc76ae097672ce1ce3d3c66d91f52aee8c0a87e72a125e5e9b45d0f0",
+      "normativeRequirements": "#### `event.timeStamp`\n\n\n\n* Type: {number}\n\nThe millisecond timestamp when the `Event` object was created.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2382,
+      "endLine": 2391,
+      "title": "`event.type`",
+      "sha256": "202b02a233f9d173771fd6621a4aaf651404ca23367201ad86a89b7e6ca9119e",
+      "normativeRequirements": "#### `event.type`\n\n\n\n* Type: {string}\n\nThe event type identifier.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2392,
+      "endLine": 2402,
+      "title": "Class: `EventTarget`",
+      "sha256": "373506af2b329cf963e2411a4ff3a2d8448017ad950803f770246ba88b29ffd3",
+      "normativeRequirements": "### Class: `EventTarget`\n\n\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2403,
+      "endLine": 2451,
+      "title": "`eventTarget.addEventListener(type, listener[, options])`",
+      "sha256": "e8f66f949261e37bd6d87fc8864baba90d5284cb141478e6926a7d00364d53aa",
+      "normativeRequirements": "#### `eventTarget.addEventListener(type, listener[, options])`\n\n\n\n* `type` {string}\n* `listener` {Function|EventListener}\n* `options` {Object}\n  * `once` {boolean} When `true`, the listener is automatically removed\n    when it is first invoked. **Default:** `false`.\n  * `passive` {boolean} When `true`, serves as a hint that the listener will\n    not call the `Event` object's `preventDefault()` method.\n    **Default:** `false`.\n  * `capture` {boolean} Not directly used by Node.js. Added for API\n    completeness. **Default:** `false`.\n  * `signal` {AbortSignal} The listener will be removed when the given\n    AbortSignal object's `abort()` method is called.\n\nAdds a new handler for the `type` event. Any given `listener` is added\nonly once per `type` and per `capture` option value.\n\nIf the `once` option is `true`, the `listener` is removed after the\nnext time a `type` event is dispatched.\n\nThe `capture` option is not used by Node.js in any functional way other than\ntracking registered event listeners per the `EventTarget` specification.\nSpecifically, the `capture` option is used as part of the key when registering\na `listener`. Any individual `listener` may be added once with\n`capture = false`, and once with `capture = true`.\n\n\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2452,
+      "endLine": 2466,
+      "title": "`eventTarget.dispatchEvent(event)`",
+      "sha256": "eb166a4a8e20f923bc23fe0726b158c2d7a3ddb4e59468ef60936d78608123f6",
+      "normativeRequirements": "#### `eventTarget.dispatchEvent(event)`\n\n\n\n* `event` {Event}\n* Returns: {boolean} `true` if either event's `cancelable` attribute value is\n  false or its `preventDefault()` method was not invoked, otherwise `false`.\n\nDispatches the `event` to the list of handlers for `event.type`.\n\nThe registered event listeners is synchronously invoked in the order they\nwere registered.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2467,
+      "endLine": 2479,
+      "title": "`eventTarget.removeEventListener(type, listener[, options])`",
+      "sha256": "ac559c272fecef27e3ec7fb0695f7555611b967ee2688b13c5ca3e8e2fc3b464",
+      "normativeRequirements": "#### `eventTarget.removeEventListener(type, listener[, options])`\n\n\n\n* `type` {string}\n* `listener` {Function|EventListener}\n* `options` {Object}\n  * `capture` {boolean}\n\nRemoves the `listener` from the list of handlers for event `type`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2480,
+      "endLine": 2504,
+      "title": "Class: `CustomEvent`",
+      "sha256": "094439adb59419f23c657117cbcc0e0c4cf1d32aef20b5e016934f720f825aba",
+      "normativeRequirements": "### Class: `CustomEvent`\n\n\n\n* Extends: {Event}\n\nThe `CustomEvent` object is an adaptation of the [`CustomEvent` Web API][].\nInstances are created internally by Node.js.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2505,
+      "endLine": 2522,
+      "title": "`event.detail`",
+      "sha256": "5fa95d88defd93230a2e97b64f1c59afe0ea4431669a357afef2341a8f5f7b04",
+      "normativeRequirements": "#### `event.detail`\n\n\n\n* Type: {any} Returns custom data passed when initializing.\n\nRead-only.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2523,
+      "endLine": 2533,
+      "title": "Class: `NodeEventTarget`",
+      "sha256": "afddfe1d878f20b9ca7e4bce4afbeca3de3c4f74fb3f233dd70207ea84cafc7b",
+      "normativeRequirements": "### Class: `NodeEventTarget`\n\n\n\n* Extends: {EventTarget}\n\nThe `NodeEventTarget` is a Node.js-specific extension to `EventTarget`\nthat emulates a subset of the `EventEmitter` API.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2534,
+      "endLine": 2550,
+      "title": "`nodeEventTarget.addListener(type, listener)`",
+      "sha256": "d0520f9231f1bb7c70ae831bd98837ee0d21621689a50caeac3eeea8f058a61f",
+      "normativeRequirements": "#### `nodeEventTarget.addListener(type, listener)`\n\n\n\n* `type` {string}\n\n* `listener` {Function|EventListener}\n\n* Returns: {EventTarget} this\n\nNode.js-specific extension to the `EventTarget` class that emulates the\nequivalent `EventEmitter` API. The only difference between `addListener()` and\n`addEventListener()` is that `addListener()` will return a reference to the\n`EventTarget`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2551,
+      "endLine": 2564,
+      "title": "`nodeEventTarget.emit(type, arg)`",
+      "sha256": "5afcd84a762c528aa976c098f836dbe36d2e30903bb32119bded327895d9a315",
+      "normativeRequirements": "#### `nodeEventTarget.emit(type, arg)`\n\n\n\n* `type` {string}\n* `arg` {any}\n* Returns: {boolean} `true` if event listeners registered for the `type` exist,\n  otherwise `false`.\n\nNode.js-specific extension to the `EventTarget` class that dispatches the\n`arg` to the list of handlers for `type`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2565,
+      "endLine": 2575,
+      "title": "`nodeEventTarget.eventNames()`",
+      "sha256": "862c099fd678313f169a2aa2623a170f30732e0eb6be45208e3793ce08f7c230",
+      "normativeRequirements": "#### `nodeEventTarget.eventNames()`\n\n\n\n* Returns: {string\\[]}\n\nNode.js-specific extension to the `EventTarget` class that returns an array\nof event `type` names for which event listeners are registered.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2576,
+      "endLine": 2588,
+      "title": "`nodeEventTarget.listenerCount(type)`",
+      "sha256": "d65aa3baeeae97d4e3bcd537cc5b88e8a2ec8087100d2ab3fd9392e5334d91a5",
+      "normativeRequirements": "#### `nodeEventTarget.listenerCount(type)`\n\n\n\n* `type` {string}\n\n* Returns: {number}\n\nNode.js-specific extension to the `EventTarget` class that returns the number\nof event listeners registered for the `type`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2589,
+      "endLine": 2599,
+      "title": "`nodeEventTarget.setMaxListeners(n)`",
+      "sha256": "7038605e8831942a0ad49c89166763838b1ebd2c54cca9faab345c6585fbfc5a",
+      "normativeRequirements": "#### `nodeEventTarget.setMaxListeners(n)`\n\n\n\n* `n` {number}\n\nNode.js-specific extension to the `EventTarget` class that sets the number\nof max event listeners as `n`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2600,
+      "endLine": 2610,
+      "title": "`nodeEventTarget.getMaxListeners()`",
+      "sha256": "1e7a8df18e5b996bc5ad3b37a709fc8c32fa7390e7f0752aa43cd8841a34daec",
+      "normativeRequirements": "#### `nodeEventTarget.getMaxListeners()`\n\n\n\n* Returns: {number}\n\nNode.js-specific extension to the `EventTarget` class that returns the number\nof max event listeners.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2611,
+      "endLine": 2627,
+      "title": "`nodeEventTarget.off(type, listener[, options])`",
+      "sha256": "ead8b034b33d6d9c17d428b6dda81ed35e9b8545e11229cf1ba2a15e3f6776f4",
+      "normativeRequirements": "#### `nodeEventTarget.off(type, listener[, options])`\n\n\n\n* `type` {string}\n\n* `listener` {Function|EventListener}\n\n* `options` {Object}\n  * `capture` {boolean}\n\n* Returns: {EventTarget} this\n\nNode.js-specific alias for `eventTarget.removeEventListener()`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2628,
+      "endLine": 2641,
+      "title": "`nodeEventTarget.on(type, listener)`",
+      "sha256": "9dedf4aad1d29d184451f3c691d04edb2746ece5f40c6c9323099222bd4082f6",
+      "normativeRequirements": "#### `nodeEventTarget.on(type, listener)`\n\n\n\n* `type` {string}\n\n* `listener` {Function|EventListener}\n\n* Returns: {EventTarget} this\n\nNode.js-specific alias for `eventTarget.addEventListener()`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2642,
+      "endLine": 2657,
+      "title": "`nodeEventTarget.once(type, listener)`",
+      "sha256": "dc7b8ec31e6a01670ae345a407c6705d2b4367a2bd24a49639154037f48b3395",
+      "normativeRequirements": "#### `nodeEventTarget.once(type, listener)`\n\n\n\n* `type` {string}\n\n* `listener` {Function|EventListener}\n\n* Returns: {EventTarget} this\n\nNode.js-specific extension to the `EventTarget` class that adds a `once`\nlistener for the given event `type`. This is equivalent to calling `on`\nwith the `once` option set to `true`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2658,
+      "endLine": 2671,
+      "title": "`nodeEventTarget.removeAllListeners([type])`",
+      "sha256": "30b9c21467692f26fc9fa104f3a750b6a023b336189ecc4baa0cddb18c753268",
+      "normativeRequirements": "#### `nodeEventTarget.removeAllListeners([type])`\n\n\n\n* `type` {string}\n\n* Returns: {EventTarget} this\n\nNode.js-specific extension to the `EventTarget` class. If `type` is specified,\nremoves all registered listeners for `type`, otherwise removes all registered\nlisteners.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2672,
+      "endLine": 2715,
+      "title": "`nodeEventTarget.removeListener(type, listener[, options])`",
+      "sha256": "f7420723cf0968777b631e4744f820be7489bdabab9f11aeeb33ee6604fe7c94",
+      "normativeRequirements": "#### `nodeEventTarget.removeListener(type, listener[, options])`\n\n\n\n* `type` {string}\n\n* `listener` {Function|EventListener}\n\n* `options` {Object}\n  * `capture` {boolean}\n\n* Returns: {EventTarget} this\n\nNode.js-specific extension to the `EventTarget` class that removes the\n`listener` for the given `type`. The only difference between `removeListener()`\nand `removeEventListener()` is that `removeListener()` will return a reference\nto the `EventTarget`.\n\n[WHATWG-EventTarget]: https://dom.spec.whatwg.org/#interface-eventtarget\n[`--trace-warnings`]: cli.md#--trace-warnings\n[`CustomEvent` Web API]: https://dom.spec.whatwg.org/#customevent\n[`EventTarget` Web API]: https://dom.spec.whatwg.org/#eventtarget\n[`EventTarget` error handling]: #eventtarget-error-handling\n[`Event` Web API]: https://dom.spec.whatwg.org/#event\n[`domain`]: domain.md\n[`e.stopImmediatePropagation()`]: #eventstopimmediatepropagation\n[`emitter.removeListener()`]: #emitterremovelistenereventname-listener\n[`emitter.setMaxListeners(n)`]: #emittersetmaxlistenersn\n[`event.defaultPrevented`]: #eventdefaultprevented\n[`event.stopPropagation()`]: #eventstoppropagation\n[`event.target`]: #eventtarget\n[`events.defaultMaxListeners`]: #eventsdefaultmaxlisteners\n[`fs.ReadStream`]: fs.md#class-fsreadstream\n[`net.Server`]: net.md#class-netserver\n[`new.target.name`]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/new.target\n[`process.on('warning')`]: process.md#event-warning\n[async context]: async_context.md\n[capturerejections]: #capture-rejections-of-promises\n[error]: #error-events\n[rejection]: #emittersymbolfornodejsrejectionerr-eventname-args\n[rejectionsymbol]: #eventscapturerejectionsymbol\n[stream]: stream.md\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 32,
+      "endLine": 57,
+      "title": "Class: `AbortController`",
+      "sha256": "7dcca1dde82a211e0cd423af2b780200d161a34b5d2eb0c87f8ab510cb49fe7f",
+      "normativeRequirements": "## Class: `AbortController`\n\n\n\nA utility class used to signal cancelation in selected `Promise`-based APIs.\nThe API is based on the Web API {AbortController}.\n\n\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 58,
+      "endLine": 77,
+      "title": "`abortController.abort([reason])`",
+      "sha256": "65340ad6eac30b46958045780e60ff090287ee6ffe4d6041eaa29aa9215e15e2",
+      "normativeRequirements": "### `abortController.abort([reason])`\n\n\n\n* `reason` {any} An optional reason, retrievable on the `AbortSignal`'s\n  `reason` property.\n\nTriggers the abort signal, causing the `abortController.signal` to emit\nthe `'abort'` event.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 78,
+      "endLine": 87,
+      "title": "`abortController.signal`",
+      "sha256": "e57502f98d3bb365c7d55f5002f8301a8c823245af77f82479aa264fa884153d",
+      "normativeRequirements": "### `abortController.signal`\n\n\n\n* Type: {AbortSignal}\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 88,
+      "endLine": 100,
+      "title": "Class: `AbortSignal`",
+      "sha256": "ccc48be99a0a789a1032ad60e29ab42ad0c1424f241bbd7f4edea9000f87a960",
+      "normativeRequirements": "## Class: `AbortSignal`\n\n\n\n* Extends: {EventTarget}\n\nThe `AbortSignal` is used to notify observers when the\n`abortController.abort()` method is called.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 101,
+      "endLine": 119,
+      "title": "Static method: `AbortSignal.abort([reason])`",
+      "sha256": "9bb69a54659ab3ce30e82761b1942932efead51b56abb7d46b57a59b346bcfec",
+      "normativeRequirements": "### Static method: `AbortSignal.abort([reason])`\n\n\n\n* `reason` {any}\n* Returns: {AbortSignal}\n\nReturns a new already aborted `AbortSignal`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 120,
+      "endLine": 132,
+      "title": "Static method: `AbortSignal.timeout(delay)`",
+      "sha256": "8e3eea6c2e67b5590ae4d268b3ed5ee370b5ad7997c13454b8953fa99e47f694",
+      "normativeRequirements": "### Static method: `AbortSignal.timeout(delay)`\n\n\n\n* `delay` {number} The number of milliseconds to wait before triggering\n  the AbortSignal.\n\nReturns a new `AbortSignal` which will be aborted in `delay` milliseconds.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 133,
+      "endLine": 147,
+      "title": "Static method: `AbortSignal.any(signals)`",
+      "sha256": "b8b7033458091cb4ce5d12523d99e34c5f206e2f36b82c4f7b520b1611b5acd3",
+      "normativeRequirements": "### Static method: `AbortSignal.any(signals)`\n\n\n\n* `signals` {Iterable} An iterable of {AbortSignal}s from which to compose a new\n  {AbortSignal}.\n\nReturns a new `AbortSignal` which will be aborted if any of the provided\nsignals are aborted. Its [`abortSignal.reason`][] will be set to whichever\none of the `signals` caused it to be aborted.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 148,
+      "endLine": 184,
+      "title": "Event: `'abort'`",
+      "sha256": "bef0183ceaa5e5c1225f68ac8f1e042abed5687ccd759257c85bb653cb762c80",
+      "normativeRequirements": "### Event: `'abort'`\n\n\n\nThe `'abort'` event is emitted when the `abortController.abort()` method\nis called. The callback is invoked with a single object argument with a\nsingle `type` property set to `'abort'`:\n\n\n\nThe `AbortController` with which the `AbortSignal` is associated will only\never trigger the `'abort'` event once. We recommended that code check\nthat the `abortSignal.aborted` attribute is `false` before adding an `'abort'`\nevent listener.\n\nAny event listeners attached to the `AbortSignal` should use the\n`{ once: true }` option (or, if using the `EventEmitter` APIs to attach a\nlistener, use the `once()` method) to ensure that the event listener is\nremoved as soon as the `'abort'` event is handled. Failure to do so may\nresult in memory leaks.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 185,
+      "endLine": 196,
+      "title": "`abortSignal.aborted`",
+      "sha256": "3967bf6903d2dbe192940518af82ad6f84a32118922ce5d5ff4c76eaaa4d674d",
+      "normativeRequirements": "### `abortSignal.aborted`\n\n\n\n* Type: {boolean}\n\nTrue after the `AbortController` has been aborted.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 197,
+      "endLine": 209,
+      "title": "`abortSignal.onabort`",
+      "sha256": "72cb833ff6294dac24af88f7a77f9cec985fe9615390336f8c810074cf997496",
+      "normativeRequirements": "### `abortSignal.onabort`\n\n\n\n* Type: {Function}\n\nAn optional callback function that may be set by user code to be notified\nwhen the `abortController.abort()` function has been called.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 210,
+      "endLine": 227,
+      "title": "`abortSignal.reason`",
+      "sha256": "00f1395f2edb6cb524ec203af944888d3df39d6cfdbeea45832d6b2503189ea1",
+      "normativeRequirements": "### `abortSignal.reason`\n\n\n\n* Type: {any}\n\nAn optional reason specified when the `AbortSignal` was triggered.\n\n\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 228,
+      "endLine": 237,
+      "title": "`abortSignal.throwIfAborted()`",
+      "sha256": "c01a43d37a2786e6425c5a578f83ff9497abea51ff3bb555011380e9f777ace1",
+      "normativeRequirements": "### `abortSignal.throwIfAborted()`\n\n\n\nIf `abortSignal.aborted` is `true`, throws `abortSignal.reason`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 441,
+      "endLine": 462,
+      "title": "Class: `CustomEvent`",
+      "sha256": "fc8c7da8460223bfe0ee40ce20b0d0efb7d5b4c4d35690a5cac5580a861a78d6",
+      "normativeRequirements": "## Class: `CustomEvent`\n\n\n\nA browser-compatible implementation of {CustomEvent}.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 498,
+      "endLine": 510,
+      "title": "Class: `Event`",
+      "sha256": "07aafd750de16e46a56fc64811c805191d129377a0d7ab34ece485df98dafb87",
+      "normativeRequirements": "## Class: `Event`\n\n\n\nA browser-compatible implementation of the `Event` class. See\n[`EventTarget` and `Event` API][] for more details.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/globals.md",
+      "line": 524,
+      "endLine": 536,
+      "title": "Class: `EventTarget`",
+      "sha256": "722173832ab12e948e9cf71c9f04434302ce651db95d971ffe10439af3221362",
+      "normativeRequirements": "## Class: `EventTarget`\n\n\n\nA browser-compatible implementation of the `EventTarget` class. See\n[`EventTarget` and `Event` API][] for more details.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/util.md",
+      "line": 3120,
+      "endLine": 3134,
+      "title": "`util.transferableAbortController()`",
+      "sha256": "4fcb13801f102a7958c32f423c89c0a68cbdfb37de87c21d5aabd9218b2c4681",
+      "normativeRequirements": "## `util.transferableAbortController()`\n\n\n\nCreates and returns an {AbortController} instance whose {AbortSignal} is marked\nas transferable and can be used with `structuredClone()` or `postMessage()`.\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/util.md",
+      "line": 3135,
+      "endLine": 3158,
+      "title": "`util.transferableAbortSignal(signal)`",
+      "sha256": "7b2375266be94c7590347904e4fb0df35f7183b973e8b0a92e138d4b06e91db6",
+      "normativeRequirements": "## `util.transferableAbortSignal(signal)`\n\n\n\n* `signal` {AbortSignal}\n* Returns: {AbortSignal}\n\nMarks the given {AbortSignal} as transferable so that it can be used with\n`structuredClone()` and `postMessage()`.\n\n\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    },
+    {
+      "document": "doc/api/util.md",
+      "line": 3159,
+      "endLine": 3225,
+      "title": "`util.aborted(signal, resource)`",
+      "sha256": "d321160a8c7ff2464da4e53411c92801999e4031ed776d80dff7e766b2592de0",
+      "normativeRequirements": "## `util.aborted(signal, resource)`\n\n\n\n* `signal` {AbortSignal}\n* `resource` {Object} Any non-null object tied to the abortable operation and held weakly.\n  If `resource` is garbage collected before the `signal` aborts, the promise remains pending,\n  allowing Node.js to stop tracking it.\n  This helps prevent memory leaks in long-running or non-cancelable operations.\n* Returns: {Promise}\n\nListens to abort event on the provided `signal` and returns a promise that resolves when the `signal` is aborted.\nIf `resource` is provided, it weakly references the operation's associated object,\nso if `resource` is garbage collected before the `signal` aborts,\nthen returned promise shall remain pending.\nThis prevents memory leaks in long-running or non-cancelable operations.\n\n\n\n\n\n",
+      "review": "Source-reconciled requirements/owner/dependencies; target questions explicit, no runtime conformance"
+    }
+  ],
+  "memberRequirements": {
+    "Event": "Required type, option validation/getter order/coercion; private state, actual monotonic creation time and ordinary class/prototype metadata",
+    "Event.prototype.initEvent": "Required type, active-dispatch early return, boolean bubbles/cancelable; does not clear all existing state",
+    "Event.prototype.bubbles": "Actual constructor/initEvent boolean; target prose always-false conflict A-028",
+    "Event.prototype.cancelable": "Actual constructor/initEvent boolean with method-specific receiver validation",
+    "Event.prototype.composed": "Actual constructor boolean; initEvent does not set composed; target prose conflict A-028",
+    "Event.prototype.target": "Null before dispatch and persistent last dispatch target afterward",
+    "Event.prototype.currentTarget": "Target while dispatch flag true, otherwise null; target per-callback flag question A-028",
+    "Event.prototype.srcElement": "Same stored target semantics, separate getter identity",
+    "Event.prototype.type": "Stored converted type and actual receiver validation",
+    "Event.prototype.defaultPrevented": "Cancelable and prevented state; passive listener prevention suppressed",
+    "Event.prototype.timeStamp": "Native monotonic creation time, target performance origin coherence A-027",
+    "Event.prototype.preventDefault": "Cancelable only, no effect in passive listener; actual receiver errors",
+    "Event.prototype.returnValue": "Inverse cancellation getter, false assignment prevents only if cancelable/nonpassive",
+    "Event.prototype.cancelBubble": "Propagation flag getter, truthy setter sets but false does not clear",
+    "Event.prototype.stopPropagation": "Sets propagation flag; Node flat target has no ancestor tree",
+    "Event.prototype.stopImmediatePropagation": "Calls actual stopPropagation then marks immediate stop; protected listener exceptions",
+    "Event.prototype.composedPath": "One current target only during dispatch, empty afterward",
+    "Event.prototype.eventPhase": "AT_TARGET while dispatching, NONE otherwise",
+    "Event.prototype.isTrusted": "Nonconfigurable enumerable prototype getter over actual WeakSet; trusted abort tokens, target differs from DOM own-property rule",
+    "Event.[prototype symbols and descriptors]": "Enumerable public methods/accessors, configurable nonenumerable nonwritable toStringTag and real custom inspect hook; not all brands identical",
+    "Event.[constants]": "NONE/CAPTURING_PHASE/AT_TARGET/BUBBLING_PHASE own constructor constants enumerable/nonwritable/nonconfigurable; static inheritance separate",
+    "CustomEvent": "Extends actual Event, required type, options.detail nullish-default null and conversion/receiver order",
+    "CustomEvent.prototype.detail": "Read-only enumerable accessor and actual source brand, retains arbitrary nonnull detail identity",
+    "EventTarget": "Class marker/shared symbols, per-instance SafeMap/list state, shared max-listener warning ownership; no ancestor propagation",
+    "EventTarget.prototype.addEventListener": "Type DOMString, listener/capture duplicate identity, object callback laziness; options getters before validation, once/passive/protected/weak/signal paths",
+    "EventTarget.prototype.removeEventListener": "Actual validation/conversion/capture order, removes one tuple and unregisters weak records",
+    "EventTarget.prototype.dispatchEvent": "Synchronous linked-list iteration, real Event instanceof, recursion flag, once-before-call/remove/add behavior, inverse cancellation boolean",
+    "EventTarget.[listener exceptions]": "Continue listeners; thenable errors/rejections scheduled through nextTick throw; missing candidate fatal route A-014 and target prose A-028",
+    "EventTarget.[weak ownership]": "WeakRef listener and retainer key, FinalizationRegistry removal and WeakMap retainer sets, release on explicit removal",
+    "EventTarget.[symbols descriptors warning]": "Enumerable public prototype methods, actual marker/toStringTag/max symbols and custom inspection; process.emitWarning and diagnostics remain dependencies",
+    "NodeEventTarget": "Documented returned/inherited contract, not public events namespace/global constructor; actual class exists but MessagePort public consumer missing",
+    "NodeEventTarget.prototype.setMaxListeners": "Shared events validation/stored limit, actual brand, returns undefined",
+    "NodeEventTarget.prototype.getMaxListeners": "Actual brand and stored shared max listener limit",
+    "NodeEventTarget.prototype.eventNames": "Fresh array of actual map keys; no synthetic newListener/removeListener events",
+    "NodeEventTarget.prototype.listenerCount": "Actual brand, string conversion, root size, zero if absent",
+    "NodeEventTarget.prototype.on": "Registers node-style payload handler and returns receiver; not identity alias of addEventListener",
+    "NodeEventTarget.prototype.addListener": "Registers node-style payload handler and returns receiver; no duplicate identity/constructor exposure assumption",
+    "NodeEventTarget.prototype.once": "Node-style payload handler removed before call, returns receiver",
+    "NodeEventTarget.prototype.off": "Delegates actual removal/capture path, returns receiver; wrapper not strict function alias",
+    "NodeEventTarget.prototype.removeListener": "Delegates removal/capture path, returns receiver",
+    "NodeEventTarget.prototype.removeAllListeners": "Delete one converted key or clear map; actual target bypasses individual removal hooks",
+    "NodeEventTarget.prototype.emit": "Required string type, node raw payload versus lazy CustomEvent for DOM handlers, boolean previous-listener existence, no special error event",
+    "AbortController": "Private lazily created one-signal owner, ordinary class/prototype descriptors; no outer host controller substitution",
+    "AbortController.prototype.signal": "Same signal identity with private brand; enumerable configurable getter",
+    "AbortController.prototype.abort": "First synchronous state/reason and trusted event; default/undefined DOMException, arbitrary reason identity, subsequent calls no-op",
+    "AbortSignal": "Illegal public constructor, EventTarget inheritance, own private brand for WebIDL but source-symbol validation on several public methods",
+    "AbortSignal.abort": "Create already aborted instance, actual default reason, independent signal identity",
+    "AbortSignal.timeout": "Uint32 validation without coercion; unreferenced weak native timer, finalizer clear, TimeoutError, pending-listener retention and timer delay policy",
+    "AbortSignal.any": "Full iterable/brand conversion first; flatten source composites, weak following, first reason, premark dependents before source events, GC/persistent root cleanup",
+    "AbortSignal.prototype.aborted": "Refresh composite then boolean actual state, method-specific receiver errors",
+    "AbortSignal.prototype.reason": "Refresh composite then exact reason reference; no stringify/copy",
+    "AbortSignal.prototype.throwIfAborted": "Refresh then throw exact reason only when aborted, including arbitrary primitive",
+    "AbortSignal.prototype.onabort": "Enumerable wrapper-map handler preserving insertion position and replacement/deactivation; noncallable object/primitives distinction",
+    "AbortSignal.[abort event and cleanup]": "Trusted Event, one synchronous controller-triggered dispatch, ordinary public dispatch separate; protected internal listeners and weak/GC state",
+    "util.aborted": "Async interface/resource validation, already-aborted resolves, protected one-shot weak resource listener and pending Promise if resource collected first",
+    "util.transferableAbortSignal": "Marks actual signal and returns same identity; clone/port transfer backend unavailable A-029",
+    "util.transferableAbortController": "Actual marked-signal controller creation; does not establish structuredClone/postMessage transport A-029",
+    "global.[Event Abort exposure]": "Final interface globals nonenumerable/writable/configurable; target lazy-data versus candidate eager owner, util getter function names A-030",
+    "Event.NONE": "Constant 0; constructor own enumerable nonwritable nonconfigurable property; inherited statically by subclasses",
+    "Event.CAPTURING_PHASE": "Constant 1; constructor own enumerable nonwritable nonconfigurable property; inherited statically by subclasses",
+    "Event.AT_TARGET": "Constant 2; constructor own enumerable nonwritable nonconfigurable property; inherited statically by subclasses",
+    "Event.BUBBLING_PHASE": "Constant 3; constructor own enumerable nonwritable nonconfigurable property; inherited statically by subclasses"
+  },
+  "sourceComparisons": [
+    {
+      "candidate": "third_party/node-core/upstream/event-target.js",
+      "upstream": "lib/internal/event_target.js",
+      "sha256": "ca832ed6f25ba9cc7dc56ba3663a89686b0ae51bf2c0fede831bb5b8c198c021",
+      "comparison": "Exact file bytes and generated-source inclusion; no execution"
+    },
+    {
+      "candidate": "third_party/node-core/upstream/abort-controller.js",
+      "upstream": "lib/internal/abort_controller.js",
+      "sha256": "6c2f2464c122c0a213323e3907b23a41a342938f6c0012b7e910a86d5a3700b2",
+      "comparison": "Exact file bytes and generated-source inclusion; no execution"
+    },
+    {
+      "candidate": "third_party/node-core/upstream/abort-listener.js",
+      "upstream": "lib/internal/events/abort_listener.js",
+      "sha256": "fa7d14991f7fe53e646cd89b12eaff000ca729d6ec2ee4359cf4081f49cfa4f5",
+      "comparison": "Exact file bytes and generated-source inclusion; no execution"
+    },
+    {
+      "candidate": "third_party/node-core/upstream/webidl.js",
+      "upstream": "lib/internal/webidl.js",
+      "sha256": "d5890f07653cb452e4404fdccb6d99e82d03d07ae84fe0d40129f1f2e7bd648a",
+      "comparison": "Exact file bytes and generated-source inclusion; no execution"
+    }
+  ],
+  "sourceFiles": {
+    "lib/internal/event_target.js": "ca832ed6f25ba9cc7dc56ba3663a89686b0ae51bf2c0fede831bb5b8c198c021",
+    "lib/internal/abort_controller.js": "6c2f2464c122c0a213323e3907b23a41a342938f6c0012b7e910a86d5a3700b2",
+    "lib/internal/events/abort_listener.js": "fa7d14991f7fe53e646cd89b12eaff000ca729d6ec2ee4359cf4081f49cfa4f5",
+    "lib/internal/webidl.js": "d5890f07653cb452e4404fdccb6d99e82d03d07ae84fe0d40129f1f2e7bd648a",
+    "lib/internal/validators.js": "dd61b9cb7af5c18b46f2029c2f06b0fc2638d1cd870fe65934966e840e88e1c2",
+    "lib/internal/perf/utils.js": "12aaefacd6f7b67360fb9758cdc94c8e0f2d43c36a1f71f313c3e4f776e80be0",
+    "lib/internal/util.js": "4aa900feab2a6cdb84060c0358c569578d31b6f0831224792868ece9b8899951",
+    "lib/internal/bootstrap/web/exposed-wildcard.js": "0a3d80f3062ec263b08ae7cfb4d477946d915b6c7368f02e44b51363c26c81bf",
+    "lib/internal/worker/io.js": "2ea7672fa2a7b32ad536ff0bf9ce64b467415a948b9b39a2116782b3f7b7bd32",
+    "lib/util.js": "cd5ddc4930015553e7b981d827f60bad80997483d4169909658a00bdf3c99646",
+    "src/node_util.cc": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae",
+    "doc/api/events.md": "ddbacc018b2989525f45c92f38bf807ca4e08dab68e5fa87eac156ebba43ca3d",
+    "doc/api/globals.md": "3e2d4dac29d0af582df891654fff0d818f702b757a9665552a59ea58c2bfa5d9",
+    "doc/api/util.md": "95838aac33ac251b4d77ad8f9de667ca2ac8231f894e282958dad40eb55efcae"
+  },
+  "candidateSourceFiles": {
+    "third_party/node-core/event-platform-adapter.js": "83c398737e7a7fa0af9b86f10ee289057b10f2a210e7a31a0025301e2e1773ed",
+    "third_party/node-core/upstream/event-target.js": "ca832ed6f25ba9cc7dc56ba3663a89686b0ae51bf2c0fede831bb5b8c198c021",
+    "third_party/node-core/upstream/abort-controller.js": "6c2f2464c122c0a213323e3907b23a41a342938f6c0012b7e910a86d5a3700b2",
+    "third_party/node-core/upstream/abort-listener.js": "fa7d14991f7fe53e646cd89b12eaff000ca729d6ec2ee4359cf4081f49cfa4f5",
+    "third_party/node-core/upstream/webidl.js": "d5890f07653cb452e4404fdccb6d99e82d03d07ae84fe0d40129f1f2e7bd648a",
+    "third_party/node-core/upstream/js-transferable.js": "c2c798c77deccdf13dbbd526650755d9ea0670782278530f053885cf2d960366",
+    "third_party/node-core/clone-platform-adapter.js": "3885c8d5adb151cb2d8ab48a2a1bd5ffd135db4f63e4151bb41d178b56e6efc0"
+  },
+  "scope": "Complete scoped Event/Abort/inherited contracts; worker/web/util family audits independent",
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

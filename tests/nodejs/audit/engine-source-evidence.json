@@ -1,0 +1,586 @@
+{
+  "schema": 1,
+  "kind": "Read-only upstream engine source excerpts for capability audit; not a compilation or runtime probe",
+  "archiveSha256": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028",
+  "license": "Mozilla Public License 2.0; see upstream source notices",
+  "files": [
+    {
+      "path": "js/src/wasm/WasmJS.cpp",
+      "sha256": "40105917b62aa95b0deb6ddc9891b15c6faadb0510db3c8c44369edf69dca431",
+      "selectedSource": []
+    },
+    {
+      "path": "js/src/wasm/WasmFeatures.cpp",
+      "sha256": "2afd634267f12ef866ea68568c8765b180234157070bc86faf6d4706bd94de95",
+      "selectedSource": [
+        {
+          "line": 241,
+          "lines": [
+            "bool wasm::ThreadsAvailable(JSContext* cx) {",
+            "  return WasmThreadsFlag(cx) && AnyCompilerAvailable(cx);",
+            "}",
+            "",
+            "bool wasm::HasPlatformSupport() {",
+            "#if !MOZ_LITTLE_ENDIAN()",
+            "  return false;",
+            "#else",
+            "",
+            "  if (!HasJitBackend()) {",
+            "    return false;",
+            "  }",
+            ""
+          ]
+        },
+        {
+          "line": 284,
+          "lines": [
+            "                  cx->realm()->principals()->isSystemOrAddonPrincipal();",
+            "  }",
+            "  // Do not check for compiler availability, as that may be run-time variant.",
+            "  // For HasSupport() we want a stable answer depending only on prefs.",
+            "  return prefEnabled && HasPlatformSupport() && EnsureFullSignalHandlers(cx);",
+            "}",
+            "",
+            "bool wasm::StreamingCompilationAvailable(JSContext* cx) {",
+            "  // This should match EnsureStreamSupport().",
+            "  return HasSupport(cx) && AnyCompilerAvailable(cx) &&",
+            "         cx->runtime()->offThreadPromiseState.ref().initialized() &&",
+            "         CanUseExtraThreads() && cx->runtime()->consumeStreamCallback &&",
+            "         cx->runtime()->reportStreamErrorCallback;"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "js/src/wasm/WasmSignalHandlers.cpp",
+      "sha256": "236934d4a20b567f01550537a0ef1b384653d41540a36f5d7529f6e29862b445",
+      "selectedSource": [
+        {
+          "line": 40,
+          "lines": [
+            "",
+            "using namespace js;",
+            "using namespace js::wasm;",
+            "",
+            "#if !defined(JS_CODEGEN_NONE)",
+            "",
+            "// =============================================================================",
+            "// This following pile of macros and includes defines the ToRegisterState() and",
+            "// the ContextTo{PC,FP,SP,LR}() functions from the (highly) platform-specific",
+            "// CONTEXT struct which is provided to the signal handler.",
+            "// =============================================================================",
+            "",
+            "#  if defined(__FreeBSD__) || defined(__FreeBSD_kernel__)"
+          ]
+        },
+        {
+          "line": 805,
+          "lines": [
+            "",
+            "MOZ_RUNINIT static ExclusiveData<InstallState> sEagerInstallState(",
+            "    mutexid::WasmSignalInstallState);",
+            "",
+            "#endif  // !(JS_CODEGEN_NONE)",
+            "",
+            "void wasm::EnsureEagerProcessSignalHandlers() {",
+            "#ifdef JS_CODEGEN_NONE",
+            "  // If there is no JIT, then there should be no Wasm signal handlers.",
+            "  return;",
+            "#else",
+            "  auto eagerInstallState = sEagerInstallState.lock();",
+            "  if (eagerInstallState->tried) {"
+          ]
+        },
+        {
+          "line": 818,
+          "lines": [
+            "    return;",
+            "  }",
+            ""
+          ]
+        },
+        {
+          "line": 883,
+          "lines": [
+            "  eagerInstallState->success = true;",
+            "#endif",
+            "}",
+            "",
+            "#ifndef JS_CODEGEN_NONE",
+            "MOZ_RUNINIT static ExclusiveData<InstallState> sLazyInstallState(",
+            "    mutexid::WasmSignalInstallState);",
+            "",
+            "static bool EnsureLazyProcessSignalHandlers() {",
+            "  auto lazyInstallState = sLazyInstallState.lock();",
+            "  if (lazyInstallState->tried) {",
+            "    return lazyInstallState->success;",
+            "  }"
+          ]
+        },
+        {
+          "line": 923,
+          "lines": [
+            "",
+            "  lazyInstallState->success = true;",
+            "  return true;",
+            "}",
+            "#endif  // JS_CODEGEN_NONE",
+            "",
+            "bool wasm::EnsureFullSignalHandlers(JSContext* cx) {",
+            "#ifdef JS_CODEGEN_NONE",
+            "  return false;",
+            "#else",
+            "  if (cx->wasm().triedToInstallSignalHandlers) {",
+            "    return cx->wasm().haveSignalHandlers;",
+            "  }"
+          ]
+        },
+        {
+          "line": 936,
+          "lines": [
+            "",
+            "  cx->wasm().triedToInstallSignalHandlers = true;",
+            "  MOZ_RELEASE_ASSERT(!cx->wasm().haveSignalHandlers);"
+          ]
+        },
+        {
+          "line": 975,
+          "lines": [
+            "}",
+            "",
+            "bool wasm::MemoryAccessTraps(const RegisterState& regs, uint8_t* addr,",
+            "                             uint32_t numBytes, uint8_t** newPC) {",
+            "#ifdef JS_CODEGEN_NONE",
+            "  return false;",
+            "#else",
+            "  const wasm::CodeBlock* codeBlock = wasm::LookupCodeBlock(regs.pc);",
+            "  if (!codeBlock) {",
+            "    return false;",
+            "  }",
+            "",
+            "  Trap trap;"
+          ]
+        },
+        {
+          "line": 1041,
+          "lines": [
+            "}",
+            "",
+            "bool wasm::HandleIllegalInstruction(const RegisterState& regs,",
+            "                                    uint8_t** newPC) {",
+            "#ifdef JS_CODEGEN_NONE",
+            "  return false;",
+            "#else",
+            "  const wasm::CodeBlock* codeBlock = wasm::LookupCodeBlock(regs.pc);",
+            "  if (!codeBlock) {",
+            "    return false;",
+            "  }",
+            "",
+            "  Trap trap;"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "js/src/wasm/WasmCompile.cpp",
+      "sha256": "77e93d0f1890d84d8aeb75608c46fbc2c5adf4fcff4f1b2e804127b2599d8e28",
+      "selectedSource": [
+        {
+          "line": 87,
+          "lines": [
+            "  return LOONG64 | (jit::GetLOONG64Flags() << ARCH_BITS);",
+            "#elif defined(JS_CODEGEN_RISCV64)",
+            "  MOZ_ASSERT(jit::GetRISCV64Flags() <= (UINT32_MAX >> ARCH_BITS));",
+            "  return RISCV64 | (jit::GetRISCV64Flags() << ARCH_BITS);",
+            "#elif defined(JS_CODEGEN_NONE) || defined(JS_CODEGEN_WASM32)",
+            "  return 0;",
+            "#else",
+            "#  error \"unknown architecture\"",
+            "#endif",
+            "}",
+            "",
+            "bool FeatureOptions::init(JSContext* cx, HandleValue val) {",
+            "  if (val.isNullOrUndefined()) {"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "js/src/wasm/WasmProcess.cpp",
+      "sha256": "aae9e63eb05b0b4fa866b7567532b46ed78dd7a376bfea4bc6819ccfd67217ea",
+      "selectedSource": []
+    },
+    {
+      "path": "js/moz.configure",
+      "sha256": "7bed9aebfa41bd922c2d92afa81b727a0df43774eb539b20e66fcf4bda535f2b",
+      "selectedSource": [
+        {
+          "line": 323,
+          "lines": [
+            "",
+            "    return namespace(**{str(target.cpu): True})",
+            "",
+            "",
+            "set_config(\"JS_CODEGEN_NONE\", jit_codegen.none)",
+            "set_config(\"JS_CODEGEN_ARM\", jit_codegen.arm)",
+            "set_config(\"JS_CODEGEN_ARM64\", jit_codegen.arm64)",
+            "set_config(\"JS_CODEGEN_MIPS64\", jit_codegen.mips64)",
+            "set_config(\"JS_CODEGEN_LOONG64\", jit_codegen.loong64)",
+            "set_config(\"JS_CODEGEN_RISCV64\", jit_codegen.riscv64)",
+            "set_config(\"JS_CODEGEN_X86\", jit_codegen.x86)",
+            "set_config(\"JS_CODEGEN_X64\", jit_codegen.x64)",
+            "set_config(\"JS_CODEGEN_WASM32\", jit_codegen.wasm32)"
+          ]
+        },
+        {
+          "line": 336,
+          "lines": [
+            "",
+            "set_define(\"JS_CODEGEN_NONE\", jit_codegen.none)",
+            "set_define(\"JS_CODEGEN_ARM\", jit_codegen.arm)",
+            "set_define(\"JS_CODEGEN_ARM64\", jit_codegen.arm64)",
+            "set_define(\"JS_CODEGEN_MIPS64\", jit_codegen.mips64)",
+            "set_define(\"JS_CODEGEN_LOONG64\", jit_codegen.loong64)",
+            "set_define(\"JS_CODEGEN_RISCV64\", jit_codegen.riscv64)",
+            "set_define(\"JS_CODEGEN_X86\", jit_codegen.x86)",
+            "set_define(\"JS_CODEGEN_X64\", jit_codegen.x64)",
+            "set_define(\"JS_CODEGEN_WASM32\", jit_codegen.wasm32)"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "mozglue/misc/TimeStamp_posix.cpp",
+      "sha256": "6021df6d774509d4ea5f4259de0cd14ba6e773da0aa63ff61b38563303aff029",
+      "selectedSource": [
+        {
+          "line": 4,
+          "lines": [
+            " * License, v. 2.0. If a copy of the MPL was not distributed with this",
+            " * file, You can obtain one at http://mozilla.org/MPL/2.0/. */",
+            "",
+            "//",
+            "// Implement TimeStamp::Now() with POSIX clocks.",
+            "//",
+            "// The \"tick\" unit for POSIX clocks is simply a nanosecond, as this is",
+            "// the smallest unit of time representable by struct timespec.  That",
+            "// doesn't mean that a nanosecond is the resolution of TimeDurations",
+            "// obtained with this API; see TimeDuration::Resolution;",
+            "//",
+            "",
+            "#include <sys/syscall.h>"
+          ]
+        },
+        {
+          "line": 57,
+          "lines": [
+            "// Estimate of the smallest duration of time we can measure.",
+            "static uint64_t sResolution;",
+            "static uint64_t sResolutionSigDigs;",
+            "",
+            "#ifdef CLOCK_MONOTONIC_COARSE",
+            "static bool sSupportsMonotonicCoarseClock = false;",
+            "#endif",
+            "",
+            "#if !defined(__wasi__)",
+            "static const uint16_t kNsPerUs = 1000;",
+            "#endif",
+            "",
+            "static const uint64_t kNsPerMs = 1000000;"
+          ]
+        },
+        {
+          "line": 75,
+          "lines": [
+            "  uint64_t baseNs = uint64_t(aTs.tv_sec) * kNsPerSec;",
+            "  return baseNs + uint64_t(aTs.tv_nsec);",
+            "}",
+            "",
+            "static uint64_t ClockTimeNs(const clockid_t aClockId = CLOCK_MONOTONIC) {",
+            "  struct timespec ts;",
+            "#ifdef CLOCK_MONOTONIC_COARSE",
+            "  MOZ_RELEASE_ASSERT(",
+            "      aClockId == CLOCK_MONOTONIC ||",
+            "      (sSupportsMonotonicCoarseClock && aClockId == CLOCK_MONOTONIC_COARSE));",
+            "#else",
+            "  MOZ_RELEASE_ASSERT(aClockId == CLOCK_MONOTONIC);",
+            "#endif",
+            "  // this can't fail: we know &ts is valid, and TimeStamp::Startup()",
+            "  // checks that CLOCK_MONOTONIC / CLOCK_MONOTONIC_COARSE are",
+            "  // supported (and aborts if the former is not).",
+            "  clock_gettime(aClockId, &ts);",
+            "",
+            "  // tv_sec is defined to be relative to an arbitrary point in time,",
+            "  // but it would be madness for that point in time to be earlier than",
+            "  // the Epoch.  So we can safely assume that even if time_t is 32",
+            "  // bits, tv_sec won't overflow while the browser is open.  Revisit",
+            "  // this argument if we're still building with 32-bit time_t around",
+            "  // the year 2037.",
+            "  return TimespecToNs(ts);"
+          ]
+        },
+        {
+          "line": 102,
+          "lines": [
+            "static uint64_t ClockResolutionNs() {",
+            "  // NB: why not rely on clock_getres()?  Two reasons: (i) it might",
+            "  // lie, and (ii) it might return an \"ideal\" resolution that while",
+            "  // theoretically true, could never be measured in practice.  Since",
+            "  // clock_gettime() likely involves a system call on your platform,",
+            "  // the \"actual\" timing resolution shouldn't be lower than syscall",
+            "  // overhead.",
+            "",
+            "  uint64_t start = ClockTimeNs();",
+            "  uint64_t end = ClockTimeNs();",
+            "  uint64_t minres = (end - start);",
+            "",
+            "  // 10 total trials is arbitrary: what we're trying to avoid by"
+          ]
+        },
+        {
+          "line": 127,
+          "lines": [
+            "  if (0 == minres) {",
+            "    // measurable resolution is either incredibly low, ~1ns, or very",
+            "    // high.  fall back on clock_getres()",
+            "    struct timespec ts;",
+            "    if (0 == clock_getres(CLOCK_MONOTONIC, &ts)) {",
+            "      minres = TimespecToNs(ts);",
+            "    }",
+            "  }",
+            "",
+            "  if (0 == minres) {",
+            "    // clock_getres probably failed.  fall back on NSPR's resolution",
+            "    // assumption",
+            "    minres = 1 * kNsPerMs;"
+          ]
+        },
+        {
+          "line": 180,
+          "lines": [
+            "    return;",
+            "  }",
+            "",
+            "  struct timespec dummy;",
+            "  if (clock_gettime(CLOCK_MONOTONIC, &dummy) != 0) {",
+            "    MOZ_CRASH(\"CLOCK_MONOTONIC is absent!\");",
+            "  }",
+            "",
+            "#ifdef CLOCK_MONOTONIC_COARSE",
+            "  if (clock_gettime(CLOCK_MONOTONIC_COARSE, &dummy) == 0) {",
+            "    sSupportsMonotonicCoarseClock = true;",
+            "  }",
+            "#endif",
+            "",
+            "  sResolution = ClockResolutionNs();",
+            "",
+            "  // find the number of significant digits in sResolution, for the",
+            "  // sake of ToSecondsSigDigits()"
+          ]
+        },
+        {
+          "line": 203,
+          "lines": [
+            "}",
+            "",
+            "void TimeStamp::Shutdown() {}",
+            "",
+            "TimeStamp TimeStamp::Now(bool aHighResolution) {",
+            "#ifdef CLOCK_MONOTONIC_COARSE",
+            "  if (!aHighResolution && sSupportsMonotonicCoarseClock) {",
+            "    return TimeStamp(ClockTimeNs(CLOCK_MONOTONIC_COARSE));",
+            "  }",
+            "#endif",
+            "  return TimeStamp(ClockTimeNs(CLOCK_MONOTONIC));",
+            "}",
+            "",
+            "#if defined(XP_LINUX) || defined(ANDROID)",
+            "",
+            "// Calculates the amount of jiffies that have elapsed since boot and up to the",
+            "// starttime value of a specific process as found in its /proc/*/stat file.",
+            "// Returns 0 if an error occurred.",
+            ""
+          ]
+        },
+        {
+          "line": 312,
+          "lines": [
+            "// Returns 0 if an error was encountered.",
+            "",
+            "uint64_t TimeStamp::ComputeProcessUptime() {",
+            "  struct timespec ts;",
+            "  int rv = clock_gettime(CLOCK_REALTIME, &ts);",
+            "",
+            "  if (rv == -1) {",
+            "    return 0;",
+            "  }",
+            "",
+            "  int mib[] = {",
+            "      // clang-format off",
+            "      CTL_KERN,"
+          ]
+        }
+      ],
+      "review": "Source inspection only; no build or runtime probe"
+    },
+    {
+      "path": "mozglue/misc/moz.build",
+      "sha256": "ef5a5c011df8c828bfaa66b489ef6267498bd0dff67e731c88e1a174c77e1b6d",
+      "selectedSource": [
+        {
+          "line": 31,
+          "lines": [
+            "    \"Debug.h\",",
+            "    \"WinUtils.h\",",
+            "]",
+            "",
+            "if CONFIG[\"OS_ARCH\"] == \"WINNT\":",
+            "    EXPORTS.mozilla += [",
+            "        \"GetKnownFolderPath.h\",",
+            "        \"PreXULSkeletonUI.h\",",
+            "        \"StackWalk_windows.h\",",
+            "        \"StackWalkThread.h\",",
+            "        \"TimeStamp_windows.h\",",
+            "        \"WindowsDpiAwareness.h\",",
+            "    ]"
+          ]
+        },
+        {
+          "line": 75,
+          "lines": [
+            "    ]",
+            "",
+            "OS_LIBS += CONFIG[\"REALTIME_LIBS\"]",
+            "",
+            "if CONFIG[\"OS_ARCH\"] == \"WINNT\":",
+            "    EXPORTS.mozilla += [",
+            "        \"DynamicallyLinkedFunctionPtr.h\",",
+            "        \"ImportDir.h\",",
+            "        \"NativeNt.h\",",
+            "        \"WindowsDiagnostics.h\",",
+            "        \"WindowsDpiInitialization.h\",",
+            "        \"WindowsEnumProcessModules.h\",",
+            "        \"WindowsMapRemoteView.h\","
+          ]
+        },
+        {
+          "line": 93,
+          "lines": [
+            "        \"WindowsUnicode.h\",",
+            "    ]",
+            "    SOURCES += [",
+            "        \"GetKnownFolderPath.cpp\",",
+            "        \"TimeStamp_windows.cpp\",",
+            "        \"WindowsDiagnostics.cpp\",",
+            "        \"WindowsDllMain.cpp\",",
+            "        \"WindowsDpiInitialization.cpp\",",
+            "        \"WindowsMapRemoteView.cpp\",",
+            "        \"WindowsProcessMitigations.cpp\",",
+            "        \"WindowsUnicode.cpp\",",
+            "    ]",
+            ""
+          ]
+        },
+        {
+          "line": 111,
+          "lines": [
+            "            \"/ipc/mscom/ProcessRuntime.cpp\",",
+            "            \"PreXULSkeletonUI.cpp\",",
+            "        ]",
+            "",
+            "elif CONFIG[\"OS_ARCH\"] == \"Darwin\":",
+            "    SOURCES += [",
+            "        \"TimeStamp_darwin.cpp\",",
+            "    ]",
+            "elif CONFIG[\"HAVE_CLOCK_MONOTONIC\"]:",
+            "    SOURCES += [",
+            "        \"TimeStamp_posix.cpp\",",
+            "    ]",
+            "elif CONFIG[\"COMPILE_ENVIRONMENT\"]:",
+            "    error(\"No TimeStamp implementation on this platform.  Build will not succeed\")",
+            "",
+            "if CONFIG[\"OS_ARCH\"] == \"WINNT\":",
+            "    SOURCES += [",
+            "        \"ConditionVariable_windows.cpp\",",
+            "        \"Mutex_windows.cpp\",",
+            "        \"RWLock_windows.cpp\",",
+            "    ]",
+            "# WASI hasn't supported cond vars and mutexes yet so noop implementation is used.",
+            "elif CONFIG[\"OS_ARCH\"] == \"WASI\":",
+            "    SOURCES += [",
+            "        \"ConditionVariable_noop.cpp\",",
+            "        \"Mutex_noop.cpp\",",
+            "    ]",
+            "else:",
+            "    SOURCES += [",
+            "        \"ConditionVariable_posix.cpp\",",
+            "        \"Mutex_posix.cpp\","
+          ]
+        }
+      ],
+      "review": "Source inspection only; no build or runtime probe"
+    },
+    {
+      "path": "js/src/builtin/Symbol.cpp",
+      "sha256": "e6b3861315985be97d48e5b6dda9dbd4791746dc971a02faf6e2ea0c28f0d307",
+      "selectedSource": [],
+      "review": "Read-only inherited async-iterator/disposal capability source, not runtime proof"
+    },
+    {
+      "path": "js/src/builtin/AsyncIteration.js",
+      "sha256": "b9072d14b2caa8c9a611862d50fd3eda3923604a3df2db281dced5b98a241659",
+      "selectedSource": [],
+      "review": "Read-only inherited async-iterator/disposal capability source, not runtime proof"
+    },
+    {
+      "path": "js/src/vm/GlobalObject.cpp",
+      "sha256": "6e5ee66034640ab63a0d98b775c81ed15dc2587ad5fe7edc84d5a59164069273",
+      "selectedSource": [
+        {
+          "line": 990,
+          "lines": [
+            "  JSObject* proto = &global->getPrototype(JSProto_Iterator);",
+            "  return proto;",
+            "}",
+            "",
+            "/* static */",
+            "JSObject* GlobalObject::createAsyncIteratorPrototype(",
+            "    JSContext* cx, Handle<GlobalObject*> global) {",
+            "  if (!IsAsyncIteratorHelpersEnabled()) {",
+            "    return getOrCreateBuiltinProto(cx, global, ProtoKind::AsyncIteratorProto,",
+            "                                   initAsyncIteratorProto);",
+            "  }",
+            "",
+            "  if (!ensureConstructor(cx, global, JSProto_AsyncIterator)) {",
+            "    return nullptr;",
+            "  }",
+            "  JSObject* proto = &global->getPrototype(JSProto_AsyncIterator);",
+            "  global->initBuiltinProto(ProtoKind::AsyncIteratorProto, proto);"
+          ]
+        }
+      ],
+      "review": "Read-only inherited async-iterator/disposal capability source, not runtime proof"
+    }
+  ],
+  "reviewComplete": false,
+  "archiveIdentityCheck": {
+    "observedSha256": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028",
+    "matchesPinned": true,
+    "operation": "Read-only source hash; not a build or runtime probe"
+  },
+  "asyncIteratorSourceInspection": {
+    "requested": [
+      "js/src/builtin/AsyncIteration.cpp",
+      "js/src/builtin/AsyncIteration.js",
+      "js/src/builtin/Symbol.cpp",
+      "js/src/vm/GlobalObject.cpp"
+    ],
+    "found": [
+      "js/src/builtin/AsyncIteration.js",
+      "js/src/builtin/Symbol.cpp",
+      "js/src/vm/GlobalObject.cpp"
+    ],
+    "newRuntimeTests": 0,
+    "newBuilds": 0
+  }
+}

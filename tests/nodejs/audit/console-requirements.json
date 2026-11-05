@@ -1,0 +1,1044 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "kind": "Source contracts/gaps; implementation and conformance separate",
+  "sections": [
+    {
+      "document": "doc/api/console.md",
+      "line": 1,
+      "endLine": 70,
+      "title": "Console",
+      "sha256": "23245ef179dae58dc4982de4bca6a2268706a70e5fc732ad53c9a8bc0b9bc407",
+      "normativeRequirements": "# Console\n\n\n\n> Stability: 2 - Stable\n\n\n\nThe `node:console` module provides a simple debugging console that is similar to\nthe JavaScript console mechanism provided by web browsers.\n\nThe module exports two specific components:\n\n* A `Console` class with methods such as `console.log()`, `console.error()`, and\n  `console.warn()` that can be used to write to any Node.js stream.\n* A global `console` instance configured to write to [`process.stdout`][] and\n  [`process.stderr`][]. The global `console` can be used without calling\n  `require('node:console')`.\n\n_**Warning**_: The global console object's methods are neither consistently\nsynchronous like the browser APIs they resemble, nor are they consistently\nasynchronous like all other Node.js streams. Programs that desire to depend\non the synchronous / asynchronous behavior of the console functions should\nfirst figure out the nature of console's backing stream. This is because the\nstream is dependent on the underlying platform and standard stream\nconfiguration of the current process. See the [note on process I/O][] for\nmore information.\n\nExample using the global `console`:\n\n\n\nExample using the `Console` class:\n\n\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 71,
+      "endLine": 98,
+      "title": "Class: `Console`",
+      "sha256": "aba385bd1aaee1b692ebb41f8c4f6460b14ecc34467449b15944ccb85b2331f9",
+      "normativeRequirements": "## Class: `Console`\n\n\n\n\n\nThe `Console` class can be used to create a simple logger with configurable\noutput streams and can be accessed using either `require('node:console').Console`\nor `console.Console` (or their destructured counterparts):\n\n\n\n\n\n\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 99,
+      "endLine": 100,
+      "title": "`new Console(stdout[, stderr][, ignoreErrors])`",
+      "sha256": "fff85c334dbb262addace0d5e4a3f44c7ec89084d8a133a2d75d0875d16ad5b0",
+      "normativeRequirements": "### `new Console(stdout[, stderr][, ignoreErrors])`\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 101,
+      "endLine": 185,
+      "title": "`new Console(options)`",
+      "sha256": "07efdd1c6b2b83335c89441310fd9b2ef1a8733f788b74f577bb875e0fe92acc",
+      "normativeRequirements": "### `new Console(options)`\n\n\n\n* `options` {Object}\n  * `stdout` {stream.Writable}\n  * `stderr` {stream.Writable}\n  * `ignoreErrors` {boolean} Ignore errors when writing to the underlying\n    streams. **Default:** `true`.\n  * `colorMode` {boolean|string} Set color support for this `Console` instance.\n    Setting to `true` enables coloring while inspecting values. Setting to\n    `false` disables coloring while inspecting values. Setting to\n    `'auto'` makes color support depend on the value of the `isTTY` property\n    and the value returned by `getColorDepth()` on the respective stream. This\n    option can not be used, if `inspectOptions.colors` is set as well.\n    **Default:** `'auto'`.\n  * `inspectOptions` {Object|Map} Specifies options that are passed along to\n    [`util.inspect()`][]. Can be an options object or, if different options\n    for stdout and stderr are desired, a `Map` from stream objects to options.\n  * `groupIndentation` {number} Set group indentation.\n    **Default:** `2`.\n\nCreates a new `Console` with one or two writable stream instances. `stdout` is a\nwritable stream to print log or info output. `stderr` is used for warning or\nerror output. If `stderr` is not provided, `stdout` is used for `stderr`.\n\n\n\n\n\nThe global `console` is a special `Console` whose output is sent to\n[`process.stdout`][] and [`process.stderr`][]. It is equivalent to calling:\n\n\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 186,
+      "endLine": 216,
+      "title": "`console.assert(value[, ...message])`",
+      "sha256": "e057c0e3d9b8ed4bead1ecaf4b94527880e1496f42d509f0014f6347bf7d38f9",
+      "normativeRequirements": "### `console.assert(value[, ...message])`\n\n\n\n* `value` {any} The value tested for being truthy.\n* `...message` {any} All arguments besides `value` are used as error message.\n\n`console.assert()` writes a message if `value` is [falsy][] or omitted. It only\nwrites a message and does not otherwise affect execution. The output always\nstarts with `\"Assertion failed\"`. If provided, `message` is formatted using\n[`util.format()`][].\n\nIf `value` is [truthy][], nothing happens.\n\n\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 217,
+      "endLine": 231,
+      "title": "`console.clear()`",
+      "sha256": "18ce1ca76ce7802002a8bca6c3eb374849d253d2e58f71ddcb187007f28aee46",
+      "normativeRequirements": "### `console.clear()`\n\n\n\nWhen `stdout` is a TTY, calling `console.clear()` will attempt to clear the\nTTY. When `stdout` is not a TTY, this method does nothing.\n\nThe specific operation of `console.clear()` can vary across operating systems\nand terminal types. For most Linux operating systems, `console.clear()`\noperates similarly to the `clear` shell command. On Windows, `console.clear()`\nwill clear only the output in the current terminal viewport for the Node.js\nbinary.\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 232,
+      "endLine": 264,
+      "title": "`console.count([label])`",
+      "sha256": "ecfc3f1247fdfbe36e147e25aae20300b6a56968efb39188680c8a1afd8755d3",
+      "normativeRequirements": "### `console.count([label])`\n\n\n\n* `label` {string} The display label for the counter. **Default:** `'default'`.\n\nMaintains an internal counter specific to `label` and outputs to `stdout` the\nnumber of times `console.count()` has been called with the given `label`.\n\n\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 265,
+      "endLine": 286,
+      "title": "`console.countReset([label])`",
+      "sha256": "86c82877da196fa3c60c529ed29d361b6eb606baf83b5b11a5e74d57f4a111c7",
+      "normativeRequirements": "### `console.countReset([label])`\n\n\n\n* `label` {string} The display label for the counter. **Default:** `'default'`.\n\nResets the internal counter specific to `label`.\n\n\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 287,
+      "endLine": 301,
+      "title": "`console.debug(data[, ...args])`",
+      "sha256": "d739fb41c7f0e0d61034f434caef091c08bbaee66ca4f80a4cd7c43150b11439",
+      "normativeRequirements": "### `console.debug(data[, ...args])`\n\n\n\n* `data` {any}\n* `...args` {any}\n\nThe `console.debug()` function is an alias for [`console.log()`][].\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 302,
+      "endLine": 321,
+      "title": "`console.dir(obj[, options])`",
+      "sha256": "a894855ae9b1b4a0237ab966542ea624c17c3c3e2900e953b949ab9ff68051d5",
+      "normativeRequirements": "### `console.dir(obj[, options])`\n\n\n\n* `obj` {any}\n* `options` {Object}\n  * `showHidden` {boolean} If `true` then the object's non-enumerable and symbol\n    properties will be shown too. **Default:** `false`.\n  * `depth` {number} Tells [`util.inspect()`][] how many times to recurse while\n    formatting the object. This is useful for inspecting large complicated\n    objects. To make it recurse indefinitely, pass `null`. **Default:** `2`.\n  * `colors` {boolean} If `true`, then the output will be styled with ANSI color\n    codes. Colors are customizable;\n    see [customizing `util.inspect()` colors][]. **Default:** `false`.\n\nUses [`util.inspect()`][] on `obj` and prints the resulting string to `stdout`.\nThis function bypasses any custom `inspect()` function defined on `obj`.\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 322,
+      "endLine": 336,
+      "title": "`console.dirxml(...data)`",
+      "sha256": "d6e5286af7089b7a11fb297fdc9389bc49340d95eeecce413fa4810d6e16a00a",
+      "normativeRequirements": "### `console.dirxml(...data)`\n\n\n\n* `...data` {any}\n\nThis method calls `console.log()` passing it the arguments received.\nThis method does not produce any XML formatting.\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 337,
+      "endLine": 362,
+      "title": "`console.error([data][, ...args])`",
+      "sha256": "3009ea9abfae7f6b17f9f45ae336cf0dd586849279fb9e3b0e8137e5f93cded9",
+      "normativeRequirements": "### `console.error([data][, ...args])`\n\n\n\n* `data` {any}\n* `...args` {any}\n\nPrints to `stderr` with newline. Multiple arguments can be passed, with the\nfirst used as the primary message and all additional used as substitution\nvalues similar to printf(3) (the arguments are all passed to\n[`util.format()`][]).\n\n\n\nIf formatting elements (e.g. `%d`) are not found in the first string then\n[`util.inspect()`][] is called on each argument and the resulting string\nvalues are concatenated. See [`util.format()`][] for more information.\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 363,
+      "endLine": 376,
+      "title": "`console.group([...label])`",
+      "sha256": "c3487a05dd5572f6b19ba94ebc142f16b2cd834d74f4c2b7c1846ab251da2776",
+      "normativeRequirements": "### `console.group([...label])`\n\n\n\n* `...label` {any}\n\nIncreases indentation of subsequent lines by spaces for `groupIndentation`\nlength.\n\nIf one or more `label`s are provided, those are printed first without the\nadditional indentation.\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 377,
+      "endLine": 384,
+      "title": "`console.groupCollapsed()`",
+      "sha256": "37e9dcd9255e56e769fbb709ad2715bfe48ee4da140937047697964f7081f5de",
+      "normativeRequirements": "### `console.groupCollapsed()`\n\n\n\nAn alias for [`console.group()`][].\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 385,
+      "endLine": 393,
+      "title": "`console.groupEnd()`",
+      "sha256": "f9467ad307e6f064421ebcb54a1b40589cf43126e151e0a08403fcc7988323fa",
+      "normativeRequirements": "### `console.groupEnd()`\n\n\n\nDecreases indentation of subsequent lines by spaces for `groupIndentation`\nlength.\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 394,
+      "endLine": 404,
+      "title": "`console.info([data][, ...args])`",
+      "sha256": "9170b87e60322d667f69444f33cef915b56f8d5234f707b67ef4485b2caac193",
+      "normativeRequirements": "### `console.info([data][, ...args])`\n\n\n\n* `data` {any}\n* `...args` {any}\n\nThe `console.info()` function is an alias for [`console.log()`][].\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 405,
+      "endLine": 428,
+      "title": "`console.log([data][, ...args])`",
+      "sha256": "d4b4f241495f7d36bc1e0676ac47aa060f00ab7f056efb6921d3ad1c5c5abe9e",
+      "normativeRequirements": "### `console.log([data][, ...args])`\n\n\n\n* `data` {any}\n* `...args` {any}\n\nPrints to `stdout` with newline. Multiple arguments can be passed, with the\nfirst used as the primary message and all additional used as substitution\nvalues similar to printf(3) (the arguments are all passed to\n[`util.format()`][]).\n\n\n\nSee [`util.format()`][] for more information.\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 429,
+      "endLine": 466,
+      "title": "`console.table(tabularData[, properties])`",
+      "sha256": "06d9ab7ec15fe3df94f9d8fc1ed350e0a86004c3110670f75ea09c46a80b962d",
+      "normativeRequirements": "### `console.table(tabularData[, properties])`\n\n\n\n* `tabularData` {any}\n* `properties` {string\\[]} Alternate properties for constructing the table.\n\nTry to construct a table with the columns of the properties of `tabularData`\n(or use `properties`) and rows of `tabularData` and log it. Falls back to just\nlogging the argument if it can't be parsed as tabular.\n\n\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 467,
+      "endLine": 480,
+      "title": "`console.time([label])`",
+      "sha256": "cd6b16c4ea073da6c0e15e8a057d3f5bf6a25c879c3cfc7aae33f63433a96bae",
+      "normativeRequirements": "### `console.time([label])`\n\n\n\n* `label` {string} **Default:** `'default'`\n\nStarts a timer that can be used to compute the duration of an operation. Timers\nare identified by a unique `label`. Use the same `label` when calling\n[`console.timeEnd()`][] to stop the timer and output the elapsed time in\nsuitable time units to `stdout`. For example, if the elapsed\ntime is 3869ms, `console.timeEnd()` displays \"3.869s\".\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 481,
+      "endLine": 506,
+      "title": "`console.timeEnd([label])`",
+      "sha256": "799a6d824c1b9f5ec0d0c0ea5cd27127271c24390c8b24c38f781e911f819b2e",
+      "normativeRequirements": "### `console.timeEnd([label])`\n\n\n\n* `label` {string} **Default:** `'default'`\n\nStops a timer that was previously started by calling [`console.time()`][] and\nprints the result to `stdout`:\n\n\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 507,
+      "endLine": 527,
+      "title": "`console.timeLog([label][, ...data])`",
+      "sha256": "3deec92e2a392c180cd62d01ae563b809de78f620fa656b0f8efda0cb2e7ece1",
+      "normativeRequirements": "### `console.timeLog([label][, ...data])`\n\n\n\n* `label` {string} **Default:** `'default'`\n* `...data` {any}\n\nFor a timer that was previously started by calling [`console.time()`][], prints\nthe elapsed time and other `data` arguments to `stdout`:\n\n\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 528,
+      "endLine": 555,
+      "title": "`console.trace([message][, ...args])`",
+      "sha256": "3b8267e8ee30bdc6db2ab93dedaab496f3bebbf5fcf36019929ab5739b3eca65",
+      "normativeRequirements": "### `console.trace([message][, ...args])`\n\n\n\n* `message` {any}\n* `...args` {any}\n\nPrints to `stderr` the string `'Trace: '`, followed by the [`util.format()`][]\nformatted message and stack trace to the current position in the code.\n\n\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 556,
+      "endLine": 566,
+      "title": "`console.warn([data][, ...args])`",
+      "sha256": "e08dbfc787b694e90bcb9b062c909e68557a57b932165c4e4e6cb88b8cce1015",
+      "normativeRequirements": "### `console.warn([data][, ...args])`\n\n\n\n* `data` {any}\n* `...args` {any}\n\nThe `console.warn()` function is an alias for [`console.error()`][].\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 567,
+      "endLine": 572,
+      "title": "Inspector only methods",
+      "sha256": "e0d05ff2bae002776cab7f6853d34fe12d0cc2fbfe8a7cb0338875ef750b06c3",
+      "normativeRequirements": "## Inspector only methods\n\nThe following methods are exposed by the V8 engine in the general API but do\nnot display anything unless used in conjunction with the [inspector][]\n(`--inspect` flag).\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 573,
+      "endLine": 592,
+      "title": "`console.profile([label])`",
+      "sha256": "87116f35ca42df0b0ce352be498c04531cfe48aa4a8decff1edb26531af73744",
+      "normativeRequirements": "### `console.profile([label])`\n\n\n\n* `label` {string}\n\nThis method does not display anything unless used in the inspector. The\n`console.profile()` method starts a JavaScript CPU profile with an optional\nlabel until [`console.profileEnd()`][] is called. The profile is then added to\nthe **Profile** panel of the inspector.\n\n\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 593,
+      "endLine": 608,
+      "title": "`console.profileEnd([label])`",
+      "sha256": "68dba86cd6737727dbfd0d5fe5d407dbb689ad4e444dfb6ff66a3cb8e480fd4c",
+      "normativeRequirements": "### `console.profileEnd([label])`\n\n\n\n* `label` {string}\n\nThis method does not display anything unless used in the inspector. Stops the\ncurrent JavaScript CPU profiling session if one has been started and prints\nthe report to the **Profiles** panel of the inspector. See\n[`console.profile()`][] for an example.\n\nIf this method is called without a label, the most recently started profile is\nstopped.\n\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    },
+    {
+      "document": "doc/api/console.md",
+      "line": 609,
+      "endLine": 636,
+      "title": "`console.timeStamp([label])`",
+      "sha256": "1392a8fb259c1776d2a9a60ce876aed411af5393adf03b899c099dff20b7e40a",
+      "normativeRequirements": "### `console.timeStamp([label])`\n\n\n\n* `label` {string}\n\nThis method does not display anything unless used in the inspector. The\n`console.timeStamp()` method adds an event with the label `'label'` to the\n**Timeline** panel of the inspector.\n\n[`console.error()`]: #consoleerrordata-args\n[`console.group()`]: #consolegrouplabel\n[`console.log()`]: #consolelogdata-args\n[`console.profile()`]: #consoleprofilelabel\n[`console.profileEnd()`]: #consoleprofileendlabel\n[`console.time()`]: #consoletimelabel\n[`console.timeEnd()`]: #consoletimeendlabel\n[`process.stderr`]: process.md#processstderr\n[`process.stdout`]: process.md#processstdout\n[`util.format()`]: util.md#utilformatformat-args\n[`util.inspect()`]: util.md#utilinspectobject-options\n[customizing `util.inspect()` colors]: util.md#customizing-utilinspect-colors\n[falsy]: https://developer.mozilla.org/en-US/docs/Glossary/Falsy\n[inspector]: debugger.md\n[note on process I/O]: process.md#a-note-on-process-io\n[truthy]: https://developer.mozilla.org/en-US/docs/Glossary/Truthy\n",
+      "review": "Source requirement/owner reviewed with known gaps; not runtime conformance"
+    }
+  ],
+  "memberRequirements": {
+    "log": "stdout/newline; real formatWithOptions and per-stream inspect/color; diagnostics console.log original args",
+    "info": "stdout and dedicated diagnostics console.info; equivalent output to log but distinct source function, not strict identity",
+    "debug": "stdout and dedicated console.debug; equivalent output to log but distinct source function",
+    "warn": "stderr and dedicated console.warn; equivalent output to error but distinct source function",
+    "error": "stderr/newline/format and dedicated console.error diagnostics",
+    "assert": "Truthy does nothing; falsy formats through warn; distinct empty/nonstring message prefix; no assertion throw",
+    "dir": "stdout inspect with options/customInspect false by default, precise option spread behavior; no extra string inspection",
+    "dirxml": "Prototype function aliases log; separately bound per instance/global; no XML formatter",
+    "trace": "Formatted stderr and real captured stack excluding wrapper",
+    "count": "Per-console Map labels/coercion/default, increment/output/trace count; Symbol rejected",
+    "countReset": "Map delete/missing warning/trace zero; preserve source has-before-coercion edge",
+    "group": "Print current-indent label then add configured width; multiline output indentation",
+    "groupCollapsed": "Prototype alias group then independent binding; same output/state",
+    "groupEnd": "Remove one indentation step, clamp via target string slicing",
+    "time": "Per-console monotonic hrtime Map/unique label/default/coercion/duplicate warning/trace begin",
+    "timeLog": "Preserve timer, elapsed human units/additional data/missing warning/trace instant",
+    "timeEnd": "Elapsed output then delete timer/trace end; missing/default/coercion behavior",
+    "table": "Properties array validation; real object/array/typed/Map/Set/iterator rows/columns/inspection/Unicode width; primitive log fallback",
+    "clear": "TTY stdout and TERM != dumb then cursor/clear sequences; non-TTY/dumb correctly no output",
+    "profile": "Global VM inspector extension, not Console.prototype; inactive silent, active actual CPU profiling and session ownership",
+    "profileEnd": "Global inspector extension; stop named/latest CPU profile and publish actual profile",
+    "timeStamp": "Global inspector extension; active timeline event, inactive silent output",
+    "Console": "Callable/new legacy streams or options; validation/errors/defaults; weak per-stream option Map/color policy; method binding/subclass/metadata/instanceof marker",
+    "Console.prototype": "Ordinary constructor prototype with enumerable methods assigned from object; symbol private helpers metadata; inherits normal Object operations",
+    "Console.Symbol(Symbol.hasInstance)": "Well-known custom instance check on private marker; global Console instance relationship despite different prototype chain",
+    "Console.Symbol(Symbol.hasInstance).prototype": "Target ordinary assigned function retains its own function prototype descriptor; no independent class export",
+    "context": "Undocumented native namespace extension: named unique VM console context with VM console methods, not Node stream Console; scope/engine mapping retained question",
+    "createTask": "Undocumented namespace inspector async-stack tagging, nonempty name, branded run callback/result/throw and weak cancellation",
+    "createTask().run": "Call fn with undefined receiver/no args, return/throw propagated; actual scheduled task start/finish pairing and illegal receiver/name/function errors",
+    "[module/default/global identity]": "Module equals guest global namespace with Console; special empty prototype layer, copied/bound descriptors; ESM/default through real loader",
+    "[write lifecycle]": "No stream ownership/close; ignoreErrors policy for sync/async errors and listener cleanup; overflow and formatting errors propagate as target; backing stream controls sync/async",
+    "[global log byte path]": "Use shared formatting/stream owner and preserve full strings including embedded NUL; actual guest fd output not outer host console",
+    "Symbol(Symbol.toStringTag)": "console tag: nonwritable, nonenumerable configurable own property installed in bindProperties",
+    "_stdout": "Retained undocumented stream owner metadata; global lazy accessor/setter, instances eager data property; ordinary supplied stream, not owned/closed",
+    "_stderr": "Retained undocumented stderr stream owner metadata and lazy global routing",
+    "_stdoutErrorHandler": "Retained undocumented async error callback ownership; nonenumerable/writable/configurable",
+    "_stderrErrorHandler": "Retained undocumented stderr error callback state",
+    "_ignoreErrors": "Retained undocumented boolean-normalized ignore policy state",
+    "_times": "Retained undocumented per-console Map; independent timer state, not prototype-keyed object"
+  },
+  "capturedDescriptors": [
+    {
+      "path": "log",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.log"
+      ]
+    },
+    {
+      "path": "info",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.info"
+      ]
+    },
+    {
+      "path": "debug",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.debug"
+      ]
+    },
+    {
+      "path": "warn",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.warn"
+      ]
+    },
+    {
+      "path": "error",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.error"
+      ]
+    },
+    {
+      "path": "dir",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.dir"
+      ]
+    },
+    {
+      "path": "time",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.time"
+      ]
+    },
+    {
+      "path": "timeEnd",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.timeEnd"
+      ]
+    },
+    {
+      "path": "timeLog",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.timeLog"
+      ]
+    },
+    {
+      "path": "trace",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.trace"
+      ]
+    },
+    {
+      "path": "assert",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.assert"
+      ]
+    },
+    {
+      "path": "clear",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.clear"
+      ]
+    },
+    {
+      "path": "count",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.count"
+      ]
+    },
+    {
+      "path": "countReset",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.countReset"
+      ]
+    },
+    {
+      "path": "group",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.group"
+      ]
+    },
+    {
+      "path": "groupEnd",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.groupEnd"
+      ]
+    },
+    {
+      "path": "table",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.table"
+      ]
+    },
+    {
+      "path": "dirxml",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.dirxml"
+      ]
+    },
+    {
+      "path": "groupCollapsed",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.groupCollapsed"
+      ]
+    },
+    {
+      "path": "_stdoutErrorHandler",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console._stdoutErrorHandler"
+      ]
+    },
+    {
+      "path": "_stderrErrorHandler",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console._stderrErrorHandler"
+      ]
+    },
+    {
+      "path": "_ignoreErrors",
+      "kind": "boolean",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console._ignoreErrors"
+      ]
+    },
+    {
+      "path": "_times",
+      "kind": "object",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console._times"
+      ]
+    },
+    {
+      "path": "Console",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console"
+      ]
+    },
+    {
+      "path": "Console.prototype",
+      "kind": "object",
+      "enumerable": false,
+      "configurable": false,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype"
+      ]
+    },
+    {
+      "path": "Console.prototype.log",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.log"
+      ]
+    },
+    {
+      "path": "Console.prototype.info",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.info"
+      ]
+    },
+    {
+      "path": "Console.prototype.debug",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.debug"
+      ]
+    },
+    {
+      "path": "Console.prototype.warn",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.warn"
+      ]
+    },
+    {
+      "path": "Console.prototype.error",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.error"
+      ]
+    },
+    {
+      "path": "Console.prototype.dir",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.dir"
+      ]
+    },
+    {
+      "path": "Console.prototype.time",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.time"
+      ]
+    },
+    {
+      "path": "Console.prototype.timeEnd",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.timeEnd"
+      ]
+    },
+    {
+      "path": "Console.prototype.timeLog",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.timeLog"
+      ]
+    },
+    {
+      "path": "Console.prototype.trace",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.trace"
+      ]
+    },
+    {
+      "path": "Console.prototype.assert",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.assert"
+      ]
+    },
+    {
+      "path": "Console.prototype.clear",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.clear"
+      ]
+    },
+    {
+      "path": "Console.prototype.count",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.count"
+      ]
+    },
+    {
+      "path": "Console.prototype.countReset",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.countReset"
+      ]
+    },
+    {
+      "path": "Console.prototype.group",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.group"
+      ]
+    },
+    {
+      "path": "Console.prototype.groupEnd",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.groupEnd"
+      ]
+    },
+    {
+      "path": "Console.prototype.table",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.table"
+      ]
+    },
+    {
+      "path": "Console.prototype.dirxml",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.dirxml"
+      ]
+    },
+    {
+      "path": "Console.prototype.groupCollapsed",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.groupCollapsed"
+      ]
+    },
+    {
+      "path": "Console.prototype.Symbol(kBindStreamsEager)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.Symbol(kBindStreamsEager)"
+      ]
+    },
+    {
+      "path": "Console.prototype.Symbol(kBindStreamsLazy)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.Symbol(kBindStreamsLazy)"
+      ]
+    },
+    {
+      "path": "Console.prototype.Symbol(kBindProperties)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.Symbol(kBindProperties)"
+      ]
+    },
+    {
+      "path": "Console.prototype.Symbol(kWriteToConsole)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.Symbol(kWriteToConsole)"
+      ]
+    },
+    {
+      "path": "Console.prototype.Symbol(kGetInspectOptions)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.Symbol(kGetInspectOptions)"
+      ]
+    },
+    {
+      "path": "Console.prototype.Symbol(kFormatForStdout)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.Symbol(kFormatForStdout)"
+      ]
+    },
+    {
+      "path": "Console.prototype.Symbol(kFormatForStderr)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.Symbol(kFormatForStderr)"
+      ]
+    },
+    {
+      "path": "Console.Symbol(Symbol.hasInstance)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": false,
+      "writable": false,
+      "apiObservationIds": [
+        "console.Console.Symbol(Symbol.hasInstance)"
+      ]
+    },
+    {
+      "path": "Console.Symbol(Symbol.hasInstance).prototype",
+      "kind": "object",
+      "enumerable": false,
+      "configurable": false,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.Symbol(Symbol.hasInstance).prototype"
+      ]
+    },
+    {
+      "path": "profile",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.profile"
+      ]
+    },
+    {
+      "path": "profileEnd",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.profileEnd"
+      ]
+    },
+    {
+      "path": "timeStamp",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Console.prototype.timeStamp"
+      ]
+    },
+    {
+      "path": "context",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.context"
+      ]
+    },
+    {
+      "path": "createTask",
+      "kind": "function",
+      "enumerable": true,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.createTask"
+      ]
+    },
+    {
+      "path": "_stdout",
+      "kind": "accessor",
+      "enumerable": false,
+      "configurable": true,
+      "get": true,
+      "set": true,
+      "apiObservationIds": [
+        "console._stdout"
+      ]
+    },
+    {
+      "path": "_stderr",
+      "kind": "accessor",
+      "enumerable": false,
+      "configurable": true,
+      "get": true,
+      "set": true,
+      "apiObservationIds": [
+        "console._stderr"
+      ]
+    },
+    {
+      "path": "Symbol(kBindStreamsEager)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Symbol(kBindStreamsEager)"
+      ]
+    },
+    {
+      "path": "Symbol(kBindStreamsLazy)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Symbol(kBindStreamsLazy)"
+      ]
+    },
+    {
+      "path": "Symbol(kBindProperties)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Symbol(kBindProperties)"
+      ]
+    },
+    {
+      "path": "Symbol(kWriteToConsole)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Symbol(kWriteToConsole)"
+      ]
+    },
+    {
+      "path": "Symbol(kGetInspectOptions)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Symbol(kGetInspectOptions)"
+      ]
+    },
+    {
+      "path": "Symbol(kFormatForStdout)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Symbol(kFormatForStdout)"
+      ]
+    },
+    {
+      "path": "Symbol(kFormatForStderr)",
+      "kind": "function",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Symbol(kFormatForStderr)"
+      ]
+    },
+    {
+      "path": "Symbol(counts)",
+      "kind": "object",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Symbol(counts)"
+      ]
+    },
+    {
+      "path": "Symbol(kColorMode)",
+      "kind": "string",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Symbol(kColorMode)"
+      ]
+    },
+    {
+      "path": "Symbol(kIsConsole)",
+      "kind": "boolean",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Symbol(kIsConsole)"
+      ]
+    },
+    {
+      "path": "Symbol(kGroupIndentWidth)",
+      "kind": "number",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Symbol(kGroupIndentWidth)"
+      ]
+    },
+    {
+      "path": "Symbol(kGroupIndentationString)",
+      "kind": "string",
+      "enumerable": false,
+      "configurable": true,
+      "writable": true,
+      "apiObservationIds": [
+        "console.Symbol(kGroupIndentationString)"
+      ]
+    },
+    {
+      "path": "Symbol(Symbol.toStringTag)",
+      "kind": "string",
+      "enumerable": false,
+      "configurable": true,
+      "writable": false,
+      "apiObservationIds": [
+        "console.Symbol(Symbol.toStringTag)"
+      ]
+    }
+  ],
+  "sourceFiles": {
+    "doc/api/console.md": "bc2e0cd59d0d6e9a62ca26e1417cef8ca60f5ef6adf24646cf98917e8ce33e1f",
+    "lib/console.js": "5a90c73a304c10ef51adf6c82e25b757f567eaff5e007093a2ca4fe05c309044",
+    "lib/internal/console/constructor.js": "8bd0572039fd9ce33e432ad25897f01218d58dc9d3a6a0d5f79d793bba0cf674",
+    "lib/internal/console/global.js": "3822573834e98586cf342c37ff92e0b03eeefdb859e15f722e324b062ff04a0e",
+    "lib/internal/util/debuglog.js": "60de509a07a474fdf76d8c86dd5103e0126c431e6965a755fef4ccb5843501e8",
+    "lib/internal/util/colors.js": "f6b6702f24abe359726f05115767142148bcd5f87b84896dab47488db08af516",
+    "lib/internal/readline/callbacks.js": "af9b691f147976bca019361b7be1095c7ef8c059353cd948e518327f2b3d6f8f",
+    "lib/internal/cli_table.js": "02ef9145e420038d2f82966da3ac3ddade577fb431e5951bd7f6f1fabf21e756",
+    "lib/internal/util/inspector.js": "7b4f4143c330634416f6868938b49152d3bc8ab23d32886653fcf1b7b831dd42",
+    "src/inspector_js_api.cc": "b5de7ed99efbf4c14b263b50240ab2b98dde9f38c2883362adf192a040cd2714",
+    "deps/v8/src/builtins/builtins-console.cc": "ed5b4ad6a2a67f3e6e6846991e6a8a7a6550d401e618d9eeac66cfad100ac501",
+    "deps/v8/src/inspector/v8-console.cc": "07201aeaa51f7ddfb19ceeafba793f4a02dc922e2af92e7ef45dac56292cc111"
+  },
+  "publicSourceReviewComplete": true,
+  "dependencyAuditsComplete": false,
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

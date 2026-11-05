@@ -1,0 +1,1370 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/abort/test-zlib-invalid-internals-usage.js",
+      "sha256": "9c9a0d86dc194612e0a3a3aad60ccf1a1ca5b795d11ece26e8b5d70db48119a1",
+      "category": "abort",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/async-hooks/test-zlib.zlib-binding.deflate.js",
+      "sha256": "5826e9bab394888d483ad5dbe483291804f997e1fbed7d6fddce5df84bc0ba89",
+      "category": "async-hooks",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/benchmark/test-benchmark-zlib.js",
+      "sha256": "bbee8717d6a49903c9695ca061ebf8fb2b590b2ff3d2ee89a6e59975b31da188",
+      "category": "benchmark",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/module-hooks/redirected-zlib.js",
+      "sha256": "d8efbf735b53471d2cb14df03ed738e784d5bbb7fad5ae68d8d19654f93edbae",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/module-hooks/redirected-zlib.mjs",
+      "sha256": "a4335b9a0b35ef2c4fd71548092fb0c4f3abb18b58573e78d656049c7a723da8",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/snapshot/decompress-gzip-sync.js",
+      "sha256": "af58a443b417d1570b7fe35212e2bbbef9e64573526bddfd6d9c49b5943d84f0",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/compression-bad-chunks.any.js",
+      "sha256": "8c4a4b645d0e779c23c6df63492b720047231a5e350b652c95d84a26febb11cf",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/compression-constructor-error.any.js",
+      "sha256": "a968549b34d389468a507fed586d8523161a321a0eea1b2774cad80cbbb41a69",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/compression-including-empty-chunk.any.js",
+      "sha256": "664669ed1b1b656892f1e43e6870e2e9c3953566db8c8f8b43f5b1b9bd4d32f6",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/compression-large-flush-output.any.js",
+      "sha256": "0591e3d85c52960a72dbd29b40c67d1e18e36c22a1d904fbfcb70d7df321c274",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/compression-multiple-chunks.any.js",
+      "sha256": "36a0b6f817ad185e20afd1e17a4b62e3310b759bf26115bb6ed40699be833b58",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/compression-output-length.any.js",
+      "sha256": "0b9881dff2e4c3b9ef60708c40da2cbf7454185826c78f2687e3198ced1b0977",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/compression-stream.any.js",
+      "sha256": "847dcb9f11da1f006cc373fcca62bcd596e0003757ab62bd9056831ac98b9a8e",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/compression-with-detach.window.js",
+      "sha256": "1a17ee87ebaa558dfe97ae0c5350ebb2a08f88cb304a5dbe5429bf0bfe96432d",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/decompression-bad-chunks.any.js",
+      "sha256": "0382b0f22e8c80a014668b4c5322a9251c5b97cdbb3a5e51b1f258ef6e67e22b",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/decompression-buffersource.any.js",
+      "sha256": "10ddd5c2047a7c7217ce594feb56a8609bb41c9452856f62ebf80920959a07f1",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/decompression-constructor-error.any.js",
+      "sha256": "04c440e718d34549aaf136b9b6b2b9dfb7dd7d875ee0ce3ceb6091209dccd3de",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/decompression-correct-input.any.js",
+      "sha256": "84a36ea95b8ca9a260b74ae848118ea7d9d2e13c815104015da8e47183181c6c",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/decompression-corrupt-input.any.js",
+      "sha256": "225ce1041e2b363672bfdb5e6babcbfa885630e2bfa5bad460d192ffe9409995",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/decompression-empty-input.any.js",
+      "sha256": "afa4fbf157df9c882c0a2c86b8ac3b979550db199e32e4c60dbb88e470754b4c",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/decompression-extra-input.any.js",
+      "sha256": "5142fc1051d9f9956497434d103f6dbb5894ad27eac046ae22f36cd114fd3035",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/decompression-split-chunk.any.js",
+      "sha256": "23d1b20a0b77b7656eb3c743a01d4aadfb3820296a8a8f11e4152c2c2c51189d",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/decompression-uint8array-output.any.js",
+      "sha256": "4541ef21b5afb6fbc619dd1e5979e5590499f74a6cdb9ede2dbc245cd130524c",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/decompression-with-detach.window.js",
+      "sha256": "85485ae91560aaea9859e0fc2451d96bf9099bd06102999aebce6ef3424ba049",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/compression/resources/decompression-input.js",
+      "sha256": "b86fff0a0b52133cc20d175d48ea89c29db4a5c016f5c81e19ad9a3ff68c096f",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Fixture/helper/native source, not an independent executable case",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-compression-decompression-stream.js",
+      "sha256": "bd07a9f3b3c63d69c93d558f6f996f42b8412a4176a347b461fe2c75ddd40505",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings --expose-internals"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-quic-certificate-compression.mjs",
+      "sha256": "d2129581a7fde4efcf49b029bfc02650a73d4d6e051e5c04468159088e3dcafb",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-quic --no-warnings"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-snapshot-gzip.js",
+      "sha256": "0814b6eaf42c75ef61d73f7a645bd4498e24f4c614e75c13d7d6a7f624567cc9",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-tls-certificate-compression.js",
+      "sha256": "f7b5f2a59e46ec6dce8480d5eef70c90b9e54088852f6e639852d153522e94b8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-vfs-zip-provider-commit.js",
+      "sha256": "8832f9bc7f23bc5692f8f7d0025bf72aa46165d5c137b607d12e99b518301ead",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-vfs"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-vfs-zip-provider-dispose.js",
+      "sha256": "87cf6c9ab97d56c5afb168defe10a5ab385bacfde942038cf4d7f23a71cb86f7",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-vfs"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-vfs-zip-provider-handle.js",
+      "sha256": "5af9b7d60b148ba48c1d784f0eae221a77875c663a912d15ad0961958fb16043",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-vfs"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-vfs-zip-provider-readdir-recursive.js",
+      "sha256": "b17cfaa748ab1522b0c652dbffcfc3fe6770da46f5d6ade416c7b111ba5a7660",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-vfs"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-vfs-zip-provider.js",
+      "sha256": "fb192b44389ef5f2d6c689ee40c1c9912b88f422bc8b5fee2dcd76959ebfbfc5",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-vfs"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-webstreams-compression-bad-chunks.js",
+      "sha256": "5eb98ac3f629b052439ade5b3f2e1f96e7362ca25bcb6b7be01ff6d7a58d5b4a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-webstreams-compression-buffer-source.js",
+      "sha256": "8329eba5e500cce7d421526ed0b8f4eb4639f7f7246c76de3a038479cc991220",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-webstreams-decompression-reject-trailing.js",
+      "sha256": "0cb15d68b76a6732fdaab76491b4df2cca6c8633c33de2466597741e72522cc0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-whatwg-webstreams-compression.js",
+      "sha256": "2dc4a64a27781b6e6c1e691d2633ac6b07448668e03118850faebf344fa18f64",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-brotli-16GB.js",
+      "sha256": "b38b534296bb8e8e41e2cc4178df58e56a1d6929f399147bc842e63927312cfd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-brotli-dictionary.js",
+      "sha256": "4ed378c2cf2f416665e129f5024b03415b0d1244b9352a49ddf7833d78973dc4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-brotli-flush-invalid-kind.js",
+      "sha256": "394f8b32e5a813866a53910959a81010796b34fcad4d28fc3bddb80c03c54a88",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-brotli-flush.js",
+      "sha256": "a3e3cc2981e37905b4844e4d837617701b27c7f9bf4f9cb7be4b7aab236be78f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-brotli-from-brotli.js",
+      "sha256": "9742778395840b531d199b2c64d00efc832aa376465014970407f31219078a19",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-brotli-from-string.js",
+      "sha256": "289678f374d6ccc2ad136016e16b94fb4b95820f3d67fff01e67da203cae6f54",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-brotli-kmaxlength-rangeerror.js",
+      "sha256": "e282e90f6e2b6df1358b3d3119de444aba29fd7852622e78f326f6224d3742d0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-brotli-reset.js",
+      "sha256": "9376fee373cbf2f3728bbdc8cca45fba6d6f21dfb815e00cfc37bb020fc61032",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-brotli.js",
+      "sha256": "b967c0f130c415d9306b67f265e4203ded70463778c43e55f68a20abcb0b3ff1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-close-after-error.js",
+      "sha256": "4e83cddf1b1dfa27a54dac1b5e5f701bf125a7e5a2d850480737b87437bd8129",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-close-after-write.js",
+      "sha256": "2725e1cf19ea00835a944572360b571e305e91e05f08e8c0add4e70a407eee2f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-close-in-ondata.js",
+      "sha256": "02bbaf6dda8c340e9104f4201290fe41a85de99d2b7d5d8059cfdd09d71bf221",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-const.js",
+      "sha256": "8c06894eb2e0832d4935b0dea72712cd6d4f7c7485188e19fafd44ecdf7c856c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-convenience-methods.js",
+      "sha256": "68d95f2f5050e7669771cbc66ae7d2153cac850e1a0e715943255b7aba43b35f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-crc32.js",
+      "sha256": "4843610cef33bf352e2e9c8fc9b6368bafd6178d7891214000fa0035c451ee0a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-create-raw.js",
+      "sha256": "854b01d874275f14aeb079fdcda96e128f418d89701421d28e5cfab3070e96b8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-decode-strings.js",
+      "sha256": "de0f10157436e6d1640daa61a16bb15bfa3d09ebec472c66a5dda2fea5932237",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-deflate-constructors.js",
+      "sha256": "f450bb33076737662aca269cf89eecbc0e334b3c18f61312cb6911c1d852fac9",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-deflate-raw-inherits.js",
+      "sha256": "67d08b1ee349d949bf56542b85eed57e079a338a026340f4dfbd5b3790ec3432",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-destroy-pipe.js",
+      "sha256": "2bcc6c1ee981f60de13bacf09d70ac039c91ad290b01c9b718893c98cca65e7b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-destroy.js",
+      "sha256": "5d70e5f321acb778f41e992ea60840f9ec08549b7157651aac013434fea012bd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-dictionary-fail.js",
+      "sha256": "4d00ffedff48c1f38a53184499a49cb211f7fdbcc5367777ba1bd6a0af740377",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-dictionary.js",
+      "sha256": "a2a78fbf308b490778b1732e7b40b158183a2ba21454f4cbb5587bc67eb3a102",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-empty-buffer.js",
+      "sha256": "d76d22af54cbdc112e1d99eea3d47e362967de7372662c74d84512407d6ab7dd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-failed-init.js",
+      "sha256": "62f01c36d1ff4a837d430be3e8e07cb59b178c3eb2be552a4444afdfd9fae295",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-flush-drain-longblock.js",
+      "sha256": "36b791c01b9c9155bec1d9724c5f3fff22c095521d60213eb71586b348817551",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-flush-drain.js",
+      "sha256": "c652e3300895d4fcb6049c428dfa83dbfb9e4f3102a11f28a9c5f1f72da7c3a2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-flush-flags.js",
+      "sha256": "be0b2f83a1fa0c5cc8710f08651e39dc3fe508f43f47f51ad6950206eee5fa17",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-flush-write-sync-interleaved.js",
+      "sha256": "7276dd274ce74e9195f0426818915fc902f11e408eaba578fb2a0c4454353bc5",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-flush.js",
+      "sha256": "c93d23a8f7dde93f53386d8b56cdf46b55756327a5418b4e50c66bc1d8c0d351",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-from-concatenated-gzip.js",
+      "sha256": "12fd4932caa3c8894c1dca6bac26335bbceb05390ece7c898662f38da8ccca73",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-from-gzip-with-trailing-garbage.js",
+      "sha256": "5b99de86a8f1c6da0116876b64f1c88cc687df5397ef085eeaa50e90615403e7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-from-gzip.js",
+      "sha256": "b8417b4c6b21b0ff294b4fbe3cb926584ce23b90d8ccb98e6f1c4284ec44b6e2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-from-string.js",
+      "sha256": "710df25a808bf39929b964730aee798cc453b4f0c1d618bd0b547e1b675b2a08",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-invalid-arg-value-brotli-compress.js",
+      "sha256": "ce3a9834054fbc0da8b1af3268a8a468b216f7ef209a43ba9c00e70fb2a5faa4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-invalid-input-memory.js",
+      "sha256": "2002f51c9df37a54afcca532237c72cc7b6faa90e9c196891804b727815a6246",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-invalid-input.js",
+      "sha256": "e1b4609729f74568f3525e4e9c84e1441003e75364c2ab9670b4f97a7cda9b4f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-kmaxlength-rangeerror.js",
+      "sha256": "752ee06c92feb421fe6e46c6462829624528370d8532cab86751b46107dffcbd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-maxOutputLength.js",
+      "sha256": "2be56547b74e394e2b8d6996b5313f45fe7863f9f502da0ffbfac0bd7778e353",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-negative-zero.js",
+      "sha256": "86d61f1c2062d71d3a27656fb2ee7188f8ee13f8419c61f06208b204f3ab6ba7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-no-stream.js",
+      "sha256": "afdeeebc4fa1c75751ec4b3afa9134c0d6718ab7743c6e21ece299b353f00eda",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-not-string-or-buffer.js",
+      "sha256": "b99f3e4a4125776e1a3d1b4d1973ac80e617e513e1b7b4714c583d46ddffe403",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-object-write.js",
+      "sha256": "7dfb30438f855b4e35d8ce083d14093da7030fe3129921727ce1c863580f9791",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-params.js",
+      "sha256": "e4810cf8c7c8a8849d3ab967730a920595acbb74cc6520db5c5775be38908cad",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-premature-end.js",
+      "sha256": "7f6105855d4cb4dbc5219a8795287672978a45974e461773d65864c326316bef",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-random-byte-pipes.js",
+      "sha256": "d7fa5e6fa125f204eab6f3d1efe46778fd207df116d48abb85da6d58116b80e7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-reject-garbage-after-end.js",
+      "sha256": "693fe9feac34a2d21a2203300393f4740c7a089dce1e4edef9843c079560a2ff",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-reset-before-write.js",
+      "sha256": "0b3df7b300700cb19f7099e10813440ad8a98e6c425c9fa5dbe54061158bb978",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-reset-during-write.js",
+      "sha256": "8b10900688471580e8d44dbe7bd45bfea874d20d76c1e3fbf9b2ac30b741d4d1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-reset-incomplete-output.js",
+      "sha256": "6b8d03fb9195b2fb40d8f9631d5f3ffc51ed35cb07cf3f4818582a3e49ea0e83",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-sync-no-event.js",
+      "sha256": "26e7b01bfd0c894e8a1ef75ac6f6469d758ebbdd04f159b3aca55ed700395e30",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-truncated.js",
+      "sha256": "8591ed09eca2324867a722198e043c413e71e02e6e6595012f6b7fc34819c4d0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-type-error.js",
+      "sha256": "f1100a3a2040d4c686ce6b821f8ad19c0eb7d0caea3983afe556a3f525a58d7f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-unused-weak.js",
+      "sha256": "e84334e89ab64d924c38d7f9f82e228bcce6bf134501aee6ff93335cdb3e92e5",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-gc --no-concurrent-array-buffer-sweeping"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-unzip-one-byte-chunks.js",
+      "sha256": "6bb18e6da139c6161b44d65f764e132b5f30a73b3c463f1eb0fedf78d5d0ca4e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-write-after-close.js",
+      "sha256": "f0d81fae2c8abe050025e4078e80ce2dd0b39c1d9ef47546fad858988e91a7b3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-write-after-end.js",
+      "sha256": "34ae2a6489305c1be94fc0ae5110414284d793c2549ac03c4c83a8d3a64942db",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-write-after-flush.js",
+      "sha256": "baffbc402899bf8aaa30b219f1e072d11347eef4c1a30c29ae77e4859d6f0b4b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zero-byte.js",
+      "sha256": "37f39e254aa391491f2a8d1220870c72649c0c44673d13ac2a47eca827a54096",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zero-windowBits.js",
+      "sha256": "be02791fcc7288eaa6dbdf2386e4eaf89a7eb1f5e5a749f52d24238372b6ec4b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-coverage.js",
+      "sha256": "cb655d48a65350128125d940afec26a962ff33199e8fbba466d2fa4d705597e7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-edgecases.js",
+      "sha256": "7d58d6bec7b490df578c3e9918e0a6820d102a4151b56e07fceaa2a9677ffcf7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-encoding.js",
+      "sha256": "3aa8dc3d95bd095e4448699766caf249cfb1b4c0a2d55abc02d18df01f55a1a8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-experimental-warning.js",
+      "sha256": "a0a56ed44db53e56f8e32f91586949303e59fee7fc5343276e36cd1609100b97",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-file-lifecycle.js",
+      "sha256": "77dbe772564ac3bd0b3bbd93b7f42c777bf9d68cba186c8244fee9641af18d8d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-files.js",
+      "sha256": "daba35d5828a5cc738f0365c519287aeeb28230abaebb0386a2d0f00cb03e4c2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-fuzz.js",
+      "sha256": "0b193bf18a7d0a44369341132349cbb3a77ddf4c034bf3102f32fc2b988e75b4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-hardening.js",
+      "sha256": "a77f7086fcc0da730ff02f1453b576bac5b07636054982ab8a1a7aa0a269ff9b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-internals.js",
+      "sha256": "322dace5ee0394a90a0bd33f4afffe041f35bc0dd5fb59791bf2515694a4c379",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-interop.js",
+      "sha256": "afb2005781facd5fe8b904368004b7b8f0e53c447f6a15d1d159255643f44f01",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-metadata.js",
+      "sha256": "70f5751d796b6b726738443b945117a9fd8c64ecf775b8fd78d01bc2a97f36ac",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-property.js",
+      "sha256": "3d0606f11c7c9acc943cada4d9136178f0486363d455e2e5d97cb1306efbef29",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-security-hardening.js",
+      "sha256": "6b5805fd80e26362e220eadce477b1ff54f4085d3c4132c2b3a7a3fc2729dd8f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-security.js",
+      "sha256": "d8ca69679c6cbf73c09336861fb6742b4b4993efb6f5801e6e468f1e70738c93",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-sync.js",
+      "sha256": "99bc5dc09da8a57727f8a7cd8695ddd4311646efd39744f73988646dcd72977e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-vfs.js",
+      "sha256": "4943b87b59590b3228612fcd818d3a6254dba168edb2208a958aa2db58d3effd",
+      "category": "parallel",
+      "declaredFlags": [
+        "--experimental-vfs"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-writable.js",
+      "sha256": "ed53498a48008baae4f78e72b54c39bb969b2fbdbb02554817be2ab3623f8359",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip-zip64.js",
+      "sha256": "b02a9f6156ef3795974f9dbf393ba070ce79dec43d7e15e1a5a2404be08a4d0b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zip.js",
+      "sha256": "cd0013ff438bddbea2eae68628759094811df3a9e8b4cdce09839bfc94198a3b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zstd-dictionary.js",
+      "sha256": "ca7424613e812af07eb25585556ec60b12616d744b549f33c0b0f50102ffa68c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zstd-flush.js",
+      "sha256": "b54105dd343c36f47cf0cf4f7ff87fb94d1f815711599da9a87548dc29a843e1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zstd-from-string.js",
+      "sha256": "accd98f8dec351752c6a5c9b89b6f53d7772e5663e7677954bd1b447d30f3948",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zstd-from-zstd.js",
+      "sha256": "068108bceae2557c7e2d00ae48c2608dba6b9e42dc49c31f5869b60b1b1d75b6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zstd-kmaxlength-rangeerror.js",
+      "sha256": "d1cbb5b7e076ae7d2bb5762d36a62bb08d0960e8e02acb55be2facf99f2ec933",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zstd-pledged-src-size.js",
+      "sha256": "581551c9e5f24b9da7754fd1655a6ea6df1014b64f3208b8e28d83d2399d2dba",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zstd-reset-incomplete-frame.js",
+      "sha256": "c379b76309ed07b23cc41fcf7907a3bbf2cff307717ed9ed59555d09f40acff7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zstd-reset.js",
+      "sha256": "d4c7daa64df35f31d2003ccb030d34ad5cb614ecf57f4b7ed1d89ceaab585330",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib-zstd.js",
+      "sha256": "fe88f8336be6e7852a63f053c1dbfe8b182e1c3bdb26e27d527c88921f33c2c6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-zlib.js",
+      "sha256": "fddbf1cf4b55fb597224af04036017444943ed60eb0b5e2aebc176ba12a723c7",
+      "category": "parallel",
+      "declaredFlags": [
+        "--no-warnings"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/pummel/test-heapdump-zlib.js",
+      "sha256": "a56c6beb9dc6d769b8ddcc94cb6168ccbdd15e37c6f4be3e5806d8b141fba4fd",
+      "category": "pummel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/pummel/test-heapdump-zstd.js",
+      "sha256": "7c690d71f0158d4801cfe70f78aa5a747eb69716b2e7156df1c25cc8ee84e5fc",
+      "category": "pummel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/pummel/test-zlib-zip-slow.js",
+      "sha256": "c11c9f3bec6121d232c568550e957d783ac294571d9c4c4d21ede08abf1dd414",
+      "category": "pummel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-vfs-zip.js",
+      "sha256": "cab31395f5f7be5d6b1c5fa21cd495522d87a4e878b32e4027c94602c423400c",
+      "category": "sea",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sequential/test-zlib-crc32-fast-api.js",
+      "sha256": "73ed7fc225148ac68104abaf214826929a4d88a851696d4e0feb310bf6761c8a",
+      "category": "sequential",
+      "declaredFlags": [
+        "--expose-internals --no-warnings --allow-natives-syntax"
+      ],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/wpt/test-compression.js",
+      "sha256": "a5556a5446f083faf336e995224416060c02e8305ed2933cd706b1125d17ff9a",
+      "category": "wpt",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "role": "Future unchanged candidate; launcher/subtest/variant and platform applicability still required",
+      "requirements": "Exact native pin and actual guest codecs/flags, dictionaries/vectors/GC/stdio/fd/file/network/realm/worker/resource fixtures and WPT resources/variants. ZIP-007/008/009/011/012 native controls; preserve all statuses.",
+      "status": "Unrun in audit"
+    }
+  ],
+  "scope": "Source selection aid, not executable-case/assertion/subtest/variant denominator or completed fixture applicability selection; no test or discovery source executed.",
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

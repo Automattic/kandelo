@@ -1,0 +1,558 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/embedding/embedtest.cc",
+      "sha256": "57f5dc8c0b98cb029a9bbcc855c6b1604962f4b9964e437eb9cf07d3cafd3f85",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Native fixture source; not independently executable test",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/shared_embedtest.cc",
+      "sha256": "941c7a82e485a560f76b3340d8e5b27aa7c65ae82627bf44803c64b026c85018",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Native fixture source; not independently executable test",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-builtin-code-cache-harvest.js",
+      "sha256": "18b9ad2cee511cad42cb56f436db12bb44d6bf578122dcfa41a09594c4fea973",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-create-require-fs.js",
+      "sha256": "94a7b07b7981a9f21924cbe5be018121f5df17f9026f4143eaca8e479b3e4a52",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-create-require-internal.js",
+      "sha256": "89a9f06c5020f5eb13d09e4203a1e3a49b57799ca2be6cf03810be22b0a7364d",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-disable-node-env-vars.js",
+      "sha256": "ed737d7bc781c6b773c0e3f670bf1e31d14a7017aadf185a26d76a5f2dd1c6d9",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-exit-code.js",
+      "sha256": "332d995a948aa56d063b77c8bb395b2a0e7a8eff8fbd4ffcc2f2e7b723140b04",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-load-environment-basic.js",
+      "sha256": "8f32555bd0b8db5407912c31b6417871a37f94e4e84217e5553b29d8a3d4cf38",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-load-environment-utf8.js",
+      "sha256": "1b89a2a404fc5ac2f856f5870f36f4acea73706f8e82ef49690a5b1d3b9a6151",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-snapshot-as-file.js",
+      "sha256": "d9162725db70b087fe8a8081d2c08bd2810a2bbff055c725c52a46cb14c01b4e",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-snapshot-basic.js",
+      "sha256": "ca6653c11fb2cb636b8b4a97b86092f308221e9ddb45c393fb860e2dbdc9b0ac",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-snapshot-isolate-settings.js",
+      "sha256": "7124ebc3d21c940480f5c823def455ff2e076d8bdd45a0cda8b2c568dd1da314",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-snapshot-twice.js",
+      "sha256": "1e385fbcdca02c203a08dac80038cd6e58acf0163192c3d1ccc8f929cbf78167",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-snapshot-vm.js",
+      "sha256": "5e8034beac5a7d244732aef2bbd62fdc68ffec5e62abecc31f1599155f5366f6",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-snapshot-without-code-cache.js",
+      "sha256": "ca08f83bacc53e7a12fb23aa6324464eef84ca4696094f8406e9cfd10fcf8f53",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-snapshot-worker.js",
+      "sha256": "86f5a6cb19daac4d45d5907ce66e85f855ad4fb185b931a7d6451fd71dcd354e",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-throw.js",
+      "sha256": "bf8fe89530d91449fa854a4f56b670be791b716a59c864f1422a62c8c09b7dc3",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-embedding-trace-events-unavailable.js",
+      "sha256": "274e203cb34934f24d5a8d06f9b66d62d4a4a8bff8b1a72eca4791f4094a4c76",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/embedding/test-shared-embedding-v8.js",
+      "sha256": "74e3cfc4fbe2e02973ee8b1557843c8191592f573d520200d279d4239c329b68",
+      "category": "embedding",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-already-exists.js",
+      "sha256": "3fee31c39f00b3a17100e827d9c69ce94d82cb45aa80f42abee7378027b6e8db",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-config-not-found.js",
+      "sha256": "f6a07d47253f1edb4edf38dff5c4391966cc9e88a206b207d7adf6d7593d72b5",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-custom-argv0.js",
+      "sha256": "b3d4706c2ae66112d27b6db42e802d3e7f2fad458fb83ffefc64d9303051b1df",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-elf-segments.js",
+      "sha256": "398dfd3b9a1c26150f0c4f2ec775880931cbd5b6c4448ce00eb9f2258c5a0185",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-executable-field.js",
+      "sha256": "897688abebce38797845280afd7db3e98b2cdee1f3c3317d5b2c81e7751db5f3",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-invalid-assets.js",
+      "sha256": "3a04b620324cbdaec8b4bca6cb4478793a798b1fee843ca4e00b2d12c5d24e8b",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-invalid-boolean-fields.js",
+      "sha256": "3c5c21235f989f235dff1f2a8b0d824fbc5faf58bd6323d7229d1bb81feef88d",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-invalid-exec-argv.js",
+      "sha256": "b64a1afedb9858e2dee1d8ce7496c57fcbda916199c6d60c5546150e207c3809",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-invalid-executable.js",
+      "sha256": "5b3785729a4308e4a15dd7fbfd98ab8cd99a9c45e60e0ff51fc7642b1a4f3231",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-invalid-json.js",
+      "sha256": "e1ed1857ea040f0992b594172915a02836caaea921bf242bed8c3c68bb93aee3",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-missing-main.js",
+      "sha256": "34bb516a7f7f7e89624d65c99b4575a2adb0af9a7c0800be4325dc0c613294ec",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-missing-output.js",
+      "sha256": "700d1bda68fb9cfa086aba621554e137ef4279b1bf651f8179fd6e3b2024b5f6",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea-vfs-incompatible-options.js",
+      "sha256": "8ddbefc9799668353dd782cffae3c0073df387e535ab6857e87a5e7b5d7c8ca1",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-build-sea.js",
+      "sha256": "c8e1b4d753933d07316f2dbdd7c787d2b9b35440081b66d9b52b6b0a6c43f8ca",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-asset-keys-empty.js",
+      "sha256": "738d7d15c50edbef28fb6d8cb873d75f45cf6b578eab4f123dcff420efc52e5d",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-asset-keys.js",
+      "sha256": "1de2a005b0a580614434d203db1a98f0e4237b06d4ddd62339033a535f0798ce",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-assets-invalid-type.js",
+      "sha256": "19b1911fea2427ba5b91bd54bb48edc90752feaf61cc475770f0d54c0feeea5b",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-assets-nonexistent-file.js",
+      "sha256": "b8bd575d6aa1cfe3f94821ea8fa2e37df42e8ad320761a0ed5c74cf9160a86dd",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-assets-raw.js",
+      "sha256": "cd1f568b95963247413ce9c238d598633b1113b4865e5573bae4532fbb5f5008",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-assets.js",
+      "sha256": "6172163d697a889d0121883e18b85ac29cf54691d630a5fb51a616c3e582dbf4",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-disable-experimental-sea-warning.js",
+      "sha256": "85beab907bfc525e96e69382684b5bb62b6a560aefdb5b7511fe52bf25fbee59",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-empty.js",
+      "sha256": "cf9bc029cdef9d51fd68247361dec14aaaa87e8f15bdc70dba20dd884ee51076",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-esm-code-cache.js",
+      "sha256": "e92ca02a8d89bf0d5fcb410e5e2ddfd8d9b8c745d7be59b15aa453b6077afd5f",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-esm.js",
+      "sha256": "3d5cfbacf9e581245a986de433d5888d7856602870f3d5c1e2851bde555a5188",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-exec-argv-empty.js",
+      "sha256": "2c0d4c2a43c92d17692f1282731078a10705b41c05137c37c1e0924d02d22217",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-exec-argv-extension-cli.js",
+      "sha256": "f2b39de189a6b157c612114d802adc9fb5d2cedbadc23de94c851dada7ed1025",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-exec-argv-extension-env.js",
+      "sha256": "8fe30473ca77de9f7130862b7def068579fe0064620097c12db045819b16eee8",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-exec-argv-extension-none.js",
+      "sha256": "f7dfcd069c5ae0e0cb4340fa249994a2461d7370db010934273a0463ebb7e90a",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-exec-argv.js",
+      "sha256": "0979d77b960d1e7f80f9ca4524ad1ac7ca24edcc2a2738324636e75e29080f3a",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-inspect-in-sea-flags.js",
+      "sha256": "0b443c5592f8d154b17bc12cb9a315189b1d699f3f83d57c895e25b6b618e19a",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-inspect.js",
+      "sha256": "ec3d9b78997513585d853b103f821c0dd024cced5944265a868198c7e2ff9fcc",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-snapshot-and-code-cache.js",
+      "sha256": "df553f37cf02b21ff713cadb75a62dc086e6567682ee33ac8c0326cc209bcb3d",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-snapshot-worker.js",
+      "sha256": "90e0d74622eb806ec1530f0bbb8276b108e792621eb72d1216bfd99fa39105ff",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-snapshot.js",
+      "sha256": "7174d66dfdfedd03dc37d75d1a2ddd8697805037e46ef74f1e9e00ab9cbe8952",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-use-code-cache-dynamic-import.js",
+      "sha256": "638ce593c2c6c0a650bff28965888b475097aade831aff102a22a493458c324b",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-use-code-cache.js",
+      "sha256": "8904866d378295b4e5ba89f85a63a7caccc12ebd529efa707a77ab79ee0bfee6",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-vfs-esm.js",
+      "sha256": "a9f75b989cab181d12f899ebde46f52ac4d504a2a9b4637db2d79f35b31ff262",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-vfs-zip.js",
+      "sha256": "cab31395f5f7be5d6b1c5fa21cd495522d87a4e878b32e4027c94602c423400c",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application-vfs.js",
+      "sha256": "8e25fac0aa775094c8d15a5292c8a20e0028641e4695ff6f9506a8394281f77c",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-application.js",
+      "sha256": "5f9561e45bf48e548da5047aae8112a354afe0a34addf900e75ef44b7edd3a03",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-blob-config-errors.js",
+      "sha256": "81e46cd29dab28f71b83d258beb4f577d7245c1d14b9749ecfa264996d21f931",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sea/test-single-executable-blob-config.js",
+      "sha256": "a2d2b8e40da0da9c832dc01b8cf203bf8cc23c09f5cbff2be25f2ae4904eebc8",
+      "category": "sea",
+      "declaredFlags": [],
+      "role": "Unchanged future candidate; launcher/subtests/fixture applicability still required",
+      "requirements": "Native reference architecture and actually admissible guest artifacts, builder/format/signing/cache/VFS/GC/worker/preload/permission/loop fixtures; preserve skips/unsupported/harness errors",
+      "status": "Unrun in audit"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

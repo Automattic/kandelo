@@ -1,0 +1,1819 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/benchmark/test-benchmark-readline.js",
+      "sha256": "dd2ed87d10b72c1c398bb915e4d504b8e1f958a2cf802f50c472f2bf61114110",
+      "category": "benchmark",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/benchmark/test-benchmark-repl.js",
+      "sha256": "6eb5a7c9ad3f1629dd986c93178e53c4d438318eef59fa410cc5c5c0b69330a4",
+      "category": "benchmark",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/common/repl.js",
+      "sha256": "3520951a80a6b146158627e90a59537010ff4794487c653792d80eaa0fbde7b9",
+      "category": "common",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/es-module/test-esm-repl-imports.js",
+      "sha256": "2978dbbbad2f8cb3f266145b0b6673f2f23ce9b7a65c0486f67a026c3052cb88",
+      "category": "es-module",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/es-module/test-esm-repl.js",
+      "sha256": "c71ec577339892c8039b9750d59aa0861e73bbace6de32d42b39149e94b0702f",
+      "category": "es-module",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/external-repl-module.js",
+      "sha256": "5b33fb713bfdd3a02ce283fa87a617e112372e1dcbef822d4fd75ad8ba38abc5",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/repl-load-multiline-no-trailing-newline.js",
+      "sha256": "5ee384761abc7bdd2818fb4a6e4fd7dd0c5f6306cfb30540f6a7a9c1a9631a62",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/repl-load-multiline.js",
+      "sha256": "f4f14c01813459d3ace6d25f1195833c0f7a3d819b3060412c12395741297857",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/repl-pretty-stack.js",
+      "sha256": "465b1144543be70bf91136ed6d589f506d67153c0f5b5179aad4c420f729a22f",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/repl-tab-completion-nested-repls.js",
+      "sha256": "30ba38f11aaddaabbd2cef61a630ed76d25467955f314f6794625bd987e1a416",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/encoding/api-replacement-encodings.any.js",
+      "sha256": "0401e4275880ed9d652059d594fa382d4bf11d5e5bbb64b24b5aa238d9dd5e87",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/encoding/replacement-encodings.any.js",
+      "sha256": "fd9ea5ba1800676284553dc88aae23e66bbcbd7496dd545ced679757e63081a7",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/performance-timeline/not-restored-reasons/performance-navigation-timing-same-origin-replace.tentative.window.js",
+      "sha256": "a6a7f9114297a6a076ea9e6fc798a71b257f1646115092d1a12b53919b0b319b",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/service-workers/service-worker/resources/about-blank-replacement-worker.js",
+      "sha256": "5d1c8181a83408e0957742f738f7ada5f484bf1d2973ef948ef76d42e1a5e28a",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/workers/SharedWorker-replace-EventHandler.any.js",
+      "sha256": "6be7d03886cec7b7882e81bd6739cf5a914be7a8b2a2aff4cc9ac1b0f49a93c9",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/workers/Worker-replace-event-handler.any.js",
+      "sha256": "bd3c9650ce154c09907b4e0e55c073da6d37b23657dba424d3406e81aa5dffbd",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/workers/Worker-replace-global-constructor.any.js",
+      "sha256": "a4594caeae21a3b1b6984c24c324888a062f321a185e83a9b50f01f3afd22cad",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/fixtures/wpt/workers/Worker-replace-self.any.js",
+      "sha256": "85539eaa4956b165c3ac1ddc786cd8240dfe5a02a44baad55b8bd69e780a1891",
+      "category": "fixtures",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Fixture/helper source, not an independent case",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/known_issues/test-repl-require-context.js",
+      "sha256": "208a6d8f78954aad4aea2fd8e4095415881cfaa3489f72576839ae176c0544de",
+      "category": "known_issues",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-cwd-enoent-repl.js",
+      "sha256": "22dd642a77dd3afa06f1370b53930cc70f176e2d1b2129fceeef36f2b010b5bb",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-dgram-bind-socket-close-before-cluster-reply.js",
+      "sha256": "113afc69c497d5bb9e88ab49f91734d44c449aba757ba08f751fef05dec6d3d5",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-force-repl-with-eval.js",
+      "sha256": "6f38c4de8642427ff33be61f79663517f87c7083517143528074c02cb76389bf",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-force-repl.js",
+      "sha256": "44ce97104af44f6f7263ef4943a9c6e77fcaa18f254a1cdc0592bacb252c061d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-fs-promises-file-handle-readLines.mjs",
+      "sha256": "48655dae10e0deaadb644dc8e5ba9672fb6d4d895ccd4024a4e5f802c446dfe9",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-async-iterators-backpressure.js",
+      "sha256": "ca99cd12a6201d39de6bcbda17285ac3b7f7d5336644906956adec555f829c4b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-async-iterators-destroy.js",
+      "sha256": "71d8969912c30119c35edf2aa37d4d96cf3997f9aa56f9cb3bd3b0255a5996e0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-async-iterators.js",
+      "sha256": "1691ef614ff609ac2f2ace000ff8c7b030789af5726e2150d68cf8fa40384a88",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-carriage-return-between-chunks.js",
+      "sha256": "b42e54024ff46158ba87bc910c9c8f2ff6547f75a533ce82ffc953500eae9dec",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-csi.js",
+      "sha256": "dd6a9c21b5bc5b8e4f8b266542e03f66f72b696924f93f13e03ddc4c09065ddc",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-emit-keypress-events.js",
+      "sha256": "46827e3438c33a691eb746ed1b086491d71a2a2e3ee5bad6ce609706cc344810",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-input-onerror.js",
+      "sha256": "d2b1f54abbd292544a0d0f48a1bc023f82a3a7f441674690af5ea6641d9cbb9e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-interface-escapecodetimeout.js",
+      "sha256": "d041f43f941255acc8fac17fc4f230855552549a8f765a2e886918273e44028c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-interface-no-trailing-newline.js",
+      "sha256": "4b278304e9908cf3302b593b69f39aad9e9e5ab4061e1e4378a50f40b0e4627f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-interface-recursive-writes.js",
+      "sha256": "f92a8a7f8292e4a3f0a53506a46cbb18f93ac422a958e095c51c1830b1cc53af",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-interface.js",
+      "sha256": "faf8ba9afac0184ec5084025721075c3a078a1fba3f3d6db06a8d748c637e3e2",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-keys.js",
+      "sha256": "eda127f43e01352482895c95501c9f02a35ae76b802ba0c91191d3b9086d2bfc",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-line-separators.js",
+      "sha256": "c17e27f0fa1e4ff656946f057daaf8bf15dfd59a9999747d5b1536b4c44efbb6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-position.js",
+      "sha256": "53a121978252ffce56660bdb3a91fce646b17f682c2baca7a39b2b274c5a4623",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-promises-csi.mjs",
+      "sha256": "abd31bdefb699ecccb50541e2001c7e1d1f96084174a81fbff4f4f8e0c3113be",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-promises-interface.js",
+      "sha256": "e90980795f1bf6842e261af25820b4415178a472b7f51784ad13e71d8938f78d",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-promises-tab-complete.js",
+      "sha256": "b9df3c2169d4026a363afe8c73e3b11b682af5e142b122cac1a2970b46bf73df",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-reopen.js",
+      "sha256": "a9a40d77b0de8af1805cb4b088eada9a2fbecdd16900570b93504efccb765a48",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-set-raw-mode.js",
+      "sha256": "9dd03a8fb30721c7d82274c4390673aaffb0ffb33c68729735470a323b63891d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-tab-complete.js",
+      "sha256": "8944c57eec190e3bbdb56b20ec8062ccf7e9893edf9c0e46639c869c829ef483",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline-undefined-columns.js",
+      "sha256": "c522d976b6c5432c626b0fd8c304a87e1bfc304f69b362d03935a968485ac728",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-readline.js",
+      "sha256": "3aa755e369f5f8e9b4f6d286ccbc3c4eff0a99dca864ff4a06fb48445d64e3f6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-array-prototype-tempering.js",
+      "sha256": "7b6c99dfdddf77f4fc3953081e60933de39c351f9893bfae8f4dd1b7b1368a0d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-async-iife.js",
+      "sha256": "aaf535e187bf6c600e813653d8c0b4092daf28036832a498ef9f6ae25e0feaf8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-autocomplete.js",
+      "sha256": "e5dc2764821801d736e289943841537b05896da8732e74e0add445e179a92de2",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-autolibs.js",
+      "sha256": "2f22690ff5047d7d224b3d2c0727126136b1fdc7d0c019075efff35f85d02b7a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-clear-immediate-crash.js",
+      "sha256": "e90af7118625fce61e09ccd24f0f3ba10d3622539c2016707a5a7ec4c7874299",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-cli-eval.js",
+      "sha256": "e81626a93365319d268e537a544e6fe97d10163d4435412f5c84f9044cd63322",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-close.js",
+      "sha256": "09066277fc2765d1a7268b1e408b0a2c64a20f3eddcd662079c6a1ee95227b6f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-colors.js",
+      "sha256": "8d6aa82f2569d3c3cac9e17452a692f5461523d8e93f6ac48c384b12181a002a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-completion-on-getters-disabled.js",
+      "sha256": "ac0779b0de1fb8c358159fc04c75d1f946adfff8904fe1c4f541bdc67a13d891",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-context.js",
+      "sha256": "0914492419d4cd9066f199057e43eebcba118c8698ed4dd27fb10a889e0337c2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-custom-eval-previews.js",
+      "sha256": "44faa9b8ade249a118fcb0ef7f35ddca4b032888619141361d2a517d87f8c455",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-custom-eval.js",
+      "sha256": "d67e4007f61193046ba002b4b9f97b3038ed33ea80db5b6ba936d026cb82c577",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-definecommand.js",
+      "sha256": "ff473f2ef673347eae2c8025d37d645b6169ebb3b7ae9cad259b8997fe3f1331",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-domain.js",
+      "sha256": "02f910038ad1c4bd4e0edc70e7c77c45c069f746a5bd8cdb7de6622be46c258c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-dynamic-import.js",
+      "sha256": "93946c4cd19da35fbdf0b5e8936a09b82e4699914c540d7b35ccf96f49783010",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-editor.js",
+      "sha256": "22ef7b120d60967f939499c2665f952eb8828b942e3eaa794839ef737c6cd708",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-empty.js",
+      "sha256": "6fbdcd657ff93e6d5febc93ac9dfe145f3ee201cbe6d4c29e6d4d018ca0005d4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-end-emits-exit.js",
+      "sha256": "a602a5a05e5797c6cc31e44b4601b97f4b56401b0356283e1b7094758db4c49a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-envvars.js",
+      "sha256": "ff87ef5a5c9243b3db6766b687dea90278eb484be49bb9c3f5ef2a09d50e4f41",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-eval-error-after-close.js",
+      "sha256": "65a6ad64cc04f74cc323619633455cba9edd830329a2ca8a77e0ff4bc673e764",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-function-definition-edge-case.js",
+      "sha256": "e42bda5831e805168bc27ca7c6c7c433c09f98e2842f24094d6fe9fb4ade4134",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-harmony.js",
+      "sha256": "64aa97ef92c67b15f7b7e6c3b0506a9af57e95eaecac24b9766ab7188774acca",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-highlight.js",
+      "sha256": "d2c38117b5a9eaddc048207164e8cbcc548855b736f381b5d0f721ece26e1439",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-history-dedup-multiline.js",
+      "sha256": "13a447d8b55bae73a51c963e0cfcd7b488b4f201dd91abec21bdd860d8706baa",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-history-init-fail-leak.js",
+      "sha256": "60374345dc69eeae77ad9f9317452f57edaaca245499c52930124a66189be27f",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-history-load-preserves-pending-entries.js",
+      "sha256": "824f488fc68941693567a4184879945f661f9148b8fe6d551cc90b04bc0fab30",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-history-navigation.js",
+      "sha256": "68131206d2ac6743b401662cedd3c785f4cc711c053276bc4e93c016c5e10621",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-history-perm.js",
+      "sha256": "910e0100dbf92687a97a71c024f72af742af97764cba09a5a5155865bad7eeec",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-import-referrer.js",
+      "sha256": "b6de08f9be075db984e2cc2bf7b06bb08e37dfe9f1a3eff85b2968ababd1bca6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-inspect-defaults.js",
+      "sha256": "718b1a8d8c9f87b0e4790e619255f734fdd435db01b82acaa97092183dc31bd7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-inspector.js",
+      "sha256": "f6dfc2ec8ad625d7f38e53f44b29c2ad2a41fa5783846242985b89906ac66fa0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-let-process.js",
+      "sha256": "cbe8b12c901a0efad97d8048f2694d8657d483f453a571efda0674e97c68caf8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-load-multiline-from-history.js",
+      "sha256": "08083e9781a5bc83d0a46a3faabf8b637c762bc829c04ff72dfeb2a41c5d1e77",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-load-multiline-no-trailing-newline.js",
+      "sha256": "75cfe1fe95a505fb81c70754e42b7d0d86c5009c3b5ef59990d3edb8b85c7c66",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-load-multiline.js",
+      "sha256": "2a1ab1f95112e9a3b04aa62ecfb5d63e654127c58b1c9d170eb33534473af9ae",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-mode.js",
+      "sha256": "94ccf4a69b345dc495aee81f667be7b0b42c04c6b0678771706c36bbc932b874",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-multiline-navigation-while-adding.js",
+      "sha256": "213914fb75c669ebf8d06739811aedcfa0b3ffb6ff517740c1d4ce0b3ca87fd7",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-multiline-navigation.js",
+      "sha256": "7cd1906dfba6c62a2af73fb5a16f19e7d70fba0c41a933175403178a276b91e8",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-multiline.js",
+      "sha256": "735de217609b5f40e0978a659ccfc04c7e42bd164b3bcdeae5650d17de389b71",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-multiple-instances-async-error.js",
+      "sha256": "71199cc96a1c6409399844e7401a5196fe97a27637670153fe885550bfcffa37",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-no-terminal-restore-process-listeners.js",
+      "sha256": "ba391226c0861b5f868683f0f06dec20da19afaec7fd2ac6bc34377f980d74a9",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-no-terminal.js",
+      "sha256": "0b5816244b1f075302b3d255c6b073b8bb178998f7d9f683156c1bd0c2393177",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-null-thrown.js",
+      "sha256": "a98eecba81fc45fa5e46f5f4e899b393dcf22e97362bd84d4ecf93e703dce4af",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-null.js",
+      "sha256": "8e613d9176f7fa58a39f565cd6f8e82be3de6b60d0bb3c8ad04db6938acebed6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-options.js",
+      "sha256": "8b24ec70b61bb5067e718f0720ecdf91c9971e93bc571ce5e25085eea9ef2788",
+      "category": "parallel",
+      "declaredFlags": [
+        "--pending-deprecation"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-permission-model.js",
+      "sha256": "4de6f46ddb9f180161c84e63b4e91c77723d2fec2b23ba3e758370f26342366a",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals --permission --allow-fs-read=*"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-persistent-history.js",
+      "sha256": "1f9f93210554b60b7c4ad5abfcfebe7840bbe31e56aa39dc8c31c16f4245a141",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-preprocess-top-level-await.js",
+      "sha256": "55caeb254ee7dbb423861989f22f33ba1856836b1ced6795f32aa6b6cf972a21",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-pretty-custom-stack.js",
+      "sha256": "5f4b70e48aa00e5770599ecbed8525ea36f14797b7c094adc2091f1fad0acab6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-pretty-stack-custom-writer.js",
+      "sha256": "b4342720e8c97f713253b9b549bec87d39bd07f76e7f20e9f957d3aaa688feea",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-pretty-stack.js",
+      "sha256": "86e8fe7937177abbf53c41e5a707f60315c4619434fe2ae4882be42d75297100",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-preview-newlines.js",
+      "sha256": "a818a35ae91c43613cf8e50ab39a97833dedf9d4ce1125e9a65b95276bb0c425",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-preview-timeout.js",
+      "sha256": "fae7767f45a1eef2d88dd2d15ab8a7d1efae9a275f9c9f6f65abca504180094f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-preview-without-inspector.js",
+      "sha256": "b060fd5ede75947a71543da7b9741f6d6642d980e7b75e687b64a50da36daa5c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-preview.js",
+      "sha256": "2b162518d904c80199b1742b5022b67a5762b48b072dffdc47b665511250a161",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-programmatic-history-setup-history.js",
+      "sha256": "29ef7cb9f248af3beb8a49e7c61be331e4f50c72da9fbcdb71af3618aae2ff69",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-programmatic-history.js",
+      "sha256": "baba9f6fc5260c920b128720d531d7f76d4c89ee8eea34d6a5d13ffb31e4a955",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-recoverable.js",
+      "sha256": "c8501a61753976815f7f3611b14bea7180f9515209fe249b18e1a784042af3b1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-require-after-write.js",
+      "sha256": "cb07f679d07c38fbd403f5e5fa93dc8b06611270700284c3ca6814eaa863f7bb",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-require-cache.js",
+      "sha256": "090e478a66428472ffb80eff0d0c6927f9d2a5d446aaba31ccba98c17403dfa7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-require-context.js",
+      "sha256": "8c5cc9edcef2eeabb3eebaf6836da0bc2f7db38a0868d85f958c5129826fd281",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-require-self-referential.js",
+      "sha256": "f3d900c23bc2edf57af6f4b4f4a5066cab09bad36f6216949bb3352db899c341",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-require.js",
+      "sha256": "1195a53a4d852ca9b54f726398f229787a62879c03d6e1ea9be98fac3fa572c2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-reset-event.js",
+      "sha256": "9d9f8e9fbe93d522ad534187bbdd2b3ec11088358683e51b951aaae41efe0bb9",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-reverse-search.js",
+      "sha256": "012656a9858da756509ae94405e9f676dcadb434c9d05b29f52fb73ac285f493",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-save-load-editor-mode.js",
+      "sha256": "c3afc6c1efab28ae4ceab6f6815605c5fa505399a3ebc7732e4e38b0f152944d",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-save-load-invalid-save.js",
+      "sha256": "2c91b9b2f8e393e3609299dbb3df72037dc5db739ac150e710fd2a4444de9506",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-save-load-load-dir.js",
+      "sha256": "aaf9b89c011503caa62f79a147ec54b1c1079dd9872daae2c899a3c28f9b95fb",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-save-load-load-non-existent.js",
+      "sha256": "883cf5e7141a7fcf3da023e0bb5d660fb4036ef84345cf4066d88f65390ec93b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-save-load-load-without-name.js",
+      "sha256": "9793deb72170bb4478d64ceac89def5c215a463de1129aef92fac188e0bfac96",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-save-load-save-without-name.js",
+      "sha256": "ad34f3212d69c996617171783be5e22d5ad904a2605d137024404eb1ded9c8e7",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-save-load.js",
+      "sha256": "03cec9132f1f2f2cf7c7769e86ad76b2a09fed5934f3b1e2888cc9d5c97f6b05",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-setprompt.js",
+      "sha256": "e037b4ab888f14c72d3ea8ec0f017dcf62d75d5f30b49b3f5ed94f4020b689f8",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-sigint-nested-eval.js",
+      "sha256": "0d9af8c6a4f2dc908f087e4d3c166c7259c59c1459fe8906a14d62765512387a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-sigint.js",
+      "sha256": "a637858ce4b854b34b37719069b47c59d404ba21b7944e800cc2758e1d7951c3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-stdin-push-null.js",
+      "sha256": "76d6c63d080793012bd7fbe8ea456e1311c67bde9c7be20cacd7aff993111412",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-strict-mode-previews.js",
+      "sha256": "f267083b27cb1a23b4894f20f2632ed934954a4b84d7608bac887c994cef0d17",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-syntax-error-handling.js",
+      "sha256": "29193dd0abf9369a642454235bc0a6b2fd04a62f44fead38f902c76e02512a2f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-syntax-error-stack.js",
+      "sha256": "833f5eaaa24510f7cd7c4ffd41f7c4be96aeef566f092615385fce3455a1c13b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-buffer.js",
+      "sha256": "13981e7db01526d0c7813bc72e23e8d7501f9d552ed3f99b580056cf5b43f15f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-computed-props.js",
+      "sha256": "82ea0847083e03eebb6ba12e48eb824231df7fc12189ef7647d0cc31adcf4cc2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-crash.js",
+      "sha256": "a362c9acb5b4e42d4ff35ab9920519682a26f0ed63503d1606ccb06b7f698467",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-custom-completer.js",
+      "sha256": "376927bb7647643d3aa2e7bccc8723e756a9e412fd03010d80df1901988d9392",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-files.js",
+      "sha256": "a79a5f623bdfe02c5b8509495f04e5958dc379c163e0c0c28608594fa5e46c1f",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-import.js",
+      "sha256": "ac8fa96d67f03248d1a62c92c94c57a895cd417af66b2d7b2ac8a3eae37ecd65",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-nested-repls.js",
+      "sha256": "796dc00c081f39a56c501bce19f85fd1d0471bfd464f3ba8415bf093bfb79ee3",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-new-expression.js",
+      "sha256": "d1075a4f0d2ecb45d7a6e00240f689e7806c6bb97afba75284d0084917f3f5cb",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-no-warn.js",
+      "sha256": "e24c26dc12254f85d12d427e998fd0a630419cf8719f0f99908c933cc4aa5711",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-nosideeffects.js",
+      "sha256": "5f3554752ebc32b8cf3af3c235213d5c263c410ed85c33f66acd66842be6f9cf",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-on-editor-mode.js",
+      "sha256": "1dd14c3efa794888b89b2985efdafc38fbee9fccc0450389ba5252628899becf",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-require.js",
+      "sha256": "e8bdb10bb8b3fd71711cf83ebcd11bfcda941a626a49049cb1275bc1d7605164",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete-unary-expressions.js",
+      "sha256": "92623145560b26d662c189b537a81ddc6849dcbc89bf6b51ea0d68be851380b2",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab-complete.js",
+      "sha256": "0e1ed86eb9117db98bfdcd95736a56a8b93f218daa0de080597500d43b36ae3e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-tab.js",
+      "sha256": "6979643542c516ec89ff37dd8663801d832a7d410a533b010dca4bad1312d89c",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-throw-null-or-undefined.js",
+      "sha256": "13c1c7200780f6388a0332c703a1062f2cca14bfc9d9bacb05ea0e10cd5539fd",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-top-level-await.js",
+      "sha256": "09ebcc87816c720d6e908102eb0ef7d0e15828ab2e1dbd9dbb4234f76562aeee",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-uncaught-exception-after-input-ended.js",
+      "sha256": "728ee7c1c0b70776a0abf1c0ac2e8401d98d94f3d7ef931cbb0b60fb9a006b9e",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-uncaught-exception-async.js",
+      "sha256": "b113f5fece7af3b2886fd2a97c8276b670ab25debd4a60576d05473693a49f11",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-uncaught-exception-evalcallback.js",
+      "sha256": "0b664d86af14cfb4809bf8bd45ccc7ad4eb02e4941d16ae76d6f516b977ed710",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-uncaught-exception-standalone.js",
+      "sha256": "124a59404d8bdff5fb99fbab9dcab6f55921111b5c7ac37d92a873c4dee86e11",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-uncaught-exception.js",
+      "sha256": "cbc63e8f7fb3dcf5d0e7661b811313307765daf6346df2aebd72b9856551343b",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-underscore.js",
+      "sha256": "efa3e0394d155f230c5b3dc8301eae7b53f7fe4667e1238cd4ff4323de52535a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-unexpected-token-recoverable.js",
+      "sha256": "8f2c0a762f27773a266284faabdcbe066dcaf08b02a89706c6e2c3e4277e029a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-unsafe-array-iteration.js",
+      "sha256": "c58ab1dea3fc13f0ceae6ca32b4d9ba90db63cda24b6673ae9bae8a15eae65fe",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-unsupported-option.js",
+      "sha256": "bbbf951a36bec05562970bdc2ac833d38d159a4e31ef09f4382511e02dc0a85a",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-use-global.js",
+      "sha256": "31e3c292d9e3ea28788908df750f9aacee02e4e38a51b48e6eb4bbc1e5c41cc3",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl-user-error-handler.js",
+      "sha256": "cbfd20d948977e15c71347498b25b6df18dc076564d884087dc67f3352424b03",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/parallel/test-repl.js",
+      "sha256": "32e5efe46b418bc7acfbc6fad492b03d1120b9efc2bb8170121b352bb15566e0",
+      "category": "parallel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/pseudo-tty/readline-dumb-tty.js",
+      "sha256": "63bfd6ce14340d2ae7c8c8dbc75c0a86fa99c1880ac33c8f491bc65b9ad007d3",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [
+        {
+          "path": "test/pseudo-tty/readline-dumb-tty.out",
+          "sha256": "232f83ca5ca268385d8598909370dd635974e17c683601e70d781d1d29a33fd6"
+        }
+      ],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/pseudo-tty/repl-dumb-tty.js",
+      "sha256": "3cbd07b1af93a4f33602801b08b189686dc23324259c89552664a96976465b40",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [
+        {
+          "path": "test/pseudo-tty/repl-dumb-tty.out",
+          "sha256": "7e96b97e3cb34c0845881e427270dd551e8489f692488c560629d839681fac46"
+        }
+      ],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/pseudo-tty/test-repl-external-module.js",
+      "sha256": "e368a6aa9270934386394a7accbb1d034684c0ffa2736d96893f1b92743b45b1",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [
+        {
+          "path": "test/pseudo-tty/test-repl-external-module.out",
+          "sha256": "084c799cd551dd1d8d5c5f9a5d593b2e931f5e36122ee5c793c1d08a19839cc0"
+        }
+      ],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/pummel/test-repl-paste-big-data.js",
+      "sha256": "73b76eba1629926dbbc4f51e2af40d60b3dd309475b6636c2eab0e47b72be384",
+      "category": "pummel",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    },
+    {
+      "path": "test/sequential/test-repl-timeout-throw.js",
+      "sha256": "1821fd92a7d15d9743e3f6925dafb90291a487d798a5834ae674d7625c9fa1d4",
+      "category": "sequential",
+      "declaredFlags": [],
+      "declaredEnv": [],
+      "companions": [],
+      "role": "Future unchanged candidate; actual launcher/subtests/applicability remain required",
+      "requirements": "Real PTY helper and expected output/input where applicable, guest byte/signals/context/GC/stream/CLI/permission/history fixtures; known_issues expected-failure policy not a pass",
+      "status": "Unrun in audit"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

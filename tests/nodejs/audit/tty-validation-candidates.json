@@ -1,0 +1,239 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "candidates": [
+    {
+      "path": "test/async-hooks/test-ttywrap.readstream.js",
+      "sha256": "f200d15e8bc7c9c78fd928735fdeaddba5c1f180b26f16d585b7161444dceb05",
+      "category": "async-hooks",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/parallel/test-console-tty-colors-per-stream.js",
+      "sha256": "a82eb89bd8a0e018b5316f2c546d6164d376ef60d287a7960dcf5684a3828706",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/parallel/test-console-tty-colors.js",
+      "sha256": "76d4a9d300c62e7f2b0bddf89a674b133a5e6a57b06f18c6167f1150eee7d4c1",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/parallel/test-repl-pretty-custom-stack.js",
+      "sha256": "5f4b70e48aa00e5770599ecbed8525ea36f14797b7c094adc2091f1fad0acab6",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/parallel/test-repl-pretty-stack-custom-writer.js",
+      "sha256": "b4342720e8c97f713253b9b549bec87d39bd07f76e7f20e9f957d3aaa688feea",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/parallel/test-repl-pretty-stack.js",
+      "sha256": "86e8fe7937177abbf53c41e5a707f60315c4619434fe2ae4882be42d75297100",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/parallel/test-tty-backwards-api.js",
+      "sha256": "b4d9624bac6cbe0114c8d08b21262cab4453c7cac51643ac941d092100a32674",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/parallel/test-tty-stdin-end.js",
+      "sha256": "3904acdb96d3f3d06e94e17847df9e7657d62d0d319078b7947b649105261c59",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/parallel/test-tty-stdin-pipe.js",
+      "sha256": "71668ef2ea41ec5fdf0c4b4ea3a3c55fe7dfa0d15a7bc01b781f420534f9b288",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/parallel/test-ttywrap-invalid-fd.js",
+      "sha256": "174625226f4dca14090769a5777139041ddeb2846e872c206dca11186d630145",
+      "category": "parallel",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/parallel/test-ttywrap-stack.js",
+      "sha256": "87933d3e7cd7c451c420aa6a598b535a98f5475dbb0c0104ca41e306d093d5c4",
+      "category": "parallel",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-async-wrap-getasyncid-tty.js",
+      "sha256": "5f7031f77a91bb3b0c63e0c50689c0d6489df1af60733161b893eac5207c6e0f",
+      "category": "pseudo-tty",
+      "declaredFlags": [
+        "--expose-internals --no-warnings"
+      ],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-handle-wrap-hasref-tty.js",
+      "sha256": "dac88ed5e74af2230fac8e37e8841d7787f8e741d4960a5b69794f6b1fc6bc07",
+      "category": "pseudo-tty",
+      "declaredFlags": [
+        "--expose-internals --no-warnings"
+      ],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-readable-tty-keepalive.js",
+      "sha256": "7f059570f47f8e5a4de52dae3027c945777361f9515d3feaa34773e491da2aa5",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-tty-color-support-warning-2.js",
+      "sha256": "61759d5e1401dd694ee9106392e1adc109d05ba53cfc4463cfe373343aed74b4",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-tty-color-support-warning.js",
+      "sha256": "1b87e4d2f332b5336724f24dca6f9b08a9f532f9f68774fb60c7dd50c335c01d",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-tty-color-support.js",
+      "sha256": "3a4bec9a5a987d35c34ee4963e2b878bbd7ea87e6f16e32c0d1d14f5b7187249",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-tty-isatty.js",
+      "sha256": "e5adc6ceb3db6b0e1ca7a5204d7b3268223e5e536f57ceaea1b308f8b196f1ad",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-tty-stdin-call-end.js",
+      "sha256": "7e2ce790627b5c65e8129a0443e4463f18649731d2fdcbbc5969554b1791d2ce",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-tty-stdin-end.js",
+      "sha256": "3904acdb96d3f3d06e94e17847df9e7657d62d0d319078b7947b649105261c59",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-tty-stdout-end.js",
+      "sha256": "89e1af0f5bc88624ec878f9d9dc26971aff0b4bfb16f719fbba745b5b53816d1",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-tty-stdout-resize.js",
+      "sha256": "53668fb36e40a341abc314ff317b43e4abccccfc9184fdc47687b3a7f5481e8e",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-tty-stream-constructors.js",
+      "sha256": "3e2d2467262414287f47eb2b7736e84021d1ed4582d8a98c5ac6aa282b62a445",
+      "category": "pseudo-tty",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-tty-window-size.js",
+      "sha256": "a363b0690c5c6eb40ae25c2ba1400d763e87fa9c69d7d98299eb03171108750c",
+      "category": "pseudo-tty",
+      "declaredFlags": [
+        "--expose-internals --no-warnings"
+      ],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/pseudo-tty/test-tty-wrap.js",
+      "sha256": "39695454258bf83a18e0fa90c48f6df5868be756d35f6bc3f318c618141da4d4",
+      "category": "pseudo-tty",
+      "declaredFlags": [
+        "--expose-internals --no-warnings"
+      ],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/test-runner/test-output-assertion-color-tty.mjs",
+      "sha256": "10dd5fb7500bfdf41745f295154bcd66525692f75fc9f702ba61740238987946",
+      "category": "test-runner",
+      "declaredFlags": [
+        "--expose-internals"
+      ],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    },
+    {
+      "path": "test/test-runner/test-output-non-tty-forced-color-output.mjs",
+      "sha256": "6427b36b0e951c8d4f184ffb1fbf9a6f37c829539c7f6c5727363a784f2e703b",
+      "category": "test-runner",
+      "declaredFlags": [],
+      "status": "Future unchanged candidate, not run or assertion applicability signoff",
+      "requirements": "Real upstream pseudo-tty input/output launcher when applicable, original expected output/flags/fixtures, native termios and fd/close controls; pipe/exit-code substitutes do not establish behavior"
+    }
+  ],
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}

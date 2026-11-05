@@ -1,0 +1,485 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sections": [
+    {
+      "document": "doc/api/events.md",
+      "line": 1,
+      "endLine": 56,
+      "title": "Events",
+      "sha256": "38fc291fa662ab1af923a3244a2231b60ef56413464e66b8f0bd5a6c35ac3e81",
+      "normativeRequirements": "# Events\n\n\n\n> Stability: 2 - Stable\n\n\n\n\n\nMuch of the Node.js core API is built around an idiomatic asynchronous\nevent-driven architecture in which certain kinds of objects (called \"emitters\")\nemit named events that cause `Function` objects (\"listeners\") to be called.\n\nFor instance: a [`net.Server`][] object emits an event each time a peer\nconnects to it; a [`fs.ReadStream`][] emits an event when the file is opened;\na [stream][] emits an event whenever data is available to be read.\n\nAll objects that emit events are instances of the `EventEmitter` class. These\nobjects expose an `eventEmitter.on()` function that allows one or more\nfunctions to be attached to named events emitted by the object. Typically,\nevent names are camel-cased strings but any valid JavaScript property key\ncan be used.\n\nWhen the `EventEmitter` object emits an event, all of the functions attached\nto that specific event are called _synchronously_. Any values returned by the\ncalled listeners are _ignored_ and discarded.\n\nThe following example shows a simple `EventEmitter` instance with a single\nlistener. The `eventEmitter.on()` method is used to register listeners, while\nthe `eventEmitter.emit()` method is used to trigger the event.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 57,
+      "endLine": 125,
+      "title": "Passing arguments and `this` to listeners",
+      "sha256": "45b573a6ad65f72eaf127e8209915698c77c74640220888ce254bdb1f6440ed0",
+      "normativeRequirements": "## Passing arguments and `this` to listeners\n\nThe `eventEmitter.emit()` method allows an arbitrary set of arguments to be\npassed to the listener functions. Keep in mind that when\nan ordinary listener function is called, the standard `this` keyword\nis intentionally set to reference the `EventEmitter` instance to which the\nlistener is attached.\n\n\n\n\n\nIt is possible to use ES6 Arrow Functions as listeners, however, when doing so,\nthe `this` keyword will no longer reference the `EventEmitter` instance:\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 126,
+      "endLine": 157,
+      "title": "Asynchronous vs. synchronous",
+      "sha256": "e70ffe672aa2086cbe519bdc7cf2156fbbe775336f6c12d941e4d6b3339420f5",
+      "normativeRequirements": "## Asynchronous vs. synchronous\n\nThe `EventEmitter` calls all listeners synchronously in the order in which\nthey were registered. This ensures the proper sequencing of\nevents and helps avoid race conditions and logic errors. When appropriate,\nlistener functions can switch to an asynchronous mode of operation using\nthe `setImmediate()` or `process.nextTick()` methods:\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 158,
+      "endLine": 222,
+      "title": "Handling events only once",
+      "sha256": "d90aa5764751586b734a45712be30d230c97e682a59d71859e5bcc38619e5829",
+      "normativeRequirements": "## Handling events only once\n\nWhen a listener is registered using the `eventEmitter.on()` method, that\nlistener is invoked _every time_ the named event is emitted.\n\n\n\n\n\nUsing the `eventEmitter.once()` method, it is possible to register a listener\nthat is called at most once for a particular event. Once the event is emitted,\nthe listener is unregistered and _then_ called.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 223,
+      "endLine": 300,
+      "title": "Error events",
+      "sha256": "1dc7b99054768c1b085187c798fce73bb81a726901a069f04ecc37f82fe0cad4",
+      "normativeRequirements": "## Error events\n\nWhen an error occurs within an `EventEmitter` instance, the typical action is\nfor an `'error'` event to be emitted. These are treated as special cases\nwithin Node.js.\n\nIf an `EventEmitter` does _not_ have at least one listener registered for the\n`'error'` event, and an `'error'` event is emitted, the error is thrown, a\nstack trace is printed, and the Node.js process exits.\n\n\n\n\n\nTo guard against crashing the Node.js process the [`domain`][] module can be\nused. (Note, however, that the `node:domain` module is deprecated.)\n\nAs a best practice, listeners should always be added for the `'error'` events.\n\n\n\n\n\nIt is possible to monitor `'error'` events without consuming the emitted error\nby installing a listener using the symbol `events.errorMonitor`.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 301,
+      "endLine": 391,
+      "title": "Capture rejections of promises",
+      "sha256": "ed4a333a3a59234121d3a324d9ff216094a20c6dd219cee9a31059c4b30f81f8",
+      "normativeRequirements": "## Capture rejections of promises\n\nUsing `async` functions with event handlers is problematic, because it\ncan lead to an unhandled rejection in case of a thrown exception:\n\n\n\n\n\nThe `captureRejections` option in the `EventEmitter` constructor or the global\nsetting change this behavior, installing a `.then(undefined, handler)`\nhandler on the `Promise`. This handler routes the exception\nasynchronously to the [`Symbol.for('nodejs.rejection')`][rejection] method\nif there is one, or to [`'error'`][error] event handler if there is none.\n\n\n\n\n\nSetting `events.captureRejections = true` will change the default for all\nnew instances of `EventEmitter`.\n\n\n\n\n\nThe `'error'` events that are generated by the `captureRejections` behavior\ndo not have a catch handler to avoid infinite error loops: the\nrecommendation is to **not use `async` functions as `'error'` event handlers**.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 392,
+      "endLine": 422,
+      "title": "Class: `EventEmitter`",
+      "sha256": "aec71f8dc9de9f28c0ceeb7946a58b8640f6d5e1fe8fb024793bcf2311fb4242",
+      "normativeRequirements": "## Class: `EventEmitter`\n\n\n\nThe `EventEmitter` class is defined and exposed by the `node:events` module:\n\n\n\n\n\nAll `EventEmitter`s emit the event `'newListener'` when new listeners are\nadded and `'removeListener'` when existing listeners are removed.\n\nIt supports the following option:\n\n* `captureRejections` {boolean} It enables\n  [automatic capturing of promise rejection][capturerejections].\n  **Default:** `false`.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 423,
+      "endLine": 488,
+      "title": "Event: `'newListener'`",
+      "sha256": "ca8e1bae4c1e978ecc20aa28958d1933c1f9cd641e82d28c23140f815b5939a8",
+      "normativeRequirements": "### Event: `'newListener'`\n\n\n\n* `eventName` {string|symbol} The name of the event being listened for\n* `listener` {Function} The event handler function\n\nThe `EventEmitter` instance will emit its own `'newListener'` event _before_\na listener is added to its internal array of listeners.\n\nListeners registered for the `'newListener'` event are passed the event\nname and a reference to the listener being added.\n\nThe fact that the event is triggered before adding the listener has a subtle\nbut important side effect: any _additional_ listeners registered to the same\n`name` _within_ the `'newListener'` callback are inserted _before_ the\nlistener that is in the process of being added.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 489,
+      "endLine": 506,
+      "title": "Event: `'removeListener'`",
+      "sha256": "e2ed28decef273a4625e78f679de6641d65f903615475eb220eb3a227d991131",
+      "normativeRequirements": "### Event: `'removeListener'`\n\n\n\n* `eventName` {string|symbol} The event name\n* `listener` {Function} The event handler function\n\nThe `'removeListener'` event is emitted _after_ the `listener` is removed.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 507,
+      "endLine": 517,
+      "title": "`emitter.addListener(eventName, listener)`",
+      "sha256": "b21532f4c74244d03a57489e67f3df584b42fd96525ccea655a3d4b4da187c4e",
+      "normativeRequirements": "### `emitter.addListener(eventName, listener)`\n\n\n\n* `eventName` {string|symbol}\n* `listener` {Function}\n\nAlias for `emitter.on(eventName, listener)`.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 518,
+      "endLine": 599,
+      "title": "`emitter.emit(eventName[, ...args])`",
+      "sha256": "cd1d833b6fc6a8c825c4b52351b3884e6ed150933934c725392b05a9512d8ce6",
+      "normativeRequirements": "### `emitter.emit(eventName[, ...args])`\n\n\n\n* `eventName` {string|symbol}\n* `...args` {any}\n* Returns: {boolean}\n\nSynchronously calls each of the listeners registered for the event named\n`eventName`, in the order they were registered, passing the supplied arguments\nto each.\n\nReturns `true` if the event had listeners, `false` otherwise.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 600,
+      "endLine": 638,
+      "title": "`emitter.eventNames()`",
+      "sha256": "2d39759d845541a0a2ad8a5ed425bd73c9858e6b18b8515a0a88ebd3d02d7c4f",
+      "normativeRequirements": "### `emitter.eventNames()`\n\n\n\n* Returns: {string\\[]|symbol\\[]}\n\nReturns an array listing the events for which the emitter has registered\nlisteners.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 639,
+      "endLine": 650,
+      "title": "`emitter.getMaxListeners()`",
+      "sha256": "711d1ff1e5db9a79fed1eeb76ad02e10df737a59ac01762d9dcf104e370c5e2b",
+      "normativeRequirements": "### `emitter.getMaxListeners()`\n\n\n\n* Returns: {integer}\n\nReturns the current max listener value for the `EventEmitter` which is either\nset by [`emitter.setMaxListeners(n)`][] or defaults to\n[`events.defaultMaxListeners`][].\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 651,
+      "endLine": 670,
+      "title": "`emitter.listenerCount(eventName[, listener])`",
+      "sha256": "c3bdbb6f08c5f5195d8916034d65a0ba43adf780e354714640ef7bdc692be04c",
+      "normativeRequirements": "### `emitter.listenerCount(eventName[, listener])`\n\n\n\n* `eventName` {string|symbol} The name of the event being listened for\n* `listener` {Function} The event handler function\n* Returns: {integer}\n\nReturns the number of listeners listening for the event named `eventName`.\nIf `listener` is provided, it will return how many times the listener is found\nin the list of the listeners of the event.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 671,
+      "endLine": 694,
+      "title": "`emitter.listeners(eventName)`",
+      "sha256": "fae58e411f35f8b006fd2b1d7b91b3232292dbbea5a3bee3ddfe19adc4a3eb74",
+      "normativeRequirements": "### `emitter.listeners(eventName)`\n\n\n\n* `eventName` {string|symbol}\n* Returns: {Function\\[]}\n\nReturns a copy of the array of listeners for the event named `eventName`.\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 695,
+      "endLine": 706,
+      "title": "`emitter.off(eventName, listener)`",
+      "sha256": "c300f3c898b55febfd78f2921c3dec1ae6daf23c3fc637441eb304c23657d3ca",
+      "normativeRequirements": "### `emitter.off(eventName, listener)`\n\n\n\n* `eventName` {string|symbol}\n* `listener` {Function}\n* Returns: {EventEmitter}\n\nAlias for [`emitter.removeListener()`][].\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 707,
+      "endLine": 756,
+      "title": "`emitter.on(eventName, listener)`",
+      "sha256": "b653f6fcedeb392fa25892c61d1b20c5a9cb60a2d1b7c3a1a0c51cff76faeda4",
+      "normativeRequirements": "### `emitter.on(eventName, listener)`\n\n\n\n* `eventName` {string|symbol} The name of the event.\n* `listener` {Function} The callback function\n* Returns: {EventEmitter}\n\nAdds the `listener` function to the end of the listeners array for the\nevent named `eventName`. No checks are made to see if the `listener` has\nalready been added. Multiple calls passing the same combination of `eventName`\nand `listener` will result in the `listener` being added, and called, multiple\ntimes.\n\n\n\nReturns a reference to the `EventEmitter`, so that calls can be chained.\n\nBy default, event listeners are invoked in the order they are added. The\n`emitter.prependListener()` method can be used as an alternative to add the\nevent listener to the beginning of the listeners array.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 757,
+      "endLine": 803,
+      "title": "`emitter.once(eventName, listener)`",
+      "sha256": "d3f67d684d96d58021a9c6a057ef02e84858afb5bb77df3fcde99377b28a9d68",
+      "normativeRequirements": "### `emitter.once(eventName, listener)`\n\n\n\n* `eventName` {string|symbol} The name of the event.\n* `listener` {Function} The callback function\n* Returns: {EventEmitter}\n\nAdds a **one-time** `listener` function for the event named `eventName`. The\nnext time `eventName` is triggered, this listener is removed and then invoked.\n\n\n\nReturns a reference to the `EventEmitter`, so that calls can be chained.\n\nBy default, event listeners are invoked in the order they are added. The\n`emitter.prependOnceListener()` method can be used as an alternative to add the\nevent listener to the beginning of the listeners array.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 804,
+      "endLine": 827,
+      "title": "`emitter.prependListener(eventName, listener)`",
+      "sha256": "abe778e2bec318b1464d2b8b23ffff2d8fe5bc582b3e76f2f856d689a4a174f6",
+      "normativeRequirements": "### `emitter.prependListener(eventName, listener)`\n\n\n\n* `eventName` {string|symbol} The name of the event.\n* `listener` {Function} The callback function\n* Returns: {EventEmitter}\n\nAdds the `listener` function to the _beginning_ of the listeners array for the\nevent named `eventName`. No checks are made to see if the `listener` has\nalready been added. Multiple calls passing the same combination of `eventName`\nand `listener` will result in the `listener` being added, and called, multiple\ntimes.\n\n\n\nReturns a reference to the `EventEmitter`, so that calls can be chained.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 828,
+      "endLine": 849,
+      "title": "`emitter.prependOnceListener(eventName, listener)`",
+      "sha256": "fe74038df414f51b530bc228248d15e39a520e7ce2ff7af042ad77d1480f44d2",
+      "normativeRequirements": "### `emitter.prependOnceListener(eventName, listener)`\n\n\n\n* `eventName` {string|symbol} The name of the event.\n* `listener` {Function} The callback function\n* Returns: {EventEmitter}\n\nAdds a **one-time** `listener` function for the event named `eventName` to the\n_beginning_ of the listeners array. The next time `eventName` is triggered, this\nlistener is removed, and then invoked.\n\n\n\nReturns a reference to the `EventEmitter`, so that calls can be chained.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 850,
+      "endLine": 866,
+      "title": "`emitter.removeAllListeners([eventName])`",
+      "sha256": "f3b6e19d31d62a14de67dbe63f4f8f798ad87294b1acb27f194d2859e21abaf4",
+      "normativeRequirements": "### `emitter.removeAllListeners([eventName])`\n\n\n\n* `eventName` {string|symbol}\n* Returns: {EventEmitter}\n\nRemoves all listeners, or those of the specified `eventName`.\n\nIt is bad practice to remove listeners added elsewhere in the code,\nparticularly when the `EventEmitter` instance was created by some other\ncomponent or module (e.g. sockets or file streams).\n\nReturns a reference to the `EventEmitter`, so that calls can be chained.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 867,
+      "endLine": 1008,
+      "title": "`emitter.removeListener(eventName, listener)`",
+      "sha256": "3340b66d73c9a9dd0d6d9191993930eb757c6c8ef57b8bc9ab2684591ecde845",
+      "normativeRequirements": "### `emitter.removeListener(eventName, listener)`\n\n\n\n* `eventName` {string|symbol}\n* `listener` {Function}\n* Returns: {EventEmitter}\n\nRemoves the specified `listener` from the listener array for the event named\n`eventName`.\n\n\n\n`removeListener()` will remove, at most, one instance of a listener from the\nlistener array. If any single listener has been added multiple times to the\nlistener array for the specified `eventName`, then `removeListener()` must be\ncalled multiple times to remove each instance.\n\nOnce an event is emitted, all listeners attached to it at the\ntime of emitting are called in order. This implies that any\n`removeListener()` or `removeAllListeners()` calls _after_ emitting and\n_before_ the last listener finishes execution will not remove them from\n`emit()` in progress. Subsequent events behave as expected.\n\n\n\n\n\nBecause listeners are managed using an internal array, calling this will\nchange the position indexes of any listener registered _after_ the listener\nbeing removed. This will not impact the order in which listeners are called,\nbut it means that any copies of the listener array as returned by\nthe `emitter.listeners()` method will need to be recreated.\n\nWhen a single function has been added as a handler multiple times for a single\nevent (as in the example below), `removeListener()` will remove the most\nrecently added instance. In the example the `once('ping')`\nlistener is removed:\n\n\n\n\n\nReturns a reference to the `EventEmitter`, so that calls can be chained.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1009,
+      "endLine": 1025,
+      "title": "`emitter.setMaxListeners(n)`",
+      "sha256": "77478b098bdd0f1706587914d7253b66bfc01787e3163c4b9af62752e65414cc",
+      "normativeRequirements": "### `emitter.setMaxListeners(n)`\n\n\n\n* `n` {integer}\n* Returns: {EventEmitter}\n\nBy default `EventEmitter`s will print a warning if more than `10` listeners are\nadded for a particular event. This is a useful default that helps finding\nmemory leaks. The `emitter.setMaxListeners()` method allows the limit to be\nmodified for this specific `EventEmitter` instance. The value can be set to\n`Infinity` (or `0`) to indicate an unlimited number of listeners.\n\nReturns a reference to the `EventEmitter`, so that calls can be chained.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1026,
+      "endLine": 1087,
+      "title": "`emitter.rawListeners(eventName)`",
+      "sha256": "f6b71c9621870099a701a8a78c13393538bad7b389e26818f343157abd7a64f7",
+      "normativeRequirements": "### `emitter.rawListeners(eventName)`\n\n\n\n* `eventName` {string|symbol}\n* Returns: {Function\\[]}\n\nReturns a copy of the array of listeners for the event named `eventName`,\nincluding any wrappers (such as those created by `.once()`).\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1088,
+      "endLine": 1149,
+      "title": "`emitter[Symbol.for('nodejs.rejection')](err, eventName[, ...args])`",
+      "sha256": "4fcd37757d5775cb719f130507fe9784758254aea6a87ef5af67a15072772f0b",
+      "normativeRequirements": "### `emitter[Symbol.for('nodejs.rejection')](err, eventName[, ...args])`\n\n\n\n* `err` {Error}\n* `eventName` {string|symbol}\n* `...args` {any}\n\nThe `Symbol.for('nodejs.rejection')` method is called in case a\npromise rejection happens when emitting an event and\n[`captureRejections`][capturerejections] is enabled on the emitter.\nIt is possible to use [`events.captureRejectionSymbol`][rejectionsymbol] in\nplace of `Symbol.for('nodejs.rejection')`.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1150,
+      "endLine": 1206,
+      "title": "`events.defaultMaxListeners`",
+      "sha256": "d89bb3248c89a8a427879a6c4e6ac98188b858c21ff9576ac34d30093ae6cfc9",
+      "normativeRequirements": "## `events.defaultMaxListeners`\n\n\n\nBy default, a maximum of `10` listeners can be registered for any single\nevent. This limit can be changed for individual `EventEmitter` instances\nusing the [`emitter.setMaxListeners(n)`][] method. To change the default\nfor _all_ `EventEmitter` instances, the `events.defaultMaxListeners`\nproperty can be used. If this value is not a positive number, a `RangeError`\nis thrown.\n\nTake caution when setting the `events.defaultMaxListeners` because the\nchange affects _all_ `EventEmitter` instances, including those created before\nthe change is made. However, calling [`emitter.setMaxListeners(n)`][] still has\nprecedence over `events.defaultMaxListeners`.\n\nThis is not a hard limit. The `EventEmitter` instance will allow\nmore listeners to be added but will output a trace warning to stderr indicating\nthat a \"possible EventEmitter memory leak\" has been detected. For any single\n`EventEmitter`, the `emitter.getMaxListeners()` and `emitter.setMaxListeners()`\nmethods can be used to temporarily avoid this warning:\n\n`defaultMaxListeners` has no effect on `AbortSignal` instances. While it is\nstill possible to use [`emitter.setMaxListeners(n)`][] to set a warning limit\nfor individual `AbortSignal` instances, per default `AbortSignal` instances will not warn.\n\n\n\n\n\nThe [`--trace-warnings`][] command-line flag can be used to display the\nstack trace for such warnings.\n\nThe emitted warning can be inspected with [`process.on('warning')`][] and will\nhave the additional `emitter`, `type`, and `count` properties, referring to\nthe event emitter instance, the event's name and the number of attached\nlisteners, respectively.\nIts `name` property is set to `'MaxListenersExceededWarning'`.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1207,
+      "endLine": 1222,
+      "title": "`events.errorMonitor`",
+      "sha256": "62e3137a376fba50f59519f0e576bb7097cfbb3aa8fc2c3663326e03c5d7ca05",
+      "normativeRequirements": "## `events.errorMonitor`\n\n\n\nThis symbol shall be used to install a listener for only monitoring `'error'`\nevents. Listeners installed using this symbol are called before the regular\n`'error'` listeners are called.\n\nInstalling a listener using this symbol does not change the behavior once an\n`'error'` event is emitted. Therefore, the process will still crash if no\nregular `'error'` listener is installed.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1223,
+      "endLine": 1276,
+      "title": "`events.getEventListeners(emitterOrTarget, eventName)`",
+      "sha256": "b492f5a73731e88086025d478d68f4dc2744ba41faf5a02bcc268a909b93782b",
+      "normativeRequirements": "## `events.getEventListeners(emitterOrTarget, eventName)`\n\n\n\n* `emitterOrTarget` {EventEmitter|EventTarget}\n* `eventName` {string|symbol}\n* Returns: {Function\\[]}\n\nReturns a copy of the array of listeners for the event named `eventName`.\n\nFor `EventEmitter`s this behaves exactly the same as calling `.listeners` on\nthe emitter.\n\nFor `EventTarget`s this is the only way to get the event listeners for the\nevent target. This is useful for debugging and diagnostic purposes.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1277,
+      "endLine": 1330,
+      "title": "`events.getMaxListeners(emitterOrTarget)`",
+      "sha256": "942910ddf991a5225a60afa8d40da2d31fe8272c4194b4e1474b59ea00da419b",
+      "normativeRequirements": "## `events.getMaxListeners(emitterOrTarget)`\n\n\n\n* `emitterOrTarget` {EventEmitter|EventTarget}\n* Returns: {number}\n\nReturns the currently set max amount of listeners.\n\nFor `EventEmitter`s this behaves exactly the same as calling `.getMaxListeners` on\nthe emitter.\n\nFor `EventTarget`s this is the only way to get the max event listeners for the\nevent target. If the number of event handlers on a single EventTarget exceeds\nthe max set, the EventTarget will print a warning.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1331,
+      "endLine": 1491,
+      "title": "`events.once(emitter, name[, options])`",
+      "sha256": "43165fc12f2b2f303bfad92bb44899c58062cf98e90add580f23098d9108e327",
+      "normativeRequirements": "## `events.once(emitter, name[, options])`\n\n\n\n* `emitter` {EventEmitter}\n* `name` {string|symbol}\n* `options` {Object}\n  * `signal` {AbortSignal} Can be used to cancel waiting for the event.\n* Returns: {Promise}\n\nCreates a `Promise` that is fulfilled when the `EventEmitter` emits the given\nevent or that is rejected if the `EventEmitter` emits `'error'` while waiting.\nThe `Promise` will resolve with an array of all the arguments emitted to the\ngiven event.\n\nThis method is intentionally generic and works with the web platform\n[EventTarget][WHATWG-EventTarget] interface, which has no special\n`'error'` event semantics and does not listen to the `'error'` event.\n\n\n\n\n\nThe special handling of the `'error'` event is only used when `events.once()`\nis used to wait for another event. If `events.once()` is used to wait for the\n'`error'` event itself, then it is treated as any other kind of event without\nspecial handling:\n\n\n\n\n\nAn {AbortSignal} can be used to cancel waiting for the event:\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1492,
+      "endLine": 1605,
+      "title": "Caveats when awaiting multiple events",
+      "sha256": "9611df9ec8114b459f6e444fb9e4d6faf60fd7504a5bf6408dd046266974e23c",
+      "normativeRequirements": "### Caveats when awaiting multiple events\n\nIt is important to be aware of execution order when using the `events.once()`\nmethod to await multiple events.\n\nConventional event listeners are called synchronously when the event is\nemitted. This guarantees that execution will not proceed beyond the emitted\nevent until all listeners have finished executing.\n\nThe same is _not_ true when awaiting Promises returned by `events.once()`.\nPromise tasks are not handled until after the current execution stack runs to\ncompletion, which means that multiple events could be emitted before\nasynchronous execution continues from the relevant `await` statement.\n\nAs a result, events can be \"missed\" if a series of `await events.once()`\nstatements is used to listen to multiple events, since there might be times\nwhere more than one event is emitted during the same phase of the event loop.\n(The same is true when using `process.nextTick()` to emit events, because the\ntasks queued by `process.nextTick()` are executed before Promise tasks.)\n\n\n\n\n\nTo catch multiple events, create all of the Promises _before_ awaiting any of\nthem. This is usually made easier by using `Promise.all()`, `Promise.race()`,\nor `Promise.allSettled()`:\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1606,
+      "endLine": 1623,
+      "title": "`events.captureRejections`",
+      "sha256": "4b33040dc4ed33190ce16263aafc9ff81c500acd458365c4623f4f995297582e",
+      "normativeRequirements": "## `events.captureRejections`\n\n\n\n* Type: {boolean}\n\nChange the default `captureRejections` option on all new `EventEmitter` objects.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1624,
+      "endLine": 1641,
+      "title": "`events.captureRejectionSymbol`",
+      "sha256": "bd5f48f3243ae78abe4396f9232f2eda46abfd7cc6b0a216a61319f64d2f452e",
+      "normativeRequirements": "## `events.captureRejectionSymbol`\n\n\n\n* Type: {symbol} `Symbol.for('nodejs.rejection')`\n\nSee how to write a custom [rejection handler][rejection].\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1642,
+      "endLine": 1707,
+      "title": "`events.listenerCount(emitterOrTarget, eventName)`",
+      "sha256": "eeb106a8d5843969a2066f913b0cb1056bf362bd2852c25f054497701252ce51",
+      "normativeRequirements": "## `events.listenerCount(emitterOrTarget, eventName)`\n\n\n\n* `emitterOrTarget` {EventEmitter|EventTarget}\n* `eventName` {string|symbol}\n* Returns: {integer}\n\nReturns the number of registered listeners for the event named `eventName`.\n\nFor `EventEmitter`s this behaves exactly the same as calling `.listenerCount`\non the emitter.\n\nFor `EventTarget`s this is the only way to obtain the listener count. This can\nbe useful for debugging and diagnostic purposes.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1708,
+      "endLine": 1845,
+      "title": "`events.on(emitter, eventName[, options])`",
+      "sha256": "a64ed66f26109e88fa8a6c9b4387c71dde73af3e4bb913424e4687d1179c9c31",
+      "normativeRequirements": "## `events.on(emitter, eventName[, options])`\n\n\n\n* `emitter` {EventEmitter}\n* `eventName` {string|symbol} The name of the event being listened for\n* `options` {Object}\n  * `signal` {AbortSignal} Can be used to cancel awaiting events.\n  * `close` {string\\[]} Names of events that will end the iteration.\n  * `highWaterMark` {integer} **Default:** `Number.MAX_SAFE_INTEGER`\n    The high watermark. The emitter is paused every time the size of events\n    being buffered is higher than it. Supported only on emitters implementing\n    `pause()` and `resume()` methods.\n  * `lowWaterMark` {integer} **Default:** `1`\n    The low watermark. The emitter is resumed every time the size of events\n    being buffered is lower than it. Supported only on emitters implementing\n    `pause()` and `resume()` methods.\n* Returns: {AsyncIterator} that iterates `eventName` events emitted by the `emitter`\n\n\n\n\n\nReturns an `AsyncIterator` that iterates `eventName` events. It will throw\nif the `EventEmitter` emits `'error'`. It removes all listeners when\nexiting the loop. The `value` returned by each iteration is an array\ncomposed of the emitted event arguments.\n\nAn {AbortSignal} can be used to cancel waiting on events:\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1846,
+      "endLine": 1878,
+      "title": "`events.setMaxListeners(n[, ...eventTargets])`",
+      "sha256": "0039f6daf1fd307f93eaec501c1027fc34f5f571c04c436cac515d1f2d561eda",
+      "normativeRequirements": "## `events.setMaxListeners(n[, ...eventTargets])`\n\n\n\n* `n` {number} A non-negative number. The maximum number of listeners per\n  `EventTarget` event.\n* `...eventsTargets` {EventTarget\\[]|EventEmitter\\[]} Zero or more {EventTarget}\n  or {EventEmitter} instances. If none are specified, `n` is set as the default\n  max for all newly created {EventTarget} and {EventEmitter} objects.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1879,
+      "endLine": 1943,
+      "title": "`events.addAbortListener(signal, listener)`",
+      "sha256": "d52a4629ce91fb52766a914f905dbb6ab3a36737ed8446afb55f7150d1a03f23",
+      "normativeRequirements": "## `events.addAbortListener(signal, listener)`\n\n\n\n* `signal` {AbortSignal}\n* `listener` {Function|EventListener}\n* Returns: {Disposable} A Disposable that removes the `abort` listener.\n\nListens once to the `abort` event on the provided `signal`.\n\nListening to the `abort` event on abort signals is unsafe and may\nlead to resource leaks since another third party with the signal can\ncall [`e.stopImmediatePropagation()`][]. Unfortunately Node.js cannot change\nthis since it would violate the web standard. Additionally, the original\nAPI makes it easy to forget to remove listeners.\n\nThis API allows safely using `AbortSignal`s in Node.js APIs by solving these\ntwo issues by listening to the event such that `stopImmediatePropagation` does\nnot prevent the listener from running.\n\nReturns a disposable so that it may be unsubscribed from more easily.\n\nIf `signal` is already aborted, the listener is called with an `abort` event in a\nmicrotask. Disposing before that microtask runs cancels the call.\n\n\n\n\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 1944,
+      "endLine": 2016,
+      "title": "Class: `events.EventEmitterAsyncResource extends EventEmitter`",
+      "sha256": "45ee36fd7b1c0c0b5396cda7749303c30e8bfcfb5b31b6c964738734fa5013d7",
+      "normativeRequirements": "## Class: `events.EventEmitterAsyncResource extends EventEmitter`\n\n\n\nIntegrates `EventEmitter` with {AsyncResource} for `EventEmitter`s that\nrequire manual async tracking. Specifically, all events emitted by instances\nof `events.EventEmitterAsyncResource` will run within its [async context][].\n\n\n\n\n\nThe `EventEmitterAsyncResource` class has the same methods and takes the\nsame options as `EventEmitter` and `AsyncResource` themselves.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2017,
+      "endLine": 2033,
+      "title": "`new events.EventEmitterAsyncResource([options])`",
+      "sha256": "208df767f1a7b50ff2eb37a267f75d6f824171a454e5a5c9a01e6f2bc99eb9e5",
+      "normativeRequirements": "### `new events.EventEmitterAsyncResource([options])`\n\n* `options` {Object}\n  * `captureRejections` {boolean} It enables\n    [automatic capturing of promise rejection][capturerejections].\n    **Default:** `false`.\n  * `name` {string} The type of async event. **Default:** [`new.target.name`][].\n  * `triggerAsyncId` {number} The ID of the execution context that created this\n    async event. **Default:** `executionAsyncId()`.\n  * `requireManualDestroy` {boolean} If set to `true`, disables `emitDestroy`\n    when the object is garbage collected. This usually does not need to be set\n    (even if `emitDestroy` is called manually), unless the resource's `asyncId`\n    is retrieved and the sensitive API's `emitDestroy` is called with it.\n    When set to `false`, the `emitDestroy` call on garbage collection\n    will only take place if there is at least one active `destroy` hook.\n    **Default:** `false`.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2034,
+      "endLine": 2037,
+      "title": "`eventemitterasyncresource.asyncId`",
+      "sha256": "f6d1564d507ad1549651cabe7b4d3d074f5625e53cb5a7bfdb5dae8e5bb8be89",
+      "normativeRequirements": "### `eventemitterasyncresource.asyncId`\n\n* Type: {number} The unique `asyncId` assigned to the resource.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2038,
+      "endLine": 2044,
+      "title": "`eventemitterasyncresource.asyncResource`",
+      "sha256": "b5d9d3ef2d128e47a3956ddad4b5e1aae7441abd416124824fa09425782382ae",
+      "normativeRequirements": "### `eventemitterasyncresource.asyncResource`\n\n* Type: {AsyncResource} The underlying {AsyncResource}.\n\nThe returned `AsyncResource` object has an additional `eventEmitter` property\nthat provides a reference to this `EventEmitterAsyncResource`.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2045,
+      "endLine": 2051,
+      "title": "`eventemitterasyncresource.emitDestroy()`",
+      "sha256": "6d0149e8e7d123a7c576562a9badf8b808554ee449e57aa038a8466e718765f1",
+      "normativeRequirements": "### `eventemitterasyncresource.emitDestroy()`\n\nCall all `destroy` hooks. This should only ever be called once. An error will\nbe thrown if it is called more than once. This **must** be manually called. If\nthe resource is left to be collected by the GC then the `destroy` hooks will\nnever be called.\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    },
+    {
+      "document": "doc/api/events.md",
+      "line": 2052,
+      "endLine": 2058,
+      "title": "`eventemitterasyncresource.triggerAsyncId`",
+      "sha256": "17050ec158d706622024c27dde249539ca9de5f6061eb06be136e2c908a83282",
+      "normativeRequirements": "### `eventemitterasyncresource.triggerAsyncId`\n\n* Type: {number} The same `triggerAsyncId` that is passed to the\n  `AsyncResource` constructor.\n\n<a id=\"event-target-and-event-api\"></a>\n\n",
+      "review": "Public emitter/helper/returned class scope reviewed; separate EventTarget sections not signed off"
+    }
+  ],
+  "memberRequirements": {
+    "EventEmitter": "Module function/self alias, actual constructor/init/prototype/null-proto listener state, opts capture validation/defaults and legacy receiver/subclass metadata",
+    "EventEmitter.prototype.addListener": "Validate callback, newListener before addition/reread map, duplicates and ordering, receiver return; alias on",
+    "EventEmitter.prototype.on": "Exact addListener alias and semantics",
+    "EventEmitter.prototype.prependListener": "Prepend state/copy-on-write/duplicate/warning and newListener behavior",
+    "EventEmitter.prototype.once": "Guarded removable wrapper, original receiver, listener metadata and remove-before-call, exactly once even reentrant/manual call",
+    "EventEmitter.prototype.prependOnceListener": "Prepend guarded once wrapper with original listener metadata",
+    "EventEmitter.prototype.emit": "Synchronous ordered receiver/args, reentrant snapshot array, bool result, monitor/error behavior, returned thenable capture and throws; missing coded error/stack producer",
+    "EventEmitter.prototype.removeListener": "Most recent match at most one, wrapper matching, copy-on-write and shape/count/notification; local splice dependency differs",
+    "EventEmitter.prototype.off": "Exact removeListener alias",
+    "EventEmitter.prototype.removeAllListeners": "No-arg versus explicit key, symbols, LIFO notifications and removeListener-last; true state transitions",
+    "EventEmitter.prototype.listeners": "Copy/listener unwrapping without exposing stored array",
+    "EventEmitter.prototype.rawListeners": "Copy preserving once wrapper metadata and behavior",
+    "EventEmitter.prototype.listenerCount": "Optional listener filter, duplicate/wrapper matches and exact nullish handling",
+    "EventEmitter.prototype.eventNames": "Own key order including symbols, filter undefined shape-mode slots, empty fast path",
+    "EventEmitter.prototype.setMaxListeners": "Number/range validation, actual per-instance warning threshold and return this",
+    "EventEmitter.prototype.getMaxListeners": "Stored per-instance limit or live constructor default",
+    "defaultMaxListeners": "Nonconfigurable enumerable closure getter/setter, nonnegative number/range; existing instance defaults follow changes, advisory warning only",
+    "captureRejections": "Shared nonconfigurable enumerable accessor boolean validation/default for new instances; exact source false-option behavior retained",
+    "captureRejectionSymbol": "Symbol.for(nodejs.rejection) identity and invocation receiver/error/type/args",
+    "errorMonitor": "Shared private module symbol, monitor delivery before ordinary error handling without consuming error",
+    "setMaxListeners": "Multi-target setter, target EventTarget symbols versus callable instance setter, zero-target default, per-target validation/error effects",
+    "getEventListeners": "Final pinned helper emitter listeners delegation or actual EventTarget listener records/weak dereferencing, array copy and errors",
+    "getMaxListeners": "Final pinned helper callable-method test followed by stored limit, not superseded early override call; target symbol numeric fallback",
+    "listenerCount": "Final pinned helper method call or EventTarget root size/error path",
+    "once": "Async function Promise, options/signal validation, protected abort and special emitter error behavior, exact listener cleanup/arguments/order",
+    "on": "Actual inherited async iterator with event/wait queues, high/low and legacy aliases, pause/resume, abort/error/close state and cleanup",
+    "addAbortListener": "Protected once abort listener or trusted preaborted-event microtask; null-proto disposable and cancellation before delivery",
+    "EventEmitterAsyncResource": "Lazy configurable enumerable getter, exact source class wired to actual AsyncResource; name/string/subclass and destroy docs/source questions",
+    "EventEmitterAsyncResource.prototype.emit": "Private resource scope runs real superclass emitter; captured args/unshift/receiver/result/errors and context restoration",
+    "EventEmitterAsyncResource.prototype.emitDestroy": "Delegate to actual AsyncResource; no source once-only guard, GC/manual behavior question retained",
+    "EventEmitterAsyncResource.prototype.asyncId": "Getter delegates actual owned resource ID",
+    "EventEmitterAsyncResource.prototype.triggerAsyncId": "Getter delegates actual trigger ID",
+    "EventEmitterAsyncResource.prototype.asyncResource": "Getter returns same actual AsyncResource referring to emitter",
+    "EventEmitterAsyncResource.asyncResource.eventEmitter": "Private-branded referencing getter, actual emitter identity/lifetime",
+    "on().next": "Drain queued events, then stored one-time error, then done/wait; genuine Promise result and watermark resume timing",
+    "on().return": "Dispose abort/listeners, finish pending waiters; retained queued events are not invented eager-cleared behavior",
+    "on().throw": "Same-realm Error validation, source error/close path, valid call returns undefined",
+    "on().[Symbol.asyncIterator]": "Own method returns receiver; actual AsyncIteratorPrototype inheritance",
+    "on().[Symbol.asyncDispose]": "Inherited real engine disposal calls return and awaits; reviewed engine source/feature owners, no fabricated one-off method",
+    "on().[Symbol.for(nodejs.watermarkData)]": "Own getter object size/low/high/isPaused, exact pause >high/resume <low, mutable descriptor/receiver semantics",
+    "addAbortListener().[Symbol.dispose]": "Own symbol method on null-prototype object removes registered listener or cancels pending preaborted microtask; repeated cleanup semantics",
+    "[namespace order and descriptors]": "Function/self alias/exact descriptor/own-key insertion order; candidate order differs from target, loader coherence separate",
+    "[unhandled error metadata]": "Actual coded Error subclass/context/toString, original Error rethrow identity and fatal emission-stack enhancer phase",
+    "[target disagreements]": "Direct class name option versus doc default; repeated/manual/GC destroy behavior; nonnegative fractional/zero limits versus prose wording",
+    "init": "Retained exported init/legacy state hook; callable metadata and capture/shape/null-proto map; domain replacement missing",
+    "usingDomains": "Retained false metadata until actual domain integration, not domain support"
+  },
+  "sourceComparisons": {
+    "publicHelpersExactTargetExcerpt": true,
+    "publicHelpersPresentInGeneratedBundle": true,
+    "lazyEmitterResourceExactTargetExcerpt": true,
+    "lazyEmitterResourcePresentInGeneratedBundle": true,
+    "EventEmitter.init = function(opts) {": {
+      "whitespaceNormalizedEqual": true,
+      "targetExcerptSha256": "561a2b5da50aa06211735857433494013047d823e778c5e6fe0f31b900ccbe80",
+      "candidateExcerptSha256": "561a2b5da50aa06211735857433494013047d823e778c5e6fe0f31b900ccbe80"
+    },
+    "function addCatch(": {
+      "whitespaceNormalizedEqual": true,
+      "targetExcerptSha256": "a8e1af693bf9ce236b619e0dd1a61afaa2f03191f5085cd14110da963ef3387a",
+      "candidateExcerptSha256": "a8e1af693bf9ce236b619e0dd1a61afaa2f03191f5085cd14110da963ef3387a"
+    },
+    "listenerCoreDiff": "--- \n\n+++ \n\n@@ -396,6 +396,4 @@\n\n \n function arrayClone(arr) {\n-  // At least since V8 8.3, this implementation is faster than the previous\n-  // which always used a simple for-loop\n   switch (arr.length) {\n     case 2: return [arr[0], arr[1]];\n@@ -436,9 +434,4 @@\n\n }\n \n-/**\n- * Returns a copy of the array of listeners for the event name\n- * specified as `type`.\n- * @param {EventEmitter | EventTarget} emitterOrTarget\n- * @param {string | symbol} type\n- * @returns {Function[]}\n- */\n+\n+",
+    "listenerCoreDiffDisposition": "Only removed comments; actual helper/error/primordial dependencies reviewed separately, not runtime proof"
+  },
+  "sourceFiles": {
+    "lib/events.js": "1e974008f9c43a046124557f170ff1af23d239eb107f883b0420598f465611f3",
+    "doc/api/events.md": "ddbacc018b2989525f45c92f38bf807ca4e08dab68e5fa87eac156ebba43ca3d",
+    "lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
+    "lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
+    "lib/internal/events/abort_listener.js": "fa7d14991f7fe53e646cd89b12eaff000ca729d6ec2ee4359cf4081f49cfa4f5",
+    "lib/internal/events/symbols.js": "eff49f22c59c0d97da42fe6834dcc8a482b4892b701185baed81050270e441e3",
+    "lib/internal/fixed_queue.js": "7835f56dd55679da79eb676af0daa57fd23a87e811a2fce709965a83311bb74c",
+    "lib/internal/errors.js": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+    "lib/internal/validators.js": "dd61b9cb7af5c18b46f2029c2f06b0fc2638d1cd870fe65934966e840e88e1c2",
+    "lib/internal/util.js": "4aa900feab2a6cdb84060c0358c569578d31b6f0831224792868ece9b8899951",
+    "lib/internal/process/task_queues.js": "71fac2b5855102504d67fd228e3466a46aacbf9cd44126320b677fd31d53a472",
+    "lib/internal/per_context/primordials.js": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622"
+  },
+  "candidateFiles": {
+    "third_party/node-core/event-helpers-prelude.js": "b1a153562e62e83d5165c3d1f0510890aaee9967c4fbcb6b3b30fdf535aa5213",
+    "third_party/node-core/upstream/events-public-helpers.js": "abcc6704035461a146c8ba5ed80fa1261dc4d7dedd8ad9c7811cd0d6a35109de",
+    "third_party/node-core/upstream/events-async-resource.js": "1ea12b415c8b950cec4aead532b59e92137c788a4fe8906aa44ff868e955f0e7",
+    "third_party/node-core/event-platform-adapter.js": "83c398737e7a7fa0af9b86f10ee289057b10f2a210e7a31a0025301e2e1773ed",
+    "third_party/node-core/async-platform-adapter.js": "e783a1276ec487b345b515abf4e2104552eff96fc79fc4167442f09ea56dc7e5",
+    "third_party/node-core/native-async.cpp": "f150ffc494ad831ef5343396ec32dc6e2c97ac414b6c6b92eb2959426974fb5b"
+  },
+  "scope": "node:events emitter/helper scope, not later EventTarget/global document sections or full async dependency signoff",
+  "newRuntimeTests": 0,
+  "newBuilds": 0
+}
