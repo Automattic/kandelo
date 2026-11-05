@@ -4310,3 +4310,7 @@ The checked-in FrankenPHP classic Node probe now passes: PHP and a static
 asset return HTTP 200, the built-in OPcache compiles a target script into the
 file cache, and no host diagnostic is emitted. This is standalone classic
 SAPI evidence; it does not yet establish WordPress behavior.
+The focused normal NetHack resolver build then passed in 4m23s on the fixed
+kernel worker, including its guest `makedefs` execution. This closes the
+specific `EIO` path observed in the prior WordPress image attempt; the
+whole image must still be rebuilt and booted.
