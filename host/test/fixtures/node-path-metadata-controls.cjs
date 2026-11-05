@@ -114,4 +114,79 @@ module.exports={
       ];
     } finally {fs.rmSync(base,{recursive:true,force:true});}
   },
+  hardlinkSyncOwnership(candidate) {
+    const base=root(),src=path.join(base,'source'),dst=path.join(base,'destination');
+    try {
+      fs.writeFileSync(src,'before');
+      assert.equal(candidate.api.linkSync(pathToFileURL(src),Buffer.from(dst)),undefined);
+      const same=fs.statSync(src).ino===fs.statSync(dst).ino;
+      const links=fs.statSync(src).nlink;
+      fs.appendFileSync(dst,' after');fs.unlinkSync(src);
+      const retained=fs.readFileSync(dst,'utf8'),remaining=fs.statSync(dst).nlink;
+      const symlink=path.join(base,'symlink'),alias=path.join(base,'symlink-alias');
+      fs.symlinkSync('destination',symlink);candidate.api.linkSync(symlink,alias);
+      return {same,links,retained,remaining,symlink:fs.lstatSync(alias).isSymbolicLink(),target:fs.lstatSync(alias).isSymbolicLink()?fs.readlinkSync(alias):fs.readFileSync(alias,'utf8')};
+    } finally {fs.rmSync(base,{recursive:true,force:true});}
+  },
+  hardlinkErrorsAndValidation(candidate) {
+    const base=root(),src=path.join(base,'source'),dst=path.join(base,'destination');
+    try {
+      fs.writeFileSync(src,'source');fs.writeFileSync(dst,'destination');
+      const raw=Buffer.concat([Buffer.from(base+'/missing-'),Buffer.from([0xff])]);
+      return [[null,null],[src,null],['',dst],[src,''],[path.join(base,'missing'),dst],
+        [src,dst],[raw,path.join(base,'raw-dest')],[src,path.join(base,'missing-parent/dest')]]
+        .map(args=>outcome(()=>candidate.api.linkSync(...args),base)).concat([
+          outcome(()=>candidate.api.link(null,null,undefined),base),
+          outcome(()=>candidate.api.link(src,null,()=>{}),base),
+        ]);
+    } finally {fs.rmSync(base,{recursive:true,force:true});}
+  },
+  async hardlinkCallbackScopeAndCopies(candidate) {
+    const base=root(),src=path.join(base,'source'),alpha=path.join(base,'alpha'),bravo=path.join(base,'bravo');
+    const storage=new AsyncLocalStorage(),resources=new Set();let dest=Buffer.from(alpha),seen=0;
+    fs.writeFileSync(src,'owned');
+    const hook=createHook({init(id,type){if(type==='FSREQCALLBACK'){resources.add(id);seen++;dest.set(Buffer.from(bravo));}}}).enable();
+    try {
+      await storage.run('hardlink-context',()=>new Promise((resolve,reject)=>{
+        let returned=false;
+        candidate.api.link(Buffer.from(src),dest,function(error){
+          try {assert.equal(error,null);assert.equal(arguments.length,1);assert.equal(this,undefined);
+            assert.equal(returned,true);assert.equal(storage.getStore(),'hardlink-context');
+            assert(resources.has(executionAsyncId()));resolve();}catch(e){reject(e);}
+        });
+        returned=true;dest.fill(0x78);
+      }));
+      return {seen,alpha:fs.existsSync(alpha),bravo:fs.readFileSync(bravo,'utf8'),links:fs.statSync(src).nlink};
+    } finally {hook.disable();fs.rmSync(base,{recursive:true,force:true});}
+  },
+  async hardlinkPromiseDestination(candidate) {
+    const base=root(),src=path.join(base,'source'),dst=path.join(base,'destination');fs.writeFileSync(src,'promise');
+    try {
+      assert.equal(await candidate.promises.link(Buffer.from(src),pathToFileURL(dst)),undefined);
+      const results=[];
+      for(const [from,to] of [[src,dst],[path.join(base,'missing'),path.join(base,'alias')]]) {
+        let error;try{await candidate.promises.link(from,to);}catch(e){error=e;}
+        assert(error);results.push(outcome(()=>{throw error;},base));
+      }
+      let returned=false;const promise=candidate.promises.link(null,null);returned=true;
+      await assert.rejects(promise,{code:'ERR_INVALID_ARG_TYPE'});assert(returned);
+      return {contents:fs.readFileSync(dst,'utf8'),errors:results};
+    } finally {fs.rmSync(base,{recursive:true,force:true});}
+  },
+  sharedCompletionDestination(candidate) {
+    const base=root(),src=path.join(base,'missing'),dst=path.join(base,'destination');
+    try {
+      const expected=outcome(()=>fs.linkSync(src,dst),base);
+      if(!candidate.complete)return expected;
+      let received;
+      candidate.complete.call({oncomplete(error){assert.equal(arguments.length,1);received=error;}},
+        expected.errno,'link',undefined,Buffer.from(src),Buffer.from(dst));
+      const result=outcome(()=>{throw received;},base);
+      assert.deepEqual(result,expected);
+      let arity;
+      candidate.complete.call({oncomplete(error){assert.equal(error,null);arity=arguments.length;}},0,'access',undefined,undefined,undefined);
+      assert.equal(arity,1);
+      return result;
+    } finally {fs.rmSync(base,{recursive:true,force:true});}
+  },
 };

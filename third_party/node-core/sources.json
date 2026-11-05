@@ -4464,6 +4464,24 @@
         "start": "function handleErrorFromBinding(",
         "length": 130,
         "sha256": "27447320d89711e70bee64140cafb9395944ebb5ec1303bc1d9aa3b8615f77b5"
+      },
+      "public-link": {
+        "source": "public",
+        "start": "function link(",
+        "length": 423,
+        "sha256": "33c018ea6a833cf97778056eaeec419852934c7981e53355a958179939705209"
+      },
+      "public-linkSync": {
+        "source": "public",
+        "start": "function linkSync(",
+        "length": 360,
+        "sha256": "434e2fedbba15918ba77375abed14a4aad4cca1557d981bd944a345b3fe0c0db"
+      },
+      "promises-link": {
+        "source": "promises",
+        "start": "async function link(",
+        "length": 465,
+        "sha256": "3323a1200826d7405425f0aeeaa55dce254e2d45a25e60ba2507649814695546"
       }
     },
     "scope": "Exact public sync/callback/promise pathname access/mode/owner/time wrappers with native POSIX metadata and shared native system-error construction. Not complete permission/backend/four-host conformance."

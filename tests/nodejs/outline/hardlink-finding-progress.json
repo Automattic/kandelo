@@ -1,0 +1,87 @@
+{
+  "at": "2026-11-05T17:58:42.729947+00:00",
+  "recipeRevision": 118,
+  "lastAcceptedEngine": 116,
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem-contracts.md",
+    "findingIds": [
+      "FS-006",
+      "FS-016",
+      "FS-017"
+    ],
+    "surface": [
+      "fs.link",
+      "fs.linkSync",
+      "fs.promises.link"
+    ],
+    "scope": "Partial implementation/evidence;broader finding IDs and complete APIs remain open"
+  },
+  "sourceImplemented": [
+    "Three unchanged pinned public functions with real path/URL validation,callback/promise/VFS handler contracts",
+    "Actual libc link and errno over existing kernel inode aliases/namespace authority;no byte-copy implementation or invented metadata",
+    "Two copied/accounted native pathnames with checked combined allocation sizes and actual FSREQ/native queue lifetime",
+    "Shared optional destination error value retains raw bytes and reaches actual UVException path/dest fields for callbacks and promises"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-link-source-r2/report.json",
+    "sha256": "9ed700462eaf0585a85e8c5cf25fe1cf718e8a44da3723f52e318fba06291139",
+    "upstreamCompleteFiles": 6,
+    "selectedIdentities": 13,
+    "scope": "Archive equality,generation,syntax and declared inputs;not native guest compilation"
+  },
+  "frontend": {
+    "report": ".context/node26-link-frontend-r2.json",
+    "sha256": "c89580473a3fcb82492cd3d68379b1c2c20ecb653cf8a8918f482b5f319fe141",
+    "newPassed": 5,
+    "affectedPassed": 7,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Candidate public/UVException/shared completion source over explicit native Node filesystem/request dependencies;not new guest C++"
+  },
+  "portableNative": {
+    "report": ".context/node26-hardlink-native-r3/report.json",
+    "sha256": "83d0bdaa052c93c790489929efa4b7d76590a5bc6723bec5af1bc9099a954033",
+    "passed": true,
+    "nativeHelperCompilationAttempts": 2,
+    "scope": "One native-owner/reference object comparison over real inode/content/lifetime and errors;fields are not separate public-API cases;reference-only final correction reuses second compiled owner"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-link-frontend-r1.json",
+      "sha256": "bd21a60797659cc19436a3968040cc4e82995e9d2e2cd9182a37759d12d0b978",
+      "kind": "frontend",
+      "passed": 11,
+      "failed": 1,
+      "reason": "New fixture unconditionally read a symlink alias;macOS resolved the link to a regular file. Now compares actual platform type/contents;no upstream assertion changed"
+    },
+    {
+      "report": ".context/node26-hardlink-native-r1/report.json",
+      "sha256": "9b89be14fa94729b7aa30072d1027b26a1224e7db34a01cefd390d614e9e10d8",
+      "kind": "fixture setup/harness-error",
+      "reason": "Both controls could not create invalid-byte name on development filesystem;nativeEILSEQ. Original source/control preimages retained"
+    },
+    {
+      "report": ".context/node26-hardlink-native-r2/report.json",
+      "sha256": "1a41467d4f8a2e69717971ef5a947e609758ce7f8c51d1bc243c33bafc2e0226",
+      "kind": "native differential",
+      "reason": "Reference sampled remaining link count after another macOS alias;owner sampled before. Reference measurement aligned;no production behavior changed"
+    },
+    {
+      "report": ".context/node26-link-source-r1.log",
+      "sha256": "6f3a61323748d10755855404c6d482b9794fbc6b916cf4c81748b245a102324d",
+      "kind": "source-check",
+      "reason": "Missing changed shared fs-truncate adapter recipe input;declaration added"
+    }
+  ],
+  "remaining": [
+    "Guest compile of shared completion/two-path work owner and previous117empty-input correction",
+    "Actual guest callback/promise/resource lifetime,raw storage/hooks/cancel/shutdown/reentry/OOM/GC and full errors/descriptors across all four hosts",
+    "Inode/symlink/permission/namespaceEXDEV reconciliation,including kernelNOFOLLOW versus observed native Darwin behavior;no accepted deviation declared",
+    "Unchanged upstream link/FS-error validation after breadth pass;other filesystem gaps and every family remain open"
+  ],
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

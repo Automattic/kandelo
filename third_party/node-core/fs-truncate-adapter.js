@@ -12,10 +12,10 @@ function _createNodeFsTruncation(platform) {
         try { platform.throwErrno(-status, syscall, path, dest); }
         catch (error) { return error; }
     }
-    function complete(status, syscall, value, path) {
+    function complete(status, syscall, value, path, dest) {
         let error = null;
         if (status < 0) {
-            error = makeError(status, syscall, path);
+            error = makeError(status, syscall, path, dest);
         }
         // FSReqCallback::Resolve passes only null for an undefined result;
         // Reject passes just its error. The native job supplies real values.

@@ -16,7 +16,9 @@ const relay=bootstrap.slice(bootstrap.indexOf('function _errnoToCode('),bootstra
 const truncationSource=fs.readFileSync(path.resolve(__dirname,'../../../third_party/node-core/fs-truncate-adapter.js'),'utf8');
 const makeErrorStart=truncationSource.indexOf('    function makeError(');
 const makeErrorSource=truncationSource.slice(makeErrorStart,truncationSource.indexOf('\n    }',makeErrorStart)+6);
-const argumentList = (name, path, first, second) => name === 'access' || name === 'chmod' ? [path,first] : [path,first,second];
+const completeStart=truncationSource.indexOf('    function complete(');
+const completeSource=truncationSource.slice(completeStart,truncationSource.indexOf('\n    }',completeStart)+6);
+const argumentList = (name, path, first, second) => name === 'access' || name === 'chmod' || name === 'link' ? [path,first] : [path,first,second];
 exports.create = function create() {
   const uv = { binding:nativeUv, getSystemErrorName:util.getSystemErrorName };
   const errorOwner = factories.errors({ uv, codecs: { decodeBytes: bytes => BufferToString(BufferFrom(bytes),'utf8') } });
@@ -42,7 +44,7 @@ exports.create = function create() {
     },
   };
   return { ...factories.metadata({ values,utils,truncation,native,constants:fs.constants }),
-    errorOwner, calls, values, truncation };
+    errorOwner, calls, values, truncation, complete:Function('makeError','ReflectApply',completeSource+';return complete;')(makeError,Reflect.apply) };
 };
 // This preload deliberately substitutes real native request/metadata owners.
 // It tests selected public source, never the uncompiled guest JSAPI/queue.

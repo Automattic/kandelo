@@ -66,7 +66,7 @@
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "22611a7cca72f1918c65333550dd8a95338b99661b1ffb98b54464f37f1ec075"
+        "packages/registry/spidermonkey/build.toml": "033147c3ea3911e132ce5cebdac016c3a4a3816af320c5c3740f295ec449abb5"
       },
       "sourceRoute": "pinned URL/path/byte-path/HTTP-option helpers over shared parser and platform owners; generic native Error location policy; pinned AssertionError/Myers diff and shared validator/error/color/primordial owners; values/util/UV/dotenv/MIME/Buffer/path owners and full querystring/punycode algorithms with saved-frame load-origin source; pinned util/StringDecoder owners and callable Buffer/shared aligned pool/permanent storage/zero-fill source",
       "remainingDependencies": "Private worker marks have a source owner and focused environment evidence; remaining Buffer/backing-store/realm/CLI/error/descriptor edges, remaining util/URL/IDNA/encoding, complete errors/brands/descriptors and guest byte/origin/loader/warning conformance",
@@ -89,7 +89,7 @@
         "equals": "async"
       },
       "selectedCurrentSourceIdentities": {
-        "third_party/node-core/native-fs.cpp": "3ef63119a092a81aa342538db26a499787aa7f3a3191710d6a36c667610e0f61",
+        "third_party/node-core/native-fs.cpp": "229783877cfe8021074ad99458b2c430becd72ee279756ea8e8eb8869c1f6842",
         "third_party/node-core/native-random.cpp": "69183cd6fe601262851eb704eeac26c54160e9bf080800d79277bce9856f4062",
         "third_party/node-core/async-platform-adapter.js": "6c6297ca0297b8975d3a508659ed4e730181285f6a52dedddf933ec6ca1c060f",
         "third_party/node-core/event-platform-adapter.js": "83c398737e7a7fa0af9b86f10ee289057b10f2a210e7a31a0025301e2e1773ed",
@@ -146,6 +146,7 @@
         "equals": "filesystem"
       },
       "selectedCurrentSourceIdentities": {
+        "third_party/node-core/fs-truncate-adapter.js": "b105c3f2ea94641e68fc06fe1fb0deb12941236c9b3b42b5a25563f08612071b",
         "third_party/node-core/tempdir-platform-adapter.js": "5102bbeeeb0ca8ffe47dec42d4edad3a91e0e8c6842903b3d3fb904b237afa39",
         "third_party/node-core/url-path-platform-adapter.js": "9db59cbd3a1a7e05938bf8c0a05e1fc6a87fe9a0a503dc79762529098494a5ca",
         "third_party/node-core/file-sync-adapter.js": "a764abfd8bb8697006b467a4c32f9a6a7c2f4eb3f616b250cbfa6151996dd767",
@@ -154,9 +155,9 @@
         "third_party/node-core/native-file-jobs.cpp": "0243a2afcf02de74e6f911cf64b0c79a66f365ea6aa157bb4c2ecb2ce63b976a",
         "third_party/node-core/file-jobs-adapter.js": "421c39f5139be3c48861f6e881eba2520118d621d757c1cfa40351aa41168a60",
         "third_party/node-core/fs-callback-adapter.js": "c14f00872d51a8b3ec137b527800113fad55696ed43e342de5b0a43ead0e0112",
-        "third_party/node-core/path-metadata-adapter.js": "9644e03d5e5fa979d344a325d97508b95a08d03ec3c8d5958a565aa523643388",
-        "third_party/node-core/path-metadata-operations.h": "a66760f739cb7bbf662722c6b30d01ffbb765cbd296d107d89b20b87325fbd06",
-        "third_party/node-core/native-path-metadata.cpp": "1d9a6b2705c2840be64cbdb34de6856f1469cf59440f5685ace2b7a128ddeb57",
+        "third_party/node-core/path-metadata-adapter.js": "788bcb3366e71d515a6642cb9f428ec37185b10754be6f69b8e39755b632fa5a",
+        "third_party/node-core/path-metadata-operations.h": "c57afbcc3044d978d516bb883113208e9208253af4415d35e279a94120b089b6",
+        "third_party/node-core/native-path-metadata.cpp": "0c4b76fa1df8a6792e6fd42fd798ba691a06fa419090cd30fd5588913a513f5d",
         "third_party/node-core/fs-system-errors-adapter.js": "d2541bb65fa772be497d54bdea11f4192fb1b6934ef48c6e0397328b04418ffa",
         "third_party/node-core/native-fs-promise.cpp": "e75846911ec9094dbb68f41aba34313417087d7ef68864ec0bf19dd2c7667f66",
         "third_party/node-core/upstream/path-metadata/lib/fs.js": "21e9604151bcdfdacec9ec6e127e8ba906fb1b4e9415fd0de3221b7e92a08ef3",
@@ -165,7 +166,7 @@
         "third_party/node-core/dir-cursor.h": "28bdb5016f6d1163158b271dcbe6082f4a30699682c9bb38541e1e3318f6e074",
         "third_party/node-core/native-dir.cpp": "cacfe378a2de1143f6c11855a63b6f3696125d905bb9b0e1b1932522ff0161b7",
         "third_party/node-core/upstream/dir/lib/internal/fs/dir.js": "b0790f231855c30be329836456a1d85d6c1e082373a6fd6b74ea927b8e7fe0c2",
-        "third_party/node-core/native-fs.cpp": "3ef63119a092a81aa342538db26a499787aa7f3a3191710d6a36c667610e0f61",
+        "third_party/node-core/native-fs.cpp": "229783877cfe8021074ad99458b2c430becd72ee279756ea8e8eb8869c1f6842",
         "third_party/node-core/native-async.cpp": "22773b10bfbf2166ddff8abe65b567e0f7ed90f7552c007c2ca26012d2df772c",
         "third_party/node-core/readdir-platform-adapter.js": "3b0fc98c2f1be73d4508776df9c599a09dec8a98da0318d20337b47175b68236",
         "third_party/node-core/native-readdir.cpp": "9afa67e93cf7c3599fd02837ee389d7c8af302ed14deadc458195f61f21b04e3",
@@ -197,7 +198,7 @@
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
-        "node": "Scoped115identified-artifact broadcast/worker/tempdir evidence;full family conformance unestablished",
+        "node": "118hardlink/shared destination source uncompiled;frontend/native-owner comparisons only. Full family and current guest conformance unestablished.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -356,7 +357,7 @@
         "packages/registry/php/package.toml": "3ae9d7bc075a1e187e0262e276f16d63b02aacd9e213f1f4f440ac52bee6cbba",
         "packages/registry/php/build.toml": "ad4e35904e40a9027b646dd25f342b0335a0afcd025edaee68354d656bc05ab4",
         "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
-        "packages/registry/spidermonkey/build.toml": "22611a7cca72f1918c65333550dd8a95338b99661b1ffb98b54464f37f1ec075",
+        "packages/registry/spidermonkey/build.toml": "033147c3ea3911e132ce5cebdac016c3a4a3816af320c5c3740f295ec449abb5",
         "packages/registry/wget/package.toml": "252e2ea144b723a24617f78911bf44ff9ec5ff61d2f0c12a6947c7c170e97b2e",
         "packages/registry/wget/build.toml": "ad538e1d004b0ab32732563826a33c6230ff627d855b0f14de3627d2d508569e"
       },
@@ -433,7 +434,7 @@
         "packages/registry/php/package.toml": "3ae9d7bc075a1e187e0262e276f16d63b02aacd9e213f1f4f440ac52bee6cbba",
         "packages/registry/php/build.toml": "ad4e35904e40a9027b646dd25f342b0335a0afcd025edaee68354d656bc05ab4",
         "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
-        "packages/registry/spidermonkey/build.toml": "22611a7cca72f1918c65333550dd8a95338b99661b1ffb98b54464f37f1ec075",
+        "packages/registry/spidermonkey/build.toml": "033147c3ea3911e132ce5cebdac016c3a4a3816af320c5c3740f295ec449abb5",
         "packages/registry/wget/package.toml": "252e2ea144b723a24617f78911bf44ff9ec5ff61d2f0c12a6947c7c170e97b2e",
         "packages/registry/wget/build.toml": "ad538e1d004b0ab32732563826a33c6230ff627d855b0f14de3627d2d508569e",
         "packages/registry/node-ncrypto/package.toml": "aa361891e88e356114e223dd009c63de934a8d7a01986da92ea2f927c4d8716f",
@@ -582,7 +583,7 @@
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "22611a7cca72f1918c65333550dd8a95338b99661b1ffb98b54464f37f1ec075"
+        "packages/registry/spidermonkey/build.toml": "033147c3ea3911e132ce5cebdac016c3a4a3816af320c5c3740f295ec449abb5"
       },
       "sourceRoute": "Actual thread/context/input/error/join owners and connected local endpoint packets/IO; shared native weak clone/transfer marks, Buffer backing policy and pinned public marking wrappers with native Proxy rejection",
       "remainingDependencies": "Broader native environment guest/GC/realm evidence beyond three Node-host cases and full prototype/shared-store policy, guest registry/GC/realm/ownership evidence, endpoint/host transfer/context movement, broadcast/thread routing/locks, full Worker options/stdio/resource/ref/failure/termination/public lifecycle and four-host conformance",
@@ -610,7 +611,7 @@
         "third_party/node-core/native-work.cpp": "530d8d95eb485264d76f9ef56cbe4d570fdd678ab6adf9cb0cb7c17f174013fa",
         "third_party/node-core/generate-codec-contexts.py": "6f61278030201514033f6fabd0aefc63a2d0e4c23294e2f6113242f98ce760e5",
         "packages/registry/node-compat/bootstrap.js": "313b98ec890c69020af20ef1e501378708d09f672ce358e28f2b6f556bc7cfd8",
-        "packages/registry/spidermonkey/build.toml": "22611a7cca72f1918c65333550dd8a95338b99661b1ffb98b54464f37f1ec075"
+        "packages/registry/spidermonkey/build.toml": "033147c3ea3911e132ce5cebdac016c3a4a3816af320c5c3740f295ec449abb5"
       },
       "sourceRoute": "pinned codec/archive/iterable JS and native contexts; actual shared/growable queue leases and synchronous resizable codec/CRC/dictionary spans compiled in112",
       "remainingDependencies": "Ordinary async resizable/transfer/pre-existing pin ownership; complete modes/options/iterators/files and native cleanup/cancellation/accounting; retained gzip OS-byte comparison mismatches and complete four-host evidence",
@@ -672,7 +673,7 @@
         "third_party/node-core/native-vm.cpp": "55c20f56eb704baad5e65498ce7361b2991d1382a75f37aff46312dfb5c12b62",
         "packages/registry/node-compat/bootstrap.js": "313b98ec890c69020af20ef1e501378708d09f672ce358e28f2b6f556bc7cfd8",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "22611a7cca72f1918c65333550dd8a95338b99661b1ffb98b54464f37f1ec075"
+        "packages/registry/spidermonkey/build.toml": "033147c3ea3911e132ce5cebdac016c3a4a3816af320c5c3740f295ec449abb5"
       },
       "sourceRoute": "generic native Error location policy across registered root/worker contexts and VM realms; VM compiler, actual ordinary DONT_CONTEXTIFY globals, per-runtime chained security-callback owners and partial nominal GC budget",
       "remainingDependencies": "Complete ordinary sandbox exotic behavior, context metadata/deadlines/modules/cache/microtasks, inspector, heap measurements and worker/guest integration",
@@ -753,7 +754,7 @@
         "equals": "documentation"
       },
       "selectedCurrentSourceIdentities": {
-        "tests/nodejs/outline/current-capability-reconciliation.md": "b29b143016c621269d5773de4e21cb6a65dd001bd5b10e65a4d613ba96afaf38"
+        "tests/nodejs/outline/current-capability-reconciliation.md": "2548809b93b65a68fb249e55c11f463d4100edff18b6305938f621dc4f01f023"
       },
       "sourceRoute": "This reconciliation and original requirements",
       "remainingDependencies": "Actual warning/origin/CLI/environment/activation behavior and unresolved target prose/source questions",

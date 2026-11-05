@@ -180,6 +180,9 @@ struct KandeloFsWork : js::shell::KandeloNativeWork {
   virtual bool ErrorPathValue(JSContext*, MutableHandleValue value) {
     value.setUndefined(); return true;
   }
+  virtual bool ErrorDestValue(JSContext*, MutableHandleValue value) {
+    value.setUndefined(); return true;
+  }
   virtual bool PrepareResult(JSContext*) { return true; }
   virtual bool ResultIsException() const { return false; }
   virtual const char* Syscall() const {
@@ -224,11 +227,12 @@ struct KandeloFsWork : js::shell::KandeloNativeWork {
     if (succeeded && !PrepareResult(cx)) return false;
     RootedValue frame(cx, JS::GetReservedSlot(resource, FsRequestFrame));
     RootedValue callback(cx, JS::GetReservedSlot(resource, FsRequestCallback)), ignored(cx);
-    JS::RootedValueArray<4> arguments(cx); arguments[0].setNumber(succeeded ? 0 : double(result));
+    JS::RootedValueArray<5> arguments(cx); arguments[0].setNumber(succeeded ? 0 : double(result));
     RootedString syscall(cx, JS_NewStringCopyZ(cx, Syscall()));
     if (!syscall) return false;
     arguments[1].setString(syscall);
     if (!succeeded && !ErrorPathValue(cx, arguments[3])) return false;
+    if (!succeeded && !ErrorDestValue(cx, arguments[4])) return false;
     KandeloNativeCallbackScope scope(cx, resource, frame);
     if (!scope.Enter()) return scope.Stopped();
     if (ResultIsException()) {
@@ -252,8 +256,9 @@ struct KandeloFsWork : js::shell::KandeloNativeWork {
                             &JS::GetReservedSlot(resource, FsRequestParent).toObject());
         RootedValue makeError(cx, JS::GetReservedSlot(parent, FsRequestCallback));
         RootedValue error(cx);
-        JS::RootedValueArray<3> errorArguments(cx);
+        JS::RootedValueArray<4> errorArguments(cx);
         errorArguments[0].set(arguments[0]); errorArguments[1].set(arguments[1]); errorArguments[2].set(arguments[3]);
+        errorArguments[3].set(arguments[4]);
         if (!JS_CallFunctionValue(cx, parent, makeError, errorArguments, &error) ||
             !JS::RejectPromise(cx, promise, error)) return false;
       } else {

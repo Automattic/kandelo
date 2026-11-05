@@ -1,5 +1,17 @@
 # Current public-contract reconciliation
 
+Source revision 118 adds pinned hard-link sync/callback/promise APIs over
+actual libc operations, owned queued source/destination paths and shared
+destination-error completion. Twelve frontend controls and one portable-owner
+comparison pass within explicit native dependency boundaries. The new C++ and
+source117 empty-input fix remain guest-uncompiled; accepted engine116 is not
+current. Its earlier cipher failures remain open, with a bounded native-tag
+investigation recorded separately. All 19 families remain incomplete; overall
+suites and a full product rebuild remain deferred. See
+[hard-link ownership and evidence](hardlink-implementation-dependencies.md).
+
+Earlier revision checkpoints below retain their historical scope.
+
 Source revision 117 supplies pinned Cipheriv/Decipheriv algorithms over actual
 native ncrypto/OpenSSL contexts and fixes the empty-data versus null-control
 boundary. The accepted targeted engine 116 compiles the preceding source and

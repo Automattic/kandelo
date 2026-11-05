@@ -19119,10 +19119,10 @@ function setVfsHandlers(handlers) { vfsState.handlers = handlers; }
         try { platform.throwErrno(-status, syscall, path, dest); }
         catch (error) { return error; }
     }
-    function complete(status, syscall, value, path) {
+    function complete(status, syscall, value, path, dest) {
         let error = null;
         if (status < 0) {
-            error = makeError(status, syscall, path);
+            error = makeError(status, syscall, path, dest);
         }
         // FSReqCallback::Resolve passes only null for an undefined result;
         // Reject passes just its error. The native job supplies real values.
@@ -39364,7 +39364,8 @@ function _createNodePathMetadata(platform) {
         if (request !== undefined) return platform.native.fsMetadataPromise(name, path, first, second,
             request === kUsePromises ? makeError : request);
         const status = platform.native.fsMetadataSync(name, path, first, second);
-        if (status < 0) throw makeError(status, name === 'utimes' ? 'utime' : name === 'lutimes' ? 'lutime' : name, path);
+        if (status < 0) throw makeError(status, name === 'utimes' ? 'utime' : name === 'lutimes' ? 'lutime' : name,
+            path, name === 'link' ? first : undefined);
     }
     const binding = {
         access: (path, mode, req) => operation('access', path, mode, undefined, req),
@@ -39373,6 +39374,7 @@ function _createNodePathMetadata(platform) {
         lchown: (path, uid, gid, req) => operation('lchown', path, uid, gid, req),
         utimes: (path, atime, mtime, req) => operation('utimes', path, atime, mtime, req),
         lutimes: (path, atime, mtime, req) => operation('lutimes', path, atime, mtime, req),
+        link: (existingPath, newPath, req) => operation('link', existingPath, newPath, undefined, req),
     };
     function makeCallback(cb) {
   validateFunction(cb, 'cb');
@@ -39541,8 +39543,37 @@ function lutimesSync(path, atime, mtime) {
 
   binding.lutimes(path, atime, mtime);
 }
+function link(existingPath, newPath, callback) {
+  callback = makeCallback(callback);
+
+  const h = vfsState.handlers;
+  if (h !== null && vfsVoid(h.link(existingPath, newPath), callback)) return;
+
+  existingPath = getValidatedPath(existingPath, 'existingPath');
+  newPath = getValidatedPath(newPath, 'newPath');
+
+  const req = new FSReqCallback();
+  req.oncomplete = callback;
+
+  binding.link(existingPath, newPath, req);
+}
+function linkSync(existingPath, newPath) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const result = h.linkSync(existingPath, newPath);
+    if (result !== undefined) return;
+  }
+
+  existingPath = getValidatedPath(existingPath, 'existingPath');
+  newPath = getValidatedPath(newPath, 'newPath');
+
+  binding.link(
+    existingPath,
+    newPath,
+  );
+}
         return { access, accessSync, chmod, chmodSync, chown, chownSync,
-            lchown, lchownSync, utimes, utimesSync, lutimes, lutimesSync };
+            lchown, lchownSync, utimes, utimesSync, lutimes, lutimesSync, link, linkSync };
     }
     function promiseAPIs() {
         async function access(path, mode = F_OK) {
@@ -39639,7 +39670,21 @@ async function lutimes(path, atime, mtime) {
     handleErrorFromBinding,
   );
 }
-        return { access, chmod, chown, lchown, utimes, lutimes };
+async function link(existingPath, newPath) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const promise = h.link(existingPath, newPath);
+    if (promise !== undefined) { await promise; return; }
+  }
+  existingPath = getValidatedPath(existingPath, 'existingPath');
+  newPath = getValidatedPath(newPath, 'newPath');
+  return await PromisePrototypeThen(
+    binding.link(existingPath, newPath, kUsePromises),
+    undefined,
+    handleErrorFromBinding,
+  );
+}
+        return { access, chmod, chown, lchown, utimes, lutimes, link };
     }
     return { api: publicAPIs(), promises: promiseAPIs() };
 }
