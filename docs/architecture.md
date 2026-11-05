@@ -214,6 +214,7 @@ Key host components:
 | SharedIpcTable | `shared-ipc-table.ts` | SysV IPC (msg queues, semaphores, shm) |
 | NodeWorkerAdapter | `worker-adapter.ts` | Creates Node.js worker_threads |
 | BrowserWorkerAdapter | `worker-adapter-browser.ts` | Creates Web Workers |
+| SpareWorkerPool | `spare-worker-pool.ts` | Keeps process and thread Workers started before a launch takes them |
 
 `NodeWorkerAdapter` prefers the compiled worker entry distributed with the
 host package. In a source checkout without `host/dist`, it bundles the
@@ -221,6 +222,20 @@ TypeScript entry once per adapter and reuses that temporary module for later
 process workers; if bundling is unavailable, it falls back to the `tsx`
 loader. Browser worker entries are bundled by the browser build and do not use
 this Node-only source fallback.
+
+Both adapters keep up to two spare Workers (`SpareWorkerPool`). A spare has
+evaluated the worker entry and waits in its event loop for its one init
+message. A fork child, an exec replacement, a `posix_spawn` child, or a thread
+takes a spare when one is ready, so starting the Worker realm is not on its
+launch path. The pool starts its first spares after the first launch, and
+refills on a later task, after the taking launch has posted its init. A spare
+holds no Memory, program, channel, or pid, and it is never parked in
+`Atomics.wait`, so `terminate()` reclaims an unused spare on every engine.
+Machine destroy terminates the spares first. Node uses spares only for the
+built-in entry, which reads its init as a message; an unused spare is
+`unref()`'d so it does not keep the Node process alive. A spare that fails to
+start before a launch takes it is terminated, and the launch takes the next
+spare or constructs its own Worker.
 
 Kernel module instantiation snapshots the caller's exact intrinsic
 `ArrayBuffer`, typed-array, or `DataView` byte window before inspecting it.

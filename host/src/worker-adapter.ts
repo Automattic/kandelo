@@ -105,6 +105,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NODE_WORKER_INIT_BY_MESSAGE } from "./node-worker-initialization";
 import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
+import { SPARE_WORKERS, SpareWorkerPool } from "./spare-worker-pool";
 
 // Wasm guest stacks consume the embedding worker's native stack when engines
 // recurse through Wasm frames. Keep the default high enough for stack-heavy
@@ -182,6 +183,20 @@ export class NodeWorkerAdapter implements WorkerAdapter {
   private _bundledSourceEntry: URL | false | undefined;
   private readonly initializeByMessage: boolean;
   private injectedVforkStartFailure = false;
+  // WHY: a spare waits for Kandelo's init message, so only the built-in
+  // entry, which reads that message, takes spares. An unused spare is
+  // unref'd: it must not keep the embedding Node process alive.
+  private readonly spares = new SpareWorkerPool<Worker>(
+    SPARE_WORKERS,
+    (failed) => {
+      const worker = this.constructWorker(NODE_WORKER_INIT_BY_MESSAGE);
+      worker.unref();
+      worker.once("error", failed);
+      worker.once("exit", failed);
+      return worker;
+    },
+    (worker) => void worker.terminate(),
+  );
 
   constructor(
     entryUrl?: URL,
@@ -328,17 +343,29 @@ export class NodeWorkerAdapter implements WorkerAdapter {
       workerData,
       this.initializeByMessage,
     );
+    const spare = initialization.transport === "message"
+      ? this.spares.take()
+      : undefined;
+    spare?.ref();
+    return this.initializeWorker(
+      spare ?? this.constructWorker(initialization.workerDataValue),
+      initialization,
+    );
+  }
+
+  /** Terminate the spare Workers. Launched Workers keep their own owners. */
+  dispose(): void {
+    this.spares.dispose();
+  }
+
+  private constructWorker(workerDataValue: unknown): Worker {
     // Try the compiled JS entry first (much faster startup — avoids tsx
     // bootstrap which takes >500ms with 10+ concurrent workers).
     const compiledEntry =
       this.resolveCompiledEntry() ?? (this.sourceOptions.bundleSource === false
         ? null : this.resolveBundledSourceEntry());
     if (compiledEntry) {
-      const worker = new Worker(
-        compiledEntry,
-        nodeWorkerOptions(initialization.workerDataValue),
-      );
-      return this.initializeWorker(worker, initialization);
+      return new Worker(compiledEntry, nodeWorkerOptions(workerDataValue));
     }
 
     // Fallback: tsx eval bootstrap for running from TypeScript source.
@@ -353,11 +380,10 @@ export class NodeWorkerAdapter implements WorkerAdapter {
       `await import('${entryUrl}');`,
     ].join("\n");
 
-    const worker = new Worker(
+    return new Worker(
       bootstrap,
-      nodeWorkerOptions(initialization.workerDataValue, { eval: true }),
+      nodeWorkerOptions(workerDataValue, { eval: true }),
     );
-    return this.initializeWorker(worker, initialization);
   }
 }
 

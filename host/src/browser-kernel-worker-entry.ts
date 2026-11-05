@@ -4124,6 +4124,8 @@ function handlePickListenerTarget(
 }
 
 async function performDestroy() {
+  // Destroy can run before init constructs the adapter.
+  workerAdapter?.dispose();
   // Phase 1 — wake every Atomics.wait-blocked worker so it cooperatively exits.
   // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
   // WORKAROUND, remove when the engine bug is fixed; see
