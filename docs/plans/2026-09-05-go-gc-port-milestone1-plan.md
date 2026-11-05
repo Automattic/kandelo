@@ -4380,3 +4380,11 @@ failure and the immediate rerun passed. That transient failure remains
 unexplained, and teardown still reports a forced drain for live guest
 processes. Neither observation is claimed resolved. The full source-only
 projection remains in progress, so the visible Chromium app gate is pending.
+
+The published revision-31 image passed the focused Chromium browser-kernel
+host gates: FrankenPHP classic served WordPress while the test ran 40 request
+churn iterations and 20 editor burst rounds (27.1s), and the Caddy profile
+passed its separate browser-host case including restart (15.8s). Both used
+the actual revision-31 resolver image. These are browser Wasm/HTTP results;
+they do not yet verify the visible site editor JavaScript in the app. The
+source-only projection required for that app test remains in progress.
