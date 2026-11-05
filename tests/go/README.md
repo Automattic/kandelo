@@ -33,6 +33,19 @@ The script stamps only the binaries it rebuilt with this checkout's
 fixture digest to match the kernel, so run the fixture script rather than
 building individual probes directly with `go build`.
 
+The separate retirement fixture blocks a live Go guest in a pipe read,
+then destroys the machine. It observes the host's drain progress to require
+that the guest unwinds before forced worker termination. Both plain Go and
+cgo builds exercise the same terminal channel marker as libc; this does
+not establish Go's general signal-notification support.
+
+```sh
+scripts/dev-shell.sh bash tests/go/retirement/build.sh
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/retirement/run.ts .context/go-retirement/pure.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/retirement/run.ts .context/go-retirement/cgo.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 npx playwright test test/go-retirement.spec.ts --project=chromium --project=firefox --project=webkit --workers=1'
+```
+
 To run the exec probe in Node after building the fixtures:
 
 ```sh
@@ -41,7 +54,8 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/exec-basic/run-vfs.ts .
 scripts/dev-shell.sh bash -c 'node --import tsx tests/go/os-stdlib/run-executable.ts .context/go-browser/os-test.wasm $(scripts/resolve-binary.sh kernel.wasm)'
 ```
 
-The Node runners check direct byte launches report no executable path, VFS
+The Node runners check direct byte launches expose a readable kernel-owned
+executable object with a diagnostic ` (deleted)` name, VFS
 launches report their selected path despite a forged `argv[0]`, and spawned
 children retain that path. The upstream `TestExecutable` subprocess test also
 passes from a VFS launch. The direct runner checks that both child launches
@@ -173,7 +187,8 @@ The selected `os` fixture still runs through a direct byte launch, so it does
 not include `TestExecutable`. A separate Node runner and browser probe launch
 that fixture from `/bin/os-test.wasm` and pass upstream `TestExecutable` in
 Node, Chromium, Firefox, and WebKit. `/proc/self/exe` uses a kernel-owned
-selected VFS path, not `argv[0]`; a direct byte launch reports `ENOENT`.
+selected VFS path, not `argv[0]`. A direct byte launch now retains a readable
+anonymous executable object whose diagnostic name carries ` (deleted)`.
 
 The builder also links `one-slot-second-m.wasm` with
 `-ldflags=-kandelothreadslots=1`. Go can request an additional M before

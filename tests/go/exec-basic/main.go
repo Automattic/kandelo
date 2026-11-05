@@ -44,8 +44,23 @@ func main() {
 		if pathErr != nil || path != executable {
 			panic(fmt.Sprintf("wrong initial executable path: %q: %v", path, pathErr))
 		}
-	} else if pathErr == nil {
-		panic(fmt.Sprintf("byte-launched process invented executable path: %q", path))
+	} else {
+		// Host-supplied bytes have a kernel-owned executable object but no
+		// namespace link. Its diagnostic name therefore carries this suffix.
+		link, err := os.Readlink("/proc/self/exe")
+		if pathErr != nil || err != nil || path != link || !strings.HasSuffix(link, " (deleted)") {
+			panic(fmt.Sprintf("wrong anonymous executable identity: path=%q link=%q errors=%v, %v", path, link, pathErr, err))
+		}
+		file, err := os.Open("/proc/self/exe")
+		if err != nil {
+			panic(err)
+		}
+		var magic [4]byte
+		n, err := file.Read(magic[:])
+		file.Close()
+		if err != nil || n != 4 || string(magic[:]) != "\x00asm" {
+			panic(fmt.Sprintf("anonymous executable object is not Wasm: %x: %v", magic, err))
+		}
 	}
 
 	parent := os.Getpid()

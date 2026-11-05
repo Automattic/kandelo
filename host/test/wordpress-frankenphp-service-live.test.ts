@@ -6,6 +6,7 @@ import { expect, it } from "vitest";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { configureWordPressRuntime, SERVICE_DEMO_ENV, waitForHttp } from "../../packages/registry/service-vfs-demo";
 import { NodeKernelHost } from "../src/node-kernel-host";
+import type { DestroyProgressEvent } from "../src/browser-kernel-protocol";
 
 async function availablePort(): Promise<number> {
   const server = createServer();
@@ -32,6 +33,8 @@ it.skipIf(!imagePath)("boots WordPress through the image service controller in N
     `FRANKENPHP_LISTEN=:${port}`,
   ];
   let logs = "";
+  const diagnostics: unknown[] = [];
+  const shutdown: DestroyProgressEvent[] = [];
   const append = (_pid: number, data: Uint8Array) => {
     logs = (logs + new TextDecoder().decode(data)).slice(-100_000);
   };
@@ -42,7 +45,9 @@ it.skipIf(!imagePath)("boots WordPress through the image service controller in N
     maxPages: 16_384,
     onStdout: append,
     onStderr: append,
+    onHostDiagnostic: diagnostic => diagnostics.push(diagnostic),
   });
+  host.subscribeDestroyProgress(event => shutdown.push(event));
   try {
     await host.init();
     const init = await host.spawnFromVfs("/bin/sh", ["sh", "/sbin/kandelo-init", "frankenphp-classic"], {
@@ -82,6 +87,12 @@ it.skipIf(!imagePath)("boots WordPress through the image service controller in N
     const response = await fetch(`http://127.0.0.1:${port}/`);
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("WordPress on Kandelo");
+    await host.destroy();
+    const drained = shutdown.filter(event => event.phase === "draining").at(-1);
+    expect(drained, JSON.stringify(shutdown)).toBeDefined();
+    expect(drained!.total).toBeGreaterThan(0);
+    expect(drained!.completed, JSON.stringify(shutdown)).toBe(drained!.total);
+    expect(diagnostics).toEqual([]);
   } finally {
     await host.destroy();
   }

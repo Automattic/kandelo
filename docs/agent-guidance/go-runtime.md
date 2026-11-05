@@ -197,6 +197,16 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   import wrapper finishes reading it: the direct-call prototype trapped
   because generated wrapper code reread the stack. Process exit still uses
   the separate `kernel_exit` path.
+- The channel's pending-signal area also carries the host's terminal
+  retirement marker. After a Go syscall completes, a queued `SIGKILL`
+  must enter the non-returning `kernel_exit` import directly, as libc does.
+  This marker unwinds a blocked worker during machine shutdown, exec, or
+  retirement after an already committed exit; it is not ordinary catchable
+  signal delivery. Do not issue another Go channel syscall or call the
+  process-wide Go `exit` wrapper first: that can repark the retired worker.
+  The `tests/go/retirement` probes require pure-Go and cgo guests to finish
+  the host's cooperative drain before forced termination on Node and all
+  three browsers. General Go signal notification remains a separate gap.
 - Go `syscall.StartProcess` uses non-forking `SYS_SPAWN`; descriptor
   inheritance must be serialized with `ForkLock`. The existing spawn
   attribute supports child-atomic process groups. Requested child
@@ -255,7 +265,9 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
 - `os.Executable` reads Kandelo's kernel-owned `/proc/self/exe` identity,
   never `argv[0]`. Initial VFS launches publish the canonical selected path;
   prepared exec/spawn commits replace it, fork inherits it, and direct byte
-  launches return `ENOENT` rather than inventing a path. Test a forged
+  launches retain an anonymous executable object with a diagnostic
+  ` (deleted)` name, matching the current kernel contract. Check that
+  `/proc/self/exe` actually opens its Wasm bytes. Test a forged
   `argv[0]`, post-`chdir` lookup, an actual child exec, and the upstream
   `TestExecutable` in Node and all three browser engines. An added kernel
   export changes the ABI snapshot and digest even if `ABI_VERSION` stays

@@ -4762,3 +4762,76 @@ The browser reference now describes all three actual WordPress profiles
 and built-in ZTS file-cache-only OPcache instead of obsolete port blockers.
 WebKit editor-health stalls, broader Go/POSIX gaps, physical-memory plateau,
 Node readiness/teardown, and current performance comparisons remain open.
+
+**2026-11-05 — Retire blocked Go workers through the normal channel.** Three
+fresh Node service-controller boots passed on revision 31, with zero skips
+(`node-wordpress-service-repeat-1105-161634-c6db`, 1m44s total). The older
+readiness failure did not recur, but every run still warned that shutdown
+had to force-terminate a live guest. The Go channel completion path ignored
+the host's terminal `SIGKILL` marker, so a woken Go read could return to the
+channel instead of unwinding its disposable worker. This is missing target
+runtime integration, not evidence of an engine defect or a PHP workaround.
+
+The direct Go fork now recognizes that marker after channel completion and
+enters the existing non-returning `kernel_exit` import, matching libc. It
+does not issue another syscall or reinterpret ordinary catchable signals.
+Fork `c925e9c9ca8c63c549053fd07d3fe0799473d4e0` is pushed. The behavioral
+change is ten added lines in the Kandelo runtime, plus gofmt alignment;
+there is no compiler, linker, PHP, or dependency-package patch.
+
+The new `tests/go/retirement` fixture blocks in a pipe read and observes the
+host's actual shutdown drain. Before the change, the Node plain-Go case and
+both Chromium variants failed because zero of one guests drained before
+forced termination. After rebuilding from the fixed fork, plain-Go and cgo
+variants pass in Node and all three browsers (2 Node and 6 browser checks),
+with one of one guests drained, empty stderr, and no host diagnostics. The
+four-target standard-library compilation matrix also passes: Kandelo with
+cgo disabled/enabled and upstream js/wasm and wasip1/wasm. All 31 core Go
+fixtures were refreshed; their broader browser run is in progress. This
+uses the existing ABI-55 marker and import contract; no ABI change is made.
+
+Go hello, standalone Caddy, and both FrankenPHP recipes are being repinned
+to the fixed fork; the WordPress image revision is 32. Their package/image
+rebuilds and the actual WordPress service's shutdown remain pending, so the
+small-fixture results do not yet establish that the packaged service drains.
+
+The separate WebKit worker-baseline editor run failed in 2m13s. Its worker
+answered `performance.now()` after the homepage (`16006.04` ms) but stopped
+answering during editor activity, while the health fetch and VFS inspector
+also stalled. This confirms that the diagnostic can work in that same live
+machine; it does not locate the blocking operation. Native sampling began
+during editor navigation and showed active worker dispatch and OPFS reads,
+not an identified long-blocking operation. Evidence is in
+`.context/webkit-editor-worker-baseline.json` and
+`.context/webkit-worker-baseline-content.sample.txt`. No WebKit fix or
+upstream-engine root cause is claimed.
+
+The broader Go browser run completed with 144 passes and three failures
+(`go-core-retirement-regression-1105-162250-f310`, 6m37s). All three were
+the same stale fixture expectation, one per engine: the byte-launch exec
+probe expected `/proc/self/exe` to be absent. Current main instead retains
+a host-supplied executable object whose diagnostic name carries
+` (deleted)`, as documented in `docs/posix-status.md` and covered by the
+kernel's host-executable tests. The probe now checks agreement between
+`os.Executable` and the actual procfs link and opens that object to verify
+its Wasm magic. No kernel or Go-library behavior was changed for this test.
+The corrected byte-launch and existing forged-argv VFS-launch probes pass
+6/6 across the three browsers (29s); both Node paths pass with clean stderr
+and diagnostics and zero captured forks for the byte-launch path. Those
+are targeted reruns, not a replacement full-inventory report.
+
+The rebuilt fork's full image-backed upstream Node `os` sweep also passed
+215 top-level cases with zero failures, 21 skips, empty guest stderr and no
+host diagnostics. The host console still reports an attempt to publish
+guest port 49152 where this Mac's `rapportd` already listens; no native
+service was stopped. The guest suite passes despite that host listener
+warning. `check-abi-version.sh` passes with the program digest unchanged.
+
+The checked-in WordPress Node service test now requires the real service
+tree to finish its cooperative drain before forced termination and checks
+host diagnostics. It must run against the new image; the prior three boots
+only establish readiness on revision 31. The source build plan reuses 160
+of 178 nodes and estimates roughly 35 minutes for the refreshed Go consumers
+and revision-32 WordPress products. Builds will run serially to limit memory
+pressure. Standalone Caddy is excluded from the ordinary local-supported
+set and requires its separate package build.
