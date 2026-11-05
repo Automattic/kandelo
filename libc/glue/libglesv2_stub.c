@@ -1005,6 +1005,32 @@ void glBindBuffer(GLenum target, GLuint buf) {
     }
 }
 
+/* A fresh definition and its fill are one API call. Within an uninterrupted
+ * prefix every chunk is in range of the immediately preceding definition.
+ * Ordinary SubData has no such storage proof. reserve() can submit mid-call;
+ * finish_predicted_command then refuses to extend the revoked error proof,
+ * including after foreign device I/O. Never continue after a failed reserve. */
+static inline void upload_buffer_chunks(GLenum target, uint32_t dst, uint32_t remaining,
+                                        const void *data, int fresh_definition) {
+    const uint8_t *src = data;
+    while (remaining > 0) {
+        uint32_t dlen = remaining;
+        if (dlen > 0xFFFFu - 12u) dlen = 0xFFFFu - 12u;
+        EMIT_BEGIN(OP_BUFFER_SUB_DATA, 12u + dlen)
+        uint8_t *start = _c - 4;
+        w_u32(&_c, target);
+        w_i32(&_c, (int32_t)dst);
+        w_u32(&_c, dlen);
+        memcpy(_c, src, dlen);
+        _c += dlen;
+        if (fresh_definition) finish_predicted_command(start, _c, GL_NO_ERROR);
+        else g_cursor = _c;
+        src += dlen;
+        dst += dlen;
+        remaining -= dlen;
+    }
+}
+
 void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
                      const void *data) {
     if (!_wpk_gl_command_encoder()) return;
@@ -1027,23 +1053,7 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
     /* Payload: u32 target, i32 dstOffset, u32 dataLen, u8 data[dataLen].
      * The TLV payload-length field is u16, so larger updates split into
      * consecutive records with the destination offset advanced. */
-    const uint8_t *src = (const uint8_t *)data;
-    uint32_t remaining = (uint32_t)size;
-    uint32_t dst = (uint32_t)offset;
-    while (remaining > 0) {
-        uint32_t dlen = remaining;
-        if (dlen > 0xFFFFu - 12u) dlen = 0xFFFFu - 12u;
-        EMIT_BEGIN(OP_BUFFER_SUB_DATA, 12u + dlen)
-        w_u32(&_c, (uint32_t)target);
-        w_i32(&_c, (int32_t)dst);
-        w_u32(&_c, dlen);
-        memcpy(_c, src, dlen);
-        _c += dlen;
-        EMIT_END()
-        src += dlen;
-        dst += dlen;
-        remaining -= dlen;
-    }
+    upload_buffer_chunks(target,(uint32_t)offset,(uint32_t)size,data,0);
 }
 
 /* ARRAY_BUFFER is mirrored only after checked bind/delete acceptance. Its
@@ -1097,8 +1107,15 @@ void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage
     }
 
     if (dlen > WPK_GL_MAX_TLV_PAYLOAD - 12u) {
-        glBufferData(target, size, NULL, usage);
-        glBufferSubData(target, 0, size, data);
+        /* Emit the definition here so a refused prefix cannot return from a
+         * recursive void call and then fill unrelated old storage. Presence
+         * was checked above, even when a lost bind reply left C's name stale. */
+        EMIT_BEGIN(OP_BUFFER_DATA, 12u)
+        uint8_t *start = _c - 4;
+        w_u32(&_c,target);w_u32(&_c,dlen);w_u32(&_c,usage);
+        finish_buffer_definition(start,_c,target);
+        upload_buffer_chunks(target,0,dlen,data,
+            target == GL_ARRAY_BUFFER && state->array_binding_known);
         return;
     }
 

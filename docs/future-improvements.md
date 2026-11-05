@@ -1159,6 +1159,21 @@ performance improvement. Full B2–B6, C1–C3 and all correctness,
 conformance, memory and native-feel gates remain required in their
 agreed order.
 
+The current B1 prototype now preserves exact error knowledge across a
+fresh large array-buffer definition and its immediate fill in one
+uninterrupted prefix. Refused definitions stop before fill; lost
+accepted binds use actual binding presence while retaining conservative
+error observation. Independent native and three-engine byte/rendering
+controls cover both fixes. In the frozen SDK workload,20 uploads
+of128KiB change from20 to4 device entries; two command-buffer rollovers
+each require a submit and error drain. The other13 measured operation
+families retain their request counts. This is an operation- count result
+against4de407f20f, not main, application latency, total overhead or
+native-feel acceptance. Remaining B1 upload/draw/object families,
+ordinary activation, complete stage validation and ScummVM's round-trip
+target still need closure before a complete normal-built B1 preview.
+B2–B6 and C1–C3 remain required in their recorded order.
+
 C publication must also precede EGL lifetime mutations made without a current
 GL binding. The optional0x3c lifecycle barrier now supplies checked metadata-only
 authority through a live owned public context; ordinary0x3b current-thread

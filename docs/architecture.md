@@ -6242,6 +6242,26 @@ an object identity from that query. Healthy acknowledged bindings need no
 extra query. Element-buffer definitions retain the ordinary path because
 queued vertex-array selection is not yet mirrored exactly.
 
+Large `glBufferData` calls define storage and fill it with the existing
+bounded subdata records. The driver preserves its exact error proof
+across that fill only for a known array binding and an uninterrupted
+prefix: each chunk is in range of the immediately preceding definition.
+The normal request epoch and cursor checks revoke that proof if reserve
+submits mid-call or foreign device I/O intervenes. Standalone
+`glBufferSubData`, unknown bindings and element-buffer definitions
+retain their normal error observation. No storage-size cache or extra
+per-draw/per-frame owner scan is introduced.
+
+The large path emits its definition directly and stops if reservation
+fails. A recursive void definition used to return after a refused
+prefix, allowing the outer call to fill unrelated old storage. After a
+lost accepted bind reply, the normal checked binding-presence query
+remains sufficient for the complete large definition and fill; a stale C
+name cannot reject a buffer that the host actually bound. Such unknown
+bindings still do not establish local error knowledge. Native controls
+verify complete bytes, held errors, standalone fallback, rollover
+revocation, refused-prefix stop and actual binding recovery.
+
 Ordinary vertex-layout updates can reuse an existing host attribute slot
 inside an authoritative guest batch. Aligned BYTE/UNSIGNED_BYTE/SHORT/
 UNSIGNED_SHORT/FLOAT layouts with stride at most 255 need neither a shadow
@@ -6267,13 +6287,12 @@ checks errors and rendered pixels in the original context.
 This is still partial B1; the remaining draw/object validation, later driver
 stages and desktop acceptance measurements are not established by these
 scalar checks.
-Host object groups now own shareable name maps, shader/program metadata,
-and imported textures. Each binding initially
-has its own group. An internal construction operation can join unused
-contexts on the same native renderer; guest EGL sharing is not wired to it
-yet. Context state, errors, VAOs and FBO containers stay local. Group
-resources survive member retirement until the last owner ends; pending
-program deletion and retained link executables consider every member.
+Host object groups own shareable name maps, shader/program metadata and
+imported textures. Normal EGL shared-context creation joins the requested
+source group on its renderer. Context state, errors, VAOs and FBO containers
+stay local. Group resources survive member retirement until the last owner
+ends; pending program deletion and retained link executables consider
+every member.
 Deleted texture/renderbuffer names now retain their native objects while
 another context binding or FBO attachment still refers to them. Deletion
 unbinds only the caller and detaches only its bound FBO attachments;

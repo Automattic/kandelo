@@ -42,6 +42,80 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Fresh large-array upload proof and failure handling, 2026-11-04
+
+Large `glBufferData` now emits its storage definition directly, then
+fills it with the existing bounded SubData records. For a known array
+binding, each chunk is in range of the fresh definition within one
+uninterrupted prefix. The existing error-proof epoch/cursor checks
+permit local error observation; mid-call submission or foreign device
+I/O revokes it. Standalone SubData and unknown/element bindings keep
+their normal observation. No size cache, wire, snapshot or version
+change is added; ABI remains program56/host3/GL17/fork21. The small
+ordinary definition path and unused-feature draw/frame paths gain no
+member scan or extra request.
+
+This also fixes two correctness defects. A recursive void definition
+could return after a refused prefix and still let the outer call fill
+old storage. Reservation failure now stops the whole large path.
+Separately, after a lost accepted bind, a checked host presence query
+could prove the binding exists while C still held name zero. The old
+large path re-entered the stale-name SubData guard and reported
+INVALID_OPERATION; the complete fill now uses the checked actual binding
+without falsely restoring exact error knowledge.
+
+| Evidence / exact command or job | Result | Scope |
+| --- | --- | --- |
+| R252 first/r2 | Recorded probe failures | Direct OES symbols were absent; then OES getProcAddress was unavailable. These invalid invocations provide no performance result. The probe uses existing internal core VAO symbols with explicit prototypes, as native controls do; no OES/GLES3 support claim |
+| R252-r3 `graphics-hotpaths-before-r252-r3-1104-230404-60fa`, port6061 | PASS24 /36s | Current14-family attribution on normal R249 SDK/4de; ordinary and explicitly admitted journals, three engines/both widths/prod+fatal |
+| R253-r2 `graphics-large-upload-before-r253-r2-1104-231254-c822`; `KANDELO_GRAPHICS_LIBC_CASES="error-array-storage-large error-array-storage-large-held error-array-storage-large-standalone error-array-storage-large-rollover error-array-storage-large-before-fail error-array-storage-large-unknown-bind" bash tests/graphics/run-libc-unit.sh 4de407f20f` inside the dev shell | FAIL4 / PASS2 | Old C fails local/held proof, failed-definition/no-stray-fill and lost-bind controls. Native full-byte double exposes an out-of-range fill into old16-byte storage; fallback/rollover controls already pass. Frozen source copies and hashes retained; R253's earlier three failures retained separately |
+| R254 `graphics-hotpaths-before-r254-1104-231111-5916`, port6062 | PASS24 /40s | Same final guest source before/after; normal old R249 SDK; actual kernel/guest hashes, byte-boundary/tail pixels, native program/shader cleanup and boundary probe |
+| R255 `graphics-large-upload-native-r255-1104-231333-bdcf`; `scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh` | PASS487 /20s | Full native C/UBSan inventory, including held flags, standalone fallback, full-byte rollover, refused-definition stop and stale-name/actual-binding recovery |
+| R256 `graphics-large-upload-build-r256-1104-231546-0758` | PASS | One normal sequential SDK32/64 producer, disk check and ABI against4de; native inputs verified rather than rerun. Kernel/image-writer/snapshot unchanged; source/product manifests frozen |
+| R257 `graphics-large-upload-focused-r257-1104-231641-2109`, port6063 | PASS2m00 | Graphics2175/88, Node18/6files, two strict helpers,24 GPU cases; large counts(total,min,max)=(4,0,2) in every engine/width/audit/mode. Full host tsc still exact39 retained diagnostics |
+| R258 `graphics-large-upload-regression-r258-1104-231734-1923`, port6064; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-large-upload-regression-r258/run.sh` | PASS852 combined GPU cases | ABI/evidence709, six strict helpers; source/config/products checked before/after; all24 before/after comparisons preserve13 other family counts. Full commands and routed identities retained |
+
+| Operation /20 calls | R254 normal4de SDK | R258 current SDK | Meaning |
+| --- | --- | --- | --- |
+| Fresh128KiB array-buffer definitions |20 device entries |4 device entries | Two automatic rollovers each submit and drain; other calls retain local proof |
+| Small array definitions, existing default attributes, default clear |0 each |0 each | Existing proven paths preserved |
+|20 select/unselect pairs, ordinary / explicitly admitted |40 /0 |40 /0 | Existing checked selection / optional journal; ordinary admission remains off |
+| Same array bind / changed pair, same texture bind, matrix, draw, element definitions and internal-VAO attribute paths | Recorded original counts | Identical counts | Remaining hot-path work is not hidden by this bounded upload result |
+
+All24 workload comparisons span Chromium, Firefox and WebKit, wasm32/64
+and production/fatal audit, ordinary/admitted mode. Native C device-
+double controls compare complete upload bytes; real GPU rendering checks
+vertices at the start, tail and across a16-bit TLV boundary before
+storage is replaced. The same final guest fixture is used on both normal
+SDK builds. Node's two new controls retain honest no-renderer refusal
+(D-37), not GPU execution or Node GPU latency.
+
+The combined run closes the previously open828-case component rerun and
+adds 24 hot-path cases. All780 routed records retain actual guest/kernel
+hashes matching normal kernel
+`46f21423280ac733dc4cd22960c05d8b2412a79e3a93b4ec37d8d7a6ff9f9769`.
+The600 successful journal/OOM/render/hot-path rows have native
+program/shader live0;96 explicit retirement cases have zero
+public/execution/binding/native owners before guest exit;60 error-
+receipt cases retain exact transfer/error and pixel checks;24 deliberate
+fatal controls retain refusal. Existing72 publication/OOM cases plus96
+retirement cases sample explicit ownership before process exit. No
+native-cleanup claim is made for fatal worker termination. R248/R250
+failures remain historical evidence, with exact stronger healthy
+owner/ticket/sequence/name checks on the repaired path; they are not
+relabeled.
+
+Request counts are not native GL call counts, latency, FPS or a native-
+feel claim, and4de is an intermediate source rather than main or the
+public preview. No application or cross-host benchmark improvement is
+claimed. Rust, xtask and shader sources are unchanged; their earlier
+exact evidence is retained, not presented as a new whole-workspace run.
+Full host tsc still fails39 exact retained diagnostics. Full B1 hot
+families/activation/conformance/application measurements/complete normal
+preview and all final goal-wide three-engine
+CTS/desktop/memory/POSIX/bench/manual checks remain required. No new
+boundary, deferral or reduced acceptance criterion is introduced.
+
 ## Retire a lost final metadata publisher, 2026-11-04
 
 C retirement now separates dispatch exclusion from metadata publication.
