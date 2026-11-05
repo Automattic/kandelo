@@ -56,7 +56,6 @@ use crate::syscalls;
 
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
-    fn host_debug_log(ptr: *const u8, len: u32);
     // The handle-only filesystem contract. Every one of these resolves exactly
     // one path component relative to a directory handle the host previously
     // issued; the kernel owns namespace resolution, mount routing, `..`, and

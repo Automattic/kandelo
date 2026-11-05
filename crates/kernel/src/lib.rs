@@ -8,7 +8,7 @@ extern crate wasm_posix_shared;
 // This crate is the Wasm FFI shell over the engine-agnostic runtime-core.
 // Re-export the runtime so `wasm_api.rs` and downstream keep flat
 // `crate::<mod>` paths (e.g. `crate::process::HostIO`, `crate::syscalls::…`,
-// `crate::debug_log`, `crate::current_time_secs`).
+// `crate::current_time_secs`).
 pub use runtime_core::*;
 
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
