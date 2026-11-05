@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { PACKAGE_MAINTENANCE_WIRE as wire } from "../src/generated/abi";
+import { PackageMaintenanceSession } from "../../apps/browser-demos/pages/kandelo/kernel-host/package-maintenance-session";
+import { assertPersistentImageBootMetadata } from "../../apps/browser-demos/pages/kandelo/kernel-host/persistent-image-boot-metadata";
 
 const state = vi.hoisted(() => ({ record: null as string | null, writes: 0, failWrite: false }));
 
@@ -11,7 +14,7 @@ vi.mock("../../apps/browser-demos/lib/kernel-owned-boot", () => ({}));
 
 import {
   INSTALLED_INVENTORY_PATH, bootCompositionMatchesInstalled, promoteBootConfiguration, readBootConfigurations,
-  recordBootConfiguration, selectBootComposition,
+  prepareBootConfiguration, selectBootComposition,
 } from "../../apps/browser-demos/pages/kandelo/kernel-host/package-boot-configuration";
 import { KANDELO_DEMO_CONFIG_PATH } from "../../web-libs/kandelo-session/src/demo-config";
 import { EXPERIMENTAL_TERMINAL_SESSION_PATH } from "../../web-libs/kandelo-session/src/experimental-terminal-session";
@@ -82,6 +85,10 @@ const target = {
 };
 const computer = "11111111-1111-4111-8111-111111111111";
 
+async function recordBootConfiguration(...args: Parameters<typeof prepareBootConfiguration>) {
+  await (await prepareBootConfiguration(...args))();
+}
+
 afterEach(() => { state.record = null; state.writes = 0; state.failWrite = false; });
 
 describe("boot configuration of upgraded computers", () => {
@@ -93,6 +100,15 @@ describe("boot configuration of upgraded computers", () => {
     expect(saved[1].composition.imageConfig).toEqual(upgraded.imageConfig);
     expect(saved[1].composition.profileId).toBe("site");
     expect(new Set(saved[1].composition.requiredServices)).toEqual(new Set(["web", "db"]));
+  });
+
+  it("validates a candidate without changing the installed or rollback records", async () => {
+    await recordBootConfiguration(computer, reader(liveOld), base as never, source(target, newInventory));
+    const before = state.record;
+    await prepareBootConfiguration(computer, reader({ [INSTALLED_INVENTORY_PATH]: newInventory }),
+      base as never, source(target, encoder.encode("unaccepted candidate")));
+    expect(state.record).toBe(before);
+    expect(state.writes).toBe(1);
   });
 
   it("selects by the replayed inventory, never by which record is newest", async () => {
@@ -183,4 +199,53 @@ describe("boot configuration of upgraded computers", () => {
     await expect(promoteBootConfiguration(computer, sha256(oldInventory))).rejects.toThrow("publication failed");
     expect(state.record).toBe(before);
   });
+});
+
+it("preserves a previous non-base rollback's boot settings after an install is refused", async () => {
+  const B = newInventory;
+  const C = encoder.encode("release C inventory");
+  const filesFor = (title: string, service: string) => ({
+    ...target,
+    [KANDELO_DEMO_CONFIG_PATH]: encoder.encode(JSON.stringify(config(title, service))),
+    [`/etc/dinit.d/${service}`]: encoder.encode("type = process\n"),
+  });
+  await recordBootConfiguration(computer, reader(liveOld), base as never, source(target, B));
+  await recordBootConfiguration(computer, reader({ [INSTALLED_INVENTORY_PATH]: B }), base as never,
+    source(filesFor("C", "service-c"), C));
+  const actions: string[] = [];
+  const progress = new Uint8Array(wire.PROGRESS_HEADER_BYTES);
+  const data = new DataView(progress.buffer);
+  data.setUint32(wire.PROGRESS_VERSION_OFFSET, wire.VERSION, true);
+  data.setUint32(wire.PROGRESS_PHASE_OFFSET, wire.PHASE_PENDING, true);
+  data.setUint32(wire.PROGRESS_FILE_COUNT_OFFSET, 1, true);
+  const runtime = { packageMaintenance: async (request: { action: string; offset?: number; data?: Uint8Array }) => {
+    actions.push(request.action);
+    if (request.action === "verifyInstalled") return { status: -17, errorKind: wire.ERROR_COLLISION, data: new Uint8Array() };
+    return { status: request.action === "recovery" ? wire.RECOVERY_ACTIVE
+      : request.action === "uploadInventory" ? (request.offset ?? 0) + (request.data?.length ?? 0) : 0,
+      errorKind: 0, data: request.action === "progress" ? progress : new Uint8Array() };
+  } };
+  const session = await PackageMaintenanceSession.open(runtime, () => {});
+  const before = state.record;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const candidate = source(filesFor("D", "service-d"), encoder.encode(`refused candidate ${attempt}`));
+    await expect(session.run("install", async () => ({
+      source: candidate,
+      prepare: () => prepareBootConfiguration(computer, reader({ [INSTALLED_INVENTORY_PATH]: C }), base as never, candidate),
+      close: async () => {},
+    }))).rejects.toThrow(/maintenance refused/);
+    expect(state.record).toBe(before);
+  }
+  expect(actions).not.toContain("discard");
+  expect(session.getSnapshot().recovery).toBe("active");
+  const records = await readBootConfigurations(computer);
+  // A newly added D path colliding with an unmanaged user file can refuse
+  // verifyInstalled without preventing a C-to-B rollback. Rust still has
+  // that rollback: this failed install never calls discard.
+  const rollback = await selectBootComposition(reader({ [INSTALLED_INVENTORY_PATH]: B }), records, base as never);
+  const bootError = await assertPersistentImageBootMetadata(reader(target), rollback as never).then(() => null, error => String(error));
+  expect(bootError).toBeNull();
+  await session.close();
+  expect(rollback.imageConfig).toEqual(upgraded.imageConfig);
+  expect(rollback.requiredServices).toEqual(["web", "db"]);
 });

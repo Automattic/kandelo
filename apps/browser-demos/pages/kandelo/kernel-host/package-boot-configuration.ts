@@ -94,12 +94,16 @@ export async function readBootConfigurations(computerId: string): Promise<BootCo
   return parseRecord(value);
 }
 
-async function writeRecord(computerId: string, entries: BootConfiguration[]): Promise<void> {
+function encodeRecord(entries: BootConfiguration[]): Uint8Array<ArrayBuffer> {
   const text = JSON.stringify({ version: 1, entries });
   const bytes = new TextEncoder().encode(text);
   if (bytes.length > MAX_RECORD_BYTES) throw new Error("Software boot configuration exceeds its bound");
   // Readers refuse a record they cannot parse, and every boot reads this one.
   parseRecord(JSON.parse(text));
+  return bytes;
+}
+
+async function publishRecord(computerId: string, bytes: Uint8Array<ArrayBuffer>): Promise<void> {
   const directory = await softwareDirectory(computerId);
   const writer = await (await directory.getFileHandle(FILE, { create: true })).createWritable();
   try { await writer.write(bytes); await writer.close(); }
@@ -128,21 +132,22 @@ async function targetComposition(source: PackageUpgradeSource, profileId: string
 }
 
 /**
- * Publish the target's configuration before the native commit. Doing this
- * first is safe because a record stays inert until its inventory is installed,
- * so a crash on either side of the commit leaves the correct record selected.
+ * Validate without changing saved records. The returned publisher may replace
+ * the old rollback's record only after native verification and any discard.
+ * It must finish before staging can commit the candidate's inventory.
  */
-export async function recordBootConfiguration(computerId: string, kernel: Reader, base: StoredComposition, source: PackageUpgradeSource): Promise<void> {
+export async function prepareBootConfiguration(computerId: string, kernel: Reader, base: StoredComposition, source: PackageUpgradeSource): Promise<() => Promise<void>> {
   const installed = await installedInventorySha256(kernel);
   if (installed === null) throw new Error("This computer has no readable installed software inventory");
   const inventory = await readBounded((offset, length) => source.readInventory(offset, length), MAX_INVENTORY_BYTES);
   const inventorySha256 = await sha256(inventory!);
   const entries = await readBootConfigurations(computerId);
   const current = entries.find(entry => entry.inventorySha256 === installed)?.composition ?? base;
-  await writeRecord(computerId, [
+  const bytes = encodeRecord([
     { inventorySha256: installed, composition: current },
     { inventorySha256, composition: await targetComposition(source, current.profileId) },
   ]);
+  return () => publishRecord(computerId, bytes);
 }
 
 /** The configuration authorized by the inventory replay actually left installed. */
@@ -161,7 +166,7 @@ export async function promoteBootConfiguration(computerId: string, inventorySha2
   const entries = await readBootConfigurations(computerId);
   const selected = entries.find(entry => entry.inventorySha256 === inventorySha256);
   if (selected === undefined || entries.at(-1) === selected) return;
-  await writeRecord(computerId, [...entries.filter(entry => entry !== selected), selected]);
+  await publishRecord(computerId, encodeRecord([...entries.filter(entry => entry !== selected), selected]));
 }
 
 export async function installedBootConfigurationSha256(kernel: Reader): Promise<string | null> {

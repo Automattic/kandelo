@@ -69,7 +69,7 @@ These are deliberate choices with real costs:
 | Choice | What it costs |
 | --- | --- |
 | Update inside the journal instead of rebasing the base | The base header keeps describing the original software forever, so an installed inventory overrides it when deciding what may run. |
-| One rollback per computer | Installing another update replaces the earlier rollback once the target has passed verification. A refused update leaves it in place. It verifies twice, because a full plan leaves no room for the inventories a discard reads. |
+| One rollback per computer | Installing another update replaces the earlier rollback once the target has passed verification. A target refused during verification leaves it in place. It verifies twice, because a full plan leaves no room for the inventories a discard reads. |
 | Refuse the whole update on any conflict | One edited package file blocks the update until the user resolves it. |
 | Rollback restores packaged files only | Database contents and schema are not rolled back. Migrations stay explicit and separate. |
 | No old runtime after a contract change | Rollback restores the old files, but they cannot run. The computer stays stopped until a current set is applied. |
@@ -406,8 +406,15 @@ also keeps the record of the set being replaced, so rollback has its own
 authority. At most two records are retained, and the file is size-bounded,
 versioned and refused rather than ignored when malformed.
 
-Publishing first is safe because a record is inert until replay shows its
-exact inventory installed, so a crash on either side of the commit selects
+The browser validates the target's complete boot record without changing
+saved records. It publishes the installed and candidate records only after
+native verification succeeds and any previous rollback is discarded, before
+native staging starts. A refused or cancelled candidate therefore leaves the
+still-available rollback's boot settings intact. Publication failure prevents
+staging and activation.
+
+Publishing before activation is safe because a record is inert until replay
+shows its exact inventory installed, so a crash on either side of the commit selects
 correctly. A rewritten inventory matches no record and falls back to the base
 composition. Selected configuration is still compared with the live files
 before guests start, so guest edits stay refused. The machine is configured

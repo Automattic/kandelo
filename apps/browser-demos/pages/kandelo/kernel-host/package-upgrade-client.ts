@@ -26,6 +26,8 @@ interface Hooks {
   onTransfer?: (progress: { path: string | null; accepted: number; total: number }) => void;
   /** Installing over a finished transaction, which this replaces once the target passes. */
   replacesRollback?: boolean;
+  /** Publish boot settings after verification/discard, before durable staging. */
+  beforeStaging?: () => Promise<void>;
 }
 
 function view(bytes: Uint8Array, minimum: number): DataView {
@@ -178,6 +180,8 @@ export class PackageUpgradeClient {
         await this.verify("verifyInstalled", hooks);
       }
       if (operation !== "rollback") {
+        hooks.signal?.throwIfAborted();
+        await hooks.beforeStaging?.();
         if (operation === "install") await this.call({ action: "prepare" }, hooks);
         await this.stage(source!, progress.files, operation === "resume", hooks);
       }

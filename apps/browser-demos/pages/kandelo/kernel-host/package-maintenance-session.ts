@@ -7,7 +7,8 @@ import { PackageUpgradeClient, PackageUpgradeFinalizationError, type PackageUpgr
 export interface OwnedPackageSource {
   source: PackageUpgradeSource;
   close(): Promise<void>;
-  prepare?(): Promise<void>;
+  /** Validate first; publish only after the client retires any old rollback. */
+  prepare?(): Promise<() => Promise<void>>;
   committed?(): Promise<void>;
 }
 
@@ -81,11 +82,12 @@ export class PackageMaintenanceSession {
       try {
         if (operation !== "rollback") source = await openSource!(signal);
         signal.throwIfAborted();
-        await source?.prepare?.();
+        const publish = await source?.prepare?.();
         signal.throwIfAborted();
         const client = new PackageUpgradeClient(request => this.call(request));
         await client.run(operation, source?.source, {
           signal,
+          beforeStaging: publish,
           replacesRollback: this.state.recovery === "active" || this.state.recovery === "rolled-back",
           onProgress: progress => this.publish({ progress: {
             files: progress.files, installedVerified: progress.installedVerified, stagedVerified: progress.stagedVerified,

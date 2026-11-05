@@ -54,8 +54,53 @@ describe("application maintenance session ownership", () => {
     expect(requests.indexOf("prepare")).toBeGreaterThan(requests.lastIndexOf("verifyInstalled"));
   });
 
+  it.each([wire.RECOVERY_NONE, wire.RECOVERY_ACTIVE, wire.RECOVERY_ROLLED_BACK])(
+    "publishes boot settings after verification and any discard, before staging (recovery %s)", async recovery => {
+      const { runtime, requests, source } = fixture(recovery);
+      source.prepare = async () => {
+        requests.push("validateBootConfiguration");
+        return async () => { requests.push("publishBootConfiguration"); };
+      };
+      const session = await PackageMaintenanceSession.open(runtime, () => {});
+      await session.run("install", async () => source);
+      const publish = requests.indexOf("publishBootConfiguration");
+      expect(requests.indexOf("validateBootConfiguration")).toBeLessThan(requests.indexOf("begin"));
+      expect(publish).toBeGreaterThan(requests.lastIndexOf("verifyInstalled"));
+      expect(publish).toBeGreaterThan(requests.lastIndexOf("discard"));
+      expect(publish).toBeLessThan(requests.indexOf("prepare"));
+    },
+  );
+
+  it("keeps boot records when native discard fails", async () => {
+    const { runtime, requests, source } = fixture(wire.RECOVERY_ACTIVE);
+    const publish = vi.fn(async () => {});
+    source.prepare = async () => publish;
+    const invoke = runtime.packageMaintenance.getMockImplementation()!;
+    runtime.packageMaintenance.mockImplementation(async request => {
+      if (request.action === "discard") throw new Error("discard failed");
+      return invoke(request);
+    });
+    const session = await PackageMaintenanceSession.open(runtime, () => {});
+    await expect(session.run("install", async () => source)).rejects.toThrow("discard failed");
+    expect(publish).not.toHaveBeenCalled();
+    expect(requests).not.toContain("prepare");
+  });
+
+  it("does not prepare native staging when boot-record publication fails", async () => {
+    const { runtime, requests, source } = fixture();
+    source.prepare = async () => async () => { throw new Error("boot-record publication failed"); };
+    const session = await PackageMaintenanceSession.open(runtime, () => {});
+    await expect(session.run("install", async () => source)).rejects.toThrow("boot-record publication failed");
+    expect(requests).toContain("verifyInstalled");
+    expect(requests).not.toContain("prepare");
+    expect(requests).not.toContain("commit");
+    expect(source.close).toHaveBeenCalledOnce();
+  });
+
   it("keeps the rollback when verification refuses the target", async () => {
     const { runtime, requests, source } = fixture(wire.RECOVERY_ACTIVE);
+    const publish = vi.fn(async () => {});
+    source.prepare = async () => publish;
     const invoke = runtime.packageMaintenance.getMockImplementation()!;
     runtime.packageMaintenance.mockImplementation(async request => {
       if (request.action === "verifyInstalled") throw new PackageMaintenanceError(ERRNO.EIO, wire.ERROR_CONTENTS);
@@ -64,6 +109,7 @@ describe("application maintenance session ownership", () => {
     const session = await PackageMaintenanceSession.open(runtime, () => {});
     await expect(session.run("install", async () => source)).rejects.toBeInstanceOf(PackageMaintenanceError);
     expect(requests).not.toContain("discard");
+    expect(publish).not.toHaveBeenCalled();
   });
 
   it("offers no update to a blocked computer without an inventory and explains a refused start", async () => {

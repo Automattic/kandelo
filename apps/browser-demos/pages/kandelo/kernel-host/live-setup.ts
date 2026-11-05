@@ -12,7 +12,7 @@ import { PackageMaintenanceSession, type OwnedPackageSource } from "./package-ma
 import { openSavedPackageSource, stageCurrentPackageSource } from "./package-source-cache";
 import {
   bootCompositionMatchesInstalled, installedBootConfigurationSha256, promoteBootConfiguration,
-  readBootConfigurations, recordBootConfiguration, selectBootComposition,
+  readBootConfigurations, prepareBootConfiguration, selectBootComposition,
 } from "./package-boot-configuration";
 import type { StoredComposition } from "./stored-composition";
 import { checkedPackageMaintenanceResponse } from "../../../../../host/src/package-maintenance";
@@ -1262,7 +1262,7 @@ async function createLiveHostWithLease(
     const base = currentBaseComposition;
     if (kernel === null || base === null) throw new Error("Computer boot configuration is unavailable for this update");
     const owned = await open();
-    return { ...owned, prepare: () => recordBootConfiguration(computerId, kernel, base, owned.source) };
+    return { ...owned, prepare: () => prepareBootConfiguration(computerId, kernel, base, owned.source) };
   }
 
 }
