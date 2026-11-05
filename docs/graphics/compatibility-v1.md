@@ -23,6 +23,15 @@ checks after each, then validating and measuring each frozen stage before
 landing it. Stage landing order, B1 ownership prerequisites, the full B
 preview before C1–C3 and all final acceptance gates remain required.
 
+On 2026-11-05 the maintainer kept asynchronous bindings in B2 and moved
+the ScummVM <=10 total synchronous requests per produced buffer gate to
+B2 completion. Rebuilt ScummVM makes13 synchronous buffer binds per
+produced buffer, so enforcing that gate at B1 would require moving B2
+work into B1. This changes only that intermediate gate's placement.
+B1's other correctness, audit and measurement requirements, separate
+stage landing order, cross-engine checks and final native-feel targets
+remain required. It does not establish B1 completion.
+
 Retain the existing pointer, typing, ScummVM and idle-worker ship bar.
 Additional targets are pointer input to display within one refresh interval
 p50 and two refresh intervals p95; desktop motion, dragging, resizing and
@@ -242,10 +251,11 @@ Source/configuration/product hashes pass after the run. Raw startup and
 steady observations, exact commands and analysis are retained in
 `.context/graphics-readonly-early-r340/`.
 
-B1's <=10 target remains unmet: the13 synchronous buffer binds alone
-exceed it. The plan assigns asynchronous binds to B2; the maintainer has
-been asked to resolve that stage dependency. No gate, boundary or order
-has changed while that question is pending. Counts describe client front
+The <=10 target remains unmet: the13 synchronous buffer binds alone
+exceed it. The maintainer resolved this stage dependency on2026-11-05:
+asynchronous bindings stay in B2, and the <=10 total-request gate is
+required at B2 completion. Other stage and final gates are unchanged.
+Counts describe client front
 production, not Wayland commits, physical display, latency, display FPS,
 instrumentation overhead, a main comparison or native feel. R299's full
 producer subsequently passes; normal admission and final-tree checks remain
