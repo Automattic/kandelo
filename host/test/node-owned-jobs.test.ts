@@ -2,12 +2,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import type { OwnedJobRead } from "../src/owned-jobs";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { compileSdkFixture } from "./support/compile-sdk-fixture";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "../..");
@@ -74,6 +75,43 @@ function decode(read: Extract<OwnedJobRead, { expired: false }>, stream: "stdout
 }
 
 describe.skipIf(!haveKernel || !havePrograms)("NodeKernelHost owned jobs", () => {
+  it("reports a reaped group leader's exit while another group member is alive", async () => {
+    const fixture = compileSdkFixture(new URL("../../programs/reaped-group-leader.c", import.meta.url), [], { forkInstrument: true });
+    const events: Array<{ kind: string; pid: number }> = [];
+    const fs = KandeloImageFs.create();
+    fs.mkdir("/bin", 0o755);
+    fs.writeFile("/bin/reaped-leader", new Uint8Array(readFileSync(fixture.programPath)), 0o755);
+    const host = new NodeKernelHost({ rootfsImage: await fs.saveImage(), onProcessEvent: event => events.push(event) });
+    try {
+      await host.init(asArrayBuffer(new Uint8Array(readFileSync(kernelPath!))));
+      await host.spawnFromVfs("/bin/reaped-leader", ["reaped-leader"], {
+        ownedJob: { id: "group", timeoutMs: 0 },
+      });
+      let leader = 0;
+      let member = 0;
+      const output = async () => {
+        const read = await host.readOwnedJob("group", 0, 65536);
+        if (read.expired) throw new Error("group fixture output expired");
+        return decode(read, "stdout");
+      };
+      await vi.waitFor(async () => {
+        const match = /LEADER=(\d+) MEMBER=(\d+)/.exec(await output());
+        expect(match).not.toBeNull();
+        leader = Number(match![1]);
+        member = Number(match![2]);
+      }, { timeout: 5000 });
+      await host.signalProcess(leader, 15);
+      await vi.waitFor(async () => expect(await output()).toContain(`LEADER_REAPED=${leader}`), { timeout: 5000 });
+      // No further guest syscalls are needed to notice the already-reaped
+      // leader, and the surviving member must not be killed to finish it.
+      await vi.waitFor(() => expect(events.filter(event => event.kind === "exit" && event.pid === leader)).toHaveLength(1), { timeout: 2000 });
+      expect((await host.enumProcs()).some(process => process.pid === member)).toBe(true);
+    } finally {
+      await host.destroy();
+      fixture.cleanup();
+    }
+  }, 30000);
+
   it("starts concurrent jobs with their requested working directory", async () => {
     const host = await bootedHost();
     try {

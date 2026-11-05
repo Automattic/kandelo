@@ -3682,6 +3682,7 @@ pub extern "C" fn kernel_clear_fork_child(pid: u32) -> i32 {
 /// Get the shell-style process exit status used by the host lifecycle scan.
 /// Returns a normal exit code, 128+signal for signal termination, -1 while
 /// alive, or -ESRCH when the process does not exist.
+/// A retained, reaped group leader is a group identity, not a live process.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
@@ -3693,6 +3694,9 @@ pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
                 proc.exit_status
             }
         }
+        Some(proc) if proc.state == crate::process::ProcessState::Limbo => {
+            -(Errno::ESRCH as i32)
+        }
         Some(_) => -1,
         None => -(Errno::ESRCH as i32),
     }
@@ -3700,12 +3704,16 @@ pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
 
 /// Return the signal that terminated an exited process, or zero for a normal
 /// exit. Returns -1 while the process is alive and -ESRCH when it is absent.
+/// Reaped group identities report ESRCH even while other group members live.
 /// Hosts use this explicit cause instead of guessing from high exit codes.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_process_exit_signal(pid: u32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     match table.get(pid) {
         Some(proc) if proc.state == crate::process::ProcessState::Exited => proc.exit_signal as i32,
+        Some(proc) if proc.state == crate::process::ProcessState::Limbo => {
+            -(Errno::ESRCH as i32)
+        }
         Some(_) => -1,
         None => -(Errno::ESRCH as i32),
     }
