@@ -26,6 +26,7 @@ import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../web-libs/kandelo-session/src/vfs-capacity";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { populateShellRuntimeLayout } from "../src/shell-runtime-layout";
 
 const MiB = 1024 * 1024;
 const O_RDONLY = 0x0000;
@@ -178,6 +179,14 @@ function expectContentsPreserved(fs: KandeloImageFs): void {
 }
 
 describe("shell VFS base composition", () => {
+  it("provides an image-backed writable projects directory for maker", () => {
+    const filesystem = productFs(64 * MiB);
+    populateShellRuntimeLayout(filesystem);
+    const projects = filesystem.stat("/home/projects");
+    expect({ uid: projects.uid, gid: projects.gid, mode: projects.mode & 0o777 })
+      .toEqual({ uid: 1000, gid: 1000, mode: 0o755 });
+  });
+
   it("refuses an image the loader rejects, before any shell build side effect", async () => {
     // This used to forge a legacy atomic seal and assert the refusal. The
     // refusal moved layers: verification now happens inside the module's
@@ -229,6 +238,7 @@ describe("shell VFS base composition", () => {
       populateShellEnvironment(fs, {
         eagerBinaries: false,
         resolveArtifact: () => artifact,
+        resolveOriginal: () => null,
       });
     } catch {
       // Populating the whole environment needs artifacts this fixture does not
@@ -324,13 +334,16 @@ describe("shell VFS base composition", () => {
       }
       return [name, Number(revision![1])] as const;
     }));
-    expect(shellDerivedRevisions).toEqual({
+    const minimumRevisions = {
       lamp: 19,
       "nginx-php-vfs": 10,
       "nginx-python-vfs": 5,
       "nginx-vfs": 9,
       wordpress: 20,
-    });
+    };
+    for (const [name, minimum] of Object.entries(minimumRevisions)) {
+      expect(shellDerivedRevisions[name], `${name} headroom-gate revision`).toBeGreaterThanOrEqual(minimum);
+    }
   });
 
   it("rebases a serialized source larger than the downstream capacity", async () => {

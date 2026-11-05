@@ -102,6 +102,7 @@ mod runtime_workarounds;
 mod source_archive_cache;
 mod source_extract;
 mod stamp_abi_contract;
+mod supported_program_baseline;
 mod test_failures;
 mod update_pkg_manifest;
 mod util;
@@ -119,6 +120,21 @@ fn main() -> ExitCode {
         }
     };
     let rest: Vec<String> = args.collect();
+    if matches!(
+        sub.as_str(),
+        "bootstrap"
+            | "local-build"
+            | "build-deps"
+            | "bundle-program"
+            | "stamp-abi-contract"
+            | "vfs"
+            | "vfs-image"
+    ) {
+        if let Err(error) = supported_program_baseline::check(&repo_root()) {
+            eprintln!("xtask: {error}");
+            return ExitCode::from(1);
+        }
+    }
     if sub == "vfs" {
         return vfs_products::run(rest);
     }
@@ -144,6 +160,7 @@ fn main() -> ExitCode {
         "cache-gc" => cache_gc::run(rest),
         "stamp-abi-contract" => stamp_abi_contract::run(&rest),
         "abi-program-digest" => stamp_abi_contract::run_print(&rest),
+        "check-program-baseline" => supported_program_baseline::run(&rest),
         "runtime-workarounds" => runtime_workarounds::run(rest),
         "verify-fresh" => local_build::run_verify_fresh(rest),
         "test-failures" => test_failures::run(rest),

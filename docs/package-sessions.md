@@ -74,7 +74,8 @@ See the complete examples in
 The `kandelo-package-sessions` manifest has `version: 1`, a package name and
 package version, and arrays of `offers` and `joins`. Each offer declares:
 
-- An identifier, title and description.
+- An identifier, title and description. Optional `category` is `apps`,
+  `services`, or `demos` for the unified activity picker.
 - Host setup `fields` and an optional `launch` procedure. A share-only service
   omits `launch` and requires `attachExisting: true`.
 - Optional `hostRequires` paths identify images capable of hosting the offer.

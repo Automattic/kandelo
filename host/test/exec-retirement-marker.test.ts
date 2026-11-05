@@ -7,10 +7,21 @@ import {
   CH_SIG_SIGNUM,
   CH_SIG_SI_CODE,
 } from "../src/generated/abi";
-import { buildKernelImportsForTest, isExecRetirementMarker } from "../src/worker-main";
+import { buildKernelImportsForTest, isExecRetirementMarker, isProcessTeardownInterrupt } from "../src/worker-main";
 import { EXEC_RETIRE_SIGNAL_CODE, EXIT_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 
 describe("exec worker retirement marker", () => {
+
+  it("recognizes only a teardown interrupt of a host-side channel call", () => {
+    const channelOffset = 64;
+    const view = new DataView(new ArrayBuffer(channelOffset + CH_SIG_SI_CODE + 4));
+    view.setUint32(channelOffset + CH_SIG_SIGNUM, 9, true);
+    expect(isProcessTeardownInterrupt(view, channelOffset, 4)).toBe(true);
+    expect(isProcessTeardownInterrupt(view, channelOffset, 22)).toBe(false);
+    view.setUint32(channelOffset + CH_SIG_SIGNUM, 2, true);
+    expect(isProcessTeardownInterrupt(view, channelOffset, 4)).toBe(false);
+  });
+
   it("reads the marker from the generated ABI layout", () => {
     const channelOffset = 64;
     const view = new DataView(

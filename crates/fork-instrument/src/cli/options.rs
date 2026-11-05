@@ -17,6 +17,49 @@ pub(super) struct Cli {
     #[arg(short, long)]
     pub(super) output: Option<PathBuf>,
 
+    #[arg(long, requires = "output", conflicts_with_all = [
+        "original_store", "reprepare_from_original", "retain_uninstrumented", "original_reference",
+        "verify_original", "discover_only", "sink_report", "contract_inventory", "artifact_identity",
+        "fork_capability_hex", "linked_frame_descriptor_hex", "reserved_env_imports", "streaming_scan",
+        "legacy_asyncify_exports",
+    ], help = "Bind the raw input's content identity without storing it; ignore the ambient original store")]
+    pub(super) bind_original: bool,
+
+    /// Retain the exact uninstrumented input in STORE/originals and bind its
+    /// content identity into the output for explicit future re-preparation.
+    #[arg(long, value_name = "STORE", requires = "output", conflicts_with_all = [
+        "discover_only", "sink_report", "contract_inventory", "artifact_identity",
+        "fork_capability_hex", "linked_frame_descriptor_hex", "reserved_env_imports", "streaming_scan",
+        "legacy_asyncify_exports",
+    ])]
+    pub(super) original_store: Option<PathBuf>,
+
+    /// Resolve INPUT's content-bound original from --original-store and
+    /// prepare it again with this tool and the selected options.
+    #[arg(long, requires = "original_store")]
+    pub(super) reprepare_from_original: bool,
+
+    #[arg(long, help = "Print the retained original's byte length and SHA-256, or none, without writes", conflicts_with_all = [
+        "output", "original_store", "reprepare_from_original", "discover_only",
+        "sink_report", "contract_inventory", "artifact_identity", "fork_capability_hex",
+        "linked_frame_descriptor_hex", "reserved_env_imports", "streaming_scan", "legacy_asyncify_exports",
+    ])]
+    pub(super) original_reference: bool,
+
+    #[arg(long, value_name = "ORIGINAL", help = "Verify INPUT's retained original bytes and immutable file mode without writes", conflicts_with_all = [
+        "output", "original_store", "reprepare_from_original", "original_reference", "retain_uninstrumented",
+        "discover_only", "sink_report", "contract_inventory", "artifact_identity", "fork_capability_hex",
+        "linked_frame_descriptor_hex", "reserved_env_imports", "streaming_scan", "legacy_asyncify_exports",
+    ])]
+    pub(super) verify_original: Option<PathBuf>,
+
+    #[arg(long, help = "Retain and bind a raw module without instrumenting it", requires_all = ["output", "original_store"], conflicts_with_all = [
+        "reprepare_from_original", "original_reference", "verify_original", "discover_only", "sink_report",
+        "contract_inventory", "artifact_identity", "fork_capability_hex", "linked_frame_descriptor_hex",
+        "reserved_env_imports", "streaming_scan", "legacy_asyncify_exports",
+    ])]
+    pub(super) retain_uninstrumented: bool,
+
     /// Maximum bytes in the private immutable input snapshot.
     #[arg(long, default_value_t = 8_u64 * 1024 * 1024 * 1024)]
     pub(super) max_input_bytes: u64,
@@ -82,7 +125,7 @@ pub(super) struct Cli {
     /// set as JSON to stdout. Skips instrumentation and output emission.
     /// Useful for validating call-graph discovery against
     /// hand-maintained onlylists.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "output")]
     pub(super) discover_only: bool,
 
     /// Diagnose the bounded original-binary scanner without producing an

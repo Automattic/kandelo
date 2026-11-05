@@ -287,6 +287,43 @@ test.describe.serial("real scoped production deployments", () => {
       await context.close();
     }
   });
+
+  test("boots a Pages product from authenticated OPFS staging under experimental persistence", async ({ playwright, browserName }, testInfo) => {
+    test.setTimeout(5 * 60_000);
+    const projectUse = testInfo.project.use as {
+      channel?: string;
+      launchOptions?: Record<string, unknown>;
+      proxy?: Record<string, unknown>;
+      extraHTTPHeaders?: Record<string, string>;
+    };
+    const userDataDir = await mkdtemp(join(tmpdir(), "kandelo-pages-persistence-"));
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      await context.addInitScript(() => { window.confirm = () => true; });
+      const page = context.pages()[0] ?? await context.newPage();
+      const url = `${server.origin}/a/?experimentalPersistence=pages-${crypto.randomUUID()}`;
+      await page.goto(url, { waitUntil: "domcontentloaded" });
+      await waitForShell(page);
+      const first = await page.evaluate(async () => {
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const names: string[] = [];
+        for await (const name of directory.keys()) names.push(name);
+        return names;
+      });
+      expect(first).toContainEqual(expect.stringMatching(/\.base\.json$/));
+      expect(first.some((name) => name.startsWith("source-"))).toBe(false);
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await waitForShell(page);
+    } finally {
+      await context.close();
+      await rm(userDataDir, { force: true, recursive: true });
+    }
+  });
 });
 
 async function withSourceOnlyEnvironment(action: () => Promise<void>): Promise<void> {
@@ -355,17 +392,9 @@ async function readVimArchiveIdentity(
 }
 
 async function waitForShell(page: Page): Promise<void> {
-  // The readiness status belongs to the demo guide, which starts closed.
-  // Open it before observing readiness; a running shell alone does not render it.
-  if (await page.locator("aside.kdemo").count() === 0) {
-    await page.getByRole("button", { name: "Demo guide" }).click({
-      timeout: 120_000,
-    });
-  }
-  await expect(page.locator("aside.kdemo .kdemo-status")).toHaveText("Ready", {
-    timeout: 180_000,
-  });
+  await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
+  await expect(page.locator(".xterm-rows").first()).toContainText(/kandelo(?:-bash-[0-9.]+)?\$ ?/, { timeout: 120_000 });
 }
 
 async function runVimVersion(page: Page): Promise<void> {

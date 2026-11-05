@@ -1,5 +1,6 @@
 import { expect, test, type FrameLocator, type Page } from "@playwright/test";
 import { runTerminalCommand } from "./support/terminal-command";
+import { configureNewComputer, currentComputerMetadata } from "./support/computer-library";
 import {
   gotoInPreview,
   gotoMachineOrSkip,
@@ -54,11 +55,7 @@ function trimLog(lines: string[]) {
 }
 
 async function waitForReady(page: Page, timeout = 180_000) {
-  // "Ready" renders inside the demo guide panel, which no longer auto-opens.
-  await ensureGuideOpen(page);
-  await expect
-    .poll(() => page.evaluate(() => document.body.innerText), { timeout })
-    .toContain("Ready");
+  await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout });
 }
 
 async function terminalText(page: Page): Promise<string> {
@@ -79,25 +76,18 @@ async function waitForTerminalContent(
 }
 
 async function ensureGuideOpen(page: Page) {
-  // The demo guide no longer auto-opens; open it from the dock on first use.
-  if (await page.locator("aside.kdemo").count()) return;
-  await page.getByRole("button", { name: "Demo guide" }).click({ timeout: 120_000 });
-  await page.waitForSelector("aside.kdemo", { timeout: 30_000 });
+  if (await page.getByRole("dialog", { name: "Shortcuts", exact: true }).count()) return;
+  await page.getByRole("button", { name: "Shortcuts" }).click({ timeout: 120_000 });
+  await expect(page.getByRole("dialog", { name: "Shortcuts", exact: true })).toBeVisible({ timeout: 30_000 });
 }
 
-async function runGuideScript(
+async function runShellScript(
   page: Page,
   script: string,
   expected: string | RegExp,
   timeout = 120_000,
 ) {
-  await ensureGuideOpen(page);
-  const runButton = page.locator(".kdemo-run").first();
-  await page.locator(".kdemo textarea").first().fill(script);
-  await runButton.click();
-  await waitForTerminalContent(page, expected, timeout);
-  await expect(runButton).toHaveText("Run script", { timeout });
-  await expect(runButton).toBeEnabled();
+  await runTerminalCommand(page, script, expected, timeout);
 }
 
 async function openTerminalDrawer(page: Page) {
@@ -210,24 +200,15 @@ async function runWordPressPreinstalledLogin(page: Page, demo: string, title: st
     // while Launch still assigned the image an undersized custom-image
     // capacity profile.
     await gotoMachineOrSkip(page, "shell");
-    await page.getByRole("button", { name: "New", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Launch New Computer" }))
-      .toBeVisible();
-    await page
-      .locator(".kgal-row", {
-        has: page.locator(".kgal-machine-title", { hasText: title }),
-      })
-      .getByRole("button", { name: "Launch" })
-      .click();
-    // Launch writes `&profile=` — the only channel that selects which machine
-    // inside the image to boot. The image URL itself carries no fragment.
+    await configureNewComputer(page, demo, title);
+    await page.getByRole("button", { name: "Create and boot", exact: true }).click();
     await expect
       .poll(
-        () => new URL(page.url()).searchParams.get("profile"),
+        async () => (await currentComputerMetadata(page)).profileId,
         { timeout: 60_000 },
       )
       .toBe(demo);
-    const vfsParam = new URL(page.url()).searchParams.get("vfs");
+    const vfsParam = (await currentComputerMetadata(page)).descriptor.mounts.find(mount => mount.path === "/")?.ref;
     expect(vfsParam).not.toBeNull();
     expect(vfsParam).not.toContain("#");
     expect(vfsParam).not.toContain("%23");
@@ -271,9 +252,6 @@ async function runWordPressPreinstalledLogin(page: Page, demo: string, title: st
       );
     }
 
-    // "Log in as admin" is a guide ACTION the image declares in its own
-    // demo.json, so it lives in the demo guide panel — which no longer opens
-    // by itself (same reason waitForReady has to open it).
     await ensureGuideOpen(page);
     await page.getByRole("button", { name: /Log in as admin/i }).click();
 
@@ -302,7 +280,7 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
   // like the other terminal tests do.
   await waitForTerminalContent(page, KANDELO_PROMPT, 120_000);
 
-  await runGuideScript(
+  await runShellScript(
     page,
     "vals=(alpha beta)\n" +
       "if [[ ${vals[1]} == beta ]]; then\n" +
@@ -312,7 +290,7 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
       "fi",
     /KANDELO_BASH_OK:[0-9][^\r\n]*:\/home\/maker/,
   );
-  await runGuideScript(
+  await runShellScript(
     page,
     "vim --version >/tmp/kandelo-vim.out 2>&1\n" +
       "vim_version=$(</tmp/kandelo-vim.out)\n" +
@@ -325,7 +303,7 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
       "fi",
     "KANDELO_VIM_OK",
   );
-  await runGuideScript(
+  await runShellScript(
     page,
     "nethack -s all >/tmp/kandelo-nethack.out 2>&1\n" +
       "status=$?\n" +

@@ -85,6 +85,7 @@ wasm_require_exports "$OUT" \
     kernel_has_sa_nocldstop \
     kernel_host_adapter_manifest_len \
     kernel_host_adapter_manifest_ptr \
+    kernel_initial_exec_commit \
     kernel_install_host_stdin_pipe \
     kernel_ipc_shm_lookup_mapping_for_task \
     kernel_ipc_shm_record_mapping_for_process \
@@ -126,6 +127,7 @@ wasm_require_exports "$OUT" \
     kernel_set_main_channel_addr \
     kernel_spawn_exec_commit \
     kernel_spawn_exec_target_prepare \
+    kernel_spawn_exec_target_prepare_handle \
     kernel_spawn_process \
     kernel_take_process_timer_cleanup \
     kernel_tcp_connection_id \

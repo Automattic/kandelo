@@ -11,6 +11,7 @@
 // WebKit's collector to reclaim it between boots.
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import imageModuleUrl from "@kandelo-image-module32-wasm?url";
+import positionedImageModuleUrl from "@kandelo-image-module-positioned32-wasm?url";
 import { overlayEtcFromRootfs } from "../../../images/vfs/lib/rootfs-etc-overlay";
 import { isWebKitLikeBrowser } from "./browser-engine";
 
@@ -112,6 +113,18 @@ export function ensureImageWriterInstalled(): Promise<void> {
   return moduleInstall;
 }
 
+let positionedModuleBytes: Promise<Uint8Array> | null = null;
+export function loadPositionedImageWriterModuleBytes(): Promise<Uint8Array> {
+  positionedModuleBytes ??= (async () => {
+    const response = await fetch(positionedImageModuleUrl);
+    if (!response.ok) {
+      throw new Error(`failed to fetch the positioned VFS image writer (${response.status})`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  })();
+  return positionedModuleBytes;
+}
+
 /**
  * Restore an image for BUILDING on: mutate the tree, then re-export it.
  *
@@ -143,7 +156,7 @@ export async function restoreVerifiedImageForBuild(
 }
 
 /** Create a fresh, empty build-time image filesystem for assembling an image
- *  that the kernel worker will own. Scratch mounts (/tmp, /var, /home/maker,
+ *  that the kernel worker will own. Scratch mounts (/tmp, /var/log,
  *  …) are served by the in-kernel tmpfs, so only the image's `/` content
  *  (e.g. /etc, /bin) needs to live here. */
 export async function createEmptyBuildFs(

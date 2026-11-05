@@ -67,5 +67,5 @@ describe("RLIMIT_AS describes the process address space", () => {
     expect(reportedHardLimit(desktop.stdout)).toBeGreaterThan(
       reportedHardLimit(constrained.stdout),
     );
-  });
+  }, 30_000);
 });

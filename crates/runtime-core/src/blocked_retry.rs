@@ -9,13 +9,11 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
 
 use crate::ipc::{PinnedMsgQueue, PinnedSemSet};
 use crate::lock::OfdId;
 use crate::mqueue::PinnedMqueueDescriptor;
-use crate::pipe::InFlightFd;
 
 /// One normalized syscall family whose retry target must remain stable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -159,7 +157,7 @@ pub enum BlockingRetryTarget {
     },
     Sendmsg {
         carrier: StableOfdTarget,
-        ancillary: Vec<InFlightFd>,
+        ancillary: crate::pipe::AncillaryFds,
     },
     Mqueue(PinnedMqueueDescriptor),
     SysvMessage {
@@ -207,10 +205,10 @@ pub enum BlockingRetryTarget {
 #[derive(Debug)]
 pub struct PendingVectorIo {
     /// The caller's `struct iovec` table, decoded at entry.
-    pub entries: alloc::vec::Vec<crate::msghdr::NativeIovec>,
+    pub entries: crate::IoBuffer<crate::msghdr::NativeIovec>,
     /// Bytes gathered from the caller at entry. Empty for a read, whose
     /// buffers are outputs rather than inputs.
-    pub outgoing: alloc::vec::Vec<u8>,
+    pub outgoing: crate::IoBuffer<u8>,
     /// Total bytes the retained table addresses.
     pub total: usize,
 }
@@ -219,7 +217,7 @@ pub struct PendingVectorIo {
 #[derive(Debug)]
 pub struct PendingSysvMessage {
     pub mtype: i64,
-    pub data: alloc::vec::Vec<u8>,
+    pub data: crate::IoBuffer<u8>,
 }
 
 impl BlockingRetryTarget {
@@ -262,12 +260,12 @@ pub struct BlockingRetryBinding {
 
 /// Per-process binding registry.
 ///
-/// A `Vec` keeps the common one-blocked-call-per-task case compact and avoids
+/// An admitted slot array keeps one blocked call per task compact and avoids
 /// a second tree allocation. Tokens never wrap or reuse during a process
 /// lifetime; exhaustion is a truthful terminal error.
 pub struct BlockingRetryState {
     next_token: u64,
-    bindings: Vec<BlockingRetryBinding>,
+    bindings: crate::IoBuffer<BlockingRetryBinding>,
     active: Option<(u32, i64, BlockingRetryOperation)>,
     dispatch_tid: Option<u32>,
     bound_tid: Option<u32>,
@@ -277,7 +275,7 @@ impl BlockingRetryState {
     pub fn new() -> Self {
         Self {
             next_token: 1,
-            bindings: Vec::new(),
+            bindings: crate::IoBuffer::new(),
             active: None,
             dispatch_tid: None,
             bound_tid: None,
@@ -371,6 +369,15 @@ impl BlockingRetryState {
         self.bindings
             .iter_mut()
             .find(|binding| binding.token == token)
+    }
+
+    pub(crate) fn retain_sysv_message(&mut self, token: i64, message: PendingSysvMessage) -> Result<(), Errno> {
+        let binding = self.binding_for_token_mut(token).ok_or(Errno::ENOENT)?;
+        if binding.operation != BlockingRetryOperation::MsgSend { return Err(Errno::EINVAL); }
+        let BlockingRetryTarget::SysvMessage { pending_send, .. } = &mut binding.target
+            else { return Err(Errno::EINVAL); };
+        if pending_send.is_none() { *pending_send = Some(message); }
+        Ok(())
     }
 
     pub fn has_binding_for_tid(&self, tid: u32) -> bool {
@@ -617,7 +624,7 @@ impl BlockingRetryState {
             .map(|index| self.bindings.swap_remove(index))
     }
 
-    pub fn take_all(&mut self) -> Vec<BlockingRetryBinding> {
+    pub fn take_all(&mut self) -> crate::IoBuffer<BlockingRetryBinding> {
         self.bound_tid = None;
         self.dispatch_tid = None;
         self.active = None;
@@ -639,6 +646,46 @@ impl Default for BlockingRetryState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_arena_refusal_preserves_tokens_and_first_sysv_snapshot() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut state = BlockingRetryState::new();
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(state.prepare_insert(), Err(Errno::ENOMEM));
+        }
+        let mut ipc = crate::ipc::IpcTable::new();
+        let queue = ipc.msgget(0, 0o1000 | 0o600, 1, 0, 0).unwrap();
+        let pin = ipc.pin_msg_queue(queue).unwrap();
+        let token = state.prepare_insert().unwrap();
+        assert_eq!(token, 1);
+        assert!(state.insert_prepared(token, 1, BlockingRetryOperation::MsgSend,
+            BlockingRetryTarget::SysvMessage { queue: pin, pending_send: None }).is_ok());
+        let first = PendingSysvMessage { mtype: 7, data: crate::IoBuffer::copy_from(b"first").unwrap() };
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            state.retain_sysv_message(token, first).unwrap();
+        }
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let later = PendingSysvMessage { mtype: 8, data: crate::IoBuffer::copy_from(b"later").unwrap() };
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            state.retain_sysv_message(token, later).unwrap();
+            state.activate(1, token, BlockingRetryOperation::MsgSend).unwrap();
+            let (_, pending) = state.active_sysv_message(1, BlockingRetryOperation::MsgSend).unwrap().unwrap();
+            let pending = pending.unwrap();
+            assert_eq!(pending.mtype, 7);
+            assert_eq!(pending.data, b"first");
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+        for binding in state.take_all() {
+            let BlockingRetryTarget::SysvMessage { queue, .. } = binding.target else { unreachable!() };
+            ipc.release_msg_queue_pin(queue).unwrap();
+        }
+        ipc.msgctl(queue, 0, 1, 0, 0).unwrap();
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
 
     fn ofd_target(fd: i32, ofd_idx: usize, ofd_id: u64) -> BlockingRetryTarget {
         BlockingRetryTarget::Ofd(StableOfdTarget {
@@ -777,7 +824,7 @@ mod tests {
                     ofd_idx: 4,
                     ofd_id: OfdId(5),
                 },
-                ancillary: Vec::new(),
+                ancillary: crate::pipe::AncillaryFds::new(),
             },
         );
         state

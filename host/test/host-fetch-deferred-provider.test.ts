@@ -61,6 +61,150 @@ function importsOf(
 }
 
 describe("host_fetch_deferred provider seam", () => {
+  it.each([4, 8] as const)("shares one isolated image/journal/index/compaction staging backing and recovers from storage detachment for width %s", width => {
+    const { kernel, memory } = kernelHarness({}, width);
+    const imports = importsOf(kernel, memory);
+    const buffers = new Set<ArrayBufferLike>();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const pointer = width === 8 ? 4096n : 4096;
+    kernel.setRootfsImageProvider((_offset: bigint, bytes: Uint8Array) => {
+      buffers.add(bytes.buffer); bytes.fill(0x39); return bytes.byteLength;
+    });
+    expect(imports.env.host_image_read(pointer, 4, 0, 0)).toBe(4);
+    try {
+      for (const [setter, imported] of [
+        ["setPersistentOverlayStorage", "host_overlay_read"],
+        ["setPersistentOverlayTargetStorage", "host_overlay_target_read"],
+        ["setPersistentOverlayCompactionStorage", "host_overlay_compaction_read"],
+      ]) {
+        kernel[setter!]({ readExactAt(_offset: bigint, bytes: Uint8Array) {
+          buffers.add(bytes.buffer);
+          expect(new Uint8Array(bytes.buffer).every(value => value === 0)).toBe(true);
+          expect(imports.env.host_image_read(pointer, 4, 0, 0)).toBe(-EIO);
+          bytes.fill(0x5a);
+        } });
+        expect(imports.env[imported!]!(17n, pointer, 4)).toBe(0);
+        expect([...new Uint8Array(memory.buffer, 4096, 4)]).toEqual(Array(4).fill(0x5a));
+      }
+      expect(buffers.size).toBe(1);
+      kernel.setPersistentOverlayStorage({ readExactAt(_offset: bigint, bytes: Uint8Array) {
+        const backing = bytes.buffer as ArrayBuffer;
+        structuredClone(backing, { transfer: [backing] });
+      }, len: () => 0, writeAllAt: () => {}, flush: () => {}, truncate: () => {}, close: () => {} });
+      expect(imports.env.host_overlay_read(17n, pointer, 4)).toBe(-EIO);
+      expect([...new Uint8Array(memory.buffer, 4096, 4)]).toEqual(Array(4).fill(0x5a));
+      expect(imports.env.host_image_read(pointer, 4, 0, 0)).toBe(4);
+      expect([...new Uint8Array(memory.buffer, 4096, 4)]).toEqual(Array(4).fill(0x39));
+    } finally { warning.mockRestore(); }
+  });
+
+  it.each([4, 8] as const)("replaces provider-detached image scratch and permits a later retry for width %s", width => {
+    for (const result of [-EIO, 4]) {
+      const { kernel, memory } = kernelHarness({}, width);
+      const imports = importsOf(kernel, memory);
+      const pointer = width === 8 ? 4096n : 4096;
+      const destination = new Uint8Array(memory.buffer, 4096, 4);
+      destination.fill(0x5a);
+      kernel.setRootfsImageProvider((_offset: bigint, staged: Uint8Array) => {
+        staged.fill(0xff);
+        structuredClone(staged.buffer, { transfer: [staged.buffer] });
+        return result;
+      });
+      expect(imports.env.host_image_read(pointer, 4, 0, 0)).toBe(result < 0 ? -EIO : -14);
+      expect([...destination]).toEqual([0x5a, 0x5a, 0x5a, 0x5a]);
+      const succeeding = vi.fn((_offset: bigint, staged: Uint8Array) => { staged.fill(0x39); return staged.byteLength; });
+      kernel.setRootfsImageProvider(succeeding);
+      expect(imports.env.host_image_read(pointer, 4, 0, 0)).toBe(4);
+      expect([...destination]).toEqual([0x39, 0x39, 0x39, 0x39]);
+      expect(succeeding).toHaveBeenCalledOnce();
+    }
+  });
+
+  it.each([4, 8] as const)("reuses one cleared image staging backing without lending kernel memory for width %s", width => {
+    const { kernel, memory } = kernelHarness({}, width);
+    const imports = importsOf(kernel, memory);
+    const buffers = new Set<ArrayBufferLike>();
+    let retained: Uint8Array | undefined;
+    kernel.setRootfsImageProvider((_offset: bigint, staged: Uint8Array) => {
+      expect(staged.buffer).not.toBe(memory.buffer);
+      expect(new Uint8Array(staged.buffer).every(value => value === 0)).toBe(true);
+      buffers.add(staged.buffer);
+      retained = staged;
+      staged.fill(0x39);
+      return staged.byteLength;
+    });
+    const pointer = width === 8 ? 4096n : 4096;
+    for (let count = 0; count < 100; count += 1) {
+      expect(imports.env.host_image_read(pointer, 4096, count, 0)).toBe(4096);
+      retained!.fill(0xff);
+      expect(new Uint8Array(memory.buffer, 4096, 4096).every(value => value === 0x39)).toBe(true);
+    }
+    expect(buffers.size).toBe(1);
+    expect(imports.env.host_image_read(pointer, 65537, 0, 0)).toBe(65537);
+    expect(buffers.size).toBe(2);
+  });
+
+  it.each([4, 8] as const)("refuses nested image scratch reuse without disturbing its outer read for width %s", width => {
+    const { kernel, memory } = kernelHarness({}, width);
+    const imports = importsOf(kernel, memory);
+    const pointer = width === 8 ? 4096n : 4096;
+    const nestedPointer = width === 8 ? 8192n : 8192;
+    new Uint8Array(memory.buffer, 8192, 4).fill(0x5a);
+    kernel.setRootfsImageProvider((_offset: bigint, staged: Uint8Array) => {
+      staged.fill(0x39);
+      expect(imports.env.host_image_read(nestedPointer, 4, 0, 0)).toBe(-EIO);
+      return staged.byteLength;
+    });
+    expect(imports.env.host_image_read(pointer, 4, 0, 0)).toBe(4);
+    expect([...new Uint8Array(memory.buffer, 4096, 4)]).toEqual([0x39, 0x39, 0x39, 0x39]);
+    expect([...new Uint8Array(memory.buffer, 8192, 4)]).toEqual([0x5a, 0x5a, 0x5a, 0x5a]);
+  });
+
+  it.each([4, 8] as const)("keeps storage-read failures atomic and diagnostics bounded across slots for pointer width %s", width => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const [setter, imported] of [
+        ["setPersistentOverlayStorage", "host_overlay_read"],
+        ["setPersistentOverlayTargetStorage", "host_overlay_target_read"],
+        ["setPersistentOverlayCompactionStorage", "host_overlay_compaction_read"],
+      ]) {
+        const { kernel, memory } = kernelHarness({}, width);
+        const imports = importsOf(kernel, memory);
+        const destination = new Uint8Array(memory.buffer, 4096, 4);
+        destination.fill(0x5a);
+        kernel[setter!]({ readExactAt(_offset: bigint, staged: Uint8Array) {
+          staged.fill(0xff);
+          throw Object.assign(new Error("storage read failed"), { code: "EIO" });
+        } });
+        const pointer = width === 8 ? 4096n : 4096;
+        expect(imports.env[imported!]!(17n, pointer, 4)).toBe(-EIO);
+        expect(imports.env[imported!]!(18n, pointer, 4)).toBe(-EIO);
+        expect([...destination]).toEqual([0x5a, 0x5a, 0x5a, 0x5a]);
+      }
+      expect(warning).toHaveBeenCalledTimes(3);
+    } finally { warning.mockRestore(); }
+  });
+
+  it.each([4, 8] as const)("reports one image-provider failure without publishing partial bytes for pointer width %s", width => {
+    const { kernel, memory } = kernelHarness({}, width);
+    const imports = importsOf(kernel, memory);
+    const destination = new Uint8Array(memory.buffer, 4096, 4);
+    destination.fill(0x5a);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => { throw new Error("diagnostic failure"); });
+    try {
+      kernel.setRootfsImageProvider((_offset: bigint, staged: Uint8Array) => {
+        staged.fill(0xff);
+        throw new Error("image transport failed");
+      });
+      const pointer = width === 8 ? 4096n : 4096;
+      expect(imports.env.host_image_read(pointer, 4, 1, 1)).toBe(-EIO);
+      expect(imports.env.host_image_read(pointer, 4, 2, 1)).toBe(-EIO);
+      expect([...destination]).toEqual([0x5a, 0x5a, 0x5a, 0x5a]);
+      expect(warning).toHaveBeenCalledOnce();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining("provider failed at byte 4294967297 for 4 bytes"));
+    } finally { warning.mockRestore(); }
+  });
+
   it("reports ENOSYS when no deferred provider is installed", () => {
     const { kernel, memory } = kernelHarness();
     const imports = importsOf(kernel, memory);

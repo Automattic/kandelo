@@ -112,13 +112,12 @@ Build the kernel and benchmark programs:
 scripts/dev-shell.sh bash scripts/build-programs.sh
 ```
 
-`./run.sh setup` provisions the musl sysroot for you on a fresh
-checkout. If a sysroot already exists and you changed
-`libc/musl-overlay` or `libc/glue`, `setup` only re-syncs headers —
-rebuild it explicitly first:
+`./run.sh setup` provisions and checks both musl sysroots. The normal product
+build does not create the unpacked local WordPress tree consumed by the Node
+benchmark. Prepare that additional input in each comparison checkout:
 
 ```bash
-scripts/dev-shell.sh bash scripts/build-musl.sh
+scripts/dev-shell.sh bash packages/registry/wordpress/setup.sh
 ```
 
 Some suites require additional binaries:
@@ -129,11 +128,30 @@ Some suites require additional binaries:
 | `process-lifecycle` | Base sysroot + benchmark programs |
 | `spawn-scratch` | Benchmark programs; supplies both executables and uses an empty VFS |
 | `erlang-ring` | Pre-built Erlang binary |
-| `wordpress` | Pre-built PHP, nginx, WordPress |
-| `mariadb` | Pre-built MariaDB |
+| `wordpress` | PHP and unpacked WordPress for Node; the WordPress VFS image for browser |
+| `mariadb-aria`, `mariadb-innodb` | wasm32 MariaDB programs; MariaDB VFS image for browser |
+| `mariadb-aria-64`, `mariadb-innodb-64` | wasm64 MariaDB programs; wasm64 MariaDB VFS image for browser |
+
+The standalone MariaDB benchmark images are not selected by ordinary browser
+product setup. Prepare both architectures through the package resolver:
+
+```bash
+scripts/dev-shell.sh bash -c '
+  target="$(rustc -vV | sed -n "s/^host: //p")"
+  for arch in wasm32 wasm64; do
+    cargo run -q -p xtask --target "$target" -- build-deps resolve \
+      mariadb-vfs --arch "$arch" --binaries-dir "$PWD/binaries" || exit
+  done
+'
+```
+
+Browser benchmark extraction completes positive short reads in at most
+64 KiB windows and fails on premature EOF or invalid progress. The returned
+whole executable is caller-owned input to compilation, not filesystem cache
+memory. A zero-filled unread suffix must never be timed as a valid program.
 
 Application benchmark suites fail if their required binaries are not found. A
-missing artifact means the suite did not measure its workload; build or fetch
+missing artifact means the suite did not measure its workload; build
 the prerequisite before running it.
 
 ### Running Benchmarks

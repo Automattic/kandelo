@@ -7,6 +7,7 @@ import {
 } from "../src/demo-config";
 import {
   dockActionProgramName,
+  followShellOutput,
   dockActionProgress,
   runDemoDockAction,
   shellPromptReturned,
@@ -99,6 +100,28 @@ describe("image-owned dock actions", () => {
 });
 
 describe("runDemoDockAction", () => {
+  it("does not interrupt TTY1 for an activity without its own stop handler", async () => {
+    const interruptShellForeground = vi.fn(async () => {});
+    const host = { interruptShellForeground } as unknown as KernelHost;
+    await expect(runDemoDockAction(host, ACTION, { terminalPath: "/dev/pts/3" })).rejects.toThrow("requires its own stop handler");
+    expect(interruptShellForeground).not.toHaveBeenCalled();
+  });
+
+  it("follows the selected activity's terminal instead of TTY1", async () => {
+    const close = vi.fn();
+    const attachPty = vi.fn(async () => ({ onData: () => () => {}, close }));
+    const host = { attachPty } as unknown as KernelHost;
+    const stop = await followShellOutput(host, () => {}, "/dev/pts/3");
+    expect(attachPty).toHaveBeenCalledWith("/dev/pts/3");
+    stop();
+    expect(close).toHaveBeenCalled();
+  });
+  it("keeps a menu command in the activity's owned terminal", async () => {
+    const dispatchShellCommand = vi.fn(async () => {});
+    const host = { dispatchShellCommand } as unknown as KernelHost;
+    await runDemoDockAction(host, ACTION, { terminalPath: "/dev/pts/3", stop: async () => {} });
+    expect(dispatchShellCommand).toHaveBeenCalledWith(ACTION.restart, expect.objectContaining({ path: "/dev/pts/3" }));
+  });
   it("interrupts the foreground program before dispatching the restart", async () => {
     const calls: string[] = [];
     const host = {

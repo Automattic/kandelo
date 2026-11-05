@@ -33,7 +33,8 @@
         "requires": [],
         "surface": "terminal"
       },
-      "requiresHost": true
+      "requiresHost": true,
+      "category": "services"
     }
   ],
   "joins": [

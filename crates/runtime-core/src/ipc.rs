@@ -5,10 +5,11 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
-use alloc::collections::VecDeque;
+use crate::{IoBuffer, IoDeque, PreparedMap};
+use crate::prepared_map::MapMemory;
+
+#[cfg(test)]
 use alloc::vec;
-use alloc::vec::Vec;
 use wasm_posix_shared::{Errno, platform_limits};
 
 // ── IPC constants ──
@@ -85,7 +86,7 @@ fn ipc_check_owner(uid: u32, owner_uid: u32, creator_uid: u32) -> Result<(), Err
 /// A single message in a SysV message queue.
 struct MsgEntry {
     mtype: i64,
-    data: Vec<u8>,
+    data: IoBuffer<u8>,
 }
 
 /// SysV message queue.
@@ -101,7 +102,7 @@ struct MsgQueue {
     cuid: u32,
     cgid: u32,
     qbytes: u32,
-    messages: VecDeque<MsgEntry>,
+    messages: IoDeque<MsgEntry>,
     cbytes: u32,
     lspid: i32,
     lrpid: i32,
@@ -135,10 +136,11 @@ pub struct MsgQueueInfo {
 #[derive(Debug)]
 pub struct MsgRcvResult {
     pub mtype: i64,
-    pub data: Vec<u8>,
+    pub data: IoBuffer<u8>,
 }
 
 /// A single semaphore within a set.
+#[derive(Clone, Copy)]
 struct SemValue {
     val: u16,
     pid: u32,
@@ -161,7 +163,7 @@ struct SemSet {
     cuid: u32,
     cgid: u32,
     nsems: u32,
-    values: Vec<SemValue>,
+    values: IoBuffer<SemValue>,
     otime: i64,
     ctime: i64,
     seq: i32,
@@ -200,7 +202,7 @@ struct ShmSegment {
     cuid: u32,
     cgid: u32,
     segsz: u32,
-    data: Vec<u8>,
+    data: IoBuffer<u8>,
     cpid: i32,
     lpid: i32,
     nattch: u32,
@@ -239,7 +241,7 @@ pub enum SemCtlResult {
     /// Stat info (IPC_STAT).
     Stat(SemSetInfo),
     /// Array of all values (GETALL) — packed as u16 little-endian.
-    All(Vec<u16>),
+    All(IoBuffer<u16>),
 }
 
 /// Stable identity for one message-queue generation retained across a blocked
@@ -269,6 +271,14 @@ pub struct PinnedSemSet {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct IpcPinId(u64);
 
+macro_rules! map_memory {
+    ($($value:ty),*) => { $(impl MapMemory for $value {
+        fn heap_bytes(&self) -> Result<usize, Errno> { Ok(0) }
+    })* };
+}
+
+map_memory!(IpcPinId, MsgQueue, SemSet, ShmSegment);
+
 #[cfg(test)]
 impl PinnedMsgQueue {
     fn duplicate_for_exact_release_test(&self) -> Self {
@@ -296,13 +306,13 @@ impl PinnedSemSet {
 /// Global SysV IPC table holding message queues, semaphore sets,
 /// and shared memory segments.
 pub struct IpcTable {
-    msg_queues: BTreeMap<i32, MsgQueue>,
-    removed_msg_queues: BTreeMap<u64, MsgQueue>,
-    active_msg_pins: BTreeMap<IpcPinId, u64>,
-    sem_sets: BTreeMap<i32, SemSet>,
-    removed_sem_sets: BTreeMap<u64, SemSet>,
-    active_sem_pins: BTreeMap<IpcPinId, u64>,
-    shm_segments: BTreeMap<i32, ShmSegment>,
+    msg_queues: PreparedMap<u64, MsgQueue>,
+    removed_msg_queues: PreparedMap<u64, MsgQueue>,
+    active_msg_pins: PreparedMap<IpcPinId, u64>,
+    sem_sets: PreparedMap<u64, SemSet>,
+    removed_sem_sets: PreparedMap<u64, SemSet>,
+    active_sem_pins: PreparedMap<IpcPinId, u64>,
+    shm_segments: PreparedMap<i32, ShmSegment>,
     next_id: i32,
     next_generation: u64,
     next_pin_id: Option<IpcPinId>,
@@ -311,13 +321,13 @@ pub struct IpcTable {
 impl IpcTable {
     pub const fn new() -> Self {
         IpcTable {
-            msg_queues: BTreeMap::new(),
-            removed_msg_queues: BTreeMap::new(),
-            active_msg_pins: BTreeMap::new(),
-            sem_sets: BTreeMap::new(),
-            removed_sem_sets: BTreeMap::new(),
-            active_sem_pins: BTreeMap::new(),
-            shm_segments: BTreeMap::new(),
+            msg_queues: PreparedMap::new(),
+            removed_msg_queues: PreparedMap::new(),
+            active_msg_pins: PreparedMap::new(),
+            sem_sets: PreparedMap::new(),
+            removed_sem_sets: PreparedMap::new(),
+            active_sem_pins: PreparedMap::new(),
+            shm_segments: PreparedMap::new(),
             next_id: 0,
             next_generation: 1,
             next_pin_id: Some(IpcPinId(1)),
@@ -325,13 +335,13 @@ impl IpcTable {
     }
 
     fn public_id_in_use(&self, id: i32) -> bool {
-        self.msg_queues.contains_key(&id)
-            || self.sem_sets.contains_key(&id)
+        self.msg_queues.contains_key(&(id as u32 as u64))
+            || self.sem_sets.contains_key(&(id as u32 as u64))
             || self.shm_segments.contains_key(&id)
     }
 
-    fn alloc_id(&mut self) -> Result<i32, Errno> {
-        self.alloc_id_bounded(i32::MAX)
+    fn next_free_id(&self) -> Result<(i32, i32), Errno> {
+        self.next_free_id_bounded(i32::MAX)
     }
 
     /// Allocate from `0..=max_id`, advancing through the domain without ever
@@ -340,7 +350,7 @@ impl IpcTable {
     /// The bounded form also gives unit tests a tractable way to prove
     /// collision, wrap, and exhaustion behavior without constructing billions
     /// of IPC objects.
-    fn alloc_id_bounded(&mut self, max_id: i32) -> Result<i32, Errno> {
+    fn next_free_id_bounded(&self, max_id: i32) -> Result<(i32, i32), Errno> {
         if max_id < 0 {
             return Err(Errno::ENOSPC);
         }
@@ -357,12 +367,12 @@ impl IpcTable {
 
         for _ in 0..domain_size {
             if !self.public_id_in_use(candidate) {
-                self.next_id = if candidate == max_id {
+                let next_id = if candidate == max_id {
                     0
                 } else {
                     candidate + 1
                 };
-                return Ok(candidate);
+                return Ok((candidate, next_id));
             }
             candidate = if candidate == max_id {
                 0
@@ -374,20 +384,26 @@ impl IpcTable {
         Err(Errno::ENOSPC)
     }
 
-    fn alloc_generation(&mut self) -> Result<u64, Errno> {
-        let generation = self.next_generation;
-        self.next_generation = self.next_generation.checked_add(1).ok_or(Errno::ENOSPC)?;
-        Ok(generation)
+    #[cfg(test)]
+    fn alloc_id_bounded(&mut self, max_id: i32) -> Result<i32, Errno> {
+        let (id, next_id) = self.next_free_id_bounded(max_id)?;
+        self.next_id = next_id;
+        Ok(id)
     }
 
-    fn alloc_pin_id(&mut self) -> Result<IpcPinId, Errno> {
+    fn next_free_generation(&self) -> Result<(u64, u64), Errno> {
+        let generation = self.next_generation;
+        let next = generation.checked_add(1).ok_or(Errno::ENOSPC)?;
+        Ok((generation, next))
+    }
+
+    fn next_free_pin_id(&self) -> Result<(IpcPinId, Option<IpcPinId>), Errno> {
         let mut candidate = self.next_pin_id.ok_or(Errno::EOVERFLOW)?;
         loop {
             if !self.active_msg_pins.contains_key(&candidate)
                 && !self.active_sem_pins.contains_key(&candidate)
             {
-                self.next_pin_id = candidate.0.checked_add(1).map(IpcPinId);
-                return Ok(candidate);
+                return Ok((candidate, candidate.0.checked_add(1).map(IpcPinId)));
             }
             candidate = IpcPinId(candidate.0.checked_add(1).ok_or(Errno::EOVERFLOW)?);
         }
@@ -432,11 +448,11 @@ impl IpcTable {
             return Err(Errno::ENOENT);
         }
 
-        let id = self.alloc_id()?;
-        let generation = self.alloc_generation()?;
+        let (id, next_id) = self.next_free_id()?;
+        let (generation, next_generation) = self.next_free_generation()?;
         let seq = id;
-        self.msg_queues.insert(
-            id,
+        let prepared = self.msg_queues.prepare_io(
+            id as u64,
             MsgQueue {
                 key,
                 id,
@@ -449,7 +465,7 @@ impl IpcTable {
                 cuid: uid,
                 cgid: gid,
                 qbytes: MSGMNB,
-                messages: VecDeque::new(),
+                messages: IoDeque::new(),
                 cbytes: 0,
                 lspid: 0,
                 lrpid: 0,
@@ -458,7 +474,10 @@ impl IpcTable {
                 ctime: crate::current_time_secs(),
                 seq,
             },
-        );
+        )?;
+        self.msg_queues.publish_io(prepared);
+        self.next_id = next_id;
+        self.next_generation = next_generation;
 
         Ok(id)
     }
@@ -470,14 +489,15 @@ impl IpcTable {
     pub fn pin_msg_queue(&mut self, qid: i32) -> Result<PinnedMsgQueue, Errno> {
         let generation = self
             .msg_queues
-            .get(&qid)
+            .get(&(qid as u32 as u64))
             .map(|queue| queue.generation)
             .ok_or(Errno::EINVAL)?;
-        let pin_id = self.alloc_pin_id()?;
-        let queue = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
+        let (pin_id, next_pin_id) = self.next_free_pin_id()?;
+        let prepared = self.active_msg_pins.prepare_io(pin_id, generation)?;
+        let queue = self.msg_queues.get_mut(&(qid as u32 as u64)).ok_or(Errno::EINVAL)?;
         queue.active_pins = queue.active_pins.checked_add(1).ok_or(Errno::EOVERFLOW)?;
-        let previous = self.active_msg_pins.insert(pin_id, generation);
-        debug_assert!(previous.is_none());
+        self.active_msg_pins.publish_io(prepared);
+        self.next_pin_id = next_pin_id;
         Ok(PinnedMsgQueue {
             pin_id,
             public_id: qid,
@@ -494,7 +514,7 @@ impl IpcTable {
             return Err(Errno::EINVAL);
         }
 
-        if let Some(queue) = self.msg_queues.get_mut(&pin.public_id) {
+        if let Some(queue) = self.msg_queues.get_mut(&(pin.public_id as u32 as u64)) {
             if queue.generation == pin.generation {
                 queue.active_pins = queue.active_pins.checked_sub(1).ok_or(Errno::EINVAL)?;
                 self.active_msg_pins.remove(&pin.pin_id);
@@ -526,10 +546,10 @@ impl IpcTable {
         }
         if self
             .msg_queues
-            .get(&pin.public_id)
+            .get(&(pin.public_id as u32 as u64))
             .is_some_and(|queue| queue.generation == pin.generation)
         {
-            return self.msg_queues.get_mut(&pin.public_id).ok_or(Errno::EIDRM);
+            return self.msg_queues.get_mut(&(pin.public_id as u32 as u64)).ok_or(Errno::EIDRM);
         }
 
         // A capability never follows a reused public ID. Whether its removed
@@ -610,13 +630,13 @@ impl IpcTable {
         pid: u32,
         uid: u32,
         gid: u32,
-        reserve_message: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), Errno>,
-        reserve_slot: impl FnOnce(&mut VecDeque<MsgEntry>) -> Result<(), Errno>,
+        reserve_message: impl FnOnce(&mut IoBuffer<u8>, usize) -> Result<(), Errno>,
+        reserve_slot: impl FnOnce(&mut IoDeque<MsgEntry>) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
         if mtype <= 0 {
             return Err(Errno::EINVAL);
         }
-        let q = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
+        let q = self.msg_queues.get_mut(&(qid as u32 as u64)).ok_or(Errno::EINVAL)?;
         Self::msgsnd_queue_with_reserve(
             q,
             mtype,
@@ -639,8 +659,8 @@ impl IpcTable {
         pid: u32,
         uid: u32,
         gid: u32,
-        reserve_message: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), Errno>,
-        reserve_slot: impl FnOnce(&mut VecDeque<MsgEntry>) -> Result<(), Errno>,
+        reserve_message: impl FnOnce(&mut IoBuffer<u8>, usize) -> Result<(), Errno>,
+        reserve_slot: impl FnOnce(&mut IoDeque<MsgEntry>) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
         ipc_check_perm(uid, gid, q.uid, q.gid, q.mode, IPC_W)?;
 
@@ -665,7 +685,7 @@ impl IpcTable {
         // WHY: both the owned payload and the VecDeque slot can allocate.
         // Prepare them fallibly before changing accounting or queue order so
         // ENOMEM leaves the logical message queue transaction untouched.
-        let mut message_data = Vec::new();
+        let mut message_data = IoBuffer::new();
         reserve_message(&mut message_data, data.len())?;
         if message_data.capacity() < data.len() {
             return Err(Errno::ENOMEM);
@@ -717,7 +737,7 @@ impl IpcTable {
         uid: u32,
         gid: u32,
     ) -> Result<MsgRcvResult, Errno> {
-        let q = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
+        let q = self.msg_queues.get_mut(&(qid as u32 as u64)).ok_or(Errno::EINVAL)?;
         Self::msgrcv_queue_with_mtype_max(
             q,
             max_size,
@@ -862,7 +882,7 @@ impl IpcTable {
     ) -> Result<Option<MsgQueueInfo>, Errno> {
         match cmd {
             IPC_STAT => {
-                let q = self.msg_queues.get(&qid).ok_or(Errno::EINVAL)?;
+                let q = self.msg_queues.get(&(qid as u32 as u64)).ok_or(Errno::EINVAL)?;
                 ipc_check_perm(uid, gid, q.uid, q.gid, q.mode, IPC_R)?;
                 Ok(Some(MsgQueueInfo {
                     key: q.key,
@@ -883,17 +903,17 @@ impl IpcTable {
                 }))
             }
             IPC_RMID => {
-                let q = self.msg_queues.get(&qid).ok_or(Errno::EINVAL)?;
+                let q = self.msg_queues.get(&(qid as u32 as u64)).ok_or(Errno::EINVAL)?;
                 ipc_check_owner(uid, q.uid, q.cuid)?;
-                let mut queue = self.msg_queues.remove(&qid).ok_or(Errno::EINVAL)?;
-                queue.removed = true;
-                if queue.active_pins != 0 {
+                let mut queue = self.msg_queues.remove_entry(&(qid as u32 as u64)).ok_or(Errno::EINVAL)?;
+                queue.value_mut().removed = true;
+                if queue.value().active_pins != 0 {
                     // Public visibility ends before any waiter is woken. The
                     // generation-keyed tombstone exists only to make those
                     // already-pinned retries fail with EIDRM and to keep ID
                     // reuse from redirecting them.
-                    let previous = self.removed_msg_queues.insert(queue.generation, queue);
-                    debug_assert!(previous.is_none());
+                    queue.replace_key(queue.value().generation);
+                    self.removed_msg_queues.publish_io(queue);
                 }
                 Ok(None)
             }
@@ -916,7 +936,7 @@ impl IpcTable {
         new_qbytes: u32,
         uid: u32,
     ) -> Result<(), Errno> {
-        let q = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
+        let q = self.msg_queues.get_mut(&(qid as u32 as u64)).ok_or(Errno::EINVAL)?;
         ipc_check_owner(uid, q.uid, q.cuid)?;
         if new_qbytes > MSGMNB && uid != 0 {
             return Err(Errno::EPERM);
@@ -966,20 +986,19 @@ impl IpcTable {
             return Err(Errno::EINVAL);
         }
 
-        let id = self.alloc_id()?;
-        let generation = self.alloc_generation()?;
+        let (id, next_id) = self.next_free_id()?;
+        let (generation, next_generation) = self.next_free_generation()?;
         let seq = id;
-        let values = (0..nsems)
-            .map(|_| SemValue {
+        let mut values = IoBuffer::try_with_capacity(nsems as usize)?;
+        values.resize(nsems as usize, SemValue {
                 val: 0,
                 pid: 0,
                 ncnt: 0,
                 zcnt: 0,
-            })
-            .collect();
+        });
 
-        self.sem_sets.insert(
-            id,
+        let prepared = self.sem_sets.prepare_io(
+            id as u64,
             SemSet {
                 key,
                 id,
@@ -997,7 +1016,10 @@ impl IpcTable {
                 ctime: crate::current_time_secs(),
                 seq,
             },
-        );
+        )?;
+        self.sem_sets.publish_io(prepared);
+        self.next_id = next_id;
+        self.next_generation = next_generation;
 
         Ok(id)
     }
@@ -1006,14 +1028,15 @@ impl IpcTable {
     pub fn pin_sem_set(&mut self, semid: i32) -> Result<PinnedSemSet, Errno> {
         let generation = self
             .sem_sets
-            .get(&semid)
+            .get(&(semid as u32 as u64))
             .map(|set| set.generation)
             .ok_or(Errno::EINVAL)?;
-        let pin_id = self.alloc_pin_id()?;
-        let set = self.sem_sets.get_mut(&semid).ok_or(Errno::EINVAL)?;
+        let (pin_id, next_pin_id) = self.next_free_pin_id()?;
+        let prepared = self.active_sem_pins.prepare_io(pin_id, generation)?;
+        let set = self.sem_sets.get_mut(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
         set.active_pins = set.active_pins.checked_add(1).ok_or(Errno::EOVERFLOW)?;
-        let previous = self.active_sem_pins.insert(pin_id, generation);
-        debug_assert!(previous.is_none());
+        self.active_sem_pins.publish_io(prepared);
+        self.next_pin_id = next_pin_id;
         Ok(PinnedSemSet {
             pin_id,
             public_id: semid,
@@ -1027,7 +1050,7 @@ impl IpcTable {
             return Err(Errno::EINVAL);
         }
 
-        if let Some(set) = self.sem_sets.get_mut(&pin.public_id) {
+        if let Some(set) = self.sem_sets.get_mut(&(pin.public_id as u32 as u64)) {
             if set.generation == pin.generation {
                 set.active_pins = set.active_pins.checked_sub(1).ok_or(Errno::EINVAL)?;
                 self.active_sem_pins.remove(&pin.pin_id);
@@ -1059,10 +1082,10 @@ impl IpcTable {
         }
         if self
             .sem_sets
-            .get(&pin.public_id)
+            .get(&(pin.public_id as u32 as u64))
             .is_some_and(|set| set.generation == pin.generation)
         {
-            return self.sem_sets.get_mut(&pin.public_id).ok_or(Errno::EIDRM);
+            return self.sem_sets.get_mut(&(pin.public_id as u32 as u64)).ok_or(Errno::EIDRM);
         }
         Err(Errno::EIDRM)
     }
@@ -1076,7 +1099,7 @@ impl IpcTable {
         uid: u32,
         gid: u32,
     ) -> Result<(), Errno> {
-        let set = self.sem_sets.get_mut(&semid).ok_or(Errno::EINVAL)?;
+        let set = self.sem_sets.get_mut(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
         Self::semop_set(set, sops, pid, uid, gid)
     }
 
@@ -1156,7 +1179,7 @@ impl IpcTable {
     ) -> Result<SemCtlResult, Errno> {
         match cmd {
             IPC_STAT => {
-                let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                let s = self.sem_sets.get(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
                 ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_R)?;
                 Ok(SemCtlResult::Stat(SemSetInfo {
                     key: s.key,
@@ -1172,24 +1195,24 @@ impl IpcTable {
                 }))
             }
             IPC_RMID => {
-                let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                let s = self.sem_sets.get(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
                 ipc_check_owner(uid, s.uid, s.cuid)?;
-                let mut set = self.sem_sets.remove(&semid).ok_or(Errno::EINVAL)?;
-                set.removed = true;
-                if set.active_pins != 0 {
-                    let previous = self.removed_sem_sets.insert(set.generation, set);
-                    debug_assert!(previous.is_none());
+                let mut set = self.sem_sets.remove_entry(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
+                set.value_mut().removed = true;
+                if set.value().active_pins != 0 {
+                    set.replace_key(set.value().generation);
+                    self.removed_sem_sets.publish_io(set);
                 }
                 Ok(SemCtlResult::Ok)
             }
             IPC_SET => {
-                let s = self.sem_sets.get_mut(&semid).ok_or(Errno::EINVAL)?;
+                let s = self.sem_sets.get_mut(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
                 ipc_check_owner(uid, s.uid, s.cuid)?;
                 s.ctime = crate::current_time_secs();
                 Ok(SemCtlResult::Ok)
             }
             GETVAL => {
-                let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                let s = self.sem_sets.get(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
                 ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_R)?;
                 if semnum < 0 || semnum as u32 >= s.nsems {
                     return Err(Errno::EINVAL);
@@ -1197,7 +1220,7 @@ impl IpcTable {
                 Ok(SemCtlResult::Value(s.values[semnum as usize].val as i32))
             }
             SETVAL => {
-                let s = self.sem_sets.get_mut(&semid).ok_or(Errno::EINVAL)?;
+                let s = self.sem_sets.get_mut(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
                 ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_W)?;
                 if semnum < 0 || semnum as u32 >= s.nsems {
                     return Err(Errno::EINVAL);
@@ -1210,9 +1233,10 @@ impl IpcTable {
                 Ok(SemCtlResult::Ok)
             }
             GETALL => {
-                let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                let s = self.sem_sets.get(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
                 ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_R)?;
-                let vals: Vec<u16> = s.values.iter().map(|v| v.val).collect();
+                let mut vals = IoBuffer::try_with_capacity(s.values.len())?;
+                for value in &s.values { vals.push(value.val); }
                 Ok(SemCtlResult::All(vals))
             }
             SETALL => {
@@ -1221,7 +1245,7 @@ impl IpcTable {
                 Err(Errno::EINVAL)
             }
             GETPID => {
-                let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                let s = self.sem_sets.get(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
                 ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_R)?;
                 if semnum < 0 || semnum as u32 >= s.nsems {
                     return Err(Errno::EINVAL);
@@ -1229,7 +1253,7 @@ impl IpcTable {
                 Ok(SemCtlResult::Value(s.values[semnum as usize].pid as i32))
             }
             GETNCNT => {
-                let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                let s = self.sem_sets.get(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
                 ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_R)?;
                 if semnum < 0 || semnum as u32 >= s.nsems {
                     return Err(Errno::EINVAL);
@@ -1237,7 +1261,7 @@ impl IpcTable {
                 Ok(SemCtlResult::Value(s.values[semnum as usize].ncnt as i32))
             }
             GETZCNT => {
-                let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                let s = self.sem_sets.get(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
                 ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_R)?;
                 if semnum < 0 || semnum as u32 >= s.nsems {
                     return Err(Errno::EINVAL);
@@ -1257,7 +1281,7 @@ impl IpcTable {
         uid: u32,
         gid: u32,
     ) -> Result<usize, Errno> {
-        let set = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+        let set = self.sem_sets.get(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
         let permission = match cmd {
             GETALL => IPC_R,
             SETALL => IPC_W,
@@ -1278,7 +1302,7 @@ impl IpcTable {
         uid: u32,
         gid: u32,
     ) -> Result<(), Errno> {
-        let s = self.sem_sets.get_mut(&semid).ok_or(Errno::EINVAL)?;
+        let s = self.sem_sets.get_mut(&(semid as u32 as u64)).ok_or(Errno::EINVAL)?;
         ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_W)?;
         if values.len() != s.nsems as usize {
             return Err(Errno::EINVAL);
@@ -1306,7 +1330,7 @@ impl IpcTable {
         if bytes.len() != expected {
             return Err(Errno::EINVAL);
         }
-        let mut values = Vec::new();
+        let mut values = IoBuffer::new();
         values
             .try_reserve_exact(expected / core::mem::size_of::<u16>())
             .map_err(|_| Errno::ENOMEM)?;
@@ -1353,9 +1377,10 @@ impl IpcTable {
             return Err(Errno::EINVAL);
         }
 
-        let id = self.alloc_id()?;
+        let (id, next_id) = self.next_free_id()?;
         let seq = id;
-        self.shm_segments.insert(
+        let data = crate::guest_ptr::zeroed_io_staging(size as usize, size as usize)?;
+        let prepared = self.shm_segments.prepare_io(
             id,
             ShmSegment {
                 key,
@@ -1366,7 +1391,7 @@ impl IpcTable {
                 cuid: uid,
                 cgid: gid,
                 segsz: size,
-                data: vec![0u8; size as usize],
+                data,
                 cpid: pid as i32,
                 lpid: 0,
                 nattch: 0,
@@ -1375,7 +1400,9 @@ impl IpcTable {
                 ctime: crate::current_time_secs(),
                 seq,
             },
-        );
+        )?;
+        self.shm_segments.publish_io(prepared);
+        self.next_id = next_id;
 
         Ok(id)
     }
@@ -1527,6 +1554,151 @@ pub unsafe fn global_ipc_table() -> &'static mut IpcTable {
 mod tests {
     use super::*;
 
+    #[test]
+    fn creation_admission_preserves_public_and_generation_counters() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = IpcTable::new();
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(table.msgget(IPC_PRIVATE, IPC_CREAT | 0o600, 1, 0, 0), Err(Errno::ENOMEM));
+            assert_eq!(table.semget(IPC_PRIVATE, 2, IPC_CREAT | 0o600, 1, 0, 0), Err(Errno::ENOMEM));
+            assert_eq!(table.shmget(IPC_PRIVATE, 16, IPC_CREAT | 0o600, 1, 0, 0), Err(Errno::ENOMEM));
+        }
+        for kind in 0..3 {
+            crate::prepared_map::fail_after_allocations(0);
+            let result = match kind {
+                0 => table.msgget(IPC_PRIVATE, IPC_CREAT | 0o600, 1, 0, 0),
+                1 => table.semget(IPC_PRIVATE, 2, IPC_CREAT | 0o600, 1, 0, 0),
+                _ => table.shmget(IPC_PRIVATE, 16, IPC_CREAT | 0o600, 1, 0, 0),
+            };
+            crate::prepared_map::fail_after_allocations(usize::MAX);
+            assert_eq!(result, Err(Errno::ENOMEM));
+            assert_eq!((table.next_id, table.next_generation), (0, 1));
+            assert!(table.msg_queues.is_empty() && table.sem_sets.is_empty() && table.shm_segments.is_empty());
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+    }
+
+    #[test]
+    fn pinned_removal_rekeys_existing_nodes_at_full_credit_and_keeps_generation_authority() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = IpcTable::new();
+        let queue = table.msgget(IPC_PRIVATE, IPC_CREAT | 0o600, 1, 0, 0).unwrap();
+        let semaphores = table.semget(IPC_PRIVATE, 2, IPC_CREAT | 0o600, 1, 0, 0).unwrap();
+        let before_send = crate::io_buffer::IO_MEMORY.usage().0;
+        for allowance in [0, 2 * b"retained".len()] {
+            let _limit = crate::io_buffer::test_budget(before_send + allowance);
+            assert_eq!(table.msgsnd(queue, 1, b"retained", 0, 1, 0, 0), Err(Errno::ENOMEM));
+            let queued = &table.msg_queues[&(queue as u64)];
+            assert!(queued.messages.is_empty());
+            assert_eq!((queued.cbytes, queued.lspid, queued.stime), (0, 0, 0));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, before_send);
+        }
+        table.msgsnd(queue, 1, b"retained", 0, 1, 0, 0).unwrap();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert!(matches!(table.pin_msg_queue(queue), Err(Errno::ENOMEM)));
+            assert!(matches!(table.pin_sem_set(semaphores), Err(Errno::ENOMEM)));
+            assert_eq!(table.msg_queues[&(queue as u64)].active_pins, 0);
+            assert_eq!(table.sem_sets[&(semaphores as u64)].active_pins, 0);
+            assert_eq!(table.next_pin_id, Some(IpcPinId(1)));
+        }
+        let message_pin = table.pin_msg_queue(queue).unwrap();
+        let semaphore_pin = table.pin_sem_set(semaphores).unwrap();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            crate::prepared_map::fail_after_allocations(0);
+            let removed_queue = table.msgctl(queue, IPC_RMID, 1, 0, 0);
+            let removed_semaphores = table.semctl(semaphores, 0, IPC_RMID, 1, 0, 0, 0);
+            crate::prepared_map::fail_after_allocations(usize::MAX);
+            removed_queue.unwrap();
+            removed_semaphores.unwrap();
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            assert!(table.msg_queues.is_empty() && table.sem_sets.is_empty());
+            assert_eq!(table.removed_msg_queues.len(), 1);
+            assert_eq!(table.removed_sem_sets.len(), 1);
+        }
+        table.set_next_public_id_for_test(queue);
+        let replacement = table.msgget(IPC_PRIVATE, IPC_CREAT | 0o600, 1, 0, 0).unwrap();
+        assert_eq!(replacement, queue);
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(table.msgsnd_pinned(&message_pin, 1, b"stale", 0, 1, 0, 0), Err(Errno::EIDRM));
+            assert_eq!(table.semop_pinned(&semaphore_pin, &[SemOp { num: 0, op: 0, flg: 0 }], 1, 0, 0), Err(Errno::EIDRM));
+            table.release_msg_queue_pin(message_pin).unwrap();
+            table.release_sem_set_pin(semaphore_pin).unwrap();
+            assert!(table.removed_msg_queues.is_empty() && table.removed_sem_sets.is_empty());
+            assert!(table.msg_queues[&(replacement as u64)].messages.is_empty());
+            table.msgctl(replacement, IPC_RMID, 1, 0, 0).unwrap();
+        }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn semaphore_output_and_shared_memory_follow_their_actual_owners() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = IpcTable::new();
+        let semaphores = table.semget(IPC_PRIVATE, 2, IPC_CREAT | 0o600, 1, 0, 0).unwrap();
+        let shared = table.shmget(IPC_PRIVATE, 32, IPC_CREAT | 0o600, 1, 0, 0).unwrap();
+        table.semctl_set_all(semaphores, &[5, 7], 0, 0).unwrap();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert!(matches!(table.semctl(semaphores, 0, GETALL, 1, 0, 0, 0), Err(Errno::ENOMEM)));
+            assert_eq!(table.sem_sets[&(semaphores as u64)].values[0].val, 5);
+            assert_eq!(table.sem_sets[&(semaphores as u64)].values[1].val, 7);
+            assert_eq!(table.shm_write_chunk(shared, 0, b"stored"), Ok(6));
+            let mut output = [0u8; 6];
+            assert_eq!(table.shm_read_chunk(shared, 0, &mut output), Ok(6));
+            assert_eq!(&output, b"stored");
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            table.shmctl(shared, IPC_RMID, 1, 0, 0).unwrap();
+        }
+        let values = match table.semctl(semaphores, 0, GETALL, 1, 0, 0, 0).unwrap() {
+            SemCtlResult::All(values) => values,
+            _ => unreachable!(),
+        };
+        assert_eq!(values, [5u16, 7]);
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            table.semctl(semaphores, 0, IPC_RMID, 1, 0, 0, 0).unwrap();
+        }
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 > baseline);
+        drop(values);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn many_pinned_removals_and_final_releases_need_no_new_nodes() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = IpcTable::new();
+        let mut messages = alloc::vec::Vec::new();
+        let mut semaphores = alloc::vec::Vec::new();
+        for _ in 0..32 {
+            let queue = table.msgget(IPC_PRIVATE, IPC_CREAT | 0o600, 1, 0, 0).unwrap();
+            let set = table.semget(IPC_PRIVATE, 1, IPC_CREAT | 0o600, 1, 0, 0).unwrap();
+            messages.push((queue, table.pin_msg_queue(queue).unwrap()));
+            semaphores.push((set, table.pin_sem_set(set).unwrap()));
+        }
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            crate::prepared_map::fail_after_allocations(0);
+            for (queue, _) in messages.iter().rev() { table.msgctl(*queue, IPC_RMID, 1, 0, 0).unwrap(); }
+            for (set, _) in &semaphores { table.semctl(*set, 0, IPC_RMID, 1, 0, 0, 0).unwrap(); }
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            assert_eq!(table.removed_msg_queues.len(), 32);
+            assert_eq!(table.removed_sem_sets.len(), 32);
+            for (_, pin) in messages { table.release_msg_queue_pin(pin).unwrap(); }
+            for (_, pin) in semaphores.into_iter().rev() { table.release_sem_set_pin(pin).unwrap(); }
+            crate::prepared_map::fail_after_allocations(usize::MAX);
+            assert!(table.removed_msg_queues.is_empty() && table.removed_sem_sets.is_empty());
+        }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
     // ── Message Queue Tests ──
 
     #[test]
@@ -1642,7 +1814,7 @@ mod tests {
             ),
             Err(Errno::ENOMEM),
         );
-        let queue = &t.msg_queues[&qid];
+        let queue = &t.msg_queues[&(qid as u32 as u64)];
         assert!(queue.messages.is_empty());
         assert_eq!(queue.cbytes, 0);
         assert_eq!(queue.lspid, 0);
@@ -1666,14 +1838,14 @@ mod tests {
             ),
             Err(Errno::ENOMEM),
         );
-        let queue = &t.msg_queues[&qid];
+        let queue = &t.msg_queues[&(qid as u32 as u64)];
         assert!(queue.messages.is_empty());
         assert_eq!(queue.cbytes, 0);
         assert_eq!(queue.lspid, 0);
         assert_eq!(queue.stime, 0);
 
         t.msgsnd(qid, 1, b"payload", 0, 42, 0, 0).unwrap();
-        let queue = &t.msg_queues[&qid];
+        let queue = &t.msg_queues[&(qid as u32 as u64)];
         assert_eq!(queue.messages.len(), 1);
         assert_eq!(queue.cbytes, 7);
         assert_eq!(queue.lspid, 42);
@@ -1887,13 +2059,13 @@ mod tests {
         );
 
         t.msgctl(qid, IPC_RMID, 1, 0, 0).unwrap();
-        assert!(!t.msg_queues.contains_key(&qid));
+        assert!(!t.msg_queues.contains_key(&(qid as u32 as u64)));
         assert_eq!(t.removed_msg_queues[&removed_generation].active_pins, 1);
 
         t.set_next_public_id_for_test(qid);
         let replacement = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 2, 0, 0).unwrap();
         assert_eq!(replacement, qid);
-        assert_ne!(t.msg_queues[&replacement].generation, removed_generation);
+        assert_ne!(t.msg_queues[&(replacement as u32 as u64)].generation, removed_generation);
 
         assert_eq!(
             t.msgsnd_pinned(&pin, 2, b"old", 0, 1, 0, 0),
@@ -1948,7 +2120,7 @@ mod tests {
         let second = t.pin_msg_queue(qid).unwrap();
         let generation = first.generation;
 
-        assert_eq!(t.msg_queues[&qid].active_pins, 2);
+        assert_eq!(t.msg_queues[&(qid as u32 as u64)].active_pins, 2);
         t.msgctl(qid, IPC_RMID, 1, 0, 0).unwrap();
         assert_eq!(t.removed_msg_queues[&generation].active_pins, 2);
 
@@ -2325,7 +2497,7 @@ mod tests {
             Err(Errno::EAGAIN)
         );
         t.semctl(semid, 0, IPC_RMID, 1, 0, 0, 0).unwrap();
-        assert!(!t.sem_sets.contains_key(&semid));
+        assert!(!t.sem_sets.contains_key(&(semid as u32 as u64)));
         assert_eq!(t.removed_sem_sets[&removed_generation].active_pins, 1);
 
         t.set_next_public_id_for_test(semid);
@@ -2333,7 +2505,7 @@ mod tests {
             .semget(IPC_PRIVATE, 1, IPC_CREAT | 0o666, 2, 0, 0)
             .unwrap();
         assert_eq!(replacement, semid);
-        assert_ne!(t.sem_sets[&replacement].generation, removed_generation);
+        assert_ne!(t.sem_sets[&(replacement as u32 as u64)].generation, removed_generation);
         t.semctl(replacement, 0, SETVAL, 2, 2, 0, 0).unwrap();
 
         assert_eq!(t.semop_pinned(&pin, &decrement, 1, 0, 0), Err(Errno::EIDRM));
@@ -2358,7 +2530,7 @@ mod tests {
         let second = t.pin_sem_set(semid).unwrap();
         let generation = first.generation;
 
-        assert_eq!(t.sem_sets[&semid].active_pins, 2);
+        assert_eq!(t.sem_sets[&(semid as u32 as u64)].active_pins, 2);
         t.semctl(semid, 0, IPC_RMID, 1, 0, 0, 0).unwrap();
         assert_eq!(t.removed_sem_sets[&generation].active_pins, 2);
 
@@ -2393,9 +2565,9 @@ mod tests {
                 .unwrap();
             (
                 qid,
-                ipc.msg_queues[&qid].generation,
+                ipc.msg_queues[&(qid as u32 as u64)].generation,
                 semid,
-                ipc.sem_sets[&semid].generation,
+                ipc.sem_sets[&(semid as u32 as u64)].generation,
             )
         };
 
@@ -2660,8 +2832,8 @@ mod tests {
             t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap(),
             2
         );
-        assert!(t.msg_queues.contains_key(&0));
-        assert!(t.sem_sets.contains_key(&1));
+        assert!(t.msg_queues.contains_key(&(0 as u32 as u64)));
+        assert!(t.sem_sets.contains_key(&(1 as u32 as u64)));
         assert!(t.shm_segments.contains_key(&i32::MAX));
     }
 
@@ -2685,8 +2857,8 @@ mod tests {
 
         t.set_next_public_id_for_test(0);
         assert_eq!(t.alloc_id_bounded(2), Err(Errno::ENOSPC));
-        assert!(t.msg_queues.contains_key(&0));
-        assert!(t.sem_sets.contains_key(&1));
+        assert!(t.msg_queues.contains_key(&(0 as u32 as u64)));
+        assert!(t.sem_sets.contains_key(&(1 as u32 as u64)));
         assert!(t.shm_segments.contains_key(&2));
     }
 }

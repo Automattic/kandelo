@@ -31,7 +31,7 @@ describe("validateGuestBuildRequest", () => {
   });
 
   it("refuses mounts the in-kernel tmpfs would shadow", () => {
-    for (const guestPath of ["/tmp", "/tmp/deps", "/root/x", "/var/log"]) {
+    for (const guestPath of ["/tmp", "/tmp/deps", "/var/run/x", "/var/log"]) {
       expect(() => validateGuestBuildRequest({
         ...base,
         inputs: [{ guestPath, hostPath: "/abs/deps" }],

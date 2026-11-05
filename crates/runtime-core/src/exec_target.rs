@@ -13,6 +13,10 @@ use crate::lock::{AdvisoryLockManager, FileId, OfdId};
 use crate::ofd::FileType;
 use crate::process::{HostIO, Process};
 
+mod prepared_image;
+mod host_program;
+pub use host_program::prepare_host_program;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PreparedExecOwner {
     Process {
@@ -75,11 +79,17 @@ impl PreparedExecOwner {
     }
 }
 
-/// One exact executable object retained independently of guest descriptors.
+#[derive(Clone, Copy)]
+enum PreparedExecBacking {
+    Source,
+    Derived { source_generation: Option<u64> },
+}
+
+/// One executable object retained independently of guest descriptors.
 ///
 /// The pathname is diagnostic only. `ofd_ref` plus `ofd_id` is the object
-/// lease, and `observed_bytes` is filled only by positioned reads through that
-/// lease. Commit requires complete coverage and compares the same bytes again.
+/// lease. Metadata describes source authority; positioned image observations
+/// drive compilation. Commit requires complete coverage and revalidates both.
 pub struct PreparedExecTarget {
     token: u32,
     owner: PreparedExecOwner,
@@ -89,10 +99,11 @@ pub struct PreparedExecTarget {
     stat: WasmStat,
     statfs: WasmStatfs,
     #[allow(dead_code)] // Retained only for Task 11 diagnostics, never authority.
-    diagnostic_path: Vec<u8>,
+    diagnostic_path: crate::ofd::OfdPath,
     observed_bytes: Vec<u8>,
     observed_ranges: Vec<(usize, usize)>,
     content_drifted: bool,
+    backing: PreparedExecBacking,
 }
 
 impl PreparedExecTarget {
@@ -104,9 +115,25 @@ impl PreparedExecTarget {
         file_id: Option<FileId>,
         stat: WasmStat,
         statfs: WasmStatfs,
-        diagnostic_path: Vec<u8>,
+        diagnostic_path: impl AsRef<[u8]>,
     ) -> Result<Self, Errno> {
-        let size = usize::try_from(stat.st_size).map_err(|_| Errno::EOVERFLOW)?;
+        let image_length = stat.st_size;
+        Self::new_with_image_length(owner, ofd_ref, ofd_id, file_id, stat, statfs, diagnostic_path, image_length)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_image_length(
+        owner: PreparedExecOwner,
+        ofd_ref: OpenFileDescRef,
+        ofd_id: OfdId,
+        file_id: Option<FileId>,
+        stat: WasmStat,
+        statfs: WasmStatfs,
+        diagnostic_path: impl AsRef<[u8]>,
+        image_length: u64,
+    ) -> Result<Self, Errno> {
+        let diagnostic_path = crate::ofd::OfdPath::copy_from(diagnostic_path.as_ref())?;
+        let size = usize::try_from(image_length).map_err(|_| Errno::EOVERFLOW)?;
         if size > platform_limits::MAX_REPORTABLE_TRANSFER_BYTES {
             return Err(Errno::EFBIG);
         }
@@ -128,6 +155,7 @@ impl PreparedExecTarget {
             observed_bytes,
             observed_ranges: Vec::new(),
             content_drifted: false,
+            backing: PreparedExecBacking::Source,
         })
     }
 
@@ -421,15 +449,27 @@ fn insert_opened_target(
     opened: crate::syscalls::PreparedExecOpen,
 ) -> Result<u32, Errno> {
     let ofd_ref = opened.ofd_ref;
-    let target = match PreparedExecTarget::new(
-        owner,
-        opened.ofd_ref,
-        opened.ofd_id,
-        opened.file_id,
-        opened.stat,
-        opened.statfs,
-        opened.diagnostic_path,
-    ) {
+    let target = (|| {
+        let handle = proc.ofd_table.get(ofd_ref.0).ok_or(Errno::EBADF)?.host_handle;
+        let image_length = exec_image_length(handle, &opened.stat)?;
+        let mut target = PreparedExecTarget::new_with_image_length(
+            owner,
+            opened.ofd_ref,
+            opened.ofd_id,
+            opened.file_id,
+            opened.stat,
+            opened.statfs,
+            opened.diagnostic_path,
+            image_length,
+        )?;
+        if crate::executable_backing::is_executable_handle(handle) {
+            target.backing = PreparedExecBacking::Derived {
+                source_generation: crate::executable_backing::source_generation(handle)?,
+            };
+        }
+        Ok(target)
+    })();
+    let target = match target {
         Ok(target) => target,
         Err(error) => {
             let _ =
@@ -447,7 +487,7 @@ fn insert_opened_target(
     }
 }
 
-fn retain_empty_path_target(
+pub(crate) fn retain_fd_target(
     proc: &mut Process,
     host: &mut dyn HostIO,
     fd: i32,
@@ -457,22 +497,12 @@ fn retain_empty_path_target(
         let ofd = proc.ofd_table.get(ofd_ref.0).ok_or(Errno::EBADF)?;
         (ofd.ofd_id, ofd.file_type, ofd.host_handle, ofd.path.clone())
     };
-    let invalid_handle = host_handle < 0 && !is_kernel_fs_file_handle(host_handle);
+    let invalid_handle = host_handle < 0 && !is_kernel_fs_file_handle(host_handle)
+        && !crate::executable_backing::is_executable_handle(host_handle);
     if file_type != FileType::Regular || invalid_handle {
         return Err(Errno::EACCES);
     }
-    let stat = target_fstat(host, host_handle)?;
-    crate::syscalls::check_prepared_exec_stat(proc, &stat)?;
-    let statfs = if crate::rootfs::is_rootfs_file_handle(host_handle) {
-        // The overlay statfs carries the `/` mount's real `nosuid` flag, so an
-        // AT_EMPTY_PATH exec of a set-ID overlay binary honors (or, on a nosuid
-        // mount, drops) the set-ID bits exactly like the pathname exec path.
-        crate::rootfs::statfs(&diagnostic_path)?
-    } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
-        crate::tmpfs::statfs(&diagnostic_path)?
-    } else {
-        crate::syscalls::host_fstatfs_or_default(host, host_handle)?
-    };
+    let (stat, statfs) = source_authority(proc, host, host_handle, &diagnostic_path)?;
     let file_id = (stat.st_ino != 0).then_some(FileId::Host {
         dev: stat.st_dev,
         ino: stat.st_ino,
@@ -486,6 +516,26 @@ fn retain_empty_path_target(
         statfs,
         diagnostic_path,
     })
+}
+
+pub(crate) fn source_authority(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    handle: i64,
+    diagnostic_path: &[u8],
+) -> Result<(WasmStat, WasmStatfs), Errno> {
+    let stat = target_fstat(host, handle)?;
+    crate::syscalls::check_prepared_exec_stat(proc, &stat)?;
+    let statfs = if crate::executable_backing::is_executable_handle(handle) {
+        crate::executable_backing::source_statfs(handle, host)?
+    } else if crate::rootfs::is_rootfs_file_handle(handle) {
+        crate::rootfs::statfs_for_exec(diagnostic_path)?
+    } else if crate::tmpfs::is_tmpfs_file_handle(handle) {
+        crate::tmpfs::fstatfs(handle)?
+    } else {
+        crate::syscalls::host_fstatfs_or_default(host, handle)?
+    };
+    Ok((stat, statfs))
 }
 
 /// Retain the exact object selected by one pathname or `AT_EMPTY_PATH`
@@ -507,7 +557,7 @@ pub fn prepare(
         if flags & AT_EMPTY_PATH == 0 {
             return Err(Errno::ENOENT);
         }
-        retain_empty_path_target(proc, host, dirfd)?
+        retain_fd_target(proc, host, dirfd)?
     } else {
         crate::syscalls::open_prepared_exec_target(proc, host, dirfd, path, flags)?
     };
@@ -522,8 +572,10 @@ fn retained_host_handle(proc: &Process, target: &PreparedExecTarget) -> Result<i
     // An exec target in an in-kernel filesystem carries a negative rootfs or
     // tmpfs handle, which is a valid backing (not the "no host handle"
     // sentinel).
-    let invalid_handle = ofd.host_handle < 0 && !is_kernel_fs_file_handle(ofd.host_handle);
-    if ofd.ofd_id != target.ofd_id() || ofd.file_type != FileType::Regular || invalid_handle {
+    let invalid_handle = ofd.host_handle < 0 && !is_kernel_fs_file_handle(ofd.host_handle)
+        && !crate::executable_backing::is_executable_handle(ofd.host_handle);
+    if ofd.ofd_id != target.ofd_id() || ofd.file_type != FileType::Regular || invalid_handle
+        || crate::executable_backing::is_executable_handle(ofd.host_handle) != matches!(target.backing, PreparedExecBacking::Derived { .. }) {
         return Err(Errno::ETXTBSY);
     }
     Ok(ofd.host_handle)
@@ -538,7 +590,9 @@ fn is_kernel_fs_file_handle(handle: i64) -> bool {
 /// fstat the retained exec target, honoring in-kernel filesystem handles (a
 /// negative rootfs or tmpfs handle is served by the kernel, not the host).
 fn target_fstat(host: &mut dyn HostIO, host_handle: i64) -> Result<WasmStat, Errno> {
-    if crate::rootfs::is_rootfs_file_handle(host_handle) {
+    if crate::executable_backing::is_executable_handle(host_handle) {
+        crate::executable_backing::source_stat(host_handle, host)
+    } else if crate::rootfs::is_rootfs_file_handle(host_handle) {
         crate::rootfs::fstat(host_handle)
     } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
         crate::tmpfs::fstat(host_handle)
@@ -555,7 +609,9 @@ fn target_pread(
     buf: &mut [u8],
     offset: i64,
 ) -> Result<usize, Errno> {
-    if crate::rootfs::is_rootfs_file_handle(host_handle) {
+    if crate::executable_backing::is_executable_handle(host_handle) {
+        crate::executable_backing::read(host_handle, offset, buf, host)
+    } else if crate::rootfs::is_rootfs_file_handle(host_handle) {
         crate::rootfs::read(host_handle, offset, buf, |req, b| match req {
             crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
             crate::rootfs::ByteReq::DiscardDeferred { uri } => {
@@ -583,6 +639,44 @@ pub fn artifact_bytes(proc: &Process, owner_pid: u32, token: u32) -> Result<&[u8
     let target = proc.prepared_exec_targets.get(token)?;
     owner_matches_ledger_pid(target.owner(), owner_pid)?;
     target.observed_bytes()
+}
+
+pub fn preparation_plan(
+    proc: &Process,
+    owner_pid: u32,
+    token: u32,
+    profile: crate::program_preparation::PreparationProfile,
+    limits: crate::program_preparation::PreparationLimits,
+) -> Result<crate::program_preparation::PreparationPlan, Errno> {
+    let source = planning_source(proc, owner_pid, token)?;
+    crate::program_preparation::PreparationPlan::from_source(source, profile, limits)
+}
+
+pub fn preparation_plan_inspected(
+    proc: &Process, owner_pid: u32, token: u32,
+    inspection: &kandelo_program_policy::Inspection,
+    profile: crate::program_preparation::PreparationProfile,
+    limits: crate::program_preparation::PreparationLimits,
+) -> Result<crate::program_preparation::PreparationPlan, Errno> {
+    let source = planning_source(proc, owner_pid, token)?;
+    crate::program_preparation::PreparationPlan::from_inspected_source(source, inspection, profile, limits)
+}
+
+fn planning_source(proc: &Process, owner_pid: u32, token: u32) -> Result<&[u8], Errno> {
+    let target = proc.prepared_exec_targets.get(token)?;
+    owner_matches_ledger_pid(target.owner(), owner_pid)?;
+    let source = target.observed_bytes()?;
+    if matches!(target.backing, PreparedExecBacking::Derived { .. }) { return Err(Errno::ENOTSUP); }
+    Ok(source)
+}
+
+pub fn initial_preparation_inspected(
+    proc: &Process, owner_pid: u32, token: u32,
+    inspection: &kandelo_program_policy::Inspection,
+    profile: crate::program_preparation::PreparationProfile,
+    limits: crate::program_preparation::PreparationLimits,
+) -> Result<crate::program_preparation::InitialPreparation, Errno> {
+    crate::program_preparation::initial_preparation(planning_source(proc, owner_pid, token)?, inspection, profile, limits)
 }
 
 pub fn read(
@@ -711,8 +805,11 @@ fn probe_one(
         crate::syscalls::open_prepared_exec_target(proc, host, wasm_posix_shared::flags::AT_FDCWD, path, 0)?;
     let header = match proc.ofd_table.get(opened.ofd_ref.0) {
         Some(ofd) => {
-            let size = usize::try_from(opened.stat.st_size).map_err(|_| Errno::EOVERFLOW);
             let handle = ofd.host_handle;
+            let source = if crate::executable_backing::is_executable_handle(handle) {
+                crate::executable_backing::verify_source(handle, host)
+            } else { Ok(()) };
+            let size = source.and_then(|()| exec_image_length(handle, &opened.stat)).and_then(|length| usize::try_from(length).map_err(|_| Errno::EOVERFLOW));
             size.and_then(|size| read_header(host, handle, size))
         }
         None => Err(Errno::EBADF),
@@ -795,6 +892,11 @@ fn revalidate(
     let expected = target.observed_bytes()?;
     let handle = retained_host_handle(proc, target)?;
     let is_kernel_fs = is_kernel_fs_file_handle(handle);
+    let is_pair = crate::executable_backing::is_executable_handle(handle);
+    let source_generation = match target.backing {
+        PreparedExecBacking::Source => None,
+        PreparedExecBacking::Derived { source_generation } => source_generation,
+    };
     let before = target_fstat(host, handle)?;
     if !metadata_matches(target.stat(), &before) {
         return Err(Errno::ETXTBSY);
@@ -808,7 +910,11 @@ fn revalidate(
     // mounts; they cannot remount under the kernel, so their mount identity is
     // the prepared value by construction. Host mounts are still re-checked for
     // a remount race.
-    let live = if is_kernel_fs {
+    let live = if is_pair {
+        if crate::executable_backing::source_generation(handle)? != source_generation { return Err(Errno::ETXTBSY); }
+        crate::executable_backing::verify_source(handle, host)?;
+        crate::executable_backing::source_statfs(handle, host)?
+    } else if is_kernel_fs {
         *target.statfs()
     } else {
         host.host_fstatfs(handle).map_err(|_| Errno::ENOTSUP)?
@@ -827,11 +933,27 @@ fn revalidate(
         }
         offset += read;
     }
+    if is_pair {
+        crate::executable_backing::verify_source(handle, host)?;
+        if crate::executable_backing::source_generation(handle)? != source_generation
+            || !mount_matches(target.statfs(), &crate::executable_backing::source_statfs(handle, host)?) {
+            return Err(Errno::ETXTBSY);
+        }
+    }
     let after = target_fstat(host, handle)?;
     if !metadata_matches(target.stat(), &after) {
         return Err(Errno::ETXTBSY);
     }
+    if is_pair {
+        crate::executable_backing::validate_image(handle, host)?;
+        if crate::executable_backing::source_generation(handle)? != source_generation { return Err(Errno::ETXTBSY); }
+    }
     Ok(())
+}
+
+fn exec_image_length(handle: i64, source: &WasmStat) -> Result<u64, Errno> {
+    if crate::executable_backing::is_executable_handle(handle) { crate::executable_backing::image_size(handle) }
+    else { Ok(source.st_size) }
 }
 
 fn proposed_credentials(
@@ -952,6 +1074,25 @@ pub fn commit_spawn(
     commit_taken_target(proc, locks, host, target, validation, None)
 }
 
+pub fn commit_initial(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    pid: u32,
+    token: u32,
+) -> Result<(), Errno> {
+    let target = proc.prepared_exec_targets.take(token)?;
+    let validation = target.owner().validate_process(pid, pid, proc.exec_generation)
+        .and_then(|()| {
+            if proc.pid != pid || proc.exec_generation != 0 || proc.exe.is_some()
+                || proc.spawn_publication_pending || proc.main_channel_addr != 0 {
+                return Err(Errno::EINVAL);
+            }
+            crate::syscalls::check_prepared_exec_stat(proc, target.stat())
+        });
+    commit_taken_target(proc, locks, host, target, validation, None)
+}
+
 /// Make `opened` the image's executable (`Process::exe`), releasing the one it
 /// replaces.
 fn install_exe(
@@ -1029,27 +1170,26 @@ pub fn attach_exe_host_handle(
     if stat.st_mode & wasm_posix_shared::mode::S_IFMT != wasm_posix_shared::mode::S_IFREG {
         return refuse(host, Errno::EINVAL);
     }
-    let mut path = Vec::new();
-    if path
-        .try_reserve_exact(name.len() + crate::procfs::EXE_DELETED_SUFFIX.len())
-        .is_err()
-    {
-        return refuse(host, Errno::ENOMEM);
-    }
+    let path_length = name.len().checked_add(crate::procfs::EXE_DELETED_SUFFIX.len()).ok_or(Errno::ENOMEM);
+    let mut path = match path_length.and_then(crate::IoBuffer::try_with_capacity) {
+        Ok(path) => path,
+        Err(error) => return refuse(host, error),
+    };
     path.extend_from_slice(name);
     path.extend_from_slice(crate::procfs::EXE_DELETED_SUFFIX);
-    let index = proc.ofd_table.create(
+    let mut prepared = match proc.ofd_table.prepare(
         FileType::Regular,
         wasm_posix_shared::flags::O_RDONLY,
-        handle,
-        path,
-    );
-    if let Some(ofd) = proc.ofd_table.get_mut(index) {
-        ofd.file_id = (stat.st_ino != 0).then_some(FileId::Host {
-            dev: stat.st_dev,
-            ino: stat.st_ino,
-        });
-    }
+        &path,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => return refuse(host, error),
+    };
+    prepared.value_mut().file_id = (stat.st_ino != 0).then_some(FileId::Host {
+        dev: stat.st_dev,
+        ino: stat.st_ino,
+    });
+    let index = proc.ofd_table.publish(prepared, handle);
     install_exe(proc, locks, host, OpenFileDescRef(index));
     Ok(())
 }
@@ -1247,6 +1387,41 @@ mod tests {
         assert!(matches!(ledger.take(first), Err(Errno::EINVAL)));
         assert_eq!(ledger.take(second).unwrap().ofd_id(), OfdId(102));
         assert!(ledger.is_empty());
+    }
+
+    #[test]
+    fn preparation_uses_the_exact_observed_lease_without_changing_source_authority() {
+        use crate::program_preparation::{PreparationLimits, PreparationProfile};
+        let original = include_bytes!("../../../abi/program-fixtures/v55/raw-fork.wasm");
+        let mut metadata = stat();
+        metadata.st_size = original.len() as u64;
+        metadata.st_mode |= wasm_posix_shared::mode::S_ISUID;
+        let mut process = crate::process::Process::new(41);
+        let owner = PreparedExecOwner::Process { pid: 41, caller_tid: 43, generation: 0 };
+        let target = PreparedExecTarget::new(owner, OpenFileDescRef(0), OfdId(101),
+            Some(FileId::Host { dev: 7, ino: 11 }), metadata, statfs(), b"/never/reopen/this/path").unwrap();
+        let token = process.prepared_exec_targets.insert(target).unwrap();
+        let profile = PreparationProfile { preparer_sha256: [1; 32], optimizer_sha256: None, options_sha256: [2; 32],
+            dependency_closure_sha256: [3; 32], program_contract_sha256: wasm_artifact::facts::read_custom_section(
+                original, wasm_artifact::ABI_CONTRACT_SECTION).unwrap().try_into().unwrap(), program_abi: 55 };
+        let limits = PreparationLimits { source_bytes: 1024 * 1024, original_bytes: 1024 * 1024,
+            output_bytes: 4 * 1024 * 1024, metadata_bytes: 1024 * 1024, metadata_work_items: 1_000_000 };
+        assert_eq!(super::preparation_plan(&process, 41, token, profile, limits), Err(Errno::EINVAL));
+        process.prepared_exec_targets.get_mut(token).unwrap().record_read(0, original).unwrap();
+        let plan = super::preparation_plan(&process, 41, token, profile, limits).unwrap();
+        plan.verify_original(original).unwrap();
+        assert_eq!(super::preparation_plan(&process, 42, token, profile, limits), Err(Errno::ESRCH));
+        let retained = process.prepared_exec_targets.get(token).unwrap();
+        assert!(super::metadata_matches(retained.stat(), &metadata));
+        assert_eq!(retained.ofd_ref(), OpenFileDescRef(0));
+        assert_eq!(retained.owner(), owner);
+        assert_eq!(retained.observed_bytes().unwrap(), original);
+        assert_eq!(process.exec_generation, 0);
+        assert!(process.exe.is_none());
+        process.prepared_exec_targets.get_mut(token).unwrap().mark_content_drifted();
+        assert_eq!(super::preparation_plan(&process, 41, token, profile, limits), Err(Errno::ETXTBSY));
+        process.prepared_exec_targets.take(token).unwrap();
+        assert_eq!(super::preparation_plan(&process, 41, token, profile, limits), Err(Errno::EINVAL));
     }
 
     #[test]

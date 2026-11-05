@@ -52,6 +52,7 @@ import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
 import { populateShellRuntimeLayout } from "./shell-runtime-layout";
+import { imageFileStat, registerResolvedProgramOriginal, type ProgramOriginalImageOptions } from "./program-originals";
 
 const SHELL_DERIVED_CREATED_BY =
   "images/vfs/scripts/saveShellDerivedVfsImage";
@@ -409,7 +410,7 @@ export async function loadShellBaseFileSystemFromImage(
   return fs;
 }
 
-export interface ShellVfsOptions {
+export interface ShellVfsOptions extends ProgramOriginalImageOptions {
   /**
    * When true, every tool binary (bash, coreutils, grep, sed, bc, file,
    * less, m4, make, tar, curl, wget, git, gzip/bzip2/xz/zstd, zip/unzip,
@@ -458,7 +459,7 @@ export function populateShellEnvironment(
   } else {
     populateSystem(fs);
     if (opts.eagerBinaries) populateBash(fs, resolveArtifact);
-    if (!opts.eagerBinaries) populateLazyBinaries(fs, resolveArtifact);
+    if (!opts.eagerBinaries) populateLazyBinaries(fs, resolveArtifact, opts);
     populateCoreutilsSymlinks(fs);
     if (opts.eagerBinaries) populateCoreutils(fs, resolveArtifact);
     populateGrepSedSymlinks(fs);
@@ -481,7 +482,7 @@ export function populateShellEnvironment(
   // only whichever builder its author edited.
   registerShellProfileScripts(fs);
   if (opts.baseProvided && !opts.eagerBinaries) {
-    populateLazyBinaries(fs, resolveArtifact, { skipExisting: true });
+    populateLazyBinaries(fs, resolveArtifact, { ...opts, skipExisting: true });
   }
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
     if (spec.id === "man") displacePosixUtilsLiteManApplet(fs);
@@ -569,11 +570,15 @@ function populateSed(
 function populateLazyBinaries(
   fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
-  opts: { skipExisting?: boolean } = {},
+  opts: ProgramOriginalImageOptions & { skipExisting?: boolean } = {},
 ): void {
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
-    if (opts.skipExisting && fs.getLazyEntry(spec.vfsPath)) continue;
-    const resolved = resolveArtifact(spec.resolverPath, shellLazySpecDependency(spec));
+    const dependency = shellLazySpecDependency(spec);
+    const existing = opts.skipExisting ? imageFileStat(fs, spec.vfsPath) : null;
+    if (existing !== null && !opts.existingProgramDependencies?.has(dependency)) continue;
+    const resolved = resolveArtifact(spec.resolverPath, dependency);
+    const program = registerResolvedProgramOriginal(fs, spec.resolverPath, dependency, resolved, spec.vfsPath, opts.resolveOriginal);
+    if (existing !== null) continue;
     const size = statSync(resolved).size;
     // Hashed from the artifact this line already opened to measure. Length was
     // the only check these files had, and several of them ship setuid-root, so
@@ -585,7 +590,7 @@ function populateLazyBinaries(
       shellLazyPlaceholderUrl(spec),
       size,
       shellLazySpecMode(spec),
-      createHash("sha256").update(readFileSync(resolved)).digest("hex"),
+      createHash("sha256").update(program).digest("hex"),
     );
   }
 }

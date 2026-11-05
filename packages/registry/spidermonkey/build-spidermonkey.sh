@@ -424,9 +424,6 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
         WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm
-    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
-        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
-        install_local_binary spidermonkey-node "$BIN_DIR/node.wasm" node.wasm
 else
     WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm

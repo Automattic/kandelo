@@ -23,6 +23,7 @@ import {
 import { writeVfsFile } from "../../lib/init/vfs-utils";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 import { collectSpawnScratchEvidence } from "../../../../benchmarks/spawn-scratch-evidence";
+import { readImageFileBytes } from "../../../../benchmarks/read-image-file";
 
 // Micro-benchmark wasm URLs (always built by scripts/build-programs.sh)
 import pipeWasmUrl from "../../../../benchmarks/wasm/pipe-throughput.wasm?url";
@@ -92,21 +93,7 @@ async function fetchWasm(url: string): Promise<ArrayBuffer> {
 }
 
 async function readVfsBytes(fs: KandeloImageFs, path: string): Promise<ArrayBuffer> {
-  // No `ensureMaterialized`. That asked a filesystem to fetch a deferred file
-  // before reading it, which a BUILD-time image has no notion of: it holds what
-  // it was given, and anything deferred is deferred for the kernel to fetch
-  // later, not for this page. `stat` by path rather than `fstat` by descriptor
-  // for the same reason — the path is right here, and the bridge describes an
-  // image rather than a live filesystem with open-file state.
-  const size = fs.stat(path).size;
-  const fd = fs.open(path, 0, 0);
-  try {
-    const buf = new Uint8Array(size);
-    fs.read(fd, buf, 0, buf.length);
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-  } finally {
-    fs.close(fd);
-  }
+  return readImageFileBytes(fs, path);
 }
 
 async function readVfsText(fs: KandeloImageFs, path: string): Promise<string> {

@@ -20,6 +20,8 @@ set -euo pipefail
 #   scripts/run-sortix-tests.sh basic stdio/printf     # run suite or specific test
 #   scripts/run-sortix-tests.sh --all                 # run all suites
 #   scripts/run-sortix-tests.sh --report              # run all + write report
+#   scripts/run-sortix-tests.sh --persistent basic stdio/rename  # resizable journaled rootfs
+#   scripts/run-sortix-tests.sh --persistent-reboot basic stdio/rename  # strict post-test reboot
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # WHY: the SDK driver finds its sysroot and glue dir by walking up from the
@@ -660,6 +662,16 @@ _run_runtime_test_worker() {
     # stdin redirected to /dev/null: run-example.ts reads process.stdin
     # when not a TTY, which would drain any pipe the caller supplies.
     set +e
+    local runner_mode="isolated"
+    local journal_path=""
+    local verify_reopen=""
+    if $PERSISTENT_MODE; then
+        runner_mode="persistent"
+        journal_path="${SORTIX_FIXTURE_ROOT:?}/rootfs.journal"
+    fi
+    if $PERSISTENT_REBOOT_MODE; then
+        verify_reopen=1
+    fi
     (cd "$REPO_ROOT" && \
         KERNEL_CWD= \
         KANDELO_RUNNER_NETWORK=offline-egress \
@@ -667,7 +679,11 @@ _run_runtime_test_worker() {
         KANDELO_RUNNER_FIXTURE_ROOT="${SORTIX_FIXTURE_ROOT:?}" \
         KANDELO_RUNNER_FIXTURE_CWD="$suite" \
         KANDELO_RUNNER_GUEST_PROGRAM="$suite/$test_name" \
-        KANDELO_RUNNER_VFS=isolated \
+        KANDELO_RUNNER_VFS="$runner_mode" \
+        KANDELO_RUNNER_PERSISTENCE_PATH="$journal_path" \
+        KANDELO_RUNNER_VERIFY_REOPEN="$verify_reopen" \
+        KANDELO_RUNNER_BUILTINS=explicit \
+        WASM_POSIX_XTASK_BIN="$PROGRAM_INDEX_CHECKER" \
         TIMEOUT="$((this_timeout * 1000))" \
         run_with_timeout "$((this_timeout + 5))" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
@@ -689,6 +705,10 @@ _run_runtime_test_worker() {
         else
             { echo "TIME"; echo "$output"; } > "$result_dir/${test_name//\//__}.result"
         fi
+        return
+    fi
+    if $PERSISTENT_REBOOT_MODE && [ $rc -eq 125 ] && grep -q '^persistent runner verification failed:' "$host_diagnostic_file"; then
+        { echo "FAIL"; echo "persistent runner verification failed (exit 125)"; tail -n 30 "$host_diagnostic_file"; } > "$result_dir/${test_name//\//__}.result"
         return
     fi
 
@@ -1027,6 +1047,8 @@ run_suite() {
 
 REPORT_MODE=false
 ALL_MODE=false
+PERSISTENT_MODE=false
+PERSISTENT_REBOOT_MODE=false
 SUITES=()
 SPECIFIC_TESTS=()
 
@@ -1037,6 +1059,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --report) REPORT_MODE=true; ALL_MODE=true; shift ;;
         --all)    ALL_MODE=true; shift ;;
+        --persistent) PERSISTENT_MODE=true; shift ;;
+        --persistent-reboot) PERSISTENT_MODE=true; PERSISTENT_REBOOT_MODE=true; shift ;;
         --sequential) PARALLEL=1; shift ;;
         --parallel)
             if [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -1064,6 +1088,7 @@ if [ ${#SUITES[@]} -eq 0 ]; then
         SUITES=("${DEFAULT_SUITES[@]}")
     fi
 fi
+export PERSISTENT_MODE PERSISTENT_REBOOT_MODE
 
 # Verify prerequisites
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
@@ -1078,6 +1103,18 @@ if [ ! -d "$OS_TEST" ]; then
     echo "Error: os-test not found. Run: git submodule update --init tests/sortix/os-test" >&2
     exit 1
 fi
+RUST_HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+if [ -z "$RUST_HOST_TARGET" ]; then
+    echo "Error: could not determine the Rust host target." >&2
+    exit 1
+fi
+cargo build --release -p xtask --target "$RUST_HOST_TARGET" --quiet
+PROGRAM_INDEX_CHECKER="$REPO_ROOT/target/$RUST_HOST_TARGET/release/xtask"
+if [ ! -f "$PROGRAM_INDEX_CHECKER" ]; then
+    echo "Error: prepared xtask was not found at $PROGRAM_INDEX_CHECKER" >&2
+    exit 1
+fi
+export PROGRAM_INDEX_CHECKER
 abi_contract_stamp_prepare || exit 1
 # shellcheck source=scripts/conformance-program-index.sh
 source "$REPO_ROOT/scripts/conformance-program-index.sh"
@@ -1139,7 +1176,13 @@ done
 # ── Report mode ─────────────────────────────────────────────
 
 if $REPORT_MODE; then
-    REPORT="$REPO_ROOT/docs/sortix-test-report.md"
+    if $PERSISTENT_REBOOT_MODE; then
+        REPORT="$REPO_ROOT/docs/sortix-persistent-reboot-test-report.md"
+    elif $PERSISTENT_MODE; then
+        REPORT="$REPO_ROOT/docs/sortix-persistent-test-report.md"
+    else
+        REPORT="$REPO_ROOT/docs/sortix-test-report.md"
+    fi
     {
         echo "# Sortix os-test Conformance Report"
         echo ""
@@ -1191,6 +1234,6 @@ if [ ${#EMPTY_SUITES[@]} -gt 0 ]; then
     echo "Error: suites with no tests: ${EMPTY_SUITES[*]}" >&2
     exit 1
 fi
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ]; then
+if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi

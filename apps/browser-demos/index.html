@@ -11,29 +11,32 @@
        Inter/JetBrains Mono we'll need to self-host with @font-face. -->
   <script>
     (() => {
+      let family = "kandelo";
+      let preference = "dark";
       try {
         const raw = window.localStorage.getItem("kandelo.theme");
-        const parsed = raw ? JSON.parse(raw) : {};
-        const validStoredPreference = parsed.version === 1 || parsed.version === 2 || parsed.version === 3;
+        const parsed = raw ? JSON.parse(raw) : null;
+        const validStoredPreference = parsed && (parsed.version === 1 || parsed.version === 2 || parsed.version === 4);
         const normalizeFamily = (family) => {
           if (family === "playground") return "wordpress";
           if (family === "balanced" || family === "terminal") return "kandelo";
-          return ["ubuntu", "wordpress", "kandelo"].includes(family) ? family : "ubuntu";
+          return ["ubuntu", "wordpress", "kandelo"].includes(family) ? family : null;
         };
-        const family = validStoredPreference ? normalizeFamily(parsed.family) : "ubuntu";
-        const preference = validStoredPreference && ["auto", "light", "dark"].includes(parsed.mode)
-          ? parsed.mode
-          : "auto";
-        const resolvedMode = preference === "auto"
-          ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
-          : preference;
-        document.documentElement.dataset.kTheme = family;
-        document.documentElement.dataset.kMode = resolvedMode;
-        document.documentElement.dataset.kModePreference = preference;
-        document.documentElement.style.colorScheme = resolvedMode;
+        const storedFamily = validStoredPreference ? normalizeFamily(parsed.family) : null;
+        if (storedFamily && ["auto", "light", "dark"].includes(parsed.mode)) {
+          family = storedFamily;
+          preference = parsed.mode;
+        }
       } catch {
         // Preference storage can be unavailable in restricted browser contexts.
       }
+      const resolvedMode = preference === "auto"
+        ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+        : preference;
+      document.documentElement.dataset.kTheme = family;
+      document.documentElement.dataset.kMode = resolvedMode;
+      document.documentElement.dataset.kModePreference = preference;
+      document.documentElement.style.colorScheme = resolvedMode;
     })();
   </script>
   <link rel="stylesheet" href="./pages/kandelo/tokens.css">

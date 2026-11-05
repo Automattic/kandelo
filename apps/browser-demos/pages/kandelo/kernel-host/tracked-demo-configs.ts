@@ -1,4 +1,6 @@
 import redisDemoSource from "../../../../../packages/registry/redis-vfs/redis-demo.json?raw";
+import webStackSource from "../../../../../packages/registry/web-stack-vfs/demo.json?raw";
+import wordpressFamilySource from "../../../../../packages/registry/wordpress-family-vfs/demo.json?raw";
 // The gallery LISTING's view of every first-party machine, aggregated from
 // the tracked `*-demo.json` sources rather than from built images.
 //
@@ -105,6 +107,8 @@ function composeShellDemoConfig(
 export const TRACKED_DEMO_CONFIG_BY_PRODUCT: Readonly<
   Record<string, KandeloDemoConfig>
 > = Object.freeze({
+  "browser-web-stack": parseTracked(webStackSource, "web-stack-vfs/demo.json"),
+  "browser-wordpress-family": parseTracked(wordpressFamilySource, "wordpress-family-vfs/demo.json"),
   "browser-redis": parseTracked(redisDemoSource, "redis-demo.json"),
   "browser-main-shell": composeShellDemoConfig(
     parseTracked(shellDemoSource, "source-rootfs-shell-demo.json"),

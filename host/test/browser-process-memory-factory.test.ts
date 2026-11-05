@@ -83,7 +83,7 @@ describe("browser process memory allocation realm", () => {
     factory.dispose();
   });
 
-  it("retries native constructor exhaustion in its owner after terminating the worker", async () => {
+  it("retries constructor exhaustion once in the owner after terminating the worker", async () => {
     setup();
     const factory = new BrowserProcessMemoryFactory();
     const allocated = factory.allocate(request);
@@ -101,27 +101,47 @@ describe("browser process memory allocation realm", () => {
       initial: 1, maximum: 4, shared: true,
     });
     expect(memory.buffer).toBeInstanceOf(SharedArrayBuffer);
-    expect(memory.grow(3)).toBe(1);
-    expect(() => memory.grow(1)).toThrow(RangeError);
+    expect(worker.terminate).toHaveBeenCalledOnce();
     expect(AllocationWorker.instances).toHaveLength(1);
     factory.dispose();
   });
 
-  it("propagates failure of the single owner attempt", async () => {
+  it("can allocate again after native construction fails", async () => {
     setup();
     const factory = new BrowserProcessMemoryFactory();
-    const exhausted = new RangeError("owner memory exhausted");
-    const construct = vi.spyOn(WebAssembly, "Memory").mockImplementation(function () {
-      throw exhausted;
+    const construct = vi.spyOn(WebAssembly, "Memory").mockImplementationOnce(function () {
+      throw new RangeError("Out of memory");
     });
     const allocated = factory.allocate(request);
-    const rejected = expect(allocated).rejects.toBe(exhausted);
+    const rejected = expect(allocated).rejects.toThrow("Out of memory");
     AllocationWorker.instances[0].onmessage!({ data: {
       error: "RangeError: Out of memory", constructorErrorName: "RangeError",
     } } as MessageEvent);
     await rejected;
-    expect(construct).toHaveBeenCalledOnce();
     expect(AllocationWorker.instances[0].terminate).toHaveBeenCalledOnce();
+    expect(construct).toHaveBeenCalledOnce();
+    construct.mockRestore();
+    const next = factory.allocate(request);
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 4, shared: true });
+    AllocationWorker.instances[1].onmessage!({ data: { memory } } as MessageEvent);
+    expect(await next).toBe(memory);
+    expect(AllocationWorker.instances[1].terminate).toHaveBeenCalledOnce();
+    factory.dispose();
+  });
+
+  it("does not retry allocation when terminating the construction realm fails", async () => {
+    setup();
+    const factory = new BrowserProcessMemoryFactory();
+    const allocated = factory.allocate(request);
+    const rejected = expect(allocated).rejects.toThrow("Out of memory");
+    const worker = AllocationWorker.instances[0];
+    worker.terminate.mockImplementationOnce(() => { throw new Error("termination failed"); });
+    const construct = vi.spyOn(WebAssembly, "Memory");
+    worker.onmessage!({ data: {
+      error: "RangeError: Out of memory", constructorErrorName: "RangeError",
+    } } as MessageEvent);
+    await rejected;
+    expect(construct).not.toHaveBeenCalled();
     factory.dispose();
   });
 

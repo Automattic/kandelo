@@ -1,4 +1,4 @@
-export type WordPressDatabaseKind = "sqlite" | "mariadb";
+export type WordPressDatabaseKind = "sqlite" | "mariadb" | "selectable";
 
 export const WORDPRESS_CONFIG_INIT_SCRIPT = `# wp-config.php is rendered into the VFS by the browser host before dinit starts.
 : "\${WP_APP_PATH:=/computer}"
@@ -18,6 +18,24 @@ if ( defined( 'WP_SITEURL' ) ) {
 `;
 
 function dbConfig(kind: WordPressDatabaseKind): string {
+  if (kind === "selectable") {
+    return `$kandelo_site_backend = $_SERVER['KANDELO_WORDPRESS_BACKEND'] ?? getenv('KANDELO_WORDPRESS_BACKEND');
+$kandelo_backend = $kandelo_site_backend ?: trim((string) @file_get_contents('/etc/kandelo/wordpress-backend'));
+if ($kandelo_site_backend) {
+    if (!in_array($kandelo_backend, array('sqlite', 'mariadb'), true)) {
+        throw new RuntimeException('Unknown WordPress site backend.');
+    }
+    define('WP_CONTENT_DIR', '/var/lib/wordpress-sites/' . $kandelo_backend . '/wp-content');
+}
+if ($kandelo_backend === 'sqlite') {
+${dbConfig("sqlite")}
+} elseif ($kandelo_backend === 'mariadb') {
+${dbConfig("mariadb")}
+} else {
+    throw new RuntimeException('The WordPress database backend has not been selected.');
+}
+unset($kandelo_backend, $kandelo_site_backend);`;
+  }
   if (kind === "mariadb") {
     return [
       "define('DB_NAME', 'wordpress');",
@@ -34,7 +52,7 @@ function dbConfig(kind: WordPressDatabaseKind): string {
     "define('DB_PASSWORD', '');",
     "define('DB_HOST', '');",
     "",
-    "define('DB_DIR', __DIR__ . '/wp-content/database/');",
+    "define('DB_DIR', (defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : __DIR__ . '/wp-content') . '/database/');",
     "define('DB_FILE', 'wordpress.db');",
   ].join("\n");
 }
@@ -136,6 +154,9 @@ if ($kandelo_proto === 'https') {
 $kandelo_site_url = $kandelo_proto . '://' . $kandelo_host . $kandelo_app_path;
 define('WP_HOME', $kandelo_site_url);
 define('WP_SITEURL', $kandelo_site_url);
+if (defined('WP_CONTENT_DIR') && !defined('WP_CONTENT_URL')) {
+    define('WP_CONTENT_URL', $kandelo_site_url . '/wp-content');
+}
 
 define('WP_HTTP_BLOCK_EXTERNAL', true);
 define('DISABLE_WP_CRON', true);

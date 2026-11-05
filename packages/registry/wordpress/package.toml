@@ -31,3 +31,4 @@ script_path = "packages/registry/wordpress/build-wordpress.sh"
 [[outputs]]
 name = "wordpress"
 wasm = "wordpress.vfs.zst"
+fork_instrumentation = "disabled"

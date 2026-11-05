@@ -254,6 +254,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
     kernel_host_adapter_manifest_ptr
+    kernel_initial_exec_commit
     kernel_install_host_stdin_pipe
     kernel_ipc_shm_lookup_mapping_for_task
     kernel_ipc_shm_record_mapping_for_process
@@ -295,6 +296,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_set_main_channel_addr
     kernel_spawn_exec_commit
     kernel_spawn_exec_target_prepare
+    kernel_spawn_exec_target_prepare_handle
     kernel_spawn_process
     kernel_take_process_timer_cleanup
     kernel_tcp_connection_id
@@ -529,6 +531,8 @@ has_texlive_vfs()   { pkg_has_output texlive texlive-bundle.json || [ -f "$REPO_
 has_nginx_vfs()     { has_resolvable programs/nginx-vfs.vfs.zst; }
 has_redis_vfs()     { has_resolvable programs/redis-vfs.vfs.zst; }
 has_nginx_php_vfs() { has_resolvable programs/nginx-php-vfs.vfs.zst; }
+has_web_stack_vfs() { has_resolvable programs/web-stack-vfs.vfs.zst; }
+has_wordpress_family_vfs() { has_resolvable programs/wordpress-family-vfs.vfs.zst; }
 has_ncurses()       { pkg_has_output ncurses clear.wasm && pkg_has_output ncurses tic.wasm && pkg_has_output ncurses tput.wasm; }
 has_zlib()          { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()       { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
@@ -655,6 +659,7 @@ build_rootfs() {
 }
 
 build_programs() {
+    python3 "$REPO_ROOT/scripts/build-program-baseline.py"
     if has_programs; then
         info "programs"
         return
@@ -1513,6 +1518,14 @@ build_redis_vfs() {
     bootstrap_target browser-redis
 }
 
+build_web_stack_vfs() {
+    bootstrap_target browser-web-stack
+}
+
+build_wordpress_family_vfs() {
+    bootstrap_target browser-wordpress-family
+}
+
 build_nginx_php_vfs() {
     # Declared VFS product; the engine resolves shell/nginx/php/dinit and
     # runs images/vfs/scripts/build-nginx-php-vfs-image.sh (unchanged
@@ -1929,6 +1942,8 @@ build_target() {
         lamp-vfs)   build_lamp_vfs ;;
         nginx-vfs)  build_nginx_vfs ;;
         redis-vfs)  build_redis_vfs ;;
+        web-stack-vfs) build_web_stack_vfs ;;
+        wordpress-family-vfs) build_wordpress_family_vfs ;;
         nginx-php-vfs) build_nginx_php_vfs ;;
         nginx-python-vfs) build_nginx_python_vfs ;;
         ruby-todo-vfs) build_ruby_todo_vfs ;;
@@ -1981,7 +1996,7 @@ build_target() {
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node wp-vfs lamp-vfs ruby-todo-vfs redis-vfs dbus foot)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node wp-vfs lamp-vfs ruby-todo-vfs redis-vfs web-stack-vfs wordpress-family-vfs dbus foot)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -2251,6 +2266,10 @@ clean_target() {
             rm -f "$REPO_ROOT/apps/browser-demos/public/redis.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/redis-vfs.vfs.zst"
             warn "Cleaned Redis VFS image" ;;
+        web-stack-vfs|wordpress-family-vfs)
+            xtask_clean_target "$target"
+            pkg_remove_local_output "$target" "$target.vfs.zst" wasm32
+            warn "Cleaned $target image" ;;
         nginx-php-vfs)
             xtask_clean_target nginx-php-vfs
             rm -f "$REPO_ROOT/apps/browser-demos/public/nginx-php-vfs.vfs.zst" \
@@ -3164,6 +3183,8 @@ cmd_list() {
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-vfs      WordPress VFS image                   $(has_wp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  lamp-vfs    WordPress LAMP VFS image              $(has_lamp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  web-stack-vfs Web Stack image family             $(has_web_stack_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  wordpress-family-vfs WordPress image family     $(has_wordpress_family_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  perl        Perl 5.40                              $(has_perl && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  ruby        Ruby                                   $(has_ruby && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  erlang      Erlang/OTP 28 BEAM VM                   $(has_erlang && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

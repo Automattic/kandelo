@@ -28,6 +28,7 @@ script_path = "packages/registry/tyrquake/build-tyrquake.sh"
 [[outputs]]
 name = "quake"
 wasm = "quake.wasm"
+fork_instrumentation = "disabled"
 
 [[runtime_files]]
 artifact = "sessions.json"

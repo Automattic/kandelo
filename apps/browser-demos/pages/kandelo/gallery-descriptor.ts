@@ -45,6 +45,8 @@ export function descriptorFromGalleryItem(
     mounts,
     boot: {
       ...base.boot,
+      inputs: undefined,
+      parameters: undefined,
       cwd: rootBoot ? "/root" : "/home/maker",
       env: rootBoot ? rootEnv : makerEnv,
       uid: rootBoot ? 0 : 1000,

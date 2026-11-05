@@ -19,6 +19,7 @@ import type { KernelHost } from "./kernel-host";
 export type DockActionPhase = "stopping" | "starting" | "done";
 
 export interface RunDemoDockActionOptions {
+  terminalPath?: string;
   /**
    * Awaited before the next step, so a caller can attach to the terminal in
    * `starting` and see the command's first line of output.
@@ -42,12 +43,16 @@ export async function runDemoDockAction(
   options: RunDemoDockActionOptions = {},
 ): Promise<void> {
   const { onPhase = () => {}, stopTimeoutMs = 10_000, stop } = options;
+  if (options.terminalPath !== undefined && options.terminalPath !== "/dev/pts/0" && !stop) {
+    throw new Error("A non-primary activity terminal requires its own stop handler");
+  }
   await onPhase("stopping");
   if (stop) await stop();
   else await host.interruptShellForeground({ timeoutMs: stopTimeoutMs });
   // Like the machine's own command, the restart is usually a long-lived
   // foreground program: resolve on the PTY write, not on a later prompt.
   await host.dispatchShellCommand(action.restart, {
+    ...(options.terminalPath === undefined ? {} : { path: options.terminalPath }),
     beforeWrite: () => onPhase("starting"),
   });
   await onPhase("done");
@@ -128,8 +133,9 @@ export function shellPromptReturned(output: string): boolean {
 export async function followShellOutput(
   host: KernelHost,
   onText: (text: string) => void,
+  terminalPath = "/dev/pts/0",
 ): Promise<() => void> {
-  const pty = await host.attachPty("/dev/pts/0");
+  const pty = await host.attachPty(terminalPath);
   const decoder = new TextDecoder();
   let replayingHistory = true;
   const off = pty.onData((bytes) => {

@@ -13,7 +13,8 @@
 // obtained the same way. If that fetch is unavailable the whole demo can't run,
 // so the suite skips rather than reporting a false failure.
 
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
+import { test } from "./support/persistent-page";
 import {
   existsSync,
   mkdtempSync,
