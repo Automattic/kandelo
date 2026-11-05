@@ -1666,22 +1666,11 @@ try {
 
 function _createReadStream(fd) {
     if (_stdin) return _stdin;
-    const input = _nodeFdStreamPlatform.readable(fd);
+    let retireTerminal;
+    const input = _nodeFdStreamPlatform.readable(fd, undefined, () => retireTerminal?.());
     if (os.isatty(fd)) {
         input.isTTY = true;
-        input.isRaw = false;
-        input.setRawMode = function setRawMode(raw) {
-            // The old adapter silently accepted a missing native operation.
-            // Never claim terminal state changed without an actual setter.
-            if (typeof _nodeNative.setRawMode !== 'function') {
-                const error = new Error('Terminal mode ownership is not implemented');
-                error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
-            }
-            const want = !!raw;
-            _nodeNative.setRawMode(fd, want);
-            input.isRaw = want;
-            return input;
-        };
+        retireTerminal = _nodeTerminalPlatform.bindInput(input, fd);
     }
     _stdin = input;
     return input;
@@ -2673,6 +2662,7 @@ const _nodePortIO = _nodePortsPlatform.initialize(stream);
 const _nodeFdStreamPlatform = _createNodeFdStreamPlatform({
     stream, Buffer, process, native: _nodeNative,
 });
+const _nodeTerminalPlatform = _createNodeTerminalPlatform({ native: _nodeNative, values: _nodeValues, uv: _nodeUv });
 // Assertion diagnostics load the shared color module, which observes the real
 // stderr stream immediately. Its FD owner must exist before that module loads.
 const assert = _nodeCore.assert;

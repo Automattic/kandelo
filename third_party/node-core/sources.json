@@ -4909,5 +4909,35 @@
       }
     },
     "scope": "Pinned public cipher classes/creators and native state reference;RSA siblings,WebCrypto and FIPS mutation/cache owners remain separate."
+  },
+  "terminalPlatform": {
+    "sources": {
+      "lib/tty.js": {
+        "path": "upstream/terminal/lib/tty.js",
+        "upstreamPath": "lib/tty.js",
+        "sha256": "119d25f6e820b3a082a17fde3e242207604149614c6f421be8c83dfb0631b0d2"
+      },
+      "src/tty_wrap.cc": {
+        "path": "upstream/terminal/src/tty_wrap.cc",
+        "upstreamPath": "src/tty_wrap.cc",
+        "sha256": "09de3d949b5ad557e3ca1167a2e87a0a4f4fa4dd20c049d53eba9a1026764428"
+      },
+      "deps/uv/src/unix/tty.c": {
+        "path": "upstream/terminal/deps/uv/src/unix/tty.c",
+        "upstreamPath": "deps/uv/src/unix/tty.c",
+        "sha256": "65b98df1215c32ddd87e7b89e2d8d78c7e79a02e2bf4a53e1860f61d00bf431a"
+      },
+      "deps/uv/include/uv.h": {
+        "path": "upstream/terminal/deps/uv/include/uv.h",
+        "upstreamPath": "deps/uv/include/uv.h",
+        "sha256": "bb9ed99b80cd22c58361bffdfbb2aa7029ce0391cde616745c0072a6f3c03219"
+      }
+    },
+    "setRawMode": {
+      "source": "lib/tty.js",
+      "start": "ReadStream.prototype.setRawMode = function(mode) {",
+      "length": 703,
+      "sha256": "5cc97cc54043008360f98f002b3f960aa09542f5df0c654ab7a5495e1c2d19cd"
+    }
   }
 }

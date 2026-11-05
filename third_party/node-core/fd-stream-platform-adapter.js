@@ -32,7 +32,7 @@ function _createNodeFdStreamPlatform(platform) {
         return result;
     }
 
-    function readable(fd, options) {
+    function readable(fd, options, onRetire) {
         let pending = null, requested = false, stopped = false;
         let referenced = true, ended = false, retired = false;
         function start() {
@@ -77,9 +77,14 @@ function _createNodeFdStreamPlatform(platform) {
             read() { requested = true; stopped = false; start(); },
             destroy(error, callback) {
                 retired = true;
+                let failure = error;
                 try { stop(); }
-                catch (cancelError) { callback(error || cancelError); return; }
-                callback(error);
+                catch (cancelError) { failure = failure || cancelError; }
+                // Resource retirement follows the actual transport owner,
+                // never a user-emitted public close notification.
+                try { if (onRetire) onRetire(); }
+                catch (retireError) { failure = failure || retireError; }
+                callback(failure);
             },
         });
         result.fd = fd;

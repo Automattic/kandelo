@@ -1,5 +1,16 @@
 # Breadth-first implementation after the core audit
 
+Source120 adds real borrowed-stdin terminal mode leases, pinned mode/error
+policy, actual window queries and transport/context/GC cleanup. Five native-
+boundary frontend comparisons, four affected stream controls and one portable
+PTY/native comparison pass in their recorded scopes. The guest binding and
+117–119 source remain uncompiled; accepted116 is not current. Public TTY classes,
+signals/drain and four-host conformance remain open. All 19 families are partial;
+overall suites/full product rebuild remain deferred. See
+[terminal ownership and evidence](terminal-mode-implementation-dependencies.md).
+
+Earlier revision checkpoints below retain their historical scope.
+
 Source revision119 adds pinned Module.wrap/wrapper owners and actual patched
 script compilation, preserving the ordinary function compiler. The shared
 invocation now snapshots exports once for receiver/argument identity. Eight

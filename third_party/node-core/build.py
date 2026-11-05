@@ -882,6 +882,27 @@ for marker, content in [
         raise ValueError('Review path metadata marker: ' + marker)
     metadata_adapter = metadata_adapter.replace(marker, content)
 bundle += (root / 'fs-system-errors-adapter.js').read_text() + '\n' + metadata_adapter + '\n'
+
+terminal_spec = manifest['terminalPlatform']
+for name, item in terminal_spec['sources'].items():
+    if hashlib.sha256((root / item['path']).read_bytes()).hexdigest() != item['sha256']:
+        raise ValueError('Terminal reference mismatch: ' + name)
+item = terminal_spec['setRawMode']
+text = (root / terminal_spec['sources'][item['source']]['path']).read_text()
+if text.count(item['start']) != 1:
+    raise ValueError('Ambiguous terminal mode method')
+offset = text.index(item['start']); selected = text[offset:offset + item['length']]
+if hashlib.sha256(selected.encode()).hexdigest() != item['sha256']:
+    raise ValueError('Terminal mode method mismatch')
+old = 'this._handle?.setRawMode(ttyMode)'
+if selected.count(old) != 1:
+    raise ValueError('Review borrowed terminal mode seam')
+selected = selected.replace(old, 'setMode(this, ttyMode)')
+terminal_adapter = (root / 'terminal-platform-adapter.js').read_text()
+if terminal_adapter.count('/* NODE_TERMINAL_SET_RAW */') != 1:
+    raise ValueError('Review terminal mode embedding')
+bundle += terminal_adapter.replace('/* NODE_TERMINAL_SET_RAW */', selected) + '\n'
+
 readdir_spec = manifest['readdirPlatform']
 for name, item in readdir_spec['sources'].items():
     if hashlib.sha256((root / item['path']).read_bytes()).hexdigest() != item['sha256']:

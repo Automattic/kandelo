@@ -21,6 +21,10 @@ static bool KandeloFsPathString(JSContext* cx, const char* bytes, size_t length,
 
 namespace js::shell {
 
+struct KandeloTerminalLease;
+struct KandeloNativeAsyncState;
+static void KandeloShutdownTerminalLeases(KandeloNativeAsyncState* state);
+
 struct KandeloNativeDestroyRecord { double id; bool promise; };
 struct KandeloFsGcCloseRecord {
   int fd, status;
@@ -30,6 +34,7 @@ struct KandeloFsGcCloseRecord {
 };
 
 struct KandeloNativeAsyncState {
+  KandeloTerminalLease* terminalLeases = nullptr;
   size_t references = 1;  // Shell owner plus each actual native resource.
   bool trackingDestroy = false;
   bool detached = false;
@@ -185,6 +190,7 @@ static void KandeloShutdownNativeAsync(ShellContext* sc) {
   auto* state = sc->kandeloNativeAsync;
   if (!state) return;
   MOZ_RELEASE_ASSERT(state->callbackDepth == 0);
+  KandeloShutdownTerminalLeases(state);
   sc->kandeloNativeAsync = nullptr;
   state->detached = true;
   state->trackingDestroy = false;

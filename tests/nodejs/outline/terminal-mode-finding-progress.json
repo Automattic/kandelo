@@ -1,0 +1,91 @@
+{
+  "at": "2026-11-05T19:14:17.952416+00:00",
+  "recipeRevision": 120,
+  "lastAcceptedEngine": 116,
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/terminal.md",
+    "findingIds": [
+      "T-007",
+      "T-008"
+    ],
+    "surface": [
+      "Borrowed process.stdin.setRawMode",
+      "Real window-size ioctl route"
+    ],
+    "scope": "Partial prerequisites only;public TTY/Socket constructors,signals and full findings remain open"
+  },
+  "sourceImplemented": [
+    "Actual CLOEXEC dup mode lease with real termios attributes and pinned UNIX RAW/IO/NORMAL/first-owner reset policy",
+    "GC ownership and retained per-context native state close leases on context shutdown and release them at finalization",
+    "Pinned complete public setRawMode algorithm with one explicit private lease adaptation preserves validation,errors,mode flags and events",
+    "Private readable retirement callback releases the resource;user-emitted close notification does not retire it",
+    "Window-size route now reaches actual TIOCGWINSZ instead of an absent shell helper"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-terminal-source-r3/report.json",
+    "sha256": "af13b0a65a8d0454c0003e819b614c8ec5f25ed52a979aaf97c6fa4ce8e54d11",
+    "selectedIdentities": 22,
+    "upstreamCompleteFiles": 4,
+    "scope": "Canonical archive equality,generation,syntax and selected declarations;not guest C++ compilation",
+    "whitespaceNote": "Staged check found one pre-existing whitespace line in complete unchanged pinned libuv tty.c:55;archive identity preserved. Authored files checked separately."
+  },
+  "frontend": {
+    "report": ".context/node26-terminal-frontend-r2/report.json",
+    "sha256": "755908651005990e42c57a3ae6c121996d6102b032f41df28fd3ec7e6eb6c33f",
+    "passed": 5,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Candidate pinned mode source and actual error owner with real native NodeTTY handles over controlled development PTY. Native Node supplies stream/handle/close boundary;not guest C++ or full TTY/Socket/four-host conformance."
+  },
+  "affectedRegression": {
+    "report": ".context/node26-terminal-affected-r1.json",
+    "sha256": "ebff7be1d64faefc64a1ca8f7a4f90ec6ef9e69fb3c01a14a49b43afe80ed7f3",
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Actual candidate fd streams over native pipe/file boundaries;not guest terminal binding"
+  },
+  "portableNative": {
+    "report": ".context/node26-terminal-native-r1/report.json",
+    "sha256": "e78c45625a6b53040155bf2c564d77da7deb92ec741b14dc9ed99b75d525a298",
+    "passed": 1,
+    "nativeHelperCompileAttempts": 1,
+    "scope": "Actual portable borrowed mode owner versus exact native NodeTTY over one controlled development-host PTY;probe reads actual tcgetattr/ioctl state. Six snapshots are operations,not six public API cases. Not guest/JSAPI/context-shutdown/four-host conformance."
+  },
+  "historicalPositiveControls": [
+    {
+      "report": ".context/node26-terminal-frontend-r1/report.json",
+      "sha256": "d6fcaa2b9b50dbff21a9d4228fd5309465acefb3e5988f39333ee72a0cd69c9a",
+      "passed": 4,
+      "scope": "Initial controls before private retirement review;did not cover manual close notification"
+    }
+  ],
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-terminal-final-checks.log",
+      "sha256": "c56245ce44d935381e1828d92dbbac764c2701320a529e045ca02251b42bf925",
+      "kind": "source-check",
+      "reason": "Expanded source check caught changed fd-stream adapter missing from engine inputs;fixed declaration before final source-r3 check"
+    }
+  ],
+  "sharedInputGap": {
+    "report": ".context/node26-core-input-coverage-r2.json",
+    "sha256": "8e341cf2293a77a65389b897a9427567540289a5d72b95464c722ee59cd50691",
+    "missingStaticFiles": 305,
+    "scope": "Manifest paths and literal build.py reads only;not full dynamic SDK/toolchain closure;not evidence of cause of earlier runtime failures"
+  },
+  "remaining": [
+    "Compile pending117\u2013120guest engine source through normal resolver;accepted116is not current",
+    "Full public TTY/Socket construction,inheritance,reopen,I/O/ref/async ownership and descriptor policies",
+    "Native signal watcher/delivery and SIGWINCH window refresh/resize lifecycle remain missing",
+    "Kernel TCSADRAIN currently accepts action without actual output drainage;implementation gap,not platform boundary",
+    "Guest realm/GC/OOM/context teardown,worker/fork/quit/signal/receiver ownership and unchanged upstream terminal coverage on all four hosts",
+    "305 additional statically discovered core verification file inputs require shared package contract fix",
+    "Prior cipher/SQLite/Error/compression nonpasses and every incomplete family remain open"
+  ],
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

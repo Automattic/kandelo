@@ -340,6 +340,7 @@ python3 "$REPO_ROOT/third_party/node-core/generate-dns-constants.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-dns-constants.h"
 cp "$REPO_ROOT/third_party/node-core/process-state.h" "$SRC_DIR/js/src/shell/kandelo-node-process-state.h"
 cp "$REPO_ROOT/third_party/node-core/os-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-os-operations.h"
+cp "$REPO_ROOT/third_party/node-core/terminal-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-terminal-operations.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-dotenv.py" --check
 cp "$REPO_ROOT/third_party/node-core/dotenv-parser.h" "$SRC_DIR/js/src/shell/kandelo-node-dotenv-parser.h"
 cp "$REPO_ROOT/third_party/node-core/dotenv-file.h" "$SRC_DIR/js/src/shell/kandelo-node-dotenv-file.h"

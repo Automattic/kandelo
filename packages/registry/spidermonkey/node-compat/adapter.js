@@ -360,7 +360,7 @@
         seek(fd, offset, whence) { return typeof shellOs.seek === 'function' ? shellOs.seek(fd, offset, whence) : -38; },
         fstat(fd) { return typeof shellOs.fstat === 'function' ? shellOs.fstat(fd) : [null, 38]; },
         isatty(fd) { return typeof shellOs.isatty === 'function' ? shellOs.isatty(fd) : false; },
-        ttyGetWinSize(fd) { return typeof shellOs.ttyGetWinSize === 'function' ? shellOs.ttyGetWinSize(fd) : null; },
+        ttyGetWinSize(fd) { const result = native.operatingSystem('tty-size', fd); return result.error === 0 ? result.value : null; },
         signal() {},
         setReadHandler() {},
         setTimeout(fn, delay, referenced = true, start) { return timerScheduler.schedule(fn, delay, referenced, false, start); },

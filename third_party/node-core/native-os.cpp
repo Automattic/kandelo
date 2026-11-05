@@ -22,7 +22,9 @@ static bool KandeloNativeOS(JSContext* cx,unsigned argc,Value* vp) {
   if (!operation) return false;
   RootedValue value(cx,UndefinedValue()); int error = 0;
   const char* name = operation.get();
-  if (strcmp(name,"info") == 0) {
+  if (strncmp(name, "tty-", 4) == 0) {
+    if (!KandeloTerminalDispatch(cx, args, name, &value, &error)) return false;
+  } else if (strcmp(name,"info") == 0) {
     const auto result = kandelo::node_os::Information(); error = result.error;
     if (!error) {
       RootedObject list(cx,JS::NewArrayObject(cx,4)); if (!list) return false;
