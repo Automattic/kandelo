@@ -42,6 +42,67 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Recover interrupted logical publication, 2026-11-04
+
+A pending native OOM in metadata cleanup can reset the submitting context
+after one row has already advanced a healthy peer's logical state. C now
+recovers only an exact prefix proven by read-only group-sequence and per-owner
+published/executed-ticket snapshots. A healthy caller publishes the unentered
+suffix. The reset caller remains blocked; neither its consumed transaction nor
+an entered selector is replayed. An inconsistent snapshot retains the queue
+for a later read-only retry. No protocol or version change is made.
+
+The same control exposed dependent shader names remaining visible after the
+program name retired. Shader creation now reserves native cleanup custody
+cold. Finalization ends all dependent public names before physical cleanup;
+an intrusive owned list survives an interrupted deletion and drains at shader
+finalization or context retirement. Its physical epoch survives logical reset,
+and cleanup error flags remain with the current caller. Refused private
+cleanup stays fatal. Draws/frames do not inspect this failure-state list.
+
+R224 pending-OOM controls fail4/4 on the previous implementation with status2,
+one committed row, exactly one context reset, and a healthy-context error.
+The C prefix fix in R225 then advances to a distinct shader-name failure in
+all4 R226 cases. R227's36 focused host controls pass after the ownership fix.
+R229-r4 `graphics-publication-reset-focused-r229-1104-194809-17df`, port6044,
+passes1m24: graphics2166/88, strict probe types and36 GPU cases on all three
+engines/both widths/production+fatal. Controls cover the normal interruption,
+two owners including a lost caller's pending selector, and one inconsistent
+snapshot followed by a valid retry. They check exact non-replayed publication
+and execution identities, no native drains/deletion during read-only recovery,
+correct healthy pixels/public names, and native shader/program live0 before
+process exit. R225 normally refreshes SDK32/64 and passes477 native C/UBSan
+controls and ABI verification; canonical kernel/image writer remain unchanged.
+
+R223 intentionally placed OOM after private deletion, reaching the recorded
+fatal cleanup policy rather than the intended reset path; it is not evidence
+of a defect in that policy. R228's guests all complete correctly, but its
+counter assertion omitted the final cleanup selection. R229 initially exposes
+and fixes lost cleanup error ownership (2165pass/1fail); r2's peer case requested
+no reset notification while asserting a notification. R3's guests all pass but
+its count overlooks conservative checked fallback after the peer's loss.
+Corrected controls retain every ownership/error assertion and distinguish
+publication owners from actual executed selectors. Every failed run remains
+recorded; none is counted as a passing checkpoint.
+
+Full combined checkpoint R230
+`graphics-publication-reset-final-r230-1104-195039-18b0`, port6045, passes
+12m21: `cd host && npx --no-install vitest run -c vitest.graphics.config.ts`
+passes2166 assertions/88 files; the private Node fixture configuration passes12
+controls; `npx --no-install playwright test -c <private-config>
+--project=chromium --project=firefox --project=webkit --workers=1` passes672
+cases. ABI and evidence-class709 checks and strict probe types pass. Frozen
+source/configuration and normal R225 SDK/product hashes remain unchanged.
+All600 routed records retain actual guest/kernel hashes;576 successful cases
+have native live0 before machine teardown (192 per engine), including72
+independent pre-process-exit ownership samples. The24 intentionally fatal
+controls retain their refusal latch; they do not establish native cleanup.
+Full host TypeScript checking still fails with the exact39 diagnostics retained
+at R211; this is not a typecheck pass. Full workspace Rust/xtask, shader,
+conformance, normal browser-memory preparation, desktop/POSIX/benchmark evidence,
+remaining loss/error-custody cases and B1 activation remain open. No new
+boundary, reduced acceptance, new preview or performance claim is introduced.
+
 ## Ordinary program captures become lazy, 2026-11-04
 
 The ordinary checked link/use path no longer acquires unused private native

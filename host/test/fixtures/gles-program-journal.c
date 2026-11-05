@@ -1,7 +1,9 @@
 /* Exercise journal transport and explicitly admitted C selection through the
  * real SDK/kernel/host path. Raw-wire modes keep independent protocol checks. */
+#define GL_GLEXT_PROTOTYPES
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
 #include <assert.h>
 #include <errno.h>
 #include <pthread.h>
@@ -153,6 +155,27 @@ static void check_driver_fork(EGLDisplay display,EGLConfig config,EGLContext con
     assert(!pthread_mutex_unlock(&p.mutex));assert(!pthread_join(thread,NULL));
     assert(!pthread_mutex_destroy(&p.mutex)&&!pthread_cond_destroy(&p.condition));
 }
+struct publication_peer {
+    EGLDisplay display;EGLContext context;int ready,queue,queued,finish;
+    pthread_mutex_t mutex;pthread_cond_t condition;
+};
+static void *publication_peer(void *opaque) {
+    struct publication_peer *p=opaque;
+    assert(eglMakeCurrent(p->display,EGL_NO_SURFACE,EGL_NO_SURFACE,p->context));
+    assert(_wpk_gl_enable_program_journal());
+    assert(!pthread_mutex_lock(&p->mutex));p->ready=1;assert(!pthread_cond_signal(&p->condition));
+    while(!p->queue)assert(!pthread_cond_wait(&p->condition,&p->mutex));
+    assert(!pthread_mutex_unlock(&p->mutex));
+    glUseProgram(0); // Accepted before reset, but never executes after loss.
+    assert(!pthread_mutex_lock(&p->mutex));p->queued=1;assert(!pthread_cond_signal(&p->condition));
+    while(!p->finish)assert(!pthread_cond_wait(&p->condition,&p->mutex));
+    assert(!pthread_mutex_unlock(&p->mutex));
+    assert(_wpk_gl_flush_checked()!=0);
+    assert(glGetGraphicsResetStatusEXT()==GL_UNKNOWN_CONTEXT_RESET_EXT);
+    assert(glGetError()==GL_CONTEXT_LOST_KHR&&glGetError()==GL_NO_ERROR);
+    assert(eglMakeCurrent(p->display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
+    assert(eglDestroyContext(p->display,p->context)&&eglReleaseThread());return NULL;
+}
 int main(int argc,char **argv) {
     assert(argc==2);const int errors=!strcmp(argv[1],"errors"),preflight=!strcmp(argv[1],"preflight");
     const int uniform=!strcmp(argv[1],"uniform-interleave");
@@ -168,7 +191,10 @@ int main(int argc,char **argv) {
         EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_NONE};
     EGLConfig config;EGLint count;assert(eglChooseConfig(display,choose,&config,1,&count)&&count==1);
     const EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE},dimensions[]={EGL_WIDTH,16,EGL_HEIGHT,16,EGL_NONE};
-    EGLContext context=eglCreateContext(display,config,EGL_NO_CONTEXT,attrs);
+    const EGLint reset_attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY,
+        EGL_LOSE_CONTEXT_ON_RESET,EGL_NONE};
+    const EGLint *requested_attrs=!strncmp(argv[1],"publication-reset",17)?reset_attrs:attrs;
+    EGLContext context=eglCreateContext(display,config,EGL_NO_CONTEXT,requested_attrs);
     EGLSurface surface=eglCreatePbufferSurface(display,config,dimensions);
     assert(context!=EGL_NO_CONTEXT&&surface!=EGL_NO_SURFACE&&eglMakeCurrent(display,surface,surface,context));
     GLuint vertex=shader(GL_VERTEX_SHADER,"attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}");
@@ -199,6 +225,58 @@ int main(int argc,char **argv) {
     glGenBuffers(1,&buffer);glBindBuffer(GL_ARRAY_BUFFER,buffer);glBufferData(GL_ARRAY_BUFFER,sizeof triangle,triangle,GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
     glViewport(0,0,16,16);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);glFinish();assert(glGetError()==GL_NO_ERROR);
+    if(!strncmp(argv[1],"publication-reset",17)) {
+        const int threaded=!strcmp(argv[1],"publication-reset-peer");
+        const int snapshot_failure=!strcmp(argv[1],"publication-reset-snapshot");
+        GLuint v2=shader(GL_VERTEX_SHADER,"attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}");
+        GLuint f2=shader(GL_FRAGMENT_SHADER,"precision mediump float;void main(){gl_FragColor=vec4(.8,.2,.4,1.);}");
+        GLuint next=glCreateProgram();assert(next);glAttachShader(next,v2);glAttachShader(next,f2);
+        glBindAttribLocation(next,0,"p");glLinkProgram(next);glGetProgramiv(next,GL_LINK_STATUS,&linked);assert(linked);
+        glUseProgram(program);assert(_wpk_gl_enable_program_journal());
+        glUseProgram(next);glUseProgram(program);glFinish();assert(glGetError()==GL_NO_ERROR);
+        EGLContext peer=eglCreateContext(display,config,context,reset_attrs);assert(peer!=EGL_NO_CONTEXT);
+        struct publication_peer publisher={.display=display,.context=peer,
+            .mutex=PTHREAD_MUTEX_INITIALIZER,.condition=PTHREAD_COND_INITIALIZER};pthread_t publisher_thread;
+        if(threaded) {
+            assert(!pthread_create(&publisher_thread,NULL,publication_peer,&publisher));
+            assert(!pthread_mutex_lock(&publisher.mutex));
+            while(!publisher.ready)assert(!pthread_cond_wait(&publisher.condition,&publisher.mutex));
+            assert(!pthread_mutex_unlock(&publisher.mutex));
+        } else {
+            assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
+            assert(_wpk_gl_enable_program_journal());
+            assert(eglMakeCurrent(display,surface,surface,context));
+        }
+        glDeleteShader(vertex);glDeleteShader(fragment);glDeleteProgram(program);
+        assert(glGetError()==GL_NO_ERROR);
+        puts("ARM");fflush(stdout);assert(getchar()=='x'&&getchar()=='\n');
+        const uint64_t before=_wpk_gl_device_requests();
+        glUseProgram(0);
+        if(threaded) {
+            assert(!pthread_mutex_lock(&publisher.mutex));publisher.queue=1;assert(!pthread_cond_signal(&publisher.condition));
+            while(!publisher.queued)assert(!pthread_cond_wait(&publisher.condition,&publisher.mutex));
+            assert(!pthread_mutex_unlock(&publisher.mutex));
+        }
+        glUseProgram(next);assert(_wpk_gl_device_requests()==before);
+        glFinish();
+        assert(glGetGraphicsResetStatusEXT()==GL_NO_ERROR);
+        if(snapshot_failure)assert(glGetError()==GL_INVALID_OPERATION);
+        assert(glGetError()==GL_NO_ERROR);
+        assert(glIsProgram(program)==GL_FALSE&&glIsShader(vertex)==GL_FALSE&&glIsShader(fragment)==GL_FALSE);
+        glDrawArrays(GL_TRIANGLES,0,3);check_color(204,51,102);
+        assert(glGetError()==GL_NO_ERROR);
+        if(threaded) {
+            assert(!pthread_mutex_lock(&publisher.mutex));publisher.finish=1;assert(!pthread_cond_signal(&publisher.condition));
+            assert(!pthread_mutex_unlock(&publisher.mutex));assert(!pthread_join(publisher_thread,NULL));
+            assert(!pthread_mutex_destroy(&publisher.mutex)&&!pthread_cond_destroy(&publisher.condition));
+        }else assert(eglDestroyContext(display,peer));
+        glUseProgram(0);glDeleteProgram(next);glDeleteShader(v2);glDeleteShader(f2);glDeleteBuffers(1,&buffer);
+        assert(glGetError()==GL_NO_ERROR);
+        assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
+        assert(eglDestroySurface(display,surface)&&eglDestroyContext(display,context)&&eglTerminate(display)&&eglReleaseThread());
+        puts("RETIRED");fflush(stdout);assert(getchar()=='y'&&getchar()=='\n');
+        puts("PASS publication reset preserves healthy prefix");return 0;
+    }
     if(!strcmp(argv[1],"cold-failed-link")) {
         // Do not query LINK_STATUS: the journal's cold capture must observe
         // failure itself, without keeping an eager pin on every ordinary link.

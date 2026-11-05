@@ -2267,8 +2267,8 @@ static int program_stream_mutate(struct wpk_program_stream *stream,uint32_t acti
     if (stream->reply[0]==2) {stream->blocked|=WPK_PROGRAM_BLOCKED_RECEIPT;return -1;}
     return stream->reply[0]==0;
 }
-static void finish_program_publication(struct wpk_object_group *group) {
-    for (unsigned i=0;i<group->program_publication_count;i++) {
+static void finish_program_publication_prefix(struct wpk_object_group *group,unsigned count) {
+    for (unsigned i=0;i<count;i++) {
         struct wpk_program_intent *p=group->program_head;
         if (!p) abort();
         group->program_head=p->next;p->next=NULL;p->phase=2;
@@ -2276,6 +2276,49 @@ static void finish_program_publication(struct wpk_object_group *group) {
     if (!group->program_head) group->program_tail=NULL;
     group->program_publication_caller=NULL;
     group->program_publication_transaction=group->program_publication_count=0;
+}
+/* A context reset may interrupt shared publication after an exact prefix.
+ * Read only: require one consistent group sequence and each owner's exact
+ * published ticket before releasing any receiver or choosing another caller.
+ * The failed caller retains its consumed transaction and execution loss. */
+static int recover_reset_publication(struct wpk_object_group *group) {
+    struct wpk_program_stream *caller=group->program_publication_caller;
+    const unsigned count=group->program_publication_count;
+    if (!caller || !(caller->blocked&WPK_PROGRAM_BLOCKED_EXECUTION) ||
+        caller->recovery[0]!=2 || caller->recovery[1]!=group->program_publication_transaction ||
+        caller->recovery[2]!=3 || !count || !group->program_head) return 0;
+    const uint64_t before=group->program_head->sequence-1;
+    uint64_t sequence=0;int known=0,valid=1;
+    caller->read_request[0]=7;
+    struct wpk_program_intent *p=group->program_head;
+    for (unsigned i=0;i<count && valid;i++,p=p->next) {
+        if (!p || p->phase!=1 || p->sequence!=before+i+1) {valid=0;break;}
+        int seen=0;struct wpk_program_intent *earlier=group->program_head;
+        for (unsigned j=0;j<i;j++,earlier=earlier->next)
+            if (earlier->owner==p->owner) {seen=1;break;}
+        if (seen) continue;
+        caller->read_request[1]=p->owner->id;
+        if (!program_stream_io(caller,QOP_PROGRAM_JOURNAL_BARRIER,caller->read_request,2,caller->recovery) ||
+            caller->recovery[0] || caller->recovery[2]!=7 ||
+            caller->recovery[3]!=p->owner->id || !(caller->recovery[4]&1)) {valid=0;break;}
+        const uint64_t observed=program_counter(caller->recovery+5);
+        if (!known) {sequence=observed;known=1;}
+        if (observed!=sequence || sequence<before || sequence-before>count) {valid=0;break;}
+        uint64_t ticket=p->ticket-1;struct wpk_program_intent *row=group->program_head;
+        for (unsigned j=0;j<count;j++,row=row->next) {
+            if (!row || row->phase!=1 || row->sequence!=before+j+1) {valid=0;break;}
+            if (row->owner==p->owner && row->sequence<=sequence) ticket=row->ticket;
+        }
+        if (program_counter(caller->recovery+7)!=ticket ||
+            program_counter(caller->recovery+9)>ticket) valid=0;
+    }
+    caller->read_request[0]=6;
+    if (!valid || !known) return 0;
+    // Status2 is never retried on that caller. Other healthy metadata owners
+    // publish only the still-unentered suffix, keeping global order intact.
+    caller->blocked|=WPK_PROGRAM_BLOCKED_RECEIPT;
+    finish_program_publication_prefix(group,(unsigned)(sequence-before));
+    return 1;
 }
 static int publish_program_intents(struct wpk_object_group *group) {
     if (group->program_publication_caller) {
@@ -2297,7 +2340,9 @@ static int publish_program_intents(struct wpk_object_group *group) {
             // uncertainty and EGL reset state retain their separate authority.
             caller->blocked&=~WPK_PROGRAM_BLOCKED_RECEIPT;
             memcpy(caller->reply,caller->recovery,48);
-            finish_program_publication(group);
+            finish_program_publication_prefix(group,group->program_publication_count);
+        } else if (recover_reset_publication(group)) {
+            // The read-only prefix proof retained every unpublished receiver.
         } else {raise_client_error(GL_INVALID_OPERATION);return 0;}
     }
     while (group->program_head) {
@@ -2321,10 +2366,13 @@ static int publish_program_intents(struct wpk_object_group *group) {
             if (accepted==-2) {
                 group->program_publication_caller=NULL;
                 group->program_publication_transaction=group->program_publication_count=0;
+                if (caller->blocked&WPK_PROGRAM_BLOCKED_EXECUTION) continue;
+            } else if (recover_reset_publication(group)) {
+                continue;
             } else caller->blocked|=WPK_PROGRAM_BLOCKED_RECEIPT;
             raise_client_error(GL_INVALID_OPERATION);return 0;
         }
-        finish_program_publication(group);
+        finish_program_publication_prefix(group,group->program_publication_count);
     }
     atomic_store_explicit(&group->program_intents_pending,0,memory_order_release);
     return 1;

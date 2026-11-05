@@ -13,6 +13,8 @@ import { recordLinkedProgram, releaseReversedDepthTwin } from "./reversed-depth.
 import { aliasedAttributeLocation, attributeAliasLayout, linkAliasedExecutable } from "./attribute-aliasing.js";
 import { nativeInterfaceName, prepareLinkLanguages, programNativeName, recordProgramLanguage } from "./essl3-translation.js";
 import { noteProgramRelinked } from "./uniform-layout.js";
+import { rendererObjectEpoch } from "./renderer-loss.js";
+import type { GlRetiredShader } from "./object-group.js";
 
 /** Inside a guest execution batch, validation has already decided acceptance.
  * Private host allocations outside that owner still need exact native checks
@@ -101,6 +103,13 @@ export function attributeLocation(b: GlBinding, program: WebGLProgram, text: str
  * AttachShader's one-shader-per-type rule is predicted (es2-validation.ts).
  * Keyed by the native object, which EGL share groups share. */
 const shaderTypes = new WeakMap<WebGLShader, number>();
+const shaderCustody = new WeakMap<WebGLShader, GlRetiredShader>();
+function reserveShaderCustody(b:CheckedGlOwner):GlRetiredShader {
+  const node:GlRetiredShader={owner:{gl:b.gl,errors:[],nativeEpoch:rendererObjectEpoch(b)},
+    shader:null,next:null,queued:false,drop:undefined!};
+  node.drop=()=>node.owner.gl!.deleteShader(node.shader!);
+  return node;
+}
 /** Native programs whose last link the host saw fail, so UseProgram's
  * link-status rule is predicted for them (es2-validation.ts). A program the
  * host never saw linked is left to the renderer (native-predictions.ts). */
@@ -130,6 +139,11 @@ export function createShaderIfAccepted(b: GlBinding, type: number, name: number)
   if (!name || b.shaders.has(name) || b.programs.has(name)) {
     recordGlError(b, 0x502); return;
   }
+  let custody:GlRetiredShader;
+  try {custody=reserveShaderCustody(b);}catch(error) {
+    rethrowNativeGlFault(error);if(isKernelExportFailure(error))throw error;
+    recordGlError(b,0x505);return;
+  }
   const receiver = reserveNativeRetirement(b, [["deleteShader", null]]);
   if (!receiver) return;
   try {
@@ -137,6 +151,7 @@ export function createShaderIfAccepted(b: GlBinding, type: number, name: number)
     const shader = receiver.calls[0][1] as WebGLShader | null;
     if (!accepted) return;
     if (!shader) { recordGlError(b, 0x505); return; }
+    custody.shader=shader;shaderCustody.set(shader,custody);
     shaderTypes.set(shader, type);
     b.shaders.set(name, shader);
     transferNativeRetirement(receiver);
@@ -311,24 +326,49 @@ export function checkedGlSequence(b: CheckedGlOwner, calls: readonly (() => void
   }
 }
 
-export function finalizeShader(b: GlBinding, name: number): void {
+function retireShaderName(b: GlBinding, name: number): void {
   if (!b.shaderDeletePending.has(name)) return;
   for (const attached of b.programShaders.values()) if (attached.has(name)) return;
   const shader = b.shaders.get(name);
-  if (shader && !rendererOwnerGone(b) && !checkedGlCall(b, () => b.gl!.deleteShader(shader), "cleanup")) {
-    if (!rendererOwnerGone(b)) nativeGlFault("the live renderer refused deleteShader of a retired shader");
-    return;
+  if (shader) {
+    // Public guest creation reserves this node before native allocation.
+    // Directly seeded internal bindings retain a checked cold constructor.
+    let custody=shaderCustody.get(shader);
+    if(!custody){custody=reserveShaderCustody(b);custody.shader=shader;shaderCustody.set(shader,custody);}
+    if(!custody.queued){custody.next=b.objects.retiredShaders;custody.queued=true;b.objects.retiredShaders=custody;}
   }
   b.shaderDeletePending.delete(name);
   if (shader) b.shaderSources.delete(shader);
   for (const member of b.objects.members) if (member.shaderUpload?.shader === shader) member.shaderUpload = null;
   b.shaders.delete(name);
 }
+/** Only shader finalization and context retirement drain this list. Ordinary
+ * draws/frames do not inspect it. A reset before deletion keeps its exact
+ * native owner while logical names have already retired in shared order. */
+export function retireShaderObjects(b:GlBinding):void {
+  while(b.objects.retiredShaders){
+    const node=b.objects.retiredShaders,shader=node.shader;
+    // Physical custody follows the creation epoch; pre-existing flags still
+    // belong to this cleanup caller, never the shader's original context.
+    const previous=node.owner.errors;node.owner.errors=b.errors;
+    try{
+      if(shader&&!rendererOwnerGone(node.owner)&&!checkedGlCall(node.owner,node.drop,"cleanup")){
+        if(!rendererOwnerGone(node.owner))nativeGlFault("the live renderer refused deleteShader of a retired shader");
+      }
+    }finally{node.owner.errors=previous;}
+    node.shader=null;node.queued=false;b.objects.retiredShaders=node.next;node.next=null;
+    if(shader)shaderCustody.delete(shader);
+  }
+}
+export function finalizeShader(b:GlBinding,name:number):void {
+  retireShaderName(b,name);retireShaderObjects(b);
+}
 
 export function finalizeProgram(b: GlBinding, name: number): void {
   if (!b.programDeletePending.has(name)) return;
   const program = b.programs.get(name);
-  if ([...b.objects.members].some(member => !retiredProgramNameOwners.has(member) && name === publicCurrentProgramName(member))) return;
+  for(const member of b.objects.members)
+    if(!retiredProgramNameOwners.has(member)&&name===publicCurrentProgramName(member))return;
   finishProgramDeletion(b,name,program);
 }
 
@@ -337,15 +377,18 @@ function finishProgramDeletion(b: GlBinding, name: number, program: WebGLProgram
   // name. Otherwise a peer can keep using a deleted, non-current program.
   // Its last pin releases the unnamed native object through the same exact
   // cleanup path; current contexts remain separate logical name owners.
-  if (program && !b.programQueryPins.has(program) &&
-      ![...b.objects.members].some(member=>member.currentProgram===program) &&
+  let installed=false;
+  if(program)for(const member of b.objects.members)if(member.currentProgram===program){installed=true;break;}
+  if (program && !b.programQueryPins.has(program) && !installed &&
       b.gl && !deleteUnusedNativeProgram(b, program)) return false;
   b.programDeletePending.delete(name);
   b.programs.delete(name);
   const shaders = b.programShaders.get(name);
   b.programShaders.delete(name);
   b.programAttributeBindings.delete(name);
-  if (shaders) for (const shader of shaders) finalizeShader(b, shader);
+  // End every dependent public name before any fallible native cleanup.
+  if (shaders) for (const shader of shaders) retireShaderName(b, shader);
+  retireShaderObjects(b);
   return true;
 }
 

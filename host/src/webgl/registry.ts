@@ -47,7 +47,7 @@ import type { GlMuxer } from "./muxer.js";
 import { replaceDefaultFramebuffer } from "./framebuffer.js";
 import { framebufferInputsChanged } from "./framebuffer-revision.js";
 import { createGlObjectGroup, exposeGlSharedObjects, type GlObjectGroup, type GlSharedObjects } from "./object-group.js";
-import { finalizeProgram, releaseRetainedExecutable, retireProgramNameOwner } from "./program-objects.js";
+import { finalizeProgram, releaseRetainedExecutable, retireProgramNameOwner, retireShaderObjects } from "./program-objects.js";
 import { releaseReversedDepthTwin } from "./reversed-depth.js";
 import { collectRetiredImages, type GlImageAttachment } from "./image-references.js";
 import { destroyBufferStorage } from "./buffer-storage.js";
@@ -713,6 +713,7 @@ export class GlContextRegistry {
 
 function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>, cleanup?: NativeRetirement): void {
   const gl = b.gl;
+  retireShaderObjects(b);
   if (gl) retireNativeRepair(gl, b.shadow);
   b.uniformUpload = null;
   b.uniformUploadSerial = 0;

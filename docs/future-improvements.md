@@ -287,6 +287,14 @@ B2–B6 and C1–C3 remain current-iteration work; no completed driver stage or
 native-feel result follows from the
 focused scalar controls.
 
+A focused native-reset interruption during shared metadata publication now
+recovers only the snapshot-proven prefix and moves its unentered suffix to a
+healthy publisher. Shader public names retire before fallible cleanup, with
+cold native custody surviving the reset. Multiple-owner and inconsistent-
+snapshot controls preserve healthy rendering and explicit pre-exit cleanup.
+Remaining execution-loss, error-drain reply custody and final-context cases
+still gate ordinary activation; this does not complete B1 or native feel.
+
 Ordinary link/use no longer pays for an unused selected/prepared executable
 capture cache. Admitted journal caches acquire cold pins only when needed,
 including authoritative unknown-link observations. Focused request-count and

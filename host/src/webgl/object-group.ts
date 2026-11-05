@@ -58,12 +58,20 @@ export type GlSharedObjects = {
   externallyOwnedTextures: WeakSet<WebGLTexture>;
 };
 
-export type GlObjectGroup = GlSharedObjects & { members: Set<GlBinding> };
+/** Cold shader custody can outlive its public name after a batch reset. */
+export type GlRetiredShader = {
+  owner: {gl:WebGL2RenderingContext|null;errors:number[];nativeEpoch?:number};
+  shader: WebGLShader|null;
+  next: GlRetiredShader|null;
+  queued: boolean;
+  drop: () => void;
+};
+export type GlObjectGroup = GlSharedObjects & { members: Set<GlBinding>; retiredShaders:GlRetiredShader|null };
 
 export function createGlObjectGroup(): GlObjectGroup {
   return {
     bufferRetirements:new Map(),imageRetirements:new Map(),imageSources:new Map(),nextImageSource:1,imageRevisions:new Map(),textureViews:new Map(),textureViewOwners:new Map(),renderbufferViews:new Map(),renderbufferViewOwners:new Map(),
-    members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(), programQueryPins: new Map(),
+    members: new Set(), retiredShaders:null, buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(), programQueryPins: new Map(),
     programLinkGenerations: new WeakMap(), uniformLookupBudget: new GlUniformLookupBudget(),
     rbos: new Map(), shaderSources: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),

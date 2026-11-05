@@ -3,11 +3,11 @@ import {GlContextRegistry} from "../src/webgl/registry.js";
 import {GlMuxer} from "../src/webgl/muxer.js";
 import {runGlQuery} from "../src/webgl/query.js";
 import {captureContextGlProgram} from "../src/webgl/program-captures.js";
-import {publicCurrentProgramName,GlProgramQueryPin} from "../src/webgl/program-objects.js";
+import {publicCurrentProgramName,GlProgramQueryPin,createShaderIfAccepted,finalizeProgram,retireShaderObjects} from "../src/webgl/program-objects.js";
 import {decodeAndDispatch,validateCommandBuffer} from "../src/webgl/bridge.js";
 import {QOP_PROGRAM_JOURNAL,QOP_PROGRAM_JOURNAL_BARRIER,OP_USE_PROGRAM_JOURNAL,OP_ERROR_OBSERVED} from "../src/webgl/ops.js";
 import {NativeGlFault,setNativeGlFaultReporter} from "../src/webgl/native-recovery.js";
-import {NativeContextReset} from "../src/webgl/native-batch.js";
+import {NativeContextReset,withNativeBatch} from "../src/webgl/native-batch.js";
 import {markRendererReset} from "../src/webgl/renderer-loss.js";
 import {configureGlAudit,resetGlAuditForTesting} from "../src/webgl/native-audit.js";
 afterEach(()=>{resetGlAuditForTesting();setNativeGlFaultReporter(null);});
@@ -179,4 +179,43 @@ it("rejects a malformed trailing selector before any native mutation",()=>{
  const n=f.emit([[OP_USE_PROGRAM_JOURNAL,[1,0,1,0]],[OP_USE_PROGRAM_JOURNAL,[1,0,0,0]]]);
  expect(validateCommandBuffer(f.b.cmdbufView!,0,n)).toBeLessThan(0);expect(decodeAndDispatch(f.b,0,n)).toBeLessThan(0);
  expect(f.selected).toEqual([]);f.dispose();
+});
+
+function shaderRetirementFixture(){
+ const f=fixture(),deleted:WebGLShader[]=[],a={},shaderB={};let next=0;
+ f.gl.createShader=()=>[a,shaderB][next++] as WebGLShader;
+ f.gl.deleteShader=(shader:WebGLShader)=>{deleted.push(shader);};
+ createShaderIfAccepted(f.b,0x8b31,40);createShaderIfAccepted(f.b,0x8b30,41);
+ f.b.programShaders.set(20,new Set([40,41]));
+ f.b.shaderDeletePending.add(40);f.b.shaderDeletePending.add(41);f.b.programDeletePending.add(20);
+ return {...f,deleted,a,shaderB};
+}
+it("retires all dependent shader names before a pending native OOM and keeps exact physical custody",()=>{
+ const f=shaderRetirementFixture();let pending=true;
+ f.gl.getError=()=>{if(pending){pending=false;return 0x505;}return 0;};
+ expect(withNativeBatch(f.b,"publication cleanup",()=>{finalizeProgram(f.b,20);return 0;})).toBe(-19);
+ expect(f.b.programs.has(20)).toBe(false);expect(f.b.shaders.size).toBe(0);
+ expect(f.b.shaderDeletePending.size).toBe(0);expect(f.deleted).toEqual([]);
+ const head=f.b.objects.retiredShaders!;expect(head.shader).toBe(f.shaderB);expect(head.next!.shader).toBe(f.a);
+ const reads=vi.spyOn(f.gl,"getError");
+ expect(f.query([6]).rc).toBe(48);expect(reads).not.toHaveBeenCalled();
+ expect(f.b.objects.retiredShaders).toBe(head);reads.mockRestore();
+ // Logical reset does not lose the shared physical renderer's objects.
+ retireShaderObjects(f.b);expect(f.deleted).toEqual([f.shaderB,f.a]);
+ expect(f.b.objects.retiredShaders).toBeNull();f.dispose();
+});
+it("reserves shader deletion custody at creation without a late weak-map publication",()=>{
+ const f=shaderRetirementFixture();
+ const late=vi.spyOn(WeakMap.prototype,"set").mockImplementation(()=>{throw new Error("late shader custody allocation");});
+ try{finalizeProgram(f.b,20);expect(late).not.toHaveBeenCalled();}
+ finally{late.mockRestore();}
+ expect(f.b.shaders.size).toBe(0);expect(f.deleted).toEqual([f.shaderB,f.a]);f.dispose();
+});
+it.each([0x502,0x505])("keeps refused shader cleanup0x%s fatal with its exact deletion receiver retained",code=>{
+ const f=shaderRetirementFixture();let error=0;
+ f.gl.deleteShader=()=>{error=code;};f.gl.getError=()=>{const result=error;error=0;return result;};
+ expect(()=>finalizeProgram(f.b,20)).toThrow(NativeGlFault);
+ expect(f.b.shaders.size).toBe(0);expect(f.b.objects.retiredShaders!.shader).toBe(f.shaderB);
+ f.gl.deleteShader=(shader:WebGLShader)=>{f.deleted.push(shader);};
+ retireShaderObjects(f.b);expect(f.deleted).toEqual([f.shaderB,f.a]);f.dispose();
 });

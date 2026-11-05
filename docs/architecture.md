@@ -7052,8 +7052,32 @@ name retirement, and native program ownership before process exit can reap
 forgotten descriptors. This covers those explicit scenarios, rather than the
 complete publication-loss and final-context audit.
 
-Automatic application admission is still off. Genuine partial/indeterminate
-publication, native-loss and failed-prefix reconciliation, unknown error-drain
-reply custody, and the complete final-context audit remain required before
-activation. These are unfinished B1 work. Focused warm device request counts
+A native reset can interrupt publication after a logical prefix. The C
+receiver now uses read-only snapshots to require one consistent group sequence
+and each affected journal's exact published/executed tickets. Only that proven
+prefix becomes published locally; a healthy metadata caller publishes the
+remaining suffix under fresh transaction authority. The reset caller stays
+blocked and its consumed transaction is never retried. Inconsistent snapshots
+retain every receiver for a later read-only retry. This failure path allocates
+no C storage and adds no normal draw/frame work.
+
+Shader public names also retire independently of their native objects. Public
+shader creation reserves one cleanup node before native allocation. When a
+program's last logical reference ends, all dependent shader names retire before
+any fallible native cleanup. Intrusive group custody retains interrupted
+cleanup without allocating after logical publication. Shader finalization and
+explicit context retirement drain it; ordinary draws do not inspect it. Its
+physical renderer epoch survives a logical context reset, while pre-existing
+errors still belong to the current cleanup caller. Refused native cleanup
+remains fatal; read-only recovery performs neither cleanup nor error drains.
+
+Focused controls recover interrupted metadata publication, including a lost
+caller's pending intent and an inconsistent snapshot retry, on three engines
+and both widths. Healthy rendering, vanished public names, no selector replay
+and native shader/program ownership before process exit are checked. They do
+not establish full native-loss/final-context coverage or desktop performance.
+
+Automatic application admission is still off. Remaining native-loss and
+failed-prefix reconciliation, unknown error-drain reply custody, and the
+complete final-context audit remain required before activation. These are unfinished B1 work. Focused warm device request counts
 do not establish application latency or native desktop feel.
