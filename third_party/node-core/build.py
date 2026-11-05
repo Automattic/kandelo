@@ -831,6 +831,25 @@ for marker, replacement in [
         raise ValueError('Review directory source marker: ' + marker)
     directory_adapter = directory_adapter.replace(marker, replacement)
 bundle += directory_adapter + '\n'
+tempdir_public = filesystem_sections(manifest['tempdirPublic'])
+tempdir_promises = filesystem_sections(manifest['tempdirPromise'])
+tempdir_warning = filesystem_sections(manifest['tempdirWarnings'])
+old = '  ErrorCaptureStackTrace(error, handleErrorFromBinding);'
+if tempdir_promises['error'].count(old) != 1:
+    raise ValueError('Review temporary-directory promise stack recapture')
+tempdir_promises['error'] = tempdir_promises['error'].replace(
+    old, '  if (ErrorCaptureStackTrace !== undefined) ErrorCaptureStackTrace(error, handleErrorFromBinding);')
+tempdir_adapter = (root / 'tempdir-platform-adapter.js').read_text()
+for marker, replacement in [
+    ('/* NODE_TEMPDIR_SHARED */', '\n'.join([tempdir_public.pop('makeCallback'),
+        tempdir_public.pop('vfsResult'), *tempdir_warning.values(), tempdir_promises.pop('error')])),
+    ('/* NODE_TEMPDIR_PUBLIC */', '\n'.join(tempdir_public.values())),
+    ('/* NODE_TEMPDIR_PROMISES */', '\n'.join(tempdir_promises.values())),
+]:
+    if tempdir_adapter.count(marker) != 1:
+        raise ValueError('Review temporary-directory source marker: ' + marker)
+    tempdir_adapter = tempdir_adapter.replace(marker, replacement)
+bundle += tempdir_adapter + '\n'
 metadata_spec = manifest['pathMetadata']
 metadata_sources = {}
 metadata_sections = {}

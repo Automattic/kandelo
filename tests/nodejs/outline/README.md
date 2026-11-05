@@ -1,6 +1,16 @@
 # Node 26 core implementation outline
 
-Current source113 supplies real SQLite scalar and aggregate/window registrations,
+Source revision 114 adds pinned temporary-directory and disposal APIs over
+real libc creation, native FS requests and existing removal owners. Seven
+new frontend controls, twelve affected controls, nine portable native-owner
+scenarios and four unchanged upstream files pass within their documented
+control boundaries. The changed guest source is uncompiled; accepted engine
+113 is not current for this candidate. All 19 families remain incomplete,
+and overall suites/full product rebuild remain deferred. See
+[temporary-directory ownership and evidence](tempdir-implementation-dependencies.md).
+
+
+Earlier source113 supplies real SQLite scalar and aggregate/window registrations,
 traced callback/accumulator ownership and parent-handle retention. The targeted
 engine compiles and passes normal artifact admission. Nine focused comparisons
 record3pass/6fail: return conversions, groups and windows match; other cases

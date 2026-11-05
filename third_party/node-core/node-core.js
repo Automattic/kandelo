@@ -39137,6 +39137,167 @@ async function unlink(path) {
     return { api: publicAPIs(), promises: promiseAPIs(), validateRmdirOptions };
 }
 
+// Pinned temporary/disposable directory APIs over actual guest libc requests.
+function _createNodeTempdirPlatform(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { ErrorCaptureStackTrace, PromisePrototypeThen, PromiseReject, ReflectApply,
+        StringPrototypeEndsWith, Symbol, SymbolDispose, SymbolAsyncDispose,
+        TypedArrayPrototypeAt } = primordials;
+    const process = platform.process, pathModule = platform.path;
+    const { validateFunction } = platform.values.validators;
+    const { getOptions, getValidatedPath } = platform.utils;
+    const { vfsState, FSReqCallback, makeError } = platform.truncation;
+    const kUsePromises = Symbol('tempdir_use_promises');
+    const lazyRimRaf = platform.removal.lazyRimRaf;
+    function create(prefix, encoding, request) {
+        const convert = bytes => encoding === 'buffer' ?
+            platform.codecs.copyBytes(bytes) : platform.codecs.decodeBytes(bytes, encoding);
+        if (request !== undefined)
+            return platform.native.fsPathPromise('mkdtemp', prefix, 0, false,
+                request === kUsePromises ? makeError : request, convert);
+        const result = platform.native.fsPathSync('mkdtemp', prefix, 0, false);
+        if (typeof result === 'number' && result < 0)
+            throw makeError(result, 'mkdtemp', typeof prefix === 'string' ?
+                prefix + 'XXXXXX' : platform.codecs.decodeBytes(prefix) + 'XXXXXX');
+        return convert(result);
+    }
+    const binding = { mkdtemp: create, rmSync: platform.removal.binding.rmSync };
+    function makeCallback(cb) {
+  validateFunction(cb, 'cb');
+
+  return (...args) => ReflectApply(cb, this, args);
+}
+function vfsResult(promise, callback) {
+  if (promise === undefined) return false;
+  PromisePrototypeThen(promise, (result) => callback(null, result), callback);
+  return true;
+}
+let nonPortableTemplateWarn = true;
+
+function warnOnNonPortableTemplate(template) {
+  // Template strings passed to the mkdtemp() family of functions should not
+  // end with 'X' because they are handled inconsistently across platforms.
+  if (nonPortableTemplateWarn &&
+    ((typeof template === 'string' && StringPrototypeEndsWith(template, 'X')) ||
+    (typeof template !== 'string' && TypedArrayPrototypeAt(template, -1) === 0x58))) {
+    process.emitWarning('mkdtemp() templates ending with X are not portable. ' +
+                        'For details see: https://nodejs.org/api/fs.html');
+    nonPortableTemplateWarn = false;
+  }
+}
+function handleErrorFromBinding(error) {
+  if (ErrorCaptureStackTrace !== undefined) ErrorCaptureStackTrace(error, handleErrorFromBinding);
+  return PromiseReject(error);
+}
+    function publicAPIs() {
+        function mkdtemp(prefix, options, callback) {
+  callback = makeCallback(typeof options === 'function' ? options : callback);
+
+  const h = vfsState.handlers;
+  if (h !== null && vfsResult(h.mkdtemp(prefix, typeof options === 'function' ? undefined : options), callback)) return;
+
+  options = getOptions(options);
+
+  prefix = getValidatedPath(prefix, 'prefix');
+  warnOnNonPortableTemplate(prefix);
+
+  const req = new FSReqCallback();
+  req.oncomplete = callback;
+  binding.mkdtemp(prefix, options.encoding, req);
+}
+function mkdtempSync(prefix, options) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const result = h.mkdtempSync(prefix, options);
+    if (result !== undefined) return result;
+  }
+
+  options = getOptions(options);
+
+  prefix = getValidatedPath(prefix, 'prefix');
+  warnOnNonPortableTemplate(prefix);
+  return binding.mkdtemp(prefix, options.encoding);
+}
+function mkdtempDisposableSync(prefix, options) {
+  options = getOptions(options);
+
+  prefix = getValidatedPath(prefix, 'prefix');
+  warnOnNonPortableTemplate(prefix);
+
+  const path = binding.mkdtemp(prefix, options.encoding);
+  // Stash the full path in case of process.chdir()
+  const fullPath = pathModule.resolve(process.cwd(), path);
+
+  const remove = () => {
+    binding.rmSync(fullPath, 0 /* maxRetries */, true /* recursive */, 100 /* retryDelay */);
+  };
+  return {
+    path,
+    remove,
+    [SymbolDispose]() {
+      remove();
+    },
+  };
+}
+        return { mkdtemp, mkdtempSync, mkdtempDisposableSync };
+    }
+    function promiseAPIs() {
+        async function mkdtemp(prefix, options) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const promise = h.mkdtemp(prefix, options);
+    if (promise !== undefined) return await promise;
+  }
+
+  options = getOptions(options);
+
+  prefix = getValidatedPath(prefix, 'prefix');
+  warnOnNonPortableTemplate(prefix);
+
+  return await PromisePrototypeThen(
+    binding.mkdtemp(prefix, options.encoding, kUsePromises),
+    undefined,
+    handleErrorFromBinding,
+  );
+}
+async function mkdtempDisposable(prefix, options) {
+  options = getOptions(options);
+
+  prefix = getValidatedPath(prefix, 'prefix');
+  warnOnNonPortableTemplate(prefix);
+
+  const cwd = process.cwd();
+  const path = await PromisePrototypeThen(
+    binding.mkdtemp(prefix, options.encoding, kUsePromises),
+    undefined,
+    handleErrorFromBinding,
+  );
+  // Stash the full path in case of process.chdir()
+  const fullPath = pathModule.resolve(cwd, path);
+
+  const remove = async () => {
+    const rmrf = lazyRimRaf();
+    await rmrf(fullPath, {
+      maxRetries: 0,
+      recursive: true,
+      retryDelay: 0,
+    });
+  };
+  return {
+    __proto__: null,
+    path,
+    remove,
+    async [SymbolAsyncDispose]() {
+      await remove();
+    },
+  };
+}
+        return { mkdtemp, mkdtempDisposable };
+    }
+    return { api: publicAPIs(), promises: promiseAPIs() };
+}
+
 // Native UVException field/presence order over actual guest libuv error data.
 // In particular, an empty path is present and raw path bytes decode as UTF-8.
 function _createNodeFsSystemErrors(platform) {
@@ -40838,7 +40999,7 @@ function rmSync(path, options) {
 
         return { rm };
     }
-    return { api: publicAPIs(), promises: promiseAPIs() };
+    return { api: publicAPIs(), promises: promiseAPIs(), binding, lazyRimRaf };
 }
 
 // Actual pinned reader/cache over the real native parser and POSIX file owner.

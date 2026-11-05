@@ -113,7 +113,7 @@ resolver build in 227.0 seconds. All 578 frozen selected inputs
 matched. Unchanged upstream checks, optimization and fork instrumentation
 passed. Both executable copies have 48,032,973 bytes and SHA-256
 `47697096864eea483587644b7d54f01865600ff0b6a79e5c9f706fa2ab815ab9`. The retained report/artifacts are
-in .context/node26-engine-r68-accepted. Revision68 integrates the actual package parser/cache owner. 
+in .context/node26-engine-r68-accepted. Revision68 integrates the actual package parser/cache owner.
 No guest API/four-host execution or full product rebuild is established.
 
 Revision 69 subsequently succeeded through the normal targeted wasm32
@@ -121,7 +121,7 @@ resolver build in 225.1 seconds. All 588 frozen selected inputs
 matched. Unchanged upstream checks, optimization and fork instrumentation
 passed. Both executable copies have 48,039,614 bytes and SHA-256
 `50fa90b3349d9935e927d086bf1280174d26dfa44050c5182e462a7f9716d920`. The retained report/artifacts are
-in .context/node26-engine-r69-accepted. Revision69 integrates live TLS metadata and actual verification results. 
+in .context/node26-engine-r69-accepted. Revision69 integrates live TLS metadata and actual verification results.
 No guest API/four-host execution or full product rebuild is established.
 
 Revision70 subsequently succeeded through the normal targeted wasm32

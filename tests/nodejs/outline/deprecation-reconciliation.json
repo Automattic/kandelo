@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "ff3f8d0e2e74e3f266d676c5925a6847f56ccac56ab26278a7ce8e491f519ce2",
+    "packages/registry/node-compat/bootstrap.js": "24d426db66aba57d5a463c804b42f64d309b39d0d0e6798b5a29e18b17d558f7",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "6c6297ca0297b8975d3a508659ed4e730181285f6a52dedddf933ec6ca1c060f",
@@ -67,11 +67,12 @@
     "third_party/node-core/query-codecs-platform-adapter.js": "38065f1cb667ab06a30f3a337ad8fbb771882ae28b2b233def2e1705c90a9766",
     "third_party/node-core/readdir-platform-adapter.js": "3b0fc98c2f1be73d4508776df9c599a09dec8a98da0318d20337b47175b68236",
     "third_party/node-core/readline-platform-adapter.js": "d57d4c2fd7f188398987ce21e8591458714c5ac5d7e42c1ecc184e8d909000ae",
-    "third_party/node-core/removal-platform-adapter.js": "35c6b15c7d7cddd0956e512c6539b2e289f8a018fb1d4205612108f4d4b7c8a9",
+    "third_party/node-core/removal-platform-adapter.js": "a641209be995d2f246b87dc035857a8864fcb0cecb74ab968c1dce95bdde73b0",
     "third_party/node-core/source-map-platform-adapter.js": "cf215318dcfa6a95edd314d85b71a98c4b52f12dc10c646f3ed13a4a4b42c9fc",
     "third_party/node-core/sqlite-platform-adapter.js": "4b16d3b0859716f5a5817595bf40463650b4f73d80066764f55516cb6e7e6632",
     "third_party/node-core/stream-platform-adapter.js": "2073a7b29238c6feb09667e76806e6f42ad725f321758b9514699812223e4ac9",
     "third_party/node-core/string-decoder-adapter.js": "7e1e21f39f36fcf0e7228afd85beeb581caf6fec095eb5c9f91bee798b772e13",
+    "third_party/node-core/tempdir-platform-adapter.js": "5102bbeeeb0ca8ffe47dec42d4edad3a91e0e8c6842903b3d3fb904b237afa39",
     "third_party/node-core/testing-platform-adapter.js": "fa85040d7cdee8356ff15486489246b5cd0977df2b43b4b9213b28545db54c8f",
     "third_party/node-core/tls-identity-adapter.js": "7e1688bff98af17878908679a8c58fc084730e4c1dd6daa03975e0fcdb525760",
     "third_party/node-core/url-path-platform-adapter.js": "9db59cbd3a1a7e05938bf8c0a05e1fc6a87fe9a0a503dc79762529098494a5ca",
@@ -2347,7 +2348,7 @@
       "selectedAdapterLiteralOccurrences": [
         {
           "path": "packages/registry/node-compat/bootstrap.js",
-          "line": 2963
+          "line": 2957
         }
       ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",

@@ -66,5 +66,5 @@ function _createNodeRemovalPlatform(platform) {
         /* NODE_REMOVAL_PROMISE */
         return { rm };
     }
-    return { api: publicAPIs(), promises: promiseAPIs() };
+    return { api: publicAPIs(), promises: promiseAPIs(), binding, lazyRimRaf };
 }

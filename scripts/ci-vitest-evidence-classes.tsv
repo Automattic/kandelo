@@ -298,6 +298,7 @@ host/test/node-crypto-random-sync.test.ts	source-only
 host/test/node-diagnostics-channels.test.ts	source-only
 host/test/node-digests-platform.test.ts	source-only
 host/test/node-directory-platform.test.ts	source-only
+host/test/node-tempdir-platform.test.ts	source-only
 host/test/node-dns-platform.test.ts	source-only
 host/test/node-dotenv-platform.test.ts	source-only
 host/test/node-events.test.ts	source-only

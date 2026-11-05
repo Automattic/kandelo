@@ -1,6 +1,16 @@
 # Breadth-first implementation after the core audit
 
-Current source/accepted engine113 and [SQLite callback ownership](sqlite-callback-implementation-dependencies.md)
+Source revision 114 adds pinned temporary-directory and disposal APIs over
+real libc creation, native FS requests and existing removal owners. Seven
+new frontend controls, twelve affected controls, nine portable native-owner
+scenarios and four unchanged upstream files pass within their documented
+control boundaries. The changed guest source is uncompiled; accepted engine
+113 is not current for this candidate. All 19 families remain incomplete,
+and overall suites/full product rebuild remain deferred. See
+[temporary-directory ownership and evidence](tempdir-implementation-dependencies.md).
+
+
+Earlier source/accepted engine113 and [SQLite callback ownership](sqlite-callback-implementation-dependencies.md)
 are tracked in implementation-state.json. Scoped comparisons record3pass/6fail;
 all19families remain partial and overall suites/full product rebuild remain
 deferred. Earlier source checkpoints below retain their exact scope.

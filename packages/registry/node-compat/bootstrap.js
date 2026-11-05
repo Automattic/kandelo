@@ -1847,19 +1847,7 @@ const fs = (() => {
     function futimesSync(fd, atime, mtime) { return _nodeFsStats.futimesSync(fd, atime, mtime); }
 
     function mkdtempSync(prefix, options) {
-        const p = _pathToString(prefix);
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-        for (let attempt = 0; attempt < 64; attempt++) {
-            let suffix = '';
-            for (let i = 0; i < 6; i++) {
-                suffix += chars[Math.floor(Math.random() * chars.length)];
-            }
-            const dirpath = p + suffix;
-            const err = os.mkdir(dirpath, 0o700);
-            if (err === 0) return dirpath;
-            if (err !== -17) _throwErrno(-err, 'mkdtemp', dirpath);
-        }
-        _throwErrno(17, 'mkdtemp', p);
+        return _nodeTempdirPlatform.api.mkdtempSync(prefix, options);
     }
 
     // Callback wrappers for sync filesystem helpers.
@@ -2527,6 +2515,12 @@ const _nodeRemovalPlatform = _createNodeRemovalPlatform({
 });
 Object.assign(fs, _nodeRemovalPlatform.api);
 Object.assign(fs.promises, _nodeRemovalPlatform.promises);
+const _nodeTempdirPlatform = _createNodeTempdirPlatform({
+    process, path, values: _nodeValues, utils: _nodeFsStats, codecs: _nodeBufferCodecs,
+    truncation: _nodeFsTruncation, native: _nodeNative, removal: _nodeRemovalPlatform,
+});
+Object.assign(fs, _nodeTempdirPlatform.api);
+Object.assign(fs.promises, _nodeTempdirPlatform.promises);
 
 
 const timersPromises = (() => {

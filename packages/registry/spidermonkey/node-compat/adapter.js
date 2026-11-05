@@ -547,7 +547,7 @@
         fsReaddirSync(path, recursive, withTypes, convert) { return native.fsReaddirSync(path, recursive, withTypes, convert); },
         fsReaddirPromise(path, recursive, withTypes, request, convert) { return native.fsReaddirPromise(path, recursive, withTypes, request, convert); },
         fsPathSync(name, path, mode, recursive) { return native.fsPathSync(name, path, mode, recursive); },
-        fsPathPromise(name, path, mode, recursive, request) { return native.fsPathPromise(name, path, mode, recursive, request); },
+        fsPathPromise(name, path, mode, recursive, request, convert) { return native.fsPathPromise(name, path, mode, recursive, request, convert); },
         fsMetadataSync(name, path, first, second) { return native.fsMetadataSync(name, path, first, second); },
         fsMetadataPromise(name, path, first, second, request) { return native.fsMetadataPromise(name, path, first, second, request); },
         fsOpenPromise(path, flags, mode, makeError) { return native.fsOpenPromise(path, flags, mode, makeError); },

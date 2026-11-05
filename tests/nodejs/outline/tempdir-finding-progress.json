@@ -1,0 +1,84 @@
+{
+  "at": "2026-11-05T15:49:57.406103+00:00",
+  "recipeRevision": 114,
+  "auditFindings": [
+    "FS-013 partial: queued temporary directory callback/promise ownership",
+    "FS-016 partial: actual libc temporary directory creation and disposable owners"
+  ],
+  "sourceImplemented": [
+    "Five unchanged pinned public sync/callback/promise/disposable wrappers, validation/VFS dispatch and one portability warning owner",
+    "Actual guest libc mkdtemp over copied prefix/template bytes, atomic directory creation and native work/request lifetimes",
+    "Private rooted encoder and candidate Buffer codecs for native path bytes; per-request conversion failure routing",
+    "Shared real sync removal and queued rimraf disposal with cwd retention, error/repeated cleanup and target symbols/prototypes",
+    "Legacy Math.random name loop removed and removal adapter added to recipe input closure"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tempdir-source-r2/report.json",
+    "sha256": "e0675be42a7371255a7213a44ecc7f903dc14fdcb3d0232647dfd4e3fb9612f0",
+    "checks": 4,
+    "selectedIdentities": 18,
+    "pinnedReferences": 5
+  },
+  "frontend": {
+    "report": ".context/node26-tempdir-frontend-r3.json",
+    "sha256": "4ee09d04fa741b5644bd547e4b7737a9481916dd44cac09ccffdc12bd2a343a3",
+    "newPassed": 7,
+    "affectedPassed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Real candidate wrappers/codecs/removal with native Node engine/FS request/OS boundaries;not guest execution"
+  },
+  "portableNative": {
+    "report": ".context/node26-tempdir-native/report.json",
+    "sha256": "825a81e0d965c0d358df0044f18e7faec67475333a0c1272575df500af982023",
+    "matchedScenarios": 9,
+    "nativeHelperCompilations": 1,
+    "scope": "Portable header/libc on macOS versus exact native Node;not guest JSAPI/workqueue/libc/kernel/four-host conformance"
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-tempdir-upstream-r2/report.json",
+    "sha256": "2851b003533abeaedb559103557e076c24b9abd4ec6a1c0893aacf68b06b447a",
+    "candidatePassed": 4,
+    "nativePassed": 4,
+    "scope": "Only selected temporary/disposable APIs are candidate;other FS/common/engine boundaries remain native"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-tempdir-frontend.log",
+      "sha256": "d70de1fb2f05bd26a4a76f3c348cff64b5a927644bbc99137132051738d0e529",
+      "kind": "harness-error",
+      "reason": "Wrong config path;no test loaded"
+    },
+    {
+      "report": ".context/node26-tempdir-frontend-r2.log",
+      "sha256": "c7edb68a313584a5d3fcb0b4d8f20ba1c22abe399f1e9c2d382ff84f89cd9375",
+      "kind": "mixed frontend run",
+      "passed": 5,
+      "failed": 2,
+      "reason": "Missing PromiseReject owner import and control preload warning contamination"
+    },
+    {
+      "report": ".context/node26-tempdir-upstream/report.json",
+      "sha256": "61940fa010d423fc54beadb2a8c71c7053f29284e26249fd63ebbff616660479",
+      "kind": "unchanged-source control failure",
+      "reason": "Native private-binding preload warning failed unchanged common unexpected-warning assertion;not a candidate API conformance pass"
+    },
+    {
+      "report": ".context/node26-tempdir-source.log",
+      "sha256": "b5bf288b56ee027a03dabc4154a30e5939454d5980302369037263027fc1c5f4",
+      "kind": "source-check failure",
+      "reason": "Removal adapter not declared in recipe inputs"
+    }
+  ],
+  "remaining": [
+    "Current114guest JSAPI source is uncompiled/unexecuted;accepted113cannot validate these changed bytes",
+    "Actual guest encoding/callback/request/GC/OOM/cancellation/shutdown and error-template/byte-path/backend/permission behavior",
+    "Non-default disposable encodings, full enabled public VFS and remaining FS-013/FS-016 and other filesystem findings",
+    "Persistent113constructor/error/session failures,all other families and identified-artifact four-host conformance"
+  ],
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

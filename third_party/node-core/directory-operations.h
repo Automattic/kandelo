@@ -5,6 +5,7 @@
 #define KANDELO_NODE_DIRECTORY_OPERATIONS_H
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -12,7 +13,7 @@
 #include <vector>
 
 namespace kandelo::nodefs {
-enum class PathOperation { Mkdir, Unlink, Rmdir };
+enum class PathOperation { Mkdir, Unlink, Rmdir, Mkdtemp };
 struct DirectoryResult { int status = 0; std::string firstPath; };
 struct PosixDirectoryBackend {
   int Mkdir(const std::string& path, mode_t mode) {
@@ -77,6 +78,15 @@ DirectoryResult Mkdir(Backend& backend, const std::string& path, mode_t mode,
 }
 inline DirectoryResult RunPath(PathOperation operation, const std::string& path,
                                mode_t mode, bool recursive, bool asynchronous) {
+  if (operation == PathOperation::Mkdtemp) {
+    // Node appends six template bytes before libuv's real mkdtemp call.
+    // libc owns candidate generation, atomic mkdir(0700) and collision retry;
+    // no existence precheck or JS random-number source selects a free name.
+    std::string name = path + "XXXXXX";
+    char* created;
+    do { created = ::mkdtemp(name.data()); } while (!created && errno == EINTR);
+    return {created ? 0 : -errno, std::move(name)};
+  }
   if (operation == PathOperation::Mkdir) {
     PosixDirectoryBackend backend;
     return Mkdir(backend, path, mode, recursive, asynchronous);

@@ -30,6 +30,7 @@ export default {
       'test/node-buffer-codecs.test.ts',
       'test/node-fs-removal.test.ts',
       'test/node-directory-platform.test.ts',
+      'test/node-tempdir-platform.test.ts',
       'test/node-readdir-platform.test.ts',
       'test/node-dotenv-platform.test.ts',
       'test/node-digests-platform.test.ts',

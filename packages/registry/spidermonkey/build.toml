@@ -113,6 +113,7 @@ inputs = [
   "third_party/node-core/native-file-handle.cpp",
   "third_party/node-core/native-fs-promise.cpp",
   "third_party/node-core/native-directory.cpp",
+  "third_party/node-core/tempdir-platform-adapter.js",
   "third_party/node-core/native-readdir.cpp",
   "third_party/node-core/native-dir.cpp",
   "third_party/node-core/native-package.cpp",
@@ -126,6 +127,7 @@ inputs = [
   "third_party/node-core/readdir-operations.h",
   "third_party/node-core/generate-dirent-types.py",
   "third_party/node-core/native-removal.cpp",
+  "third_party/node-core/removal-platform-adapter.js",
   "third_party/node-core/removal-operations.h",
   "third_party/node-core/directory-operations.h",
   "third_party/node-core/native-file-jobs.cpp",
@@ -160,4 +162,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 113
+revision = 114

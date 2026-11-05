@@ -4765,5 +4765,77 @@
       }
     },
     "nativeBoundary": "Pinned EncodePathChars ASCII table/Windows slash rule ported over the actual shared WHATWG parser; public conversion algorithms unchanged. Full URL/parser/IDNA/namespace and filesystem byte-path conformance remain separate."
+  },
+  "tempdirPublic": {
+    "source": {
+      "path": "upstream/fs-fs-source.js",
+      "upstreamPath": "lib/fs.js",
+      "sha256": "21e9604151bcdfdacec9ec6e127e8ba906fb1b4e9415fd0de3221b7e92a08ef3"
+    },
+    "sections": {
+      "makeCallback": {
+        "start": "function makeCallback(cb) {",
+        "length": 112,
+        "sha256": "9136b5d12943d80471ec75860102496a0bf916fd54289943f3ac10950c073117"
+      },
+      "vfsResult": {
+        "start": "function vfsResult(promise, callback) {",
+        "length": 178,
+        "sha256": "d0b40cd75670afadebe32ce84ca34695b1b9d2f6870f63d626198221ce0c25e1"
+      },
+      "mkdtemp": {
+        "start": "function mkdtemp(prefix, options, callback) {",
+        "length": 513,
+        "sha256": "53c6074ece8055e9c1c6dabc70516692fcebeade1d7488e31ee67818663dd30e"
+      },
+      "mkdtempSync": {
+        "start": "function mkdtempSync(prefix, options) {",
+        "length": 363,
+        "sha256": "c823d8baf023b4a7f8fe80b547ff421b0242f4bd125f5105f27bbffad85cc026"
+      },
+      "mkdtempDisposableSync": {
+        "start": "function mkdtempDisposableSync(prefix, options) {",
+        "length": 550,
+        "sha256": "551702df344304f1dd80b82ccea2847580805de243bfb639b95f480659e9cd32"
+      }
+    }
+  },
+  "tempdirPromise": {
+    "source": {
+      "path": "upstream/fs-promises-source.js",
+      "upstreamPath": "lib/internal/fs/promises.js",
+      "sha256": "bdb9f9c75509dbaade2ef68e7d8b1c6fff345f356b1459c8969696d48180ea49"
+    },
+    "sections": {
+      "error": {
+        "start": "function handleErrorFromBinding(error) {",
+        "length": 130,
+        "sha256": "27447320d89711e70bee64140cafb9395944ebb5ec1303bc1d9aa3b8615f77b5"
+      },
+      "mkdtemp": {
+        "start": "async function mkdtemp(prefix, options) {",
+        "length": 465,
+        "sha256": "c876f46fd59e2558d7be499f1593566b1f4199131b3a3ab7f29efe6c86145efd"
+      },
+      "mkdtempDisposable": {
+        "start": "async function mkdtempDisposable(prefix, options) {",
+        "length": 746,
+        "sha256": "c64520a1270ea7133dcf089308129437ce4c92447f70d5b57d002cc253d7af35"
+      }
+    }
+  },
+  "tempdirWarnings": {
+    "source": {
+      "path": "upstream/fs-utils-source.js",
+      "upstreamPath": "lib/internal/fs/utils.js",
+      "sha256": "8f4f44388934c9fd281a122122f667b1a92d41f9e558bfd45a83c9aff49f061b"
+    },
+    "sections": {
+      "warning": {
+        "start": "let nonPortableTemplateWarn = true;\n\nfunction warnOnNonPortableTemplate(template) {",
+        "length": 637,
+        "sha256": "d617b7080f8830ff95149193b5416bac965ac677480a19b424b29b933b5a7602"
+      }
+    }
   }
 }
