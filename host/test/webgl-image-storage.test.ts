@@ -1,13 +1,14 @@
+import { withNativeBatch } from "../src/webgl/native-batch.js";
 import { foreignTextureGl } from "./support/foreign-texture-gl.js";
 import { afterEach, expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
-import { registerImageSource, textureNative, canonicalTexture, WPK_IMAGE_SOURCE_TARGET, imageTextureOperation, imageRenderbufferStorage, destroyTextureView, destroyRenderbufferView } from "../src/webgl/image-storage.js";
+import { registerImageSource, textureNative, canonicalTexture, WPK_IMAGE_SOURCE_TARGET, imageTextureOperation, imageRenderbufferStorage, destroyTextureView, destroyRenderbufferView, refreshTextureView } from "../src/webgl/image-storage.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
 import * as O from "../src/webgl/ops.js";
 import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
-import { noteStorageWrite } from "../src/webgl/image-writes.js";
+import { noteStorageWrite, storageWrites } from "../src/webgl/image-writes.js";
 afterEach(() => setNativeGlFaultReporter(null));
 /** Decision D-29: the reporter latches a refused native deletion or
  * restoration as fatal, and query replies (checkedQueryReply) rethrow the
@@ -339,4 +340,49 @@ it("faults when the live renderer refuses a retired context's image view deletio
   let fault: unknown; try { registry.destroyContext(7,11); } catch (error) { fault = error; }
   expect(fault).toBeInstanceOf(NativeGlFault);
   expect((fault as Error).message).toMatch(/live renderer refused deleteTexture/);
+});
+
+it.each([0x505,0x502])("does not publish a failed private image allocation after native flag %s", nativeError => {
+  const {registry,b,gl,object,first,second,alive} = storageRepairSetup();
+  Object.assign(gl,{isContextLost:() => false});
+  registry.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
+  const peer = registry.get(7,12)!; peer.gl = gl; peer.contextId = 22;
+  expect(registry.shareObjects(7,12,11)).toBe(true);
+  const before = alive.size, getError = gl.getError.bind(gl), allocate = gl.texImage2D.bind(gl);
+  let pending = 0;
+  gl.getError = () => { const error = pending; pending = 0; return error || getError(); };
+  gl.texImage2D = () => { pending = nativeError; };
+  b.errors.push(0x500);
+  const request = new Uint8Array(new Uint32Array([1,17,1]).buffer), output = new Uint8Array(12);
+  expect(withNativeBatch(b,"private image allocation",() => runGlQuery(b,O.QOP_IMAGE_TARGET,request,output))).toBe(-19);
+  expect(b.textureViews.has(object)).toBe(false); expect(b.imageRevisions.has(object)).toBe(false);
+  expect(alive.size).toBe(before); expect(b.errors).toEqual([0x500]); expect(peer.errors).toEqual([]);
+  expect(gl.getParameter(0x8069)).toBe(object);
+  expect(gl.getParameter(0x8ca6)).toBeNull(); expect(gl.getParameter(0x8caa)).toBeNull();
+  gl.texImage2D = allocate;
+  expect(withNativeBatch(peer,"healthy image allocation",() => runGlQuery(peer,O.QOP_IMAGE_TARGET,request,output))).toBe(12);
+  expect(peer.textureViews.get(object)!.source!.token).toBe(1);
+  expect(peer.errors).toEqual([]);
+  registry.unbind(7); gl.deleteTexture(first); gl.deleteTexture(second); expect(alive.size).toBe(0);
+});
+
+it("keeps failed private image refreshes stale and counts possible writes through reset unwinding", () => {
+  const {registry,b,gl,object,first,second,alive} = storageRepairSetup();
+  Object.assign(gl,{isContextLost:() => false});
+  expect(checked(b,O.QOP_IMAGE_TARGET,[1,17,1])[0]).toBe(0);
+  const view = b.textureViews.get(object)!, synced = view.synced, writes = storageWrites(view.native).count;
+  registry.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
+  const peer = registry.get(7,12)!; peer.gl = gl; peer.contextId = 22;
+  expect(registry.shareObjects(7,12,11)).toBe(true);
+  const getError = gl.getError.bind(gl), copy = gl.copyTexSubImage2D.bind(gl);
+  let pending = 0;
+  gl.getError = () => { const error = pending; pending = 0; return error || getError(); };
+  gl.copyTexSubImage2D = () => { pending = 0x502; };
+  noteStorageWrite(first);
+  expect(withNativeBatch(b,"private image refresh",() => refreshTextureView(b,object) ? 0 : -5)).toBe(-19);
+  expect(view.synced).toBe(synced); expect(storageWrites(view.native).count).toBe(writes+1);
+  gl.copyTexSubImage2D = copy;
+  expect(withNativeBatch(peer,"healthy image refresh",() => refreshTextureView(peer,object) ? 0 : -5)).toBe(0);
+  expect(view.synced).toBe(storageWrites(first).count); expect(peer.errors).toEqual([]);
+  registry.unbind(7); gl.deleteTexture(first); gl.deleteTexture(second); expect(alive.size).toBe(0);
 });

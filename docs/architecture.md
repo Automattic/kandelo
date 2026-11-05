@@ -6087,6 +6087,12 @@ native changes and retires unpublished buffers before another context can
 acquire the renderer. Refused restoration on a live renderer remains fatal;
 physical renderer loss drops the obsolete native state. These checks do not
 change guest-command acceptance or consume previously recorded guest flags.
+Private image allocation and preservation copies also require native success
+before a sibling view is published. Refreshing an image view leaves its sync
+count stale until the private copy succeeds, so a healthy peer cannot skip a
+needed refresh after the submitter resets. Possible writes remain counted
+through reset unwinding for exported siblings. Framebuffer attachment and
+sampling must resolve coherent contents for the accepted shared generation.
 
 An unpredicted native error resets the guilty logical binding, emits a
 `gl-context-reset` host diagnostic naming its process, session, batch and

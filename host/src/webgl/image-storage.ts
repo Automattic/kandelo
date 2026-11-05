@@ -1,3 +1,4 @@
+import { withNativeBookkeeping } from "./native-batch.js";
 import { rendererObjectEpoch } from "./renderer-loss.js";
 import { applyNativeChanges, invokeNativeCall, rethrowNativeGlFault, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, type NativeChange, type NativeCall, type NativeDeletion } from "./native-recovery.js";
 import { sizedFormatTransfer } from "./es2-validation.js";
@@ -136,19 +137,32 @@ function copySource(b: GlBinding, view: GlTextureView): boolean {
   const gl = b.gl!, source = view.source, storage = sourceStorage(source);
   // The count read before the copy: a write during it leaves the view stale.
   const count = storage ? storageWrites(storage).count : 0;
-  const copied = withImageState(b, () => checkedGlCall(b, () => {
-    gl.bindFramebuffer(READ, view.read);
-    gl.bindTexture(TEX, view.native);
-    gl.copyTexSubImage2D(TEX, 0, 0, 0, 0, 0, source.width, source.height);
-  }));
-  // The view's own storage was written. It is canonical storage for anyone
-  // who reads it directly: a GLES image exported from this sibling texture
-  // is presented from it (an exported image's native is the object's view).
-  noteStorageWrite(view.native);
+  let copied = false;
+  try {
+    copied = withNativeBookkeeping(() => withImageState(b, () => checkedGlCall(b, () => {
+      gl.bindFramebuffer(READ, view.read);
+      gl.bindTexture(TEX, view.native);
+      gl.copyTexSubImage2D(TEX, 0, 0, 0, 0, 0, source.width, source.height);
+    })));
+  } finally {
+    // A failed native call may still have touched storage. Exported siblings
+    // must observe that possible write even when an early reset unwinds us.
+    noteStorageWrite(view.native);
+  }
   if (copied) view.synced = count;
   return copied;
 }
 function allocateTextureView(b: GlBinding, old: WebGLTexture, source: GlImageSource, preserveBase = true): GlTextureView | null {
+  let view: GlTextureView | null = null;
+  // This private allocation becomes shared image storage. Its native success
+  // must be known before a valid sibling view can be published to a peer.
+  withNativeBookkeeping(() => {
+    view = allocateTextureViewExact(b,old,source,preserveBase);
+    return view !== null;
+  });
+  return view;
+}
+function allocateTextureViewExact(b: GlBinding, old: WebGLTexture, source: GlImageSource, preserveBase: boolean): GlTextureView | null {
   const gl = b.gl!;
   const candidate = reserveNativeRetirement(b,[["deleteTexture",null],["deleteFramebuffer",null]]);
   if (!candidate) return null;

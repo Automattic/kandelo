@@ -255,9 +255,10 @@ also the planned migration of host GL logic out of TypeScript. Asynchronous
 binds also fix the dEQP-EGL `gles2_shared_render` timeouts, where every
 `glBindTexture` is a synchronous round trip.
 
-Private buffer copies retain exact native checks until their results can be
-published safely. Moving validation into the guest must preserve this host
-storage-validity and reset-unwinding contract.
+Private buffer and image copies retain exact native checks until their
+results can be published safely. Image refresh counts remain stale on failure,
+and possible writes stay counted through reset unwinding. Moving validation
+into the guest must preserve this host storage-validity contract.
 
 The initial B1 source increments preserve local error knowledge across
 scalar and argument-validated setters, retaining the ordinary host command

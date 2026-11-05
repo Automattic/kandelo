@@ -984,6 +984,26 @@ existing controls, no failures. ABI checks pass without changing 56/3/17/21.
 Host TypeScript retains the same 32 diagnostics, so this is not a full
 host-build pass.
 
+**A3 private-image validity follow-up, 2026-11-05.** Native image allocation
+and preservation-copy success now precede publication of a shared sibling
+view. Private refresh success precedes advancing its sync count; an early
+reset still counts possible writes. Actual-GPU causal controls on all three
+engines exposed a healthy peer sampling black while its framebuffer read red
+after allocation OOM (R332), and sampling stale red while canonical storage
+was green after a refused refresh (R334). Exact private checks fix both.
+R336 passes 2,187 source controls and 18 Node controls; its 339-case browser
+run passes 315 with the same 24 prior image-expectation failures retained.
+All 96 guest reset-retirement controls pass with zero owners before exit.
+ABI and rewrite checks pass, with the same Firefox inconclusive/controls;
+host TypeScript retains 32 diagnostics. R339 final controls pass all nine
+engine/mode combinations, including sampling/attachment coherence, native
+retirement and browser memory boundaries. Accepted shared mutations may
+precede a reset; the controls require coherent accepted contents rather than
+assuming atomic rollback. Production native-OOM and divergence policies and
+56/3/17/21 remain unchanged. Exact commands, frozen inputs and comparisons are
+in `.context/graphics-image-reset-main-r336/` and `-final-r339/`. Full A3/B1,
+application, memory, conformance and native-feel acceptance remain open.
+
 **Graphics replay fixture follow-up, 2026-11-05.** The state suite now
 replays checked shader/program creation and mutation instead of omitting
 those operations, and compares complete C receipts, including extended

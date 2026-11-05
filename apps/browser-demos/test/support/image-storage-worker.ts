@@ -192,21 +192,64 @@ self.onmessage = ({ data }) => {
     }
     require(error() === 0x505, "candidate allocation error");
     const rejected = pixels(71);
+    if ((scenario === "retargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
+      current(12); bind(17,12); fbo(81,17,12); current(11); bind(17); pixels(71);
+      if (scenario === "refreshReset") {
+        checked(O.QOP_IMAGE_TARGET,[1,17,source]);
+        send(O.OP_BIND_FRAMEBUFFER,[0x8d40,72]); send(O.OP_CLEAR_COLOR,[0,0x3f800000,0,0x3f800000]); send(O.OP_CLEAR,[0x4000]);
+      }
+    }
     const attach = gl.framebufferTexture2D.bind(gl), ownedFbo = kernel.gl.get(7, 11)!.fbos.get(71)!;
-    let injected = false;
+    let injected = false, allocationFlag = 0;
+    const nativeTexImage = gl.texImage2D.bind(gl), nativeCopy = gl.copyTexSubImage2D.bind(gl), nativeGetError = gl.getError.bind(gl);
+    if (scenario === "allocationReset") {
+      gl.texImage2D = ((...args: Parameters<typeof gl.texImage2D>) => {
+        if (!injected) { injected = true; allocationFlag = 0x505; return; }
+        Reflect.apply(nativeTexImage,gl,args);
+      }) as typeof gl.texImage2D;
+      gl.getError = () => { if (allocationFlag) { const value = allocationFlag; allocationFlag = 0; return value; } return nativeGetError(); };
+    }
+    if (scenario === "refreshReset") {
+      gl.copyTexSubImage2D = (...args: Parameters<typeof gl.copyTexSubImage2D>) => {
+        if (!injected) { injected = true; allocationFlag = 0x502; return; }
+        Reflect.apply(nativeCopy,gl,args);
+      };
+      gl.getError = () => { if (allocationFlag) { const value = allocationFlag; allocationFlag = 0; return value; } return nativeGetError(); };
+    }
     gl.framebufferTexture2D = (target, point, textarget, texture, level) => {
-      if (!injected && target === 0x8ca9 && gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === ownedFbo) {
+      if (scenario !== "allocationReset" && scenario !== "refreshReset" && !injected && target === 0x8ca9 && gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === ownedFbo) {
         injected = true;
         attach(target, point, 0xdead, texture, level);
       }
       else
         attach(target, point, textarget, texture, level);
     };
+    let resetRc = 0;
     try {
-      checked(O.QOP_IMAGE_TARGET, [1, 17, source], 1);
+      if ((scenario === "retargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
+        new Uint32Array(memory.buffer,64,3).set([1,17,source]);
+        resetRc = api.host_gl_query(7,O.QOP_IMAGE_TARGET,64,12,512,12,11);
+      } else checked(O.QOP_IMAGE_TARGET, [1, 17, source], 1);
     }
     finally {
       gl.framebufferTexture2D = attach;
+      if (scenario === "allocationReset" || scenario === "refreshReset") { gl.texImage2D = nativeTexImage as typeof gl.texImage2D; gl.copyTexSubImage2D = nativeCopy; gl.getError = nativeGetError; }
+    }
+    if ((scenario === "retargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
+      require(injected && resetRc === -19,"retarget logical reset");
+      const refused = api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,11);
+      current(12); const healthyPixels = pixels(81,12);
+      const healthySource = checked(O.QOP_IMAGE_SOURCE_STATE,[1,17],0,12);
+      bind(60,12); send(O.OP_TEX_IMAGE_2D,[0x0de1,0,0x1908,1,1,0,0x1908,0x1401,4],rgba([0,0,0,255]),12); fbo(82,60,12);
+      send(O.OP_USE_PROGRAM,[103],new Uint8Array(),12); bind(17,12);
+      send(O.OP_VIEWPORT,[0,0,1,1],new Uint8Array(),12); send(O.OP_DRAW_ARRAYS,[0,0,1],new Uint8Array(),12);
+      const sampledPixels = pixels(82,12);
+      api.host_gl_destroy_context(7,21); const afterRetirement = pixels(81,12);
+      api.host_gl_destroy_context(7,22); api.host_gl_unbind(7,11); api.host_gl_unbind(7,12); api.host_gbm_bo_destroy(7,41);
+      postMessage({type:"image_storage_reset",resetRc,refused,healthyPixels,healthySource,sampledPixels,afterRetirement,
+        clean:made.length===deleted.length&&made.every(value=>deleted.includes(value))&&live.every(check=>!check()),
+        nativeError:gl.getError(),diagnostics});
+      return;
     }
     require(injected && error() === 0x500, "retarget rejection");
     const retargetRejected = pixels(71);
