@@ -192,7 +192,7 @@ application request inventories with actual fetched-kernel SHA checks. Prototype
 availability will remain separate from validation and acceptance.
 
 R291 `graphics-b1-desktop-r291-1105-043003-bd45` on frozenb45 completes in30m47
-and remains FAILED: Node Foot/GTK3/Qt3 pass, but Mako's file fails to load because
+and remains FAILED: Node Foot/GTK3/QtGui smokes pass, but Mako's file fails to load because
 the default-product projection lacks its package. Browser result is36 passed,
 2 failed and4 skipped. Firefox Cage retains the223-pixel cursor difference;
 Firefox Sway times out awaiting its startup syslog, with the rendered desktop
