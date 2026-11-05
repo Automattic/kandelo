@@ -233,6 +233,33 @@ or new preview is claimed. ABI family56/3/17/21 is unchanged. Commands:
 `.context/graphics-private-savepoint-r375/run.sh` and
 `.context/graphics-private-savepoint-regression-r376/run.sh`.
 
+## Early inverse refusal and late native reset are separate controls, 2026-11-05
+
+The pointer and deletion-repair fixtures previously injected a forward
+native error flag and expected immediate rejected-change recovery. A3
+predicts guest acceptance and discovers that flag at the batch boundary;
+that path resets its context instead. Early partial-mutation controls
+now throw immediately after the native pointer installation or container
+detachment, then independently refuse the actual inverse. Their original
+fatal expectations remain, including one reported fault and proof that
+restoration was attempted. Separate late-flag controls retain the old
+native injection and require ENODEV on this and later guilty entries,
+zero early inverse attempts, one reset diagnostic, an unchanged blue
+healthy-peer framebuffer and a clean native error queue.
+
+R379 first passes all six early controls and fails six new late controls:
+the new fixture assumed yellow even though earlier storage replacement
+made the shared image blue, and its checked-reply helper obscured the
+raw deletion ENODEV result. Reading the actual raw reply and correcting
+the known setup color resolves those fixture mistakes. R379-final passes
+all12 controls across Chromium, Firefox and WebKit, with frozen source
+hashes and memory-boundary checks. Runtime source is unchanged from the
+preceding private-savepoint correction. The older long default-positive
+image scenario still needs separation from its embedded pre-A3 faults;
+this focused run does not close it or final B1 acceptance. Commands:
+`.context/graphics-inverse-policy-r379/run.sh` and
+`.context/graphics-inverse-policy-r379-final/run.sh`.
+
 ## Automatic application-driver admission prototype, 2026-11-05
 
 Ordinary applications now enter the B1 program journal at their first

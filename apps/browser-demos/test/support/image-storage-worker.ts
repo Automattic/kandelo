@@ -504,7 +504,7 @@ self.onmessage = ({ data }) => {
       finally { gl.bindBuffer = promotionBind; gl.drawElements = promotionDraw; }
       return finish(outcome, { draws: promotionDraws, types: promotionTypes, refused: promotionRefused });
     }
-    if (scenario === "pointer") {
+    if (scenario === "pointer" || scenario === "pointerReset") {
       // A valid converted pointer is partially installed before a native
       // rejection; the refused restoration of the old pointer is fatal.
       const nativePointer = () => [gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING),
@@ -512,7 +512,7 @@ self.onmessage = ({ data }) => {
         gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_NORMALIZED),gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_STRIDE),
         gl.getVertexAttribOffset(1,gl.VERTEX_ATTRIB_ARRAY_POINTER)];
       const originalPointer = nativePointer(), pointerBuffer = originalPointer[0];
-      const pointerCall = gl.vertexAttribPointer.bind(gl); let pointerRejected = false;
+      const pointerCall = gl.vertexAttribPointer.bind(gl); let pointerRejected = false, pointerRestores = 0;
       const precondition = {error:-1,selected:false,installed:false};
       gl.vertexAttribPointer = (...args) => {
         if(!pointerRejected && args[0]===1 && args[4]===0 && args[5]===0) {
@@ -520,14 +520,24 @@ self.onmessage = ({ data }) => {
           precondition.error = gl.getError();
           precondition.selected = gl.getParameter(gl.ARRAY_BUFFER_BINDING)!==pointerBuffer;
           precondition.installed = gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING)!==pointerBuffer;
-          pointerRejected = true; gl.bindBuffer(0xdead,null);
-        } else if(pointerRejected && args[0]===1 && args[4]===24 && args[5]===8) gl.bindBuffer(0xdead,null);
+          pointerRejected = true;
+          if (scenario === "pointerReset") gl.bindBuffer(0xdead,null);
+          else throw new Error("injected early pointer failure after native installation");
+        } else if(pointerRejected && args[0]===1 && args[4]===24 && args[5]===8) {
+          pointerRestores++; gl.bindBuffer(0xdead,null);
+        }
         else pointerCall(...args);
       };
       let outcome: ReturnType<typeof refusal>;
       try { outcome = refusal(() => submitWords(O.OP_VERTEX_ATTRIB_POINTER,[1,4,0x140c,0,0,0])); }
       finally { gl.vertexAttribPointer = pointerCall; }
-      return finish(outcome, { precondition, dirty: pointerRejected && nativePointer().some((value,i)=>value!==originalPointer[i]) });
+      const dirty = pointerRejected && nativePointer().some((value,i)=>value!==originalPointer[i]);
+      if (scenario === "pointerReset") {
+        const refused = api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,12);
+        current(11); const healthy = pixels(75,11);
+        return finish(outcome, { precondition, dirty, restores: pointerRestores, refused, healthy, nativeError:gl.getError(), diagnostics });
+      }
+      return finish(outcome, { precondition, dirty, restored: pointerRestores>0 });
     }
     mutate(O.QOP_BIND_BUFFER,[0x8892,211]);
     send(O.OP_BUFFER_DATA,[0x8892,16,0x88e4],new Uint8Array(),12);
@@ -542,12 +552,14 @@ self.onmessage = ({ data }) => {
     mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 94]);
     mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 33, 0]);
     const repairTexture = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture;
-    if (scenario === "repair") {
+    if (scenario === "repair" || scenario === "repairReset") {
       const repairBind = gl.bindTexture.bind(gl), repairAttach = gl.framebufferTexture2D.bind(gl);
       let repairRejected = false, repairAttempts = 0;
       gl.bindTexture = (target, texture) => {
         if (!repairRejected && target === 0x0de1 && texture !== repairTexture) {
-          repairRejected = true; repairBind(0xdead, texture);
+          repairRejected = true;
+          if (scenario === "repairReset") repairBind(0xdead, texture);
+          else throw new Error("injected early selector failure after framebuffer detachment");
         } else repairBind(target, texture);
       };
       gl.framebufferTexture2D = (target, point, textureTarget, texture, level) => {
@@ -556,10 +568,18 @@ self.onmessage = ({ data }) => {
         } else repairAttach(target, point, textureTarget, texture, level);
       };
       let outcome: ReturnType<typeof refusal>;
-      try { outcome = refusal(() => mutate(O.QOP_IMAGE_OBJECT_DELETE, [1, 33], 1)); }
+      try { outcome = refusal(() => {
+        new Uint32Array(memory.buffer,64,2).set([1,33]);
+        return api.host_gl_query(7,O.QOP_IMAGE_OBJECT_DELETE,64,8,512,12,12);
+      }); }
       finally { gl.bindTexture = repairBind; gl.framebufferTexture2D = repairAttach; }
-      return finish(outcome, { rejected: repairRejected && repairAttempts > 0,
-        dirty: gl.getFramebufferAttachmentParameter(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME) === null });
+      const dirty = gl.getFramebufferAttachmentParameter(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME) === null;
+      if (scenario === "repairReset") {
+        const refused = api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,12);
+        current(11); const healthy = pixels(75,11);
+        return finish(outcome, { rejected: repairRejected, dirty, restores:repairAttempts, refused, healthy, nativeError:gl.getError(), diagnostics });
+      }
+      return finish(outcome, { rejected: repairRejected && repairAttempts > 0, dirty });
     }
     mutate(O.QOP_IMAGE_OBJECT_DELETE, [1, 33]);
     // Storage respecification retargets containers of both contexts. A

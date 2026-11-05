@@ -1603,7 +1603,7 @@ for (const [fault,message,detail] of [
   ["deleteBuffer",refusedDeletion("deleteBuffer"),{refused:true,logicalDeleted:true}],
   ["capture",REFUSED_RESTORE,{}],
   ["promotion",REFUSED_RESTORE,{draws:1,types:[0x1403],refused:true}],
-  ["pointer",REFUSED_RESTORE,{precondition:{error:0,selected:true,installed:true},dirty:true}],
+  ["pointer",REFUSED_RESTORE,{precondition:{error:0,selected:true,installed:true},dirty:true,restored:true}],
   ["repair",REFUSED_RESTORE,{rejected:true,dirty:true}],
   ["storage",REFUSED_RESTORE,{rejected:true,dirty:true}],
   ["storageCleanup",refusedDeletion("deleteTexture"),{retained:true}],
@@ -1611,6 +1611,23 @@ for (const [fault,message,detail] of [
   test(`logical image views make a refused ${fault} cleanup or restoration a fatal host fault`,async({page})=>{
     const result=await runImageStorageWorker(page,fault);
     expect(result).toEqual({type:"image_storage_fault",scenario:fault,fault:"NativeGlFault",message,reported:true,...detail});
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}
+
+// A forward native flag is discovered only at the batch boundary. It resets
+// its context; it does not retroactively turn an accepted forward call into
+// the early failed change exercised by the refused-inverse controls above.
+for (const fault of ["pointerReset","repairReset"] as const) {
+  test(`logical image views isolate a late ${fault} native error from a healthy peer`,async({page})=>{
+    const result=await runImageStorageWorker(page,fault);
+    expect(result).toMatchObject({type:"image_storage_fault",scenario:fault,
+      fault:"returned -19",message:null,reported:false,dirty:true,restores:0,
+      refused:-19,healthy:[0,0,255,255],nativeError:0});
+    if(fault==="pointerReset") expect(result.precondition).toEqual({error:0,selected:true,installed:true});
+    else expect(result.rejected).toBe(true);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]).toContain("gl-context-reset");
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
