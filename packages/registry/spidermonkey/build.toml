@@ -178,6 +178,8 @@ inputs = [
   "third_party/node-core/buffer-unpooled-adapter.js",
   "third_party/node-core/builtin-policy-adapter.js",
   "third_party/node-core/check-build-inputs.py",
+  "third_party/node-core/warning-platform-adapter.js",
+  "third_party/node-core/upstream/warning",
   "third_party/node-core/clone-platform-adapter.js",
   "third_party/node-core/compression-binding-adapter.js",
   "third_party/node-core/console-platform-adapter.js",
@@ -485,4 +487,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 120
+revision = 121

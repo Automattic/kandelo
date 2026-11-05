@@ -1,0 +1,111 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -11195,6 +11195,13 @@
+ // NODE_OPTIONS contributes values but never appears in that CLI-only array.
+ struct KandeloNodeCLIState {
+   bool noWarnings = false;
++  bool noDeprecation = false;
++  bool throwDeprecation = false;
++  bool traceDeprecation = false;
++  bool traceWarnings = false;
++  std::string redirectWarnings;
++  std::string diagnosticDir;
++  std::vector<std::string> disableWarnings;
+   bool experimentalStreamIter = false;
+   // The declared recipe links the actual SQLite backend (target HAVE_SQLITE).
+   bool experimentalSqlite = true;
+@@ -11231,6 +11238,22 @@
+     kandeloNodeCLI.noWarnings = !value;
+     return true;
+   }
++  if (name == "--deprecation") {
++    kandeloNodeCLI.noDeprecation = !value;
++    return true;
++  }
++  if (name == "--throw-deprecation") {
++    kandeloNodeCLI.throwDeprecation = value;
++    return true;
++  }
++  if (name == "--trace-deprecation") {
++    kandeloNodeCLI.traceDeprecation = value;
++    return true;
++  }
++  if (name == "--trace-warnings") {
++    kandeloNodeCLI.traceWarnings = value;
++    return true;
++  }
+   if (name == "--zero-fill-buffers") {
+     gKandeloZeroFillBuffers = value;
+     return true;
+@@ -11257,7 +11280,8 @@
+ static bool KandeloNodeStringOption(const std::string& arg) {
+   const auto name = KandeloNodeOptionName(arg);
+   return name == "--conditions" || name == "-C" ||
+-         name == "--experimental-package-map";
++         name == "--experimental-package-map" || name == "--redirect-warnings" ||
++         name == "--diagnostic-dir" || name == "--disable-warning";
+ }
+ 
+ static void ApplyKandeloNodeStringOption(const std::string& arg,
+@@ -11265,12 +11289,21 @@
+   const auto name = KandeloNodeOptionName(arg);
+   if (name == "--conditions" || name == "-C") {
+     kandeloNodeCLI.conditions.push_back(value);
++  } else if (name == "--redirect-warnings") {
++    kandeloNodeCLI.redirectWarnings = value;
++  } else if (name == "--diagnostic-dir") {
++    kandeloNodeCLI.diagnosticDir = value;
++  } else if (name == "--disable-warning") {
++    kandeloNodeCLI.disableWarnings.push_back(value);
+   } else {
+     kandeloNodeCLI.packageMapPath = value;
+   }
+ }
+ 
+ static bool PrepareKandeloNodeCLI(int argc, char** argv) {
++  if (const char* value = getenv("NODE_REDIRECT_WARNINGS")) {
++    kandeloNodeCLI.redirectWarnings = value;
++  }
+   if (const char* value = getenv("NODE_OPTIONS")) {
+     std::vector<std::string> errors;
+     auto envArgs = ParseNodeOptionsEnvVar(value, &errors);
+@@ -16168,6 +16201,29 @@
+   return JS_DefineProperty(cx, object, name, boolean, attributes);
+ }
+ 
++static bool KandeloDefineWarningOptions(JSContext* cx, HandleObject cli) {
++  if (!KandeloDefineBooleanProperty(cx, cli, "noDeprecation", kandeloNodeCLI.noDeprecation, 0) ||
++      !KandeloDefineBooleanProperty(cx, cli, "throwDeprecation", kandeloNodeCLI.throwDeprecation, 0) ||
++      !KandeloDefineBooleanProperty(cx, cli, "traceDeprecation", kandeloNodeCLI.traceDeprecation, 0) ||
++      !KandeloDefineBooleanProperty(cx, cli, "traceWarnings", kandeloNodeCLI.traceWarnings, 0)) return false;
++  auto stringOption = [&](const char* name, const std::string& value) {
++    UniqueChars utf8 = JS::EncodeNarrowToUtf8(cx, value.c_str());
++    RootedString text(cx, utf8 ? NewStringCopyUTF8(cx, utf8.get()) : nullptr);
++    return text && JS_DefineProperty(cx, cli, name, text, 0);
++  };
++  if (!stringOption("redirectWarnings", kandeloNodeCLI.redirectWarnings) ||
++      !stringOption("diagnosticDir", kandeloNodeCLI.diagnosticDir)) return false;
++  RootedObject disabled(cx, JS::NewArrayObject(cx, 0));
++  if (!disabled) return false;
++  uint32_t index = 0;
++  for (const auto& item : kandeloNodeCLI.disableWarnings) {
++    UniqueChars utf8 = JS::EncodeNarrowToUtf8(cx, item.c_str());
++    RootedString text(cx, utf8 ? NewStringCopyUTF8(cx, utf8.get()) : nullptr);
++    if (!text || !JS_DefineElement(cx, disabled, index++, text, JSPROP_ENUMERATE)) return false;
++  }
++  return JS_DefineProperty(cx, cli, "disableWarnings", disabled, 0);
++}
++
+ static bool BindScriptArgs(JSContext* cx, OptionParser* op) {
+   AutoReportException are(cx);
+ 
+@@ -16250,7 +16306,8 @@
+     UniqueChars evalUtf8 = JS::EncodeNarrowToUtf8(cx, kandeloNodeCLI.evalSource.c_str());
+     RootedString evalSource(cx, evalUtf8 ? NewStringCopyUTF8(cx, evalUtf8.get()) : nullptr);
+     if (!evalSource) return false;
+-    if (!JS_DefineProperty(cx, cli, "evalSource", evalSource, 0) ||
++    if (!KandeloDefineWarningOptions(cx, cli) ||
++        !JS_DefineProperty(cx, cli, "evalSource", evalSource, 0) ||
+         !JS_DefineProperty(cx, cli, "conditions", conditions, 0) ||
+         !JS_DefineProperty(cx, cli, "packageMapPath", packageMapPath, 0) ||
+         !KandeloDefineBooleanProperty(cx, cli, "preserveSymlinks", kandeloNodeCLI.preserveSymlinks, 0) ||

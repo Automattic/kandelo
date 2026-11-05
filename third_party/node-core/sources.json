@@ -4939,5 +4939,30 @@
       "length": 703,
       "sha256": "5cc97cc54043008360f98f002b3f960aa09542f5df0c654ab7a5495e1c2d19cd"
     }
+  },
+  "warningPlatform": {
+    "sources": {
+      "lib/internal/process/warning.js": {
+        "path": "upstream/warning/lib/internal/process/warning.js",
+        "upstreamPath": "lib/internal/process/warning.js",
+        "sha256": "b3abe35b1f8c98d6fb7ff34649d422fe4ae8b700968a533a5e20ade7bc471ee8"
+      },
+      "lib/internal/process/pre_execution.js": {
+        "path": "upstream/warning/lib/internal/process/pre_execution.js",
+        "upstreamPath": "lib/internal/process/pre_execution.js",
+        "sha256": "b87b010a0f42b40bc7af93195b520193e49dd1ac80a30ece13642978737c351c"
+      },
+      "src/node_options.cc": {
+        "path": "upstream/warning/src/node_options.cc",
+        "upstreamPath": "src/node_options.cc",
+        "sha256": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279"
+      },
+      "src/node_options-inl.h": {
+        "path": "upstream/warning/src/node_options-inl.h",
+        "upstreamPath": "src/node_options-inl.h",
+        "sha256": "1d3b7cd2dc488d09ad583f3df71cdbe40f71bcaa104191e7abe3b9a4fdbfb516"
+      }
+    },
+    "scope": "Complete pinned warning owner, startup alias/listener and native option references;engine stack recapture and full fatal/CLI conformance remain open"
   }
 }

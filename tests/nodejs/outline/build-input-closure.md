@@ -1,10 +1,11 @@
 # Shared Node core build inputs
 
-The engine recipe now declares 309 additional core inputs: 308 existing
+At source120, the engine recipe added309 core inputs: 308 existing
 source/reference/license files and the new input guard. The earlier static
 inventory identified 305 files; a conservative scan also found the domain,
-network-IP and TLS identity adapters. The full guarded set contains 601
-files, including already-declared production owners and references.
+network-IP and TLS identity adapters. That checkpoint guarded601
+files, including already-declared production owners and references. Source121
+adds the warning owner/references; the current guard covers606 files.
 
 `third_party/node-core/check-build-inputs.py` checks root production files,
 recursive manifest file paths, literal Python generator paths, the native

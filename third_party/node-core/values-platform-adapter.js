@@ -22,6 +22,10 @@ function _createNodeValuesPlatform(platform) {
     function require(name) {
         if (loading.has(name)) return loading.get(name).exports;
         if (modules.has(name)) return modules.get(name);
+        if (name === 'internal/process/warning') {
+            if (typeof platform.getWarnings !== 'function') return unavailable(name);
+            return platform.getWarnings();
+        }
         if (name === 'internal/util') {
             const helpers = require('internal/util/core_helpers');
             const result = {

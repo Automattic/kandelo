@@ -1,5 +1,15 @@
 # Current public-contract reconciliation
 
+Source121 installs the pinned shared warning owner and actual CLI option
+source for filtering, trace/deprecation policy and redirect-file lifecycle.
+Sixteen new frontend and47 affected controls pass; one known environment-clone
+fixture nonpass remains. Four unchanged-file runs and14 portable parser
+comparisons pass in their explicit native-boundary scopes. Guest source117–121
+is uncompiled; accepted116 is not current. All19 families remain partial;
+overall suites/full product rebuild remain deferred. See
+[warning ownership and evidence](warning-implementation-dependencies.md).
+
+
 Source120 adds real borrowed-stdin terminal mode leases, pinned mode/error
 policy, actual window queries and transport/context/GC cleanup. Five native-
 boundary frontend comparisons, four affected stream controls and one portable

@@ -16907,6 +16907,10 @@ module.exports = {
     function require(name) {
         if (loading.has(name)) return loading.get(name).exports;
         if (modules.has(name)) return modules.get(name);
+        if (name === 'internal/process/warning') {
+            if (typeof platform.getWarnings !== 'function') return unavailable(name);
+            return platform.getWarnings();
+        }
         if (name === 'internal/util') {
             const helpers = require('internal/util/core_helpers');
             const result = {
@@ -95659,6 +95663,272 @@ function pathToFileURL(filepath, options = kEmptyObject) {
 }
 
     return { fileURLToPath, fileURLToPathBuffer, pathToFileURL, urlToHttpOptions, isURL };
+}
+
+// Pinned warning creation, event/throw scheduling, filtering and file ownership.
+// The real process/console/fs owners supply I/O and lifecycle dependencies.
+function _createNodeWarningPlatform(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { ObjectDefineProperty } = primordials;
+    const process = platform.process;
+    const cli = platform.cliOptions;
+    function getOptionValue(name) {
+        switch (name) {
+            case '--warnings': return cli.noWarnings !== true;
+            case '--no-warnings': return cli.noWarnings === true;
+            case '--no-deprecation': return cli.noDeprecation === true;
+            case '--throw-deprecation': return cli.throwDeprecation === true;
+            case '--trace-deprecation': return cli.traceDeprecation === true;
+            case '--trace-warnings': return cli.traceWarnings === true;
+            case '--diagnostic-dir': return cli.diagnosticDir || '';
+            case '--redirect-warnings': return cli.redirectWarnings || '';
+            case '--disable-warning': return cli.disableWarnings || [];
+            default: throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Warning option ' + name);
+        }
+    }
+    function require(name) {
+        if (name === 'internal/options') return { getOptionValue };
+        if (name === 'internal/assert') return platform.values.require(name);
+        if (name === 'internal/errors') return platform.values.errors;
+        if (name === 'internal/validators') return platform.values.validators;
+        if (name === 'internal/console/global') return platform.getConsole();
+        if (name === 'fs') return platform.fs;
+        if (name === 'path') return platform.path;
+        throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Warning dependency ' + name);
+    }
+    const module = { exports: {} };
+    (function(module, exports, require, primordials, process) {
+        'use strict';
+
+const {
+  ArrayIsArray,
+  Error,
+  ErrorCaptureStackTrace,
+  ErrorPrototypeToString,
+  SafeSet,
+  String,
+} = primordials;
+
+const {
+  getOptionValue,
+} = require('internal/options');
+
+const assert = require('internal/assert');
+const {
+  codes: {
+    ERR_INVALID_ARG_TYPE,
+  },
+  isErrorStackTraceLimitWritable,
+} = require('internal/errors');
+const { validateString } = require('internal/validators');
+
+// Lazily loaded
+let fs;
+let fd;
+let warningFile;
+let traceWarningHelperShown = false;
+
+function resetForSerialization() {
+  if (fd !== undefined) {
+    process.removeListener('exit', closeFdOnExit);
+  }
+  fd = undefined;
+  warningFile = undefined;
+  traceWarningHelperShown = false;
+}
+
+function lazyOption() {
+  // This will load `warningFile` only once. If the flag is not set,
+  // `warningFile` will be set to an empty string.
+  if (warningFile === undefined) {
+    const diagnosticDir = getOptionValue('--diagnostic-dir');
+    const redirectWarnings = getOptionValue('--redirect-warnings');
+    warningFile = diagnosticDir || redirectWarnings || '';
+  }
+  return warningFile;
+}
+
+// If we can't write to stderr, we'd like to make this a noop,
+// so use console.error.
+let error;
+function writeOut(message) {
+  error ??= require('internal/console/global').error;
+  error(message);
+}
+
+function closeFdOnExit() {
+  try {
+    fs.closeSync(fd);
+  } catch {
+    // Continue regardless of error.
+  }
+}
+
+function writeToFile(message) {
+  if (fd === undefined) {
+    fs = require('fs');
+    try {
+      fd = fs.openSync(warningFile, 'a');
+    } catch {
+      return writeOut(message);
+    }
+    process.on('exit', closeFdOnExit);
+  }
+  fs.appendFile(fd, `${message}\n`, (err) => {
+    if (err) {
+      writeOut(message);
+    }
+  });
+}
+
+function doEmitWarning(warning) {
+  process.emit('warning', warning);
+}
+
+let disableWarningSet;
+
+function onWarning(warning) {
+  if (!disableWarningSet) {
+    disableWarningSet = new SafeSet();
+    const disableWarningValues = getOptionValue('--disable-warning');
+    for (let i = 0; i < disableWarningValues.length; i++) {
+      disableWarningSet.add(disableWarningValues[i]);
+    }
+  }
+  if ((warning?.code && disableWarningSet.has(warning.code)) ||
+      (warning?.name && disableWarningSet.has(warning.name))) return;
+
+  if (!(warning instanceof Error)) return;
+
+  const isDeprecation = warning.name === 'DeprecationWarning';
+  if (isDeprecation && process.noDeprecation) return;
+  const trace = process.traceProcessWarnings ||
+                (isDeprecation && process.traceDeprecation);
+  let msg = `(${process.release.name}:${process.pid}) `;
+  if (warning.code)
+    msg += `[${warning.code}] `;
+  if (trace && warning.stack) {
+    msg += `${warning.stack}`;
+  } else {
+    msg +=
+      typeof warning.toString === 'function' ?
+        `${warning.toString()}` :
+        ErrorPrototypeToString(warning);
+  }
+  if (typeof warning.detail === 'string') {
+    msg += `\n${warning.detail}`;
+  }
+  if (!trace && !traceWarningHelperShown) {
+    const flag = isDeprecation ? '--trace-deprecation' : '--trace-warnings';
+    const argv0 = require('path').basename(process.argv0 || 'node', '.exe');
+    msg += `\n(Use \`${argv0} ${flag} ...\` to show where the warning ` +
+           'was created)';
+    traceWarningHelperShown = true;
+  }
+  const warningFile = lazyOption();
+  if (warningFile) {
+    return writeToFile(msg);
+  }
+  writeOut(msg);
+}
+
+// process.emitWarning(error)
+// process.emitWarning(str[, type[, code]][, ctor])
+// process.emitWarning(str[, options])
+function emitWarning(warning, type, code, ctor) {
+  // Fast path to avoid memory allocation,
+  // this doesn't eliminate the other if a few lines below
+  if (process.noDeprecation && type === 'DeprecationWarning') {
+    return;
+  }
+  let detail;
+  if (type !== null && typeof type === 'object' && !ArrayIsArray(type)) {
+    ctor = type.ctor;
+    code = type.code;
+    if (typeof type.detail === 'string')
+      detail = type.detail;
+    type = type.type || 'Warning';
+  } else if (typeof type === 'function') {
+    ctor = type;
+    code = undefined;
+    type = 'Warning';
+  }
+  if (type !== undefined)
+    validateString(type, 'type');
+  if (typeof code === 'function') {
+    ctor = code;
+    code = undefined;
+  } else if (code !== undefined) {
+    validateString(code, 'code');
+  }
+  if (typeof warning === 'string') {
+    warning = createWarningObject(warning, type, code, ctor, detail);
+  } else if (!(warning instanceof Error)) {
+    throw new ERR_INVALID_ARG_TYPE('warning', ['Error', 'string'], warning);
+  }
+  if (warning.name === 'DeprecationWarning') {
+    if (process.noDeprecation)
+      return;
+    if (process.throwDeprecation) {
+      // Delay throwing the error to guarantee that all former warnings were
+      // properly logged.
+      return process.nextTick(() => {
+        throw warning;
+      });
+    }
+  }
+  process.nextTick(doEmitWarning, warning);
+}
+
+function emitWarningSync(warning, type, code, ctor) {
+  process.emit('warning', createWarningObject(warning, type, code, ctor));
+}
+
+function createWarningObject(warning, type, code, ctor, detail) {
+  assert(typeof warning === 'string');
+  // Improve error creation performance by skipping the error frames.
+  // They are added in the `captureStackTrace()` function below.
+  const tmpStackLimit = Error.stackTraceLimit;
+  if (typeof ErrorCaptureStackTrace === 'function' && isErrorStackTraceLimitWritable()) Error.stackTraceLimit = 0;
+  // eslint-disable-next-line no-restricted-syntax
+  warning = new Error(warning);
+  if (typeof ErrorCaptureStackTrace === 'function' && isErrorStackTraceLimitWritable()) Error.stackTraceLimit = tmpStackLimit;
+  warning.name = String(type || 'Warning');
+  if (code !== undefined) warning.code = code;
+  if (detail !== undefined) warning.detail = detail;
+  if (typeof ErrorCaptureStackTrace === 'function') ErrorCaptureStackTrace(warning, ctor || process.emitWarning);
+  return warning;
+}
+
+module.exports = {
+  emitWarning,
+  emitWarningSync,
+  onWarning,
+  resetForSerialization,
+};
+
+    })(module, module.exports, require, primordials, process);
+    return {
+        ...module.exports,
+        install() {
+            // Exact startup policy: only truthy options create these mutable-
+            // by-redefinition, nonwritable public process aliases.
+            for (const [name, option] of [
+                ['noDeprecation', '--no-deprecation'], ['noProcessWarnings', '--no-warnings'],
+                ['traceProcessWarnings', '--trace-warnings'], ['throwDeprecation', '--throw-deprecation'],
+                ['traceDeprecation', '--trace-deprecation'],
+            ]) {
+                const value = getOptionValue(option);
+                if (value) ObjectDefineProperty(process, name, {
+                    __proto__: null, value, writable: false, configurable: true, enumerable: true,
+                });
+            }
+            process.emitWarning = module.exports.emitWarning;
+            if (getOptionValue('--warnings') && process.env.NODE_NO_WARNINGS !== '1')
+                process.on('warning', module.exports.onWarning);
+        },
+    };
 }
 
 // Worker objects own actual engine threads and entangled native endpoints.

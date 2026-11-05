@@ -14,6 +14,7 @@ const _nodeParsedEvalSource = _nodeNative.cliOptions?.evalSource;
 const _nodeDispose = Symbol.dispose;
 let _nodeEventPlatform;
 let _nodeValues;
+let _nodeWarnings;
 
 // ============================================================
 // TextEncoder/TextDecoder polyfill for engines that do not provide it.
@@ -1416,7 +1417,6 @@ const process = (() => {
 
     // Create process as an EventEmitter instance without calling the class constructor
     const proc = new events.EventEmitter();
-    const warningToString = Function.prototype.call.bind(Error.prototype.toString);
 
     Object.assign(proc, {
         title: 'node',
@@ -1498,34 +1498,6 @@ const process = (() => {
 
         hrtime: _nodeProcessClock.hrtime,
 
-        emitWarning(warning, type, code, ctor) {
-            if (proc.noDeprecation && type === 'DeprecationWarning') return;
-            let detail;
-            const invalid = name => {
-                const error = new TypeError('The "' + name + '" argument has an invalid type');
-                error.code = 'ERR_INVALID_ARG_TYPE'; return error;
-            };
-            if (type !== null && typeof type === 'object' && !Array.isArray(type)) {
-                ctor = type.ctor; code = type.code;
-                if (typeof type.detail === 'string') detail = type.detail;
-                type = type.type || 'Warning';
-            } else if (typeof type === 'function') { ctor = type; code = undefined; type = 'Warning'; }
-            if (type !== undefined && typeof type !== 'string') throw invalid('type');
-            if (typeof code === 'function') { ctor = code; code = undefined; }
-            else if (code !== undefined && typeof code !== 'string') throw invalid('code');
-            if (typeof warning === 'string') {
-                warning = new Error(warning); warning.name = String(type || 'Warning');
-                if (code !== undefined) warning.code = code;
-                if (detail !== undefined) warning.detail = detail;
-                if (typeof Error.captureStackTrace === 'function') Error.captureStackTrace(warning, typeof ctor === 'function' ? ctor : proc.emitWarning);
-            } else if (!(warning instanceof Error)) throw invalid('warning');
-            if (warning.name === 'DeprecationWarning') {
-                if (proc.noDeprecation) return;
-                if (proc.throwDeprecation) { proc.nextTick(() => { throw warning; }); return; }
-            }
-            proc.nextTick(() => proc.emit('warning', warning));
-        },
-
         nextTick(fn, ...args) {
             _nodeAsyncPlatform.enqueueTick(fn, ...args);
         },
@@ -1579,14 +1551,6 @@ const process = (() => {
         stdout: { get() { return _createWriteStream(1); }, configurable: true },
         stderr: { get() { return _createWriteStream(2); }, configurable: true },
         stdin: { get() { return _createReadStream(0); }, configurable: true },
-    });
-
-    proc.on('warning', warning => {
-        if (_nodeNative.cliOptions?.noWarnings || proc.env.NODE_NO_WARNINGS === '1') return;
-        const prefix = '(' + proc.release.name + ':' + proc.pid + ') ';
-        const code = warning.code ? '[' + warning.code + '] ' : '';
-        std.err.puts(prefix + code + (proc.traceDeprecation && warning.name === 'DeprecationWarning' ? warning.stack : warningToString(warning)) + '\n');
-        if (warning.detail) std.err.puts(warning.detail + '\n');
     });
 
     // Target version states the requested API; dependency versions come from
@@ -2230,8 +2194,14 @@ Object.assign(util.types, _nodeCore.types);
 _nodeValues = _createNodeValuesPlatform({
     process, Buffer, util, inspection: _nodeInspection, os: nodeOs, uv: _nodeUv,
     signals: nodeOs.constants.signals,
+    getWarnings: () => _nodeWarnings,
     getDOMException: () => _nodeEventPlatform.dom.DOMException,
 });
+_nodeWarnings = _createNodeWarningPlatform({
+    process, values: _nodeValues, fs, path, cliOptions: _nodeNative.cliOptions || {},
+    getConsole: () => _nodeConsolePlatform.api,
+});
+_nodeWarnings.install();
 // OS accounting currently returns placeholder getrusage data. Keep that
 // owner gap explicit; do not reinterpret elapsed time or host-wide totals.
 if (_nodeNative.workerEnvironment) process.umask = _nodeProcessState.createUmask(false);

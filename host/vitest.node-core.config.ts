@@ -64,6 +64,7 @@ export default {
       'test/node-module-entrypoints.test.ts',
       'test/node-module-records.test.ts',
       'test/node-module-wrapper-platform.test.ts',
+      'test/node-warning-platform.test.ts',
       'test/node-module-syntax.test.ts',
       'test/node-source-map-platform.test.ts',
       'test/node-write-file-platform.test.ts',

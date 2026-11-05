@@ -27,7 +27,8 @@ function implementation() {
     (nativeUtil as any).markPromiseAsHandled(value);
   } };
   const start = bootstrap.indexOf('util.promisify = _nodeValues.util.promisify;');
-  const end = bootstrap.indexOf('_installNodeBufferNumeric(', start);
+  // Stop before the next owner; Buffer construction is not part of util.
+  const end = bootstrap.indexOf('_nodeBufferConstructor.initialize(', start);
   if (start < 0 || end < start) throw Error('Public util bootstrap selection missing');
   Function('_nodeValues', '_nodeNative', 'util', '_createNodePublicUtil', bootstrap.slice(start, end))(
     values, native, util, factories.publicUtil);

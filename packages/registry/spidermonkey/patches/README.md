@@ -456,3 +456,11 @@ Decipheriv classes retain their public validation and Transform methods.
 Algorithm discovery queries the linked provider. This registration does not
 supply RSA cipher operations, signatures, key generation or WebCrypto, and
 does not establish four-host conformance.
+
+### 0103: shared warning startup options
+
+Parse actual warning/deprecation booleans, redirect/diagnostic paths and
+repeated warning filters through NODE_OPTIONS and the command line. Preserve
+CLI-only execArgv and environment/CLI precedence. Publish real booleans,
+strings and arrays to each guest bootstrap. This supplies the pinned warning
+owner; native stack recapture/filtering and full CLI conformance remain open.

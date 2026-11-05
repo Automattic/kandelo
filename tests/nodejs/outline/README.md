@@ -1,7 +1,17 @@
 # Node 26 core implementation outline
 
-The shared [build-input guard](build-input-closure.md) now covers 601 source
-and verification files, including 309 newly declared inputs. Twelve focused
+Source121 installs the pinned shared warning owner and actual CLI option
+source for filtering, trace/deprecation policy and redirect-file lifecycle.
+Sixteen new frontend and47 affected controls pass; one known environment-clone
+fixture nonpass remains. Four unchanged-file runs and14 portable parser
+comparisons pass in their explicit native-boundary scopes. Guest source117–121
+is uncompiled; accepted116 is not current. All19 families remain partial;
+overall suites/full product rebuild remain deferred. See
+[warning ownership and evidence](warning-implementation-dependencies.md).
+
+
+The shared [build-input guard](build-input-closure.md) now covers606 source
+and verification files, including the initial309 added inputs. Twelve focused
 package-contract checks pass. Runtime source remains120/uncompiled; this
 source-only prerequisite changes no runtime conformance claim.
 

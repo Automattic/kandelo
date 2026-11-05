@@ -1,0 +1,113 @@
+{
+  "at": "2026-11-05T20:47:59.983128+00:00",
+  "recipeRevision": 121,
+  "lastAcceptedEngine": 116,
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/documentation-contracts.md",
+    "findingIds": [
+      "DOC-008",
+      "DOC-009"
+    ],
+    "relatedFamilies": [
+      "processes",
+      "documentation",
+      "observability",
+      "values"
+    ],
+    "scope": "Shared warning owner/CLI prerequisites;pending-deprecation/origin/stack/fatal and full individual API/family conformance remain open"
+  },
+  "sourceImplemented": [
+    "Complete pinned warning normalization/event/throw and printer owner over actual process/Console/fs dependencies",
+    "Target code/name filtering,invalid-event rejection,detail/stack/once-hint formatting,redirect append/fallback and exit-close lifecycle",
+    "Startup suppression/listener registration and truthy nonwritable/configurable public process aliases",
+    "Actual NODE_OPTIONS/CLI warning/deprecation booleans,paths,repeated filters,redirect environment defaults,precedence and CLI-only execArgv published as true JS primitives",
+    "Values internal deprecators share synchronous emitter owner instead of unsupported dependency",
+    "Optional recapture guards retain actual constructor stack without fabricating V8/filtering support"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-warning-source-r1/report.json",
+    "sha256": "bcf1dff2d8c9b366dbb0d2fd68b33e5edd51528e5990476c2e939fde15338aec",
+    "selectedIdentities": 19,
+    "completeReferences": 4,
+    "guardedInputs": 606,
+    "scope": "Selected source/complete reference identities,generated bundle/bootstrap syntax,input guard and patch composition;not guest C++ compilation or runtime conformance."
+  },
+  "frontendAndAffected": {
+    "report": ".context/node26-warning-affected-r2.json",
+    "sha256": "34be4a25719573b32d99ccb3bbd6494e68a3d9a16f1a4e0943318e7cfcfe329b",
+    "newPassed": 16,
+    "affectedPassed": 47,
+    "affectedFailed": 1,
+    "skipped": 0,
+    "scope": "Candidate warning/error/Console and affected util/process/package owners over explicit native boundaries;not guest/four-host"
+  },
+  "portableNative": {
+    "report": ".context/node26-warning-cli-r1/report.json",
+    "sha256": "fcbe903ec757fd73e3cdb01e3efa9ab2b47062100ea3e975915b5aa91f49515b",
+    "passed": 14,
+    "failed": 0,
+    "nativeHelperCompileAttempts": 1,
+    "scope": "Actual patched candidate tokenizer/boolean/string/argument parser compiled as portable native owner vs exact native Node options;not guest parser/JSAPI/worker/four-host execution"
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-warning-upstream-r2/report.json",
+    "sha256": "1b16cbf4141bf6be2a6cd7680cbda53888fd80f8cde908a1db4a3e56edaf7f18",
+    "files": 2,
+    "candidatePassed": 2,
+    "nativePassed": 2,
+    "failed": 0,
+    "scope": "Two unchanged parallel files run in two modes (4runs),actual candidate warning/error/Console over native process,engine,stream,fs,options and common harness. Not guest,whole fixture closure,four-host or complete module conformance."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-warning-frontend-r1.log",
+      "sha256": "28ada533b8cd4df71a84fbeb4b7124133015afada4b3c4480335f6912bac2e64",
+      "kind": "harness-error",
+      "reason": "Vitest config resolved relative to host root;corrected absolute path"
+    },
+    {
+      "report": ".context/node26-warning-frontend-r2.json",
+      "sha256": "cd33db98e43045414de793d5af671c0b805c4133edd9dd984dd3b2a6766d42da",
+      "kind": "frontend",
+      "passed": 1,
+      "failed": 15,
+      "reason": "Unused native internal/test binding imported by fixture emitted an extra warning;removed unused dependency without filtering events"
+    },
+    {
+      "report": ".context/node26-warning-upstream-r1/report.json",
+      "sha256": "389f53f503197253b6bef03704e617e8abecd1af14ba51782520db59c1d0fdba",
+      "kind": "upstream-control",
+      "passed": 2,
+      "failed": 2,
+      "reason": "Candidate preload relative path wrong;native files passed;corrected path,unchanged assertions"
+    },
+    {
+      "report": ".context/node26-warning-affected-r1.json",
+      "sha256": "b14fcbf339bcdd9d8228dce940f5e66087dacdb2ccf299ecf0e66d5f90774d73",
+      "kind": "affected",
+      "passed": 38,
+      "failed": 10,
+      "reason": "Util fixture selected unrelated Buffer initialization;corrected endpoint,assertions unchanged"
+    },
+    {
+      "report": ".context/node26-warning-affected-r2.json",
+      "sha256": "34be4a25719573b32d99ccb3bbd6494e68a3d9a16f1a4e0943318e7cfcfe329b",
+      "kind": "affected",
+      "passed": 63,
+      "failed": 1,
+      "reason": "Existing native addon environment clone snapshot remains unsupported by native serializer;not established guest behavior or accepted exclusion;original assertion retained"
+    }
+  ],
+  "remaining": [
+    "Compile actual121CLI publication plus117\u2013120guest changes through normal resolver;accepted116is not current",
+    "Actual guest engine stack recapture/constructor filtering and tick/fatal/exit/error/realm/GC/resource ownership",
+    "Complete pending-deprecation CLI consumers,callsite origin,process flags/permissions,worker activation/stdout/redirect teardown",
+    "Current identified-artifact warning/control coverage across all four hosts and full individual API/family reconciliation",
+    "Known environment native-fixture clone nonpass and earlier cipher/SQLite/Error/compression failures remain open"
+  ],
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

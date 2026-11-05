@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "2bb7a9fcf686f7b4705cec64c56a1d1a78bab7c5dc35ae76165cf20cacd199b2",
+    "packages/registry/node-compat/bootstrap.js": "249b948d014bbbfb5b09b413fb95a5ada28facd8d0102cb60b981f71cdf44b05",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "6c6297ca0297b8975d3a508659ed4e730181285f6a52dedddf933ec6ca1c060f",
@@ -81,8 +81,9 @@
     "third_party/node-core/util-algorithms-adapter.js": "ced00af953445ee5af90fd2b77afad95a4e0f09713514d7e1a27de79d4a251d0",
     "third_party/node-core/util-public-adapter.js": "67b2d08758d67b8d882868cd187bd50e3fe6729f5be4c9b437ef23713f31b430",
     "third_party/node-core/uv-platform-adapter.js": "63b1d8c926c4ad069e1cc0a9efa1965401c45ac7ffe09fb1a1542a374d53581f",
-    "third_party/node-core/values-platform-adapter.js": "b05a1df4cce3e9be5a4ca1be241c242a30262bf9cf42aad212be0a8390f29e5d",
+    "third_party/node-core/values-platform-adapter.js": "661bef00b89d498492117b7315ace5423befb0dcde7ee1b882bf3cc53aeb99bf",
     "third_party/node-core/vm-platform-adapter.js": "9953f331c80bc086e8092c5b9aa7dd5aa6ab64c3aa9990eddb885f6120ed86fa",
+    "third_party/node-core/warning-platform-adapter.js": "63e20e6db2e5dfc77e1499b08956158a4a74f1d77295bce7cd6509f200f068df",
     "third_party/node-core/worker-platform-adapter.js": "9be9974530bdad64295acda168178ff1d4daf7d038c8ecbb589923e182db9caf",
     "third_party/node-core/upstream/query-codecs/lib/punycode.js": "c5c75d5f31323affefa3595e63b3c50bca8bf7a2766936699e20460398e61717"
   },
@@ -2350,7 +2351,7 @@
       "selectedAdapterLiteralOccurrences": [
         {
           "path": "packages/registry/node-compat/bootstrap.js",
-          "line": 2947
+          "line": 2917
         }
       ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",

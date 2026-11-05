@@ -1656,6 +1656,29 @@ for marker, value in {
         raise ValueError('Review URL path marker: ' + marker)
     url_path_adapter = url_path_adapter.replace(marker, value)
 bundle += url_path_adapter + '\n'
+warning_sources = {}
+for name, item in manifest['warningPlatform']['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Warning reference identity mismatch: ' + name)
+    warning_sources[name] = raw.decode('utf8')
+warning_source = warning_sources['lib/internal/process/warning.js']
+# Preserve the actual constructor-captured engine stack when recapture is
+# absent. This does not implement constructor-frame filtering or V8 stacks.
+for old, new in [
+    ('if (isErrorStackTraceLimitWritable())',
+     "if (typeof ErrorCaptureStackTrace === 'function' && isErrorStackTraceLimitWritable())"),
+    ('  ErrorCaptureStackTrace(warning, ctor || process.emitWarning);',
+     "  if (typeof ErrorCaptureStackTrace === 'function') ErrorCaptureStackTrace(warning, ctor || process.emitWarning);"),
+]:
+    expected = 2 if old.startswith('if (') else 1
+    if warning_source.count(old) != expected:
+        raise ValueError('Review warning stack-capture adaptation')
+    warning_source = warning_source.replace(old, new)
+warning_adapter = (root / 'warning-platform-adapter.js').read_text()
+if warning_adapter.count('/* NODE_WARNING_MODULE */') != 1:
+    raise ValueError('Review warning owner marker')
+bundle += warning_adapter.replace('/* NODE_WARNING_MODULE */', warning_source) + '\n'
 bundle += (root / 'worker-platform-adapter.js').read_text() + '\n'
 bundle += (root / 'adapter.js').read_text().replace('/* UPSTREAM_MODULES */', ',\n'.join(entries))
 dest = root / 'node-core.js'
