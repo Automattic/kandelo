@@ -111,7 +111,7 @@ a wire entry, ABI bump or unused-feature draw/frame scan.
 
 | Evidence / exact supervised jobs | Result | Scope |
 | --- | --- | --- |
-| R270 `graphics-b2-buffer-custody-before-r270-r-1105-014720-1a13` / `graphics-b2-buffer-custody-after-r270-1105-013845-19f9`; `.context/graphics-b2-buffer-custody-r270/` | Before3 fail/4 pass; after7 pass | Source-only host controls with native doubles. The strengthened final-context test removes incidental peer custody. No C transport, actual GPU or application performance claim |
+| R270 `graphics-b2-buffer-custody-before-r270-r-1105-014720-1a13` / `graphics-b2-buffer-custody-final-r270-1105-022914-752e`; `.context/graphics-b2-buffer-custody-r270/` | Before3 fail/4 pass; after7 pass | Source-only host controls with native doubles. The strengthened final-context test removes incidental peer custody. No C transport, actual GPU or application performance claim |
 | R271 `graphics-b3-limits-before-r271-1105-021430-9759` / `graphics-b3-limits-after-r271-1105-021657-ef69`; `.context/graphics-b3-limits-draft-r271/run-native.sh` | Before7 fail/1 pass; after8 pass | UBSan/native device-double controls for scalar/vector/type conversion, mutable-state exclusion, failed reads, allocation failure, context isolation, error preservation and bounded replacement |
 | R272 `graphics-b3-limits-regression-r272-1105-022113-d062`; same private native harness with the draft driver and default case inventory | PASS487 | Existing native controls pass. This is neither admitted-path GPU evidence nor complete B3 validation |
 
