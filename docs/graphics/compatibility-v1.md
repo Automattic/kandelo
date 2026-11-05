@@ -115,6 +115,51 @@ checks; its result is not yet final. The frozen normal preview producer
 R360 is at2a8efe467d and excludes this later host correction. All remaining
 A3/B1 and final ship gates stay required, with family56/3/17/21 unchanged.
 
+R363 `graphics-image-peer-regression-r363-1105-101020-63e8` subsequently
+finishes FAILED after12m24: graphics2190/88 and Node18/6 pass; GPU327 pass
+and15 fail of342, with no new failure titles. The three formerly failing
+storage-restoration cases now pass, alongside all12 image-reset controls
+and96 pre-exit native-owner retirement controls. ABI/evidence and shader
+rewriting266 Chromium/263 Firefox/266 WebKit pass with zero shader failures
+and the existing Firefox one inconclusive/two controls. Full host type
+checking still fails24 diagnostics, byte-identical to R346. All frozen
+source/configuration/kernel hashes pass after the run. The remaining15
+native/image cases are not waived. Exact commands and comparison are in
+`.context/graphics-image-peer-regression-r363/`.
+
+## Further private B2 drafting and normal preview admission, 2026-11-05
+
+The private buffer and program journals now share one monotonically
+increasing publication ordinal. A stale/skipped ordinal, journal
+replacement or foreign authority cannot consume another family's
+publication position. Three new controls fail against independent
+histories. The first candidate passes98/100 focused controls; two new
+controls incorrectly abandon accepted retained-execution program slots.
+Explicit close/discard fixes their cleanup without changing lifetime
+policy. The final100 focused and2222 private source controls pass.
+
+A selected B2-only patch applies to currentd0cb source in a fresh private
+checkout. R366 passes2225 source controls in90 files; its overall command
+still fails the existing24 compiler diagnostics, whose complete stream
+matches current main after normalizing only the checkout root. This is
+unlanded drafting, not a completed cross-family guest stream: C queue and
+cache integration, other binding families, pre-admission, wire/GPU/
+conformance and measured acceptance remain required. No asynchronous
+binding is enabled in a preview. Evidence:
+`.context/graphics-b2-shared-order-r365/` and
+`.context/graphics-b2-current-r366-runs/`.
+
+R360's frozen2a8 normal application products pass setup1630s, SourceOnly
+Mako44s, ABI22s and freshness3s; its test-program stage continues
+sequentially. R367 admits an immutable313-file snapshot on three engines
+with five passes and one Firefox ScummVM-on-Sway exit failure. Cage passes
+on all three. The Firefox failure occurs after ScummVM's window closes,
+when the typed Sway exit command does not release compositor ownership.
+Process shutdown/reaping is under investigation; no cause is established.
+All frozen input/product hashes pass. This is a failed admission, not a
+new published preview or completed B1. The laterd0cb host correction must
+also be included through a normal host build before publication.
+
 ## Automatic application-driver admission prototype, 2026-11-05
 
 Ordinary applications now enter the B1 program journal at their first
