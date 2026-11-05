@@ -10,6 +10,7 @@ const imagePath = process.env.KANDELO_WORDPRESS_FRANKENPHP_VFS;
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const churnRequests = Number(process.env.KANDELO_FRANKENPHP_CHURN_REQUESTS ?? "0");
 const editorBurstRounds = Number(process.env.KANDELO_FRANKENPHP_EDITOR_BURST_ROUNDS ?? "0");
+const parallelEditorRequests = process.env.KANDELO_FRANKENPHP_PARALLEL_EDITOR_REQUESTS === "1";
 if (!Number.isSafeInteger(churnRequests) || churnRequests < 0 || churnRequests > 40) {
   throw new Error("KANDELO_FRANKENPHP_CHURN_REQUESTS must be an integer from 0 to 40");
 }
@@ -61,14 +62,14 @@ const artifactTest = test.extend<{ artifactUrls: { imageUrl: string; kernelUrl: 
 
 for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
   artifactTest(`WordPress on ${serviceName} serves PHP in the browser kernel host`, async ({ page, baseURL, browserName, artifactUrls }) => {
-    test.setTimeout(serviceName === "frankenphp-caddy" ? 300_000 : 240_000);
+    test.setTimeout(serviceName === "frankenphp-caddy" || parallelEditorRequests ? 300_000 : 240_000);
     test.skip(!imagePath, "Build the WordPress image and set KANDELO_WORDPRESS_FRANKENPHP_VFS");
     expect(baseURL).toBeTruthy();
     const { imageUrl, kernelUrl } = artifactUrls;
     const browserKernelUrl = new URL(`/@fs/${resolve(repoRoot, "host/src/browser-kernel-host.ts")}`, baseURL!).href;
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, serviceName }) => {
+    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName }) => {
       const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
       const [imageResponse, kernelResponse] = await Promise.all([fetch(imageUrl), fetch(kernelUrl)]);
       if (!imageResponse.ok || !kernelResponse.ok) throw new Error("WordPress test artifacts failed to load");
@@ -194,6 +195,37 @@ echo json_encode([
             }
           }
         }
+        if (parallelEditorRequests) {
+          const restNonce = /var wpApiSettings = \{[^;]*"nonce":"([^"]+)"/.exec(editorHtml)?.[1];
+          const compressionNonce = /var compressionNonce = "([^"]+)"/.exec(editorHtml)?.[1];
+          if (!restNonce || !compressionNonce) throw new Error("Editor request nonces are missing");
+          const paths = [
+            "/index.php?rest_route=%2Fwp%2Fv2%2Ftaxonomies&context=view&_locale=user",
+            "/index.php?rest_route=%2Fwp%2Fv2%2Ftemplate-parts%2Ftwentytwentyfive%2F%2Fheader&context=edit&_locale=user",
+            "/index.php?rest_route=%2Fwp%2Fv2%2Ftemplate-parts%2Ftwentytwentyfive%2F%2Ffooter&context=edit&_locale=user",
+            "/index.php?rest_route=%2Fwp%2Fv2%2Fposts&context=edit&offset=0&order=desc&orderby=date&per_page=3&_locale=user",
+            "/index.php?rest_route=%2Fwp%2Fv2%2Fblock-patterns%2Fpatterns&_locale=user",
+            "/index.php?rest_route=%2Fwp%2Fv2%2Fsettings&_locale=user",
+            "/index.php?rest_route=%2Fwp%2Fv2%2Ftemplates&_locale=user",
+            "/index.php?rest_route=%2Fwp%2Fv2%2Fpages&context=edit&per_page=100&_locale=user",
+            `/wp-admin/admin-ajax.php?action=wp-compression-test&test=2&_ajax_nonce=${compressionNonce}`,
+            `/wp-admin/site-editor.php?health=${Date.now()}`,
+          ];
+          const parallel = await Promise.all(paths.map(async (url) => {
+            const response = await kernel.fetchInKernel(8080, {
+              method: "GET", url,
+              headers: { Host: "localhost:8080", Cookie: loginCookie ?? "", "X-WP-Nonce": restNonce },
+              body: null,
+            }, { timeoutMs: 60_000 });
+            return { url, status: response.status };
+          }));
+          // The direct kernel host does not rewrite WordPress's canonical
+          // editor redirect into a preview URL; a prompt 302 is valid here.
+          if (parallel.some(({ status }, index) => index === paths.length - 1
+            ? status !== 200 && status !== 302 : status !== 200)) {
+            throw new Error(`Parallel editor requests returned ${JSON.stringify(parallel)}`);
+          }
+        }
         for (let index = 0; index < churnRequests; index += 1) {
           const isLogin = index % 2 === 1;
           const response = await kernel.fetchInKernel(8080, {
@@ -243,6 +275,7 @@ echo json_encode([
           editorBody: decoder.decode(editor.body).slice(0, 500),
           churnCompleted: churnRequests,
           editorBurstCompleted: editorBurstRounds,
+          parallelEditorCompleted: parallelEditorRequests,
           restarted,
           serviceLog: decoder.decode(serviceLog),
           diagnostics,
@@ -262,7 +295,7 @@ echo json_encode([
         ]);
         await kernel.destroy();
       }
-    }, { imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, serviceName });
+    }, { imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName });
 
     expect(result.opcacheStatus, `${result.opcacheBody}\n${result.serviceLog.slice(-3000)}`).toBe(200);
     expect(JSON.parse(result.opcacheBody)).toEqual({
@@ -277,6 +310,7 @@ echo json_encode([
     expect(result.editorStatus, `${result.editorBody}\n${result.serviceLog.slice(-3000)}`).toBe(200);
     expect(result.churnCompleted).toBe(churnRequests);
     expect(result.editorBurstCompleted).toBe(editorBurstRounds);
+    expect(result.parallelEditorCompleted).toBe(parallelEditorRequests);
     if (serviceName === "frankenphp-caddy") expect(result.restarted).toBe(true);
     expect(result.serviceLog).toContain(serviceName === "frankenphp-caddy" ? '"num_threads":6' : "num_threads=6");
     expect(result.diagnostics).toEqual([]);

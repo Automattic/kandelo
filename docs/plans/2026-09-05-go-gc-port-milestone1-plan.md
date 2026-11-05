@@ -4516,3 +4516,32 @@ request/process state and isolate the guest/bridge or engine boundary.
 The same persistent-profile app fixture passed the classic editor-health
 case in Chromium (1.8m) and Firefox (2.5m), so this fixture change has
 been rechecked in the two previously passing engines.
+
+**2026-11-05 — WebKit editor control and concurrency diagnosis.** A repeated
+classic visible-app run failed after rendering the template: its 30-second
+uncached editor PHP health request aborted, ten WordPress REST/AJAX requests
+had remained outstanding for about 45 seconds, and the VFS inspector stayed
+at `Loading…`. The same current image's nginx/PHP-FPM profile passed the
+identical WebKit editor and health flow in 1.9m. The FrankenPHP+Caddy
+profile also passed it in 2.2m. During that Caddy run one WebKit content
+process reached about 8.97 GiB RSS at 1m54s; this is a sampled footprint,
+not a peak or a leak measurement. A direct WebKit BrowserKernel test of ten
+parallel editor PHP/REST requests through classic mode passed in 14.4s for
+the complete startup and request test, without the visible app's service
+worker or navigation path.
+
+Waiting for the site-editor hub document's `readyState=complete` before
+opening its template let one focused classic WebKit run pass the editor and
+20-second health case in 1.9m. A subsequent three-case sequential WebKit
+suite on that version contradicted a fix: the editor-health case aborted
+another PHP fetch, authenticated post edits passed, and template Save/reload
+never rendered its canvas (2 failed, 1 passed in 8m04s). The latter failure
+screenshot shows a Kandelo app inside the WordPress preview, including a
+nested machine whose kernel boot reported `Out of memory`; this suggests an
+app-namespace navigation reached the SPA fallback without the service
+worker, but the exact request/registration sequence is not yet captured.
+The editor-health failure still showed pending PHP requests and a loading
+VFS inspector. These observations leave both the guest/bridge request stall
+and the preview routing failure open. The next investigation must capture
+service-worker control and response provenance during navigation, then
+address the actual platform boundary. No browser-engine defect is claimed.

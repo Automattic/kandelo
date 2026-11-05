@@ -1,4 +1,4 @@
-import { expect } from "@playwright/test";
+import { expect, type Request } from "@playwright/test";
 import { gotoInPreview, gotoMachine, machineAppPrefix } from "./support/kandelo-machine";
 import { clickDockTool } from "./support/dock";
 import { test } from "./support/persistent-page";
@@ -11,15 +11,21 @@ const soakSeconds = Number(process.env.KANDELO_FRANKENPHP_SOAK_SECONDS ?? "20");
 for (const demo of [
   { profile: "wordpress-frankenphp", title: "WordPress on FrankenPHP", serviceLog: "frankenphp-classic.log" },
   { profile: "wordpress-frankenphp-caddy", title: "WordPress on FrankenPHP + Caddy", serviceLog: "frankenphp-caddy.log" },
+  // The same image's nginx/PHP-FPM profile is a control for browser and VFS load.
+  { profile: "wordpress-sqlite", title: "WordPress SQLite", serviceLog: "nginx.log" },
 ] as const) {
   test(`${demo.title} serves the preinstalled site, admin, and site editor`, async ({ page, context }) => {
     test.setTimeout(Math.max(720_000, (soakSeconds + 480) * 1000));
     test.skip(process.env.KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS !== "1", "Build and project WordPress, then set KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS=1");
     const browserDiagnostics: string[] = [];
+    const pendingRequests = new Map<Request, number>();
     context.on("console", (message) => browserDiagnostics.push(`console ${message.type()}: ${message.text()}`));
     page.on("pageerror", (error) => browserDiagnostics.push(`pageerror: ${error.message}`));
     page.on("crash", () => browserDiagnostics.push("page crashed"));
+    page.on("request", (request) => pendingRequests.set(request, Date.now()));
+    page.on("requestfinished", (request) => pendingRequests.delete(request));
     page.on("requestfailed", (request) => {
+      pendingRequests.delete(request);
       browserDiagnostics.push(`requestfailed: ${request.method()} ${request.url()} ${request.failure()?.errorText ?? "unknown"}`);
     });
     await gotoMachine(page, demo.profile);
@@ -66,7 +72,10 @@ for (const demo of [
         .then(() => false),
     ]);
     if (editorLoaded) {
-      // The hub's first iframe can appear before the actual editor renders.
+      // The hub's first iframe can appear while its document and scripts are
+      // still loading. Finish that navigation before opening the template.
+      await expect.poll(() => frame.locator("body").evaluate(() => document.readyState),
+        { timeout: 120_000 }).toBe("complete");
       await gotoInPreview(
         frame,
         appPrefix,
@@ -120,6 +129,8 @@ for (const demo of [
       serviceLog = `Service-log inspection unavailable: ${String(error)}\nVFS: ${vfsState}`;
     }
     const dockStatus = (await page.locator(".kdock-status-text").allTextContents()).join("\n");
+    const pending = [...pendingRequests].map(([request, started]) =>
+      `${Date.now() - started}ms ${request.method()} ${request.url()}`);
     if (!editorLoaded || editorResult.status !== 200) {
       await test.info().attach("guest-service-log", { body: serviceLog, contentType: "text/plain" });
       await test.info().attach("browser-state", {
@@ -127,12 +138,13 @@ for (const demo of [
           frames: page.frames().map((item) => item.url()),
           body: (await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "unavailable")).slice(-64_000),
           diagnostics: browserDiagnostics.slice(-100),
+          pending,
         }),
         contentType: "application/json",
       });
     }
     expect(editorLoaded, `url=${page.url()}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(0, 10000)}`).toBe(true);
-    expect(editorResult.status, `url=${page.url()} samples=${samples.join(",")} dock=${dockStatus}\n${editorResult.body}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(0, 10000)}\n${browserDiagnostics.slice(-100).join("\n")}`).toBe(200);
+    expect(editorResult.status, `url=${page.url()} samples=${samples.join(",")} dock=${dockStatus}\n${editorResult.body}\npending=${pending.length}\n${pending.slice(0, 30).join("\n")}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(0, 10000)}\n${browserDiagnostics.slice(-100).join("\n")}`).toBe(200);
     expect(serviceLog).not.toMatch(/^Service-log inspection unavailable:/);
     expect(serviceLog.length).toBeGreaterThan(0);
 
