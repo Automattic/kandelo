@@ -106,7 +106,8 @@ See [docs/posix-status.md](docs/posix-status.md) for the full syscall-by-syscall
 
 - **Rust nightly** (for `build-std` and atomics) — pinned via `rust-toolchain.toml`
 - **LLVM 21+** with `clang` and `wasm-ld` (macOS: `brew install llvm`)
-- **Node.js** 24+
+- **Node.js** 24.21+ (earlier 24.x releases abort the process when a Worker
+  is terminated while it loads a CommonJS module)
 
 Or use the Nix flake (see [Using Nix](#using-nix) below) and skip per-tool installs.
 
