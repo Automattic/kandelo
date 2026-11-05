@@ -287,6 +287,13 @@ copied executable as fresh while it still embeds the previous manifest root.
 Verify the resolved package identity against the intended source before
 bootstrapping. Merely setting `WASM_POSIX_XTASK_BIN` to a copied binary does
 not select the current checkout.
+
+Vitest fixture setup and SDK-fixture stamping honor the runner's prepared
+`WASM_POSIX_XTASK_BIN` for index generation and ABI-contract stamping. Prepare
+that tool through the current checkout's normal Cargo path before setting it.
+An explicitly configured missing tool fails; it does not silently rebuild or
+fall back to another executable. Without the override, fixture setup retains
+its ordinary host-target Cargo invocation.
 Prepare that tool before a browser test's clock starts. Preserve the SDK's
 `sdk/.build` cache together with its copied sysroots, then run the normal SDK
 ensures; otherwise preparing a new tool can re-key or replace core outputs.

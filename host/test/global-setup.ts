@@ -327,34 +327,28 @@ export async function setup() {
   // read packages/registry/program-packages.json directly get a fresh
   // projection without depending on a prior build — every caller of `vitest
   // run` gets the prereq for free, exactly like the wasm fixtures below.
-  const hostTarget = execFileSync("rustc", ["-vV"], { encoding: "utf8" })
+  // The suite runner already prepares this exact tool through Cargo. Reuse
+  // it just as compile-sdk-fixture does; rebuilding a separate debug tool
+  // duplicates native caches during large normal package builds.
+  const preparedXtask = process.env.WASM_POSIX_XTASK_BIN;
+  const hostTarget = preparedXtask ? undefined : execFileSync("rustc", ["-vV"], { encoding: "utf8" })
     .split(/\r?\n/)
     .find((line) => line.startsWith("host: "))
     ?.slice(6)
     .trim();
-  if (!hostTarget) {
+  if (!preparedXtask && !hostTarget) {
     throw new Error("[global-setup] could not determine the Rust host target");
   }
+  const runXtask = (args: string[]) => execFileSync(preparedXtask ?? "cargo", [
+    ...(preparedXtask ? [] : ["run", "-p", "xtask", "--target", hostTarget!, "--quiet", "--"]),
+    ...args,
+  ], { cwd: repoRoot, stdio: "pipe" });
   console.log("[global-setup] Generating program package index...");
-  execFileSync(
-    "cargo",
-    [
-      "run",
-      "-p",
-      "xtask",
-      "--target",
-      hostTarget,
-      "--quiet",
-      "--",
-      "build-deps",
-      "program-index",
-      "--source-repo-root",
-      repoRoot,
-      join(repoRoot, "packages/registry"),
-      join(repoRoot, "packages/registry/program-packages.json"),
-    ],
-    { cwd: repoRoot, stdio: "pipe" },
-  );
+  runXtask([
+    "build-deps", "program-index", "--source-repo-root", repoRoot,
+    join(repoRoot, "packages/registry"),
+    join(repoRoot, "packages/registry/program-packages.json"),
+  ]);
 
   const wasm32Contract = fixtureBuildContract("wasm32", false);
   const wasm32ForkContract = fixtureBuildContract("wasm32", true);
@@ -461,21 +455,7 @@ export async function setup() {
   ].filter((out) => existsSync(out));
   if (abiContractStampTargets.length > 0) {
     console.log("[global-setup] Stamping ABI contract digest on fixtures...");
-    execFileSync(
-      "cargo",
-      [
-        "run",
-        "-p",
-        "xtask",
-        "--target",
-        hostTarget,
-        "--quiet",
-        "--",
-        "stamp-abi-contract",
-        ...abiContractStampTargets,
-      ],
-      { cwd: repoRoot, stdio: "pipe" },
-    );
+    runXtask(["stamp-abi-contract", ...abiContractStampTargets]);
   }
 
   // packages/registry/wordpress/test/wordpress-site-editor.test.ts calls
