@@ -35411,6 +35411,7 @@ function _createNodeFsStats(platform) {
         S_IFIFO, S_IFLNK, S_IFSOCK, O_RDONLY, O_RDWR, O_WRONLY,
         O_SYNC, O_TRUNC, O_CREAT, O_EXCL, O_APPEND } = platform.fs.constants;
     const vfsState = platform.truncation.vfsState;
+    const realpathCacheKey = Symbol('realpathCacheKey');
     const permission = { isEnabled: () => platform.permissionEnabled() };
     function result(value, syscall, path, throwIfNoEntry = true) {
         if (typeof value === 'number' && value < 0) {
@@ -36388,7 +36389,7 @@ function writevSync(fd, buffers, position) {
     return { Stats, BigIntStats, getStatsFromBinding, fromNative,
         openSync, readSync, writeSync, readvSync, writevSync,
         statSync, lstatSync, fstatSync, fchmodSync, fchownSync, futimesSync, fsyncSync, fdatasyncSync,
-        getOptions, copyObject, validatePath, getValidatedPath, getValidatedFd, stringToFlags, toUnixTimestamp,
+        getOptions, copyObject, validatePath, getValidatedPath, realpathCacheKey, getValidatedFd, stringToFlags, toUnixTimestamp,
         validateOffsetLengthRead, validateOffsetLengthWrite, validatePosition,
         validateBufferArray, validateStringAfterArrayBufferView,
         validateReadFileBufferOptions, getReadFileBuffer, getReadFileBufferByteLengthName, createReadFileBufferTooSmallError,
@@ -39693,6 +39694,3915 @@ async function link(existingPath, newPath) {
     return { api: publicAPIs(), promises: promiseAPIs() };
 }
 
+// Complete pinned logical/native realpath and readlink public owners. Native
+// byte results come from real libc operations and actual queued FS requests.
+function _createNodeRealpathPlatform(platform) {
+    'use strict';
+    const { BigIntPrototypeToString, ErrorCaptureStackTrace, Number, PromisePrototypeThen,
+        PromiseReject, ReflectApply, RegExpPrototypeExec: SideEffectFreeRegExpPrototypeExec,
+        SafeMap, SafeSet, StringPrototypeCharCodeAt, StringPrototypeIndexOf,
+        StringPrototypeSlice, Symbol } = _createNodePrimordials();
+    const process = platform.process, fs = platform.fs, pathModule = platform.path, Buffer = platform.Buffer;
+    const { codes: { ERR_ACCESS_DENIED } } = platform.values.errors;
+    const { validateFunction } = platform.values.validators;
+    const { getOptions, getValidatedPath, validatePath, realpathCacheKey } = platform.utils;
+    const { FSReqCallback, vfsState, makeError } = platform.truncation;
+    const { S_IFMT, S_IFLNK, S_IFIFO, S_IFSOCK } = fs.constants;
+    const { isWindows } = platform.values.util;
+    const toPathIfFileURL = platform.toPathIfFileURL;
+    const permission = platform.permission;
+    const CHAR_FORWARD_SLASH = 47, CHAR_BACKWARD_SLASH = 92;
+    const kUsePromises = Symbol('realpath_use_promises');
+    function read(name, path, encoding, request) {
+        const convert = bytes => encoding === 'buffer' ?
+            platform.codecs.copyBytes(bytes) : platform.codecs.decodeBytes(bytes, encoding);
+        if (request !== undefined) return platform.native.fsMetadataPromise(name, path, undefined, undefined,
+            request === kUsePromises ? makeError : request, convert);
+        const value = platform.native.fsMetadataSync(name, path, undefined, undefined, convert);
+        if (typeof value === 'number' && value < 0) throw makeError(value, name, path);
+        return value;
+    }
+    function stat(path, follow, bigint, throwIfNoEntry) {
+        const value = platform.native.fsStatSync(path, follow, bigint);
+        if (typeof value === 'number' && value < 0) {
+            if (!throwIfNoEntry && (value === -2 || value === -20)) return undefined;
+            throw makeError(value, follow ? 'stat' : 'lstat', path);
+        }
+        return value;
+    }
+    const binding = {
+        realpath: (path, encoding, request) => read('realpath', path, encoding, request),
+        readlink: (path, encoding, request) => read('readlink', path, encoding, request),
+        stat: (path, bigint, unused, throwIfNoEntry) => stat(path, true, bigint, throwIfNoEntry),
+        lstat: (path, bigint, unused, throwIfNoEntry) => stat(path, false, bigint, throwIfNoEntry),
+    };
+    // The Windows-only root regexes are private owned literals. The saved
+    // RegExp exec intrinsic cannot be replaced through public prototypes.
+    function makeCallback(cb) {
+  validateFunction(cb, 'cb');
+
+  return (...args) => ReflectApply(cb, this, args);
+}
+function vfsResult(promise, callback) {
+  if (promise === undefined) return false;
+  PromisePrototypeThen(promise, (result) => callback(null, result), callback);
+  return true;
+}
+function isFileType(stats, fileType) {
+  // Use stats array directly to avoid creating an fs.Stats instance just for
+  // our internal use.
+  let mode = stats[1];
+  if (typeof mode === 'bigint')
+    mode = Number(mode);
+  return (mode & S_IFMT) === fileType;
+}
+function handleErrorFromBinding(error) {
+  if (ErrorCaptureStackTrace !== undefined) ErrorCaptureStackTrace(error, handleErrorFromBinding);
+  return PromiseReject(error);
+}
+    function publicAPIs() {
+        function readlink(path, options, callback) {
+  if (typeof options === 'function') {
+    callback = options;
+    options = undefined;
+  }
+
+  const h = vfsState.handlers;
+  if (h !== null && vfsResult(h.readlink(path, options), callback)) return;
+
+  callback = makeCallback(callback);
+  options = getOptions(options);
+  const req = new FSReqCallback();
+  req.oncomplete = callback;
+  binding.readlink(getValidatedPath(path), options.encoding, req);
+}
+
+/**
+ * Synchronously reads the contents of a symbolic link
+ * referred to by `path`.
+ * @param {string | Buffer | URL} path
+ * @param {{ encoding?: string; } | string} [options]
+ * @returns {string | Buffer}
+ */
+function readlinkSync(path, options) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const result = h.readlinkSync(path, options);
+    if (result !== undefined) return result;
+  }
+  options = getOptions(options);
+  return binding.readlink(getValidatedPath(path), options.encoding);
+}
+
+
+let splitRoot;
+let getRealpathRootLstatPath;
+if (isWindows) {
+  // Regex to find the device root on Windows (e.g. 'c:\\'), including trailing
+  // slash.
+  const splitRootRe = /^(?:[a-zA-Z]:|[\\/]{2}[^\\/]+[\\/][^\\/]+)?[\\/]*/;
+  const namespacedDriveRootRe = /^\\\\\?\\([a-zA-Z]:\\)$/;
+  splitRoot = function splitRoot(str) {
+    return SideEffectFreeRegExpPrototypeExec(splitRootRe, str)[0];
+  };
+
+  // The root probe is the only use of this path. Passing a namespaced drive
+  // root to the binding would lose its trailing separator during resolution.
+  getRealpathRootLstatPath = function getRealpathRootLstatPath(path) {
+    const match = SideEffectFreeRegExpPrototypeExec(namespacedDriveRootRe, path);
+    return match === null ? path : match[1];
+  };
+} else {
+  splitRoot = function splitRoot(str) {
+    for (let i = 0; i < str.length; ++i) {
+      if (StringPrototypeCharCodeAt(str, i) !== CHAR_FORWARD_SLASH)
+        return StringPrototypeSlice(str, 0, i);
+    }
+    return str;
+  };
+
+}
+
+function encodeRealpathResult(result, options) {
+  if (!options || !options.encoding || options.encoding === 'utf8')
+    return result;
+  const asBuffer = Buffer.from(result);
+  if (options.encoding === 'buffer') {
+    return asBuffer;
+  }
+  return asBuffer.toString(options.encoding);
+}
+
+// Finds the next portion of a (partial) path, up to the next path delimiter
+let nextPart;
+if (isWindows) {
+  nextPart = function nextPart(p, i) {
+    for (; i < p.length; ++i) {
+      const ch = StringPrototypeCharCodeAt(p, i);
+
+      // Check for a separator character
+      if (ch === CHAR_BACKWARD_SLASH || ch === CHAR_FORWARD_SLASH)
+        return i;
+    }
+    return -1;
+  };
+} else {
+  nextPart = function nextPart(p, i) {
+    return StringPrototypeIndexOf(p, '/', i);
+  };
+}
+
+/**
+ * Returns the resolved pathname.
+ * @param {string | Buffer | URL} p
+ * @param {string | { encoding?: string | null; }} [options]
+ * @returns {string | Buffer}
+ */
+function realpathSync(p, options) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const result = h.realpathSync(p, options);
+    if (result !== undefined) return result;
+  }
+  options = getOptions(options);
+  p = toPathIfFileURL(p);
+  if (typeof p !== 'string') {
+    p += '';
+  }
+  validatePath(p);
+  p = pathModule.resolve(p);
+
+  // Check the resolved input path up front so that the lstat walk below cannot
+  // be used to probe the existence of paths outside the granted set.
+  if (permission.isEnabled() && !permission.has('fs.read', p) &&
+      !permission.isAuditMode()) {
+    throw new ERR_ACCESS_DENIED(
+      'Access to this API has been restricted. Use --allow-fs-read to manage permissions.',
+      'FileSystemRead',
+      p,
+    );
+  }
+
+  const cache = options[realpathCacheKey];
+  const maybeCachedResult = cache?.get(p);
+  if (maybeCachedResult) {
+    return maybeCachedResult;
+  }
+
+  const seenLinks = new SafeMap();
+  const knownHard = new SafeSet();
+  const original = p;
+  // Whether the symlink this walk resolved last pointed at a pipe or a
+  // socket, which is where the walk stops. It cannot be read back from the
+  // shared stat buffer, which holds the last stat made anywhere in the
+  // process rather than the last one made here.
+  let reachedPipeOrSocket = false;
+
+  // Current character position in p
+  let pos;
+  // The partial path so far, including a trailing slash if any
+  let current;
+  // The partial path without a trailing slash (except when pointing at a root)
+  let base;
+  // The partial path scanned in the previous round, with slash
+  let previous;
+
+  // Skip over roots
+  current = base = splitRoot(p);
+  pos = current.length;
+
+  // On windows, check that the root exists. On unix there is no need.
+  if (isWindows) {
+    const out = binding.lstat(
+      getRealpathRootLstatPath(base), false, undefined, true /* throwIfNoEntry */);
+    if (out === undefined) {
+      return;
+    }
+    knownHard.add(base);
+  }
+
+  // Walk down the path, swapping out linked path parts for their real
+  // values
+  // NB: p.length changes.
+  while (pos < p.length) {
+    // find the next part
+    const result = nextPart(p, pos);
+    previous = current;
+    if (result === -1) {
+      const last = StringPrototypeSlice(p, pos);
+      current += last;
+      base = previous + last;
+      pos = p.length;
+    } else {
+      current += StringPrototypeSlice(p, pos, result + 1);
+      base = previous + StringPrototypeSlice(p, pos, result);
+      pos = result + 1;
+    }
+
+    // Continue if not a symlink, break if a pipe/socket
+    if (knownHard.has(base) || cache?.get(base) === base) {
+      if (reachedPipeOrSocket) {
+        break;
+      }
+      continue;
+    }
+
+    let resolvedLink;
+    const maybeCachedResolved = cache?.get(base);
+    if (maybeCachedResolved) {
+      resolvedLink = maybeCachedResolved;
+    } else {
+      // Use stats array directly to avoid creating an fs.Stats instance just
+      // for our internal use.
+
+      const stats = binding.lstat(base, true, undefined, true /* throwIfNoEntry */);
+      if (stats === undefined) {
+        return;
+      }
+
+      if (!isFileType(stats, S_IFLNK)) {
+        knownHard.add(base);
+        cache?.set(base, base);
+        continue;
+      }
+
+      // Read the link if it wasn't read before
+      // dev/ino always return 0 on windows, so skip the check.
+      let linkTarget = null;
+      let id;
+      if (!isWindows) {
+        const dev = BigIntPrototypeToString(stats[0], 32);
+        const ino = BigIntPrototypeToString(stats[7], 32);
+        id = `${dev}:${ino}`;
+        if (seenLinks.has(id)) {
+          linkTarget = seenLinks.get(id);
+        }
+      }
+      if (linkTarget === null) {
+        const targetStats = binding.stat(base, false, undefined, true);
+        reachedPipeOrSocket = isFileType(targetStats, S_IFIFO) ||
+          isFileType(targetStats, S_IFSOCK);
+        linkTarget = binding.readlink(base, undefined);
+      }
+      resolvedLink = pathModule.resolve(previous, linkTarget);
+
+      cache?.set(base, resolvedLink);
+      if (!isWindows) seenLinks.set(id, linkTarget);
+    }
+
+    // Resolve the link, then start over
+    p = pathModule.resolve(resolvedLink, StringPrototypeSlice(p, pos));
+
+    // Skip over roots
+    current = base = splitRoot(p);
+    pos = current.length;
+
+    // On windows, check that the root exists. On unix there is no need.
+    if (isWindows && !knownHard.has(base)) {
+      const out = binding.lstat(
+        getRealpathRootLstatPath(base), false, undefined, true /* throwIfNoEntry */);
+      if (out === undefined) {
+        return;
+      }
+      knownHard.add(base);
+    }
+  }
+
+  cache?.set(original, p);
+  return encodeRealpathResult(p, options);
+}
+
+/**
+ * Returns the resolved pathname.
+ * @param {string | Buffer | URL} path
+ * @param {string | { encoding?: string; }} [options]
+ * @returns {string | Buffer}
+ */
+realpathSync.native = (path, options) => {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const result = h.realpathSync(path, options);
+    if (result !== undefined) return result;
+  }
+  options = getOptions(options);
+  return binding.realpath(
+    getValidatedPath(path),
+    options.encoding,
+  );
+};
+
+/**
+ * Asynchronously computes the canonical pathname by
+ * resolving `.`, `..` and symbolic links.
+ * @param {string | Buffer | URL} p
+ * @param {string | { encoding?: string; }} [options]
+ * @param {(
+ *   err?: Error,
+ *   resolvedPath?: string | Buffer
+ *   ) => any} callback
+ * @returns {void}
+ */
+function realpath(p, options, callback) {
+  if (typeof options === 'function') {
+    callback = options;
+    options = undefined;
+  } else {
+    validateFunction(callback, 'cb');
+  }
+
+  const h = vfsState.handlers;
+  if (h !== null && vfsResult(h.realpath(p, options), callback)) return;
+
+  options = getOptions(options);
+  p = toPathIfFileURL(p);
+
+  if (typeof p !== 'string') {
+    p += '';
+  }
+  validatePath(p);
+  p = pathModule.resolve(p);
+
+  const seenLinks = new SafeMap();
+  const knownHard = new SafeSet();
+  // Whether the symlink this walk resolved last pointed at a pipe or a
+  // socket, which is where the walk stops. It cannot be read back from the
+  // shared stat buffer, which holds the last stat made anywhere in the
+  // process rather than the last one made here.
+  let reachedPipeOrSocket = false;
+
+  // Current character position in p
+  let pos;
+  // The partial path so far, including a trailing slash if any
+  let current;
+  // The partial path without a trailing slash (except when pointing at a root)
+  let base;
+  // The partial path scanned in the previous round, with slash
+  let previous;
+
+  current = base = splitRoot(p);
+  pos = current.length;
+
+  // On windows, check that the root exists. On unix there is no need.
+  if (isWindows && !knownHard.has(base)) {
+    fs.lstat(getRealpathRootLstatPath(base), (err) => {
+      if (err) return callback(err);
+      knownHard.add(base);
+      LOOP();
+    });
+  } else {
+    process.nextTick(LOOP);
+  }
+
+  // Walk down the path, swapping out linked path parts for their real
+  // values
+  function LOOP() {
+    // Stop if scanned past end of path
+    if (pos >= p.length) {
+      return callback(null, encodeRealpathResult(p, options));
+    }
+
+    // find the next part
+    const result = nextPart(p, pos);
+    previous = current;
+    if (result === -1) {
+      const last = StringPrototypeSlice(p, pos);
+      current += last;
+      base = previous + last;
+      pos = p.length;
+    } else {
+      current += StringPrototypeSlice(p, pos, result + 1);
+      base = previous + StringPrototypeSlice(p, pos, result);
+      pos = result + 1;
+    }
+
+    // Continue if not a symlink, break if a pipe/socket
+    if (knownHard.has(base)) {
+      if (reachedPipeOrSocket) {
+        return callback(null, encodeRealpathResult(p, options));
+      }
+      return process.nextTick(LOOP);
+    }
+
+    return fs.lstat(base, { bigint: true }, gotStat);
+  }
+
+  function gotStat(err, stats) {
+    if (err) return callback(err);
+
+    // If not a symlink, skip to the next path part
+    if (!stats.isSymbolicLink()) {
+      knownHard.add(base);
+      return process.nextTick(LOOP);
+    }
+
+    // Stat & read the link if not read before.
+    // Call `gotTarget()` as soon as the link target is known.
+    // `dev`/`ino` always return 0 on windows, so skip the check.
+    let id;
+    if (!isWindows) {
+      const dev = BigIntPrototypeToString(stats.dev, 32);
+      const ino = BigIntPrototypeToString(stats.ino, 32);
+      id = `${dev}:${ino}`;
+      if (seenLinks.has(id)) {
+        return gotTarget(null, seenLinks.get(id));
+      }
+    }
+    fs.stat(base, (err, targetStats) => {
+      if (err) return callback(err);
+
+      reachedPipeOrSocket = targetStats.isFIFO() || targetStats.isSocket();
+
+      fs.readlink(base, (err, target) => {
+        if (!isWindows) seenLinks.set(id, target);
+        gotTarget(err, target);
+      });
+    });
+  }
+
+  function gotTarget(err, target) {
+    if (err) return callback(err);
+
+    gotResolvedLink(pathModule.resolve(previous, target));
+  }
+
+  function gotResolvedLink(resolvedLink) {
+    // Resolve the link, then start over
+    p = pathModule.resolve(resolvedLink, StringPrototypeSlice(p, pos));
+    current = base = splitRoot(p);
+    pos = current.length;
+
+    // On windows, check that the root exists. On unix there is no need.
+    if (isWindows && !knownHard.has(base)) {
+      fs.lstat(getRealpathRootLstatPath(base), (err) => {
+        if (err) return callback(err);
+        knownHard.add(base);
+        LOOP();
+      });
+    } else {
+      process.nextTick(LOOP);
+    }
+  }
+}
+
+/**
+ * Asynchronously computes the canonical pathname by
+ * resolving `.`, `..` and symbolic links.
+ * @param {string | Buffer | URL} path
+ * @param {string | { encoding?: string; }} [options]
+ * @param {(
+ *   err?: Error,
+ *   resolvedPath?: string | Buffer
+ *   ) => any} callback
+ * @returns {void}
+ */
+realpath.native = (path, options, callback) => {
+  callback = makeCallback(callback || options);
+  const h = vfsState.handlers;
+  if (h !== null && vfsResult(h.realpath(path, options), callback)) return;
+  options = getOptions(options);
+  path = getValidatedPath(path);
+  const req = new FSReqCallback();
+  req.oncomplete = callback;
+  binding.realpath(path, options.encoding, req);
+};
+
+
+        return { realpath, realpathSync, readlink, readlinkSync };
+    }
+    function promiseAPIs() {
+        async function readlink(path, options) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const promise = h.readlink(path, options);
+    if (promise !== undefined) return await promise;
+  }
+  options = getOptions(options);
+  path = getValidatedPath(path, 'oldPath');
+  return await PromisePrototypeThen(
+    binding.readlink(path, options.encoding, kUsePromises),
+    undefined,
+    handleErrorFromBinding,
+  );
+}
+async function realpath(path, options) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const promise = h.realpath(path, options);
+    if (promise !== undefined) return await promise;
+  }
+  options = getOptions(options);
+  return await PromisePrototypeThen(
+    binding.realpath(getValidatedPath(path), options.encoding, kUsePromises),
+    undefined,
+    handleErrorFromBinding,
+  );
+}
+        return { realpath, readlink };
+    }
+    return { api: publicAPIs(), promises: promiseAPIs() };
+}
+
+// Full pinned glob traversal/caches/depth/symlink rules over the actual guest
+// directory, stat and logical/native realpath owners. No host glob substitute.
+function _createNodeGlobPlatform(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { ArrayFromAsync, PromisePrototypeThen, ReflectApply } = primordials;
+    const process = platform.process;
+    let globModule, matcher;
+    function require(name) {
+        if (name === 'fs') return platform.fs;
+        if (name === 'fs/promises') return platform.fs.promises;
+        if (name === 'path') return platform.path;
+        if (name === 'internal/util') return platform.values.util;
+        if (name === 'internal/validators') return platform.values.validators;
+        if (name === 'internal/errors') return platform.values.errors;
+        if (name === 'internal/fs/utils') return platform.dirents;
+        if (name === 'internal/assert') return platform.values.require(name);
+        if (name === 'internal/url') return { toPathIfFileURL: platform.toPathIfFileURL };
+        if (name === 'internal/deps/minimatch/index') {
+            if (matcher === undefined) {
+                const module = { exports: {} };
+                (function(module, exports) {
+                    "use strict";
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __commonJS = (cb, mod) => function __require() {
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
+};
+
+// node_modules/balanced-match/dist/commonjs/index.js
+var require_commonjs = __commonJS({
+  "node_modules/balanced-match/dist/commonjs/index.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.range = exports2.balanced = void 0;
+    var balanced = (a, b, str) => {
+      const ma = a instanceof RegExp ? maybeMatch(a, str) : a;
+      const mb = b instanceof RegExp ? maybeMatch(b, str) : b;
+      const r = ma !== null && mb != null && (0, exports2.range)(ma, mb, str);
+      return r && {
+        start: r[0],
+        end: r[1],
+        pre: str.slice(0, r[0]),
+        body: str.slice(r[0] + ma.length, r[1]),
+        post: str.slice(r[1] + mb.length)
+      };
+    };
+    exports2.balanced = balanced;
+    var maybeMatch = (reg, str) => {
+      const m = str.match(reg);
+      return m ? m[0] : null;
+    };
+    var range = (a, b, str) => {
+      let begs, beg, left, right = void 0, result;
+      let ai = str.indexOf(a);
+      let bi = str.indexOf(b, ai + 1);
+      let i = ai;
+      if (ai >= 0 && bi > 0) {
+        if (a === b) {
+          return [ai, bi];
+        }
+        begs = [];
+        left = str.length;
+        while (i >= 0 && !result) {
+          if (i === ai) {
+            begs.push(i);
+            ai = str.indexOf(a, i + 1);
+          } else if (begs.length === 1) {
+            const r = begs.pop();
+            if (r !== void 0)
+              result = [r, bi];
+          } else {
+            beg = begs.pop();
+            if (beg !== void 0 && beg < left) {
+              left = beg;
+              right = bi;
+            }
+            bi = str.indexOf(b, i + 1);
+          }
+          i = ai < bi && ai >= 0 ? ai : bi;
+        }
+        if (begs.length && right !== void 0) {
+          result = [left, right];
+        }
+      }
+      return result;
+    };
+    exports2.range = range;
+  }
+});
+
+// node_modules/brace-expansion/dist/commonjs/index.js
+var require_commonjs2 = __commonJS({
+  "node_modules/brace-expansion/dist/commonjs/index.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.EXPANSION_MAX_LENGTH = exports2.EXPANSION_MAX = void 0;
+    exports2.expand = expand;
+    var balanced_match_1 = require_commonjs();
+    var escSlash = "\0SLASH" + Math.random() + "\0";
+    var escOpen = "\0OPEN" + Math.random() + "\0";
+    var escClose = "\0CLOSE" + Math.random() + "\0";
+    var escComma = "\0COMMA" + Math.random() + "\0";
+    var escPeriod = "\0PERIOD" + Math.random() + "\0";
+    var escSlashPattern = new RegExp(escSlash, "g");
+    var escOpenPattern = new RegExp(escOpen, "g");
+    var escClosePattern = new RegExp(escClose, "g");
+    var escCommaPattern = new RegExp(escComma, "g");
+    var escPeriodPattern = new RegExp(escPeriod, "g");
+    var slashPattern = /\\\\/g;
+    var openPattern = /\\{/g;
+    var closePattern = /\\}/g;
+    var commaPattern = /\\,/g;
+    var periodPattern = /\\\./g;
+    exports2.EXPANSION_MAX = 1e5;
+    exports2.EXPANSION_MAX_LENGTH = 4e6;
+    function numeric(str) {
+      return !isNaN(str) ? parseInt(str, 10) : str.charCodeAt(0);
+    }
+    function escapeBraces(str) {
+      return str.replace(slashPattern, escSlash).replace(openPattern, escOpen).replace(closePattern, escClose).replace(commaPattern, escComma).replace(periodPattern, escPeriod);
+    }
+    function unescapeBraces(str) {
+      return str.replace(escSlashPattern, "\\").replace(escOpenPattern, "{").replace(escClosePattern, "}").replace(escCommaPattern, ",").replace(escPeriodPattern, ".");
+    }
+    function parseCommaParts(str) {
+      if (!str) {
+        return [""];
+      }
+      const parts = [];
+      const m = (0, balanced_match_1.balanced)("{", "}", str);
+      if (!m) {
+        return str.split(",");
+      }
+      const { pre, body, post } = m;
+      const p = pre.split(",");
+      p[p.length - 1] += "{" + body + "}";
+      const postParts = parseCommaParts(post);
+      if (post.length) {
+        ;
+        p[p.length - 1] += postParts.shift();
+        p.push.apply(p, postParts);
+      }
+      parts.push.apply(parts, p);
+      return parts;
+    }
+    function expand(str, options = {}) {
+      if (!str) {
+        return [];
+      }
+      const { max = exports2.EXPANSION_MAX, maxLength = exports2.EXPANSION_MAX_LENGTH } = options;
+      if (str.slice(0, 2) === "{}") {
+        str = "\\{\\}" + str.slice(2);
+      }
+      return expand_(escapeBraces(str), max, maxLength, true).map(unescapeBraces);
+    }
+    function embrace(str) {
+      return "{" + str + "}";
+    }
+    function isPadded(el) {
+      return /^-?0\d/.test(el);
+    }
+    function lte(i, y) {
+      return i <= y;
+    }
+    function gte(i, y) {
+      return i >= y;
+    }
+    function combine(acc, pre, values, max, maxLength, dropEmpties) {
+      const out = [];
+      let length = 0;
+      for (let a = 0; a < acc.length; a++) {
+        for (let v = 0; v < values.length; v++) {
+          if (out.length >= max)
+            return out;
+          const expansion = acc[a] + pre + values[v];
+          if (dropEmpties && !expansion)
+            continue;
+          if (length + expansion.length > maxLength)
+            return out;
+          out.push(expansion);
+          length += expansion.length;
+        }
+      }
+      return out;
+    }
+    function expandSequence(body, isAlphaSequence, max, maxLength) {
+      const n = body.split(/\.\./);
+      const N = [];
+      if (n[0] === void 0 || n[1] === void 0) {
+        return N;
+      }
+      const x = numeric(n[0]);
+      const y = numeric(n[1]);
+      const width = Math.max(n[0].length, n[1].length);
+      let incr = n.length === 3 && n[2] !== void 0 ? Math.max(Math.abs(numeric(n[2])), 1) : 1;
+      let test = lte;
+      const reverse = y < x;
+      if (reverse) {
+        incr *= -1;
+        test = gte;
+      }
+      const pad = n.some(isPadded);
+      let length = 0;
+      for (let i = x; test(i, y) && N.length < max; i += incr) {
+        let c;
+        if (isAlphaSequence) {
+          c = String.fromCharCode(i);
+          if (c === "\\") {
+            c = "";
+          }
+        } else {
+          c = String(i);
+          if (pad) {
+            const need = width - c.length;
+            if (need > 0) {
+              const z = new Array(need + 1).join("0");
+              if (i < 0) {
+                c = "-" + z + c.slice(1);
+              } else {
+                c = z + c;
+              }
+            }
+          }
+        }
+        if (length + c.length > maxLength)
+          break;
+        N.push(c);
+        length += c.length;
+      }
+      return N;
+    }
+    function expand_(str, max, maxLength, isTop) {
+      let acc = [""];
+      let dropEmpties = false;
+      let firstGroup = true;
+      for (; ; ) {
+        const m = (0, balanced_match_1.balanced)("{", "}", str);
+        if (!m) {
+          return combine(acc, str, [""], max, maxLength, dropEmpties);
+        }
+        const pre = m.pre;
+        if (/\$$/.test(pre)) {
+          acc = combine(acc, pre + "{" + m.body + "}", [""], max, maxLength, dropEmpties && !m.post.length);
+          firstGroup = false;
+          if (!m.post.length)
+            break;
+          str = m.post;
+          continue;
+        }
+        const isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body);
+        const isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(m.body);
+        const isSequence = isNumericSequence || isAlphaSequence;
+        const isOptions = m.body.indexOf(",") >= 0;
+        if (!isSequence && !isOptions) {
+          if (m.post.match(/,(?!,).*\}/)) {
+            str = m.pre + "{" + m.body + escClose + m.post;
+            isTop = true;
+            continue;
+          }
+          return combine(acc, pre + "{" + m.body + "}" + m.post, [""], max, maxLength, dropEmpties);
+        }
+        if (firstGroup) {
+          dropEmpties = isTop && !isSequence;
+          firstGroup = false;
+        }
+        let values;
+        if (isSequence) {
+          values = expandSequence(m.body, isAlphaSequence, max, maxLength);
+        } else {
+          let n = parseCommaParts(m.body);
+          if (n.length === 1 && n[0] !== void 0) {
+            n = expand_(n[0], max, maxLength, false).map(embrace);
+            if (n.length === 1) {
+              acc = combine(acc, pre + n[0], [""], max, maxLength, dropEmpties && !m.post.length);
+              if (!m.post.length)
+                break;
+              str = m.post;
+              continue;
+            }
+          }
+          let dropsEmpties = dropEmpties && !m.post.length && !pre;
+          for (let d = 0; dropsEmpties && d < acc.length; d++) {
+            if (acc[d]) {
+              dropsEmpties = false;
+            }
+          }
+          values = [];
+          let valuesLength = 0;
+          outer: for (let j = 0; j < n.length; j++) {
+            const expanded = expand_(n[j], max, maxLength, false);
+            for (let k = 0; k < expanded.length; k++) {
+              const v = expanded[k];
+              if (dropsEmpties && !v)
+                continue;
+              if (values.length >= max || valuesLength + v.length > maxLength) {
+                break outer;
+              }
+              values.push(v);
+              valuesLength += v.length;
+            }
+          }
+        }
+        acc = combine(acc, pre, values, max, maxLength, dropEmpties && !m.post.length);
+        if (!m.post.length)
+          break;
+        str = m.post;
+      }
+      return acc;
+    }
+  }
+});
+
+// dist/commonjs/assert-valid-pattern.js
+var require_assert_valid_pattern = __commonJS({
+  "dist/commonjs/assert-valid-pattern.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.assertValidPattern = void 0;
+    var MAX_PATTERN_LENGTH = 1024 * 64;
+    var assertValidPattern = (pattern) => {
+      if (typeof pattern !== "string") {
+        throw new TypeError("invalid pattern");
+      }
+      if (pattern.length > MAX_PATTERN_LENGTH) {
+        throw new TypeError("pattern is too long");
+      }
+    };
+    exports2.assertValidPattern = assertValidPattern;
+  }
+});
+
+// dist/commonjs/brace-expressions.js
+var require_brace_expressions = __commonJS({
+  "dist/commonjs/brace-expressions.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.parseClass = void 0;
+    var posixClasses = {
+      "[:alnum:]": ["\\p{L}\\p{Nl}\\p{Nd}", true],
+      "[:alpha:]": ["\\p{L}\\p{Nl}", true],
+      "[:ascii:]": ["\\x00-\\x7f", false],
+      "[:blank:]": ["\\p{Zs}\\t", true],
+      "[:cntrl:]": ["\\p{Cc}", true],
+      "[:digit:]": ["\\p{Nd}", true],
+      "[:graph:]": ["\\p{Z}\\p{C}", true, true],
+      "[:lower:]": ["\\p{Ll}", true],
+      "[:print:]": ["\\p{C}", true],
+      "[:punct:]": ["\\p{P}", true],
+      "[:space:]": ["\\p{Z}\\t\\r\\n\\v\\f", true],
+      "[:upper:]": ["\\p{Lu}", true],
+      "[:word:]": ["\\p{L}\\p{Nl}\\p{Nd}\\p{Pc}", true],
+      "[:xdigit:]": ["A-Fa-f0-9", false]
+    };
+    var braceEscape = (s) => s.replace(/[[\]\\-]/g, "\\$&");
+    var regexpEscape = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
+    var rangesToString = (ranges) => ranges.join("");
+    var parseClass = (glob, position) => {
+      const pos = position;
+      if (glob.charAt(pos) !== "[") {
+        throw new Error("not in a brace expression");
+      }
+      const ranges = [];
+      const negs = [];
+      let i = pos + 1;
+      let sawStart = false;
+      let uflag = false;
+      let escaping = false;
+      let negate = false;
+      let endPos = pos;
+      let rangeStart = "";
+      WHILE: while (i < glob.length) {
+        const c = glob.charAt(i);
+        if ((c === "!" || c === "^") && i === pos + 1) {
+          negate = true;
+          i++;
+          continue;
+        }
+        if (c === "]" && sawStart && !escaping) {
+          endPos = i + 1;
+          break;
+        }
+        sawStart = true;
+        if (c === "\\") {
+          if (!escaping) {
+            escaping = true;
+            i++;
+            continue;
+          }
+        }
+        if (c === "[" && !escaping) {
+          for (const [cls, [unip, u, neg]] of Object.entries(posixClasses)) {
+            if (glob.startsWith(cls, i)) {
+              if (rangeStart) {
+                return ["$.", false, glob.length - pos, true];
+              }
+              i += cls.length;
+              if (neg)
+                negs.push(unip);
+              else
+                ranges.push(unip);
+              uflag = uflag || u;
+              continue WHILE;
+            }
+          }
+        }
+        escaping = false;
+        if (rangeStart) {
+          if (c > rangeStart) {
+            ranges.push(braceEscape(rangeStart) + "-" + braceEscape(c));
+          } else if (c === rangeStart) {
+            ranges.push(braceEscape(c));
+          }
+          rangeStart = "";
+          i++;
+          continue;
+        }
+        if (glob.startsWith("-]", i + 1)) {
+          ranges.push(braceEscape(c + "-"));
+          i += 2;
+          continue;
+        }
+        if (glob.startsWith("-", i + 1)) {
+          rangeStart = c;
+          i += 2;
+          continue;
+        }
+        ranges.push(braceEscape(c));
+        i++;
+      }
+      if (endPos < i) {
+        return ["", false, 0, false];
+      }
+      if (!ranges.length && !negs.length) {
+        return ["$.", false, glob.length - pos, true];
+      }
+      if (negs.length === 0 && ranges.length === 1 && /^\\?.$/.test(ranges[0]) && !negate) {
+        const r = ranges[0].length === 2 ? ranges[0].slice(-1) : ranges[0];
+        return [regexpEscape(r), false, endPos - pos, false];
+      }
+      const sranges = "[" + (negate ? "^" : "") + rangesToString(ranges) + "]";
+      const snegs = "[" + (negate ? "" : "^") + rangesToString(negs) + "]";
+      const comb = ranges.length && negs.length ? "(" + sranges + "|" + snegs + ")" : ranges.length ? sranges : snegs;
+      return [comb, uflag, endPos - pos, true];
+    };
+    exports2.parseClass = parseClass;
+  }
+});
+
+// dist/commonjs/unescape.js
+var require_unescape = __commonJS({
+  "dist/commonjs/unescape.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.unescape = void 0;
+    var unescape = (s, { windowsPathsNoEscape = false, magicalBraces = true } = {}) => {
+      if (magicalBraces) {
+        return windowsPathsNoEscape ? s.replace(/\[([^/\\])\]/g, "$1") : s.replace(/((?!\\).|^)\[([^/\\])\]/g, "$1$2").replace(/\\([^/])/g, "$1");
+      }
+      return windowsPathsNoEscape ? s.replace(/\[([^/\\{}])\]/g, "$1") : s.replace(/((?!\\).|^)\[([^/\\{}])\]/g, "$1$2").replace(/\\([^/{}])/g, "$1");
+    };
+    exports2.unescape = unescape;
+  }
+});
+
+// dist/commonjs/ast.js
+var require_ast = __commonJS({
+  "dist/commonjs/ast.js"(exports2) {
+    "use strict";
+    var _a;
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.AST = void 0;
+    var brace_expressions_js_1 = require_brace_expressions();
+    var unescape_js_12 = require_unescape();
+    var types = /* @__PURE__ */ new Set(["!", "?", "+", "*", "@"]);
+    var isExtglobType = (c) => types.has(c);
+    var isExtglobAST = (c) => isExtglobType(c.type);
+    var adoptionMap = /* @__PURE__ */ new Map([
+      ["!", ["@"]],
+      ["?", ["?", "@"]],
+      ["@", ["@"]],
+      ["*", ["*", "+", "?", "@"]],
+      ["+", ["+", "@"]]
+    ]);
+    var adoptionWithSpaceMap = /* @__PURE__ */ new Map([
+      ["!", ["?"]],
+      ["@", ["?"]],
+      ["+", ["?", "*"]]
+    ]);
+    var adoptionAnyMap = /* @__PURE__ */ new Map([
+      ["!", ["?", "@"]],
+      ["?", ["?", "@"]],
+      ["@", ["?", "@"]],
+      ["*", ["*", "+", "?", "@"]],
+      ["+", ["+", "@", "?", "*"]]
+    ]);
+    var usurpMap = /* @__PURE__ */ new Map([
+      ["!", /* @__PURE__ */ new Map([["!", "@"]])],
+      [
+        "?",
+        /* @__PURE__ */ new Map([
+          ["*", "*"],
+          ["+", "*"]
+        ])
+      ],
+      [
+        "@",
+        /* @__PURE__ */ new Map([
+          ["!", "!"],
+          ["?", "?"],
+          ["@", "@"],
+          ["*", "*"],
+          ["+", "+"]
+        ])
+      ],
+      [
+        "+",
+        /* @__PURE__ */ new Map([
+          ["?", "*"],
+          ["*", "*"]
+        ])
+      ]
+    ]);
+    var startNoTraversal = "(?!(?:^|/)\\.\\.?(?:$|/))";
+    var startNoDot = "(?!\\.)";
+    var addPatternStart = /* @__PURE__ */ new Set(["[", "."]);
+    var justDots = /* @__PURE__ */ new Set(["..", "."]);
+    var reSpecials = new Set("().*{}+?[]^$\\!");
+    var regExpEscape2 = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
+    var qmark2 = "[^/]";
+    var star2 = qmark2 + "*?";
+    var starNoEmpty = qmark2 + "+?";
+    var ID = 0;
+    var AST = class {
+      type;
+      #root;
+      #hasMagic;
+      #uflag = false;
+      #parts = [];
+      #parent;
+      #parentIndex;
+      #negs;
+      #filledNegs = false;
+      #options;
+      #toString;
+      // set to true if it's an extglob with no children
+      // (which really means one child of '')
+      #emptyExt = false;
+      id = ++ID;
+      get depth() {
+        return (this.#parent?.depth ?? -1) + 1;
+      }
+      [/* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom")]() {
+        return {
+          "@@type": "AST",
+          id: this.id,
+          type: this.type,
+          root: this.#root.id,
+          parent: this.#parent?.id,
+          depth: this.depth,
+          partsLength: this.#parts.length,
+          parts: this.#parts
+        };
+      }
+      constructor(type, parent, options = {}) {
+        this.type = type;
+        if (type)
+          this.#hasMagic = true;
+        this.#parent = parent;
+        this.#root = this.#parent ? this.#parent.#root : this;
+        this.#options = this.#root === this ? options : this.#root.#options;
+        this.#negs = this.#root === this ? [] : this.#root.#negs;
+        if (type === "!" && !this.#root.#filledNegs)
+          this.#negs.push(this);
+        this.#parentIndex = this.#parent ? this.#parent.#parts.length : 0;
+      }
+      get hasMagic() {
+        if (this.#hasMagic !== void 0)
+          return this.#hasMagic;
+        for (const p of this.#parts) {
+          if (typeof p === "string")
+            continue;
+          if (p.type || p.hasMagic)
+            return this.#hasMagic = true;
+        }
+        return this.#hasMagic;
+      }
+      // reconstructs the pattern
+      toString() {
+        return this.#toString !== void 0 ? this.#toString : !this.type ? this.#toString = this.#parts.map((p) => String(p)).join("") : this.#toString = this.type + "(" + this.#parts.map((p) => String(p)).join("|") + ")";
+      }
+      #fillNegs() {
+        if (this !== this.#root)
+          throw new Error("should only call on root");
+        if (this.#filledNegs)
+          return this;
+        this.toString();
+        this.#filledNegs = true;
+        let n;
+        while (n = this.#negs.pop()) {
+          if (n.type !== "!")
+            continue;
+          let p = n;
+          let pp = p.#parent;
+          while (pp) {
+            for (let i = p.#parentIndex + 1; !pp.type && i < pp.#parts.length; i++) {
+              for (const part of n.#parts) {
+                if (typeof part === "string") {
+                  throw new Error("string part in extglob AST??");
+                }
+                part.copyIn(pp.#parts[i]);
+              }
+            }
+            p = pp;
+            pp = p.#parent;
+          }
+        }
+        return this;
+      }
+      push(...parts) {
+        for (const p of parts) {
+          if (p === "")
+            continue;
+          if (typeof p !== "string" && !(p instanceof _a && p.#parent === this)) {
+            throw new Error("invalid part: " + p);
+          }
+          this.#parts.push(p);
+        }
+      }
+      toJSON() {
+        const ret = this.type === null ? this.#parts.slice().map((p) => typeof p === "string" ? p : p.toJSON()) : [this.type, ...this.#parts.map((p) => p.toJSON())];
+        if (this.isStart() && !this.type)
+          ret.unshift([]);
+        if (this.isEnd() && (this === this.#root || this.#root.#filledNegs && this.#parent?.type === "!")) {
+          ret.push({});
+        }
+        return ret;
+      }
+      isStart() {
+        if (this.#root === this)
+          return true;
+        if (!this.#parent?.isStart())
+          return false;
+        if (this.#parentIndex === 0)
+          return true;
+        const p = this.#parent;
+        for (let i = 0; i < this.#parentIndex; i++) {
+          const pp = p.#parts[i];
+          if (!(pp instanceof _a && pp.type === "!")) {
+            return false;
+          }
+        }
+        return true;
+      }
+      isEnd() {
+        if (this.#root === this)
+          return true;
+        if (this.#parent?.type === "!")
+          return true;
+        if (!this.#parent?.isEnd())
+          return false;
+        if (!this.type)
+          return this.#parent?.isEnd();
+        const pl = this.#parent ? this.#parent.#parts.length : 0;
+        return this.#parentIndex === pl - 1;
+      }
+      copyIn(part) {
+        if (typeof part === "string")
+          this.push(part);
+        else
+          this.push(part.clone(this));
+      }
+      clone(parent) {
+        const c = new _a(this.type, parent);
+        for (const p of this.#parts) {
+          c.copyIn(p);
+        }
+        return c;
+      }
+      static #parseAST(str, ast, pos, opt, extDepth) {
+        const maxDepth = opt.maxExtglobRecursion ?? 2;
+        let escaping = false;
+        let inBrace = false;
+        let braceStart = -1;
+        let braceNeg = false;
+        if (ast.type === null) {
+          let i2 = pos;
+          let acc2 = "";
+          while (i2 < str.length) {
+            const c = str.charAt(i2++);
+            if (escaping || c === "\\") {
+              escaping = !escaping;
+              acc2 += c;
+              continue;
+            }
+            if (inBrace) {
+              if (i2 === braceStart + 1) {
+                if (c === "^" || c === "!") {
+                  braceNeg = true;
+                }
+              } else if (c === "]" && !(i2 === braceStart + 2 && braceNeg)) {
+                inBrace = false;
+              }
+              acc2 += c;
+              continue;
+            } else if (c === "[") {
+              inBrace = true;
+              braceStart = i2;
+              braceNeg = false;
+              acc2 += c;
+              continue;
+            }
+            const doRecurse = !opt.noext && isExtglobType(c) && str.charAt(i2) === "(" && extDepth <= maxDepth;
+            if (doRecurse) {
+              ast.push(acc2);
+              acc2 = "";
+              const ext2 = new _a(c, ast);
+              i2 = _a.#parseAST(str, ext2, i2, opt, extDepth + 1);
+              ast.push(ext2);
+              continue;
+            }
+            acc2 += c;
+          }
+          ast.push(acc2);
+          return i2;
+        }
+        let i = pos + 1;
+        let part = new _a(null, ast);
+        const parts = [];
+        let acc = "";
+        while (i < str.length) {
+          const c = str.charAt(i++);
+          if (escaping || c === "\\") {
+            escaping = !escaping;
+            acc += c;
+            continue;
+          }
+          if (inBrace) {
+            if (i === braceStart + 1) {
+              if (c === "^" || c === "!") {
+                braceNeg = true;
+              }
+            } else if (c === "]" && !(i === braceStart + 2 && braceNeg)) {
+              inBrace = false;
+            }
+            acc += c;
+            continue;
+          } else if (c === "[") {
+            inBrace = true;
+            braceStart = i;
+            braceNeg = false;
+            acc += c;
+            continue;
+          }
+          const doRecurse = !opt.noext && isExtglobType(c) && str.charAt(i) === "(" && /* c8 ignore start - the maxDepth is sufficient here */
+          (extDepth <= maxDepth || ast && ast.#canAdoptType(c));
+          if (doRecurse) {
+            const depthAdd = ast && ast.#canAdoptType(c) ? 0 : 1;
+            part.push(acc);
+            acc = "";
+            const ext2 = new _a(c, part);
+            part.push(ext2);
+            i = _a.#parseAST(str, ext2, i, opt, extDepth + depthAdd);
+            continue;
+          }
+          if (c === "|") {
+            part.push(acc);
+            acc = "";
+            parts.push(part);
+            part = new _a(null, ast);
+            continue;
+          }
+          if (c === ")") {
+            if (acc === "" && ast.#parts.length === 0) {
+              ast.#emptyExt = true;
+            }
+            part.push(acc);
+            acc = "";
+            ast.push(...parts, part);
+            return i;
+          }
+          acc += c;
+        }
+        ast.type = null;
+        ast.#hasMagic = void 0;
+        ast.#parts = [str.substring(pos - 1)];
+        return i;
+      }
+      #canAdoptWithSpace(child) {
+        return this.#canAdopt(child, adoptionWithSpaceMap);
+      }
+      #canAdopt(child, map = adoptionMap) {
+        if (!child || typeof child !== "object" || child.type !== null || child.#parts.length !== 1 || this.type === null) {
+          return false;
+        }
+        const gc = child.#parts[0];
+        if (!gc || typeof gc !== "object" || gc.type === null) {
+          return false;
+        }
+        return this.#canAdoptType(gc.type, map);
+      }
+      #canAdoptType(c, map = adoptionAnyMap) {
+        return !!map.get(this.type)?.includes(c);
+      }
+      #adoptWithSpace(child, index) {
+        const gc = child.#parts[0];
+        const blank = new _a(null, gc, this.options);
+        blank.#parts.push("");
+        gc.push(blank);
+        this.#adopt(child, index);
+      }
+      #adopt(child, index) {
+        const gc = child.#parts[0];
+        this.#parts.splice(index, 1, ...gc.#parts);
+        for (const p of gc.#parts) {
+          if (typeof p === "object")
+            p.#parent = this;
+        }
+        this.#toString = void 0;
+      }
+      #canUsurpType(c) {
+        const m = usurpMap.get(this.type);
+        return !!m?.has(c);
+      }
+      #canUsurp(child) {
+        if (!child || typeof child !== "object" || child.type !== null || child.#parts.length !== 1 || this.type === null || this.#parts.length !== 1) {
+          return false;
+        }
+        const gc = child.#parts[0];
+        if (!gc || typeof gc !== "object" || gc.type === null) {
+          return false;
+        }
+        return this.#canUsurpType(gc.type);
+      }
+      #usurp(child) {
+        const m = usurpMap.get(this.type);
+        const gc = child.#parts[0];
+        const nt = m?.get(gc.type);
+        if (!nt)
+          return false;
+        this.#parts = gc.#parts;
+        for (const p of this.#parts) {
+          if (typeof p === "object") {
+            p.#parent = this;
+          }
+        }
+        this.type = nt;
+        this.#toString = void 0;
+        this.#emptyExt = false;
+      }
+      static fromGlob(pattern, options = {}) {
+        const ast = new _a(null, void 0, options);
+        _a.#parseAST(pattern, ast, 0, options, 0);
+        return ast;
+      }
+      // returns the regular expression if there's magic, or the unescaped
+      // string if not.
+      toMMPattern() {
+        if (this !== this.#root)
+          return this.#root.toMMPattern();
+        const glob = this.toString();
+        const [re, body, hasMagic, uflag] = this.toRegExpSource();
+        const anyMagic = hasMagic || this.#hasMagic || this.#options.nocase && !this.#options.nocaseMagicOnly && glob.toUpperCase() !== glob.toLowerCase();
+        if (!anyMagic) {
+          return body;
+        }
+        const flags = (this.#options.nocase ? "i" : "") + (uflag ? "u" : "");
+        return Object.assign(new RegExp(`^${re}$`, flags), {
+          _src: re,
+          _glob: glob
+        });
+      }
+      get options() {
+        return this.#options;
+      }
+      // returns the string match, the regexp source, whether there's magic
+      // in the regexp (so a regular expression is required) and whether or
+      // not the uflag is needed for the regular expression (for posix classes)
+      // TODO: instead of injecting the start/end at this point, just return
+      // the BODY of the regexp, along with the start/end portions suitable
+      // for binding the start/end in either a joined full-path makeRe context
+      // (where we bind to (^|/), or a standalone matchPart context (where
+      // we bind to ^, and not /).  Otherwise slashes get duped!
+      //
+      // In part-matching mode, the start is:
+      // - if not isStart: nothing
+      // - if traversal possible, but not allowed: ^(?!\.\.?$)
+      // - if dots allowed or not possible: ^
+      // - if dots possible and not allowed: ^(?!\.)
+      // end is:
+      // - if not isEnd(): nothing
+      // - else: $
+      //
+      // In full-path matching mode, we put the slash at the START of the
+      // pattern, so start is:
+      // - if first pattern: same as part-matching mode
+      // - if not isStart(): nothing
+      // - if traversal possible, but not allowed: /(?!\.\.?(?:$|/))
+      // - if dots allowed or not possible: /
+      // - if dots possible and not allowed: /(?!\.)
+      // end is:
+      // - if last pattern, same as part-matching mode
+      // - else nothing
+      //
+      // Always put the (?:$|/) on negated tails, though, because that has to be
+      // there to bind the end of the negated pattern portion, and it's easier to
+      // just stick it in now rather than try to inject it later in the middle of
+      // the pattern.
+      //
+      // We can just always return the same end, and leave it up to the caller
+      // to know whether it's going to be used joined or in parts.
+      // And, if the start is adjusted slightly, can do the same there:
+      // - if not isStart: nothing
+      // - if traversal possible, but not allowed: (?:/|^)(?!\.\.?$)
+      // - if dots allowed or not possible: (?:/|^)
+      // - if dots possible and not allowed: (?:/|^)(?!\.)
+      //
+      // But it's better to have a simpler binding without a conditional, for
+      // performance, so probably better to return both start options.
+      //
+      // Then the caller just ignores the end if it's not the first pattern,
+      // and the start always gets applied.
+      //
+      // But that's always going to be $ if it's the ending pattern, or nothing,
+      // so the caller can just attach $ at the end of the pattern when building.
+      //
+      // So the todo is:
+      // - better detect what kind of start is needed
+      // - return both flavors of starting pattern
+      // - attach $ at the end of the pattern when creating the actual RegExp
+      //
+      // Ah, but wait, no, that all only applies to the root when the first pattern
+      // is not an extglob. If the first pattern IS an extglob, then we need all
+      // that dot prevention biz to live in the extglob portions, because eg
+      // +(*|.x*) can match .xy but not .yx.
+      //
+      // So, return the two flavors if it's #root and the first child is not an
+      // AST, otherwise leave it to the child AST to handle it, and there,
+      // use the (?:^|/) style of start binding.
+      //
+      // Even simplified further:
+      // - Since the start for a join is eg /(?!\.) and the start for a part
+      // is ^(?!\.), we can just prepend (?!\.) to the pattern (either root
+      // or start or whatever) and prepend ^ or / at the Regexp construction.
+      toRegExpSource(allowDot) {
+        const dot = allowDot ?? !!this.#options.dot;
+        if (this.#root === this) {
+          this.#flatten();
+          this.#fillNegs();
+        }
+        if (!isExtglobAST(this)) {
+          const noEmpty = this.isStart() && this.isEnd() && !this.#parts.some((s) => typeof s !== "string");
+          const src = this.#parts.map((p) => {
+            const [re, _, hasMagic, uflag] = typeof p === "string" ? _a.#parseGlob(p, this.#hasMagic, noEmpty) : p.toRegExpSource(allowDot);
+            this.#hasMagic = this.#hasMagic || hasMagic;
+            this.#uflag = this.#uflag || uflag;
+            return re;
+          }).join("");
+          let start2 = "";
+          if (this.isStart()) {
+            if (typeof this.#parts[0] === "string") {
+              const dotTravAllowed = this.#parts.length === 1 && justDots.has(this.#parts[0]);
+              if (!dotTravAllowed) {
+                const aps = addPatternStart;
+                const needNoTrav = (
+                  // dots are allowed, and the pattern starts with [ or .
+                  dot && aps.has(src.charAt(0)) || // the pattern starts with \., and then [ or .
+                  src.startsWith("\\.") && aps.has(src.charAt(2)) || // the pattern starts with \.\., and then [ or .
+                  src.startsWith("\\.\\.") && aps.has(src.charAt(4))
+                );
+                const needNoDot = !dot && !allowDot && aps.has(src.charAt(0));
+                start2 = needNoTrav ? startNoTraversal : needNoDot ? startNoDot : "";
+              }
+            }
+          }
+          let end = "";
+          if (this.isEnd() && this.#root.#filledNegs && this.#parent?.type === "!") {
+            end = "(?:$|\\/)";
+          }
+          const final2 = start2 + src + end;
+          return [
+            final2,
+            (0, unescape_js_12.unescape)(src),
+            this.#hasMagic = !!this.#hasMagic,
+            this.#uflag
+          ];
+        }
+        const repeated = this.type === "*" || this.type === "+";
+        const start = this.type === "!" ? "(?:(?!(?:" : "(?:";
+        let body = this.#partsToRegExp(dot);
+        if (this.isStart() && this.isEnd() && !body && this.type !== "!") {
+          const s = this.toString();
+          const me = this;
+          me.#parts = [s];
+          me.type = null;
+          me.#hasMagic = void 0;
+          return [s, (0, unescape_js_12.unescape)(this.toString()), false, false];
+        }
+        let bodyDotAllowed = !repeated || allowDot || dot || !startNoDot ? "" : this.#partsToRegExp(true);
+        if (bodyDotAllowed === body) {
+          bodyDotAllowed = "";
+        }
+        if (bodyDotAllowed) {
+          body = `(?:${body})(?:${bodyDotAllowed})*?`;
+        }
+        let final = "";
+        if (this.type === "!" && this.#emptyExt) {
+          final = (this.isStart() && !dot ? startNoDot : "") + starNoEmpty;
+        } else {
+          const close = this.type === "!" ? (
+            // !() must match something,but !(x) can match ''
+            "))" + (this.isStart() && !dot && !allowDot ? startNoDot : "") + star2 + ")"
+          ) : this.type === "@" ? ")" : this.type === "?" ? ")?" : this.type === "+" && bodyDotAllowed ? ")" : this.type === "*" && bodyDotAllowed ? `)?` : `)${this.type}`;
+          final = start + body + close;
+        }
+        return [
+          final,
+          (0, unescape_js_12.unescape)(body),
+          this.#hasMagic = !!this.#hasMagic,
+          this.#uflag
+        ];
+      }
+      #flatten() {
+        if (!isExtglobAST(this)) {
+          for (const p of this.#parts) {
+            if (typeof p === "object") {
+              p.#flatten();
+            }
+          }
+        } else {
+          let iterations = 0;
+          let done = false;
+          do {
+            done = true;
+            for (let i = 0; i < this.#parts.length; i++) {
+              const c = this.#parts[i];
+              if (typeof c === "object") {
+                c.#flatten();
+                if (this.#canAdopt(c)) {
+                  done = false;
+                  this.#adopt(c, i);
+                } else if (this.#canAdoptWithSpace(c)) {
+                  done = false;
+                  this.#adoptWithSpace(c, i);
+                } else if (this.#canUsurp(c)) {
+                  done = false;
+                  this.#usurp(c);
+                }
+              }
+            }
+          } while (!done && ++iterations < 10);
+        }
+        this.#toString = void 0;
+      }
+      #partsToRegExp(dot) {
+        return this.#parts.map((p) => {
+          if (typeof p === "string") {
+            throw new Error("string type in extglob ast??");
+          }
+          const [re, _, _hasMagic, uflag] = p.toRegExpSource(dot);
+          this.#uflag = this.#uflag || uflag;
+          return re;
+        }).filter((p) => !(this.isStart() && this.isEnd()) || !!p).join("|");
+      }
+      static #parseGlob(glob, hasMagic, noEmpty = false) {
+        let escaping = false;
+        let re = "";
+        let uflag = false;
+        let inStar = false;
+        for (let i = 0; i < glob.length; i++) {
+          const c = glob.charAt(i);
+          if (escaping) {
+            escaping = false;
+            re += (reSpecials.has(c) ? "\\" : "") + c;
+            continue;
+          }
+          if (c === "*") {
+            if (inStar)
+              continue;
+            inStar = true;
+            re += noEmpty && /^[*]+$/.test(glob) ? starNoEmpty : star2;
+            hasMagic = true;
+            continue;
+          } else {
+            inStar = false;
+          }
+          if (c === "\\") {
+            if (i === glob.length - 1) {
+              re += "\\\\";
+            } else {
+              escaping = true;
+            }
+            continue;
+          }
+          if (c === "[") {
+            const [src, needUflag, consumed, magic] = (0, brace_expressions_js_1.parseClass)(glob, i);
+            if (consumed) {
+              re += src;
+              uflag = uflag || needUflag;
+              i += consumed - 1;
+              hasMagic = hasMagic || magic;
+              continue;
+            }
+          }
+          if (c === "?") {
+            re += qmark2;
+            hasMagic = true;
+            continue;
+          }
+          re += regExpEscape2(c);
+        }
+        return [re, (0, unescape_js_12.unescape)(glob), !!hasMagic, uflag];
+      }
+    };
+    exports2.AST = AST;
+    _a = AST;
+  }
+});
+
+// dist/commonjs/escape.js
+var require_escape = __commonJS({
+  "dist/commonjs/escape.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.escape = void 0;
+    var escape = (s, { windowsPathsNoEscape = false, magicalBraces = false } = {}) => {
+      if (magicalBraces) {
+        return windowsPathsNoEscape ? s.replace(/[?*()[\]{}]/g, "[$&]") : s.replace(/[?*()[\]\\{}]/g, "\\$&");
+      }
+      return windowsPathsNoEscape ? s.replace(/[?*()[\]]/g, "[$&]") : s.replace(/[?*()[\]\\]/g, "\\$&");
+    };
+    exports2.escape = escape;
+  }
+});
+
+// dist/commonjs/index.js
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.unescape = exports.escape = exports.AST = exports.Minimatch = exports.match = exports.makeRe = exports.braceExpand = exports.defaults = exports.filter = exports.GLOBSTAR = exports.sep = exports.minimatch = void 0;
+var brace_expansion_1 = require_commonjs2();
+var assert_valid_pattern_js_1 = require_assert_valid_pattern();
+var ast_js_1 = require_ast();
+var escape_js_1 = require_escape();
+var unescape_js_1 = require_unescape();
+var minimatch = (p, pattern, options = {}) => {
+  (0, assert_valid_pattern_js_1.assertValidPattern)(pattern);
+  if (!options.nocomment && pattern.charAt(0) === "#") {
+    return false;
+  }
+  return new Minimatch(pattern, options).match(p);
+};
+exports.minimatch = minimatch;
+var starDotExtRE = /^\*+([^+@!?*[(]*)$/;
+var starDotExtTest = (ext2) => (f) => !f.startsWith(".") && f.endsWith(ext2);
+var starDotExtTestDot = (ext2) => (f) => f.endsWith(ext2);
+var starDotExtTestNocase = (ext2) => {
+  ext2 = ext2.toLowerCase();
+  return (f) => !f.startsWith(".") && f.toLowerCase().endsWith(ext2);
+};
+var starDotExtTestNocaseDot = (ext2) => {
+  ext2 = ext2.toLowerCase();
+  return (f) => f.toLowerCase().endsWith(ext2);
+};
+var starDotStarRE = /^\*+\.\*+$/;
+var starDotStarTest = (f) => !f.startsWith(".") && f.includes(".");
+var starDotStarTestDot = (f) => f !== "." && f !== ".." && f.includes(".");
+var dotStarRE = /^\.\*+$/;
+var dotStarTest = (f) => f !== "." && f !== ".." && f.startsWith(".");
+var starRE = /^\*+$/;
+var starTest = (f) => f.length !== 0 && !f.startsWith(".");
+var starTestDot = (f) => f.length !== 0 && f !== "." && f !== "..";
+var qmarksRE = /^\?+([^+@!?*[(]*)?$/;
+var qmarksTestNocase = ([$0, ext2 = ""]) => {
+  const noext = qmarksTestNoExt([$0]);
+  if (!ext2)
+    return noext;
+  ext2 = ext2.toLowerCase();
+  return (f) => noext(f) && f.toLowerCase().endsWith(ext2);
+};
+var qmarksTestNocaseDot = ([$0, ext2 = ""]) => {
+  const noext = qmarksTestNoExtDot([$0]);
+  if (!ext2)
+    return noext;
+  ext2 = ext2.toLowerCase();
+  return (f) => noext(f) && f.toLowerCase().endsWith(ext2);
+};
+var qmarksTestDot = ([$0, ext2 = ""]) => {
+  const noext = qmarksTestNoExtDot([$0]);
+  return !ext2 ? noext : (f) => noext(f) && f.endsWith(ext2);
+};
+var qmarksTest = ([$0, ext2 = ""]) => {
+  const noext = qmarksTestNoExt([$0]);
+  return !ext2 ? noext : (f) => noext(f) && f.endsWith(ext2);
+};
+var qmarksTestNoExt = ([$0]) => {
+  const len = $0.length;
+  return (f) => f.length === len && !f.startsWith(".");
+};
+var qmarksTestNoExtDot = ([$0]) => {
+  const len = $0.length;
+  return (f) => f.length === len && f !== "." && f !== "..";
+};
+var defaultPlatform = typeof process === "object" && process ? typeof process.env === "object" && process.env && process.env.__MINIMATCH_TESTING_PLATFORM__ || process.platform : "posix";
+var path = {
+  win32: { sep: "\\" },
+  posix: { sep: "/" }
+};
+exports.sep = defaultPlatform === "win32" ? path.win32.sep : path.posix.sep;
+exports.minimatch.sep = exports.sep;
+exports.GLOBSTAR = /* @__PURE__ */ Symbol("globstar **");
+exports.minimatch.GLOBSTAR = exports.GLOBSTAR;
+var qmark = "[^/]";
+var star = qmark + "*?";
+var twoStarDot = "(?:(?!(?:\\/|^)(?:\\.{1,2})($|\\/)).)*?";
+var twoStarNoDot = "(?:(?!(?:\\/|^)\\.).)*?";
+var filter = (pattern, options = {}) => (p) => (0, exports.minimatch)(p, pattern, options);
+exports.filter = filter;
+exports.minimatch.filter = exports.filter;
+var ext = (a, b = {}) => Object.assign({}, a, b);
+var defaults = (def) => {
+  if (!def || typeof def !== "object" || !Object.keys(def).length) {
+    return exports.minimatch;
+  }
+  const orig = exports.minimatch;
+  const m = (p, pattern, options = {}) => orig(p, pattern, ext(def, options));
+  return Object.assign(m, {
+    Minimatch: class Minimatch extends orig.Minimatch {
+      constructor(pattern, options = {}) {
+        super(pattern, ext(def, options));
+      }
+      static defaults(options) {
+        return orig.defaults(ext(def, options)).Minimatch;
+      }
+    },
+    AST: class AST extends orig.AST {
+      /* c8 ignore start */
+      constructor(type, parent, options = {}) {
+        super(type, parent, ext(def, options));
+      }
+      /* c8 ignore stop */
+      static fromGlob(pattern, options = {}) {
+        return orig.AST.fromGlob(pattern, ext(def, options));
+      }
+    },
+    unescape: (s, options = {}) => orig.unescape(s, ext(def, options)),
+    escape: (s, options = {}) => orig.escape(s, ext(def, options)),
+    filter: (pattern, options = {}) => orig.filter(pattern, ext(def, options)),
+    defaults: (options) => orig.defaults(ext(def, options)),
+    makeRe: (pattern, options = {}) => orig.makeRe(pattern, ext(def, options)),
+    braceExpand: (pattern, options = {}) => orig.braceExpand(pattern, ext(def, options)),
+    match: (list, pattern, options = {}) => orig.match(list, pattern, ext(def, options)),
+    sep: orig.sep,
+    GLOBSTAR: exports.GLOBSTAR
+  });
+};
+exports.defaults = defaults;
+exports.minimatch.defaults = exports.defaults;
+var braceExpand = (pattern, options = {}) => {
+  (0, assert_valid_pattern_js_1.assertValidPattern)(pattern);
+  if (options.nobrace || !/\{(?:(?!\{).)*\}/.test(pattern)) {
+    return [pattern];
+  }
+  return (0, brace_expansion_1.expand)(pattern, { max: options.braceExpandMax });
+};
+exports.braceExpand = braceExpand;
+exports.minimatch.braceExpand = exports.braceExpand;
+var makeRe = (pattern, options = {}) => new Minimatch(pattern, options).makeRe();
+exports.makeRe = makeRe;
+exports.minimatch.makeRe = exports.makeRe;
+var match = (list, pattern, options = {}) => {
+  const mm = new Minimatch(pattern, options);
+  list = list.filter((f) => mm.match(f));
+  if (mm.options.nonull && !list.length) {
+    list.push(pattern);
+  }
+  return list;
+};
+exports.match = match;
+exports.minimatch.match = exports.match;
+var globMagic = /[?*]|[+@!]\(.*?\)|\[|\]/;
+var regExpEscape = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
+var Minimatch = class {
+  options;
+  set;
+  pattern;
+  windowsPathsNoEscape;
+  nonegate;
+  negate;
+  comment;
+  empty;
+  preserveMultipleSlashes;
+  partial;
+  globSet;
+  globParts;
+  nocase;
+  isWindows;
+  platform;
+  windowsNoMagicRoot;
+  maxGlobstarRecursion;
+  regexp;
+  constructor(pattern, options = {}) {
+    (0, assert_valid_pattern_js_1.assertValidPattern)(pattern);
+    options = options || {};
+    this.options = options;
+    this.maxGlobstarRecursion = options.maxGlobstarRecursion ?? 200;
+    this.pattern = pattern;
+    this.platform = options.platform || defaultPlatform;
+    this.isWindows = this.platform === "win32";
+    const awe = "allowWindowsEscape";
+    this.windowsPathsNoEscape = !!options.windowsPathsNoEscape || options[awe] === false;
+    if (this.windowsPathsNoEscape) {
+      this.pattern = this.pattern.replace(/\\/g, "/");
+    }
+    this.preserveMultipleSlashes = !!options.preserveMultipleSlashes;
+    this.regexp = null;
+    this.negate = false;
+    this.nonegate = !!options.nonegate;
+    this.comment = false;
+    this.empty = false;
+    this.partial = !!options.partial;
+    this.nocase = !!this.options.nocase;
+    this.windowsNoMagicRoot = options.windowsNoMagicRoot !== void 0 ? options.windowsNoMagicRoot : !!(this.isWindows && this.nocase);
+    this.globSet = [];
+    this.globParts = [];
+    this.set = [];
+    this.make();
+  }
+  hasMagic() {
+    if (this.options.magicalBraces && this.set.length > 1) {
+      return true;
+    }
+    for (const pattern of this.set) {
+      for (const part of pattern) {
+        if (typeof part !== "string")
+          return true;
+      }
+    }
+    return false;
+  }
+  debug(..._) {
+  }
+  make() {
+    const pattern = this.pattern;
+    const options = this.options;
+    if (!options.nocomment && pattern.charAt(0) === "#") {
+      this.comment = true;
+      return;
+    }
+    if (!pattern) {
+      this.empty = true;
+      return;
+    }
+    this.parseNegate();
+    this.globSet = [...new Set(this.braceExpand())];
+    if (options.debug) {
+      this.debug = (...args) => console.error(...args);
+    }
+    this.debug(this.pattern, this.globSet);
+    const rawGlobParts = this.globSet.map((s) => this.slashSplit(s));
+    this.globParts = this.preprocess(rawGlobParts);
+    this.debug(this.pattern, this.globParts);
+    let set = this.globParts.map((s, _, __) => {
+      if (this.isWindows && this.windowsNoMagicRoot) {
+        const isUNC = s[0] === "" && s[1] === "" && (s[2] === "?" || !globMagic.test(s[2])) && !globMagic.test(s[3]);
+        const isDrive = /^[a-z]:/i.test(s[0]);
+        if (isUNC) {
+          return [
+            ...s.slice(0, 4),
+            ...s.slice(4).map((ss) => this.parse(ss))
+          ];
+        } else if (isDrive) {
+          return [s[0], ...s.slice(1).map((ss) => this.parse(ss))];
+        }
+      }
+      return s.map((ss) => this.parse(ss));
+    });
+    this.debug(this.pattern, set);
+    this.set = set.filter((s) => s.indexOf(false) === -1);
+    if (this.isWindows) {
+      for (let i = 0; i < this.set.length; i++) {
+        const p = this.set[i];
+        if (p[0] === "" && p[1] === "" && this.globParts[i][2] === "?" && typeof p[3] === "string" && /^[a-z]:$/i.test(p[3])) {
+          p[2] = "?";
+        }
+      }
+    }
+    this.debug(this.pattern, this.set);
+  }
+  // various transforms to equivalent pattern sets that are
+  // faster to process in a filesystem walk.  The goal is to
+  // eliminate what we can, and push all ** patterns as far
+  // to the right as possible, even if it increases the number
+  // of patterns that we have to process.
+  preprocess(globParts) {
+    if (this.options.noglobstar) {
+      for (const partset of globParts) {
+        for (let j = 0; j < partset.length; j++) {
+          if (partset[j] === "**") {
+            partset[j] = "*";
+          }
+        }
+      }
+    }
+    const { optimizationLevel = 1 } = this.options;
+    if (optimizationLevel >= 2) {
+      globParts = this.firstPhasePreProcess(globParts);
+      globParts = this.secondPhasePreProcess(globParts);
+    } else if (optimizationLevel >= 1) {
+      globParts = this.levelOneOptimize(globParts);
+    } else {
+      globParts = this.adjascentGlobstarOptimize(globParts);
+    }
+    return globParts;
+  }
+  // just get rid of adjascent ** portions
+  adjascentGlobstarOptimize(globParts) {
+    return globParts.map((parts) => {
+      let gs = -1;
+      while (-1 !== (gs = parts.indexOf("**", gs + 1))) {
+        let i = gs;
+        while (parts[i + 1] === "**") {
+          i++;
+        }
+        if (i !== gs) {
+          parts.splice(gs, i - gs);
+        }
+      }
+      return parts;
+    });
+  }
+  // get rid of adjascent ** and resolve .. portions
+  levelOneOptimize(globParts) {
+    return globParts.map((parts) => {
+      parts = parts.reduce((set, part) => {
+        const prev = set[set.length - 1];
+        if (part === "**" && prev === "**") {
+          return set;
+        }
+        if (part === "..") {
+          if (prev && prev !== ".." && prev !== "." && prev !== "**") {
+            set.pop();
+            return set;
+          }
+        }
+        set.push(part);
+        return set;
+      }, []);
+      return parts.length === 0 ? [""] : parts;
+    });
+  }
+  levelTwoFileOptimize(parts) {
+    if (!Array.isArray(parts)) {
+      parts = this.slashSplit(parts);
+    }
+    let didSomething = false;
+    do {
+      didSomething = false;
+      if (!this.preserveMultipleSlashes) {
+        for (let i = 1; i < parts.length - 1; i++) {
+          const p = parts[i];
+          if (i === 1 && p === "" && parts[0] === "")
+            continue;
+          if (p === "." || p === "") {
+            didSomething = true;
+            parts.splice(i, 1);
+            i--;
+          }
+        }
+        if (parts[0] === "." && parts.length === 2 && (parts[1] === "." || parts[1] === "")) {
+          didSomething = true;
+          parts.pop();
+        }
+      }
+      let dd = 0;
+      while (-1 !== (dd = parts.indexOf("..", dd + 1))) {
+        const p = parts[dd - 1];
+        if (p && p !== "." && p !== ".." && p !== "**" && !(this.isWindows && /^[a-z]:$/i.test(p))) {
+          didSomething = true;
+          parts.splice(dd - 1, 2);
+          dd -= 2;
+        }
+      }
+    } while (didSomething);
+    return parts.length === 0 ? [""] : parts;
+  }
+  // First phase: single-pattern processing
+  // <pre> is 1 or more portions
+  // <rest> is 1 or more portions
+  // <p> is any portion other than ., .., '', or **
+  // <e> is . or ''
+  //
+  // **/.. is *brutal* for filesystem walking performance, because
+  // it effectively resets the recursive walk each time it occurs,
+  // and ** cannot be reduced out by a .. pattern part like a regexp
+  // or most strings (other than .., ., and '') can be.
+  //
+  // <pre>/**/../<p>/<p>/<rest> -> {<pre>/../<p>/<p>/<rest>,<pre>/**/<p>/<p>/<rest>}
+  // <pre>/<e>/<rest> -> <pre>/<rest>
+  // <pre>/<p>/../<rest> -> <pre>/<rest>
+  // **/**/<rest> -> **/<rest>
+  //
+  // **/*/<rest> -> */**/<rest> <== not valid because ** doesn't follow
+  // this WOULD be allowed if ** did follow symlinks, or * didn't
+  firstPhasePreProcess(globParts) {
+    let didSomething = false;
+    do {
+      didSomething = false;
+      for (let parts of globParts) {
+        let gs = -1;
+        while (-1 !== (gs = parts.indexOf("**", gs + 1))) {
+          let gss = gs;
+          while (parts[gss + 1] === "**") {
+            gss++;
+          }
+          if (gss > gs) {
+            parts.splice(gs + 1, gss - gs);
+          }
+          let next = parts[gs + 1];
+          const p = parts[gs + 2];
+          const p2 = parts[gs + 3];
+          if (next !== "..")
+            continue;
+          if (!p || p === "." || p === ".." || !p2 || p2 === "." || p2 === "..") {
+            continue;
+          }
+          didSomething = true;
+          parts.splice(gs, 1);
+          const other = parts.slice(0);
+          other[gs] = "**";
+          globParts.push(other);
+          gs--;
+        }
+        if (!this.preserveMultipleSlashes) {
+          for (let i = 1; i < parts.length - 1; i++) {
+            const p = parts[i];
+            if (i === 1 && p === "" && parts[0] === "")
+              continue;
+            if (p === "." || p === "") {
+              didSomething = true;
+              parts.splice(i, 1);
+              i--;
+            }
+          }
+          if (parts[0] === "." && parts.length === 2 && (parts[1] === "." || parts[1] === "")) {
+            didSomething = true;
+            parts.pop();
+          }
+        }
+        let dd = 0;
+        while (-1 !== (dd = parts.indexOf("..", dd + 1))) {
+          const p = parts[dd - 1];
+          if (p && p !== "." && p !== ".." && p !== "**") {
+            didSomething = true;
+            const needDot = dd === 1 && parts[dd + 1] === "**";
+            const splin = needDot ? ["."] : [];
+            parts.splice(dd - 1, 2, ...splin);
+            if (parts.length === 0)
+              parts.push("");
+            dd -= 2;
+          }
+        }
+      }
+    } while (didSomething);
+    return globParts;
+  }
+  // second phase: multi-pattern dedupes
+  // {<pre>/*/<rest>,<pre>/<p>/<rest>} -> <pre>/*/<rest>
+  // {<pre>/<rest>,<pre>/<rest>} -> <pre>/<rest>
+  // {<pre>/**/<rest>,<pre>/<rest>} -> <pre>/**/<rest>
+  //
+  // {<pre>/**/<rest>,<pre>/**/<p>/<rest>} -> <pre>/**/<rest>
+  // ^-- not valid because ** doens't follow symlinks
+  secondPhasePreProcess(globParts) {
+    for (let i = 0; i < globParts.length - 1; i++) {
+      for (let j = i + 1; j < globParts.length; j++) {
+        const matched = this.partsMatch(globParts[i], globParts[j], !this.preserveMultipleSlashes);
+        if (matched) {
+          globParts[i] = [];
+          globParts[j] = matched;
+          break;
+        }
+      }
+    }
+    return globParts.filter((gs) => gs.length);
+  }
+  partsMatch(a, b, emptyGSMatch = false) {
+    let ai = 0;
+    let bi = 0;
+    let result = [];
+    let which = "";
+    while (ai < a.length && bi < b.length) {
+      if (a[ai] === b[bi]) {
+        result.push(which === "b" ? b[bi] : a[ai]);
+        ai++;
+        bi++;
+      } else if (emptyGSMatch && a[ai] === "**" && b[bi] === a[ai + 1]) {
+        result.push(a[ai]);
+        ai++;
+      } else if (emptyGSMatch && b[bi] === "**" && a[ai] === b[bi + 1]) {
+        result.push(b[bi]);
+        bi++;
+      } else if (a[ai] === "*" && b[bi] && (this.options.dot || !b[bi].startsWith(".")) && b[bi] !== "**") {
+        if (which === "b")
+          return false;
+        which = "a";
+        result.push(a[ai]);
+        ai++;
+        bi++;
+      } else if (b[bi] === "*" && a[ai] && (this.options.dot || !a[ai].startsWith(".")) && a[ai] !== "**") {
+        if (which === "a")
+          return false;
+        which = "b";
+        result.push(b[bi]);
+        ai++;
+        bi++;
+      } else {
+        return false;
+      }
+    }
+    return a.length === b.length && result;
+  }
+  parseNegate() {
+    if (this.nonegate)
+      return;
+    const pattern = this.pattern;
+    let negate = false;
+    let negateOffset = 0;
+    for (let i = 0; i < pattern.length && pattern.charAt(i) === "!"; i++) {
+      negate = !negate;
+      negateOffset++;
+    }
+    if (negateOffset)
+      this.pattern = pattern.slice(negateOffset);
+    this.negate = negate;
+  }
+  // set partial to true to test if, for example,
+  // "/a/b" matches the start of "/*/b/*/d"
+  // Partial means, if you run out of file before you run
+  // out of pattern, then that's fine, as long as all
+  // the parts match.
+  matchOne(file, pattern, partial = false) {
+    let fileStartIndex = 0;
+    let patternStartIndex = 0;
+    if (this.isWindows) {
+      const fileDrive = typeof file[0] === "string" && /^[a-z]:$/i.test(file[0]);
+      const fileUNC = !fileDrive && file[0] === "" && file[1] === "" && file[2] === "?" && /^[a-z]:$/i.test(file[3]);
+      const patternDrive = typeof pattern[0] === "string" && /^[a-z]:$/i.test(pattern[0]);
+      const patternUNC = !patternDrive && pattern[0] === "" && pattern[1] === "" && pattern[2] === "?" && typeof pattern[3] === "string" && /^[a-z]:$/i.test(pattern[3]);
+      const fdi = fileUNC ? 3 : fileDrive ? 0 : void 0;
+      const pdi = patternUNC ? 3 : patternDrive ? 0 : void 0;
+      if (typeof fdi === "number" && typeof pdi === "number") {
+        const [fd, pd] = [
+          file[fdi],
+          pattern[pdi]
+        ];
+        if (fd.toLowerCase() === pd.toLowerCase()) {
+          pattern[pdi] = fd;
+          patternStartIndex = pdi;
+          fileStartIndex = fdi;
+        }
+      }
+    }
+    const { optimizationLevel = 1 } = this.options;
+    if (optimizationLevel >= 2) {
+      file = this.levelTwoFileOptimize(file);
+    }
+    if (pattern.includes(exports.GLOBSTAR)) {
+      return this.#matchGlobstar(file, pattern, partial, fileStartIndex, patternStartIndex);
+    }
+    return this.#matchOne(file, pattern, partial, fileStartIndex, patternStartIndex);
+  }
+  #matchGlobstar(file, pattern, partial, fileIndex, patternIndex) {
+    const firstgs = pattern.indexOf(exports.GLOBSTAR, patternIndex);
+    const lastgs = pattern.lastIndexOf(exports.GLOBSTAR);
+    const [head, body, tail] = partial ? [
+      pattern.slice(patternIndex, firstgs),
+      pattern.slice(firstgs + 1),
+      []
+    ] : [
+      pattern.slice(patternIndex, firstgs),
+      pattern.slice(firstgs + 1, lastgs),
+      pattern.slice(lastgs + 1)
+    ];
+    if (head.length) {
+      const fileHead = file.slice(fileIndex, fileIndex + head.length);
+      if (!this.#matchOne(fileHead, head, partial, 0, 0)) {
+        return false;
+      }
+      fileIndex += head.length;
+      patternIndex += head.length;
+    }
+    let fileTailMatch = 0;
+    if (tail.length) {
+      if (tail.length + fileIndex > file.length)
+        return false;
+      let tailStart = file.length - tail.length;
+      if (this.#matchOne(file, tail, partial, tailStart, 0)) {
+        fileTailMatch = tail.length;
+      } else {
+        if (file[file.length - 1] !== "" || fileIndex + tail.length === file.length) {
+          return false;
+        }
+        tailStart--;
+        if (!this.#matchOne(file, tail, partial, tailStart, 0)) {
+          return false;
+        }
+        fileTailMatch = tail.length + 1;
+      }
+    }
+    if (!body.length) {
+      let sawSome = !!fileTailMatch;
+      for (let i2 = fileIndex; i2 < file.length - fileTailMatch; i2++) {
+        const f = String(file[i2]);
+        sawSome = true;
+        if (f === "." || f === ".." || !this.options.dot && f.startsWith(".")) {
+          return false;
+        }
+      }
+      return partial || sawSome;
+    }
+    const bodySegments = [[[], 0]];
+    let currentBody = bodySegments[0];
+    let nonGsParts = 0;
+    const nonGsPartsSums = [0];
+    for (const b of body) {
+      if (b === exports.GLOBSTAR) {
+        nonGsPartsSums.push(nonGsParts);
+        currentBody = [[], 0];
+        bodySegments.push(currentBody);
+      } else {
+        currentBody[0].push(b);
+        nonGsParts++;
+      }
+    }
+    let i = bodySegments.length - 1;
+    const fileLength = file.length - fileTailMatch;
+    for (const b of bodySegments) {
+      b[1] = fileLength - (nonGsPartsSums[i--] + b[0].length);
+    }
+    return !!this.#matchGlobStarBodySections(file, bodySegments, fileIndex, 0, partial, 0, !!fileTailMatch);
+  }
+  // return false for "nope, not matching"
+  // return null for "not matching, cannot keep trying"
+  #matchGlobStarBodySections(file, bodySegments, fileIndex, bodyIndex, partial, globStarDepth, sawTail) {
+    const bs = bodySegments[bodyIndex];
+    if (!bs) {
+      for (let i = fileIndex; i < file.length; i++) {
+        sawTail = true;
+        const f = file[i];
+        if (f === "." || f === ".." || !this.options.dot && f.startsWith(".")) {
+          return false;
+        }
+      }
+      return sawTail;
+    }
+    const [body, after] = bs;
+    while (fileIndex <= after) {
+      const m = this.#matchOne(file.slice(0, fileIndex + body.length), body, partial, fileIndex, 0);
+      if (m && globStarDepth < this.maxGlobstarRecursion) {
+        const sub = this.#matchGlobStarBodySections(file, bodySegments, fileIndex + body.length, bodyIndex + 1, partial, globStarDepth + 1, sawTail);
+        if (sub !== false) {
+          return sub;
+        }
+      }
+      const f = file[fileIndex];
+      if (f === "." || f === ".." || !this.options.dot && f.startsWith(".")) {
+        return false;
+      }
+      fileIndex++;
+    }
+    return partial || null;
+  }
+  #matchOne(file, pattern, partial, fileIndex, patternIndex) {
+    let fi;
+    let pi;
+    let pl;
+    let fl;
+    for (fi = fileIndex, pi = patternIndex, fl = file.length, pl = pattern.length; fi < fl && pi < pl; fi++, pi++) {
+      this.debug("matchOne loop");
+      let p = pattern[pi];
+      let f = file[fi];
+      this.debug(pattern, p, f);
+      if (p === false || p === exports.GLOBSTAR) {
+        return false;
+      }
+      let hit;
+      if (typeof p === "string") {
+        hit = f === p;
+        this.debug("string match", p, f, hit);
+      } else {
+        hit = p.test(f);
+        this.debug("pattern match", p, f, hit);
+      }
+      if (!hit)
+        return false;
+    }
+    if (fi === fl && pi === pl) {
+      return true;
+    } else if (fi === fl) {
+      return partial;
+    } else if (pi === pl) {
+      return fi === fl - 1 && file[fi] === "";
+    } else {
+      throw new Error("wtf?");
+    }
+  }
+  braceExpand() {
+    return (0, exports.braceExpand)(this.pattern, this.options);
+  }
+  parse(pattern) {
+    (0, assert_valid_pattern_js_1.assertValidPattern)(pattern);
+    const options = this.options;
+    if (pattern === "**")
+      return exports.GLOBSTAR;
+    if (pattern === "")
+      return "";
+    let m;
+    let fastTest = null;
+    if (m = pattern.match(starRE)) {
+      fastTest = options.dot ? starTestDot : starTest;
+    } else if (m = pattern.match(starDotExtRE)) {
+      fastTest = (options.nocase ? options.dot ? starDotExtTestNocaseDot : starDotExtTestNocase : options.dot ? starDotExtTestDot : starDotExtTest)(m[1]);
+    } else if (m = pattern.match(qmarksRE)) {
+      fastTest = (options.nocase ? options.dot ? qmarksTestNocaseDot : qmarksTestNocase : options.dot ? qmarksTestDot : qmarksTest)(m);
+    } else if (m = pattern.match(starDotStarRE)) {
+      fastTest = options.dot ? starDotStarTestDot : starDotStarTest;
+    } else if (m = pattern.match(dotStarRE)) {
+      fastTest = dotStarTest;
+    }
+    const re = ast_js_1.AST.fromGlob(pattern, this.options).toMMPattern();
+    if (fastTest && typeof re === "object") {
+      Reflect.defineProperty(re, "test", { value: fastTest });
+    }
+    return re;
+  }
+  makeRe() {
+    if (this.regexp || this.regexp === false)
+      return this.regexp;
+    const set = this.set;
+    if (!set.length) {
+      this.regexp = false;
+      return this.regexp;
+    }
+    const options = this.options;
+    const twoStar = options.noglobstar ? star : options.dot ? twoStarDot : twoStarNoDot;
+    const flags = new Set(options.nocase ? ["i"] : []);
+    let re = set.map((pattern) => {
+      const pp = pattern.map((p) => {
+        if (p instanceof RegExp) {
+          for (const f of p.flags.split(""))
+            flags.add(f);
+        }
+        return typeof p === "string" ? regExpEscape(p) : p === exports.GLOBSTAR ? exports.GLOBSTAR : p._src;
+      });
+      pp.forEach((p, i) => {
+        const next = pp[i + 1];
+        const prev = pp[i - 1];
+        if (p !== exports.GLOBSTAR || prev === exports.GLOBSTAR) {
+          return;
+        }
+        if (prev === void 0) {
+          if (next !== void 0 && next !== exports.GLOBSTAR) {
+            pp[i + 1] = "(?:\\/|" + twoStar + "\\/)?" + next;
+          } else {
+            pp[i] = twoStar;
+          }
+        } else if (next === void 0) {
+          pp[i - 1] = prev + "(?:\\/|\\/" + twoStar + ")?";
+        } else if (next !== exports.GLOBSTAR) {
+          pp[i - 1] = prev + "(?:\\/|\\/" + twoStar + "\\/)" + next;
+          pp[i + 1] = exports.GLOBSTAR;
+        }
+      });
+      const filtered = pp.filter((p) => p !== exports.GLOBSTAR);
+      if (this.partial && filtered.length >= 1) {
+        const prefixes = [];
+        for (let i = 1; i <= filtered.length; i++) {
+          prefixes.push(filtered.slice(0, i).join("/"));
+        }
+        return "(?:" + prefixes.join("|") + ")";
+      }
+      return filtered.join("/");
+    }).join("|");
+    const [open, close] = set.length > 1 ? ["(?:", ")"] : ["", ""];
+    re = "^" + open + re + close + "$";
+    if (this.partial) {
+      re = "^(?:\\/|" + open + re.slice(1, -1) + close + ")$";
+    }
+    if (this.negate)
+      re = "^(?!" + re + ").+$";
+    try {
+      this.regexp = new RegExp(re, [...flags].join(""));
+    } catch {
+      this.regexp = false;
+    }
+    return this.regexp;
+  }
+  slashSplit(p) {
+    if (this.preserveMultipleSlashes) {
+      return p.split("/");
+    } else if (this.isWindows && /^\/\/[^/]+/.test(p)) {
+      return ["", ...p.split(/\/+/)];
+    } else {
+      return p.split(/\/+/);
+    }
+  }
+  match(f, partial = this.partial) {
+    this.debug("match", f, this.pattern);
+    if (this.comment) {
+      return false;
+    }
+    if (this.empty) {
+      return f === "";
+    }
+    if (f === "/" && partial) {
+      return true;
+    }
+    const options = this.options;
+    if (this.isWindows) {
+      f = f.split("\\").join("/");
+    }
+    const ff = this.slashSplit(f);
+    this.debug(this.pattern, "split", ff);
+    const set = this.set;
+    this.debug(this.pattern, "set", set);
+    let filename = ff[ff.length - 1];
+    if (!filename) {
+      for (let i = ff.length - 2; !filename && i >= 0; i--) {
+        filename = ff[i];
+      }
+    }
+    for (const pattern of set) {
+      let file = ff;
+      if (options.matchBase && pattern.length === 1) {
+        file = [filename];
+      }
+      const hit = this.matchOne(file, pattern, partial);
+      if (hit) {
+        if (options.flipNegate) {
+          return true;
+        }
+        return !this.negate;
+      }
+    }
+    if (options.flipNegate) {
+      return false;
+    }
+    return this.negate;
+  }
+  static defaults(def) {
+    return exports.minimatch.defaults(def).Minimatch;
+  }
+};
+exports.Minimatch = Minimatch;
+var ast_js_2 = require_ast();
+Object.defineProperty(exports, "AST", { enumerable: true, get: function() {
+  return ast_js_2.AST;
+} });
+var escape_js_2 = require_escape();
+Object.defineProperty(exports, "escape", { enumerable: true, get: function() {
+  return escape_js_2.escape;
+} });
+var unescape_js_2 = require_unescape();
+Object.defineProperty(exports, "unescape", { enumerable: true, get: function() {
+  return unescape_js_2.unescape;
+} });
+exports.minimatch.AST = ast_js_1.AST;
+exports.minimatch.Minimatch = Minimatch;
+exports.minimatch.escape = escape_js_1.escape;
+exports.minimatch.unescape = unescape_js_1.unescape;
+
+                })(module, module.exports);
+                matcher = module.exports;
+            }
+            return matcher;
+        }
+        if (name === 'internal/fs/glob') {
+            if (globModule === undefined) {
+                const module = { exports: {} };
+                (function(module, exports, require, primordials, process) {
+                    'use strict';
+
+const {
+  ArrayFrom,
+  ArrayIsArray,
+  ArrayPrototypeAt,
+  ArrayPrototypeFlatMap,
+  ArrayPrototypeJoin,
+  ArrayPrototypeMap,
+  ArrayPrototypePop,
+  ArrayPrototypePush,
+  ArrayPrototypeSome,
+  Promise,
+  PromisePrototypeThen,
+  SafeMap,
+  SafeSet,
+  StringPrototypeEndsWith,
+  StringPrototypeSlice,
+  StringPrototypeSplit,
+  StringPrototypeStartsWith,
+  StringPrototypeToLowerCase,
+} = primordials;
+
+const {
+  lstatSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+} = require('fs');
+const realpathSyncNative = realpathSync.native;
+const {
+  lstat,
+  readdir,
+  realpath,
+  stat,
+} = require('fs/promises');
+const { join, resolve, relative, basename, isAbsolute, dirname, parse, sep } = require('path');
+
+const {
+  kEmptyObject,
+  isWindows,
+  isMacOS,
+} = require('internal/util');
+const {
+  validateBoolean,
+  validateInteger,
+  validateObject,
+  validateString,
+  validateStringArray,
+} = require('internal/validators');
+const { DirentFromStats } = require('internal/fs/utils');
+const {
+  codes: {
+    ERR_INVALID_ARG_TYPE,
+  },
+  hideStackFrames,
+} = require('internal/errors');
+const assert = require('internal/assert');
+const { toPathIfFileURL } = require('internal/url');
+
+let minimatch;
+function lazyMinimatch() {
+  minimatch ??= require('internal/deps/minimatch/index');
+  return minimatch;
+}
+
+/**
+ * @param {string} path
+ * @returns {Promise<DirentFromStats|null>}
+ */
+async function getDirent(path) {
+  let stat;
+  try {
+    stat = await lstat(path);
+  } catch {
+    return null;
+  }
+  return new DirentFromStats(basename(path), stat, dirname(path));
+}
+
+/**
+ * @param {string} path
+ * @returns {DirentFromStats|null}
+ */
+function getDirentSync(path) {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    return null;
+  }
+  return new DirentFromStats(basename(path), stat, dirname(path));
+}
+
+/**
+ * @callback validateStringArrayOrFunction
+ * @param {*} value
+ * @param {string} name
+ */
+const validateStringArrayOrFunction = hideStackFrames((value, name) => {
+  if (ArrayIsArray(value)) {
+    for (let i = 0; i < value.length; ++i) {
+      if (typeof value[i] !== 'string') {
+        throw new ERR_INVALID_ARG_TYPE(`${name}[${i}]`, 'string', value[i]);
+      }
+    }
+    return;
+  }
+  if (typeof value !== 'function') {
+    throw new ERR_INVALID_ARG_TYPE(name, ['string[]', 'function'], value);
+  }
+});
+
+/**
+ * @param {string} pattern
+ * @param {options} options
+ * @returns {Minimatch}
+ */
+function createMatcher(pattern, options = kEmptyObject) {
+  const opts = {
+    __proto__: null,
+    nocase: isWindows || isMacOS,
+    windowsPathsNoEscape: true,
+    nonegate: true,
+    nocomment: true,
+    optimizationLevel: 2,
+    platform: process.platform,
+    nocaseMagicOnly: true,
+    ...options,
+  };
+  return new (lazyMinimatch().Minimatch)(pattern, opts);
+}
+
+function cloneSet(values) {
+  const cloned = new SafeSet();
+  for (const value of values) {
+    cloned.add(value);
+  }
+  return cloned;
+}
+
+function isOutsidePath(path) {
+  return isAbsolute(path) ||
+    path === '..' ||
+    StringPrototypeStartsWith(path, `..${sep}`);
+}
+
+function isStrictDescendant(path) {
+  return path !== '' && !isOutsidePath(path);
+}
+
+function pathDepth(path) {
+  if (path === '') {
+    return 0;
+  }
+  if (isAbsolute(path)) {
+    return Infinity;
+  }
+  return StringPrototypeSplit(path, sep).length;
+}
+
+function ancestorAtDepth(path, relativePath) {
+  let ancestor = path;
+  if (relativePath !== '') {
+    const depth = pathDepth(relativePath);
+    for (let i = 0; i < depth; i++) {
+      ancestor = dirname(ancestor);
+    }
+  }
+  return ancestor;
+}
+
+function caseSensitiveRelative(path, otherPath) {
+  const pathRoot = parse(path).root;
+  const otherPathRoot = parse(otherPath).root;
+  if (StringPrototypeToLowerCase(pathRoot) !==
+      StringPrototypeToLowerCase(otherPathRoot)) {
+    return otherPath;
+  }
+  const pathTail = StringPrototypeSlice(path, pathRoot.length);
+  const otherPathTail = StringPrototypeSlice(otherPath, otherPathRoot.length);
+  const pathParts = pathTail === '' ? [] : StringPrototypeSplit(pathTail, sep);
+  const otherPathParts = otherPathTail === '' ?
+    [] : StringPrototypeSplit(otherPathTail, sep);
+  let common = 0;
+  while (common < pathParts.length &&
+         common < otherPathParts.length &&
+         pathParts[common] === otherPathParts[common]) {
+    common++;
+  }
+  const parts = [];
+  for (let i = common; i < pathParts.length; i++) {
+    ArrayPrototypePush(parts, '..');
+  }
+  for (let i = common; i < otherPathParts.length; i++) {
+    ArrayPrototypePush(parts, otherPathParts[i]);
+  }
+  return ArrayPrototypeJoin(parts, sep);
+}
+
+class Cache {
+  #cache = new SafeMap();
+  #statsCache = new SafeMap();
+  #followStatsCache = new SafeMap();
+  #identityCache = new SafeMap();
+  #identityRealpathCache = new SafeMap();
+  #readdirCache = new SafeMap();
+  #realpathCache = new SafeMap();
+
+  stat(path) {
+    const cached = this.#statsCache.get(path);
+    if (cached) {
+      return cached;
+    }
+    const promise = getDirent(path);
+    this.#statsCache.set(path, promise);
+    return promise;
+  }
+  statSync(path) {
+    const cached = this.#statsCache.get(path);
+    // Do not return a promise from a sync function.
+    if (cached && !(cached instanceof Promise)) {
+      return cached;
+    }
+    const val = getDirentSync(path);
+    this.#statsCache.set(path, val);
+    return val;
+  }
+  followStat(path) {
+    const cached = this.#followStatsCache.get(path);
+    if (cached) {
+      return cached;
+    }
+    const promise = PromisePrototypeThen(stat(path), null, () => null);
+    this.#followStatsCache.set(path, promise);
+    return promise;
+  }
+  followStatSync(path) {
+    const cached = this.#followStatsCache.get(path);
+    if (cached && !(cached instanceof Promise)) {
+      return cached;
+    }
+    let val;
+    try {
+      val = statSync(path);
+    } catch {
+      val = null;
+    }
+    this.#followStatsCache.set(path, val);
+    return val;
+  }
+  identity(path) {
+    const cached = this.#identityCache.get(path);
+    if (cached) {
+      return cached;
+    }
+    const promise = PromisePrototypeThen(
+      lstat(path),
+      ({ dev, ino }) => `${dev}:${ino}`,
+      () => null,
+    );
+    this.#identityCache.set(path, promise);
+    return promise;
+  }
+  identitySync(path) {
+    const cached = this.#identityCache.get(path);
+    if (cached && !(cached instanceof Promise)) {
+      return cached;
+    }
+    let val;
+    try {
+      const { dev, ino } = lstatSync(path);
+      val = `${dev}:${ino}`;
+    } catch {
+      val = null;
+    }
+    this.#identityCache.set(path, val);
+    return val;
+  }
+  identityRealpath(path) {
+    const cached = this.#identityRealpathCache.get(path);
+    if (cached) {
+      return cached;
+    }
+    const promise = PromisePrototypeThen(realpath(path), null, () => null);
+    this.#identityRealpathCache.set(path, promise);
+    return promise;
+  }
+  identityRealpathSync(path) {
+    const cached = this.#identityRealpathCache.get(path);
+    if (cached && !(cached instanceof Promise)) {
+      return cached;
+    }
+    let val;
+    try {
+      val = realpathSyncNative(path);
+    } catch {
+      val = null;
+    }
+    this.#identityRealpathCache.set(path, val);
+    return val;
+  }
+  realpath(path) {
+    const cached = this.#realpathCache.get(path);
+    if (cached) {
+      return cached;
+    }
+    const promise = PromisePrototypeThen(realpath(path), null, () => null);
+    this.#realpathCache.set(path, promise);
+    return promise;
+  }
+  realpathSync(path) {
+    const cached = this.#realpathCache.get(path);
+    if (cached && !(cached instanceof Promise)) {
+      return cached;
+    }
+    let val;
+    try {
+      val = realpathSync(path);
+    } catch {
+      val = null;
+    }
+    this.#realpathCache.set(path, val);
+    return val;
+  }
+  addToStatCache(path, val) {
+    this.#statsCache.set(path, val);
+  }
+  async readdir(path) {
+    const cached = this.#readdirCache.get(path);
+    if (cached) {
+      return cached;
+    }
+    const promise = PromisePrototypeThen(readdir(path, { __proto__: null, withFileTypes: true }), null, () => []);
+    this.#readdirCache.set(path, promise);
+    return promise;
+  }
+  readdirSync(path) {
+    const cached = this.#readdirCache.get(path);
+    if (cached) {
+      return cached;
+    }
+    let val;
+    try {
+      val = readdirSync(path, { __proto__: null, withFileTypes: true });
+    } catch {
+      val = [];
+    }
+    this.#readdirCache.set(path, val);
+    return val;
+  }
+  add(path, pattern) {
+    let cache = this.#cache.get(path);
+    if (!cache) {
+      cache = new SafeSet();
+      this.#cache.set(path, cache);
+    }
+    const originalSize = cache.size;
+    pattern.indexes.forEach((index) => cache.add(pattern.cacheKey(index)));
+    return cache.size !== originalSize + pattern.indexes.size;
+  }
+  seen(path, pattern, index) {
+    return this.#cache.get(path)?.has(pattern.cacheKey(index));
+  }
+}
+
+class DepthLimiter {
+  #root;
+  #maxDepth;
+  #cache;
+  #relativeCache = new SafeMap();
+
+  constructor(root, maxDepth, cache) {
+    this.#root = resolve(root);
+    this.#maxDepth = maxDepth;
+    this.#cache = cache;
+  }
+
+  #relativeCandidate(path) {
+    const fullpath = resolve(this.#root, path);
+    const pathFromRoot = relative(this.#root, fullpath);
+    if (isWindows && !isOutsidePath(pathFromRoot)) {
+      return {
+        __proto__: null,
+        pathFromRoot,
+        caseVariantRoot: ancestorAtDepth(fullpath, pathFromRoot),
+        differentPath: caseSensitiveRelative(this.#root, fullpath),
+      };
+    }
+    if (isMacOS && !isAbsolute(pathFromRoot) && isOutsidePath(pathFromRoot)) {
+      const foldedPathFromRoot = relative(
+        StringPrototypeToLowerCase(this.#root),
+        StringPrototypeToLowerCase(fullpath),
+      );
+      if (!isOutsidePath(foldedPathFromRoot)) {
+        return {
+          __proto__: null,
+          pathFromRoot: foldedPathFromRoot,
+          caseVariantRoot: ancestorAtDepth(fullpath, foldedPathFromRoot),
+          differentPath: pathFromRoot,
+        };
+      }
+    }
+    return { __proto__: null, pathFromRoot };
+  }
+
+  #isSamePath(path, otherPath) {
+    if (path === otherPath) {
+      return true;
+    }
+    if (isWindows) {
+      const realPath = this.#cache.identityRealpathSync(path);
+      return realPath !== null &&
+        realPath === this.#cache.identityRealpathSync(otherPath);
+    }
+    const identity = this.#cache.identitySync(path);
+    return identity !== null &&
+      identity === this.#cache.identitySync(otherPath);
+  }
+
+  async #isSamePathAsync(path, otherPath) {
+    if (path === otherPath) {
+      return true;
+    }
+    if (isWindows) {
+      const realPath = await this.#cache.identityRealpath(path);
+      return realPath !== null &&
+        realPath === await this.#cache.identityRealpath(otherPath);
+    }
+    const identity = await this.#cache.identity(path);
+    return identity !== null &&
+      identity === await this.#cache.identity(otherPath);
+  }
+
+  #relativeFromRoot(path) {
+    const cached = this.#relativeCache.get(path);
+    if (cached !== undefined && !(cached instanceof Promise)) {
+      return cached;
+    }
+    const candidate = this.#relativeCandidate(path);
+    const relativePath = candidate.caseVariantRoot === undefined ||
+        this.#isSamePath(this.#root, candidate.caseVariantRoot) ?
+      candidate.pathFromRoot :
+      candidate.differentPath;
+    this.#relativeCache.set(path, relativePath);
+    return relativePath;
+  }
+
+  #relativeFromRootAsync(path) {
+    const cached = this.#relativeCache.get(path);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const candidate = this.#relativeCandidate(path);
+    if (candidate.caseVariantRoot === undefined) {
+      this.#relativeCache.set(path, candidate.pathFromRoot);
+      return candidate.pathFromRoot;
+    }
+    const promise = PromisePrototypeThen(
+      this.#isSamePathAsync(this.#root, candidate.caseVariantRoot),
+      (isSamePath) => (isSamePath ?
+        candidate.pathFromRoot :
+        candidate.differentPath),
+    );
+    this.#relativeCache.set(path, promise);
+    return promise;
+  }
+
+  #ancestorCandidate(path) {
+    const fullpath = resolve(this.#root, path);
+    const rootFromPath = relative(fullpath, this.#root);
+    if (isStrictDescendant(rootFromPath)) {
+      return { __proto__: null, fullpath, needsIdentity: isWindows };
+    }
+    if (isMacOS) {
+      const foldedRootFromPath = relative(
+        StringPrototypeToLowerCase(fullpath),
+        StringPrototypeToLowerCase(this.#root),
+      );
+      if (isStrictDescendant(foldedRootFromPath)) {
+        return { __proto__: null, fullpath, needsIdentity: true };
+      }
+    }
+    return null;
+  }
+
+  #isAncestorOfRoot(path) {
+    const candidate = this.#ancestorCandidate(path);
+    if (candidate === null) {
+      return false;
+    }
+    if (!candidate.needsIdentity) {
+      return true;
+    }
+    const realRoot = this.#cache.identityRealpathSync(this.#root);
+    const realFullpath = this.#cache.identityRealpathSync(candidate.fullpath);
+    if (realRoot === null || realFullpath === null) {
+      return false;
+    }
+    const realRootFromPath = isWindows ?
+      caseSensitiveRelative(realFullpath, realRoot) :
+      relative(realFullpath, realRoot);
+    return isStrictDescendant(realRootFromPath);
+  }
+
+  async #isAncestorOfRootAsync(path) {
+    const candidate = this.#ancestorCandidate(path);
+    if (candidate === null) {
+      return false;
+    }
+    if (!candidate.needsIdentity) {
+      return true;
+    }
+    const realRoot = await this.#cache.identityRealpath(this.#root);
+    const realFullpath =
+      await this.#cache.identityRealpath(candidate.fullpath);
+    if (realRoot === null || realFullpath === null) {
+      return false;
+    }
+    const realRootFromPath = isWindows ?
+      caseSensitiveRelative(realFullpath, realRoot) :
+      relative(realFullpath, realRoot);
+    return isStrictDescendant(realRootFromPath);
+  }
+
+  includes(path) {
+    return pathDepth(this.#relativeFromRoot(path)) <= this.#maxDepth;
+  }
+
+  async includesAsync(path) {
+    return pathDepth(await this.#relativeFromRootAsync(path)) <= this.#maxDepth;
+  }
+
+  canTraverse(path, isAbsolutePattern) {
+    return (isAbsolutePattern && this.#isAncestorOfRoot(path)) ||
+      pathDepth(this.#relativeFromRoot(path)) < this.#maxDepth;
+  }
+
+  async canTraverseAsync(path, isAbsolutePattern) {
+    return (isAbsolutePattern && await this.#isAncestorOfRootAsync(path)) ||
+      pathDepth(await this.#relativeFromRootAsync(path)) < this.#maxDepth;
+  }
+}
+
+function createDepthLimiter(root, maxDepth, cache) {
+  if (maxDepth == null || maxDepth === Infinity) {
+    return null;
+  }
+  validateInteger(maxDepth, 'options.maxDepth', 0);
+  return new DepthLimiter(root, maxDepth, cache);
+}
+
+class Pattern {
+  #pattern;
+  #globStrings;
+  indexes;
+  symlinks;
+  realpaths;
+  last;
+  isAbsolute;
+
+  constructor(pattern, globStrings, indexes, symlinks, isAbsolute, realpaths = new SafeSet()) {
+    this.#pattern = pattern;
+    this.#globStrings = globStrings;
+    this.indexes = indexes;
+    this.symlinks = symlinks;
+    this.isAbsolute = isAbsolute;
+    this.realpaths = realpaths;
+    this.last = pattern.length - 1;
+  }
+
+  isLast(isDirectory) {
+    return this.indexes.has(this.last) ||
+      (this.at(-1) === '' && isDirectory &&
+      this.indexes.has(this.last - 1) && this.at(-2) === lazyMinimatch().GLOBSTAR);
+  }
+  isFirst() {
+    return this.indexes.has(0);
+  }
+  get hasSeenSymlinks() {
+    return ArrayPrototypeSome(ArrayFrom(this.indexes), (i) => !this.symlinks.has(i));
+  }
+  at(index) {
+    return ArrayPrototypeAt(this.#pattern, index);
+  }
+  child(indexes, symlinks = new SafeSet(), realpaths = this.realpaths) {
+    return new Pattern(this.#pattern, this.#globStrings, indexes, symlinks, this.isAbsolute, realpaths);
+  }
+  test(index, path) {
+    if (index > this.#pattern.length) {
+      return false;
+    }
+    const pattern = this.#pattern[index];
+    if (pattern === lazyMinimatch().GLOBSTAR) {
+      return true;
+    }
+    if (typeof pattern === 'string') {
+      return pattern === path;
+    }
+    if (typeof pattern?.test === 'function') {
+      return pattern.test(path);
+    }
+    return false;
+  }
+
+  cacheKey(index) {
+    let key = '';
+    for (let i = index; i < this.#globStrings.length; i++) {
+      key += this.#globStrings[i];
+      if (i !== this.#globStrings.length - 1) {
+        key += '/';
+      }
+    }
+    return key;
+  }
+}
+
+class ResultSet extends SafeSet {
+  #root = '.';
+  #isExcluded = () => false;
+
+  setup(root, isExcludedFn) {
+    this.#root = root;
+    this.#isExcluded = isExcludedFn;
+  }
+
+  add(value) {
+    if (this.#isExcluded(resolve(this.#root, value))) {
+      return false;
+    }
+    super.add(value);
+    return true;
+  }
+}
+
+class Glob {
+  #root;
+  #exclude;
+  #cache = new Cache();
+  #results = new ResultSet();
+  #queue = [];
+  #subpatterns = new SafeMap();
+  #patterns;
+  #withFileTypes;
+  #followSymlinks = false;
+  #depthLimiter;
+  #isExcluded = () => false;
+  constructor(pattern, options = kEmptyObject) {
+    validateObject(options, 'options');
+    const { exclude, cwd, followSymlinks, maxDepth, withFileTypes } = options;
+    this.#root = toPathIfFileURL(cwd) ?? '.';
+    if (followSymlinks != null) {
+      validateBoolean(followSymlinks, 'options.followSymlinks');
+      this.#followSymlinks = followSymlinks;
+    }
+    this.#depthLimiter =
+      createDepthLimiter(this.#root, maxDepth, this.#cache);
+    this.#withFileTypes = !!withFileTypes;
+    if (exclude != null) {
+      validateStringArrayOrFunction(exclude, 'options.exclude');
+      if (ArrayIsArray(exclude)) {
+        assert(typeof this.#root === 'string');
+        // Convert the path part of exclude patterns to absolute paths for
+        // consistent comparison before instantiating matchers.
+        const matchers = exclude
+          .map((pattern) => resolve(this.#root, pattern))
+          // Exclude matching is a pure string comparison with no filesystem
+          // lookups, so unlike include patterns, literal patterns must also
+          // match case-insensitively on case-insensitive platforms.
+          .map((pattern) => createMatcher(pattern, { nocaseMagicOnly: false }));
+        this.#isExcluded = (value) =>
+          matchers.some((matcher) => matcher.match(value));
+        this.#results.setup(this.#root, this.#isExcluded);
+      } else {
+        this.#exclude = exclude;
+      }
+    }
+    let patterns;
+    if (typeof pattern === 'object') {
+      validateStringArray(pattern, 'patterns');
+      patterns = pattern;
+    } else {
+      validateString(pattern, 'patterns');
+      patterns = [pattern];
+    }
+    this.matchers = ArrayPrototypeMap(patterns, (pattern) => createMatcher(pattern));
+    this.#patterns = ArrayPrototypeFlatMap(this.matchers, (matcher) =>
+      ArrayPrototypeMap(matcher.set, (pattern, i) => new Pattern(
+        pattern,
+        matcher.globParts[i],
+        new SafeSet().add(0),
+        new SafeSet(),
+        isAbsolute(ArrayPrototypeJoin(matcher.globParts[i], sep)),
+      )));
+  }
+
+  #addResult(path) {
+    return (this.#depthLimiter === null ||
+      this.#depthLimiter.includes(path)) &&
+      this.#results.add(path);
+  }
+
+  async #addResultAsync(path) {
+    return await this.#depthLimiter.includesAsync(path) &&
+      this.#results.add(path);
+  }
+
+  #canTraverse(path, pattern) {
+    return this.#depthLimiter === null ||
+      this.#depthLimiter.canTraverse(path, pattern.isAbsolute);
+  }
+
+  async #canTraverseAsync(path, pattern) {
+    return this.#depthLimiter.canTraverseAsync(path, pattern.isAbsolute);
+  }
+
+  globSync() {
+    ArrayPrototypePush(this.#queue, { __proto__: null, path: '.', patterns: this.#patterns });
+    while (this.#queue.length > 0) {
+      const item = ArrayPrototypePop(this.#queue);
+      for (let i = 0; i < item.patterns.length; i++) {
+        this.#addSubpatterns(item.path, item.patterns[i]);
+      }
+      this.#subpatterns
+        .forEach((patterns, path) => ArrayPrototypePush(this.#queue, { __proto__: null, path, patterns }));
+      this.#subpatterns.clear();
+    }
+    return ArrayFrom(
+      this.#results,
+      this.#withFileTypes ? (path) => this.#cache.statSync(
+        isAbsolute(path) ?
+          path :
+          join(this.#root, path),
+      ) : undefined,
+    );
+  }
+  #isDirectorySync(path, stat, pattern) {
+    if (stat?.isDirectory()) {
+      return true;
+    }
+    if (!stat?.isSymbolicLink()) {
+      return false;
+    }
+    if (this.#followSymlinks) {
+      return !!this.#cache.followStatSync(path)?.isDirectory();
+    }
+    return pattern.hasSeenSymlinks;
+  }
+  async #isDirectory(path, stat, pattern) {
+    if (stat?.isDirectory()) {
+      return true;
+    }
+    if (!stat?.isSymbolicLink()) {
+      return false;
+    }
+    if (this.#followSymlinks) {
+      return !!(await this.#cache.followStat(path))?.isDirectory();
+    }
+    return pattern.hasSeenSymlinks;
+  }
+  #nextRealpathsSync(path, isDirectory, pattern) {
+    if (!this.#followSymlinks || !isDirectory) {
+      return pattern.realpaths;
+    }
+    const real = this.#cache.realpathSync(path);
+    if (real === null) {
+      return pattern.realpaths;
+    }
+    const realpaths = cloneSet(pattern.realpaths);
+    realpaths.add(real);
+    return realpaths;
+  }
+  async #nextRealpaths(path, isDirectory, pattern) {
+    if (!this.#followSymlinks || !isDirectory) {
+      return pattern.realpaths;
+    }
+    const real = await this.#cache.realpath(path);
+    if (real === null) {
+      return pattern.realpaths;
+    }
+    const realpaths = cloneSet(pattern.realpaths);
+    realpaths.add(real);
+    return realpaths;
+  }
+  async #isCyclic(path, isDirectory, pattern) {
+    if (!this.#followSymlinks || !isDirectory) {
+      return false;
+    }
+    const real = await this.#cache.realpath(path);
+    return real !== null && pattern.realpaths.has(real);
+  }
+  #isCyclicSync(path, isDirectory, pattern) {
+    if (!this.#followSymlinks || !isDirectory) {
+      return false;
+    }
+    const real = this.#cache.realpathSync(path);
+    return real !== null && pattern.realpaths.has(real);
+  }
+  #addSubpattern(path, pattern) {
+    if (this.#isExcluded(path)) {
+      return;
+    }
+    const fullpath = resolve(this.#root, path);
+
+    // If path is a directory, add trailing slash and test patterns again.
+    if (this.#isExcluded(`${fullpath}/`) && this.#cache.statSync(fullpath).isDirectory()) {
+      return;
+    }
+
+    if (this.#exclude) {
+      if (this.#withFileTypes) {
+        const stat = this.#cache.statSync(path);
+        if (stat !== null) {
+          if (this.#exclude(stat)) {
+            return;
+          }
+        }
+      } else if (this.#exclude(path)) {
+        return;
+      }
+    }
+    if (!this.#subpatterns.has(path)) {
+      this.#subpatterns.set(path, [pattern]);
+    } else {
+      ArrayPrototypePush(this.#subpatterns.get(path), pattern);
+    }
+  }
+  #addSubpatterns(path, pattern) {
+    const seen = this.#cache.add(path, pattern);
+    if (seen) {
+      return;
+    }
+    const fullpath = resolve(this.#root, path);
+    const stat = this.#cache.statSync(fullpath);
+    const last = pattern.last;
+    const isDirectory = this.#isDirectorySync(fullpath, stat, pattern);
+    const isLast = pattern.isLast(isDirectory);
+    const isFirst = pattern.isFirst();
+
+    if (this.#isExcluded(fullpath)) {
+      return;
+    }
+    if (isFirst && isWindows && typeof pattern.at(0) === 'string' && StringPrototypeEndsWith(pattern.at(0), ':')) {
+      // Absolute path, go to root
+      this.#addSubpattern(`${pattern.at(0)}\\`, pattern.child(new SafeSet().add(1)));
+      return;
+    }
+    if (isFirst && pattern.at(0) === '') {
+      // Absolute path, go to root
+      this.#addSubpattern('/', pattern.child(new SafeSet().add(1)));
+      return;
+    }
+    if (isFirst && pattern.at(0) === '..') {
+      // Start with .., go to parent
+      this.#addSubpattern('../', pattern.child(new SafeSet().add(1)));
+      return;
+    }
+    if (isFirst && pattern.at(0) === '.') {
+      // Start with ., proceed
+      this.#addSubpattern('.', pattern.child(new SafeSet().add(1)));
+      return;
+    }
+
+    if (isLast && typeof pattern.at(-1) === 'string') {
+      // Add result if it exists
+      const p = pattern.at(-1);
+      const stat = this.#cache.statSync(join(fullpath, p));
+      if (stat && (p || isDirectory)) {
+        this.#addResult(join(path, p));
+      }
+      if (pattern.indexes.size === 1 && pattern.indexes.has(last)) {
+        return;
+      }
+    } else if (isLast && pattern.at(-1) === lazyMinimatch().GLOBSTAR &&
+     (path !== '.' || pattern.at(0) === '.' || (last === 0 && stat))) {
+      // If pattern ends with **, add to results
+      // if path is ".", add it only if pattern starts with "." or pattern is exactly "**"
+      this.#addResult(path);
+    }
+
+    if (!isDirectory ||
+        !this.#canTraverse(path, pattern) ||
+        this.#isCyclicSync(fullpath, isDirectory, pattern)) {
+      return;
+    }
+
+    const nextRealpaths = this.#nextRealpathsSync(fullpath, isDirectory, pattern);
+
+    let children;
+    const firstPattern = pattern.indexes.size === 1 && pattern.at(pattern.indexes.values().next().value);
+    if (typeof firstPattern === 'string') {
+      const stat = this.#cache.statSync(join(fullpath, firstPattern));
+      if (stat) {
+        stat.name = firstPattern;
+        children = [stat];
+      } else {
+        return;
+      }
+    } else {
+      children = this.#cache.readdirSync(fullpath);
+    }
+
+    for (let i = 0; i < children.length; i++) {
+      const entry = children[i];
+      const entryPath = join(path, entry.name);
+      const entryFullpath = join(fullpath, entry.name);
+      this.#cache.addToStatCache(entryFullpath, entry);
+      const entryIsDirectory = entry.isDirectory() ||
+        (this.#followSymlinks && entry.isSymbolicLink() && !!this.#cache.followStatSync(entryFullpath)?.isDirectory());
+
+      const subPatterns = new SafeSet();
+      const nSymlinks = new SafeSet();
+      for (const index of pattern.indexes) {
+        // For each child, check potential patterns
+        const current = pattern.at(index);
+        const nextIndex = index + 1;
+        const next = pattern.at(nextIndex);
+        const fromSymlink = !this.#followSymlinks && pattern.symlinks.has(index);
+
+        if (current === lazyMinimatch().GLOBSTAR) {
+          const isDot = entry.name[0] === '.';
+          const nextMatches = pattern.test(nextIndex, entry.name);
+
+          let nextNonGlobIndex = nextIndex;
+          while (pattern.at(nextNonGlobIndex) === lazyMinimatch().GLOBSTAR) {
+            nextNonGlobIndex++;
+          }
+
+          const matchesDot = isDot && pattern.test(nextNonGlobIndex, entry.name);
+
+          if ((isDot && !matchesDot) ||
+              (this.#exclude && this.#exclude(this.#withFileTypes ? entry : entry.name))) {
+            continue;
+          }
+          if (!fromSymlink && entryIsDirectory) {
+            // If directory, add ** to its potential patterns
+            subPatterns.add(index);
+          } else if (!fromSymlink && index === last) {
+            // If ** is last, add to results
+            this.#addResult(entryPath);
+          }
+
+          // Any pattern after ** is also a potential pattern
+          // so we can already test it here
+          if (nextMatches && nextIndex === last && !isLast) {
+            // If next pattern is the last one, add to results
+            this.#addResult(entryPath);
+          } else if (nextMatches && entryIsDirectory) {
+            // Pattern matched, meaning two patterns forward
+            // are also potential patterns
+            // e.g **/b/c when entry is a/b - add c to potential patterns
+            subPatterns.add(index + 2);
+          }
+          if ((nextMatches || pattern.at(0) === '.') &&
+           entryIsDirectory && !fromSymlink) {
+            // If pattern after ** matches, or pattern starts with "."
+            // and entry is a directory, add to potential patterns
+            subPatterns.add(nextIndex);
+          }
+
+          if (!this.#followSymlinks && entry.isSymbolicLink()) {
+            nSymlinks.add(index);
+          }
+
+          if (next === '..' && entryIsDirectory) {
+            // In case pattern is "**/..",
+            // both parent and current directory should be added to the queue
+            // if this is the last pattern, add to results instead
+            const parent = join(path, '..');
+            if (nextIndex < last) {
+              if (!this.#subpatterns.has(path) && !this.#cache.seen(path, pattern, nextIndex + 1)) {
+                this.#subpatterns.set(path, [pattern.child(new SafeSet().add(nextIndex + 1))]);
+              }
+              if (!this.#subpatterns.has(parent) && !this.#cache.seen(parent, pattern, nextIndex + 1)) {
+                this.#subpatterns.set(parent, [pattern.child(new SafeSet().add(nextIndex + 1))]);
+              }
+            } else {
+              if (!this.#cache.seen(path, pattern, nextIndex)) {
+                this.#cache.add(path, pattern.child(new SafeSet().add(nextIndex)));
+                this.#addResult(path);
+              }
+              if (!this.#cache.seen(path, pattern, nextIndex) || !this.#cache.seen(parent, pattern, nextIndex)) {
+                this.#cache.add(parent, pattern.child(new SafeSet().add(nextIndex)));
+                this.#addResult(parent);
+              }
+            }
+          }
+        }
+        if (typeof current === 'string') {
+          if (pattern.test(index, entry.name) && index !== last) {
+            // If current pattern matches entry name
+            // the next pattern is a potential pattern
+            subPatterns.add(nextIndex);
+          } else if (current === '.' && pattern.test(nextIndex, entry.name)) {
+            // If current pattern is ".", proceed to test next pattern
+            if (nextIndex === last) {
+              this.#addResult(entryPath);
+            } else {
+              subPatterns.add(nextIndex + 1);
+            }
+          }
+        }
+        if (typeof current === 'object' && pattern.test(index, entry.name)) {
+          // If current pattern is a regex that matches entry name (e.g *.js)
+          // add next pattern to potential patterns, or to results if it's the last pattern
+          if (index === last) {
+            this.#addResult(entryPath);
+          } else if (entryIsDirectory) {
+            subPatterns.add(nextIndex);
+          }
+        }
+      }
+      if (subPatterns.size > 0) {
+        // If there are potential patterns, add to queue
+        this.#addSubpattern(entryPath, pattern.child(subPatterns, nSymlinks, nextRealpaths));
+      }
+    }
+  }
+
+
+  async* glob() {
+    ArrayPrototypePush(this.#queue, { __proto__: null, path: '.', patterns: this.#patterns });
+    while (this.#queue.length > 0) {
+      const item = ArrayPrototypePop(this.#queue);
+      for (let i = 0; i < item.patterns.length; i++) {
+        yield* this.#iterateSubpatterns(item.path, item.patterns[i]);
+      }
+      this.#subpatterns
+        .forEach((patterns, path) => ArrayPrototypePush(this.#queue, { __proto__: null, path, patterns }));
+      this.#subpatterns.clear();
+    }
+  }
+  async* #iterateSubpatterns(path, pattern) {
+    const seen = this.#cache.add(path, pattern);
+    if (seen) {
+      return;
+    }
+    const fullpath = resolve(this.#root, path);
+    const stat = await this.#cache.stat(fullpath);
+    const last = pattern.last;
+    const isDirectory = await this.#isDirectory(fullpath, stat, pattern);
+    const isLast = pattern.isLast(isDirectory);
+    const isFirst = pattern.isFirst();
+    const finiteDepth = this.#depthLimiter !== null;
+
+    if (this.#isExcluded(fullpath)) {
+      return;
+    }
+    if (isFirst && isWindows && typeof pattern.at(0) === 'string' && StringPrototypeEndsWith(pattern.at(0), ':')) {
+      // Absolute path, go to root
+      this.#addSubpattern(`${pattern.at(0)}\\`, pattern.child(new SafeSet().add(1)));
+      return;
+    }
+    if (isFirst && pattern.at(0) === '') {
+      // Absolute path, go to root
+      this.#addSubpattern('/', pattern.child(new SafeSet().add(1)));
+      return;
+    }
+    if (isFirst && pattern.at(0) === '..') {
+      // Start with .., go to parent
+      this.#addSubpattern('../', pattern.child(new SafeSet().add(1)));
+      return;
+    }
+    if (isFirst && pattern.at(0) === '.') {
+      // Start with ., proceed
+      this.#addSubpattern('.', pattern.child(new SafeSet().add(1)));
+      return;
+    }
+
+    if (isLast && typeof pattern.at(-1) === 'string') {
+      // Add result if it exists
+      const p = pattern.at(-1);
+      const stat = await this.#cache.stat(join(fullpath, p));
+      if (stat && (p || isDirectory)) {
+        const result = join(path, p);
+        if (!this.#results.has(result)) {
+          if (!finiteDepth ?
+            this.#results.add(result) :
+            await this.#addResultAsync(result)) {
+            yield this.#withFileTypes ? stat : result;
+          }
+        }
+      }
+      if (pattern.indexes.size === 1 && pattern.indexes.has(last)) {
+        return;
+      }
+    } else if (isLast && pattern.at(-1) === lazyMinimatch().GLOBSTAR &&
+     (path !== '.' || pattern.at(0) === '.' || (last === 0 && stat))) {
+      // If pattern ends with **, add to results
+      // if path is ".", add it only if pattern starts with "." or pattern is exactly "**"
+      if (!this.#results.has(path)) {
+        if (!finiteDepth ?
+          this.#results.add(path) :
+          await this.#addResultAsync(path)) {
+          yield this.#withFileTypes ? stat : path;
+        }
+      }
+    }
+
+    let canTraverse = true;
+    if (isDirectory && finiteDepth) {
+      canTraverse = await this.#canTraverseAsync(path, pattern);
+    }
+    if (!isDirectory ||
+        !canTraverse ||
+        await this.#isCyclic(fullpath, isDirectory, pattern)) {
+      return;
+    }
+
+    const nextRealpaths = await this.#nextRealpaths(fullpath, isDirectory, pattern);
+
+    let children;
+    const firstPattern = pattern.indexes.size === 1 && pattern.at(pattern.indexes.values().next().value);
+    if (typeof firstPattern === 'string') {
+      const stat = await this.#cache.stat(join(fullpath, firstPattern));
+      if (stat) {
+        stat.name = firstPattern;
+        children = [stat];
+      } else {
+        return;
+      }
+    } else {
+      children = await this.#cache.readdir(fullpath);
+    }
+
+    for (let i = 0; i < children.length; i++) {
+      const entry = children[i];
+      const entryPath = join(path, entry.name);
+      const entryFullpath = join(fullpath, entry.name);
+      this.#cache.addToStatCache(entryFullpath, entry);
+      const entryIsDirectory = entry.isDirectory() ||
+        (this.#followSymlinks &&
+         entry.isSymbolicLink() &&
+         !!(await this.#cache.followStat(entryFullpath))?.isDirectory());
+
+      const subPatterns = new SafeSet();
+      const nSymlinks = new SafeSet();
+      for (const index of pattern.indexes) {
+        // For each child, check potential patterns
+        const current = pattern.at(index);
+        const nextIndex = index + 1;
+        const next = pattern.at(nextIndex);
+        const fromSymlink = !this.#followSymlinks && pattern.symlinks.has(index);
+
+        if (current === lazyMinimatch().GLOBSTAR) {
+          const isDot = entry.name[0] === '.';
+          const nextMatches = pattern.test(nextIndex, entry.name);
+
+          let nextNonGlobIndex = nextIndex;
+          while (pattern.at(nextNonGlobIndex) === lazyMinimatch().GLOBSTAR) {
+            nextNonGlobIndex++;
+          }
+
+          const matchesDot = isDot && pattern.test(nextNonGlobIndex, entry.name);
+
+          if ((isDot && !matchesDot) ||
+              (this.#exclude && this.#exclude(this.#withFileTypes ? entry : entry.name))) {
+            continue;
+          }
+          if (!fromSymlink && entryIsDirectory) {
+            // If directory, add ** to its potential patterns
+            subPatterns.add(index);
+          } else if (!fromSymlink && index === last) {
+            // If ** is last, add to results
+            if (!this.#results.has(entryPath) &&
+                (!finiteDepth ?
+                  this.#results.add(entryPath) :
+                  await this.#addResultAsync(entryPath))) {
+              yield this.#withFileTypes ? entry : entryPath;
+            }
+          }
+
+          // Any pattern after ** is also a potential pattern
+          // so we can already test it here
+          if (nextMatches && nextIndex === last && !isLast) {
+            // If next pattern is the last one, add to results
+            if (!this.#results.has(entryPath) &&
+                (!finiteDepth ?
+                  this.#results.add(entryPath) :
+                  await this.#addResultAsync(entryPath))) {
+              yield this.#withFileTypes ? entry : entryPath;
+            }
+          } else if (nextMatches && entryIsDirectory) {
+            // Pattern matched, meaning two patterns forward
+            // are also potential patterns
+            // e.g **/b/c when entry is a/b - add c to potential patterns
+            subPatterns.add(index + 2);
+          }
+          if ((nextMatches || pattern.at(0) === '.') &&
+           entryIsDirectory && !fromSymlink) {
+            // If pattern after ** matches, or pattern starts with "."
+            // and entry is a directory, add to potential patterns
+            subPatterns.add(nextIndex);
+          }
+
+          if (!this.#followSymlinks && entry.isSymbolicLink()) {
+            nSymlinks.add(index);
+          }
+
+          if (next === '..' && entryIsDirectory) {
+            // In case pattern is "**/..",
+            // both parent and current directory should be added to the queue
+            // if this is the last pattern, add to results instead
+            const parent = join(path, '..');
+            if (nextIndex < last) {
+              if (!this.#subpatterns.has(path) && !this.#cache.seen(path, pattern, nextIndex + 1)) {
+                this.#subpatterns.set(path, [pattern.child(new SafeSet().add(nextIndex + 1))]);
+              }
+              if (!this.#subpatterns.has(parent) && !this.#cache.seen(parent, pattern, nextIndex + 1)) {
+                this.#subpatterns.set(parent, [pattern.child(new SafeSet().add(nextIndex + 1))]);
+              }
+            } else {
+              if (!this.#cache.seen(path, pattern, nextIndex)) {
+                this.#cache.add(path, pattern.child(new SafeSet().add(nextIndex)));
+                if (!this.#results.has(path)) {
+                  if (!finiteDepth ?
+                    this.#results.add(path) :
+                    await this.#addResultAsync(path)) {
+                    yield this.#withFileTypes ? this.#cache.statSync(fullpath) : path;
+                  }
+                }
+              }
+              if (!this.#cache.seen(path, pattern, nextIndex) || !this.#cache.seen(parent, pattern, nextIndex)) {
+                this.#cache.add(parent, pattern.child(new SafeSet().add(nextIndex)));
+                if (!this.#results.has(parent)) {
+                  if (!finiteDepth ?
+                    this.#results.add(parent) :
+                    await this.#addResultAsync(parent)) {
+                    yield this.#withFileTypes ? this.#cache.statSync(join(this.#root, parent)) : parent;
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (typeof current === 'string') {
+          if (pattern.test(index, entry.name) && index !== last) {
+            // If current pattern matches entry name
+            // the next pattern is a potential pattern
+            subPatterns.add(nextIndex);
+          } else if (current === '.' && pattern.test(nextIndex, entry.name)) {
+            // If current pattern is ".", proceed to test next pattern
+            if (nextIndex === last) {
+              if (!this.#results.has(entryPath)) {
+                if (!finiteDepth ?
+                  this.#results.add(entryPath) :
+                  await this.#addResultAsync(entryPath)) {
+                  yield this.#withFileTypes ? entry : entryPath;
+                }
+              }
+            } else {
+              subPatterns.add(nextIndex + 1);
+            }
+          }
+        }
+        if (typeof current === 'object' && pattern.test(index, entry.name)) {
+          // If current pattern is a regex that matches entry name (e.g *.js)
+          // add next pattern to potential patterns, or to results if it's the last pattern
+          if (index === last) {
+            if (!this.#results.has(entryPath)) {
+              if (!finiteDepth ?
+                this.#results.add(entryPath) :
+                await this.#addResultAsync(entryPath)) {
+                yield this.#withFileTypes ? entry : entryPath;
+              }
+            }
+          } else if (entryIsDirectory) {
+            subPatterns.add(nextIndex);
+          }
+        }
+      }
+      if (subPatterns.size > 0) {
+        // If there are potential patterns, add to queue
+        this.#addSubpattern(entryPath, pattern.child(subPatterns, nSymlinks, nextRealpaths));
+      }
+    }
+  }
+}
+
+const kGlobPatternCacheLimit = 250;
+const patternFnCache = new SafeMap();
+
+/**
+ * Check if a path matches a glob pattern
+ * @param {string} path the path to check
+ * @param {string} pattern the glob pattern to match
+ * @param {boolean} windows whether the path is on a Windows system, defaults to `isWindows`
+ * @returns {boolean}
+ */
+function matchGlobPattern(path, pattern, windows = isWindows) {
+  validateString(path, 'path');
+  validateString(pattern, 'pattern');
+
+  const cacheKey = `${windows ? 'win32' : 'posix'}:${pattern}`;
+  let matcher;
+  if (patternFnCache.has(cacheKey)) {
+    matcher = patternFnCache.get(cacheKey);
+  } else {
+    matcher = createMatcher(pattern, {
+      kEmptyObject,
+      platform: windows ? 'win32' : 'posix',
+    });
+    patternFnCache.set(cacheKey, matcher);
+
+    if (patternFnCache.size >= kGlobPatternCacheLimit) {
+      patternFnCache.delete(patternFnCache.keys().next().value);
+    }
+  }
+
+  return matcher.match(path);
+}
+
+module.exports = {
+  __proto__: null,
+  Glob,
+  createMatcher,
+  matchGlobPattern,
+};
+
+                })(module, module.exports, require, primordials, process);
+                globModule = module.exports;
+            }
+            return globModule;
+        }
+        throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Glob dependency ' + name);
+    }
+    const { validateFunction } = platform.values.validators;
+    function getLazy(initializer) {
+  let value;
+  let initialized = false;
+  return function() {
+    if (initialized === false) {
+      value = initializer();
+      initialized = true;
+    }
+    return value;
+  };
+}
+
+    function makeCallback(cb) {
+  validateFunction(cb, 'cb');
+
+  return (...args) => ReflectApply(cb, this, args);
+}
+    function publicAPIs() {
+        const lazyGlob = getLazy(() => require('internal/fs/glob').Glob);
+
+function glob(pattern, options, callback) {
+  if (typeof options === 'function') {
+    callback = options;
+    options = undefined;
+  }
+  callback = makeCallback(callback);
+
+  const Glob = lazyGlob();
+  PromisePrototypeThen(
+    ArrayFromAsync(new Glob(pattern, options).glob()),
+    (res) => callback(null, res),
+    callback,
+  );
+}
+
+function globSync(pattern, options) {
+  const Glob = lazyGlob();
+  return new Glob(pattern, options).globSync();
+}
+        return { glob, globSync };
+    }
+    function promiseAPIs() {
+        const lazyGlob = getLazy(() => require('internal/fs/glob').Glob);
+async function* glob(pattern, options) {
+  const Glob = lazyGlob();
+  yield* new Glob(pattern, options).glob();
+}
+        return { glob };
+    }
+    return { api: publicAPIs(), promises: promiseAPIs() };
+}
+
 // Borrowed stdio mode ownership. This is not a public Socket/TTY constructor.
 function _createNodeTerminalPlatform(platform) {
     'use strict';
@@ -40311,7 +44221,7 @@ async function readdir(path, options) {
         return { readdir };
     }
     return { api: callbackAPIs(), promises: promiseAPIs(),
-        utilities: { getDirent, getDirents, getRecursiveDirents } };
+        utilities: { DirentFromStats, getDirent, getDirents, getRecursiveDirents } };
 }
 
 // Full pinned Dir queues/iteration/disposal over persistent native cursors.
@@ -95662,7 +99572,12 @@ function pathToFileURL(filepath, options = kEmptyObject) {
   return new URL(resolved, undefined, windows ? kCreateURLFromWindowsPathSymbol : kCreateURLFromPosixPathSymbol);
 }
 
-    return { fileURLToPath, fileURLToPathBuffer, pathToFileURL, urlToHttpOptions, isURL };
+    function toPathIfFileURL(fileURLOrPath) {
+  if (!isURL(fileURLOrPath))
+    return fileURLOrPath;
+  return fileURLToPath(fileURLOrPath);
+}
+    return { fileURLToPath, fileURLToPathBuffer, pathToFileURL, urlToHttpOptions, isURL, toPathIfFileURL };
 }
 
 // Pinned warning creation, event/throw scheduling, filtering and file ownership.

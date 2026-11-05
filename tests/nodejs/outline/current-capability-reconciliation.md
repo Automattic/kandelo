@@ -1,5 +1,15 @@
 # Current public-contract reconciliation
 
+Source122 adds pinned logical/native realpath, readlink and full glob traversal
+using real POSIX byte results/queued requests and shared Dirent/stat owners.
+The private URL-or-path converter now serves filesystem consumers. Sixteen new
+and37 affected controls,16 portable byte/error comparisons and eight unchanged-
+file runs pass in their explicit native-boundary scopes. Guest source117–122
+is uncompiled; accepted116 is not current. All19 families remain partial;
+overall suites/full product rebuild remain deferred. See
+[path/traversal ownership](filesystem-traversal-implementation-dependencies.md).
+
+
 Source121 installs the pinned shared warning owner and actual CLI option
 source for filtering, trace/deprecation policy and redirect-file lifecycle.
 Sixteen new frontend and47 affected controls pass; one known environment-clone

@@ -1,0 +1,295 @@
+{
+  "at": "2026-11-05T21:31:00.079097+00:00",
+  "recipeRevision": 122,
+  "lastAcceptedEngine": 116,
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem-contracts.md",
+    "findingIds": [
+      "FS-013",
+      "FS-016"
+    ],
+    "sharedDependencyFindings": [
+      "FS-022"
+    ],
+    "relatedFamilies": [
+      "filesystem",
+      "values"
+    ],
+    "retainedRows": [
+      {
+        "rowIndex": 9868,
+        "id": "fs.readlinkSync"
+      },
+      {
+        "rowIndex": 9869,
+        "id": "fs.realpathSync"
+      },
+      {
+        "rowIndex": 9881,
+        "id": "fs.readlink"
+      },
+      {
+        "rowIndex": 9882,
+        "id": "fs.realpath"
+      },
+      {
+        "rowIndex": 9893,
+        "id": "fs.glob"
+      },
+      {
+        "rowIndex": 9894,
+        "id": "fs.globSync"
+      },
+      {
+        "rowIndex": 10060,
+        "id": "fs.glob.prototype"
+      },
+      {
+        "rowIndex": 10061,
+        "id": "fs.globSync.prototype"
+      },
+      {
+        "rowIndex": 10093,
+        "id": "fs.readlink.prototype"
+      },
+      {
+        "rowIndex": 10094,
+        "id": "fs.readlinkSync.prototype"
+      },
+      {
+        "rowIndex": 10095,
+        "id": "fs.realpath.prototype"
+      },
+      {
+        "rowIndex": 10096,
+        "id": "fs.realpath.native"
+      },
+      {
+        "rowIndex": 10097,
+        "id": "fs.realpathSync.prototype"
+      },
+      {
+        "rowIndex": 10098,
+        "id": "fs.realpathSync.native"
+      },
+      {
+        "rowIndex": 10531,
+        "id": "fs/promises.readlink"
+      },
+      {
+        "rowIndex": 10532,
+        "id": "fs/promises.realpath"
+      },
+      {
+        "rowIndex": 10544,
+        "id": "fs/promises.glob"
+      },
+      {
+        "rowIndex": 10602,
+        "id": "fs/promises.glob.prototype"
+      }
+    ],
+    "scope": "Path/glob/URL source prerequisites,not full finding/API/family closure;VFS/permissions/raw backend/lifecycle and current guest evidence remain open"
+  },
+  "publicSourceOwners": {
+    "fs.realpath": {
+      "sourceImplemented": true,
+      "individualApiClosure": false,
+      "runtimeConformanceFourHosts": false,
+      "scope": "Complete selected public algorithm with real private/native dependencies;remaining backend/lifecycle/error/realm obligations apply"
+    },
+    "fs.realpathSync": {
+      "sourceImplemented": true,
+      "individualApiClosure": false,
+      "runtimeConformanceFourHosts": false,
+      "scope": "Complete selected public algorithm with real private/native dependencies;remaining backend/lifecycle/error/realm obligations apply"
+    },
+    "fs.realpath.native": {
+      "sourceImplemented": true,
+      "individualApiClosure": false,
+      "runtimeConformanceFourHosts": false,
+      "scope": "Complete selected public algorithm with real private/native dependencies;remaining backend/lifecycle/error/realm obligations apply"
+    },
+    "fs.realpathSync.native": {
+      "sourceImplemented": true,
+      "individualApiClosure": false,
+      "runtimeConformanceFourHosts": false,
+      "scope": "Complete selected public algorithm with real private/native dependencies;remaining backend/lifecycle/error/realm obligations apply"
+    },
+    "fs.readlink": {
+      "sourceImplemented": true,
+      "individualApiClosure": false,
+      "runtimeConformanceFourHosts": false,
+      "scope": "Complete selected public algorithm with real private/native dependencies;remaining backend/lifecycle/error/realm obligations apply"
+    },
+    "fs.readlinkSync": {
+      "sourceImplemented": true,
+      "individualApiClosure": false,
+      "runtimeConformanceFourHosts": false,
+      "scope": "Complete selected public algorithm with real private/native dependencies;remaining backend/lifecycle/error/realm obligations apply"
+    },
+    "fs/promises.realpath": {
+      "sourceImplemented": true,
+      "individualApiClosure": false,
+      "runtimeConformanceFourHosts": false,
+      "scope": "Complete selected public algorithm with real private/native dependencies;remaining backend/lifecycle/error/realm obligations apply"
+    },
+    "fs/promises.readlink": {
+      "sourceImplemented": true,
+      "individualApiClosure": false,
+      "runtimeConformanceFourHosts": false,
+      "scope": "Complete selected public algorithm with real private/native dependencies;remaining backend/lifecycle/error/realm obligations apply"
+    },
+    "fs.glob": {
+      "sourceImplemented": true,
+      "individualApiClosure": false,
+      "runtimeConformanceFourHosts": false,
+      "scope": "Complete selected public algorithm with real private/native dependencies;remaining backend/lifecycle/error/realm obligations apply"
+    },
+    "fs.globSync": {
+      "sourceImplemented": true,
+      "individualApiClosure": false,
+      "runtimeConformanceFourHosts": false,
+      "scope": "Complete selected public algorithm with real private/native dependencies;remaining backend/lifecycle/error/realm obligations apply"
+    },
+    "fs/promises.glob": {
+      "sourceImplemented": true,
+      "individualApiClosure": false,
+      "runtimeConformanceFourHosts": false,
+      "scope": "Complete selected public algorithm with real private/native dependencies;remaining backend/lifecycle/error/realm obligations apply"
+    }
+  },
+  "sourceImplemented": [
+    "Complete pinned logical/native realpath and readlink sync/callback/promise owners,overloads,encoding and native aliases",
+    "Real libc realpath allocation/free and growing byte readlink;actual copied-path queued metadata requests root result encoders and reject conversion exceptions",
+    "Full pinned Glob/cache/depth/exclusion/symlink traversal and callback/sync/promise wrappers over actual stat,readdir,Dirent and path owners",
+    "Existing DirentFromStats and matching/lazy owners are shared with traversal;no outer-host glob substitute",
+    "Pinned private URI-to-path predicate/decoder now serves Stats,FileHandle,realpath/readlink and glob;mutable public URL methods do not redirect filesystem conversion"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-realpath-glob-source-r2/report.json",
+    "sha256": "ab822064ba4c3d7c2a47386539c21eb510d6a80f67421f99a5e56eccfcf3f098",
+    "selectedIdentities": 30,
+    "completeReferences": 7,
+    "guardedInputs": 614,
+    "scope": "Selected identities,7complete archive refs,bundle/bootstrap generation/syntax,input guard and existing engine API source;guest C++/combined candidate uncompiled."
+  },
+  "frontendAndAffected": {
+    "report": ".context/node26-realpath-glob-affected-r2.json",
+    "sha256": "e66c01567722d93e1071abfda1323eebaf10da04dc80cc44270ffd0976547e2f",
+    "newPassed": 16,
+    "affectedPassed": 37,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Actual candidate JS path/glob/Dirent/error/shared URL owners over explicit native I/O/request/process/inspection/byte/engine boundaries;not guest JSAPI"
+  },
+  "portableNative": {
+    "report": ".context/node26-realpath-native-r2/report.json",
+    "sha256": "0318f1b704f2a50d2c6bdda9e66e90b9e7d0906af396dab8170bd002caf092f7",
+    "passed": 16,
+    "failed": 0,
+    "nativeHelperCompileAttempts": 2,
+    "scope": "Actual portable libc byte owner vs exact native Node on controlled development-host files/links,including long/raw/dangling/cycle errors. Not guest kernel,JSAPI,queue or four-host conformance."
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-realpath-glob-upstream-r2/report.json",
+    "sha256": "3454c3d05ee6d66b7751aeafe70f2d49d0e2da5d435ace22b57743628b983fae",
+    "files": 4,
+    "candidatePassed": 4,
+    "nativePassed": 4,
+    "failed": 0,
+    "scope": "Four unchanged upstream files in two modes;candidate pinned path/glob/Dirent/error/codec policies over explicit native bindings/FS requests/process/engine and common harness. Not guest JSAPI,whole fixture closure,four-host or full-family conformance."
+  },
+  "historicalPositiveControls": [
+    {
+      "report": ".context/node26-realpath-frontend-r1.json",
+      "sha256": "8c0c76d4a0557b341a9a5e071184d6d6cd6de646fd461e00e3c649a2a021c1eb",
+      "passed": 7,
+      "scope": "Path source before fullglob/private URL integration"
+    },
+    {
+      "report": ".context/node26-realpath-glob-frontend-r1.json",
+      "sha256": "768e9c7fa20b5b1b055f279024210bc8119aadfda460d67742a7deb02280ae64",
+      "passed": 14,
+      "scope": "Before private URI consumer correction"
+    },
+    {
+      "report": ".context/node26-realpath-glob-affected-r1.json",
+      "sha256": "d1553da13777a3d6c52e2d8bffb25ca6cc85849b85444e0cb36bff77ce8f6ebe",
+      "passed": 43,
+      "scope": "Before additional private URI owner/consumer comparisons"
+    },
+    {
+      "report": ".context/node26-realpath-glob-upstream-r1/report.json",
+      "sha256": "1c1756bd80f59c3c19004e3b3351f4076a00c0db5cfa6224a69a4be4027eaf7d",
+      "passed": 8,
+      "scope": "Before private URI converter integration"
+    }
+  ],
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-realpath-generation-r1.log",
+      "sha256": "10765c8e743ed4a43656bc3e3e05fb8f530c919c0a40a3c0f40021d915ffc955",
+      "kind": "source-generation-error",
+      "reason": "Initial multisource manifest passed to singular-source selector helper;corrected explicit source/section verification before final generation"
+    },
+    {
+      "report": ".context/node26-realpath-native-r1.log",
+      "sha256": "5ef1e7ffea8d7db94aaed75ae53b289005621cd405a12cebe3832b6dbf930b25",
+      "kind": "harness-error",
+      "nativeHelperCompiled": true,
+      "reason": "Development-host filesystem rejected invalid-UTF8 filename creation (errno92) before comparison loop. Raw link target retained in corrected control;invalid-byte filename resolution not tested or excluded"
+    }
+  ],
+  "newlyRecordedOwnerGaps": [
+    {
+      "id": "FS-016-statfs-fallback",
+      "path": "crates/runtime-core/src/syscalls.rs",
+      "sha256": "c235ebd695a78917a364cb9a50f15c3c0ea85ffdde1ef96a6676dacc08508581",
+      "line": 20502,
+      "scope": "Fixed4GB/2GBcapacity fallback remains a kernel metadata gap;Node statfs stays unavailable in this slice",
+      "classification": "implementation gap,not accepted engine/platform boundary",
+      "modifiedThisSlice": false
+    },
+    {
+      "id": "FS-016-host-fstatfs-capacity",
+      "path": "host/src/platform/node.ts",
+      "sha256": "63e0cbe2e3f2f7c5d2405d358bf2626c5d1d7a32b21c8532f9c152181865ce83",
+      "line": 287,
+      "scope": "Host route publishes fixed nosuid policy with zero capacity rather than actual filesystem measurements;do not infer complete public statfs",
+      "classification": "implementation gap,not accepted engine/platform boundary",
+      "modifiedThisSlice": false
+    }
+  ],
+  "remaining": [
+    "Compile pending117\u2013122guest source through normal resolver;accepted116is not current",
+    "Guest result encoding/exception,allocation/GC/OOM,cancellation/ref/exit,realm/worker/bootstrap-order and byte/backend integration on all four hosts",
+    "FS-022 host raw-path aliasing,full metadata/permission/VFS/loader/cache semantics;no accepted blanket engine/platform boundary",
+    "Actual statfs capacities per backend before adding public statfs binding;fixed kernel defaults/host zero capacity are not measurements",
+    "All remaining public APIs,aliases,symbols/descriptors and identified-artifact four-host conformance;prior nonpasses remain open"
+  ],
+  "diskMaintenance": {
+    "cacheGc": {
+      "report": ".context/node26-cache-gc-122.log",
+      "sha256": "3eaa2987bddccea16b66140b1e37c766fa0aadae660de92bf8093321343729b6",
+      "result": "skipped while another build held shared cache lock;no cache removal"
+    },
+    "headerRetirement": {
+      "report": ".context/retired-generated-node-headers-20261105T212542Z/index.json",
+      "sha256": "67c227e069eb03ea10bfa3079aca23589788dd255fa7611b30c230cc16169118",
+      "files": 43,
+      "uncompressedBytes": 1006240984,
+      "archive": ".context/retired-generated-node-headers-20261105T212542Z/headers.tar.gz",
+      "archiveSha256": "4ed0c089e047fef4c9bfbe9c355dc4931170c8fee3836494e3239432ef15eb1e",
+      "archiveBytes": 135120181,
+      "roundtripVerified": true,
+      "scope": "Only old standalone generated bootstrap.h outputs;keep canonical references,current outputs,accepted116header/all binaries,source identities,evidence and shared caches",
+      "physicalFreeSpaceAttribution": false
+    }
+  },
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -883,6 +883,78 @@ for marker, content in [
     metadata_adapter = metadata_adapter.replace(marker, content)
 bundle += (root / 'fs-system-errors-adapter.js').read_text() + '\n' + metadata_adapter + '\n'
 
+realpath_spec = manifest['realpathPlatform']
+realpath_sources = {}
+for name, item in realpath_spec['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Realpath reference identity mismatch: ' + name)
+    realpath_sources[name] = raw.decode('utf8')
+realpath_sections = {}
+for name, selector in realpath_spec['sections'].items():
+    source = realpath_sources[selector['source']]
+    if source.count(selector['start']) != 1:
+        raise ValueError('Ambiguous realpath selector: ' + name)
+    start = source.index(selector['start'])
+    text = source[start:start + selector['length']]
+    if hashlib.sha256(text.encode()).hexdigest() != selector['sha256']:
+        raise ValueError('Realpath selection mismatch: ' + name)
+    realpath_sections[name] = text
+realpath_error = realpath_sections.pop('promise-error')
+old = '  ErrorCaptureStackTrace(error, handleErrorFromBinding);'
+if realpath_error.count(old) != 1:
+    raise ValueError('Review realpath promise stack recapture')
+realpath_error = realpath_error.replace(old, '  if (ErrorCaptureStackTrace !== undefined) ErrorCaptureStackTrace(error, handleErrorFromBinding);')
+realpath_adapter = (root / 'realpath-platform-adapter.js').read_text()
+for marker, content in [
+    ('/* NODE_REALPATH_SHARED */', '\n'.join(realpath_sections.pop(name) for name in ['makeCallback','vfsResult','isFileType']) + '\n' + realpath_error),
+    ('/* NODE_REALPATH_PUBLIC */', '\n'.join(value for key,value in realpath_sections.items() if key.startswith('public-'))),
+    ('/* NODE_REALPATH_PROMISES */', '\n'.join(value for key,value in realpath_sections.items() if key.startswith('promises-'))),
+]:
+    if realpath_adapter.count(marker) != 1:
+        raise ValueError('Review realpath source marker: ' + marker)
+    realpath_adapter = realpath_adapter.replace(marker, content)
+bundle += realpath_adapter + '\n'
+
+glob_spec = manifest['globPlatform']
+glob_sources = {}
+for name, item in glob_spec['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Glob reference identity mismatch: ' + name)
+    glob_sources[name] = raw.decode('utf8')
+glob_selected = {}
+for name, selector in glob_spec['sections'].items():
+    source = glob_sources[selector['source']]
+    if source.count(selector['start']) != 1:
+        raise ValueError('Ambiguous glob selector: ' + name)
+    start = source.index(selector['start'])
+    text = source[start:start + selector['length']]
+    if hashlib.sha256(text.encode()).hexdigest() != selector['sha256']:
+        raise ValueError('Glob selection mismatch: ' + name)
+    glob_selected[name] = text
+item = glob_spec['minimatch']
+raw = (root / item['path']).read_bytes()
+if hashlib.sha256(raw).hexdigest() != item['sha256']:
+    raise ValueError('Glob matcher bundle mismatch')
+lazy_item = glob_spec['lazy']
+lazy_source = (root / lazy_item['path']).read_bytes()
+if hashlib.sha256(lazy_source).hexdigest() != lazy_item['sha256']:
+    raise ValueError('Glob lazy helper mismatch')
+glob_adapter = (root / 'glob-platform-adapter.js').read_text()
+for marker, content in [
+    ('/* NODE_GLOB_MODULE */', glob_sources['lib/internal/fs/glob.js']),
+    ('/* NODE_GLOB_LAZY */', lazy_source.decode('utf8')),
+    ('/* NODE_GLOB_CALLBACK */', glob_selected['makeCallback']),
+    ('/* NODE_GLOB_MATCHER */', raw.decode('utf8')),
+    ('/* NODE_GLOB_PUBLIC */', glob_selected['public']),
+    ('/* NODE_GLOB_PROMISES */', glob_selected['promises']),
+]:
+    if glob_adapter.count(marker) != 1:
+        raise ValueError('Review glob owner marker: ' + marker)
+    glob_adapter = glob_adapter.replace(marker, content)
+bundle += glob_adapter + '\n'
+
 terminal_spec = manifest['terminalPlatform']
 for name, item in terminal_spec['sources'].items():
     if hashlib.sha256((root / item['path']).read_bytes()).hexdigest() != item['sha256']:
@@ -1651,6 +1723,7 @@ for marker, value in {
     '/* NODE_URL_LIKE_PREDICATE */': selected_platform_section(url_paths, 'isURL'),
     '/* NODE_URL_HTTP_OPTIONS */': selected_platform_section(url_paths, 'httpOptions'),
     '/* NODE_URL_PATH_CONVERSIONS */': selected_platform_section(url_paths, 'conversions'),
+    '/* NODE_URL_FS_PATH_CONVERSION */': selected_platform_section(url_paths, 'toPathIfFileURL'),
 }.items():
     if url_path_adapter.count(marker) != 1:
         raise ValueError('Review URL path marker: ' + marker)

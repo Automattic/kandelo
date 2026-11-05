@@ -4785,6 +4785,12 @@
         "start": "constexpr auto lookup_table =",
         "length": 2051,
         "sha256": "cd4791a83e05602880174aa51a2d784e06169676b51417776ceac2265e7ba0c9"
+      },
+      "toPathIfFileURL": {
+        "source": "url",
+        "start": "function toPathIfFileURL(fileURLOrPath) {",
+        "length": 137,
+        "sha256": "be551ff23c43630a2c52ec9c18a151296cfc64415a623300fb95b309f88c8e00"
       }
     },
     "nativeBoundary": "Pinned EncodePathChars ASCII table/Windows slash rule ported over the actual shared WHATWG parser; public conversion algorithms unchanged. Full URL/parser/IDNA/namespace and filesystem byte-path conformance remain separate."
@@ -4964,5 +4970,137 @@
       }
     },
     "scope": "Complete pinned warning owner, startup alias/listener and native option references;engine stack recapture and full fatal/CLI conformance remain open"
+  },
+  "realpathPlatform": {
+    "sources": {
+      "lib/fs.js": {
+        "path": "upstream/realpath/lib/fs.js",
+        "upstreamPath": "lib/fs.js",
+        "sha256": "21e9604151bcdfdacec9ec6e127e8ba906fb1b4e9415fd0de3221b7e92a08ef3"
+      },
+      "lib/internal/fs/promises.js": {
+        "path": "upstream/realpath/lib/internal/fs/promises.js",
+        "upstreamPath": "lib/internal/fs/promises.js",
+        "sha256": "bdb9f9c75509dbaade2ef68e7d8b1c6fff345f356b1459c8969696d48180ea49"
+      },
+      "lib/internal/fs/utils.js": {
+        "path": "upstream/realpath/lib/internal/fs/utils.js",
+        "upstreamPath": "lib/internal/fs/utils.js",
+        "sha256": "8f4f44388934c9fd281a122122f667b1a92d41f9e558bfd45a83c9aff49f061b"
+      },
+      "src/node_file.cc": {
+        "path": "upstream/realpath/src/node_file.cc",
+        "upstreamPath": "src/node_file.cc",
+        "sha256": "33e4be5acc25b44ba4f532564220a721b645416da4e9fa26d58e14011c66a450"
+      },
+      "deps/uv/src/unix/fs.c": {
+        "path": "upstream/realpath/deps/uv/src/unix/fs.c",
+        "upstreamPath": "deps/uv/src/unix/fs.c",
+        "sha256": "895d46c60b30e12249ed6a6696a184fcc594fccaefb008ddb3a3b6a694f0388b"
+      }
+    },
+    "sections": {
+      "makeCallback": {
+        "source": "lib/fs.js",
+        "start": "function makeCallback(cb) {",
+        "length": 112,
+        "sha256": "9136b5d12943d80471ec75860102496a0bf916fd54289943f3ac10950c073117"
+      },
+      "vfsResult": {
+        "source": "lib/fs.js",
+        "start": "function vfsResult(promise, callback) {",
+        "length": 178,
+        "sha256": "d0b40cd75670afadebe32ce84ca34695b1b9d2f6870f63d626198221ce0c25e1"
+      },
+      "isFileType": {
+        "source": "lib/fs.js",
+        "start": "function isFileType(stats, fileType) {",
+        "length": 260,
+        "sha256": "4e16500a0dd62183aae94cd0a78cca4f8f01e27b2fb61675ace1126abb3dcdd3"
+      },
+      "public-readlink": {
+        "source": "lib/fs.js",
+        "start": "function readlink(path, options, callback) {",
+        "length": 956,
+        "sha256": "c688001762a914594f258515f964ce13245454dd15b8147e5a5d4624d798eabf"
+      },
+      "public-realpath": {
+        "source": "lib/fs.js",
+        "start": "let splitRoot;",
+        "length": 12201,
+        "sha256": "eb28b97e51731a8cab0386cf2651dafb3b77f87258a3d4d282b80c94c9277faa"
+      },
+      "promises-readlink": {
+        "source": "lib/internal/fs/promises.js",
+        "start": "async function readlink(path, options) {",
+        "length": 419,
+        "sha256": "27eafb27518c4e6c21321a7e2ab4c880a928b0f3ead14e359e85dc6ee0b4c789"
+      },
+      "promises-realpath": {
+        "source": "lib/internal/fs/promises.js",
+        "start": "async function realpath(path, options) {",
+        "length": 393,
+        "sha256": "1694e1217cd23e01988e43d909adb4aa6600cf8850ddf884eda8e120cdea835a"
+      },
+      "promise-error": {
+        "source": "lib/internal/fs/promises.js",
+        "start": "function handleErrorFromBinding(error) {",
+        "length": 130,
+        "sha256": "27447320d89711e70bee64140cafb9395944ebb5ec1303bc1d9aa3b8615f77b5"
+      }
+    },
+    "scope": "Complete references and selected unmodified realpath/readlink owners;shared callback/promise error recapture guarded when absent"
+  },
+  "globPlatform": {
+    "sources": {
+      "lib/internal/fs/glob.js": {
+        "path": "upstream/glob/lib/internal/fs/glob.js",
+        "upstreamPath": "lib/internal/fs/glob.js",
+        "sha256": "3a116686e3bcff2680fd822b21cc89bb3ff2ec6cda07d856b2230e688aaafddf"
+      },
+      "lib/fs.js": {
+        "path": "upstream/realpath/lib/fs.js",
+        "upstreamPath": "lib/fs.js",
+        "sha256": "21e9604151bcdfdacec9ec6e127e8ba906fb1b4e9415fd0de3221b7e92a08ef3"
+      },
+      "lib/internal/fs/promises.js": {
+        "path": "upstream/realpath/lib/internal/fs/promises.js",
+        "upstreamPath": "lib/internal/fs/promises.js",
+        "sha256": "bdb9f9c75509dbaade2ef68e7d8b1c6fff345f356b1459c8969696d48180ea49"
+      }
+    },
+    "minimatch": {
+      "path": "upstream/path-minimatch.js",
+      "upstreamPath": "deps/minimatch/index.js",
+      "sha256": "f96315be454e1579bb685f035b015aca6c33d7275f03707f74d6c82089250c30"
+    },
+    "sections": {
+      "public": {
+        "source": "lib/fs.js",
+        "start": "const lazyGlob = getLazy(() => require('internal/fs/glob').Glob);",
+        "length": 517,
+        "sha256": "c341e74fd9748868b1ca58ffe8e1a91666960b22c3127005cc53c745690a6598"
+      },
+      "promises": {
+        "source": "lib/internal/fs/promises.js",
+        "start": "const lazyGlob = getLazy(() => require('internal/fs/glob').Glob);",
+        "length": 179,
+        "sha256": "956ca5dbaf496c12a46da86da8f7fb663b448e99bfe56c4e9a9456ac6675a1d3"
+      },
+      "makeCallback": {
+        "source": "lib/fs.js",
+        "start": "function makeCallback(cb) {",
+        "length": 112,
+        "sha256": "9136b5d12943d80471ec75860102496a0bf916fd54289943f3ac10950c073117"
+      }
+    },
+    "scope": "Complete pinned glob/cache/depth/symlink/exclusion owners and public wrappers;existing matching bundle retained,real filesystem/path owners supplied",
+    "lazy": {
+      "path": "upstream/get-lazy.js",
+      "upstreamPath": "lib/internal/util.js",
+      "sha256": "e370a760c8d025fba0538cb154377b3615d92d2ffa0c4c2adc51af0505c0dbd9",
+      "upstreamFileSha256": "4aa900feab2a6cdb84060c0358c569578d31b6f0831224792868ece9b8899951",
+      "excerpt": "unchanged pure matching/initializer functions; filesystem traversal is not included"
+    }
   }
 }

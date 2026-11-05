@@ -2253,7 +2253,7 @@ for (const name of ['truncate', 'truncateSync', 'ftruncate', 'ftruncateSync', 'c
 const _nodeFsStats = _createNodeFsStats({
     fs, process, Buffer, types: util.types, values: _nodeValues,
     throwErrno: _throwErrno, native: _nodeNative, truncation: _nodeFsTruncation,
-    toPathIfFileURL: value => value instanceof _nodeWebPlatform.URL ? url.fileURLToPath(value) : value,
+    toPathIfFileURL: value => _nodeURLPathPlatform.toPathIfFileURL(value),
     permissionEnabled: () => false,
 });
 const _nodeFileSync = _createNodeFileSync({
@@ -2300,6 +2300,22 @@ const _nodeDirPlatform = _createNodeDirPlatform({
 });
 Object.assign(fs, _nodeDirPlatform.api);
 Object.assign(fs.promises, _nodeDirPlatform.promises);
+const _nodeRealpathPlatform = _createNodeRealpathPlatform({
+    native: _nodeNative, values: _nodeValues, fs, path, process, Buffer,
+    utils: _nodeFsStats, truncation: _nodeFsTruncation, codecs: _nodeBufferCodecs,
+    toPathIfFileURL: value => _nodeURLPathPlatform.toPathIfFileURL(value),
+    // The current guest CLI rejects permission-model activation. Keep ordinary
+    // filesystem behavior; enabled public permission policy remains separate.
+    permission: { isEnabled: () => false },
+});
+Object.assign(fs, _nodeRealpathPlatform.api);
+Object.assign(fs.promises, _nodeRealpathPlatform.promises);
+const _nodeGlobPlatform = _createNodeGlobPlatform({
+    fs, path, process, values: _nodeValues, dirents: _nodeReaddirPlatform.utilities,
+    toPathIfFileURL: value => _nodeURLPathPlatform.toPathIfFileURL(value),
+});
+Object.assign(fs, _nodeGlobPlatform.api);
+Object.assign(fs.promises, _nodeGlobPlatform.promises);
 
 process.loadEnvFile = _createNodeDotenvPlatform({
     native: _nodeNative, values: _nodeValues, uv: _nodeUv, utils: _nodeFsStats,
@@ -2618,7 +2634,7 @@ fs.promises.appendFile = _nodeFileHandles.appendFile;
 const _nodeStreamPlatform = _createNodeStreamPlatform({
     process, events, Buffer, FastBuffer: _FastBuffer, stringDecoder: string_decoder, util, ports: _nodePortsPlatform,
     buffer: _nodeBufferModule, fs, fileHandles: _nodeFileHandles, fsUtils: _nodeFsStats,
-    toPathIfFileURL: value => value instanceof _nodeWebPlatform.URL ? url.fileURLToPath(value) : value,
+    toPathIfFileURL: value => _nodeURLPathPlatform.toPathIfFileURL(value),
     values: _nodeValues, async: _nodeAsyncPlatform, event: _nodeEventPlatform,
     clone: _nodeClonePlatform, native: _nodeNative,
     experimentalStreamIter: _nodeNative.cliOptions?.experimentalStreamIter === true,

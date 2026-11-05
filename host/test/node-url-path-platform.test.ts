@@ -13,6 +13,16 @@ function outcome(fn: () => any) {
 }
 
 describe.skipIf(process.versions.node !== target.version)('pinned URL path and HTTP options algorithms', () => {
+  it('uses the pinned private filesystem URL-or-path conversion policy', () => {
+    const { toPathIfFileURL } = require('internal/url');
+    const value = new nativeUrl.URL('file:///tmp/a%20b');
+    for (const input of [value, { href:value.href, protocol:value.protocol, pathname:value.pathname, hostname:value.hostname },
+      { href:value.href, protocol:value.protocol, pathname:value.pathname, hostname:value.hostname, auth:'legacy' },
+      '/tmp/a', 'file:///tmp/a', Buffer.from('/tmp/a'), null, undefined, 42, Symbol('path')]) {
+      expect(outcome(() => subject.toPathIfFileURL(input))).toEqual(outcome(() => toPathIfFileURL(input)));
+    }
+  });
+
   it('matches POSIX decoding, validation and actual URIError behavior', () => {
     for (const value of ['file:///tmp/a%20b', 'file:///tmp/%E6%B8%AC%E8%A9%A6', 'file://localhost/a',
       'file://host/a', 'https://example.org/a', 'not a URL', 'http://%', 'file:///%2f', 'file:///%2F',

@@ -22,6 +22,7 @@ function _createNodeFsStats(platform) {
         S_IFIFO, S_IFLNK, S_IFSOCK, O_RDONLY, O_RDWR, O_WRONLY,
         O_SYNC, O_TRUNC, O_CREAT, O_EXCL, O_APPEND } = platform.fs.constants;
     const vfsState = platform.truncation.vfsState;
+    const realpathCacheKey = Symbol('realpathCacheKey');
     const permission = { isEnabled: () => platform.permissionEnabled() };
     function result(value, syscall, path, throwIfNoEntry = true) {
         if (typeof value === 'number' && value < 0) {
@@ -83,7 +84,7 @@ function _createNodeFsStats(platform) {
     return { Stats, BigIntStats, getStatsFromBinding, fromNative,
         openSync, readSync, writeSync, readvSync, writevSync,
         statSync, lstatSync, fstatSync, fchmodSync, fchownSync, futimesSync, fsyncSync, fdatasyncSync,
-        getOptions, copyObject, validatePath, getValidatedPath, getValidatedFd, stringToFlags, toUnixTimestamp,
+        getOptions, copyObject, validatePath, getValidatedPath, realpathCacheKey, getValidatedFd, stringToFlags, toUnixTimestamp,
         validateOffsetLengthRead, validateOffsetLengthWrite, validatePosition,
         validateBufferArray, validateStringAfterArrayBufferView,
         validateReadFileBufferOptions, getReadFileBuffer, getReadFileBufferByteLengthName, createReadFileBufferTooSmallError,

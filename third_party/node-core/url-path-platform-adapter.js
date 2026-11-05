@@ -57,5 +57,6 @@ function _createNodeURLPathPlatform(embedding) {
     /* NODE_URL_LIKE_PREDICATE */
     /* NODE_URL_HTTP_OPTIONS */
     /* NODE_URL_PATH_CONVERSIONS */
-    return { fileURLToPath, fileURLToPathBuffer, pathToFileURL, urlToHttpOptions, isURL };
+    /* NODE_URL_FS_PATH_CONVERSION */
+    return { fileURLToPath, fileURLToPathBuffer, pathToFileURL, urlToHttpOptions, isURL, toPathIfFileURL };
 }

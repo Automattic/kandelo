@@ -65,5 +65,5 @@ function _createNodeReaddirPlatform(platform) {
         return { readdir };
     }
     return { api: callbackAPIs(), promises: promiseAPIs(),
-        utilities: { getDirent, getDirents, getRecursiveDirents } };
+        utilities: { DirentFromStats, getDirent, getDirents, getRecursiveDirents } };
 }

@@ -11,6 +11,8 @@ static const char* KandeloMetadataSyscall(KandeloMetadataOperation operation) {
     case KandeloMetadataOperation::Utimes: return "utime";
     case KandeloMetadataOperation::Lutimes: return "lutime";
     case KandeloMetadataOperation::Link: return "link";
+    case KandeloMetadataOperation::Readlink: return "readlink";
+    case KandeloMetadataOperation::Realpath: return "realpath";
   }
   MOZ_CRASH("Unknown metadata operation");
 }
@@ -27,6 +29,8 @@ static bool KandeloMetadataArguments(JSContext* cx, const CallArgs& args,
   else if (strcmp(name.get(), "utimes") == 0) *operation = KandeloMetadataOperation::Utimes;
   else if (strcmp(name.get(), "lutimes") == 0) *operation = KandeloMetadataOperation::Lutimes;
   else if (strcmp(name.get(), "link") == 0) *operation = KandeloMetadataOperation::Link;
+  else if (strcmp(name.get(), "readlink") == 0) *operation = KandeloMetadataOperation::Readlink;
+  else if (strcmp(name.get(), "realpath") == 0) *operation = KandeloMetadataOperation::Realpath;
   else { JS_ReportErrorASCII(cx, "Unknown metadata operation"); return false; }
   int64_t first, second;
   switch (*operation) {
@@ -44,16 +48,31 @@ static bool KandeloMetadataArguments(JSContext* cx, const CallArgs& args,
     case KandeloMetadataOperation::Utimes:
     case KandeloMetadataOperation::Lutimes:
       return KandeloFsTime(cx, args.get(2), &options->times[0]) && KandeloFsTime(cx, args.get(3), &options->times[1]);
+    case KandeloMetadataOperation::Readlink:
+    case KandeloMetadataOperation::Realpath:
     case KandeloMetadataOperation::Link:
       return true;  // Both paths are copied by the dispatch owner below.
   }
   MOZ_CRASH("Unknown metadata operation");
+}
+static bool KandeloMetadataConvert(JSContext* cx, const std::string& path,
+                                   HandleValue convert, MutableHandleValue value) {
+  if (!convert.isObject() || !JS::IsCallable(&convert.toObject())) {
+    JS_ReportErrorASCII(cx, "Path byte result requires its private encoder"); return false;
+  }
+  RootedObject bytes(cx, KandeloNewUint8ArrayCopy(cx,
+      reinterpret_cast<const uint8_t*>(path.data()), path.size()));
+  if (!bytes) return false;
+  JS::RootedValueArray<1> arguments(cx); arguments[0].setObject(*bytes);
+  return JS_CallFunctionValue(cx, nullptr, convert, arguments, value);
 }
 struct KandeloMetadataWork final : KandeloFsWork {
   KandeloMetadataOperation metadataOperation;
   kandelo::nodefs::MetadataOptions options;
   JS::UniqueChars path, destination;
   size_t length, destinationLength, associated;
+  kandelo::nodefs::MetadataPathResult pathResult;
+  bool resultIsException = false;
   KandeloMetadataWork(JSContext* cx, JSObject* request, KandeloMetadataOperation operation,
                       JS::UniqueChars path, size_t length, JS::UniqueChars destination,
                       size_t destinationLength, const kandelo::nodefs::MetadataOptions& options)
@@ -67,8 +86,31 @@ struct KandeloMetadataWork final : KandeloFsWork {
   ~KandeloMetadataWork() override { JS::RemoveAssociatedMemory(owner, associated, JS::MemoryUse::Embedding3); }
   const char* Syscall() const override { return KandeloMetadataSyscall(metadataOperation); }
   void Run() override {
-    result = kandelo::nodefs::RunMetadata(metadataOperation, path.get(), options, destination.get());
+    if (kandelo::nodefs::MetadataReadsPath(metadataOperation)) {
+      pathResult = kandelo::nodefs::ReadMetadataPath(metadataOperation, path.get());
+      result = pathResult.status;
+    } else result = kandelo::nodefs::RunMetadata(metadataOperation, path.get(), options, destination.get());
     performed = true;
+  }
+  bool PrepareResult(JSContext* cx) override {
+    if (!kandelo::nodefs::MetadataReadsPath(metadataOperation)) return true;
+    const size_t bytes = pathResult.bytes.capacity() + 1;
+    if (bytes > SIZE_MAX - associated) { JS_ReportOutOfMemory(cx); return false; }
+    JS::AddAssociatedMemory(owner, bytes, JS::MemoryUse::Embedding3); associated += bytes;
+    RootedValue value(cx), convert(cx, JS::GetReservedSlot(owner, FsRequestBuffers));
+    if (!KandeloMetadataConvert(cx, pathResult.bytes, convert, &value)) {
+      // Match the shared AfterStringPath policy: conversion failures reject
+      // this request, rather than escaping the completion loop as fatal.
+      if (!JS_IsExceptionPending(cx) || !JS_GetPendingException(cx, &value)) return false;
+      JS_ClearPendingException(cx); resultIsException = true;
+    }
+    JS::SetReservedSlot(owner, FsRequestResult, value); return true;
+  }
+  bool ResultIsException() const override { return resultIsException; }
+  bool ResultValue(JSContext*, MutableHandleValue value) override {
+    if (kandelo::nodefs::MetadataReadsPath(metadataOperation)) value.set(JS::GetReservedSlot(owner, FsRequestResult));
+    else value.setUndefined();
+    return true;
   }
   bool ErrorPathValue(JSContext* cx, MutableHandleValue value) override {
     // Preserve raw pathname bytes until the shared UVException owner decodes
@@ -93,6 +135,11 @@ static bool KandeloFsMetadataSync(JSContext* cx, unsigned argc, Value* vp) {
   if (!KandeloFsPath(cx, args.get(1), &path, &length)) return false;
   if (operation == KandeloMetadataOperation::Link &&
       !KandeloFsPath(cx, args.get(2), &destination, &destinationLength)) return false;
+  if (kandelo::nodefs::MetadataReadsPath(operation)) {
+    const auto result = kandelo::nodefs::ReadMetadataPath(operation, path.get());
+    if (result.status < 0) { args.rval().setInt32(result.status); return true; }
+    return KandeloMetadataConvert(cx, result.bytes, args.get(4), args.rval());
+  }
   args.rval().setInt32(kandelo::nodefs::RunMetadata(operation, path.get(), options, destination.get())); return true;
 }
 static bool KandeloFsMetadataPromise(JSContext* cx, unsigned argc, Value* vp) {
@@ -109,9 +156,14 @@ static bool KandeloFsMetadataPromise(JSContext* cx, unsigned argc, Value* vp) {
       JS_ReportOutOfMemory(cx); return false;
     }
   }
+  const bool readsPath = kandelo::nodefs::MetadataReadsPath(operation);
+  if (readsPath && (!args.get(5).isObject() || !JS::IsCallable(&args[5].toObject()))) {
+    JS_ReportErrorASCII(cx, "Path byte result requires its private encoder"); return false;
+  }
   RootedObject request(cx), promise(cx);
   if (!KandeloFsPromiseRequest(cx, args.get(4), &request, &promise)) return false;
   auto abandon = mozilla::MakeScopeExit([&] { KandeloFsAbandonRequest(request); });
+  if (readsPath) JS::SetReservedSlot(request, FsRequestBuffers, args[5]);
   auto* queue = js::shell::KandeloGetNativeWorkQueue(cx); if (!queue) return false;
   auto* work = js_new<KandeloMetadataWork>(cx, request.get(), operation, std::move(path), length,
       std::move(destination), destinationLength, options);
