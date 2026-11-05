@@ -4442,3 +4442,10 @@ inside the named `editor-canvas` iframe, and completed the same server-health
 and service-log checks. This is direct evidence that the site editor's
 JavaScript rendered editable blocks in the browser; Save and reload remain
 unverified through that UI.
+
+The same strengthened rendered-block case passed for the Caddy profile in
+Chromium under the declared dev shell (2.8m). Both FrankenPHP profiles now
+reach the visible editor canvas and render blocks from the real WordPress
+template on the projected source-only image. This does not yet establish
+editing and saving a template through the browser UI or a long-term server
+memory plateau.
