@@ -4426,3 +4426,19 @@ published post through WordPress's authenticated REST API, read the initial
 content from the site, updated it, read back the changed content, and deleted
 the post. This checks PHP, database writes, auth cookies, and persistence
 within one live machine; it does not exercise the site editor's Save button.
+
+The matching Caddy-profile visible Chromium cases passed under the declared
+dev shell: preinstalled site, admin login, site-editor navigation, and a
+20-second health soak (3.6m); authenticated publish/read/update/read/delete
+through WordPress REST (1.3m). The combined run passed 2/2 in 5.0m. Both
+profiles still need a stronger editor-JavaScript assertion. The classic
+case is being extended to open the default template and verify rendered
+editor blocks inside `editor-canvas`.
+
+The strengthened classic Chromium app case passed under the declared dev
+shell in 2.7m. It navigated through Appearance → Editor, opened the default
+Twenty Twenty-Five index template in edit mode, found a visible `[data-block]`
+inside the named `editor-canvas` iframe, and completed the same server-health
+and service-log checks. This is direct evidence that the site editor's
+JavaScript rendered editable blocks in the browser; Save and reload remain
+unverified through that UI.

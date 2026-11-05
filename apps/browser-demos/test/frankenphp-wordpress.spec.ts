@@ -9,7 +9,7 @@ for (const demo of [
   { profile: "wordpress-frankenphp-caddy", title: "WordPress on FrankenPHP + Caddy", serviceLog: "frankenphp-caddy.log" },
 ] as const) {
   test(`${demo.title} serves the preinstalled site, admin, and site editor`, async ({ page, context }) => {
-    test.setTimeout(Math.max(420_000, (soakSeconds + 300) * 1000));
+    test.setTimeout(Math.max(720_000, (soakSeconds + 480) * 1000));
     test.skip(process.env.KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS !== "1", "Build and project WordPress, then set KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS=1");
     const browserDiagnostics: string[] = [];
     context.on("console", (message) => browserDiagnostics.push(`console ${message.type()}: ${message.text()}`));
@@ -52,6 +52,16 @@ for (const demo of [
         .waitFor({ state: "attached", timeout: 60_000 })
         .then(() => false),
     ]);
+    if (editorLoaded) {
+      // The hub's first iframe can appear before the actual editor renders.
+      await gotoInPreview(
+        frame,
+        appPrefix,
+        "wp-admin/site-editor.php?postType=wp_template&postId=twentytwentyfive//index&canvas=edit",
+      );
+      const canvas = frame.frameLocator('iframe[name="editor-canvas"]');
+      await expect(canvas.locator("[data-block]").first()).toBeVisible({ timeout: 180_000 });
+    }
     let editorResult = { status: 0, body: "" };
     const samples: string[] = [];
     for (let elapsed = 0; editorLoaded && elapsed < soakSeconds; elapsed += 10) {
