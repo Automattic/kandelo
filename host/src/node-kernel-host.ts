@@ -179,6 +179,8 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /** Transfer a whole ArrayBuffer image to the worker, surrendering caller ownership. */
+  takeRootfsImageOwnership?: boolean;
   /**
    * Kandelo exchange: whether the platform may start the image's agent
    * (`/usr/libexec/kandelo/exchange-agent`) when a batch needs a consumer.
@@ -328,7 +330,8 @@ export class NodeKernelHost {
       throw new Error("rootfs image file integrity metadata is invalid");
     }
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
-    const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
+    const takeRootfsImageOwnership = this.options.takeRootfsImageOwnership === true;
+    const rootfsImage = resolveRootfsImage(this.options.rootfsImage, takeRootfsImageOwnership);
     if (this.options.enableTcpNetwork && this.options.offlineEgressLink) {
       throw new Error("enableTcpNetwork and offlineEgressLink are exclusive: a machine has one egress link");
     }
@@ -550,6 +553,7 @@ export class NodeKernelHost {
           offlineEgressLink: this.options.offlineEgressLink,
         };
         const transfer: Transferable[] = [
+          ...(rootfsImage === null ? [] : [rootfsImage]),
           ...(this.options.remoteNetwork?.role === "joiner"
             ? [this.options.remoteNetwork.peer.port as import("node:worker_threads").MessagePort]
             : []),

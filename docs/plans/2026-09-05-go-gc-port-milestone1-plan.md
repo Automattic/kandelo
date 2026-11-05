@@ -4256,3 +4256,19 @@ SHA-256 `cd4c3aa4bf894c957b9b8662eca109927b43b19adafc4ff67eb5349d29d45198`,
 exactly the pinned digest. The package now uses that URL without changing
 the source bytes or build procedure. The focused normal resolver build
 passed in 14 seconds. WordPress still needs a completed resolver build.
+
+**2026-11-05 — Restore host imports lost in the latest-main merge.**
+The first FrankenPHP classic Node probe failed before launch: NodeKernelHost
+referenced an undeclared `takeRootfsImageOwnership`, and the process worker
+rejected the Go executable's declared `kernel.kernel_thread_exit` import.
+The merged Node host now restores its documented explicit image-ownership
+option and transfers its private image buffer to the worker. The process
+worker again provides the ABI-55 thread-exit import, clearing the wait word
+and publishing thread exit through the existing channel. Eight focused
+Node image-init tests and 24 startup/import tests passed. The classic probe
+then reached PHP startup and reported that its OPcache INI lacked the
+`file_cache_only=1` setting required by this Kandelo PHP package. The same
+invalid shared-memory OPcache configuration exists in the WordPress image
+recipe; PHP and demo configuration must be reconciled before live activation
+can be claimed. The WordPress resolver remains in the long Clang guest-tool
+build, and no WordPress/Chromium result is claimed yet.

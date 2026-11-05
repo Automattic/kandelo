@@ -593,6 +593,20 @@ function buildKernelImports(
       // without a trailing unreachable; the reusable kernel never traps.
       return trapProcessWorker();
     },
+    kernel_thread_exit: (waitPtr: WasmGuestPointer): void => {
+      const range = checkedWasmMemoryRange(
+        memory,
+        waitPtr,
+        4,
+        ptrWidth,
+        "kernel_thread_exit",
+      );
+      if (range.offset % 4 !== 0) {
+        throw new RangeError("kernel_thread_exit: unaligned wait pointer");
+      }
+      Atomics.store(new Int32Array(memory.buffer), range.offset / 4, 0);
+      publishExit(0);
+    },
 
     // Clone dispatches through channel (SYS_CLONE)
     kernel_clone: (
