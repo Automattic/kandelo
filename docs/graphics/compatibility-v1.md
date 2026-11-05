@@ -212,6 +212,40 @@ excludes this later numeric-query fix. Normal application rebuild, matched
 application/benchmark measurements, full B1 audit/conformance and every
 original goal gate remain required. There is no application speed claim.
 
+## Rebuilt ScummVM request budget, 2026-11-05
+
+R340 `graphics-readonly-early-r340-1105-073847-a42f` passes all12
+checked1/automatic1/automatic2/checked2 application cohorts in8m07s.
+It uses an independently hashed313-file snapshot of R299's successful
+normal setup products at17d1b52e8a, with normal freshness/ABI verification.
+The frozen R303 host observer remains atb45 plus instrumentation; it
+excludes later private-copy/image-reset host fixes. This is a controlled
+driver-policy comparison, not final combined-tree acceptance.
+
+| Engine | Checked complete intervals | Automatic complete intervals | Requests per interval, checked / automatic |
+| --- | --- | --- | --- |
+| Chromium153.0.8010.12 |898 |879 |25 /24 |
+| Firefox155.0 |721 |486 |25 /24 |
+| WebKit26.6 |712 |690 |25 /24 |
+
+Every automatic interval has GET_ERROR6, BIND_IMAGE_OBJECT3, BIND_BUFFER13,
+PROGRAM_JOURNAL_BARRIER1 and one front copy. Checked selection instead
+has PROGRAM_MUTATION2 with the other counts unchanged. All2055 automatic
+and2331 checked intervals retain those exact counts. Each engine actually
+fetches kernel SHA256
+`269ef309983eccbd3db50795a8230714649cebc3f6f893a91f588d7370e6c4a3`.
+Source/configuration/product hashes pass after the run. Raw startup and
+steady observations, exact commands and analysis are retained in
+`.context/graphics-readonly-early-r340/`.
+
+B1's <=10 target remains unmet: the13 synchronous buffer binds alone
+exceed it. The plan assigns asynchronous binds to B2; the maintainer has
+been asked to resolve that stage dependency. No gate, boundary or order
+has changed while that question is pending. Counts describe client front
+production, not Wayland commits, physical display, latency, display FPS,
+instrumentation overhead, a main comparison or native feel. R299's full
+program/ABI/freshness completion and R304/R305 remain separately required.
+
 ## Host audit and browser declaration checks, 2026-11-05
 
 The host compiler now loads Vite's canonical client declarations for

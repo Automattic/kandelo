@@ -1226,6 +1226,16 @@ must follow the measured path rather than inferred uniform costs: decimal query
 regression passes, including pre-exit ownership and all new getter proofs.
 Further application tracing shows13 changing ARRAY_BUFFER selectors per front
 interval, so redundant binding elimination does not address that measured path.
-The next normal producer is frozen17d1b52e8a; its application budget and physical
-latency remain unmeasured. Desktop R291 remains36 pass/2 fail/4 existing skips,
+The next normal producer is frozen17d1b52e8a. R340's independent313-file
+snapshot of its successful normal setup now supplies12 checked/automatic
+ScummVM cohorts across three engines: every2055 automatic interval has24
+requests, compared with25 in every2331 checked interval. Both retain13
+buffer binds,3 image binds and6 error drains; automatic selection replaces
+2 program mutations with1 journal barrier. B1's <=10 target is unmet even
+from binds alone. The maintainer is resolving the B1/B2 stage dependency;
+no order or acceptance gate changes while that question is pending. The
+frozenb45 host observer excludes later host correctness fixes. These are
+client-front request counts, not physical latency, display FPS, overhead,
+main or native-feel acceptance. Full producer and final-tree checks remain
+required. Desktop R291 remains36 pass/2 fail/4 existing skips,
 with Firefox Cage cursor readiness and Sway's missing startup syslog still open.
