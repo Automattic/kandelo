@@ -1950,6 +1950,13 @@ process worker has detached, and the remaining family records have been reaped
 through the host-owned reap path above. A guest parent inside the family keeps
 normal `wait()`/`waitpid()` semantics while the job runs.
 
+A failed fork or spawn launch remains in its owned family until Rust has
+removed the child and the host has detached its Worker resources. Launch
+rejection alone is not proof of exit. Pending-child completion runs even if
+the parent's syscall channel has retired, so cleanup cannot be dropped when
+the parent exits during asynchronous Worker creation. Both host adapters
+update the job ledger from the completed rollback notification.
+
 A record outlives its family so the host can still read the tail and the exit
 status after the command ends. A spawn that fails before its root launches
 keeps no record: the start is refused, and the identifier stays free.

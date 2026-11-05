@@ -661,7 +661,7 @@ describe("kernel entry-context static audit", () => {
           _label: string,
           _operation: (entry: KernelWorkerEntryContext) => void,
         ): void {}
-        #runOrDeferPendingSpawnCompletionKernelEntry(
+        #runOrDeferPendingChildCompletionKernelEntry(
           _childPid: number,
           _label: string,
           _operation: (entry: KernelWorkerEntryContext) => void,
@@ -783,7 +783,7 @@ describe("kernel entry-context static audit", () => {
         void this.#continuePromise(
           this.callbacks.launch(),
           (_result) => {
-            this.#runOrDeferPendingSpawnCompletionKernelEntry(
+            this.#runOrDeferPendingChildCompletionKernelEntry(
               42,
               "finish detached spawn",
               (innerEntry) => this.#finish(innerEntry),
@@ -801,7 +801,7 @@ describe("kernel entry-context static audit", () => {
           this.#finish(innerEntry);
         };
         void this.#continuePromise(this.callbacks.launch(), (_result) => {
-          this.#runOrDeferPendingSpawnCompletionKernelEntry(
+          this.#runOrDeferPendingChildCompletionKernelEntry(
             42,
             "finish detached spawn",
             finish,

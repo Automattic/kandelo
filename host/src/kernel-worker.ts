@@ -2186,6 +2186,13 @@ export interface CentralizedKernelCallbacks {
   ) => Promise<number>;
 
   /**
+   * A failed fork/spawn child has been removed from Rust's process table.
+   * Runs outside the kernel entry. Hosts may finish owned-job bookkeeping
+   * once the child's Worker resources have also been detached.
+   */
+  onChildLaunchRolledBack?: (childPid: number) => void;
+
+  /**
    * Called when a process calls clone (thread creation). The callback should
    * spawn a thread Worker sharing the parent's Memory. The Rust kernel has
    * already allocated the task identity. The host creates a one-shot transport
@@ -21085,6 +21092,12 @@ export class CentralizedKernelWorker {
       );
       return;
     }
+    // Launch rejection alone is not exit proof: Rust must remove the child
+    // before an owned job can consume its final family member.
+    entry.deferProtocolEffect(() => {
+      this.callbacks.onChildLaunchRolledBack?.(childPid);
+      return undefined;
+    });
     if (
       this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry)
     ) {
@@ -21320,8 +21333,8 @@ export class CentralizedKernelWorker {
           }),
         );
       } catch (cause) {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
+        this.#runOrDeferPendingChildCompletionKernelEntry(
+          childPid,
           "fork launch failure",
           (rollbackEntry) => {
             this.#rollbackForkWithinKernelEntry(
@@ -21337,8 +21350,8 @@ export class CentralizedKernelWorker {
         return undefined;
       }
       this.#continuePromise(launch, () => {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
+        this.#runOrDeferPendingChildCompletionKernelEntry(
+          childPid,
           "fork launch completion",
           (completionEntry) => {
             this.#finalizePendingChildTerminationWithinKernelEntry(
@@ -21364,8 +21377,8 @@ export class CentralizedKernelWorker {
           },
         );
       }, (cause) => {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
+        this.#runOrDeferPendingChildCompletionKernelEntry(
+          childPid,
           "fork launch rejection",
           (rollbackEntry) => {
             this.#rollbackForkWithinKernelEntry(
@@ -21664,7 +21677,7 @@ export class CentralizedKernelWorker {
    * Parent memory is consulted only later by the liveness-gated publication
    * seam; this ingress exists solely so exact child cleanup cannot be dropped.
    */
-  #runOrDeferPendingSpawnCompletionKernelEntry(
+  #runOrDeferPendingChildCompletionKernelEntry(
     childPid: number,
     label: string,
     operation: (entry: KernelWorkerEntryContext) => undefined,
@@ -21724,6 +21737,10 @@ export class CentralizedKernelWorker {
       );
       return;
     }
+    entry.deferProtocolEffect(() => {
+      this.callbacks.onChildLaunchRolledBack?.(childPid);
+      return undefined;
+    });
     // A sibling wait may have parked because the unpublished child was a real
     // matching relationship. Removal makes the kernel resolve it to ECHILD.
     this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
@@ -21815,7 +21832,7 @@ export class CentralizedKernelWorker {
           ),
         );
       } catch (cause) {
-        this.#runOrDeferPendingSpawnCompletionKernelEntry(
+        this.#runOrDeferPendingChildCompletionKernelEntry(
           childPid,
           "spawn launch failure",
           (completionEntry) => {
@@ -21850,7 +21867,7 @@ export class CentralizedKernelWorker {
         return undefined;
       }
       this.#continuePromise(launch, (rc) => {
-        this.#runOrDeferPendingSpawnCompletionKernelEntry(
+        this.#runOrDeferPendingChildCompletionKernelEntry(
           childPid,
           "spawn launch completion",
           (completionEntry) => {
@@ -21894,7 +21911,7 @@ export class CentralizedKernelWorker {
           },
         );
       }, (cause) => {
-        this.#runOrDeferPendingSpawnCompletionKernelEntry(
+        this.#runOrDeferPendingChildCompletionKernelEntry(
           childPid,
           "spawn launch rejection",
           (completionEntry) => {
@@ -28731,19 +28748,19 @@ export class CentralizedKernelWorker {
           [...EXCHANGE_AGENT_ENV],
         ));
       } catch (cause) {
-        this.#runOrDeferPendingSpawnCompletionKernelEntry(pid, "exchange agent launch failure", (completion) => {
+        this.#runOrDeferPendingChildCompletionKernelEntry(pid, "exchange agent launch failure", (completion) => {
           this.#finishExchangeAgentLaunchWithinKernelEntry(pid, -EIO, cause, completion);
           return undefined;
         });
         return undefined;
       }
       this.#continuePromise(launch, (rc) => {
-        this.#runOrDeferPendingSpawnCompletionKernelEntry(pid, "exchange agent launch completion", (completion) => {
+        this.#runOrDeferPendingChildCompletionKernelEntry(pid, "exchange agent launch completion", (completion) => {
           this.#finishExchangeAgentLaunchWithinKernelEntry(pid, rc, undefined, completion);
           return undefined;
         });
       }, (cause) => {
-        this.#runOrDeferPendingSpawnCompletionKernelEntry(pid, "exchange agent launch rejection", (completion) => {
+        this.#runOrDeferPendingChildCompletionKernelEntry(pid, "exchange agent launch rejection", (completion) => {
           this.#finishExchangeAgentLaunchWithinKernelEntry(pid, -EIO, cause, completion);
           return undefined;
         });

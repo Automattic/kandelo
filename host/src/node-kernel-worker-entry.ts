@@ -1091,7 +1091,7 @@ async function handleInit(msg: InitMessage) {
           : processMemoryCreators.run(
               "a fork process Worker",
               () => launch(),
-            )).catch(error => { if (!processes.has(childPid)) { ownedJobs.exited(childPid, 127); ownedJobs.detached(childPid); } throw error; });
+            ));
       },
       onExec: async (request) => {
         const creatorAdmission = processMemoryCreators.acquire(
@@ -1177,7 +1177,14 @@ async function handleInit(msg: InitMessage) {
         return processMemoryCreators.run(
           "a posix_spawn process Worker",
           () => handlePosixSpawn(parentPid, childPid, program, envp),
-        ).catch(error => { if (!processes.has(childPid)) { ownedJobs.exited(childPid, 127); ownedJobs.detached(childPid); } throw error; });
+        );
+      },
+      onChildLaunchRolledBack: childPid => {
+        // Rust has removed the failed child; a retained Worker still blocks
+        // completion until its exact generation has detached.
+        if (processes.has(childPid)) return;
+        ownedJobs.exited(childPid, 127);
+        ownedJobs.detached(childPid);
       },
       onClone: (attachment) => processMemoryCreators.run(
         "a pthread Worker",
