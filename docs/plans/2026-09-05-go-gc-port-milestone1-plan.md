@@ -4222,4 +4222,7 @@ check reports unchanged program surface. The classic revision-26 resolver
 build then completed after 16m22s and published an ABI-55 Wasm executable.
 Much of that run rebuilt PHP-ZTS after the program-contract source changed.
 This verifies the FrankenPHP static-PHP link and package admission, not
-WordPress or live OPcache behavior. Caddy and the WordPress image are next.
+WordPress or live OPcache behavior. The FrankenPHP+Caddy revision-5
+resolver build also completed successfully in 4m35s on the same ABI-55
+Go fork and PHP-ZTS archive. Both executables are published; the
+WordPress image and live OPcache behavior remain unverified.

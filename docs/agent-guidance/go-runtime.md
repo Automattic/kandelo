@@ -355,8 +355,8 @@ Trace the whole link path before changing flags or package recipes:
   address globals. `-ldl` also selects the SDK's real Wasm `dlopen` glue,
   rather than its empty compatibility archive. The `c-exports` probe loads
   a side module that imports both kinds of symbol on Node.js and all three
-  browsers. The `php-zts` SourceOnly package now builds an instrumented
-  `opcache-zts.so` alongside `libphp.a`; it has 290 Wasm imports, including
+  browsers. On the earlier PHP 8.3 line, `php-zts` built an instrumented
+  `opcache-zts.so` alongside `libphp.a`; it had 290 Wasm imports, including
   242 functions and 42 globals. The general
   `scripts/wasm-side-module-c-exports.mjs` utility derives required C
   exports from its imports. The PHP embed fixture requests those exports
@@ -367,6 +367,13 @@ Trace the whole link path before changing flags or package recipes:
   Upstream OPcache rejects the PHP `embed` SAPI for acceleration even when
   an INI successfully registers the extension; it accepts the real
   FrankenPHP SAPI. Do not rename a probe SAPI to bypass that check.
+  The current PHP 8.5 ZTS package uses upstream's built-in OPcache and
+  publishes only the static embed archive. A separate PHP 8.5 ZTS OPcache
+  Wasm side module fails to link because its external `_tsrm_ls_cache`
+  reference uses a TLS relocation the Wasm linker cannot resolve across
+  modules. Do not duplicate that TLS symbol or bypass the linker error.
+  The PHP 8.5 embed archive and FrankenPHP classic package build; live
+  FrankenPHP SAPI activation still needs Node and browser proof.
 - A Go cgo executable must be fork-instrumented and carry the exact current
   `kandelo.abi.contract` digest. `install_local_binary` can instrument but
   does not stamp by itself: instrument first, stamp that fresh artifact, then
