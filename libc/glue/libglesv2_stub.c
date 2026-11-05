@@ -615,12 +615,15 @@ static inline void w_f32(uint8_t **c, float v)    { memcpy(*c, &v, 4); *c += 4; 
  * that state, so the reset status needs no request of its own. */
 /* Queued attribute creation may not have executed after a lost prefix.
  * Error flags and later array binds cannot repair those separate slots. */
-static void invalidate_binding_knowledge(struct wpk_gles_context *state) {
+static void invalidate_binding_rows(struct wpk_gles_context *state) {
     state->array_binding_known = 0;
-    atomic_store_explicit(&state->objects->program_records_known, 0, memory_order_relaxed);
     state->default_framebuffer_only = 0;
     for (uint32_t i=0; i<state->default_vertex_array.attrib_count; i++)
         state->default_vertex_array.attribs[i].host_row_known = 0;
+}
+static void invalidate_binding_knowledge(struct wpk_gles_context *state) {
+    invalidate_binding_rows(state);
+    atomic_store_explicit(&state->objects->program_records_known, 0, memory_order_relaxed);
 }
 
 static int gl_device_ioctl(int fd, unsigned long request, void *arg) {
@@ -628,7 +631,19 @@ static int gl_device_ioctl(int fd, unsigned long request, void *arg) {
     int rc = ioctl(fd, request, arg);
     if (rc != 0) {
         struct wpk_gles_context *state = _wpk_gl_current_encoder();
-        if (state) invalidate_binding_knowledge(state);
+        if (state) {
+            /* A standalone numeric getter cannot create, delete, relink or
+             * select a program. Its failed output is no proof of mutation:
+             * preserve the independently owned program records. Binding/error
+             * observation stays revoked. A compound request may have submitted
+             * a mutating prefix, and a reset revokes every kind of knowledge. */
+            const struct gl_query_info *query = request == GLIO_QUERY ? arg : NULL;
+            if (errno != ENODEV && query &&
+                (query->op == QOP_GET_INTEGERV || query->op == QOP_GET_FLOATV))
+                invalidate_binding_rows(state);
+            else
+                invalidate_binding_knowledge(state);
+        }
         if (errno == ENODEV) _wpk_gl_note_reset();
     }
     return rc;

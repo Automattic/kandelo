@@ -66,6 +66,7 @@ for(const mode of ["ordinary","admitted","automatic"] as const) for(const arch o
     expect(setup.find((row:any)=>row.operation==="matrix4").deviceRequests).toBe(mode==="admitted"?3:mode==="automatic"?0:1);
     expect(lines).toContain(`INITIAL_MATRIX ${mode==="automatic"?2:1}`);
     expect(lines).toContain("MATRIX_PROOFS 19");
+    expect(lines).toContain("READONLY_QUERY_PROOFS 12");
     // Permit future improvements, while rejecting one drain for every large
     // definition. Rollover still revokes the exact prefix and needs recovery.
     expect((byName.get("array-definition-large") as any).total).toBeLessThanOrEqual(4);

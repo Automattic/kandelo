@@ -1208,5 +1208,13 @@ selection, without an application-specific enable call. The checked diagnostic
 mode remains available through KANDELO_GL_CHECKED_PROGRAM_SELECTION, sampled
 once per context. Its focused108-case three-engine gate includes normal
 sharing/creation/target behavior and automatic hot-path controls, while the
-full normal preview build and ScummVM round-trip target remain unproven.
-Prototype availability will be reported separately from final validation.
+frozen b45e892d35 normal preview build is complete and available separately
+from final validation. The measured pre-fix ScummVM inventory still uses25 GL
+device requests between produced front copies; these are not display timestamps.
+A standalone rejected numeric getter no longer discards independent program-name
+knowledge. Twelve getter/error/output/selection controls per hot-path case pass
+across both widths, three engines and production/fatal modes. Application impact
+needs a normally rebuilt application and new measurements; B1's <=10 target and
+full stage acceptance remain open. Remaining binds and draw/attribute authority
+must follow the measured path rather than inferred uniform costs: decimal query
+43 is QOP_BIND_BUFFER (0x2b), not a uniform setter.

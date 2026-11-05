@@ -91,8 +91,8 @@ acceptance gate is reduced.
 The normal `./run.sh setup` app/image stage at frozen b45e892d35
 completed in9034s. Its313 published SourceOnly files were copied into
 an independent APFS snapshot and checked against the originals before
-admission. The original full job continues building test fixtures;
-that work and the full build's remaining validation are not waived.
+admission. The original full job subsequently completed programs, ABI and
+freshness successfully; the later admission failure below remains open.
 The later host declaration/audit-member cleanup below is outside this
 frozen producer. This prototype contains automatic B1 admission, with
 B1 acceptance still open; it contains no B2 or C implementation.
@@ -109,7 +109,7 @@ remain56/3/17/21. Availability was announced separately from validation.
 
 | Evidence / exact command | Result | Scope |
 | --- | --- | --- |
-| R267 `graphics-b1-auto-preview-build-r267-1105-010831-d2ea`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-b1-auto-preview-build-r267/run.sh` | Normal app/image stage0 in9034s; full job continues | Own producer tools and current SDKs; normal recipes/catalog/images/host. Programs/test fixtures and final full-build checks remain open |
+| R267 `graphics-b1-auto-preview-build-r267-1105-010831-d2ea`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-b1-auto-preview-build-r267/run.sh` | PASS3h15m | Own producer xtask85s, SDK32/64 ensures7s/2s, normal setup9034s, programs2575s, ABI2s and freshness3s. Frozenb45 producer, not final combined-tree acceptance |
 | R286 `graphics-b1-product-preview-r286-1105-034135-3212`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-b1-product-preview-r286/run.sh` | PASS3m50 | Original/snapshot313-file identity, own producer freshness, served-kernel ABI snapshot and explicit snapshot-route checks; Node6/3files and real Cage/ScummVM6 app cases on Chromium/Firefox/WebKit. Render/About/quit/reaping/KMS-owner assertions retained; input and product hashes pass |
 | R289 counter phase `graphics-early-inventory-r289-1105-035514-6e10`; `.context/graphics-early-inventory-r289/run.sh` | Counter12 pass23.8s; overall job fails its app frame classifier | Independent guest request counter equals host completion count exactly in every engine/width: automatic43, checked91 for the complete small GLES lifetime. The subsequent3 app inventories incorrectly looked for direct-present0x48; Wayland uses front-copy0x4a. Original failed assertions and data are retained; no app frame-budget result is claimed |
 
@@ -118,10 +118,14 @@ the thin observer lacked its normal Node-side image-composer helper.
 The exact normal helper was provisioned and hash-checked, without a
 source/SDK/assertion change; R289 then passed every independent counter
 case. The known-invalid queued R274 frame-classifier run was cancelled
-before execution, preserving its frozen inputs. The normal producer,
-original independent counter/desktop jobs and both previews continue.
-A corrected observer must distinguish successful front copies from
-surface retargeting and must not treat produced fronts as display times.
+before execution, preserving its frozen inputs. Full-producer R269 later
+passed Node6 and5/6 browser cases; Firefox Cage's idle-image assertion failed
+with223 changed pixels. R276, R283 and R284 stopped at that prerequisite,
+so their unexecuted dependent stages supply no coverage. Independent desktop
+checks run as R291. The original failure is retained. Extracting the two
+trace PNGs at R297 localizes all223 changes to the newly visible center cursor
+(bounds543,308–561,329); the shell text is unchanged. Cursor readiness remains
+under investigation, with no relaxed assertion or accepted failure.
 
 This is ordinary-app prototype admission and counting-method evidence,
 not complete B1, native feel, a main comparison or final conformance.
@@ -130,6 +134,45 @@ GLES2/EGL/desktop validation, all other final suites and native-feel bar
 remain mandatory. The Mac currently reports a locked screen; a fresh
 visible session is requested for manual verification. That check and
 physical display measurements remain unproved.
+
+## Numeric-query rejection and B1 request attribution, 2026-11-05
+
+A private observer now tags only successful nonzero-copy surface updates,
+then matches each scalar-only tag to its exact synchronous guest completion.
+Surface retargets are excluded, and overwritten, unconsumed or mismatched tags
+fail loudly. This observes client front production, not Wayland commit, KMS
+flip or physical display. C1 must bind future asynchronous tags to jobs.
+
+R292 records343/371/346 complete ScummVM front intervals on Chromium/Firefox/
+WebKit, respectively: every interval contains25 GL device completions. The
+query mix is GET_ERROR6, PROGRAM_MUTATION2, BIND_BUFFER13 and BIND_IMAGE_OBJECT3,
+plus one front copy. Decimal43 is BIND_BUFFER0x2b; the earlier private note's
+UniformSet label was incorrect. This diagnostic ran under concurrent load
+and establishes attribution, not application latency, FPS, native feel or
+instrumentation overhead. B1's <=10 target remains unmet on that source.
+
+Startup capture on all three engines identifies failed standalone numeric
+queries for GLES3 MAJOR_VERSION0x821b and MINOR_VERSION0x821c. The GLES2
+rejections are correct, but the C transport incorrectly discarded its entire
+program-name model after those read-only failures. That disabled the warm
+selection journal. Numeric getters cannot mutate program names, attachments,
+links or current selection. Preserve that independent knowledge while still
+revoking binding/error observation. Reset and uncertain mutating submissions
+continue to revoke every relevant proof. No output or GL error is hidden,
+no failure is retried and no wire, snapshot or ABI version changes.
+
+| Evidence / exact command | Result | Scope |
+| --- | --- | --- |
+| R292 `graphics-front-inventory-r292-1105-043024-d0d6`; `.context/graphics-front-inventory-r292/run.sh` | PASS2m08 |7 marker custody controls,12 independent guest/device-count GPU cases,3 real ScummVM inventories. Input hashes pass. Automatic43 vs checked91 whole-fixture requests; exact per-interval25 distribution above |
+| R293 `graphics-query-inventory-r293-1105-043328-9862`; `.context/graphics-query-inventory-r293/run.sh` | PASS2m14 | Same7+12+3 with scalar numeric-query identifiers. Both version queries fail on all3 engines before the steady checked path. Raw selected-environment read is unavailable in procfs and is recorded as such; no environment dump or inferred flag proof |
+| R294 `graphics-readonly-probe-before-r294-1105-043633-8f86`; `.context/graphics-readonly-probe-before-r294/run.sh` | Expected causal failure:6 automatic fail /6 checked pass | Normal old SDK, both widths/3engines. Rejected queries preserve INVALID_ENUM and outputs, but20 automatic selection pairs cost42 requests rather than0; checked pairs cost40. Original status134/assertions remain recorded |
+| R295 `graphics-readonly-candidate-r295-1105-043847-59e2`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-readonly-candidate-r295/run.sh` | PASS7m06 |487 native controls, sequential normal SDK32/64 builds, ABI, graphics2180/88, Node10/5files and108 GPU cases. All36 hot-path cases retain14 original family records/19 matrix proofs and add12 numeric getter proofs each: integer/float/boolean, major/minor, standalone/accepted-prefix. Automatic/admitted warm pairs0 requests; checked40. Errors, untouched outputs, pixels and native cleanup retained |
+| R296 `graphics-readonly-ownership-r296-1105-044350-eb52`; `.context/graphics-readonly-ownership-r296/run.sh` | PASS2m26 including prerequisite wait |18 Node controls/6files for journal/loss/creation/sharing/targets. Documented Node no-renderer refusal remains explicit; this is not Node GPU execution. Frozen runtime/test/config and normal product hashes pass |
+
+The preview on5693/6075 remains the immutable b45 automatic prototype and
+excludes this later numeric-query fix. Normal application rebuild, matched
+application/benchmark measurements, full B1 audit/conformance and every
+original goal gate remain required. There is no application speed claim.
 
 ## Host audit and browser declaration checks, 2026-11-05
 

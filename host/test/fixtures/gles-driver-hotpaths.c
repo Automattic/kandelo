@@ -87,6 +87,26 @@ static void matrix_proofs(EGLDisplay d,EGLConfig config,EGLContext context,GLuin
  glDeleteShader(gv);glDeleteProgram(program);glDeleteShader(v);glDeleteShader(f);glUseProgram(restore);assert(glGetError()==GL_NO_ERROR);
  printf("MATRIX_PROOFS %u\n",matrix_checks);
 }
+/* Read-only rejection cannot revoke independently owned program names.
+ * Both standalone requests and accepted-prefix/query-rejection receipts keep
+ * exact errors and untouched outputs. Checked mode remains the control. */
+static void readonly_query_proofs(GLuint program,int admitted){
+ unsigned checks=0;
+ for(unsigned prefix=0;prefix<2;prefix++)for(unsigned kind=0;kind<3;kind++)for(unsigned version=0;version<2;version++){
+  glUseProgram(program);glFinish();assert(glGetError()==GL_NO_ERROR);
+  if(prefix)glClearColor(.2f,.6f,.8f,1.f);
+  GLenum pname=0x821bu+version; /* GLES3 MAJOR_VERSION / MINOR_VERSION. */
+  if(kind==0){GLint value=77;glGetIntegerv(pname,&value);assert(value==77);}
+  else if(kind==1){GLfloat value=7.25f;glGetFloatv(pname,&value);assert(value==7.25f);}
+  else {GLboolean value=77;glGetBooleanv(pname,&value);assert(value==77);}
+  assert(glGetError()==GL_INVALID_ENUM&&glGetError()==GL_NO_ERROR);
+  uint64_t before=_wpk_gl_device_requests();
+  for(unsigned i=0;i<20;i++){glUseProgram(0);glUseProgram(program);assert(glGetError()==GL_NO_ERROR);}
+  assert(_wpk_gl_device_requests()-before==(admitted?0:40));checks++;
+ }
+ glFinish();assert(glGetError()==GL_NO_ERROR);
+ printf("READONLY_QUERY_PROOFS %u\n",checks);
+}
 #define MEASURE(label,...) do { \
  uint64_t setup_before=_wpk_gl_device_requests(); \
  __VA_ARGS__;assert(glGetError()==GL_NO_ERROR); \
@@ -149,6 +169,7 @@ int main(int argc,char **argv){
  MEASURE("attribute-restored-default",glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL));
  glClear(GL_COLOR_BUFFER_BIT);glDrawArrays(GL_TRIANGLES,0,3);unsigned char result[4];glReadPixels(8,8,1,1,GL_RGBA,GL_UNSIGNED_BYTE,result);assert(result[0]==51&&result[1]==153&&result[2]==204&&result[3]==255);assert(glGetError()==GL_NO_ERROR);
  matrix_proofs(d,config,ctx,program,automatic||!strcmp(argv[1],"admitted"),automatic);
+ readonly_query_proofs(program,automatic||!strcmp(argv[1],"admitted"));
  glBindVertexArray(0);glDeleteVertexArrays(1,&vao);glUseProgram(0);glDeleteProgram(program);glDeleteShader(v);glDeleteShader(f);glDeleteBuffers(3,buffers);glDeleteTextures(1,&texture);assert(glGetError()==GL_NO_ERROR);
  assert(eglMakeCurrent(d,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT)&&eglDestroyContext(d,ctx)&&eglDestroySurface(d,surface)&&eglTerminate(d)&&eglReleaseThread());
  puts("PASS hotpath request attribution");return 0;

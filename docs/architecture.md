@@ -6284,8 +6284,14 @@ independent host oracle. Inactive location-1 updates use known logical
 executable presence without reading data. Unresolved positive-count
 locations, ordinary/uncertain state and large uniform uploads keep
 ordinary observation. Journals now admit ordinary applications at their
-first eligible program selection. This remains partial B1 and does not
-finish B4's once-per-link interface cache.
+first eligible program selection. A failed standalone numeric getter revokes
+binding/error observation without discarding the independently owned program
+namespace: it cannot create, delete, relink or select a program. In particular,
+GLES3 version probes rejected by the GLES2 surface do not permanently disable
+local program selection. Compound submissions with uncertain mutating prefixes
+and ENODEV resets still revoke program knowledge. The failed getter preserves
+its GL error and leaves caller output untouched. This remains partial B1 and
+does not finish B4's once-per-link interface cache.
 
 Ordinary vertex-layout updates can reuse an existing host attribute slot
 inside an authoritative guest batch. Aligned BYTE/UNSIGNED_BYTE/SHORT/
