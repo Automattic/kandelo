@@ -1115,8 +1115,8 @@ peer-relink controls are retained in the graphics compatibility ledger.
 The C driver now consumes cold capture/release receipts into bounded selected
 and prepared-generation descriptors. Embedded transport storage avoids later C
 reply allocation, uncertain replies stop new captures, and EGL serializes C
-capture/name retirement with acknowledged host context destruction. Ordinary
-program selection remains synchronous. The prepared host logical journal now
+capture/name retirement with acknowledged host context destruction. Checked
+diagnostic program selection remains synchronous. The host logical journal now
 reserves pending/result cells and independent generation/context custody,
 separates logical names from installed execution, and delays host-computed
 errors until their command positions. Checked kernel/host transport now
@@ -1126,15 +1126,16 @@ context/session retirement is reclaimed; accepted asynchronous jobs must gain
 separate slot custody before C1 admission. The explicitly admitted C
 prototype now connects its immutable shared queue,32-entry generation-
 token cache, 256 bounded slots, caller-prefix submission and retained-
-receipt recovery. Ordinary applications still use checked selection.
+receipt recovery. Ordinary applications now admit eligible selections
+automatically; checked selection remains the diagnostic and unknown-state path.
 Native OOM during connected C selector execution now has passing three-
 engine peer-isolation and explicit retirement controls, including an
 independent ownership sample before process exit. Unexpected exceptions
 in a preflighted journal transaction now latch a fatal host fault before
 further work, and completion is sealed after all receipt fields.
-Completed-copyout recovery remains available. Automatic admission still
+Completed-copyout recovery remains available. Final B1 acceptance still
 requires closure of the independent native-loss, uncertain-prefix and
-final- context ownership audit. The known lost-final-publisher
+final-context ownership audit. The known lost-final-publisher
 retirement path now reaches backend acknowledgement before releasing its
 exact C receivers. Healthy unadmitted peers can carry metadata through a
 receiver reserved before local acceptance; unavailable reset proof

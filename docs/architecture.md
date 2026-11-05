@@ -6283,9 +6283,9 @@ signature/count/presence checks while their original records reach the
 independent host oracle. Inactive location-1 updates use known logical
 executable presence without reading data. Unresolved positive-count
 locations, ordinary/uncertain state and large uniform uploads keep
-ordinary observation. Journals remain explicitly admitted; this is
-partial B1, not ordinary application activation or B4's complete once-
-per-link interface cache.
+ordinary observation. Journals now admit ordinary applications at their
+first eligible program selection. This remains partial B1 and does not
+finish B4's once-per-link interface cache.
 
 Ordinary vertex-layout updates can reuse an existing host attribute slot
 inside an authoritative guest batch. Aligned BYTE/UNSIGNED_BYTE/SHORT/
@@ -7075,7 +7075,7 @@ it through completion or explicit cancellation. Native program counts are
 checked before whole-machine teardown, including pending-context destruction
 and process exit, so terminating a worker cannot hide leaked owners.
 
-Ordinary applications still use checked synchronous program selection. An
+The checked diagnostic path uses synchronous program selection. An
 internal diagnostic admission entry point now enables a C selection prototype.
 Each context owns a cold-allocated stream with a32-entry generation-token cache,
 256 bounded intent/result slots and persistent request/recovery storage. Cache
