@@ -270,7 +270,10 @@ int main(int argc,char **argv) {
             assert(!pthread_mutex_unlock(&publisher.mutex));assert(!pthread_join(publisher_thread,NULL));
             assert(!pthread_mutex_destroy(&publisher.mutex)&&!pthread_cond_destroy(&publisher.condition));
         }else assert(eglDestroyContext(display,peer));
-        glUseProgram(0);glDeleteProgram(next);glDeleteShader(v2);glDeleteShader(f2);glDeleteBuffers(1,&buffer);
+        const uint64_t final_selection_requests=_wpk_gl_device_requests();
+        glUseProgram(0);
+        if(threaded)assert(_wpk_gl_device_requests()==final_selection_requests);
+        glDeleteProgram(next);glDeleteShader(v2);glDeleteShader(f2);glDeleteBuffers(1,&buffer);
         assert(glGetError()==GL_NO_ERROR);
         assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
         assert(eglDestroySurface(display,surface)&&eglDestroyContext(display,context)&&eglTerminate(display)&&eglReleaseThread());

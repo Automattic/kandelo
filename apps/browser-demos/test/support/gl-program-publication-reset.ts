@@ -14,7 +14,7 @@ export async function installProgramPublicationReset(page:Page,corruptSnapshot=f
 const entry=${JSON.stringify(entry)},journalUrl=${JSON.stringify(journal)},corruptSnapshot=${JSON.stringify(corruptSnapshot)},OrdinaryWorker=globalThis.Worker;
 globalThis.Worker=class extends OrdinaryWorker{constructor(url,options){super(new URL(String(url),entry),options);}};
 const early=[],hold=e=>{e.stopImmediatePropagation();early.push(e.data);};addEventListener('message',hold);
-let armed=false,publishing=false,observing=false,injections=0,errors=0,partial=null,entries=0,duplicates=0,reads=0,snapshots=0,readonlyDepth=0,readonlyErrors=0,readonlyDeletes=0,corrupted=0;const entered=new Set(),owners=new Set(),executions=[];
+let armed=false,publishing=false,observing=false,injections=0,errors=0,partial=null,entries=0,duplicates=0,reads=0,snapshots=0,readonlyDepth=0,readonlyErrors=0,readonlyDeletes=0,corrupted=0;const entered=new Set(),owners=new Set(),executions=[],publications=[],selectionNames=[];
 const programs=new Set(),shaders=new Set();let created=0,deleted=0;
 const proto=WebGL2RenderingContext.prototype;
 for(const [create,remove,set] of [['createProgram','deleteProgram',programs],['createShader','deleteShader',shaders]]){
@@ -27,7 +27,7 @@ const getError=proto.getError;
 proto.getError=function(){if(readonlyDepth)readonlyErrors++;if(armed&&publishing){armed=false;injections++;errors++;return 0x505;}return Reflect.apply(getError,this,[]);};
 addEventListener('message',event=>{if(event.data?.__publicationResetControl){const port=event.data.__publicationResetControl;
  port.onmessage=event=>{if(event.data.command==='arm'){armed=true;observing=true;}
- port.postMessage({id:event.data.id,armed,injections,errors,created,deleted,live:programs.size+shaders.size,programs:programs.size,shaders:shaders.size,partial,entries,duplicates,reads,snapshots,readonlyErrors,readonlyDeletes,corrupted,owners:[...owners],executions});};port.start();}});
+ port.postMessage({id:event.data.id,armed,injections,errors,created,deleted,live:programs.size+shaders.size,programs:programs.size,shaders:shaders.size,partial,entries,duplicates,reads,snapshots,readonlyErrors,readonlyDeletes,corrupted,owners:[...owners],executions,publications,selectionNames});};port.start();}});
 const instantiate=WebAssembly.instantiate;
 WebAssembly.instantiate=async function(source,imports){
  if(!imports?.env?.host_gl_query)return Reflect.apply(instantiate,WebAssembly,[source,imports]);
@@ -49,14 +49,14 @@ WebAssembly.instantiate=async function(source,imports){
 await import(entry);
 const {GlProgramJournal,programJournalSequence}=await import(journalUrl),publish=GlProgramJournal.prototype.publish;
 GlProgramJournal.prototype.publish=function(...args){
- if(observing){owners.add(this.id);const key=[this.id,args[1],args[2],args[3]].join(':');if(entered.has(key))duplicates++;entered.add(key);entries++;}
+ if(observing){owners.add(this.id);const key=[this.id,args[1],args[2],args[3]].join(':');if(entered.has(key))duplicates++;entered.add(key);entries++;publications.push({owner:this.id,ticket:args[2],sequence:args[3],name:args[4]});}
  publishing=true;try{return Reflect.apply(publish,this,args);}catch(error){
  if(injections&&!partial){const words=args[0].programJournalControl.receipt;
  partial={status:words[0],transaction:words[1],action:words[2],sequence:programJournalSequence(args[0]),ticket:this.publishedTicket};}
  throw error;
 }finally{publishing=false;}};
 const execute=GlProgramJournal.prototype.execute;
-GlProgramJournal.prototype.execute=function(...args){if(observing)executions.push({owner:this.id,ticket:args[1]});return Reflect.apply(execute,this,args);};
+GlProgramJournal.prototype.execute=function(...args){if(observing){executions.push({owner:this.id,ticket:args[1]});selectionNames.push(this.slots[args[0]].name);}return Reflect.apply(execute,this,args);};
 removeEventListener('message',hold);for(const data of early)dispatchEvent(new MessageEvent('message',{data}));
 `;
         const blob=URL.createObjectURL(new Blob([bootstrap],{type:"text/javascript"}));urls.push(blob);super(blob,options);

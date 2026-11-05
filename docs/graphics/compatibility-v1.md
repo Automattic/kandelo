@@ -42,6 +42,93 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Retire a lost final metadata publisher, 2026-11-04
+
+C retirement now separates dispatch exclusion from metadata publication.
+On publication failure, read-only reset-scope checks prove whether all
+owners are reset or a healthy shared owner remains. A healthy owner that
+never admitted a journal can publish metadata through the existing
+lifecycle barrier. Its cold receiver is reserved before the first local
+selection and retains one exact transport authority through uncertain
+completion. It never flushes a foreign mutable encoder. Carrier
+authority ends before its owner admits a journal. If every owner is
+reset, each owner's C records remain until that exact backend destroy
+acknowledges success. Unavailable scope retains ownership and prints a
+diagnostic; later proof permits retirement. No records disappear merely
+because EGL returned success, and no query follows backend destruction.
+
+Foreign metadata ENODEV now marks the actual C owner through a dispatch-
+guarded lifetime cookie. One atomic state publishes sticky loss and
+pending CONTEXT_LOST without foreign TLS writes or consuming another
+context's errors. Recovery scans occur only after publication failure,
+with no new per-frame or per-draw member scan. This changes private C
+state/helpers only: no wire, snapshot or ABI version change; the family
+remains56/3/17/21.
+
+| Evidence / exact principal command | Result | Scope |
+| --- | --- | --- |
+| R240 `graphics-last-publisher-before-r240-1104-205845-786f`, port6049 | FAIL1 against b97 | Guest exits0 after explicit EGL cleanup, yet pre-exit publicContexts1/executions1/destroyCalls0 remain; real physical renderer loss |
+| R242-r3 `graphics-reset-retirement-before-r242-r3-1104-213918-eab9`, port6052; R242-r4 `graphics-reset-retirement-before-r242-r4-1104-215342-4c51`, port6053 | FAIL8 each, old normal SDK | Native OOM during an entered publication leaves an unentered suffix: final-owner leakage, unrelated foreign error contamination, and unadmitted healthy-peer failure |
+| R244 `graphics-reset-retirement-after-r244-1104-215938-02ed`, port6054 | PASS84 / FAIL12 | Initial rebuilt fix passes all ordinary physical/logical cases, but withheld scope exposes missing foreign-owner loss notification; failure retained |
+| R246 `graphics-reset-retirement-build-r246-1104-221822-32f5`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-reset-retirement-build-r246/build.sh` | PASS | One normal producer, sequential SDK32/64 ensures; native C/UBSan482, ABI; runtime/test/products frozen; disk24GiB before; kernel/image-writer/snapshot unchanged |
+| R247 `graphics-reset-retirement-after-r247-1104-221831-23f3`, port6055 | PASS4m02 | Graphics2175/88, Node16/6files, strict new helper and96 actual-GPU cases across Chromium/Firefox/WebKit, both widths, production/fatal; full host tsc still exact39 diagnostics |
+| R248 `graphics-reset-retirement-regression-r24-1104-222025-e59b`, port6056 | PASS816 / FAIL12 after16m36 | Combined828 inventory exposes an already-known-reset checked flush falsely returning success in publication-reset-peer; all96 new retirement cases pass. ABI/evidence709 and six strict helpers pass. Post-failure source/product hashes checked; failure retained |
+| R249 `graphics-reset-retirement-build-r249-1104-223828-4519` | PASS | Normal sequential SDK32/64 ensures, native482 with strengthened known-reset checked-flush assertion, ABI; source/products frozen |
+| R250 `graphics-reset-retirement-after-r250-1104-223904-0a28`, port6057 | PASS156 / FAIL12 after5m31 | All168 guests exit0 with correct pre-exit cleanup;12 legacy publication-count assertions expect fallback to checked selection after foreign loss. The healthy final unbind now remains on the local journal path; original checked-flush assertion passes |
+| R251 `graphics-reset-retirement-after-r251-1104-224632-c7a8`, port6058; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-reset-retirement-after-r251/run.sh` | PASS168 affected GPU cases | All reset/publication-loss/retirement cases across three engines, both widths and production/fatal; graphics2175/88, Node16, two strict helpers, exact39 full-host type diagnostics; source/config/normal-product hashes checked before/after |
+
+All168 current routed records retain actual guest/kernel hashes matching
+normal kernel
+`46f21423280ac733dc4cd22960c05d8b2412a79e3a93b4ec37d8d7a6ff9f9769`.
+Every case samples explicit ownership before guest exit:96 new
+retirement, 36 interrupted-publication and36 connected-journal OOM
+cases. The96 new cases require zero public contexts, execution records,
+bindings and native programs/ shaders before exit. Twelve unavailable-
+proof controls first require publicContexts3/executions2/destroyCalls0
+and a diagnostic, then all three acknowledged destroys. The48 new
+logical native-OOM cases require one injection and exact native
+deletion; healthy peers retain their errors and rendered pixels. Checked
+flush now returns ENODEV on its existing already-reset branch, without a
+new device request; the native robustness control and unchanged
+publication-reset-peer checked-flush assertion verify this behavior. The
+publication control now checks exact owner/ticket/sequence/name tuples
+and all three healthy selections (zero, linked program, zero), including
+the healthy final unbind remaining local after foreign reset. The lost
+peer never executes. Older counts that included a legacy fallback are
+replaced by these exact stronger observations. These are
+correctness/ownership counts, not application performance.
+
+The prior R248828-case run is FAILED, not a current combined pass. Its12
+peer failures are fixed and included in the current168-case selection;
+its other 816 passes remain evidence for that earlier source only. A
+complete current combined rerun and all final acceptance gates remain
+required. R239's separate 732-case success remains historical evidence
+for b97. Its24 intentional fatal controls do not establish explicit
+native cleanup after worker termination.
+
+R242/R242-r2 preserve initial control failures: audited native getters
+consumed the armed OOM, and the first retry reused a destroyed EGL
+handle. The control now uses pre-audit readonly getters only after
+cleanup, triggers genuine in-publication OOM, and retries through a
+fresh idle shared context. After foreign notification was fixed, that
+third context preserves an owner with no stream/ENODEV while scope is
+unavailable. Logical-peer also covers an unbound healthy owner, and
+logical-peer-query tests carrier-to-journal handoff.
+
+Rust/xtask/shader source is unchanged by this C-only fix; R239's exact
+selected Rust, xtask and shader results remain historical checkpoint
+evidence, not a new full validation claim. Full host TypeScript still
+fails the exact39 retained diagnostics. Full workspace/host inventories,
+browser-memory, per-case CTS, desktop, POSIX, benchmarks and manual
+final-tree validation remain required. B1 remains incomplete/default
+admission off: close the independent loss audit, finish required
+attribute/draw/element-buffer/VAO/large-upload hot paths, activate
+ordinary apps, measure the ScummVM <=10 graphics round trips/frame
+target and all application acceptance, then normal-build/admit a
+complete B1 preview. The existing partial preview is unchanged. No new
+boundary, deferral, reduced acceptance criterion or application-
+performance claim is introduced.
+
 ## Retain error-drain copyout custody, 2026-11-04
 
 Newly built libGLESv2 callers use an optional 12-byte `QOP_GET_ERROR` form:
@@ -128,8 +215,8 @@ pixels; the prior576 successful journal/OOM/render cases have native live0
 before machine teardown, including72 independent pre-process-exit samples.
 The24 intentional fatal controls retain their refusal latch; no native-cleanup
 claim is made for them. Runtime/test/config and normal product hashes remain
-unchanged through the run and post-documentation checks. R240 remains an
-explicit failure outside this passing inventory. Full workspace Rust, host
+unchanged through the run and post-documentation checks. R240 remains historical
+failure evidence outside this inventory; the next checkpoint above fixes it. Full workspace Rust, host
 inventory and acceptance suites are still required.
 
 Remaining native-loss/failed-prefix and final-

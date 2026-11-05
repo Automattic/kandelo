@@ -332,6 +332,9 @@ void     _wpk_gl_flush(void);
 struct wpk_gles_context;
 struct wpk_gles_context *_wpk_gl_command_encoder(void);
 void     _wpk_gl_note_reset(void);
+/* Cold lifetime cookie; the dispatch guard protects it during foreign I/O. */
+void _wpk_gl_set_encoder_reset_owner(struct wpk_gles_context *state,void *owner);
+void _wpk_egl_note_encoder_reset(void *owner);
 int      _wpk_gl_context_reset(void);
 int      _wpk_gl_has_draw_surface(void);
 int      _wpk_gl_reset_error(unsigned int *error);
@@ -391,6 +394,15 @@ uint32_t _wpk_gl_register_external_texture(struct wpk_gles_context *state, uint3
  * and C name/capture retirement. No cleanup query may follow host destruction.
  * A refused host retirement leaves every C owner intact. */
 struct wpk_gl_name_scope _wpk_gl_begin_encoder_retirement(struct wpk_gles_context *state);
+/* Two-phase EGL retirement retains the dispatch guard across a failure-only
+ * all-context reset proof. reset_group may be1 only while EGL's lifetime
+ * mutex proves that every context sharing this encoder's group is lost. */
+struct wpk_gl_name_scope _wpk_gl_lock_encoder_retirement(struct wpk_gles_context *state);
+int _wpk_gl_prepare_encoder_retirement(struct wpk_gles_context *state,int reset_group);
+/* Borrow only a proved healthy, same-group public context's metadata authority;
+ * no command prefix or mutable encoder is borrowed. Caller holds both guards. */
+int _wpk_gl_prepare_encoder_retirement_with_peer(struct wpk_gles_context *state,
+                                                 struct wpk_gles_context *peer,int fd);
 void _wpk_gl_retire_encoder_programs(struct wpk_gles_context *state);
 void _wpk_gl_destroy_encoder(struct wpk_gles_context *state);
 

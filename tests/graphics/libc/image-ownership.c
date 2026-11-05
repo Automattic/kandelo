@@ -3171,6 +3171,10 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
         /* Reported once, then the reset is complete; no host request. */
         assert(status() == GL_UNKNOWN_CONTEXT_RESET_KHR);
         assert(status() == GL_NO_ERROR && status_ext() == GL_NO_ERROR);
+        /* Checked submission cannot claim success after an already observed
+         * reset, even when no new device request is needed to discover it. */
+        errno = 0;
+        assert(_wpk_gl_flush_checked() == -1 && errno == ENODEV && device_calls == calls);
         /* The command that observed the reset, then each later command. */
         assert(glGetError() == GL_CONTEXT_LOST_KHR && glGetError() == GL_NO_ERROR);
         glClear(GL_COLOR_BUFFER_BIT); glFlush();

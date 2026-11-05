@@ -153,7 +153,9 @@ struct egl_context_record {
     /* Owned by the thread the context is current on: the reset was already
      * returned by glGetGraphicsResetStatus; a command ran after the reset
      * and GL_CONTEXT_LOST awaits glGetError. */
-    int reset_reported, reset_error;
+    int reset_reported;
+    /* One atomic publication keeps foreign reset notification and its pending
+     * GL error coherent: bit0 is sticky loss, bit1 is CONTEXT_LOST pending. */
     atomic_int lost;
     /* Created with EGL robust buffer access (host robust-access.ts). */
     int robust_access;
@@ -329,14 +331,15 @@ struct wpk_gles_context *_wpk_gl_command_encoder(void) {
     struct egl_context_record *context = binding->object;
     if (context && context_reset(context)) {
         if (context->reset_strategy == EGL_LOSE_CONTEXT_ON_RESET)
-            context->reset_error = 1;
+            atomic_fetch_or_explicit(&context->lost,2,memory_order_relaxed);
         return NULL;
     }
     return binding->encoder;
 }
 static void mark_context_reset(struct egl_context_record *context) {
     if (!context) return;
-    atomic_store_explicit(&context->lost, 1, memory_order_relaxed);
+    atomic_fetch_or_explicit(&context->lost,
+        context->reset_strategy==EGL_LOSE_CONTEXT_ON_RESET?3:1,memory_order_relaxed);
     uint32_t reply[3] = {0};
     const struct gl_query_info query = {.op = QOP_CONTEXT_RESET_SCOPE,
         .out_buf_ptr = (uintptr_t)reply, .out_buf_len = sizeof reply};
@@ -360,8 +363,12 @@ void _wpk_gl_note_reset(void) {
     if (!context)
         return;
     mark_context_reset(context);
-    if (context->reset_strategy == EGL_LOSE_CONTEXT_ON_RESET)
-        context->reset_error = 1;
+}
+/* The caller holds the encoder group's dispatch guard, which keeps this
+ * cookie alive through metadata I/O. Never write the foreign thread's TLS or
+ * non-atomic notification state, and never mark an unrelated current owner. */
+void _wpk_egl_note_encoder_reset(void *owner) {
+    mark_context_reset(owner);
 }
 int _wpk_gl_context_reset(void) {
     struct egl_context_record *context = g_thread_binding.object;
@@ -375,8 +382,8 @@ int _wpk_gl_reset_error(GLenum *error) {
     struct egl_context_record *context = g_thread_binding.object;
     if (!context || !context_reset(context))
         return 0;
-    *error = context->reset_error ? GL_CONTEXT_LOST_KHR : GL_NO_ERROR;
-    context->reset_error = 0;
+    const int state=atomic_fetch_and_explicit(&context->lost,~2,memory_order_relaxed);
+    *error = state&2 ? GL_CONTEXT_LOST_KHR : GL_NO_ERROR;
     return 1;
 }
 
@@ -1139,6 +1146,7 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         }
         goto fail;
     }
+    _wpk_gl_set_encoder_reset_owner(context->encoder,context);
     context->handle = (EGLContext)g_next_object_handle++;
     context->session = session;
     context->backend_id = attrs.context_id;
@@ -1876,6 +1884,35 @@ EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext handle) {
     unlock_context();
     return result;
 }
+/* Publication may have failed on a foreign metadata publisher, so the
+ * calling thread's current context cannot identify the loss. Probe each live
+ * owner in this exact share group without replaying commands or draining
+ * errors. The lifetime mutex and group dispatch guard keep owners stable. */
+static int context_reset_for_retirement(struct egl_context_record *context) {
+    if(context_reset(context))return 1;
+    uint32_t reply[3]={0};
+    const struct gl_query_info query={.op=QOP_CONTEXT_RESET_SCOPE,
+        .out_buf_ptr=(uintptr_t)reply,.out_buf_len=sizeof reply};
+    const int saved_errno=errno;
+    const int rc=egl_device_ioctl(context->session->fd,GLIO_QUERY,&query);
+    errno=saved_errno;
+    if(!rc && !reply[0] && reply[2]==WPK_GL_QUERY_REPLY_MAGIC && reply[1]<=2){
+        if(!reply[1])return 0;
+        atomic_fetch_or_explicit(&context->lost,
+            context->reset_strategy==EGL_LOSE_CONTEXT_ON_RESET?3:1,memory_order_relaxed);
+        if(reply[1]==2)atomic_store_explicit(&context->reset_group->lost,1,memory_order_relaxed);
+        return 1;
+    }
+    fprintf(stderr,"Kandelo graphics: retirement reset scope unavailable for context %u; ownership retained\n",context->backend_id);
+    return -1;
+}
+static int reset_group_has_no_live_context(struct egl_generation *g,struct egl_context_record *retiring) {
+    int all_reset=1;
+    for(struct egl_context_record *p=g->contexts;p;p=p->next)
+        if(p->reset_group==retiring->reset_group && context_reset_for_retirement(p)!=1)all_reset=0;
+    // A later physical-loss receipt also proves earlier members lost.
+    return all_reset || atomic_load_explicit(&retiring->reset_group->lost,memory_order_relaxed);
+}
 static void retire_pending_resources_locked(struct egl_generation *g) {
     retire_syncs_locked(g);
     struct egl_context_record **context = &g->contexts;
@@ -1885,10 +1922,30 @@ static void retire_pending_resources_locked(struct egl_generation *g) {
             context = &p->next;
             continue;
         }
-        struct wpk_gl_name_scope retirement=_wpk_gl_begin_encoder_retirement(p->encoder);
+        struct wpk_gl_name_scope retirement=_wpk_gl_lock_encoder_retirement(p->encoder);
         if (!retirement.group) {
             context=&p->next;
             continue;
+        }
+        if(!_wpk_gl_prepare_encoder_retirement(p->encoder,0)){
+            int prepared=reset_group_has_no_live_context(g,p);
+            if(prepared)(void)_wpk_gl_prepare_encoder_retirement(p->encoder,1);
+            else{
+                // A healthy peer need not have enabled the optional journal.
+                // Borrow its metadata capability, never its command buffer.
+                for(struct egl_context_record *peer=g->contexts;peer;peer=peer->next){
+                    if(peer==p || peer->reset_group!=p->reset_group || context_reset(peer))continue;
+                    if(context_reset_for_retirement(peer)!=0)continue;
+                    if(_wpk_gl_prepare_encoder_retirement_with_peer(p->encoder,peer->encoder,peer->session->fd)){
+                        prepared=1;break;
+                    }
+                }
+                // A cleanup OOM may have reset the last healthy carrier too.
+                if(!prepared && reset_group_has_no_live_context(g,p)){
+                    (void)_wpk_gl_prepare_encoder_retirement(p->encoder,1);prepared=1;
+                }
+            }
+            if(!prepared){_wpk_gl_end_name_scope(&retirement);context=&p->next;continue;}
         }
         if (egl_device_ioctl(p->session->fd, GLIO_DESTROY_CONTEXT, NULL) != 0) {
             _wpk_gl_end_name_scope(&retirement);

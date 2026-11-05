@@ -7095,15 +7095,37 @@ caller's pending intent and an inconsistent snapshot retry, on three engines
 and both widths. Healthy rendering, vanished public names, no selector replay
 and native shader/program ownership before process exit are checked. They do
 not establish full native-loss/final-context coverage or desktop performance.
-A separate physical-loss control exposes one remaining C lifecycle failure:
-when its only metadata publisher loses the renderer with unsubmitted intents,
-publication blocks the backend destroy call. EGL reports successful retirement
-while a public host context and execution owner survive until process exit.
-That path remains broken and must retire exact backend custody before freeing
-its C receivers; successful EGL return values do not prove cleanup.
+C retirement no longer requires a successful publication through a lost
+final publisher before attempting backend retirement. After a
+publication failure, read-only reset-scope checks distinguish a lost
+physical renderer, individually reset contexts and healthy shared
+contexts. A healthy owner can carry metadata through the existing
+lifecycle barrier even if it never enabled a journal. The share group's
+cold carrier is reserved before the first local selection; it owns only
+a transport receiver, no selector slots or native pins. It cannot change
+owners while an entered publication still needs reconciliation, and its
+authority ends before that context enables its own journal.
 
-Automatic application admission is still off. Remaining native-loss and
-failed-prefix reconciliation and the complete final-context audit remain
-required before activation. Lost/malformed error-drain replies now retain
-recoverable custody, with independent three-engine controls. These are unfinished B1 work. Focused warm device request counts
-do not establish application latency or native desktop feel.
+When every owner is proven reset, retirement keeps each exact C receiver
+until that owner's backend destroy acknowledges success, then releases
+only its records. Unknown scope retains ownership with a loud diagnostic
+and permits a later proof/retry. It never guesses that healthy shared
+objects vanished. Foreign metadata ENODEV marks the actual encoder owner
+through a cookie whose lifetime is protected by the dispatch guard.
+Sticky loss and pending CONTEXT_LOST occupy one atomic state, so
+notification never writes another thread's TLS or consumes an unrelated
+current context's errors. Checked flush reports ENODEV for already known
+loss, without a new device request. Recovery scans and reset-scope
+probes occur only after publication failure; ordinary draws and frames
+perform no additional member scan. Native and three-engine regressions
+sample zero public contexts, executions, bindings and native
+programs/shaders before guest exit after explicit cleanup, including
+both shared retirement orders, unavailable-proof retry, native OOM and
+healthy unadmitted peers.
+
+Automatic application admission is still off. The independent native-
+loss, failed-prefix and final-context audit still needs closure before
+activation. Lost/malformed error-drain replies now retain recoverable
+custody, with independent three-engine controls. These are unfinished B1
+work. Focused warm device request counts do not establish application
+latency or native desktop feel.

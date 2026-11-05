@@ -61,9 +61,21 @@ for(const mode of ["publication-reset","publication-reset-peer","publication-res
     expect(result.beforeExit.injections).toBe(1);expect(result.beforeExit.errors).toBe(1);
     expect(result.native.injections).toBe(1);expect(result.native.errors).toBe(1);
     expect(result.native.partial).toMatchObject({status:2,action:3,sequence:3,ticket:3});
-    expect(result.native.entries).toBe(3);expect(result.native.duplicates).toBe(0);
+    // Foreign reset notification preserves the healthy owner's exact records:
+    // its final Use(0) stays local instead of falling back to legacy mutation.
+    const peer=mode==="publication-reset-peer";
+    expect(result.native.entries).toBe(peer?4:3);expect(result.native.duplicates).toBe(0);
     expect(result.native.owners).toHaveLength(mode==="publication-reset-peer"?2:1);
-    expect(result.native.executions).toEqual((mode==="publication-reset-peer"?[3,4]:[3,4,5]).map(ticket=>({owner:1,ticket})));
+    expect(result.native.executions).toEqual([3,4,5].map(ticket=>({owner:1,ticket})));
+    expect(result.native.selectionNames).toHaveLength(3);
+    const next=result.native.selectionNames[1];expect(next).toBeGreaterThan(0);
+    expect(result.native.selectionNames).toEqual([0,next,0]);
+    expect(result.native.publications).toEqual([
+      {owner:1,ticket:3,sequence:3,name:0},
+      ...(peer?[{owner:2,ticket:1,sequence:4,name:0}]:[]),
+      {owner:1,ticket:4,sequence:peer?5:4,name:next},
+      {owner:1,ticket:5,sequence:peer?6:5,name:0},
+    ]);
     expect(result.native.snapshots).toBeGreaterThan(mode==="publication-reset"?0:1);
     expect(result.native.corrupted).toBe(mode==="publication-reset-snapshot"?1:0);
     expect(result.native.readonlyErrors).toBe(0);expect(result.native.readonlyDeletes).toBe(0);

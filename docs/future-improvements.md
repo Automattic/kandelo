@@ -1121,31 +1121,43 @@ errors until their command positions. Checked kernel/host transport now
 validates current-session authority, publishes batches, executes own-context
 selectors and retains recoverable receipts. Wire-only metadata abandoned at
 context/session retirement is reclaimed; accepted asynchronous jobs must gain
-separate slot custody before C1 admission. The explicitly admitted C prototype
-now connects its immutable shared queue,32-entry generation-token cache,
-256 bounded slots, caller-prefix submission and retained-receipt recovery.
-Ordinary applications still use checked selection. Native OOM during connected
-C selector execution now has passing three-engine peer-isolation and explicit
-retirement controls, including an independent ownership sample before process
-exit. Unexpected exceptions in a preflighted journal transaction now latch a
-fatal host fault before further work, and completion is sealed after all receipt
-fields. Completed-copyout recovery remains available. Automatic admission still
-requires remaining native-loss and uncertain-prefix reconciliation and the
-complete final-context ownership audit. The focused interrupted logical
-publication case now recovers only its snapshot-proven prefix. Ordered transport-error markers now prevent an
-earlier retained flag from reappearing after successful publication recovery,
-while preserving unrelated flags and later repetitions. Shared dispatch/lifecycle guards now nest on
-the owning thread while retaining peer exclusion and cancellation ordering;
-only the outer name scope reconciles unpublished external candidates. Query, submission and EGL retirement hooks now publish metadata without
-flushing foreign mutable encoders. Audit the final context collector alongside
-the remaining failure paths. Reserve all
-fallible ownership/result metadata before local acceptance. Never query a
-destroyed session, flush a foreign mutable encoder or reuse the rejected
-name-only cache. A private native pin does not establish logical ownership.
-These steps remain current-iteration B1 work; cold executable custody does not
-complete B1 or demonstrate an application performance improvement. Full B2–B6,
-C1–C3 and all correctness, conformance, memory and native-feel gates remain
-required in their agreed order.
+separate slot custody before C1 admission. The explicitly admitted C
+prototype now connects its immutable shared queue,32-entry generation-
+token cache, 256 bounded slots, caller-prefix submission and retained-
+receipt recovery. Ordinary applications still use checked selection.
+Native OOM during connected C selector execution now has passing three-
+engine peer-isolation and explicit retirement controls, including an
+independent ownership sample before process exit. Unexpected exceptions
+in a preflighted journal transaction now latch a fatal host fault before
+further work, and completion is sealed after all receipt fields.
+Completed-copyout recovery remains available. Automatic admission still
+requires closure of the independent native-loss, uncertain-prefix and
+final- context ownership audit. The known lost-final-publisher
+retirement path now reaches backend acknowledgement before releasing its
+exact C receivers. Healthy unadmitted peers can carry metadata through a
+receiver reserved before local acceptance; unavailable reset proof
+retains ownership with a diagnostic. Foreign publication loss marks its
+actual owner through atomic reset/error state, preserving healthy peers
+and unrelated errors. Three-engine physical and logical-loss regressions
+sample complete explicit cleanup before guest exit; they do not replace
+the full audit or application acceptance. The focused interrupted
+logical publication case now recovers only its snapshot-proven prefix.
+Ordered transport-error markers now prevent an earlier retained flag
+from reappearing after successful publication recovery, while preserving
+unrelated flags and later repetitions. Shared dispatch/lifecycle guards
+now nest on the owning thread while retaining peer exclusion and
+cancellation ordering; only the outer name scope reconciles unpublished
+external candidates. Query, submission and EGL retirement hooks now
+publish metadata without flushing foreign mutable encoders. Audit the
+final context collector alongside the remaining failure paths. Reserve
+all fallible ownership/result metadata before local acceptance. Never
+query a destroyed session, flush a foreign mutable encoder or reuse the
+rejected name-only cache. A private native pin does not establish
+logical ownership. These steps remain current-iteration B1 work; cold
+executable custody does not complete B1 or demonstrate an application
+performance improvement. Full B2–B6, C1–C3 and all correctness,
+conformance, memory and native-feel gates remain required in their
+agreed order.
 
 C publication must also precede EGL lifetime mutations made without a current
 GL binding. The optional0x3c lifecycle barrier now supplies checked metadata-only
