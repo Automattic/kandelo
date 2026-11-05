@@ -4419,3 +4419,10 @@ this result establishes navigation and server health, not that editing and
 saving through the site editor JavaScript work. Authenticated post-edit
 persistence, the equivalent Caddy app flow, longer stability, and comparative
 performance remain separate gates.
+
+The separate visible Chromium classic-profile test for authenticated post
+edits passed in 2.1m. It logged in through the same Shortcuts UI, created a
+published post through WordPress's authenticated REST API, read the initial
+content from the site, updated it, read back the changed content, and deleted
+the post. This checks PHP, database writes, auth cookies, and persistence
+within one live machine; it does not exercise the site editor's Save button.
