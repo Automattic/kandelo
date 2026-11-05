@@ -235,6 +235,26 @@ B1 preview producer remains frozen at b45e892d35 and excludes these
 later development declarations and unused audit-member cleanup. All
 final validation and ship-bar requirements remain open.
 
+## Fork reference and worker type checks, 2026-11-05
+
+Reference-section tags retain their generated ABI values using a regular
+enum, allowing the compiler to check imported numeric initializers. The
+minified ES2022 Node and browser entry bundles are byte-identical before
+and after this change. Worker listener removal now declares the same
+message, error and exit callback overloads as listener registration. The
+replay observer explicitly narrows its exit message before reading status.
+No callback, wire layout, generated constant or ABI version changes.
+
+R338 records the exact source/configuration hashes, commands and compiler
+output in `.context/graphics-host-types-r338/`. The seven affected source
+suites pass108 tests on the combined integration tree. Full host checking
+with `npx --no-install tsc --noEmit` still fails24 diagnostics, down from32;
+the remaining TLS source-root and buffer-type errors are not waived.
+The private comparison's Node/browser bundle SHA256 is
+`e4fe7344c9cd48dca42bff34fcd1de2b9499cb40e12513adae2ac22d23758efb`
+on both sides. This is focused source/type evidence, not a full host,
+browser, conformance or performance result.
+
 ## Isolated B2/B3 drafting, 2026-11-05
 
 These are private draft foundations under the maintainer's approved
