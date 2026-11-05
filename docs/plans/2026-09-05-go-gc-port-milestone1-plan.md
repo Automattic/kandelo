@@ -4293,3 +4293,20 @@ No host diagnostic was emitted. As expected for this PHP mode,
 The browser probe now checks the configured file-cache-only mode and the
 written cache file instead; Playwright lists all six cases, but none has run
 on the new WordPress image yet.
+
+The WordPress revision-29 resolver retry ran 2h19m, completed the guest Clang
+build and instrumentation, then failed when the NetHack guest build spawned
+its `makedefs` generator. The real error was a `ReferenceError` in the host
+kernel worker: `resolveExecPathAgainstCwd` called `normalizeExecPath`, which
+the latest-main merge had removed. The guest saw this as `EIO`; earlier
+`/bin/which` warnings belonged to unrelated libraries that built normally.
+Exec path resolution now uses the existing absolute guest path normalizer,
+which is also used for shared mappings. Focused Node guest-spawn tests pass
+(5 tests). The checked-in classic probe and WordPress image recipe now set
+OPcache file-cache-only mode; the WordPress image revision is 30. The focused
+NetHack build, full WordPress resolver, and browser runtime gates still need
+to run on these changes.
+The checked-in FrankenPHP classic Node probe now passes: PHP and a static
+asset return HTTP 200, the built-in OPcache compiles a target script into the
+file cache, and no host diagnostic is emitted. This is standalone classic
+SAPI evidence; it does not yet establish WordPress behavior.

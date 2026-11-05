@@ -9,7 +9,7 @@ if (!programPath || !kernelPath) {
 
 const image = KandeloImageFs.create();
 image.setImageCapacity(2 * 1024 * 1024);
-for (const directory of ["/tmp", "/var", "/var/www", "/var/www/html"]) {
+for (const directory of ["/tmp", "/var", "/var/cache", "/var/cache/opcache", "/var/www", "/var/www/html"]) {
   image.mkdir(directory, 0o755);
 }
 image.createFileWithOwner(
@@ -38,6 +38,8 @@ image.createFileWithOwner(
 opcache.enable=1
 opcache.enable_cli=1
 opcache.memory_consumption=64
+opcache.file_cache=/var/cache/opcache
+opcache.file_cache_only=1
 opcache.file_update_protection=0
 opcache.validate_timestamps=0
 `));
@@ -46,13 +48,14 @@ opcache.validate_timestamps=0
   image.createFileWithOwner("/var/www/html/__kandelo_opcache_probe.php", 0o644, 0, 0,
     new TextEncoder().encode(`<?php
 header('Content-Type: application/json');
-$status = opcache_get_status(false);
+$configuration = opcache_get_configuration();
 $target = __DIR__ . '/__kandelo_opcache_target.php';
+$compiled = opcache_compile_file($target);
 echo json_encode([
     'loaded' => extension_loaded('Zend OPcache'),
-    'enabled' => is_array($status) && !empty($status['opcache_enabled']),
-    'compiled' => opcache_compile_file($target),
-    'cached' => opcache_is_script_cached($target),
+    'fileCacheOnly' => !empty($configuration['directives']['opcache.file_cache_only']),
+    'compiled' => $compiled,
+    'cacheFilePresent' => count(glob('/var/cache/opcache/*' . $target . '.bin')) > 0,
 ], JSON_THROW_ON_ERROR);
 `));
 }
@@ -114,8 +117,8 @@ try {
   if (php.status !== 200 || !new TextDecoder().decode(php.body).includes("GET|/welcome?x=1|/index.php") ||
       staticAsset.status !== 200 || new TextDecoder().decode(staticAsset.body) !== "static asset\n" ||
       (opcache?.status !== 200 ||
-        opcacheResult?.loaded !== true || opcacheResult?.enabled !== true ||
-        opcacheResult?.compiled !== true || opcacheResult?.cached !== true) ||
+        opcacheResult?.loaded !== true || opcacheResult?.fileCacheOnly !== true ||
+        opcacheResult?.compiled !== true || opcacheResult?.cacheFilePresent !== true) ||
       !stderr.includes("num_threads=3") ||
       diagnostics.length !== 0) {
     process.exitCode = 1;

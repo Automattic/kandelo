@@ -22460,7 +22460,7 @@ export class CentralizedKernelWorker {
     }
     const cwd = new TextDecoder().decode(output.value);
     const joined = cwd.endsWith("/") ? cwd + path : cwd + "/" + path;
-    return { kind: "ok", value: normalizeExecPath(joined) };
+    return { kind: "ok", value: this.normalizeAbsoluteGuestPath(joined) };
   }
 
   /**
@@ -22599,7 +22599,7 @@ export class CentralizedKernelWorker {
         return;
       }
       const base = new TextDecoder().decode(output.value);
-      execPath = this.normalizeSharedMmapPath(`${base}/${pathStr}`);
+      execPath = this.normalizeAbsoluteGuestPath(`${base}/${pathStr}`);
     }
 
     if (!this.callbacks.onExec) {
@@ -25897,7 +25897,7 @@ export class CentralizedKernelWorker {
       const path = new TextDecoder().decode(pathBytes);
       if (!path) return { kind: "error", errno: ENOENT };
       if (path.startsWith("/")) {
-        return { kind: "ok", value: this.normalizeSharedMmapPath(path) };
+        return { kind: "ok", value: this.normalizeAbsoluteGuestPath(path) };
       }
 
       let base: string;
@@ -25920,7 +25920,7 @@ export class CentralizedKernelWorker {
       }
       return {
         kind: "ok",
-        value: this.normalizeSharedMmapPath(`${base}/${path}`),
+        value: this.normalizeAbsoluteGuestPath(`${base}/${path}`),
       };
     } catch (err) {
       this.#rethrowKernelEntryFatal(err);
@@ -25928,7 +25928,7 @@ export class CentralizedKernelWorker {
     }
   }
 
-  private normalizeSharedMmapPath(path: string): string {
+  private normalizeAbsoluteGuestPath(path: string): string {
     const normalized: string[] = [];
     for (const component of path.split("/")) {
       if (!component || component === ".") continue;
