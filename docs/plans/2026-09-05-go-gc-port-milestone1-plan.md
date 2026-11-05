@@ -5123,3 +5123,12 @@ select go-hello 23, classic 30, FrankenPHP+Caddy 9, standalone Caddy 7, and
 WordPress 35. Actual PHP/Caddy drain, current-image browser workflows,
 longer uptime/memory checks, and incremental benchmarks still follow the
 source-product rebuild.
+
+
+The safepoint-pinned runtime also passes both Node and all six browser
+retirement probes after rebuilding the fixtures
+(`.context/go-safepoint-retirement.log`). Every case completes cooperative
+retirement with clean guest stderr and diagnostics. The active source
+rebuild is `go-safepoint-source-products-1105-183847-8b11`; its registry
+snapshot is stable at the revision-35 recipes. The application-level
+PHP/Caddy drain test is still unrun until that image is available.
