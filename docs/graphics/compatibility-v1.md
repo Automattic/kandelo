@@ -86,6 +86,29 @@ validation. All original B1/goal-wide conformance, fault/audit,
 benchmark, memory and ship-bar requirements remain mandatory; no
 acceptance gate is reduced.
 
+## Host audit and browser declaration checks, 2026-11-05
+
+The host compiler now loads Vite's canonical client declarations for
+asset/worker URLs and `import.meta.env`. Vite8.3.2 was already locked
+as a Vitest peer; it is now an explicit development dependency, with
+no package-version, integrity or dependency-tree change. The guest
+error-mask audit passes an error prediction with its supported label;
+an unused `rule` member belonged to the other prediction variant and
+was never included in the diagnostic record. The report, flag ownership
+and native-call behavior remain covered by the existing audit controls.
+There is no kernel, guest, wire, snapshot or ABI-version change.
+
+| Evidence / exact command | Result | Scope |
+| --- | --- | --- |
+| R285 `graphics-host-types-r285-1105-032140-2ab2`; `scripts/dev-shell.sh bash -c 'cd host; npx --no-install vitest run -c vitest.graphics.config.ts test/webgl-native-audit.test.ts'` | PASS13 | Audit controls include independent guest-error observation, fatal divergence and preserving native flags |
+| R287 `graphics-host-types-final-r287-1105-033224-8b6d`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-host-types-r285/final.sh` | Graphics2180/88 pass; full compiler still fails32 | Seven identified diagnostics removed from the earlier39. Every remaining diagnostic matches the earlier stream; none is waived. Lock contents, source inputs and exact logs retained |
+
+This is focused host/type evidence, not a full typecheck, full host
+Vitest, new application or three-engine conformance result. The normal
+B1 preview producer remains frozen at b45e892d35 and excludes these
+later development declarations and unused audit-member cleanup. All
+final validation and ship-bar requirements remain open.
+
 ## Isolated B2/B3 drafting, 2026-11-05
 
 These are private draft foundations under the maintainer's approved

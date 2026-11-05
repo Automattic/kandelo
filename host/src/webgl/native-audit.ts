@@ -154,7 +154,7 @@ export function auditGuestErrorFlags(errors: readonly number[], expected: number
   observed >>>= 0;
   if (observed === expected) return;
   report({kind: "divergence", cause: "guest-error-flags"}, "guestErrorFlagMask", errors, observed,
-    {kind: "error", error: expected, label: "guest error-flag mask", rule: "B1 ordered error observation"});
+    {kind: "error", error: expected, label: "guest error-flag mask"});
 }
 
 /** Parse a mode string from configuration. Unknown values fail loudly: a

@@ -132,6 +132,7 @@
     "tsx": "^4.23.12",
     "typedoc": "^0.28.20",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vite": "^8.3.2",
     "vitest": "^5.0.3"
   },
   "dependencies": {
