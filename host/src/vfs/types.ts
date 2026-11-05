@@ -84,7 +84,8 @@ export interface FileSystemBackend {
   chmod(path: string, mode: number): void;
   chown(path: string, uid: number, gid: number): void;
   lchown(path: string, uid: number, gid: number): void;
-  utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void;
+  /** AT_SYMLINK_NOFOLLOW selects the link inode. Unimplemented metadata must fail. */
+  utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number, flags?: number): void;
 
   // Directory iteration
   opendir(path: string): number;

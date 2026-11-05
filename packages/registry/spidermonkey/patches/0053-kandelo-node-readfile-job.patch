@@ -1,0 +1,19 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -279,6 +279,7 @@
+ #include "shell/kandelo-node-native-fs.cpp"
+ #include "shell/kandelo-node-file-handle.cpp"
+ #include "shell/kandelo-node-fs-promise.cpp"
++#include "shell/kandelo-node-file-jobs.cpp"
+ #include "shell/kandelo-node-fs-constants.h"
+ #include "shell/kandelo-node-buffer.cpp"
+ 
+@@ -3815,6 +3816,8 @@
+       JS_FN("getBufferLimits", KandeloNativeBufferLimits, 0, 0),
+       JS_FN("createFsRequest", KandeloNativeCreateFsRequest, 2, 0),
+       JS_FN("cancelFsRequest", KandeloNativeCancelFsRequest, 1, 0),
++      JS_FN("createReadFileJob", (KandeloFsPromiseGuard<KandeloNativeCreateReadFileJob>), 7, 0),
++      JS_FN("runReadFileJob", (KandeloFsPromiseGuard<KandeloNativeRunReadFileJob>), 1, 0),
+       JS_FN("fsOpenSync", (KandeloFsPromiseGuard<KandeloFsOpenSync>), 3, 0),
+       JS_FN("fsIoSync", (KandeloFsPromiseGuard<KandeloFsIoSync>), 6, 0),
+       JS_FN("fsVectorSync", (KandeloFsPromiseGuard<KandeloFsVectorSync>), 4, 0),

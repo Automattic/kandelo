@@ -1,0 +1,31 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -1941,6 +1941,20 @@
+   return (TimeStamp::Now() - origin).ToMilliseconds();
+ }
+ 
++#include "kandelo-node-monotonic-clock.h"
++static bool KandeloNativeHrtime(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  uint64_t value;
++  if (kandelo::clock::Nanoseconds(&value) != 0) {
++    const int error = errno;
++    JS_ReportErrorUTF8(cx, "clock_gettime: %s", strerror(error));
++    KandeloDecoratePendingError(cx, error); return false;
++  }
++  JS::BigInt* result = JS::NumberToBigInt(cx, value);
++  if (!result) return false;
++  args.rval().setBigInt(result); return true;
++}
++
+ static bool KandeloNativeMonotonicTime(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+   args.rval().setDouble(KandeloMonotonicMilliseconds());
+@@ -3901,6 +3915,7 @@
+       JS_FN("__kandeloKill", KandeloNativeKill, 2, 0),
+       JS_FN("credentials", KandeloNativeCredentials, 0, 0),
+       JS_FN("monotonicTime", KandeloNativeMonotonicTime, 0, 0),
++      JS_FN("hrtime", KandeloNativeHrtime, 0, 0),
+       JS_FS_END,
+   };
+   if (!JS_DefineFunctions(cx, native, funcs)) {

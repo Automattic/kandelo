@@ -1,0 +1,449 @@
+{
+  "kind": "Original audit observations linked to partial TLS metadata owner; not unique APIs or passes",
+  "matrixPath": "tests/nodejs/audit/api-matrix.json",
+  "matrixSha256": "2d3fde3b30ac0d28e804cc06a50424a90ecc94abb4507697a0ddbc7c977321f9",
+  "rows": [
+    {
+      "rowIndex": 853,
+      "id": "tls.TLSSocket",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4244,
+      "id": "tls.getCiphers",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4253,
+      "id": "tls.TLSSocket.prototype.getProtocol",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4254,
+      "id": "tls.TLSSocket.prototype.getPeerCertificate",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4255,
+      "id": "tls.TLSSocket.prototype.setTimeout",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4256,
+      "id": "tls.TLSSocket.prototype.setNoDelay",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4257,
+      "id": "tls.TLSSocket.prototype.setKeepAlive",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4258,
+      "id": "tls.TLSSocket.prototype.ref",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4259,
+      "id": "tls.TLSSocket.prototype.unref",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4260,
+      "id": "tls.TLSSocket.prototype.authorized",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4261,
+      "id": "tls.TLSSocket.prototype.servername",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4267,
+      "id": "tls.TLSSocket.prototype",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4268,
+      "id": "tls.TLSSocket.prototype.disableRenegotiation",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4269,
+      "id": "tls.TLSSocket.prototype._wrapHandle",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4270,
+      "id": "tls.TLSSocket.prototype._destroySSL",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4271,
+      "id": "tls.TLSSocket.prototype._init",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4272,
+      "id": "tls.TLSSocket.prototype.renegotiate",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4273,
+      "id": "tls.TLSSocket.prototype.exportKeyingMaterial",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4274,
+      "id": "tls.TLSSocket.prototype.setMaxSendFragment",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4275,
+      "id": "tls.TLSSocket.prototype._handleTimeout",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4276,
+      "id": "tls.TLSSocket.prototype._emitTLSError",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4277,
+      "id": "tls.TLSSocket.prototype._tlsError",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4278,
+      "id": "tls.TLSSocket.prototype._releaseControl",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4279,
+      "id": "tls.TLSSocket.prototype._finishInit",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4280,
+      "id": "tls.TLSSocket.prototype._start",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4281,
+      "id": "tls.TLSSocket.prototype.setServername",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4282,
+      "id": "tls.TLSSocket.prototype.setSession",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4283,
+      "id": "tls.TLSSocket.prototype.getSession",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4284,
+      "id": "tls.TLSSocket.prototype.getCertificate",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4285,
+      "id": "tls.TLSSocket.prototype.getPeerX509Certificate",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4286,
+      "id": "tls.TLSSocket.prototype.getX509Certificate",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4287,
+      "id": "tls.TLSSocket.prototype.setKeyCert",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4288,
+      "id": "tls.TLSSocket.prototype.getCipher",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4289,
+      "id": "tls.TLSSocket.prototype.getSharedSigalgs",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4290,
+      "id": "tls.TLSSocket.prototype.getEphemeralKeyInfo",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4291,
+      "id": "tls.TLSSocket.prototype.getFinished",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4292,
+      "id": "tls.TLSSocket.prototype.getPeerFinished",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4293,
+      "id": "tls.TLSSocket.prototype.getTLSTicket",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4294,
+      "id": "tls.TLSSocket.prototype.isSessionReused",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4295,
+      "id": "tls.TLSSocket.prototype.enableTrace",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4296,
+      "id": "tls.TLSSocket.prototype.Symbol(kReinitializeHandle)",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4350,
+      "id": "tls.[doc] `tlsSocket.authorizationError` @1084",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4351,
+      "id": "tls.[doc] `tlsSocket.authorized` @1093",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4357,
+      "id": "tls.[doc] `tlsSocket.getCipher()` @1204",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4359,
+      "id": "tls.[doc] `tlsSocket.getFinished()` @1266",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4362,
+      "id": "tls.[doc] `tlsSocket.getPeerFinished()` @1409",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4364,
+      "id": "tls.[doc] `tlsSocket.getProtocol()` @1440",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4369,
+      "id": "tls.[doc] `tlsSocket.isSessionReused()` @1522",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4387,
+      "id": "tls.[doc] `tls.getCiphers()` @2442",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4394,
+      "id": "_tls_wrap.TLSSocket",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4395,
+      "id": "_tls_wrap.TLSSocket.prototype",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4396,
+      "id": "_tls_wrap.TLSSocket.prototype.disableRenegotiation",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4397,
+      "id": "_tls_wrap.TLSSocket.prototype._wrapHandle",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4398,
+      "id": "_tls_wrap.TLSSocket.prototype._destroySSL",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4399,
+      "id": "_tls_wrap.TLSSocket.prototype._init",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4400,
+      "id": "_tls_wrap.TLSSocket.prototype.renegotiate",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4401,
+      "id": "_tls_wrap.TLSSocket.prototype.exportKeyingMaterial",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4402,
+      "id": "_tls_wrap.TLSSocket.prototype.setMaxSendFragment",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4403,
+      "id": "_tls_wrap.TLSSocket.prototype._handleTimeout",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4404,
+      "id": "_tls_wrap.TLSSocket.prototype._emitTLSError",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4405,
+      "id": "_tls_wrap.TLSSocket.prototype._tlsError",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4406,
+      "id": "_tls_wrap.TLSSocket.prototype._releaseControl",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4407,
+      "id": "_tls_wrap.TLSSocket.prototype._finishInit",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4408,
+      "id": "_tls_wrap.TLSSocket.prototype._start",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4409,
+      "id": "_tls_wrap.TLSSocket.prototype.setServername",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4410,
+      "id": "_tls_wrap.TLSSocket.prototype.setSession",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4411,
+      "id": "_tls_wrap.TLSSocket.prototype.getSession",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4412,
+      "id": "_tls_wrap.TLSSocket.prototype.getPeerCertificate",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4413,
+      "id": "_tls_wrap.TLSSocket.prototype.getCertificate",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4414,
+      "id": "_tls_wrap.TLSSocket.prototype.getPeerX509Certificate",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4415,
+      "id": "_tls_wrap.TLSSocket.prototype.getX509Certificate",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4416,
+      "id": "_tls_wrap.TLSSocket.prototype.setKeyCert",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4417,
+      "id": "_tls_wrap.TLSSocket.prototype.getCipher",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4418,
+      "id": "_tls_wrap.TLSSocket.prototype.getSharedSigalgs",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4419,
+      "id": "_tls_wrap.TLSSocket.prototype.getEphemeralKeyInfo",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4420,
+      "id": "_tls_wrap.TLSSocket.prototype.getFinished",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4421,
+      "id": "_tls_wrap.TLSSocket.prototype.getPeerFinished",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4422,
+      "id": "_tls_wrap.TLSSocket.prototype.getProtocol",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4423,
+      "id": "_tls_wrap.TLSSocket.prototype.getTLSTicket",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4424,
+      "id": "_tls_wrap.TLSSocket.prototype.isSessionReused",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4425,
+      "id": "_tls_wrap.TLSSocket.prototype.enableTrace",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4426,
+      "id": "_tls_wrap.TLSSocket.prototype.Symbol(kReinitializeHandle)",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4469,
+      "id": "dtls.DTLSSession.prototype.authorizationError",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4470,
+      "id": "dtls.DTLSSession.prototype.authorized",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4528,
+      "id": "dtls.[doc] Resuming under `rejectUnauthorized` @583",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4570,
+      "id": "dtls.[doc] `session.authorized` @974",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 4571,
+      "id": "dtls.[doc] `session.authorizationError` @984",
+      "status": "partial implementation foundation; no individual closure"
+    },
+    {
+      "rowIndex": 5035,
+      "id": "quic.[doc] `sessionOptions.rejectUnauthorized` @3493",
+      "status": "partial implementation foundation; no individual closure"
+    }
+  ],
+  "individualApiClosure": false,
+  "fourHostConformance": false
+}

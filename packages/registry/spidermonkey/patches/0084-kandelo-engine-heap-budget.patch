@@ -1,0 +1,10 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3919,6 +3919,7 @@
+       JS_FN("markPromiseAsHandled", KandeloNativeMarkPromiseHandled, 1, 0),
+       JS_FN("getCompressionVersions", KandeloNativeCompressionVersions, 0, 0),
+       JS_FN("getBufferLimits", KandeloNativeBufferLimits, 0, 0),
++      JS_FN("engineGcHeapLimit", KandeloNativeEngineGcHeapLimit, 0, 0),
+       JS_FN("createFsRequest", KandeloNativeCreateFsRequest, 2, 0),
+       JS_FN("cancelFsRequest", KandeloNativeCancelFsRequest, 1, 0),
+       JS_FN("createReadFileJob", (KandeloFsPromiseGuard<KandeloNativeCreateReadFileJob>), 7, 0),

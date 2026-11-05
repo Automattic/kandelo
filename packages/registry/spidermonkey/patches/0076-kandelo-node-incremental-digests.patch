@@ -1,0 +1,207 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -387,194 +387,6 @@
+   return promise;
+ }
+ 
+-struct KandeloHashState {
+-  EVP_MD_CTX* md = nullptr;
+-  HMAC_CTX* hmac = nullptr;
+-};
+-
+-static kandelo::crypto::DigestOwner KandeloResolveDigest(const char* name) {
+-  return kandelo::crypto::Fetch(name);
+-}
+-
+-static void KandeloHashFinalize(JS::GCContext* gcx, JSObject* obj) {
+-  const Value slot = JS::GetReservedSlot(obj, 0);
+-  auto* state = slot.isUndefined() ? nullptr : static_cast<KandeloHashState*>(slot.toPrivate());
+-  if (!state) {
+-    return;
+-  }
+-  if (state->md) EVP_MD_CTX_free(state->md);
+-  if (state->hmac) HMAC_CTX_free(state->hmac);
+-  js_delete(state);
+-}
+-
+-static const JSClassOps KandeloHashClassOps = {
+-    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+-    KandeloHashFinalize, nullptr, nullptr, nullptr};
+-
+-static const JSClass KandeloHashClass = {
+-    "KandeloNodeHash",
+-    JSCLASS_HAS_RESERVED_SLOTS(1) | JSCLASS_FOREGROUND_FINALIZE,
+-    &KandeloHashClassOps,
+-};
+-
+-static KandeloHashState* KandeloHashFromThis(JSContext* cx,
+-                                             const CallArgs& args) {
+-  if (!args.thisv().isObject()) {
+-    JS_ReportErrorASCII(cx, "invalid hash receiver");
+-    return nullptr;
+-  }
+-  RootedObject obj(cx, &args.thisv().toObject());
+-  if (JS::GetClass(obj) != &KandeloHashClass) {
+-    JS_ReportErrorASCII(cx, "invalid hash receiver");
+-    return nullptr;
+-  }
+-  const Value slot = JS::GetReservedSlot(obj, 0);
+-  auto* state = slot.isUndefined() ? nullptr : static_cast<KandeloHashState*>(slot.toPrivate());
+-  if (!state || (!state->md && !state->hmac)) {
+-    JS_ReportErrorASCII(cx, "hash digest already called");
+-    return nullptr;
+-  }
+-  return state;
+-}
+-
+-static bool KandeloHashUpdate(JSContext* cx, unsigned argc, Value* vp) {
+-  CallArgs args = CallArgsFromVp(argc, vp);
+-  KandeloHashState* state = KandeloHashFromThis(cx, args);
+-  if (!state) {
+-    return false;
+-  }
+-  if (args.length() < 1) {
+-    JS_ReportErrorASCII(cx, "Hash.update requires data");
+-    return false;
+-  }
+-  std::vector<uint8_t> bytes;
+-  if (!KandeloValueToBytes(cx, args[0], &bytes)) {
+-    return false;
+-  }
+-  if (state->md) {
+-    if (EVP_DigestUpdate(state->md, bytes.data(), bytes.size()) != 1) {
+-      JS_ReportErrorASCII(cx, "EVP_DigestUpdate failed");
+-      return false;
+-    }
+-  } else if (HMAC_Update(state->hmac, bytes.data(), bytes.size()) != 1) {
+-    JS_ReportErrorASCII(cx, "HMAC_Update failed");
+-    return false;
+-  }
+-  args.rval().set(args.thisv());
+-  return true;
+-}
+-
+-static bool KandeloHashDigest(JSContext* cx, unsigned argc, Value* vp) {
+-  CallArgs args = CallArgsFromVp(argc, vp);
+-  KandeloHashState* state = KandeloHashFromThis(cx, args);
+-  if (!state) {
+-    return false;
+-  }
+-  unsigned char out[EVP_MAX_MD_SIZE];
+-  unsigned int outLen = 0;
+-  if (state->md) {
+-    if (EVP_DigestFinal_ex(state->md, out, &outLen) != 1) {
+-      JS_ReportErrorASCII(cx, "EVP_DigestFinal_ex failed");
+-      return false;
+-    }
+-    EVP_MD_CTX_free(state->md);
+-    state->md = nullptr;
+-  } else {
+-    if (HMAC_Final(state->hmac, out, &outLen) != 1) {
+-      JS_ReportErrorASCII(cx, "HMAC_Final failed");
+-      return false;
+-    }
+-    HMAC_CTX_free(state->hmac);
+-    state->hmac = nullptr;
+-  }
+-  RootedObject result(cx, KandeloNewUint8ArrayCopy(cx, out, outLen));
+-  if (!result) {
+-    return false;
+-  }
+-  args.rval().setObject(*result);
+-  return true;
+-}
+-
+-static bool KandeloCreateHashLike(JSContext* cx, const EVP_MD* md,
+-                                  const std::vector<uint8_t>* key,
+-                                  MutableHandleValue rval) {
+-  RootedObject obj(cx, JS_NewObject(cx, &KandeloHashClass));
+-  if (!obj) {
+-    return false;
+-  }
+-  JS::SetReservedSlot(obj, 0, JS::PrivateValue(nullptr));
+-  auto* state = js_new<KandeloHashState>();
+-  if (!state) {
+-    JS_ReportOutOfMemory(cx);
+-    return false;
+-  }
+-  if (key) {
+-    state->hmac = HMAC_CTX_new();
+-    if (!state->hmac || HMAC_Init_ex(state->hmac, key->data(), key->size(), md,
+-                                     nullptr) != 1) {
+-      if (state->hmac) HMAC_CTX_free(state->hmac);
+-      js_delete(state);
+-      JS_ReportErrorASCII(cx, "HMAC_Init_ex failed");
+-      return false;
+-    }
+-  } else {
+-    state->md = EVP_MD_CTX_new();
+-    if (!state->md || EVP_DigestInit_ex(state->md, md, nullptr) != 1) {
+-      if (state->md) EVP_MD_CTX_free(state->md);
+-      js_delete(state);
+-      JS_ReportErrorASCII(cx, "EVP_DigestInit_ex failed");
+-      return false;
+-    }
+-  }
+-  JS::SetReservedSlot(obj, 0, JS::PrivateValue(state));
+-  if (!JS_DefineFunction(cx, obj, "update", KandeloHashUpdate, 1, 0) ||
+-      !JS_DefineFunction(cx, obj, "digest", KandeloHashDigest, 0, 0)) {
+-    return false;
+-  }
+-  rval.setObject(*obj);
+-  return true;
+-}
+-
+-static bool KandeloNativeCreateHash(JSContext* cx, unsigned argc, Value* vp) {
+-  CallArgs args = CallArgsFromVp(argc, vp);
+-  if (args.length() < 1) {
+-    JS_ReportErrorASCII(cx, "createHash requires an algorithm");
+-    return false;
+-  }
+-  UniqueChars algorithm;
+-  if (!KandeloGetString(cx, args[0], &algorithm)) {
+-    return false;
+-  }
+-  auto md = KandeloResolveDigest(algorithm.get());
+-  if (!md) {
+-    JS_ReportErrorASCII(cx, "unsupported hash algorithm");
+-    return false;
+-  }
+-  return KandeloCreateHashLike(cx, md.get(), nullptr, args.rval());
+-}
+-
+-static bool KandeloNativeCreateHmac(JSContext* cx, unsigned argc, Value* vp) {
+-  CallArgs args = CallArgsFromVp(argc, vp);
+-  if (args.length() < 2) {
+-    JS_ReportErrorASCII(cx, "createHmac requires algorithm and key");
+-    return false;
+-  }
+-  UniqueChars algorithm;
+-  if (!KandeloGetString(cx, args[0], &algorithm)) {
+-    return false;
+-  }
+-  auto md = KandeloResolveDigest(algorithm.get());
+-  if (!md) {
+-    JS_ReportErrorASCII(cx, "unsupported hmac algorithm");
+-    return false;
+-  }
+-  kandelo::crypto::Bytes key;
+-  if (!KandeloValueToBytes(cx, args[1], &key.value)) {
+-    return false;
+-  }
+-  return KandeloCreateHashLike(cx, md.get(), &key.value, args.rval());
+-}
+-
+ struct KandeloZlibState {
+   z_stream stream{};
+   bool deflate = false;
+@@ -4057,8 +3869,7 @@
+       JS_FN("hashDigest", (KandeloCryptoGuard<KandeloNativeOneShotDigest>), 4, 0),
+       JS_FN("digestNames", (KandeloCryptoGuard<KandeloNativeDigestNames>), 0, 0),
+       JS_FN("timingSafeEqual", (KandeloCryptoGuard<KandeloNativeTimingSafeEqual>), 2, 0),
+-      JS_FN("createHash", KandeloNativeCreateHash, 1, 0),
+-      JS_FN("createHmac", KandeloNativeCreateHmac, 2, 0),
++      JS_FN("incrementalHash", KandeloNativeIncrementalHash, 1, 0),
+       JS_FN("createDeflate", KandeloNativeCreateDeflate, 1, 0),
+       JS_FN("createInflate", KandeloNativeCreateInflate, 0, 0),
+       JS_FN("createGzip", KandeloNativeCreateGzip, 1, 0),

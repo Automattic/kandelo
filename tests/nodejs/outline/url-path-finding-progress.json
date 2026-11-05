@@ -1,0 +1,108 @@
+{
+  "at": "2026-11-05T13:12:38.471013+00:00",
+  "recipeRevision": 111,
+  "auditFindings": [
+    "V-006/V-007/V-036 partial: public URL path, byte conversion and HTTP options"
+  ],
+  "sourceImplemented": [
+    "Four public helpers use unchanged pinned JS selections over actual shared URL/path/Buffer/error/platform owners",
+    "Native EncodePathChars ASCII table and Windows slash rule ported over real WHATWG parsing/serialization;actual public URL instances returned",
+    "Production dependency order and explicit four-method namespace wiring;private upstream isURL predicate retained without extra public export",
+    "Target/audit/platform identity/public constructor identity and separate Claude/npm/Bun asset branch preserved"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-url-path-source/report.json",
+    "sha256": "a85ed265da47ece56fb39d359640ec8cd2e7d8cf03cb09f94d4a03e1b79ef462",
+    "commands": 4,
+    "fullPinnedSources": 3,
+    "unchangedSelections": 5,
+    "nativeEncodingEntries": 15
+  },
+  "focusedFrontend": {
+    "report": ".context/node26-url-path-frontend-r2.json",
+    "sha256": "114bc57fcb8c6a2abad248b04936544c3459b116a4fec277fba3b92a95234259",
+    "cases": 15,
+    "passed": 15,
+    "failed": 0,
+    "skipped": 0,
+    "newCases": 8,
+    "affectedCases": 7,
+    "jobId": "node26-url-path-frontend-r2-1105-080350-b27a",
+    "scope": "Generated candidate JS and real vendored parser with explicit native dependencies;candidate Buffer supplied in byte case;not guest/four-host conformance"
+  },
+  "earlierFrontend": {
+    "report": ".context/node26-url-path-frontend-r1.json",
+    "sha256": "eaf766ad7edf2794e29922ce166f676c0580b7bfb68b552b561704e9921eaea6",
+    "cases": 15,
+    "passed": 15,
+    "countsAsAdditionalCoverage": false,
+    "inputs": {
+      "report": ".context/node26-url-path-frontend-r1-inputs/identities.json",
+      "sha256": "04249b8b32df4ea7182948bfd9cb6f74d53b76cd7cdfe4bc80a4672e58b25ed5"
+    }
+  },
+  "upstreamControls": {
+    "report": ".context/node26-url-path-upstream/report.json",
+    "sha256": "ce9de66d5f1a68b559ff7e71d65f7d399ec9dd2b1f94391142ad6ab4eccf3e49",
+    "unchangedFiles": 4,
+    "distinctPassingFiles": 3,
+    "distinctSkippedFiles": 1,
+    "executions": 8,
+    "outcomes": {
+      "pass": 6,
+      "skip": 2
+    },
+    "scope": "Subject preloader on exact native reference;unchanged harness/FS/Buffer remain native controls"
+  },
+  "upstreamSkip": {
+    "file": "test/parallel/test-fileurltopathbuffer.js",
+    "reason": "Unchanged actual-macOS guard:Test unsupported on OSX",
+    "modes": [
+      "native",
+      "candidate"
+    ],
+    "countsAsPassingCompatibility": false,
+    "acceptedKandeloExclusion": false
+  },
+  "dependencies": {
+    "default": [
+      "native process/inspection/Buffer and engine globals",
+      "candidate shared values/path/errors/validators",
+      "actual vendored WHATWG parser"
+    ],
+    "candidateBufferCase": "Actual candidate Buffer/codec owner with controlled allocator;not guest backing-store/GC/FS validation",
+    "existingNativeEnvironmentHelper": {
+      "path": ".context/node26-environment-evidence/native/owner.node",
+      "sha256": "fc8921e8f26e4eb1fdf09b00b8384d209604e8d78e12acf7744ef0a24f0dc71c",
+      "compiledThisSlice": false
+    }
+  },
+  "auditDiscrepancy": {
+    "finding": "V-036",
+    "originalAuditUnchanged": true,
+    "claim": "Bad file-URL UTF8 should not yield URIError",
+    "resolution": "Pinned string conversion calls decodeURIComponent;exact native differential controls confirm URIError. Byte-returning helper remains distinct;guest message/stack parity unvalidated."
+  },
+  "retainedSourceToolErrors": [
+    ".context/node26-url-path-source-r1.log",
+    ".context/node26-url-path-source-r2.log"
+  ],
+  "remaining": [
+    "Byte-preserving filesystem/loader/native/VFS/host marshalling and actual filenames",
+    "Legacy URL class/parse/format/resolve/resolveObject,public wrapper diagnostics/descriptors,complete IDNA,Blob URL registry/revocation and URLPattern",
+    "Private URL consumers,HTTP/Agent/server integration and complete error/realm/lifecycle semantics",
+    "Normal targeted guest compilation,identified-artifact execution and all-four-host conformance"
+  ],
+  "guestCompiled": true,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": [],
+  "compiledByEngine": {
+    "report": ".context/node26-engine-r112-accepted/report.json",
+    "sha256": "d52f108e5945d55b37f346a364d526bf5a78784bfd6e0d94850af2270ad8f047",
+    "recipeRevision": 112,
+    "exitCode": 0
+  },
+  "compileScope": "Unchanged111URL/bootstrap JS included in112;no new guest helper controls or four-host conformance"
+}

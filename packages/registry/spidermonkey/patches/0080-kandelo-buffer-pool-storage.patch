@@ -1,0 +1,108 @@
+--- a/js/src/vm/ArrayBufferObject.h
++++ b/js/src/vm/ArrayBufferObject.h
+@@ -274,7 +274,10 @@
+     // The length is temporarily pinned, so it should not be detached. In the
+     // future, this will also prevent GrowableArrayBuffer/ResizeableArrayBuffer
+     // from modifying the length while this is set.
+-    PINNED_LENGTH = 0b100'0000
++    PINNED_LENGTH = 0b100'0000,
++
++    // A permanent embedder detach restriction, independent of backing kind.
++    NON_DETACHABLE = 0b1000'0000
+   };
+ 
+   static_assert(JS_ARRAYBUFFER_DETACHED_FLAG == DETACHED,
+@@ -572,10 +575,14 @@
+   bool isLengthPinned() const { return flags() & PINNED_LENGTH; }
+   bool isPreparedForAsmJS() const { return flags() & FOR_ASMJS; }
+ 
+-  // Only WASM and asm.js buffers have a non-undefined [[ArrayBufferDetachKey]].
++  // WASM, asm.js and embedder-owned non-detachable buffers have a defined key.
+   //
+   // https://tc39.es/ecma262/#sec-properties-of-the-arraybuffer-instances
+-  bool hasDefinedDetachKey() const { return isWasm() || isPreparedForAsmJS(); }
++  bool isNonDetachable() const { return flags() & NON_DETACHABLE; }
++  void markNonDetachable() { setFlags(flags() | NON_DETACHABLE); }
++  bool hasDefinedDetachKey() const {
++    return isWasm() || isPreparedForAsmJS() || isNonDetachable();
++  }
+ 
+   // WebAssembly support:
+ 
+--- a/js/src/vm/ArrayBufferObject.cpp
++++ b/js/src/vm/ArrayBufferObject.cpp
+@@ -2939,6 +2939,9 @@
+       case ArrayBufferObject::ArrayBufferFlags::FOR_ASMJS:
+         known("FOR_ASMJS");
+         break;
++      case ArrayBufferObject::ArrayBufferFlags::NON_DETACHABLE:
++        known("NON_DETACHABLE");
++        break;
+       default:
+         unknown(i);
+         break;
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -1295,6 +1295,15 @@
+     if (!unwrappedObj) {
+       ReportAccessDenied(cx);
+       return false;
++    }
++
++    if (unwrappedObj->is<ArrayBufferObject>() &&
++        unwrappedObj->as<ArrayBufferObject>().isNonDetachable()) {
++      // Reject before graph traversal or detaching any other listed buffer.
++      if (cx->hasKandeloCloneErrors()) {
++        return cx->reportKandeloCloneError("Cannot transfer object of unsupported type.");
++      }
++      return reportDataCloneError(JS_SCERR_WASM_NO_TRANSFER);
+     }
+ 
+     // Shared memory cannot be transferred because it is not possible (nor
+@@ -2439,7 +2448,7 @@
+         return false;
+       }
+ 
+-      if (arrayBuffer->isPreparedForAsmJS()) {
++      if (arrayBuffer->hasDefinedDetachKey()) {
+         reportDataCloneError(JS_SCERR_WASM_NO_TRANSFER);
+         return false;
+       }
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -275,6 +275,8 @@
+ using mozilla::TimeStamp;
+ using mozilla::Utf8Unit;
+ 
++// Process option state is private native input to every unsafe backing allocation.
++static bool gKandeloZeroFillBuffers = false;
+ #include "shell/kandelo-node-native.cpp"
+ 
+ static JSObject* KandeloNewUint8ArrayCopy(JSContext* cx, const uint8_t* data,
+@@ -3942,6 +3944,7 @@
+       JS_FN("fsPathPromise", (KandeloFsPromiseGuard<KandeloFsPathPromise>), 5, 0),
+       JS_FN("getFsConstants", KandeloNativeFsConstants, 0, 0),
+       JS_FN("createUnsafeArrayBuffer", KandeloNativeUnsafeArrayBuffer, 1, 0),
++      JS_FN("markBufferUntransferable", KandeloNativeMarkBufferUntransferable, 1, 0),
+       JS_FN("arrayBufferAlignedOffset", KandeloNativeArrayBufferAlignedOffset, 2, 0),
+       JS_FN("peekFsGcCloseError", KandeloNativePeekFsGcClose, 0, 0),
+       JS_FN("ackFsGcCloseError", KandeloNativeAckFsGcClose, 0, 0),
+@@ -11078,6 +11081,10 @@
+     kandeloNodeCLI.noWarnings = !value;
+     return true;
+   }
++  if (name == "--zero-fill-buffers") {
++    gKandeloZeroFillBuffers = value;
++    return true;
++  }
+   if (name == "--experimental-stream-iter") {
+     kandeloNodeCLI.experimentalStreamIter = value;
+     return true;
+@@ -16002,6 +16009,7 @@
+     RootedString evalSource(cx, evalUtf8 ? NewStringCopyUTF8(cx, evalUtf8.get()) : nullptr);
+     if (!evalSource) return false;
+     if (!JS_DefineProperty(cx, cli, "evalSource", evalSource, 0) ||
++        !JS_DefineProperty(cx, cli, "zeroFillBuffers", gKandeloZeroFillBuffers, 0) ||
+         !JS_DefineProperty(cx, cli, "noWarnings", kandeloNodeCLI.noWarnings, 0) ||
+         !JS_DefineProperty(cx, cli, "experimentalStreamIter", kandeloNodeCLI.experimentalStreamIter, 0) ||
+         !JS_DefineProperty(cx, cli, "execArgv", execArgs, 0) ||

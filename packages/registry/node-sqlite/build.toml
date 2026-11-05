@@ -1,0 +1,12 @@
+script_path = "packages/registry/node-sqlite/build-node-sqlite.sh"
+inputs = [
+  "packages/registry/node-sqlite/build-node-sqlite.sh",
+  "packages/registry/node-sqlite/build-node-sqlite.py",
+  "packages/registry/node-sqlite/sources.json",
+  "packages/registry/node-compat/target.json",
+  "scripts/package-build-roots.sh",
+  "sdk/activate.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1

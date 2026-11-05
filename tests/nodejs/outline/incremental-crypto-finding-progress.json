@@ -1,0 +1,281 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "auditMatrixSha256": "2d3fde3b30ac0d28e804cc06a50424a90ecc94abb4507697a0ddbc7c977321f9",
+  "scope": "Navigation to original observations, not unique APIs/tests or finding closure",
+  "sourceReport": "tests/nodejs/outline/incremental-crypto-implementation-dependencies.md",
+  "sourceOwners": [
+    "third_party/node-core/incremental-crypto-adapter.js",
+    "third_party/node-core/incremental-hash.h",
+    "third_party/node-core/native-incremental-hash.cpp",
+    "third_party/node-core/generate-native-encoding.py"
+  ],
+  "observations": [
+    {
+      "matrixRowIndex": 874,
+      "id": "crypto.createHash",
+      "module": "node:crypto",
+      "api": "createHash",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 875,
+      "id": "crypto.createHmac",
+      "module": "node:crypto",
+      "api": "createHmac",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010",
+        "C-016"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3612,
+      "id": "crypto.Hash",
+      "module": "node:crypto",
+      "api": "Hash",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3613,
+      "id": "crypto.Hmac",
+      "module": "node:crypto",
+      "api": "Hmac",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010",
+        "C-016"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3642,
+      "id": "crypto.createHash.prototype",
+      "module": "node:crypto",
+      "api": "createHash.prototype",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3643,
+      "id": "crypto.createHmac.prototype",
+      "module": "node:crypto",
+      "api": "createHmac.prototype",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010",
+        "C-016"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3731,
+      "id": "crypto.Hash.prototype",
+      "module": "node:crypto",
+      "api": "Hash.prototype",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3732,
+      "id": "crypto.Hash.prototype.copy",
+      "module": "node:crypto",
+      "api": "Hash.prototype.copy",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3733,
+      "id": "crypto.Hash.prototype._transform",
+      "module": "node:crypto",
+      "api": "Hash.prototype._transform",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3734,
+      "id": "crypto.Hash.prototype._flush",
+      "module": "node:crypto",
+      "api": "Hash.prototype._flush",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3735,
+      "id": "crypto.Hash.prototype.update",
+      "module": "node:crypto",
+      "api": "Hash.prototype.update",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3736,
+      "id": "crypto.Hash.prototype.digest",
+      "module": "node:crypto",
+      "api": "Hash.prototype.digest",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3737,
+      "id": "crypto.Hmac.prototype",
+      "module": "node:crypto",
+      "api": "Hmac.prototype",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010",
+        "C-016"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3738,
+      "id": "crypto.Hmac.prototype.update",
+      "module": "node:crypto",
+      "api": "Hmac.prototype.update",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010",
+        "C-016"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3739,
+      "id": "crypto.Hmac.prototype.digest",
+      "module": "node:crypto",
+      "api": "Hmac.prototype.digest",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010",
+        "C-016"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3740,
+      "id": "crypto.Hmac.prototype._flush",
+      "module": "node:crypto",
+      "api": "Hmac.prototype._flush",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010",
+        "C-016"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 3741,
+      "id": "crypto.Hmac.prototype._transform",
+      "module": "node:crypto",
+      "api": "Hmac.prototype._transform",
+      "findingIds": [
+        "C-005",
+        "C-008",
+        "C-009",
+        "C-010",
+        "C-016"
+      ],
+      "relation": "Incremental digest source slice only; full original requirements and shared dependencies remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    }
+  ],
+  "implementationComplete": false,
+  "fourHostRuntimeConformance": false
+}

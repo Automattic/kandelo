@@ -9,7 +9,7 @@
     // public realm. Closures keep the real shell functions, not user globals.
     const shellGlobalNames = Object.getOwnPropertyNames(globalThis);
     const { print, printErr, putstr, quit,
-        setSharedObject, joinWorkerThreads, evalInWorker } = globalThis;
+        setSharedObject, evalInWorker } = globalThis;
     const ecmaGlobalNames = new Set([
         'globalThis', 'Infinity', 'NaN', 'undefined', 'eval', 'isFinite', 'isNaN',
         'parseFloat', 'parseInt', 'decodeURI', 'decodeURIComponent', 'encodeURI',
@@ -39,11 +39,40 @@
     const serializeValue = globalThis.serialize;
     const deserializeValue = globalThis.deserialize;
     const captureSavedStack = globalThis.saveStack;
+    // The private bootstrap has its real engine source identity, distinct
+    // from guest filenames and Node's node: internal source names.
+    const bootstrapStackSource = typeof captureSavedStack === 'function' ? captureSavedStack(1)?.source : undefined;
+    const stackSourceStartsWith = Function.prototype.call.bind(String.prototype.startsWith);
+    const stackSourceIncludes = Function.prototype.call.bind(String.prototype.includes);
     const callSiteCreate = Object.create;
     const callSiteAssign = Object.assign;
     const callSiteDefine = Object.defineProperty;
     const callSiteString = String;
     const native = globalThis.__kandeloNodeNative || {};
+    const workerEnvironment = typeof native.worker === 'function' ? native.worker('environment') : null;
+    if (workerEnvironment) workerEnvironment.env = Object.assign(Object.create(null), workerEnvironment.env);
+    function environmentOperation(operation, key, value) {
+        if (!workerEnvironment) return native.environment(operation, key, value);
+        const env = workerEnvironment.env;
+        if (operation === 'safeget') {
+            return native.environment('allowed') && Object.prototype.hasOwnProperty.call(env, key) ? env[key] : undefined;
+        }
+        if (operation === 'get') return Object.prototype.hasOwnProperty.call(env, key) ? env[key] : undefined;
+        if (operation === 'set') { env[key] = value; return; }
+        if (operation === 'unset') { delete env[key]; return; }
+        if (operation === 'keys') return Object.keys(env);
+        throw new Error('Unknown worker environment operation: ' + operation);
+    }
+
+    const asyncApply = Reflect.apply, asyncAssign = Object.assign;
+    const asyncCreate = Object.create, asyncFreeze = Object.freeze;
+    function runWithAsyncContext(context, fn, receiver, args) {
+        const prior = native.getAsyncContext();
+        const active = asyncAssign(asyncCreate(null), context, { untrackedTask: true });
+        native.setAsyncContext(asyncFreeze(active));
+        try { return asyncApply(fn, receiver, args); }
+        finally { native.setAsyncContext(prior); }
+    }
     // The deadline heap owns pending callbacks; reference state is independent
     // of wakeup deadlines. Unreferenced timers remain eligible during live work.
     function createTimerScheduler(now) {
@@ -85,14 +114,14 @@
             if (!timer) return;
             pending.delete(id); immediates.delete(id); removeHeap(timer);
             if (timer.referenced) references--;
-            timer.fn = null;
+            timer.fn = null; timer.context = undefined;
         }
         function pruneBatch() {
             while (batch && batchIndex < batch.length && !pending.has(batch[batchIndex].id)) batchIndex++;
             if (batch && batchIndex === batch.length) { batch = null; batchIndex = 0; }
         }
         function schedule(fn, delay, referenced = true, immediate = false, start = now()) {
-            const timer = { id: nextId++, fn, due: start + Math.trunc(delay), referenced, index: -1 };
+            const timer = { id: nextId++, fn, context: native.getAsyncContext(), due: start + Math.trunc(delay), referenced, index: -1 };
             pending.set(timer.id, timer);
             if (referenced) references++;
             if (immediate) immediates.set(timer.id, timer);
@@ -112,9 +141,9 @@
                 pruneBatch();
             }
             if (!batch) return 0;
-            const timer = batch[batchIndex++], fn = timer.fn;
+            const timer = batch[batchIndex++], fn = timer.fn, context = timer.context;
             clear(timer.id);
-            try { fn(); } finally { pruneBatch(); }
+            try { runWithAsyncContext(context, fn, undefined, []); } finally { pruneBatch(); }
             return 1;
         }
         return {
@@ -258,21 +287,11 @@
         SEEK_CUR: 1,
         SEEK_END: 2,
         getenv(key) {
-            if (typeof shellOs.getenv !== 'function') return null;
-            const value = shellOs.getenv(String(key));
+            const value = environmentOperation('get', String(key));
             return value === undefined ? null : value;
         },
-        setenv(key, value) {
-            // Keep process.env mutations in the shared JS bootstrap's env
-            // object. SpiderMonkey's wasm shell inherits Mozilla setenv
-            // interposition machinery that aborts when user JS calls through
-            // to libc setenv(), and npm mutates process.env during startup.
-            void key;
-            void value;
-        },
-        unsetenv(key) {
-            void key;
-        },
+        setenv(key, value) { return environmentOperation('set', String(key), String(value)); },
+        unsetenv(key) { return environmentOperation('unset', String(key)); },
         exit(code) {
             if (typeof quit === 'function') quit(code | 0);
             throw new Error('exit ' + (code | 0));
@@ -355,104 +374,45 @@
     globalThis.__kandeloNextTimerDelay = timerScheduler.nextDelay;
     globalThis.__kandeloHasReferencedTimers = timerScheduler.hasReferences;
 
-    globalThis.__kandeloCreateWorkerThreads = function(EventEmitter) {
-        class MessagePort extends EventEmitter {
-            postMessage() {}
-            start() {}
-            close() { this.emit('close'); }
-            ref() { return this; }
-            unref() { return this; }
-        }
-        class MessageChannel {
-            constructor() {
-                this.port1 = new MessagePort();
-                this.port2 = new MessagePort();
-            }
-        }
-        function clearSharedWorkerData() {
-            if (typeof setSharedObject === 'function') {
-                try { setSharedObject(null); } catch {}
-            }
-        }
-        function joinShellWorkers() {
-            if (typeof joinWorkerThreads === 'function') {
-                try { joinWorkerThreads(); } catch {}
-            }
-        }
-        class Worker extends EventEmitter {
-            constructor(filenameOrSource, options) {
-                super();
-                options = options || {};
-                let source = String(filenameOrSource);
-                if (!options.eval) {
-                    const loaded = std.loadFile(source);
-                    if (loaded == null) throw new Error('Cannot find module ' + source);
-                    source = loaded;
-                }
-
-                let workerDataExpression = 'undefined';
-                if (Object.prototype.hasOwnProperty.call(options, 'workerData')) {
-                    const data = options.workerData;
-                    if (data instanceof SharedArrayBuffer ||
-                        (typeof WebAssembly === 'object' && WebAssembly.Memory && data instanceof WebAssembly.Memory)) {
-                        if (typeof setSharedObject !== 'function') {
-                            throw new Error('SpiderMonkey shared worker mailbox is unavailable');
-                        }
-                        setSharedObject(data);
-                        workerDataExpression = 'getSharedObject()';
-                    } else {
-                        workerDataExpression = JSON.stringify(data);
-                    }
-                } else if (typeof setSharedObject === 'function') {
-                    setSharedObject(null);
-                }
-
-                const prelude = [
-                    'var workerData = ' + workerDataExpression + ';',
-                    'var parentPort = null;',
-                    'var require = function(name) {',
-                    '  if (name === "worker_threads" || name === "node:worker_threads") {',
-                    '    return { isMainThread: false, parentPort: parentPort, workerData: workerData };',
-                    '  }',
-                    '  throw new Error("Cannot find module " + name);',
-                    '};',
-                    'var module = { exports: {} };',
-                    'var exports = module.exports;',
-                ].join('\n');
-
-                if (typeof evalInWorker !== 'function') {
-                    throw new Error('SpiderMonkey evalInWorker is unavailable');
-                }
-                evalInWorker(prelude + '\n' + source + '\n');
-                const defer = typeof queueMicrotask === 'function'
-                    ? queueMicrotask
-                    : (fn) => Promise.resolve().then(fn);
-                defer(() => this.emit('online'));
-            }
-            postMessage() {
-                throw new Error('Worker.postMessage is not implemented in the SpiderMonkey shell adapter');
-            }
-            terminate() {
-                clearSharedWorkerData();
-                joinShellWorkers();
-                this.emit('exit', 0);
-                return Promise.resolve(0);
-            }
-            ref() { return this; }
-            unref() { return this; }
-        }
-        return {
-            isMainThread: true,
-            parentPort: null,
-            workerData: null,
-            Worker,
-            MessageChannel,
-            MessagePort,
-            SHARE_ENV: Symbol.for('kandelo.worker_threads.SHARE_ENV'),
-        };
-    };
-
     const _nodeNative = {
+        worker(...args) {
+            if (typeof native.worker !== 'function') { const error = new Error('Native Worker owner is unavailable'); error.code = 'ERR_NOT_IMPLEMENTED'; throw error; }
+            return native.worker(...args);
+        },
+        workerEnvironment,
+
+        isInsideNodeModules(frameLimit = 10) {
+            if (typeof captureSavedStack !== 'function') {
+                const error = new Error('This engine does not expose saved frames for module origin');
+                error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
+            }
+            // Like the target binding, use the first non-internal synchronous
+            // source in a bounded actual stack. No parsing mutable Error.stack
+            // or guessing origin from a mutable public module object.
+            const limit = typeof frameLimit === 'number' && (frameLimit | 0) === frameLimit ? frameLimit : 10;
+            if (limit <= 0) return false;
+            let frame = captureSavedStack(limit + 1)?.parent;
+            for (let i = 0; frame && i < limit; i++, frame = frame.parent) {
+                const source = frame.source;
+                if (!source || source === bootstrapStackSource || stackSourceStartsWith(source, 'node:')) continue;
+                return stackSourceIncludes(source, '/node_modules/') ||
+                    stackSourceIncludes(source, '\\node_modules\\') ||
+                    stackSourceIncludes(source, '/node_modules\\') ||
+                    stackSourceIncludes(source, '\\node_modules/');
+            }
+            return false;
+        },
+        getCallerLocation() {
+            if (typeof captureSavedStack !== 'function') {
+                const error = new Error('This engine does not expose saved frames');
+                error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
+            }
+            // Skip this private adapter and its immediate JS caller, matching
+            // the pinned native util binding's caller-of-caller operation.
+            const frame = captureSavedStack(3)?.parent?.parent;
+            if (!frame || !frame.source) return undefined;
+            return [frame.line, frame.column, frame.source];
+        },
         captureCallSites(frameCount) {
             if (typeof captureSavedStack !== 'function') {
                 const error = new Error('This engine does not expose saved frames');
@@ -492,15 +452,69 @@
                 }
             }
         },
-        cloneValue(value) {
+        configureClone(symbol, errorFactory, serialize, create, deserialize) {
+            return native.configureClone(symbol, errorFactory, serialize, create, deserialize);
+        },
+        createCloneModeSymbol() { return native.createCloneModeSymbol(); },
+        markBufferUntransferable(buffer) { return native.markBufferUntransferable(buffer); },
+        objectMark(operation, value) { return native.objectMark(operation, value); },
+        setCloneMode(object, mode) { return native.setCloneMode(object, mode); },
+        hrtime() { return native.hrtime(); },
+        operatingSystem(operation, first, second) { return native.operatingSystem(operation, first, second); },
+        getUvErrorData() { return native.getUvErrorData(); },
+        environment(operation, key, value) { return environmentOperation(operation, key, value); },
+        createEnvironmentObject(callbacks, prototype) { return native.createEnvironmentObject(callbacks, prototype); },
+        processUmask(mask) { return native.processUmask(mask); },
+        processParentPid() { return native.processParentPid(); },
+        parseEnv(content) { return native.parseEnv(content); },
+        loadEnvFile(path) { return native.loadEnvFile(path); },
+        randomFillBytes(bytes) { return native.randomFillBytes(bytes); },
+        secureRandomBuffer(size) { return native.secureRandomBuffer(size); },
+        createRandomBytesJob(prototype, mode, buffer, offset, size, callback) { return native.createRandomBytesJob(prototype, mode, buffer, offset, size, callback); },
+        runRandomBytesJob(owner) { return native.runRandomBytesJob(owner); },
+        createKdfJob(...args) { return native.createKdfJob(...args); },
+        argon2Supported() { return native.argon2Supported(); },
+        runKdfJob(owner) { return native.runKdfJob(owner); },
+        hashDigest(algorithm, input, outputLength, digestOptions) { return native.hashDigest(algorithm, input, outputLength, digestOptions); },
+        digestNames() { return native.digestNames(); },
+        getOpenSSLVersion() { return native.getOpenSSLVersion(); },
+        timingSafeEqual(a, b) { return native.timingSafeEqual(a, b); },
+        port(operation, owner, value) { return native.port(operation, owner, value); },
+        serializeMessage(value, transfer) {
+            return native.serializeMessage(value, transfer);
+        },
+        deserializeMessage(packet) {
+            return native.deserializeMessage(packet);
+        },
+        cloneValue(value, transfer) {
             // Keep the engine's structured-clone graph, cycles and byte views;
             // the unrelated global JSON fallback cannot clone stream chunks.
             const policy = { scope: 'SameProcess', SharedArrayBuffer: 'allow' };
-            return deserializeValue(serializeValue(value, undefined, policy), policy);
+            return deserializeValue(serializeValue(value, transfer, policy), policy);
         },
         isPromise: value => native.isPromise(value),
         isNativeError: Error.isError,
-        isProxy: globalThis.isProxy,
+        isProxy: value => native.hasObjectKind(value, 'Proxy'),
+        hasObjectKind: (value, kind) => native.hasObjectKind(value, kind),
+        getPromiseDetails: value => native.getPromiseDetails(value),
+        markPromiseAsHandled: value => native.markPromiseAsHandled(value),
+        getProxyDetails: (value, full) => native.getProxyDetails(value, full),
+        getConstructorName: value => native.getConstructorName(value),
+        getAsyncContext: () => native.getAsyncContext(),
+        allocateAsyncId: () => native.allocateAsyncId(),
+        setAsyncLifecycle: callback => native.setAsyncLifecycle(callback),
+        setAsyncDestroyTracking: enabled => native.setAsyncDestroyTracking(enabled),
+        drainNativeAsyncDestroyIds: () => native.drainNativeAsyncDestroyIds(),
+        enqueueAsyncDestroyId: (id, promise) => native.enqueueAsyncDestroyId(id, promise),
+        getAsyncResourceInfo: resource => native.getAsyncResourceInfo(resource),
+        asyncHookFatal: error => native.asyncHookFatal(error),
+        enqueueMicrotask: callback => native.enqueueMicrotask(callback),
+        setAsyncContext: value => native.setAsyncContext(value),
+        getAsyncJobActive: () => native.getAsyncJobActive(),
+        runWithAsyncContext,
+        previewEntries: (value, pairs) => native.previewEntries(value, pairs),
+        moduleSyntax(operation, source, filename) { return native.moduleSyntax(operation, source, filename); },
+        httpParser(...args) { return native.httpParser(...args); },
         evalScriptAsFunction(source, filename, firstLine = 1) {
             if (typeof native.evalScriptAsFunction === 'function') {
                 return native.evalScriptAsFunction(source, filename, firstLine);
@@ -515,6 +529,46 @@
             }
             return native.__kandeloRequireModule(path);
         },
+        getCompressionVersions() { return native.getCompressionVersions(); },
+        getBufferLimits() { return native.getBufferLimits(); },
+        engineGcHeapLimit() { return native.engineGcHeapLimit(); },
+        addressRules(operation, ...args) { return native.addressRules(operation, ...args); },
+        getFsConstants() { return native.getFsConstants(); },
+        createUnsafeArrayBuffer(size) { return native.createUnsafeArrayBuffer(size); },
+        arrayBufferAlignedOffset(buffer, alignment) { return native.arrayBufferAlignedOffset(buffer, alignment); },
+        fsControlSync(name, fd, first, second) { return native.fsControlSync(name, fd, first, second); },
+        fsControlPromise(name, fd, first, second, makeError) { return native.fsControlPromise(name, fd, first, second, makeError); },
+        fsIoPromise(writing, fd, buffer, offset, length, position, makeError) { return native.fsIoPromise(writing, fd, buffer, offset, length, position, makeError); },
+        fsVectorPromise(writing, fd, buffers, position, makeError) { return native.fsVectorPromise(writing, fd, buffers, position, makeError); },
+        fsStatPromise(pathOrFd, bigint, request, follow, throwIfNoEntry) { return native.fsStatPromise(pathOrFd, bigint, request, follow, throwIfNoEntry); },
+        fsStatSync(pathOrFd, follow, bigint) { return native.fsStatSync(pathOrFd, follow, bigint); },
+        fsRmSync(path, retries, recursive, delay) { return native.fsRmSync(path, retries, recursive, delay); },
+        fsScandir(path, request, prototype) { return native.fsScandir(path, request, prototype); },
+        fsReaddirSync(path, recursive, withTypes, convert) { return native.fsReaddirSync(path, recursive, withTypes, convert); },
+        fsReaddirPromise(path, recursive, withTypes, request, convert) { return native.fsReaddirPromise(path, recursive, withTypes, request, convert); },
+        fsPathSync(name, path, mode, recursive) { return native.fsPathSync(name, path, mode, recursive); },
+        fsPathPromise(name, path, mode, recursive, request) { return native.fsPathPromise(name, path, mode, recursive, request); },
+        fsMetadataSync(name, path, first, second) { return native.fsMetadataSync(name, path, first, second); },
+        fsMetadataPromise(name, path, first, second, request) { return native.fsMetadataPromise(name, path, first, second, request); },
+        fsOpenPromise(path, flags, mode, makeError) { return native.fsOpenPromise(path, flags, mode, makeError); },
+        fsOpenSync(path, flags, mode) { return native.fsOpenSync(path, flags, mode); },
+        fsIoSync(writing, fd, buffer, offset, length, position) { return native.fsIoSync(writing, fd, buffer, offset, length, position); },
+        fsVectorSync(writing, fd, buffers, position) { return native.fsVectorSync(writing, fd, buffers, position); },
+        createReadFileJob(prototype, path, flags, limit, trackFd, callback, bufferPrototype) { return native.createReadFileJob(prototype, path, flags, limit, trackFd, callback, bufferPrototype); },
+        runReadFileJob(job) { return native.runReadFileJob(job); },
+        createWriteFileJob(...args) { return native.createWriteFileJob(...args); },
+        runWriteFileJob(job) { return native.runWriteFileJob(job); },
+        cancelFsRequest(request) { return native.cancelFsRequest(request); },
+        createFsRequest(prototype, callback) { return native.createFsRequest(prototype, callback); },
+        ftruncate(fd, length, request) { return native.ftruncate(fd, length, request); },
+        closeDescriptor(fd, request) { return native.closeDescriptor(fd, request); },
+        adoptFileHandle(fd, path, makeError) { return native.adoptFileHandle(fd, path, makeError); },
+        peekFsGcCloseError() { return native.peekFsGcCloseError(); },
+        ackFsGcCloseError() { return native.ackFsGcCloseError(); },
+        sqlite(...args) { return native.sqlite(...args); },
+        getCompressionConstants() { return native.getCompressionConstants(); },
+        createCompressionHandle(mode, prototype) { return native.createCompressionHandle(mode, prototype); },
+        crc32(data, value) { return native.crc32(data, value); },
         __kandeloZstdDecompress(bytes) {
             if (typeof native.__kandeloZstdDecompress !== 'function') throw new Error('native __kandeloZstdDecompress is unavailable');
             return native.__kandeloZstdDecompress(bytes);
@@ -528,21 +582,48 @@
             if (typeof native.__kandeloVmRunInContext !== 'function') throw new Error('native __kandeloVmRunInContext is unavailable');
             return native.__kandeloVmRunInContext(codeOrScript, ctx, opts);
         },
+        __kandeloVmCompileFunction(code, params, context, opts, extensions) {
+            if (typeof native.__kandeloVmCompileFunction !== 'function') throw new Error('native __kandeloVmCompileFunction is unavailable');
+            return native.__kandeloVmCompileFunction(code, params, context, opts, extensions);
+        },
         __kandeloVmCompile(code, opts) {
             if (typeof native.__kandeloVmCompile !== 'function') throw new Error('native __kandeloVmCompile is unavailable');
             return native.__kandeloVmCompile(code, opts);
         },
-        setRawMode(fd, raw) { if (typeof native.setRawMode === 'function') return native.setRawMode(fd, raw); },
-        createHash(algorithm) { return native.createHash(algorithm); },
-        createHmac(algorithm, key) { return native.createHmac(algorithm, key); },
+        setRawMode: typeof native.setRawMode === 'function' ? (fd, raw) => native.setRawMode(fd, raw) : undefined,
+        keyOperation(operation, ...args) { return native.keyOperation(operation, ...args); },
+        isKeyObject(value) { return native.keyOperation('isKeyObject', value).value; },
+        isCryptoKey(value) { return native.keyOperation('isCryptoKey', value).value; },
+        incrementalHash(operation, ...args) { return native.incrementalHash(operation, ...args); },
+        fsDirOpen(path, prototype, request) { return native.dirOperation('open', path, prototype, request); },
+        fsDirRead(owner, maximum, request, convert) { return native.dirOperation('read', owner, maximum, request, convert); },
+        fsDirClose(owner, request) { return native.dirOperation('close', owner, request); },
+        packageOperation(...args) { return native.packageOperation(...args); },
         createDeflate(level) { return native.createDeflate(level); },
         createInflate() { return native.createInflate(); },
         createGzip(level) { return native.createGzip(level); },
         createGunzip() { return native.createGunzip(); },
+        createUnzip() { return native.createUnzip(); },
         deflateSync(input, level) { return native.deflateSync(input, level); },
         inflateSync(input) { return native.inflateSync(input); },
         gzipSync(input, level) { return native.gzipSync(input, level); },
         gunzipSync(input) { return native.gunzipSync(input); },
+        createDnsRequest(prototype, nameInfo) { return native.createDnsRequest(prototype, nameInfo); },
+        createDnsChannel(prototype, timeout, tries, maxTimeout) { return native.createDnsChannel(prototype, timeout, tries, maxTimeout); },
+        dnsQuery(channel, request, hostname, type) { return native.dnsQuery(channel, request, hostname, type); },
+        dnsGetServers(channel) { return native.dnsGetServers(channel); },
+        dnsSetServers(channel, servers) { return native.dnsSetServers(channel, servers); },
+        dnsSetLocalIP(channel, family, address) { return native.dnsSetLocalIP(channel, family, address); },
+        dnsCancel(channel) { return native.dnsCancel(channel); },
+        dnsStrError(code) { return native.dnsStrError(code); },
+        dnsVersion() { return native.dnsVersion(); },
+        dnsLookup(req, asciiHostname, family, hints, order) {
+            return native.dnsLookup(req, asciiHostname, family, hints, order);
+        },
+        dnsLookupService(req, address, port) { return native.dnsLookupService(req, address, port); },
+        dnsLookupConstants() { return native.dnsLookupConstants(); },
+        performanceNow() { return native.performanceNow(); },
+        performanceTimeOrigin() { return native.performanceTimeOrigin(); },
         socketLookup(host, family, hints) { return native.socketLookup(host, family, hints); },
         socketConnect(host, port, family, localAddress, localPort) {
             return native.socketConnect(host, port, family, localAddress, localPort);
@@ -574,13 +655,16 @@
         credentials() { return native.credentials(); },
         __kandeloKill(pid, sig) { return native.__kandeloKill(pid, sig); },
         tlsConnect(fd, servername, options) { return native.tlsConnect(fd, servername, options); },
+        tlsInfo(handle, operation) { return native.tlsInfo(handle, operation); },
         tlsRead(handle, length) { return native.tlsRead(handle, length); },
         tlsWrite(handle, bytes) { return native.tlsWrite(handle, bytes); },
         tlsClose(handle) { return native.tlsClose(handle); },
     };
 
-    const entryPath = typeof scriptPath === 'string' && scriptPath ? scriptPath : '';
-    const args = typeof scriptArgs !== 'undefined' ? Array.from(scriptArgs) : [];
+    const entryPath = workerEnvironment ? workerEnvironment.path : (typeof scriptPath === 'string' && scriptPath ? scriptPath : '');
+    const args = workerEnvironment ? workerEnvironment.argv : (typeof scriptArgs !== 'undefined' ? Array.from(scriptArgs) : []);
     _nodeNative.mainScriptPath = entryPath;
+    _nodeNative.cliOptions = workerEnvironment ? workerEnvironment.cliOptions : (globalThis.__kandeloNodeCliOptions || {});
+
     const argv0 = 'node';
     const execArgv = entryPath ? ['node', entryPath, ...args] : ['node', ...args];

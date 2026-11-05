@@ -1,0 +1,136 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3938,6 +3938,7 @@
+       JS_FN("getCompressionVersions", KandeloNativeCompressionVersions, 0, 0),
+       JS_FN("getBufferLimits", KandeloNativeBufferLimits, 0, 0),
+       JS_FN("engineGcHeapLimit", KandeloNativeEngineGcHeapLimit, 0, 0),
++      JS_FN("worker", KandeloNativeWorker, 3, 0),
+       JS_FN("createFsRequest", KandeloNativeCreateFsRequest, 2, 0),
+       JS_FN("cancelFsRequest", KandeloNativeCancelFsRequest, 1, 0),
+       JS_FN("createReadFileJob", (KandeloFsPromiseGuard<KandeloNativeCreateReadFileJob>), 7, 0),
+@@ -5418,7 +5419,7 @@
+       // but do not enter another turn when no referenced owner remains.
+       if (!timerReferences && !KandeloSocketHasWatches(cx) &&
+           !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
+-          !KandeloPortsHaveReferences(cx)) return;
++          !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx)) return;
+     }
+ 
+     // Run tasks (only finalization registry clean tasks are possible).
+@@ -5480,12 +5481,18 @@
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+       }
+       if (ranPorts) continue;
++      double ranWorkers;
++      if (!KandeloCallAsyncQueue(cx, "__kandeloDispatchWorkers", &ranWorkers)) {
++        if (sc->quitting) return;
++        AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++      }
++      if (ranWorkers) continue;
+     }
+ 
+     if (!ranTasks && ranNative == 0 && ranTimers == 0 &&
+         !KandeloSocketHasWatches(cx) && !timersPending &&
+         !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
+-          !KandeloPortsHaveReferences(cx)) {
++          !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx)) {
+       break;
+     }
+     if (!ranTasks && ranNative == 0 && ranTimers == 0) {
+@@ -8760,6 +8767,76 @@
+ 
+   KillWatchdog(cx);
+ }
++
++static bool RunKandeloNodeBootstrap(JSContext* cx);
++
++namespace {
++// A separate owned path: the public Worker does not use the shell's global
++// workerThreads vector, shared mailbox or minimal eval prelude.
++static void KandeloNodeWorkerMain(KandeloWorkerOwner input) {
++  auto complete = mozilla::MakeScopeExit([&] { input->finished.store(true); });
++  kandeloCurrentWorker = input;
++  auto clearCurrent = mozilla::MakeScopeExit([&] { kandeloCurrentWorker.reset(); });
++  try {
++    JSContext* cx = JS_NewContext(input->gcBudget, input->parentRuntime);
++    if (!cx) { input->failure = "Could not allocate Worker JS context"; return; }
++    auto destroyContext = mozilla::MakeScopeExit([&] { JS_DestroyContext(cx); });
++    UniquePtr<ShellContext> sc = MakeUnique<ShellContext>(cx, ShellContext::Worker);
++    if (!sc || !sc->registerWithCx(cx)) {
++      input->failure = "Could not initialize Worker shell context"; return;
++    }
++    {
++      std::lock_guard<std::mutex> lock(input->mutex);
++      input->child = cx;
++    }
++    auto clearContext = mozilla::MakeScopeExit([&] {
++      std::lock_guard<std::mutex> lock(input->mutex); input->child = nullptr;
++    });
++    JS_AddInterruptCallback(cx, KandeloWorkerInterrupt);
++    if (input->stopping.load()) { input->exitCode = 1; return; }
++    if (!JS::InitSelfHostedCode(cx)) {
++      input->failure = "Could not initialize Worker self-hosted code"; return;
++    }
++    EnvironmentPreparer environmentPreparer(cx);
++    JS::RealmOptions realmOptions;
++    SetStandardRealmOptions(realmOptions);
++    RootedObject global(cx, NewGlobalObject(cx, realmOptions, nullptr,
++        ShellGlobalKind::WindowProxy, true));
++    if (!global) { input->failure = "Could not initialize Worker global"; return; }
++    JSAutoRealm realm(cx, global);
++    JS::ConstUTF8CharsZ path(processWideModuleLoadPath.get(), strlen(processWideModuleLoadPath.get()));
++    RootedString moduleLoadPath(cx, JS_NewStringCopyUTF8Z(cx, path));
++    sc->moduleLoader = js::MakeUnique<ModuleLoader>();
++    if (!moduleLoadPath || !sc->moduleLoader || !sc->moduleLoader->init(cx, moduleLoadPath)) {
++      KandeloCaptureWorkerException(cx); input->failure = "Could not initialize Worker module loader"; return;
++    }
++    sc->exitCode = 0;
++    if (!RunKandeloNodeBootstrap(cx) && !sc->quitting) {
++      sc->exitCode = 1; KandeloCaptureWorkerException(cx);
++    }
++    if (!sc->quitting && !sc->exitCode) RunShellJobs(cx);
++    if (JS_IsExceptionPending(cx)) KandeloCaptureWorkerException(cx);
++    if (!sc->quitting) {
++      RootedValue finalizer(cx), result(cx);
++      RootedValue failureStatus(cx, Int32Value(sc->exitCode ? 1 : 0));
++      if (!JS_GetProperty(cx, global, "__kandeloNodeFinalize", &finalizer)) {
++        sc->exitCode = 1; KandeloCaptureWorkerException(cx);
++      } else if (finalizer.isObject() && JS::IsCallable(&finalizer.toObject())) {
++        if (!JS_CallFunctionValue(cx, global, finalizer,
++                HandleValueArray(failureStatus), &result)) {
++          if (!sc->quitting) { sc->exitCode = 1; KandeloCaptureWorkerException(cx); }
++        } else sc->exitCode = result.isInt32() ? result.toInt32() : 1;
++      }
++    }
++    input->exitCode = sc->exitCode;
++    KillWatchdog(cx);
++  } catch (const std::bad_alloc&) {
++    input->exitCode = 1; input->failure = "Worker native allocation failed";
++  } catch (...) {
++    input->exitCode = 1; input->failure = "Worker native initialization failed";
++  }
++}
++}  // namespace
+ 
+ // Workers can spawn other workers, so we need a lock to access workerThreads.
+ static Mutex* workerThreadsLock = nullptr;
+@@ -15324,6 +15401,10 @@
+ }
+ 
+ js::shell::AutoReportException::~AutoReportException() {
++  if (kandeloCurrentWorker && JS_IsExceptionPending(cx)) {
++    KandeloCaptureWorkerException(cx);
++    return;
++  }
+   if (!JS_IsExceptionPending(cx)) {
+     return;
+   }
+@@ -16460,6 +16541,8 @@
+ }
+ 
+ ShellContext::~ShellContext() {
++  // Children retire their contexts/roots before their parent runtime disappears.
++  KandeloShutdownWorkers(cx_);
+   // Finish/cancel native jobs and retire pins/roots while the JSContext lives.
+   KandeloShutdownNativeWork(this);
+   KandeloShutdownChildWatches(cx_);

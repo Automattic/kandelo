@@ -1,0 +1,76 @@
+{
+  "at": "2026-11-05T12:35:19.190429+00:00",
+  "recipeRevision": 110,
+  "nativePatch": 101,
+  "auditFindings": [
+    "V-029/V-035 partial:shared native Error location-property/legacy-argument policy behind109assertion reflection mismatch"
+  ],
+  "sourceImplemented": [
+    "Generic context option defaults to SpiderMonkey Error location extensions and is fixed before globals",
+    "Actual Node context registration disables legacy filename/line arguments and public location properties for root/shell-worker/Node-worker contexts;VM realms inherit the context policy",
+    "Native report/source/line/column/saved-stack/message/cause reserved slots stay initialized;conditional initial shapes/invariants match the selected public model",
+    "Compatibility algorithms/assertions/target/platform identity/Bun loader remain unchanged"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-error-location-source/report.json",
+    "sha256": "76063314d5e24b0eaeb315f7abaf9aba6e80fe460d034ca48133162f11581175",
+    "checks": 5,
+    "patchForwardReverseExact": true,
+    "engineFiles": 3
+  },
+  "nativeObservation": {
+    "report": ".context/node26-error-shape-reference.json",
+    "sha256": "b1c1a0a84e18aa043766a0ea09d5922f615966e7de84dae16f09b756a7b8888f",
+    "scope": "Exact native Error reflection/accessor facts,not candidate execution"
+  },
+  "nativeReferenceControls": {
+    "report": ".context/node26-error-location-controls/native/report.json",
+    "sha256": "b4c5c393142ad1e5f86f0dd680dcef53440a40502a2218dba321a3f4125211fd",
+    "cases": 3,
+    "passed": 3,
+    "scope": "Reference only;not passing candidate compatibility"
+  },
+  "targetedEngine": {
+    "report": ".context/node26-engine-r110-accepted/report.json",
+    "sha256": "8dd40c298df4eb2de54da5e1c9c3a2c0c0573a74a6aa54d92c6ac3c85f9373de",
+    "recipeRevision": 110,
+    "exitCode": 0
+  },
+  "focusedGuest": {
+    "report": ".context/node26-error-location-controls/report.json",
+    "sha256": "7128f3990ec044b34ec270dc9c974cadac97be9d7418a60be3e0e6392039388f",
+    "counts": {
+      "pass": 7,
+      "fail": 1,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "nativeReferenceCases": 8,
+    "nativeReferencePassed": 8
+  },
+  "standaloneShell": {
+    "report": ".context/node26-error-location-controls/standalone/report.json",
+    "sha256": "7352ab59b77f2cdd2f1cfd0c3dc892a72d9f9874239d5310e288d17601e0f907",
+    "counts": {
+      "pass": 1,
+      "fail": 0,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "countsAsNodeConformance": false
+  },
+  "remaining": [
+    "Fresh Error own lazy stack accessor/prototype/descriptor/function identity remains a failed full-layout comparison,not an accepted platform exclusion",
+    "Actual capture/recapture/limits/source-expression/stack formatting and realm/GC/clone/worker/lifecycle ownership remain incomplete",
+    "Complete subclass/native report/options/overload and all19family API reconciliation plus identified four-host conformance remain open"
+  ],
+  "guestCompiled": true,
+  "guestCasesRun": 8,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

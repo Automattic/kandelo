@@ -1,0 +1,15 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),util=require('node:util');
+const globals=['internalBinding','primordials'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]);
+const {internalBinding}=require('internal/test/binding');
+for(const [key,d] of globals){if(d)Object.defineProperty(globalThis,key,d);else delete globalThis[key];}
+const source=fs.readFileSync(path.resolve(__dirname,'../../../third_party/node-core/node-core.js'),'utf8');
+const factories=Function(source+';return {values:_createNodeValuesPlatform,install:_installNodeUtilAlgorithms};')();
+exports.create=function create(){
+ const values=factories.values({process,Buffer,util,inspection:util,uv:{binding:internalBinding('uv')},os:require('node:os'),signals:require('node:os').constants.signals,getDOMException:()=>DOMException});
+ const api={};
+ factories.install({util:api,values,process,timers:require('node:timers'),addAbortListener:require('node:events').addAbortListener,
+  markPromiseAsHandled:value=>util.markPromiseAsHandled(value),getLibuvNow:()=>internalBinding('timers').getLibuvNow(),
+  getOptionValue:require('internal/options').getOptionValue});
+ return api;
+};

@@ -1,0 +1,124 @@
+{
+  "at": "2026-11-05T04:45:25.930491+00:00",
+  "recipeRevision": 92,
+  "nativePatch": 93,
+  "auditFindings": [
+    "C-001 partial",
+    "C-008 partial",
+    "C-015 partial"
+  ],
+  "sourceImplemented": [
+    "Full unchanged pinned public Argon2 module and real OpenSSL3.5.9 Argon2d/i/id, optional secret/associated-data and exact output/error owners",
+    "Actual native compile capability, default-provider/FIPS gate, thread support/context lifetime and unchanged lane inputs",
+    "Real ARGON2REQUEST/native job class, shared CPU queue/resource/callback/cancellation/retirement source owners",
+    "Async pre-init and sync post-init four-input byte ownership, cleansed storage and wide byte-accounting bounds"
+  ],
+  "publicApiSourceOwners": [
+    "crypto.argon2",
+    "crypto.argon2Sync"
+  ],
+  "frontendNative": {
+    "report": ".context/node26-argon2-frontend-r2.json",
+    "sha256": "d5dc5fe996b9ed50d0de90e6755ab409e504926a2b19987baa48af179d197065",
+    "scope": "Generated public JS over actual native Node jobs/hooks/ALS; not guest JSAPI/provider/queue or four-host conformance",
+    "newPass": 4,
+    "affectedPass": 7,
+    "fail": 0,
+    "skip": 0,
+    "sourceIdentities": {
+      "host/test/node-argon2-platform.test.ts": "2c66dadd0b97c411e7d57bad1106c0cd275d932ba1f4f31e4af6c1f32ec8f854",
+      "host/test/fixtures/node-argon2-controls.cjs": "58835c8722a47367ef83656a53abaf1684a8f72f8be565efef1aaa8a50c0dde2",
+      "host/test/fixtures/node-kdf-platform.cjs": "208ffb57c7e5cfcb99fed457738517723add27925ad60133ea34933b193934f3",
+      "host/test/node-kdf-platform.test.ts": "33464d2e5e4ce7e35f1c5991a347bec96118187adb7c1a027f102088b4c55bc9",
+      "host/test/fixtures/node-kdf-controls.cjs": "e07e08605bd2c371bb6925f2debd9ae65a6e6fbffd395d3c4870d9aa741b7eda",
+      "third_party/node-core/kdf-platform-adapter.js": "34b8885c667813547665ce6dd674b256c8d01e00b34e772a628e5bab14871e18",
+      "third_party/node-core/node-core.js": "e36a4d9a71c28b7a03bf2ad2c23694a8ea93f5401994ba1c109c2be1e4655c3c"
+    },
+    "identityCapture": "Checkpoint source identities; no frontend production/test source changes after the run"
+  },
+  "portableNative": {
+    "report": ".context/node26-argon2-native-r2/report.json",
+    "sha256": "7b866cfb63e57b7b9836bb31702162aea9cbd5ad07641f1c2e451811b47cfa34",
+    "scope": "Actual portable Argon2 OpenSSL3.5.9 owner vs pinned native26 private jobs, including outputs, provider errors and FIPS/default-context gating. Not guest JSAPI/work queue or four-host conformance.",
+    "passed": 12,
+    "failed": 0,
+    "artifactSha256": "d7535600328af85e3ec1c87f7252dd9a13445af2af190fe514b87fb15bc7afce",
+    "nativeReferenceSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "affectedPortable": {
+    "report": ".context/node26-argon2-kdf-regression-r2/report.json",
+    "sha256": "a681ed624d374c754ee89af2802f7f4f408d619c315ad46d210c1feb03d195bc",
+    "scope": "Actual portable KDF owner over OpenSSL3.5.9 vs pinned native26 public KDFs. No guest work queue/JSAPI or four-host evidence.",
+    "passed": 20,
+    "failed": 0,
+    "artifactSha256": "8c9276e88af9203a9b1f3c043a5f8f522a3a386300cdc84e11def82cbe000bae"
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-argon2-upstream-r1/report.json",
+    "sha256": "a3412b2909bd318a68e32045f08ec5bd3e40bd0fddb16615d61fe9316b9fc2b6",
+    "scope": "Unchanged public Argon2/PBKDF2/scrypt tests over candidate generated JS/packet conversion and actual native26 KDF jobs. Not guest OpenSSL/queue/JSAPI or four-host conformance.",
+    "candidateFilePass": 3,
+    "nativeFilePass": 3,
+    "fileFail": 0,
+    "fileSkip": 0,
+    "files": [
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-argon2.js",
+        "sourceSha256": "1e3969a1eb5f961791da0af95d282e86dcdf53c3597820ccf5be748c45a74eaa"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-pbkdf2.js",
+        "sourceSha256": "49d96218f9e3c17405b1cb1e391967381932a6010611f46ef3a922a10eb3c17b"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-scrypt.js",
+        "sourceSha256": "2c2aa57069dc248aa31eaa8912052c29ed0bd3381ca17105337ed3864d549f8f"
+      }
+    ],
+    "denominatorMeaning": "Three selected public files per mode, not all crypto cases/assertions or API totals"
+  },
+  "sourceChecks": {
+    "report": ".context/node26-argon2-source-r2/report.json",
+    "sha256": "42a42a4de0a5c9442d28189aff9a42187046bd85f8cc0457f61d2daca9a63015",
+    "scope": "Source/archive/audit/pin/bootstrap/patch/style/evidence checks only; no engine compile",
+    "checks": 6
+  },
+  "retainedNonpasses": [
+    {
+      "report": ".context/node26-argon2-native-r1/report.json",
+      "sha256": "fd89d668fada0b18db0143231a84f9a5eea60f04f70b9515935f712e80f04a93",
+      "result": "compile-fail",
+      "cause": "Conditional byte-pointer expression mixed char* and unsigned char*",
+      "preimages": ".context/node26-argon2-first-nonpass",
+      "fixed": true
+    },
+    {
+      "log": ".context/node26-argon2-kdf-regression-r1.log",
+      "sha256": "650d1afd288ec469db65edbf5f0b8f38655bdede615739ecc5d3925ad66c8b2b",
+      "result": "compile-fail",
+      "cause": "Same shared header error in the affected-helper compile",
+      "fixed": true
+    },
+    {
+      "report": ".context/node26-argon2-frontend-r1.json",
+      "sha256": "fa79d17ddce8d202ba2c841fbdc37c091d013aa5e1a83482b983dda1b07f7999",
+      "pass": 7,
+      "fail": 0,
+      "argon2Coverage": 0,
+      "classification": "Incomplete selection after wrong-cwd registration command; not an Argon2 pass",
+      "harnessRecord": ".context/node26-argon2-registration-first.json"
+    }
+  ],
+  "remaining": [
+    "Compile guest OpenSSL3.5.9 and engine92/new request bridge, changed kernel Wasm and exact four-host artifacts; accepted engine stays88",
+    "GC/ref/cancellation/OOM/reentry/realm/worker/fatal/lifetime, large/detached/resizable/shared inputs and complete provider memory accounting",
+    "Real key objects/CryptoKey, HKDF and full WebCrypto derivation/import/export/algorithm policies",
+    "Other cipher/signature/exchange/KEM/certificate/FIPS/provider and crypto namespace obligations; all19 families remain partial",
+    "Retained SQLite module-load failure, process/metadata source-only dependencies, current host typecheck debt and remaining audit/API reconciliation"
+  ],
+  "guestCompiled": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "newAcceptedPlatformExclusions": [],
+  "dependencyDocument": "tests/nodejs/outline/argon2-implementation-dependencies.md"
+}

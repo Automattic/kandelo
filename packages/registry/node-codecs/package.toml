@@ -1,0 +1,36 @@
+# The codec variants bundled with the exact Node API/reference release.
+kind = "library"
+name = "node-codecs"
+version = "26.13.0"
+kernel_abi = 55
+depends_on = []
+arches = ["wasm32", "wasm64"]
+
+[source]
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz"
+sha256 = "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+provider = "archive"
+
+[license]
+spdx = "MIT AND Zlib AND BSD-3-Clause"
+url = "https://github.com/nodejs/node/blob/v26.13.0/LICENSE"
+
+[build]
+script_path = "packages/registry/node-codecs/build-node-codecs.sh"
+
+[outputs]
+libs = ["lib/libz.a", "lib/libbrotli.a", "lib/libzstd.a"]
+headers = ["include/zlib.h", "include/zconf.h", "include/brotli", "include/zstd.h", "include/zstd_errors.h"]
+files = [
+  "share/node-codecs/provenance.json",
+  "share/licenses/node-codecs/Node-LICENSE",
+  "share/licenses/node-codecs/zlib-LICENSE",
+  "share/licenses/node-codecs/brotli-LICENSE",
+  "share/licenses/node-codecs/zstd-LICENSE",
+]
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

@@ -1357,6 +1357,32 @@ var require_percent_encoding = __commonJS({
   }
 });
 
+// third_party/node-web-platform/host-idna.cjs
+var require_host_idna = __commonJS({
+  "third_party/node-web-platform/host-idna.cjs"(exports2) {
+    "use strict";
+    var tr46 = require_tr46();
+    exports2.toASCII = function toASCII(domain, options) {
+      if (!options.useSTD3ASCIIRules && /^[\u0000-\u007f]*$/.test(domain)) {
+        return domain.toLowerCase();
+      }
+      return tr46.toASCII(domain, options);
+    };
+    exports2.toUnicode = function toUnicode(hostname) {
+      return hostname.split(".").map((label) => {
+        const converted = tr46.toUnicode(label, {
+          checkHyphens: false,
+          checkBidi: true,
+          checkJoiners: true,
+          useSTD3ASCIIRules: false,
+          transitionalProcessing: false
+        });
+        return converted.error ? label : converted.domain;
+      }).join(".");
+    };
+  }
+});
+
 // third_party/node-web-platform/node_modules/whatwg-url/lib/url-state-machine.js
 var require_url_state_machine = __commonJS({
   "third_party/node-web-platform/node_modules/whatwg-url/lib/url-state-machine.js"(exports2, module2) {
@@ -1707,7 +1733,7 @@ var require_url_state_machine = __commonJS({
       return host;
     }
     function domainToASCII(domain, beStrict = false) {
-      const result = tr46.toASCII(domain, {
+      const result = require_host_idna().toASCII(domain, {
         checkHyphens: beStrict,
         checkBidi: true,
         checkJoiners: true,
@@ -5835,7 +5861,7 @@ var require_stream_state = __commonJS({
 });
 
 // <stdin>
-module.exports = { ...require_whatwg_url(), domainToUnicode: require_tr46().toUnicode, streams: require_ponyfill(), streamState: require_stream_state() };
+module.exports = { ...require_whatwg_url(), domainToUnicode: require_tr46().toUnicode, hostnameToUnicode: require_host_idna().toUnicode, hostnameToASCII: require_host_idna().toASCII, streams: require_ponyfill(), streamState: require_stream_state() };
 
 return module.exports;
 }

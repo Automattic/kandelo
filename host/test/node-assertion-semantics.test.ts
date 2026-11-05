@@ -3,15 +3,13 @@ import nativeAssert from 'node:assert';
 import { isDeepStrictEqual, types } from 'node:util';
 import { runInNewContext } from 'node:vm';
 import { inspect, format } from 'node:util';
+import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 
-const bundle = readFileSync(new URL('../../third_party/node-core/node-core.js', import.meta.url), 'utf8');
 // The actual bundled algorithms, with the native oracle supplying only the
 // engine-boundary brands. The guest fixture covers the SpiderMonkey binding.
-const core = Function(`${bundle}; return _createNodeCore;`)()({
-  Buffer, URL, inspect, format, isPromise: types.isPromise,
-  isNativeError: types.isNativeError, isProxy: types.isProxy,
-});
+const { create } = createRequire(import.meta.url)('./fixtures/node-assertion-platform.cjs');
+const core = create();
 const assert = core.assert;
 const compare = core.comparisons.isDeepStrictEqual;
 const target = JSON.parse(readFileSync(new URL('../../packages/registry/node-compat/target.json', import.meta.url), 'utf8'));
@@ -44,6 +42,59 @@ function values(): any[] {
 // Expectations come from the exact API target. The host/build toolchain is
 // independent: run this suite under the pinned reference, as documented.
 describe.skipIf(process.versions.node !== target.version)('pinned Node assertion semantics', () => {
+  it('preserves actual Error stacks when the capture intrinsic is unavailable', () => {
+    const subject = create({ noCapture: true }).assert;
+    const error = new subject.AssertionError({ actual: 1, expected: 2, operator: 'strictEqual' });
+    expect(error.message).toBe(new nativeAssert.AssertionError({ actual: 1, expected: 2, operator: 'strictEqual' }).message);
+    expect(error.stack).toContain('AssertionError');
+    expect(() => subject.ok(false)).toThrow(expect.objectContaining({ code: 'ERR_ASSERTION', generatedMessage: true }));
+    expect(() => subject.throws(1)).toThrow(expect.objectContaining({ code: 'ERR_INVALID_ARG_TYPE' }));
+  });
+
+  it('uses target AssertionError diffs, descriptors, details and custom inspection', () => {
+    function capture(Constructor: any, options: any) {
+      const error = new Constructor(options);
+      // Compare the custom inspection algorithm with a controlled stack.
+      // Native stack capture/filtering is a separate engine obligation.
+      error.stack = 'controlled stack';
+      const fields = ['name', 'message', 'code', 'actual', 'expected', 'operator', 'generatedMessage', 'diff'];
+      return { fields: Object.fromEntries(fields.map(name => [name, error[name]])),
+        descriptors: Object.fromEntries(fields.map(name => [name, Object.getOwnPropertyDescriptor(error, name)])),
+        ownKeys: Reflect.ownKeys(error).map(String).sort(),
+        text: String(error),
+        inspection: inspect(error, { colors: false }) };
+    }
+    for (const options of [
+      { actual: 1, expected: 2, operator: 'strictEqual' },
+      { actual: { nested: [1, 2, 3] }, expected: { nested: [1, 4, 3] }, operator: 'deepStrictEqual' },
+      { actual: 'a'.repeat(550), expected: 'b'.repeat(550), operator: 'deepEqual' },
+      { actual: 'a'.repeat(550), expected: 'b'.repeat(550), operator: 'deepEqual', diff: 'full' },
+      { actual: 'hello actual', expected: 'hello expected', operator: 'strictEqual', message: 'custom', diff: 'full' },
+      { actual: 0, expected: -0, operator: 'strictEqual' },
+      { actual: {}, expected: {}, operator: 'notDeepStrictEqual', message: '' },
+      { details: [{ message: 'detail', actual: 1, expected: 2, operator: 'equal', stack: 'owned stack' }] },
+    ]) {
+      expect(capture(assert.AssertionError, options)).toEqual(capture(nativeAssert.AssertionError, options));
+    }
+  });
+
+  it('shares real validator errors for constructors and public assertion overloads', () => {
+    function diagnostic(fn: () => unknown) {
+      try { fn(); return { ok: true }; }
+      catch (error: any) { return { name: error.name, code: error.code, message: error.message }; }
+    }
+    for (const value of [undefined, null, 1, 'options', [], () => {}]) {
+      expect(diagnostic(() => new assert.AssertionError(value)))
+        .toEqual(diagnostic(() => new (nativeAssert.AssertionError as any)(value)));
+    }
+    for (const method of ['throws', 'doesNotThrow', 'ifError']) {
+      for (const value of [null, 1, 'input', {}]) {
+        expect(diagnostic(() => assert[method](value)))
+          .toEqual(diagnostic(() => (nativeAssert as any)[method](value)));
+      }
+    }
+  });
+
   it('rejects every adversarial harness false positive', () => {
     expect(outcome(() => assert.throws(() => { throw Error('actual'); }, /expected/)).code).toBe('ERR_ASSERTION');
     expect(outcome(() => assert.strictEqual(0, -0)).code).toBe('ERR_ASSERTION');

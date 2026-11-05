@@ -1,0 +1,687 @@
+{
+  "schema": 1,
+  "nodeVersion": "26.13.0",
+  "nodeSourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "source": {
+    "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+    "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+    "provider": "archive"
+  },
+  "selectionInputs": {
+    "src/node_version.h": "94a454d9b6f16efa15ee55d3c0c130a6c69425b5bea358888a9735ddc7d62b8f",
+    "deps/zlib/BUILD.gn": "ca39854b5338812359318fae7524ed6efd7da9537cae0e66f8d407f5d3c92815",
+    "deps/zlib/zlib.gyp": "d57e1daed966e3fb4094b7d7b24012d1afa14472059965dbeb6e52e590abde5f",
+    "deps/brotli/brotli.gyp": "9bcd4eae7f7eff45ba68cbfc3fc4b4ce3b0f018407f6b014cce1d20d2f041d8d",
+    "deps/zstd/zstd.gyp": "9f73cca0a138daaa89040ffd540b908bd2e88ec9aee0d21e2f17317b11b65e82"
+  },
+  "families": [
+    {
+      "id": "zlib",
+      "version": "1.3.2.1-motley",
+      "root": "deps/zlib",
+      "archive": "libz.a",
+      "includeDirs": [
+        "deps/zlib"
+      ],
+      "flags": [
+        "-DCPU_NO_SIMD",
+        "-DHAVE_HIDDEN"
+      ],
+      "sources": [
+        {
+          "path": "deps/zlib/adler32.c",
+          "sha256": "e47831f9eaffc530e2f6f9720266d94e74eed9fe5c2082473d3afb9cf8880c13"
+        },
+        {
+          "path": "deps/zlib/compress.c",
+          "sha256": "5495bc53cd675dc10d9ab07e851e7b21324d43f6b513e759bd2bbd6698b539ab"
+        },
+        {
+          "path": "deps/zlib/cpu_features.c",
+          "sha256": "7e80a4d297e5eb6e83b8a9c384ecb7b572ccfe63acdd70fd8bc703ce714d3d21"
+        },
+        {
+          "path": "deps/zlib/crc32.c",
+          "sha256": "ca8594f9f859dcc1264ef0e26b052d09f8db2b5b9e16b3a58c687d2878ded901"
+        },
+        {
+          "path": "deps/zlib/deflate.c",
+          "sha256": "6f5ee49848c58ee670fa8077c1cf4803ec63c6d9d4ec0b89e7cf84d4ddc9c72d"
+        },
+        {
+          "path": "deps/zlib/gzclose.c",
+          "sha256": "35ea6e991a63095f797d8c4cc25817fac7a7155c2ba7dcdbbf648f7871c7ea40"
+        },
+        {
+          "path": "deps/zlib/gzlib.c",
+          "sha256": "a968a4337aa5743adf00c4088b4e93ada3dba897e2a321f643fe81286b718f82"
+        },
+        {
+          "path": "deps/zlib/gzread.c",
+          "sha256": "713edfd883f4230199ddb2b0f5dc90adb7fc96348e228fc38c249e4b4a797c5e"
+        },
+        {
+          "path": "deps/zlib/gzwrite.c",
+          "sha256": "2ce783294c688330c716bfe106f43167d3dae5be84994176bc304d205d4f5b04"
+        },
+        {
+          "path": "deps/zlib/infback.c",
+          "sha256": "f4c9a2c547e6038b2bcdb1c0c7d979eb7450aa1fa6518107203c3284939ef5fe"
+        },
+        {
+          "path": "deps/zlib/inffast.c",
+          "sha256": "ce49de35d2d5c609e3a731db9ff93fa2e131558126f75f87454940c43c06c7d4"
+        },
+        {
+          "path": "deps/zlib/inftrees.c",
+          "sha256": "64fc6aeea744510253a22f8b0611fcefa970458224a41a1649f5e0db340af8fe"
+        },
+        {
+          "path": "deps/zlib/trees.c",
+          "sha256": "13eb6702d12ba96cb43c30d45ce7bde9c522b060d39938986f995606f3e69d8d"
+        },
+        {
+          "path": "deps/zlib/uncompr.c",
+          "sha256": "953f5381650838d507b01499790bd64524433ea6ea29ea9325bf542af10cfe7d"
+        },
+        {
+          "path": "deps/zlib/zutil.c",
+          "sha256": "04303a4d607958905f0c036aeca43d14218d01752e6c444fdbeb94983912ec38"
+        },
+        {
+          "path": "deps/zlib/inflate.c",
+          "sha256": "ea50d23cb98397ccfe4d84ef2ba7b47b71826cc76beb02fa12a80d577c80b5c3"
+        }
+      ]
+    },
+    {
+      "id": "brotli",
+      "version": "1.2.0",
+      "root": "deps/brotli",
+      "archive": "libbrotli.a",
+      "includeDirs": [
+        "deps/brotli/c/include"
+      ],
+      "flags": [],
+      "sources": [
+        {
+          "path": "deps/brotli/c/common/constants.c",
+          "sha256": "630f40ca2ac787025175eaf39b9569a60aff6ddec7e5085197e4cb0d43641b0d"
+        },
+        {
+          "path": "deps/brotli/c/common/context.c",
+          "sha256": "c9aa1acb35af38c90c4a38ba168885b649838236b2d57adb5e76d687bdbe252e"
+        },
+        {
+          "path": "deps/brotli/c/common/dictionary.c",
+          "sha256": "0890056e4ae595efab6bbf3bf1fd244332e2cfad3adcb9f5793ee29a8f3a18c5"
+        },
+        {
+          "path": "deps/brotli/c/common/platform.c",
+          "sha256": "fce95889e6b1d1a91c0baa2ee0f3b83a41b670a4f51a5053185ffbed6bde71fd"
+        },
+        {
+          "path": "deps/brotli/c/common/shared_dictionary.c",
+          "sha256": "0cf405b0155230e060b9e0855bb22379037362948828b98338f203be07923d0e"
+        },
+        {
+          "path": "deps/brotli/c/common/transform.c",
+          "sha256": "47f229a79c3542ea57ec07145d7eaf77300a02816d95695332f9911ea19d6ab3"
+        },
+        {
+          "path": "deps/brotli/c/dec/bit_reader.c",
+          "sha256": "ad4a7608173afe62bc7b36d83768e4ac73dadc4a6272437340ee46e8a61a0d92"
+        },
+        {
+          "path": "deps/brotli/c/dec/decode.c",
+          "sha256": "d48bc54c60553238d50db2fcd606522efd447d33a37d6a2d5c2ea1ece22067c3"
+        },
+        {
+          "path": "deps/brotli/c/dec/huffman.c",
+          "sha256": "b7c973c2918c6765c4eb534c3ae314055d535b6d1fafb021cee5f7eae170aae6"
+        },
+        {
+          "path": "deps/brotli/c/dec/prefix.c",
+          "sha256": "0a31304f440f7bb2017d52b83ae35cb428cbc5ac2fc172c8eec2fea449c2f7cd"
+        },
+        {
+          "path": "deps/brotli/c/dec/state.c",
+          "sha256": "66a7c3d9c01cda374d33d3693ba45d059ff00b12114a8844ee4f2519ba2af14e"
+        },
+        {
+          "path": "deps/brotli/c/dec/static_init.c",
+          "sha256": "a4a308e394fe05a124d919977b3f457a06363615a882dce058f329edcf7dc851"
+        },
+        {
+          "path": "deps/brotli/c/enc/backward_references.c",
+          "sha256": "2e4320bf880dd0e03781fbd56159da069325da73ad47c1fdae46872b1db41463"
+        },
+        {
+          "path": "deps/brotli/c/enc/backward_references_hq.c",
+          "sha256": "fd418f50cea8f5a579d20b40ff7040e9ff4029e151095f4eaf9c1b6bcf15c680"
+        },
+        {
+          "path": "deps/brotli/c/enc/bit_cost.c",
+          "sha256": "544c6af87753f9e540873c2b7984d73297a53576fc0b352b34121687be2f08e4"
+        },
+        {
+          "path": "deps/brotli/c/enc/block_splitter.c",
+          "sha256": "34699e570f752cf0bd2643cb8d6a6b17e79add6856bdaf0b6007927fe509c5b1"
+        },
+        {
+          "path": "deps/brotli/c/enc/brotli_bit_stream.c",
+          "sha256": "ea95e71753a6b1b651e5315013900c5d79eb074245be750d1afc3ec5a8b19982"
+        },
+        {
+          "path": "deps/brotli/c/enc/cluster.c",
+          "sha256": "23d58bc8b628c9d168f8911d9304d4964e0f992f68e6d62daefe7eb837b07cb4"
+        },
+        {
+          "path": "deps/brotli/c/enc/command.c",
+          "sha256": "3f72daa062889ce5e662993095da5477f47815896867476b3f7b34d3a67fbd9d"
+        },
+        {
+          "path": "deps/brotli/c/enc/compound_dictionary.c",
+          "sha256": "4046dd0040ad51d4a550a747e5c4643d7cf801de426698e7566e8e2fc0c1c9ae"
+        },
+        {
+          "path": "deps/brotli/c/enc/compress_fragment.c",
+          "sha256": "0e14cfce93c2a461a5d6be626e9ed30340bab980ccc76f502a23d2c112c7c94f"
+        },
+        {
+          "path": "deps/brotli/c/enc/compress_fragment_two_pass.c",
+          "sha256": "938fc18b7a5f1e41f360a167a31a7297920160f08bff92f04d97788c3d32bfd6"
+        },
+        {
+          "path": "deps/brotli/c/enc/dictionary_hash.c",
+          "sha256": "1225337a2bad9cc08d72671757682ec90ab99388f00bfa73cd469a5e6e5e9778"
+        },
+        {
+          "path": "deps/brotli/c/enc/encode.c",
+          "sha256": "79c4bca6f88d3c8725642c01c7a470d768312d573193a600bd13a02d657b06f7"
+        },
+        {
+          "path": "deps/brotli/c/enc/encoder_dict.c",
+          "sha256": "2c538ce0bf35bce2f05b270a2f165793661fc7a427d91f355c2722a3dd345b11"
+        },
+        {
+          "path": "deps/brotli/c/enc/entropy_encode.c",
+          "sha256": "ea15125ed036547e57553a56b04ac50eb91a48424ccc5cf29d13433419fa4723"
+        },
+        {
+          "path": "deps/brotli/c/enc/fast_log.c",
+          "sha256": "7e08232d781a8e4a92f59869a492b0a8982cb3e3c51b2d4be808f59f8643dc88"
+        },
+        {
+          "path": "deps/brotli/c/enc/histogram.c",
+          "sha256": "cf8cbd4310f9b41a718ca200bfd8f7c07159729e51a5aeda1f2f809a954260bf"
+        },
+        {
+          "path": "deps/brotli/c/enc/literal_cost.c",
+          "sha256": "70b9efae900d89ba610087113bea9225debbae5db21825a9bad0051c1ea5451b"
+        },
+        {
+          "path": "deps/brotli/c/enc/memory.c",
+          "sha256": "a491c8110e9e68db26c10e008abfc69c07d6756f2b9c1f56611295aad7a817d2"
+        },
+        {
+          "path": "deps/brotli/c/enc/metablock.c",
+          "sha256": "8217f29edd2366110cb235e2e3e7e714ba89c256701bfd0b9bb001e83a7b9391"
+        },
+        {
+          "path": "deps/brotli/c/enc/static_dict.c",
+          "sha256": "9810eb7f9ab63a5720bb4a7fd089f3cbe787b10875129f1d1ed1021bc2416724"
+        },
+        {
+          "path": "deps/brotli/c/enc/static_dict_lut.c",
+          "sha256": "c06f693a31fe244858d0ec8268387657800ef42c768571be9e96fef26951d988"
+        },
+        {
+          "path": "deps/brotli/c/enc/static_init.c",
+          "sha256": "c62f0f3c81ea6bd198e5dff2f804e78a94ac10bf78cf5c1dbb72b28ab5a0cddd"
+        },
+        {
+          "path": "deps/brotli/c/enc/utf8_util.c",
+          "sha256": "15c394fe3284863e026511f8ba62dfe75148f286f59e2a8fd2f744bc00c8cda9"
+        }
+      ]
+    },
+    {
+      "id": "zstd",
+      "version": "1.5.7",
+      "root": "deps/zstd",
+      "archive": "libzstd.a",
+      "includeDirs": [
+        "deps/zstd/lib"
+      ],
+      "flags": [
+        "-DXXH_NAMESPACE=ZSTD_",
+        "-DZSTD_MULTITHREAD",
+        "-DZSTD_DISABLE_ASM",
+        "-pthread"
+      ],
+      "sources": [
+        {
+          "path": "deps/zstd/lib/common/debug.c",
+          "sha256": "7ab1ea104acf3243fc1cd4e6d2514046f1dfc1101c7c676145c8da080e8c24ca"
+        },
+        {
+          "path": "deps/zstd/lib/common/entropy_common.c",
+          "sha256": "7dfce29c6bc807645b1f0c373dad94bbb49603b175a84e72d1739bf9df65feb8"
+        },
+        {
+          "path": "deps/zstd/lib/common/fse_decompress.c",
+          "sha256": "84eba7030a036b36363a5108e760428ce549f1a833bec6464dc755f6ed51a6fb"
+        },
+        {
+          "path": "deps/zstd/lib/compress/fse_compress.c",
+          "sha256": "5070807a489757b87c1e1f50332b099e8ffe22971228218111eef64d3321ae82"
+        },
+        {
+          "path": "deps/zstd/lib/compress/huf_compress.c",
+          "sha256": "0be78471f5175e49bbacb898d8b107bb8f7e13adc84780e0625be5861f016086"
+        },
+        {
+          "path": "deps/zstd/lib/decompress/huf_decompress.c",
+          "sha256": "710a88d877d5dc5c83a4f839392996f337ec81cf38006c4a5be6042de5b54828"
+        },
+        {
+          "path": "deps/zstd/lib/common/pool.c",
+          "sha256": "9431e26cf7ca46ffb878f17df31198046664d592ae208dfbe3715e82b87af79d"
+        },
+        {
+          "path": "deps/zstd/lib/common/threading.c",
+          "sha256": "50448323b46a8e1bde042ee88ec44fcfc646f3d4aeba8a06be54d26a710ed78d"
+        },
+        {
+          "path": "deps/zstd/lib/common/xxhash.c",
+          "sha256": "8444d064922f434b67b708a987981aa21dfeece735b48c82d31f7027d0ccef03"
+        },
+        {
+          "path": "deps/zstd/lib/common/zstd_common.c",
+          "sha256": "f49eb8023a90d3de925373bd9ee0d36ed46b26c529840b64220397446cd73795"
+        },
+        {
+          "path": "deps/zstd/lib/common/error_private.c",
+          "sha256": "3f5873b2626ca1cdf554b7ec7b04ea0ef296fd0f6882d7fad42448b7e2dbb41c"
+        },
+        {
+          "path": "deps/zstd/lib/compress/hist.c",
+          "sha256": "1a613082642b9cabdeecd3b5929f7230cbb2f8344a28f5010f3aec12cb647ab8"
+        },
+        {
+          "path": "deps/zstd/lib/compress/zstd_compress.c",
+          "sha256": "10c315ae609d49b2fc431521aa95908086e69fd917991c5ed9a875af3d1208e8"
+        },
+        {
+          "path": "deps/zstd/lib/compress/zstd_compress_literals.c",
+          "sha256": "a8f25f1bd4c0d2d9dda3355d2103c9dfbd0b7056bfd373e29e923662bfea5596"
+        },
+        {
+          "path": "deps/zstd/lib/compress/zstd_compress_sequences.c",
+          "sha256": "3f4334c19ed770c4007bc12df4098026d4eb1a6fbebfbf36df58054e7babc3e9"
+        },
+        {
+          "path": "deps/zstd/lib/compress/zstd_compress_superblock.c",
+          "sha256": "dd62ed79ee1feec78b2e5bfc63417ccbdcda426f4220d112b0fcd8a9d0c7e667"
+        },
+        {
+          "path": "deps/zstd/lib/compress/zstd_double_fast.c",
+          "sha256": "9f6d003c2fe1208737bec685910324220424ba47d0323fa30d9d5f53c50e91da"
+        },
+        {
+          "path": "deps/zstd/lib/compress/zstd_fast.c",
+          "sha256": "8037320f321836652e73ab6cbf7b8f1f4c97cef38835ac6b4aaf0af716aa398d"
+        },
+        {
+          "path": "deps/zstd/lib/compress/zstd_lazy.c",
+          "sha256": "dd6ccf357165dc8cb574ea56a34ff1db57b7b31728b32103d0c6b72319fd45b1"
+        },
+        {
+          "path": "deps/zstd/lib/compress/zstd_ldm.c",
+          "sha256": "4a2bef3612ae4a9e15a78a55541a152091fa8ba160410db24d495bd6dd57249e"
+        },
+        {
+          "path": "deps/zstd/lib/compress/zstd_opt.c",
+          "sha256": "625936ee3fb02d789abb894c1fbc2918ee47582434094c963b630da13532c876"
+        },
+        {
+          "path": "deps/zstd/lib/compress/zstd_preSplit.c",
+          "sha256": "8d7da15de31318ebb7dfe2f2e2c79f05b0d0563dcb92d4525814d05a279d0d64"
+        },
+        {
+          "path": "deps/zstd/lib/compress/zstdmt_compress.c",
+          "sha256": "c83db699b4041bf4db89c5558db490dd295635f1eeefd60b643fbc862bbac7b5"
+        },
+        {
+          "path": "deps/zstd/lib/decompress/zstd_ddict.c",
+          "sha256": "38bf812283d61f4cd1f6aea30f84b43317418257c4e6fc198b09b436bd484397"
+        },
+        {
+          "path": "deps/zstd/lib/decompress/zstd_decompress.c",
+          "sha256": "029580818b7e9cd38d9d07c63516b00ceaa943ffcfbd099fc5ccbe3628fa362f"
+        },
+        {
+          "path": "deps/zstd/lib/decompress/zstd_decompress_block.c",
+          "sha256": "9cb8bcb07aeb87e4717a9c8a86d20832dc525dde2c1b72efdaaab7c937f43b87"
+        }
+      ]
+    }
+  ],
+  "inputFiles": {
+    "deps/zlib/adler32.c": "e47831f9eaffc530e2f6f9720266d94e74eed9fe5c2082473d3afb9cf8880c13",
+    "deps/zlib/adler32_simd.c": "885047cd158f16a9c386fd1f3f4251ec8e463be22960d60fe2df46c49e61bfbc",
+    "deps/zlib/adler32_simd.h": "8c1362d66be00e4ee75a303b8b67a36b128786666386d090ebd2cac8cbacd9ea",
+    "deps/zlib/chromeconf.h": "f5fff056ec46cf99ae26676e1a16b71d2ad5d96dd56918d3e110fdab13b4d461",
+    "deps/zlib/compare256.h": "735b89db2f0978a781c71f82fbe1564cc4ac2bf1fc4b7c05b22a29b3882e253d",
+    "deps/zlib/compress.c": "5495bc53cd675dc10d9ab07e851e7b21324d43f6b513e759bd2bbd6698b539ab",
+    "deps/zlib/contrib/optimizations/chunkcopy.h": "f43452bb0710645d1360f552a49359d322326fc7b2fbc607b1574fa203cce65e",
+    "deps/zlib/contrib/optimizations/inffast_chunk.c": "f89882677fdcccc2e4048dc60f6789c79208675d37fd2b04d2055b2d0911bc6f",
+    "deps/zlib/contrib/optimizations/inffast_chunk.h": "670f8d05461dbad596e81355f6e218deb8d9e2e6595259465cfb8d2fad6a2315",
+    "deps/zlib/contrib/optimizations/inflate.c": "f47ff3fedab199d4bf59a018808dcaa1b206ce0d6dea06f09f217d375d713366",
+    "deps/zlib/contrib/optimizations/insert_string.h": "ff03fe98a4dcaa22022a44340f8fe62f4820c64cd1f326bd710fa5d37f8a2897",
+    "deps/zlib/cpu_features.c": "7e80a4d297e5eb6e83b8a9c384ecb7b572ccfe63acdd70fd8bc703ce714d3d21",
+    "deps/zlib/cpu_features.h": "48f5b148756771ed44f3ed27a843e16a119ad71efbdf18af96bf53e58374db0a",
+    "deps/zlib/crc32.c": "ca8594f9f859dcc1264ef0e26b052d09f8db2b5b9e16b3a58c687d2878ded901",
+    "deps/zlib/crc32.h": "9a2223575183ac2ee8a247f20bf3ac066e8bd0140369556bdbdffc777435749e",
+    "deps/zlib/crc32_simd.c": "b15894ba217a111236b481f551c985e9375a4bb8dd8db4d2e74e055b1631ace3",
+    "deps/zlib/crc32_simd.h": "80688abed37fbff1b49079050954749f0a694b5b9998abdbf59019f65401208a",
+    "deps/zlib/crc_folding.c": "5ab4e8fda131585fa6d63f7a5d33b928e23017582fcfc639d10c8d0202b07372",
+    "deps/zlib/deflate.c": "6f5ee49848c58ee670fa8077c1cf4803ec63c6d9d4ec0b89e7cf84d4ddc9c72d",
+    "deps/zlib/deflate.h": "21e554884c697b9b7bb2c979c1c9e499487e0817756be01d3a0b4eb18545029f",
+    "deps/zlib/examples/zpipe.c": "ea4753cb67e92a495078c4a45ec47251cca8d2c2ffa171d2bb27890f8f0ecdfa",
+    "deps/zlib/google/compression_utils.h": "9187b675681853e21822511661f1d76c45ecf9505b90cd27593a13d2df84d716",
+    "deps/zlib/google/compression_utils_portable.h": "ad6e83438a781734e0b8873b846b3cafae5ca31e1bf2c56a3d8c7ea2d9dc0c19",
+    "deps/zlib/google/redact.h": "638b81c97444ae6d9ae41aacec587b70bcf9ae2ab406b0801e947cbf0f4c77a0",
+    "deps/zlib/google/zip.h": "4ff2c18a7fac71e97edbaa5a5d9c2d5f9f9d7be2e7d095b5b5c7c6ba15d63b6a",
+    "deps/zlib/google/zip_internal.h": "3954b003b8b97a440d701a3ffc3db722ad9618d6c99dbc771d3b561aac95f273",
+    "deps/zlib/google/zip_reader.h": "5b05473a3665f3da441297b314a219be13ce6eb7120552fc2d5f0b66f5e54f7c",
+    "deps/zlib/google/zip_writer.h": "0324ff99ccc093f4f7efb7dbd92b5ca823a7569f1f7bc0cf0f51ffd112f25994",
+    "deps/zlib/gzclose.c": "35ea6e991a63095f797d8c4cc25817fac7a7155c2ba7dcdbbf648f7871c7ea40",
+    "deps/zlib/gzguts.h": "a8b9589da5bab397a98685eb5cbc97a414aafec61d557f11453e1ac6d5364f2a",
+    "deps/zlib/gzlib.c": "a968a4337aa5743adf00c4088b4e93ada3dba897e2a321f643fe81286b718f82",
+    "deps/zlib/gzread.c": "713edfd883f4230199ddb2b0f5dc90adb7fc96348e228fc38c249e4b4a797c5e",
+    "deps/zlib/gzwrite.c": "2ce783294c688330c716bfe106f43167d3dae5be84994176bc304d205d4f5b04",
+    "deps/zlib/infback.c": "f4c9a2c547e6038b2bcdb1c0c7d979eb7450aa1fa6518107203c3284939ef5fe",
+    "deps/zlib/inffast.c": "ce49de35d2d5c609e3a731db9ff93fa2e131558126f75f87454940c43c06c7d4",
+    "deps/zlib/inffast.h": "8fd2fe697f951e8508b98e8e4017faa0027e47e340cc62b9e4ae1a672af5cd04",
+    "deps/zlib/inffixed.h": "fd7c4b1dbdacb283421d0675744aaecda44e840e183b5131448bac94564f6adb",
+    "deps/zlib/inflate.c": "ea50d23cb98397ccfe4d84ef2ba7b47b71826cc76beb02fa12a80d577c80b5c3",
+    "deps/zlib/inflate.h": "e6a43bd0e24ab2cf5fa1dca630859e9a2f6a721f033f75faf179f5c0299e4fe2",
+    "deps/zlib/inftrees.c": "64fc6aeea744510253a22f8b0611fcefa970458224a41a1649f5e0db340af8fe",
+    "deps/zlib/inftrees.h": "0b60ee1386f860ececdd442cb869a4b8a0920cb1003b7fca853cdb6a91cf390e",
+    "deps/zlib/slide_hash_simd.h": "0524fd845c79ac31bf7e23436e68aa9eb20d21a849088f4ec3250d460214284c",
+    "deps/zlib/test/minigzip.c": "203b1a4623a11021f4b64c5f6b6a4addc1bcefac694cd48cac71ccce35d82c1d",
+    "deps/zlib/trees.c": "13eb6702d12ba96cb43c30d45ce7bde9c522b060d39938986f995606f3e69d8d",
+    "deps/zlib/trees.h": "bb0a9d3ca88ee00c81adb7c636e73b97085f6ef1b52d6d58edbe2b6dc3adeb4d",
+    "deps/zlib/uncompr.c": "953f5381650838d507b01499790bd64524433ea6ea29ea9325bf542af10cfe7d",
+    "deps/zlib/zconf.h": "5ad08c16565403aa7823d165050c5bfac211b8748717eec8a2bb8bc6efd56981",
+    "deps/zlib/zlib.h": "0ff41598d145693759a8322bb90bc4f2c57dcdcb3635fdf5b2195bf13df15b54",
+    "deps/zlib/zutil.c": "04303a4d607958905f0c036aeca43d14218d01752e6c444fdbeb94983912ec38",
+    "deps/zlib/zutil.h": "84fa29c4a8097324a3b747e077507ba6f8de86cd593bf198219478858baf16f4",
+    "deps/brotli/c/common/constants.c": "630f40ca2ac787025175eaf39b9569a60aff6ddec7e5085197e4cb0d43641b0d",
+    "deps/brotli/c/common/constants.h": "c9c898542360e811dc44aa9be270d21ce0d18f3ecf45310f3d9f285f3692a59e",
+    "deps/brotli/c/common/context.c": "c9aa1acb35af38c90c4a38ba168885b649838236b2d57adb5e76d687bdbe252e",
+    "deps/brotli/c/common/context.h": "2745ef910928a4acd58e1cb98128a0a228fa1812c61e69538c9d393d405bf047",
+    "deps/brotli/c/common/dictionary.c": "0890056e4ae595efab6bbf3bf1fd244332e2cfad3adcb9f5793ee29a8f3a18c5",
+    "deps/brotli/c/common/dictionary.h": "bfb4f010a2279c53a039ec6f095a12ab62c7d49ab138e385a16caf3904341b10",
+    "deps/brotli/c/common/dictionary_inc.h": "55b98973df9dcb353bd78b2b573fb7338ab55d98fb5571ad93939095978768e8",
+    "deps/brotli/c/common/platform.c": "fce95889e6b1d1a91c0baa2ee0f3b83a41b670a4f51a5053185ffbed6bde71fd",
+    "deps/brotli/c/common/platform.h": "e7a9b84f71ffe037472729db11e81bee7092f4af5672b21d5bff20f454e84636",
+    "deps/brotli/c/common/shared_dictionary.c": "0cf405b0155230e060b9e0855bb22379037362948828b98338f203be07923d0e",
+    "deps/brotli/c/common/shared_dictionary_internal.h": "e9e343e5d4ddd0f87a9579aab6796dd82af08639abfda122e874a97e896c6b6a",
+    "deps/brotli/c/common/static_init.h": "be55ce94cace1a6c9dd9460ae30a5b7942834fd8c1003ffdef56df0b35dbcfd7",
+    "deps/brotli/c/common/transform.c": "47f229a79c3542ea57ec07145d7eaf77300a02816d95695332f9911ea19d6ab3",
+    "deps/brotli/c/common/transform.h": "b79dd99d1dcc618c1a4284b74dd04adda099fc3f65f906924991a736e09c125c",
+    "deps/brotli/c/common/version.h": "792d03d8feff8168edf639899f72b71a37e9cbd9f178e3be397ccef29d3346b0",
+    "deps/brotli/c/dec/bit_reader.c": "ad4a7608173afe62bc7b36d83768e4ac73dadc4a6272437340ee46e8a61a0d92",
+    "deps/brotli/c/dec/bit_reader.h": "f23fbb82054c5e4405e2a262df9cf4c4756b3e0e476ac849c0dd8f741018d161",
+    "deps/brotli/c/dec/decode.c": "d48bc54c60553238d50db2fcd606522efd447d33a37d6a2d5c2ea1ece22067c3",
+    "deps/brotli/c/dec/huffman.c": "b7c973c2918c6765c4eb534c3ae314055d535b6d1fafb021cee5f7eae170aae6",
+    "deps/brotli/c/dec/huffman.h": "09f3a1f7608b09df131342c9759f4a63c19b0e784bda5e474ec01eb72699079d",
+    "deps/brotli/c/dec/prefix.c": "0a31304f440f7bb2017d52b83ae35cb428cbc5ac2fc172c8eec2fea449c2f7cd",
+    "deps/brotli/c/dec/prefix.h": "fe1f3630f78a0ed3f79146a52d8e480c12d130ccfe9781f03d0edc581c3b9e83",
+    "deps/brotli/c/dec/prefix_inc.h": "e1ade26b7b1e1e56b1a91af20ef93f81ef7a4ed83e0543fd6d9eb29f5c6d2983",
+    "deps/brotli/c/dec/state.c": "66a7c3d9c01cda374d33d3693ba45d059ff00b12114a8844ee4f2519ba2af14e",
+    "deps/brotli/c/dec/state.h": "8937c3799c177eacfaf3c0dba8da8c2558f435d6baffa2d787aec3212eaca041",
+    "deps/brotli/c/dec/static_init.c": "a4a308e394fe05a124d919977b3f457a06363615a882dce058f329edcf7dc851",
+    "deps/brotli/c/dec/static_init.h": "a4f13d0e5c770ad92fb2d6b8d4a8f93bfe70b1e97352306636a1119a6f44f270",
+    "deps/brotli/c/enc/backward_references.c": "2e4320bf880dd0e03781fbd56159da069325da73ad47c1fdae46872b1db41463",
+    "deps/brotli/c/enc/backward_references.h": "ab3af6c955add46840b8e920ae2daf5afb971b7c9ad05ad0720bdfc9aabc298b",
+    "deps/brotli/c/enc/backward_references_hq.c": "fd418f50cea8f5a579d20b40ff7040e9ff4029e151095f4eaf9c1b6bcf15c680",
+    "deps/brotli/c/enc/backward_references_hq.h": "6ffa64b045c878600aa694f92b301cf6ff854e0e79959aeb9e124864789e210d",
+    "deps/brotli/c/enc/backward_references_inc.h": "c53d844433d3cd60e4114f9c08c42628c88b3916af39837bf05c59bc85cd433c",
+    "deps/brotli/c/enc/bit_cost.c": "544c6af87753f9e540873c2b7984d73297a53576fc0b352b34121687be2f08e4",
+    "deps/brotli/c/enc/bit_cost.h": "1336cd6c28117921ad0275a39188d17ee91eb96e8b6e362c940df488ab8068a1",
+    "deps/brotli/c/enc/bit_cost_inc.h": "71a2c3736f0039df51ba6b38741356fdbd0792d4f1068adfdaecf0df84f04329",
+    "deps/brotli/c/enc/block_encoder_inc.h": "fa99d29142869d28e6b4c471993e44b989f1350a9cfdbed7342f4b915329b9a8",
+    "deps/brotli/c/enc/block_splitter.c": "34699e570f752cf0bd2643cb8d6a6b17e79add6856bdaf0b6007927fe509c5b1",
+    "deps/brotli/c/enc/block_splitter.h": "f43db7ef733e5c87dd1fe9cef2465e02dde91d0121efae74b2c1c357ed1db267",
+    "deps/brotli/c/enc/block_splitter_inc.h": "4fd9d95ac3fc08992d6fe3d9cc7855a62417326046bb0666b8ad7196abd3c944",
+    "deps/brotli/c/enc/brotli_bit_stream.c": "ea95e71753a6b1b651e5315013900c5d79eb074245be750d1afc3ec5a8b19982",
+    "deps/brotli/c/enc/brotli_bit_stream.h": "747101dc514e7257e06c268bac2de9696fbb36ebc1a05787b67c6a2b52a7376e",
+    "deps/brotli/c/enc/cluster.c": "23d58bc8b628c9d168f8911d9304d4964e0f992f68e6d62daefe7eb837b07cb4",
+    "deps/brotli/c/enc/cluster.h": "fad2c4dea68fa93cfa61fe2234421163b15e0952446c583053a34a4b70b856bc",
+    "deps/brotli/c/enc/cluster_inc.h": "9875a8a2822b029dad7841eea87096b6e059087a066f4b3bc055a402d67f1291",
+    "deps/brotli/c/enc/command.c": "3f72daa062889ce5e662993095da5477f47815896867476b3f7b34d3a67fbd9d",
+    "deps/brotli/c/enc/command.h": "2e64e8b9ff12ae9be4c711ad25534f9c93b0fbac82f5a843ac42cc0a8168e1fb",
+    "deps/brotli/c/enc/compound_dictionary.c": "4046dd0040ad51d4a550a747e5c4643d7cf801de426698e7566e8e2fc0c1c9ae",
+    "deps/brotli/c/enc/compound_dictionary.h": "8a1926225d68075c58259260470fe193115748df5419c27b816f86473426cdd5",
+    "deps/brotli/c/enc/compress_fragment.c": "0e14cfce93c2a461a5d6be626e9ed30340bab980ccc76f502a23d2c112c7c94f",
+    "deps/brotli/c/enc/compress_fragment.h": "3b91f1b14055d1908fcfd03bdc4a7fc52371233bb1c6ff28755f5248f5726a82",
+    "deps/brotli/c/enc/compress_fragment_two_pass.c": "938fc18b7a5f1e41f360a167a31a7297920160f08bff92f04d97788c3d32bfd6",
+    "deps/brotli/c/enc/compress_fragment_two_pass.h": "aae9785aa1003e14b3eeccc263c4e583c48871577a92bf0662de40763c7fb73e",
+    "deps/brotli/c/enc/dictionary_hash.c": "1225337a2bad9cc08d72671757682ec90ab99388f00bfa73cd469a5e6e5e9778",
+    "deps/brotli/c/enc/dictionary_hash.h": "a0b125ef70ac49b0d0006aa30a8d226d5f8d1756c82c3c0d50ce08e9ecf4f4a0",
+    "deps/brotli/c/enc/dictionary_hash_inc.h": "6effa6998dbb024d12766b9240beb549a8ee50fd6fdadf4a61ec8899eb9ac4d4",
+    "deps/brotli/c/enc/encode.c": "79c4bca6f88d3c8725642c01c7a470d768312d573193a600bd13a02d657b06f7",
+    "deps/brotli/c/enc/encoder_dict.c": "2c538ce0bf35bce2f05b270a2f165793661fc7a427d91f355c2722a3dd345b11",
+    "deps/brotli/c/enc/encoder_dict.h": "e300e61e3b464c7e572bf1921547949e3cb0e87f24770ff611c75ef8459f398d",
+    "deps/brotli/c/enc/entropy_encode.c": "ea15125ed036547e57553a56b04ac50eb91a48424ccc5cf29d13433419fa4723",
+    "deps/brotli/c/enc/entropy_encode.h": "d916681f7aa9fe1ed3ec671be2d5b0687e0ac5c67f0f69dd781084746751899e",
+    "deps/brotli/c/enc/entropy_encode_static.h": "ff27cd498408d797baa4cd6750b8282c4d70100b4c000346e2a888102451debf",
+    "deps/brotli/c/enc/fast_log.c": "7e08232d781a8e4a92f59869a492b0a8982cb3e3c51b2d4be808f59f8643dc88",
+    "deps/brotli/c/enc/fast_log.h": "74a76746f3eb2e673411d0563ff22a22575d0be4dcb29da0a5ee2039aed6df43",
+    "deps/brotli/c/enc/find_match_length.h": "d03ef29e28f89b4b74124d0315e173014cbd724dcff4d3020a9b2aad0d8e60b7",
+    "deps/brotli/c/enc/hash.h": "1bcb3021c7e95b0df62f5c183b34b441de7573eb56fa8073eaba69039948e0c7",
+    "deps/brotli/c/enc/hash_base.h": "e51ef6971fe4ab11a58eb524013999645b595779b4519dc6c10af4c333a48d9b",
+    "deps/brotli/c/enc/hash_composite_inc.h": "6b77329089219d157954ae229ce438a127e123dec8aff6ca437d73845055abd4",
+    "deps/brotli/c/enc/hash_forgetful_chain_inc.h": "2812de9033a6778ab0f44be4da4e250d34a5ca4eb8b2da55fc156ea2edc1d67f",
+    "deps/brotli/c/enc/hash_longest_match64_inc.h": "a71bbe70774c94eb46f21574046d1eeb3867052d59ad5fca50d241211a143014",
+    "deps/brotli/c/enc/hash_longest_match64_simd_inc.h": "80bd560c616effa04abcb7575089f07705817289a4919c7abbc5600ba39a13b7",
+    "deps/brotli/c/enc/hash_longest_match_inc.h": "a36d5a3088b1df99da6bfb9ebfcbc4777647ac4f64f845a224119d85061acab2",
+    "deps/brotli/c/enc/hash_longest_match_quickly_inc.h": "0adeeedc0d4b5b2defb841c2f97ad127608a6f94298caa31811f46f38dbd026d",
+    "deps/brotli/c/enc/hash_longest_match_simd_inc.h": "afc8d1d0490ab66007fdcca7538cd2070b524c1878e79576151a63da77a8cd2f",
+    "deps/brotli/c/enc/hash_rolling_inc.h": "4e8e46bf74dfccb32d3cf05c29b0ada93841ea78d42863f4aec255e164332d68",
+    "deps/brotli/c/enc/hash_to_binary_tree_inc.h": "78a8c973f2cdba8085019f7f18c48b5c5d558c797eec5e1104596e452c06d36d",
+    "deps/brotli/c/enc/histogram.c": "cf8cbd4310f9b41a718ca200bfd8f7c07159729e51a5aeda1f2f809a954260bf",
+    "deps/brotli/c/enc/histogram.h": "12a8632ca3b98350bd9aa38a439a21bf63378bcd867ba43076a5bdebf0fb03b6",
+    "deps/brotli/c/enc/histogram_inc.h": "618857bb0d76c2647b26730413ddcf1ddecc63567adb5a1437eb7ff711670a71",
+    "deps/brotli/c/enc/literal_cost.c": "70b9efae900d89ba610087113bea9225debbae5db21825a9bad0051c1ea5451b",
+    "deps/brotli/c/enc/literal_cost.h": "3504da473324e0d2be76c69b5e9d1ce7d97409ff5920bd3928a05c3de2a47009",
+    "deps/brotli/c/enc/matching_tag_mask.h": "3106496cc6baa84f6dab86395002b2638ba64926de7858cd6943afd8b6c7d162",
+    "deps/brotli/c/enc/memory.c": "a491c8110e9e68db26c10e008abfc69c07d6756f2b9c1f56611295aad7a817d2",
+    "deps/brotli/c/enc/memory.h": "01ee4983c81f1b935841d4e2ebe2588cf590ea66dcce493b61c7430da8baaec5",
+    "deps/brotli/c/enc/metablock.c": "8217f29edd2366110cb235e2e3e7e714ba89c256701bfd0b9bb001e83a7b9391",
+    "deps/brotli/c/enc/metablock.h": "f200f4660b5c3670fdde8ed7300bcd7efefdb355e3132bd3b610e3b795061196",
+    "deps/brotli/c/enc/metablock_inc.h": "e68583ed633b96aacfae43c4e7810ebebc09af4414cddc49506fcb2069cbe343",
+    "deps/brotli/c/enc/params.h": "55f3508a6d8019192a43110b62d9284277e19b9d301cebe7bed27855952d1b25",
+    "deps/brotli/c/enc/prefix.h": "706a1973c2229d03eb350dcc2e6909a94175eb8581a9f890d9bda45fcc0f544d",
+    "deps/brotli/c/enc/quality.h": "b6dfb3e8433dfbb97693aa02f551870c7739e7645fcf6d9322631e02ea09c35d",
+    "deps/brotli/c/enc/ringbuffer.h": "f67876b441464cd931fb7db0c84d05fc7ac570c47ca9872751ae9c7c7c4a2455",
+    "deps/brotli/c/enc/state.h": "c7996820e3f166650e2fb9187c0f94a8a5e21bf353dbdd1c783f22e428904f9e",
+    "deps/brotli/c/enc/static_dict.c": "9810eb7f9ab63a5720bb4a7fd089f3cbe787b10875129f1d1ed1021bc2416724",
+    "deps/brotli/c/enc/static_dict.h": "4362117cf788185ead13cd181a0d7db437a05a2cdc619646f93ff3721d53ca3c",
+    "deps/brotli/c/enc/static_dict_lut.c": "c06f693a31fe244858d0ec8268387657800ef42c768571be9e96fef26951d988",
+    "deps/brotli/c/enc/static_dict_lut.h": "be10d9c9481e915424ea79e29c2e18f5dac9cb4e18a5fb07eeb7a7fb9b1637b2",
+    "deps/brotli/c/enc/static_dict_lut_inc.h": "561574bed6ff61709e20a196b611825f239aa79cd1c54c96b96757162edcd3d4",
+    "deps/brotli/c/enc/static_init.c": "c62f0f3c81ea6bd198e5dff2f804e78a94ac10bf78cf5c1dbb72b28ab5a0cddd",
+    "deps/brotli/c/enc/static_init.h": "f853f6739633044ac6acc27e0ba074b315e230a4f99aac46a98b53880af24441",
+    "deps/brotli/c/enc/utf8_util.c": "15c394fe3284863e026511f8ba62dfe75148f286f59e2a8fd2f744bc00c8cda9",
+    "deps/brotli/c/enc/utf8_util.h": "915db224b31b09c311f77776dc5c1a83c73101780349c653551493059212f795",
+    "deps/brotli/c/enc/write_bits.h": "b2af9a0a4da30b47981cc63d29eefb27a85c86e257d7e2c120b7f6ac1efdb060",
+    "deps/brotli/c/include/brotli/decode.h": "e2f5fdc3ae41e6b7e8986538e421ae79c095541bacf32f2bbfccf8e056405444",
+    "deps/brotli/c/include/brotli/encode.h": "f1842e38da557efac517a35f1b27d288d464a723ef50316d3d20fe03f6046c06",
+    "deps/brotli/c/include/brotli/port.h": "72b484d7a2561f3a9ad35ebd0d4f97f7a2d9863b619782ada5b083a4b6f40df5",
+    "deps/brotli/c/include/brotli/shared_dictionary.h": "86230f0aaf533044d85d92f84b5aec8b7e4e231d4b64b098604083e7866e8097",
+    "deps/brotli/c/include/brotli/types.h": "ebbd136dc411cc8167636d6f54b66ad0c234dc18989265c37a28c242eaae2efd",
+    "deps/brotli/c/tools/brotli.c": "cb6c8ca6668d324d50cd085fc3ddb3f202afe34fb562b5b583c0d7b0cceccd0c",
+    "deps/zstd/lib/common/allocations.h": "6a718e8edaca112abdc0bdfa7de67edefaa44c8d9e514b79672ab58ab3a9118a",
+    "deps/zstd/lib/common/bits.h": "5bb7693a35d7ce03f8715c0b1e237062285e052250fdd34f72f38e7e92365090",
+    "deps/zstd/lib/common/bitstream.h": "a9461685c9add6f609078acc950a08db4c02e6e6a849d550f45182ba2ae38556",
+    "deps/zstd/lib/common/compiler.h": "d19829705d8039437ffba873df2b58d20d7b876d58da479121d2e515df55cbf7",
+    "deps/zstd/lib/common/cpu.h": "23d520b536a6f23114e66549d03a967b1f24b15560c5b1ebd47ee392ccee4a1c",
+    "deps/zstd/lib/common/debug.c": "7ab1ea104acf3243fc1cd4e6d2514046f1dfc1101c7c676145c8da080e8c24ca",
+    "deps/zstd/lib/common/debug.h": "8260cd5087b8309679c61b772b535688993c61a675a30481b8ae55b45740ba15",
+    "deps/zstd/lib/common/entropy_common.c": "7dfce29c6bc807645b1f0c373dad94bbb49603b175a84e72d1739bf9df65feb8",
+    "deps/zstd/lib/common/error_private.c": "3f5873b2626ca1cdf554b7ec7b04ea0ef296fd0f6882d7fad42448b7e2dbb41c",
+    "deps/zstd/lib/common/error_private.h": "ae077bb433eb150ee247410a0357f910b9c07be839c6a9abe0b2e6b18ceb716d",
+    "deps/zstd/lib/common/fse.h": "5235ce1e512bf80204d013b1f4cecd776fdaa9effddb48308bce08f6d0b84499",
+    "deps/zstd/lib/common/fse_decompress.c": "84eba7030a036b36363a5108e760428ce549f1a833bec6464dc755f6ed51a6fb",
+    "deps/zstd/lib/common/huf.h": "9a83d899c8c9bf03389d482562090ec2443bc0f87f27864a2b891b180333f2d4",
+    "deps/zstd/lib/common/mem.h": "4dd5fe76fa30a020cd4b3af3134ae143920300a1fe54baac1a5da73297e66783",
+    "deps/zstd/lib/common/pool.c": "9431e26cf7ca46ffb878f17df31198046664d592ae208dfbe3715e82b87af79d",
+    "deps/zstd/lib/common/pool.h": "bca19a2408e85f31bad3a13f205de92ac26ecda0c5af96fdd7f213ce03d9fc78",
+    "deps/zstd/lib/common/portability_macros.h": "75e2b43968b70decc6bd17876833be04894035594ddc1e745cd6b70be8265637",
+    "deps/zstd/lib/common/threading.c": "50448323b46a8e1bde042ee88ec44fcfc646f3d4aeba8a06be54d26a710ed78d",
+    "deps/zstd/lib/common/threading.h": "9ca63027ea64046acacccbe056a414d37ea7ea428ce299fe08abe53c204c5c65",
+    "deps/zstd/lib/common/xxhash.c": "8444d064922f434b67b708a987981aa21dfeece735b48c82d31f7027d0ccef03",
+    "deps/zstd/lib/common/xxhash.h": "8cb837b21a8fe9a6b9dbcd0961ab16e733bfcbfa9e003f3a496ce07ae80aa8ee",
+    "deps/zstd/lib/common/zstd_common.c": "f49eb8023a90d3de925373bd9ee0d36ed46b26c529840b64220397446cd73795",
+    "deps/zstd/lib/common/zstd_deps.h": "9c77ea7d0afa8d5c868a7839e178a446a82d88eb75fd56f2fd7d9d96c5ab7c11",
+    "deps/zstd/lib/common/zstd_internal.h": "ad3d95ce2b81a8c5c6b00cfe6323d8e80cacb690d3b5883725cd0d939f4f576f",
+    "deps/zstd/lib/common/zstd_trace.h": "17f6daa4c7e97055cd1ed7bcf4d9241a4e79b465f083c5d732fda1df2f0be11e",
+    "deps/zstd/lib/compress/clevels.h": "d764daa89b7a636d26fe96ff3536c5075e9867fb5dddbf8c9d57023a8ff4a155",
+    "deps/zstd/lib/compress/fse_compress.c": "5070807a489757b87c1e1f50332b099e8ffe22971228218111eef64d3321ae82",
+    "deps/zstd/lib/compress/hist.c": "1a613082642b9cabdeecd3b5929f7230cbb2f8344a28f5010f3aec12cb647ab8",
+    "deps/zstd/lib/compress/hist.h": "9e3363e69d5fa35c1f6e8d2970c6c2453c06fd8a8ab3cc516a14c77d07cdea35",
+    "deps/zstd/lib/compress/huf_compress.c": "0be78471f5175e49bbacb898d8b107bb8f7e13adc84780e0625be5861f016086",
+    "deps/zstd/lib/compress/zstd_compress.c": "10c315ae609d49b2fc431521aa95908086e69fd917991c5ed9a875af3d1208e8",
+    "deps/zstd/lib/compress/zstd_compress_internal.h": "ab7754413cef565da559bda7eb738bc2b3708c48877cb9ec37aff767d32c57d1",
+    "deps/zstd/lib/compress/zstd_compress_literals.c": "a8f25f1bd4c0d2d9dda3355d2103c9dfbd0b7056bfd373e29e923662bfea5596",
+    "deps/zstd/lib/compress/zstd_compress_literals.h": "02270cd6bc060279217861776a53adb67f8d7e54f47f59d2a4ddcef2e705fe2d",
+    "deps/zstd/lib/compress/zstd_compress_sequences.c": "3f4334c19ed770c4007bc12df4098026d4eb1a6fbebfbf36df58054e7babc3e9",
+    "deps/zstd/lib/compress/zstd_compress_sequences.h": "361d108d7d452ed26f0ae4b39964f8e62166ed91d03347a5229e5d228734efc8",
+    "deps/zstd/lib/compress/zstd_compress_superblock.c": "dd62ed79ee1feec78b2e5bfc63417ccbdcda426f4220d112b0fcd8a9d0c7e667",
+    "deps/zstd/lib/compress/zstd_compress_superblock.h": "6b097999ea1d91776ca5a12e5ee02c1ed15edfcd31ba07b9ada94b0955195677",
+    "deps/zstd/lib/compress/zstd_cwksp.h": "ed77c2739b18b9800b97785262526a1dd4f385311ca5c2caa20b6f2a35f3735d",
+    "deps/zstd/lib/compress/zstd_double_fast.c": "9f6d003c2fe1208737bec685910324220424ba47d0323fa30d9d5f53c50e91da",
+    "deps/zstd/lib/compress/zstd_double_fast.h": "d9c29c9c004f572532265e12af78d5949c0908f4ef0bb0158977bcf80e1cf92b",
+    "deps/zstd/lib/compress/zstd_fast.c": "8037320f321836652e73ab6cbf7b8f1f4c97cef38835ac6b4aaf0af716aa398d",
+    "deps/zstd/lib/compress/zstd_fast.h": "dffdf43fae7ee10a2acc04e6a5eaaf03f7d3572898117a06c330d647eed5591d",
+    "deps/zstd/lib/compress/zstd_lazy.c": "dd6ccf357165dc8cb574ea56a34ff1db57b7b31728b32103d0c6b72319fd45b1",
+    "deps/zstd/lib/compress/zstd_lazy.h": "6f13007fbd6824058a73b097960446defe265e33b22c7c6dc2304dcf53998bbf",
+    "deps/zstd/lib/compress/zstd_ldm.c": "4a2bef3612ae4a9e15a78a55541a152091fa8ba160410db24d495bd6dd57249e",
+    "deps/zstd/lib/compress/zstd_ldm.h": "bd0cb86041d3a72fd7846e141a41aadae229c8e331a2117df7f6b70a1b4cb08c",
+    "deps/zstd/lib/compress/zstd_ldm_geartab.h": "7285ac8ba1f0fa57a8cd8158bd427ded4e70e32a58e73b57c420b83a76e5e6e3",
+    "deps/zstd/lib/compress/zstd_opt.c": "625936ee3fb02d789abb894c1fbc2918ee47582434094c963b630da13532c876",
+    "deps/zstd/lib/compress/zstd_opt.h": "9b677efbae28909034d3c24f37dc5c4295d267cf477bf04e14653579f90d8b6e",
+    "deps/zstd/lib/compress/zstd_preSplit.c": "8d7da15de31318ebb7dfe2f2e2c79f05b0d0563dcb92d4525814d05a279d0d64",
+    "deps/zstd/lib/compress/zstd_preSplit.h": "910facb2e3442e42a6952c514223c4502d95ed957bf7dc73982b3b03785b361b",
+    "deps/zstd/lib/compress/zstdmt_compress.c": "c83db699b4041bf4db89c5558db490dd295635f1eeefd60b643fbc862bbac7b5",
+    "deps/zstd/lib/compress/zstdmt_compress.h": "033fb25d96b4295c3d0158edf4d1bd4067f42aac39427706754e6c034b20f80f",
+    "deps/zstd/lib/decompress/huf_decompress.c": "710a88d877d5dc5c83a4f839392996f337ec81cf38006c4a5be6042de5b54828",
+    "deps/zstd/lib/decompress/zstd_ddict.c": "38bf812283d61f4cd1f6aea30f84b43317418257c4e6fc198b09b436bd484397",
+    "deps/zstd/lib/decompress/zstd_ddict.h": "a97a250fd2f956e3ae419ddde68ae1f9fe4025bc0373254058d31bbd352fa71c",
+    "deps/zstd/lib/decompress/zstd_decompress.c": "029580818b7e9cd38d9d07c63516b00ceaa943ffcfbd099fc5ccbe3628fa362f",
+    "deps/zstd/lib/decompress/zstd_decompress_block.c": "9cb8bcb07aeb87e4717a9c8a86d20832dc525dde2c1b72efdaaab7c937f43b87",
+    "deps/zstd/lib/decompress/zstd_decompress_block.h": "62ee0c6ae3f7353020538397f436b59743da8acb922068841b346f480f7078ac",
+    "deps/zstd/lib/decompress/zstd_decompress_internal.h": "73217b49a644c0fcf567b70677cae31449ba9f50a235ef3b681001c3f36dc56d",
+    "deps/zstd/lib/deprecated/zbuff.h": "fcd83d7f05dc7bc6e52da6200878e05d7dc4906cf2ccfa70ce4c753e1fdc2422",
+    "deps/zstd/lib/deprecated/zbuff_common.c": "9c2f0f5debd0632ea52d8776eff332227a90396bfec079159b3c29340e018215",
+    "deps/zstd/lib/deprecated/zbuff_compress.c": "b31a0a39d6546639b1d3e68c28632d0dd2651c2a7dba34a5a522cc6def43a842",
+    "deps/zstd/lib/deprecated/zbuff_decompress.c": "d567f0df10c98c6751accc2d71338437e77682b1492aab6e8e4ed09d75df572c",
+    "deps/zstd/lib/dictBuilder/cover.c": "2419631b20b0f4867d0f3c178fc4a3006d05f58e8ce3ce6657133f85ed40d683",
+    "deps/zstd/lib/dictBuilder/cover.h": "6e2906e7e5c486a5b7f479f60210ff67d068b2c58744ad6a936ba5a9f4a23755",
+    "deps/zstd/lib/dictBuilder/divsufsort.c": "2081acb08865f623857d2c0dcb0e79fce9489f01416528c30cfee7097915c616",
+    "deps/zstd/lib/dictBuilder/divsufsort.h": "14c16c2f67019875a2ea6cd07a4e803adfadce448e0b80351c51e5f910230d38",
+    "deps/zstd/lib/dictBuilder/fastcover.c": "0b8b511e6370e89cb257d1a4b4d8e77add5537ffb999cfe5e7e59e454c93f38f",
+    "deps/zstd/lib/dictBuilder/zdict.c": "dbe57910c9d446bbf2195f31bdba5cffef2c80b93c0325e9df8c9ffa744b0aa3",
+    "deps/zstd/lib/legacy/zstd_legacy.h": "90ecc3816d28da0e0537c610fe99209fb9603b1ecdb764bd1228a5226f5c7484",
+    "deps/zstd/lib/legacy/zstd_v01.c": "8f439ec4d83f13caaa4ee86d8de74660a38cade89b48bedf3943a9315b98e167",
+    "deps/zstd/lib/legacy/zstd_v01.h": "51e06e92b87abe35f617d9e65c6f26b4b1b50485cda6bf34f5b23bb6e1727b13",
+    "deps/zstd/lib/legacy/zstd_v02.c": "ffedd2b0e4dae744b8592656050f2c56eb4c8ccad1795fb3efeceb7924808712",
+    "deps/zstd/lib/legacy/zstd_v02.h": "341dd36148b7080eae742bb21196740482c4d94a97024f47ad1e7c0f2bb20e6b",
+    "deps/zstd/lib/legacy/zstd_v03.c": "1d69626197b9c76d28012b78fc66bcc3077bf8d796ff6f82457666d3271e7f3d",
+    "deps/zstd/lib/legacy/zstd_v03.h": "e9d7ccc971055129a14e3b81f0e9494a638e3d9c0b4b36413252d6b3adc90cf2",
+    "deps/zstd/lib/legacy/zstd_v04.c": "a80d9591ff3fc387a05e8e075713af9ad34596dc5c8681666346a716013a6e14",
+    "deps/zstd/lib/legacy/zstd_v04.h": "c8c31b9db45c1b559688738f280331a5f3bce5b275cf4c71e8a41282f406134e",
+    "deps/zstd/lib/legacy/zstd_v05.c": "62170472e18505b3347e563cdb1eba439312bb53385663730ac58cd92f3c4678",
+    "deps/zstd/lib/legacy/zstd_v05.h": "6fb3be7f31544cee69cfb421d5bc6e34e72f4e2612b38cb38d47032a8531acdf",
+    "deps/zstd/lib/legacy/zstd_v06.c": "d2cadc9e2906fe50e9c9564bdcb291582532060fdcec9c4bc5f0ee4370182b75",
+    "deps/zstd/lib/legacy/zstd_v06.h": "138728fdc9de7ebd5c7ffdf471b8b324cafa8e0ab638c6f4d9c048296cfe23ab",
+    "deps/zstd/lib/legacy/zstd_v07.c": "ae9f3c0a440b0f61d0ce44b06ee7ed3d256e10f3cb7dbbd9834d6c13625ac944",
+    "deps/zstd/lib/legacy/zstd_v07.h": "b682d3dffc64564fdf6f19d67baece362a1b7075c0140a80ce54e17f79961b49",
+    "deps/zstd/lib/zdict.h": "abacadb94e3f79e591f4b1648e839b0160fbf4291211fd01bdba1380269b245c",
+    "deps/zstd/lib/zstd.h": "9b4bc8245565c98ccfc61c07749928b57e7c0f6fddb0530c4f6aa1971893d88b",
+    "deps/zstd/lib/zstd_errors.h": "66a8c3f71d12ea6e797e4f622f31f3f8f81c41b36f48cad4f5de7d8bfb6aac0a"
+  },
+  "copies": [
+    {
+      "source": "deps/zlib/zlib.h",
+      "destination": "include/zlib.h",
+      "sha256": "0ff41598d145693759a8322bb90bc4f2c57dcdcb3635fdf5b2195bf13df15b54"
+    },
+    {
+      "source": "deps/zlib/zconf.h",
+      "destination": "include/zconf.h",
+      "sha256": "5ad08c16565403aa7823d165050c5bfac211b8748717eec8a2bb8bc6efd56981"
+    },
+    {
+      "source": "deps/zstd/lib/zstd.h",
+      "destination": "include/zstd.h",
+      "sha256": "9b4bc8245565c98ccfc61c07749928b57e7c0f6fddb0530c4f6aa1971893d88b"
+    },
+    {
+      "source": "deps/zstd/lib/zstd_errors.h",
+      "destination": "include/zstd_errors.h",
+      "sha256": "66a8c3f71d12ea6e797e4f622f31f3f8f81c41b36f48cad4f5de7d8bfb6aac0a"
+    },
+    {
+      "source": "LICENSE",
+      "destination": "share/licenses/node-codecs/Node-LICENSE",
+      "sha256": "8e603aa87c70d36e497004f0dec63111511cb61b7d65ace12e10ea791599286c"
+    },
+    {
+      "source": "deps/zlib/LICENSE",
+      "destination": "share/licenses/node-codecs/zlib-LICENSE",
+      "sha256": "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2"
+    },
+    {
+      "source": "deps/brotli/LICENSE",
+      "destination": "share/licenses/node-codecs/brotli-LICENSE",
+      "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94"
+    },
+    {
+      "source": "deps/zstd/LICENSE",
+      "destination": "share/licenses/node-codecs/zstd-LICENSE",
+      "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
+    },
+    {
+      "source": "deps/brotli/c/include/brotli/decode.h",
+      "destination": "include/brotli/decode.h",
+      "sha256": "e2f5fdc3ae41e6b7e8986538e421ae79c095541bacf32f2bbfccf8e056405444"
+    },
+    {
+      "source": "deps/brotli/c/include/brotli/encode.h",
+      "destination": "include/brotli/encode.h",
+      "sha256": "f1842e38da557efac517a35f1b27d288d464a723ef50316d3d20fe03f6046c06"
+    },
+    {
+      "source": "deps/brotli/c/include/brotli/port.h",
+      "destination": "include/brotli/port.h",
+      "sha256": "72b484d7a2561f3a9ad35ebd0d4f97f7a2d9863b619782ada5b083a4b6f40df5"
+    },
+    {
+      "source": "deps/brotli/c/include/brotli/shared_dictionary.h",
+      "destination": "include/brotli/shared_dictionary.h",
+      "sha256": "86230f0aaf533044d85d92f84b5aec8b7e4e231d4b64b098604083e7866e8097"
+    },
+    {
+      "source": "deps/brotli/c/include/brotli/types.h",
+      "destination": "include/brotli/types.h",
+      "sha256": "ebbd136dc411cc8167636d6f54b66ad0c234dc18989265c37a28c242eaae2efd"
+    }
+  ],
+  "policy": "Unchanged upstream C algorithms; Node generic zlib CPU branch and Node Brotli/Zstd source lists. No host target-layout helper, platform identity define or replacement codec."
+}

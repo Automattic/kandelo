@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceArchiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+  "meaning": "Future unchanged files, not executed case/subtest/variant coverage",
+  "files": [
+    {
+      "upstreamPath": "test/parallel/test-module-loading-error.js",
+      "sha256": "b33ce154426727ca85e4b5b4617cbb1db7f9c7f75d34b8485889916a6252ade8",
+      "executed": false,
+      "requirements": "Unchanged flags/environment/assertions; actual native/current guest artifacts; dependencies such as ESM/VFS/permissions are missing implementations, not passing skips"
+    },
+    {
+      "upstreamPath": "test/parallel/test-module-main-fail.js",
+      "sha256": "98d353c524b4b73aac98a799f8c7d6e15315a0b16cb11bbf73fc3a42b16d610e",
+      "executed": false,
+      "requirements": "Unchanged flags/environment/assertions; actual native/current guest artifacts; dependencies such as ESM/VFS/permissions are missing implementations, not passing skips"
+    },
+    {
+      "upstreamPath": "test/parallel/test-module-main-extension-lookup.js",
+      "sha256": "9da40fb731b862e4da0c26c1b4d737d27c7d4fed0c5056cf185d89f29a7b84f5",
+      "executed": false,
+      "requirements": "Unchanged flags/environment/assertions; actual native/current guest artifacts; dependencies such as ESM/VFS/permissions are missing implementations, not passing skips"
+    },
+    {
+      "upstreamPath": "test/parallel/test-require-invalid-package.js",
+      "sha256": "b7041f767bd26ba8313d5eb80b242ec1dd91fb25438c1955480c6e387bb9e28a",
+      "executed": false,
+      "requirements": "Unchanged flags/environment/assertions; actual native/current guest artifacts; dependencies such as ESM/VFS/permissions are missing implementations, not passing skips"
+    },
+    {
+      "upstreamPath": "test/parallel/test-module-nearest-parent-package-json-cache.js",
+      "sha256": "1afa9db22ba3b8a55c4bdcbb7c8106e5d2f6608fda39995aa5c2a0fef4f8f658",
+      "executed": false,
+      "requirements": "Unchanged flags/environment/assertions; actual native/current guest artifacts; dependencies such as ESM/VFS/permissions are missing implementations, not passing skips"
+    },
+    {
+      "upstreamPath": "test/parallel/test-module-unreadable-package-json.js",
+      "sha256": "40f3cca2bf2d629b84b85f2153c41b839eeec9fbba2a41991a70b77d2b626083",
+      "executed": false,
+      "requirements": "Unchanged flags/environment/assertions; actual native/current guest artifacts; dependencies such as ESM/VFS/permissions are missing implementations, not passing skips"
+    },
+    {
+      "upstreamPath": "test/parallel/test-find-package-json.js",
+      "sha256": "35f6ebf675f9b5b5e64d48e186000e1056d70f318e9cad7f39963f38a91a75be",
+      "executed": false,
+      "requirements": "Unchanged flags/environment/assertions; actual native/current guest artifacts; dependencies such as ESM/VFS/permissions are missing implementations, not passing skips"
+    },
+    {
+      "upstreamPath": "test/parallel/test-vfs-package-json.js",
+      "sha256": "35e47ef5d2a20c8afd516dc27466204926a59bd297fdd385b8fa4c9b845434b0",
+      "executed": false,
+      "requirements": "Unchanged flags/environment/assertions; actual native/current guest artifacts; dependencies such as ESM/VFS/permissions are missing implementations, not passing skips"
+    },
+    {
+      "upstreamPath": "test/parallel/test-vfs-invalid-package-json.js",
+      "sha256": "e931ee8b203cac986d5621c7ab2a788d55a980e70d7f891e0bc7d99eeae0751d",
+      "executed": false,
+      "requirements": "Unchanged flags/environment/assertions; actual native/current guest artifacts; dependencies such as ESM/VFS/permissions are missing implementations, not passing skips"
+    },
+    {
+      "upstreamPath": "test/parallel/test-vfs-package-json-cache.js",
+      "sha256": "3cf91d6e79987b3423e18f7cb771cbeae6964f6f2e504d0a3a9949a820a066a0",
+      "executed": false,
+      "requirements": "Unchanged flags/environment/assertions; actual native/current guest artifacts; dependencies such as ESM/VFS/permissions are missing implementations, not passing skips"
+    }
+  ],
+  "fourHostConformance": false
+}

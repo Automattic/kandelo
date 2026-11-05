@@ -1,0 +1,29 @@
+kind = "library"
+name = "node-ncrypto"
+version = "26.13.0"
+kernel_abi = 55
+depends_on = ["libcxx@21.1.7", "openssl@3.5.9"]
+arches = ["wasm32", "wasm64"]
+
+[source]
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz"
+sha256 = "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/nodejs/node/blob/v26.13.0/LICENSE"
+
+[build]
+script_path = "packages/registry/node-ncrypto/build-node-ncrypto.sh"
+
+[outputs]
+libs = ["lib/libncrypto.a"]
+headers = ["include/ncrypto.h"]
+files = ["share/node-ncrypto/provenance.json", "share/licenses/node-ncrypto/Node-LICENSE"]
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

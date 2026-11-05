@@ -142,47 +142,140 @@ fi
     exit 1
 }
 
-ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
-if [ -z "$ZLIB_PREFIX" ]; then
-    echo "==> Resolving zlib via cargo xtask build-deps..."
-    ZLIB_PREFIX="$(resolve_dep zlib)"
+CODECS_PREFIX="${WASM_POSIX_DEP_NODE_CODECS_DIR:-}"
+if [ -z "$CODECS_PREFIX" ]; then
+    echo "==> Resolving Node's pinned codec libraries..."
+    CODECS_PREFIX="$(resolve_dep node-codecs)"
 fi
-[ -f "$ZLIB_PREFIX/lib/libz.a" ] || {
-    echo "ERROR: zlib resolve missing libz.a at $ZLIB_PREFIX" >&2
+for codec_archive in libz.a libbrotli.a libzstd.a; do
+    [ -f "$CODECS_PREFIX/lib/$codec_archive" ] || {
+        echo "ERROR: node-codecs resolve missing $codec_archive at $CODECS_PREFIX" >&2
+        exit 1
+    }
+done
+[ -d "$CODECS_PREFIX/include" ] || {
+    echo "ERROR: node-codecs resolve missing include directory at $CODECS_PREFIX" >&2
     exit 1
 }
-[ -d "$ZLIB_PREFIX/include" ] || {
-    echo "ERROR: zlib resolve missing include directory at $ZLIB_PREFIX" >&2
-    exit 1
-}
+# A codec archive with a different Node source pin must not enter this target.
+python3 - "$CODECS_PREFIX/share/node-codecs/provenance.json" \
+    "$REPO_ROOT/packages/registry/node-compat/target.json" <<'PYCODECS'
+import json,sys
+from pathlib import Path
+actual,target=[json.loads(Path(p).read_text()) for p in sys.argv[1:]]
+if (actual.get('schema') != 1 or actual.get('compiled') is not True or actual.get('arch') != 'wasm32' or
+    actual.get('nodeVersion') != target['version'] or actual.get('nodeSourceCommit') != target['source']['commit'] or
+    any(actual.get('source', {}).get(k) != target['source'][k] for k in ['url','sha256'])):
+    raise SystemExit('Node codec provenance differs from the exact API/source target; rebuild through the resolver')
+PYCODECS
 
-ZSTD_PREFIX="${WASM_POSIX_DEP_LIBZSTD_DIR:-}"
-if [ -z "$ZSTD_PREFIX" ]; then
-    echo "==> Resolving libzstd via cargo xtask build-deps..."
-    ZSTD_PREFIX="$(resolve_dep libzstd)"
+SQLITE_PREFIX="${WASM_POSIX_DEP_NODE_SQLITE_DIR:-}"
+if [ -z "$SQLITE_PREFIX" ]; then
+    echo "==> Resolving Node's pinned SQLite backend..."
+    SQLITE_PREFIX="$(resolve_dep node-sqlite)"
 fi
-[ -f "$ZSTD_PREFIX/lib/libzstd.a" ] || {
-    echo "ERROR: libzstd resolve missing libzstd.a at $ZSTD_PREFIX" >&2
+[ -f "$SQLITE_PREFIX/lib/libsqlite3.a" ] && [ -f "$SQLITE_PREFIX/include/sqlite3.h" ] || {
+    echo "ERROR: node-sqlite resolve missing archive/header at $SQLITE_PREFIX" >&2
     exit 1
 }
-[ -d "$ZSTD_PREFIX/include" ] || {
-    echo "ERROR: libzstd resolve missing include directory at $ZSTD_PREFIX" >&2
-    exit 1
-}
-export WASM_POSIX_DEP_LIBZSTD_DIR="$ZSTD_PREFIX"
+python3 - "$SQLITE_PREFIX/share/node-sqlite/provenance.json" \
+    "$REPO_ROOT/packages/registry/node-compat/target.json" <<'PYSQLITE'
+import json,sys
+from pathlib import Path
+actual,target=[json.loads(Path(p).read_text()) for p in sys.argv[1:]]
+if (actual.get('schema') != 1 or actual.get('compiled') is not True or actual.get('arch') != 'wasm32' or
+    actual.get('nodeVersion') != target['version'] or actual.get('nodeSourceCommit') != target['source']['commit'] or
+    any(actual.get('source', {}).get(k) != target['source'][k] for k in ['url','sha256'])):
+    raise SystemExit('Node SQLite provenance differs from the exact API/source target; rebuild through the resolver')
+PYSQLITE
+export WASM_POSIX_DEP_NODE_SQLITE_DIR="$SQLITE_PREFIX"
 
-if [ "$RESOLVER_BUILD" -eq 1 ]; then
-    export WASM_POSIX_DEP_WORK_DIR="$WORK_DIR"
-    export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
-    export WASM_POSIX_DEP_OPENSSL_DIR="$OPENSSL_PREFIX"
-    export WASM_POSIX_DEP_ZLIB_DIR="$ZLIB_PREFIX"
-    export WASM_POSIX_DEP_LIBZSTD_DIR="$ZSTD_PREFIX"
-    SYSROOT="$(
-        kandelo_package_prepare_private_sysroot spidermonkey "$SYSROOT" \
-            libcxx openssl zlib libzstd
-    )"
-    export WASM_POSIX_SYSROOT="$SYSROOT"
+SIMDJSON_PREFIX="${WASM_POSIX_DEP_NODE_SIMDJSON_DIR:-}"
+if [ -z "$SIMDJSON_PREFIX" ]; then
+    SIMDJSON_PREFIX="$(resolve_dep node-simdjson)"
 fi
+[ -f "$SIMDJSON_PREFIX/lib/libsimdjson.a" ] && [ -f "$SIMDJSON_PREFIX/include/simdjson.h" ] || {
+    echo "ERROR: node-simdjson resolve missing archive/header at $SIMDJSON_PREFIX" >&2
+    exit 1
+}
+python3 - "$SIMDJSON_PREFIX/share/node-simdjson/provenance.json" \
+    "$REPO_ROOT/packages/registry/node-compat/target.json" <<'PYSIMDJSON'
+import json,sys
+from pathlib import Path
+actual,target=[json.loads(Path(p).read_text()) for p in sys.argv[1:]]
+if (actual.get('schema') != 1 or actual.get('compiled') is not True or actual.get('arch') != 'wasm32' or
+    actual.get('nodeVersion') != target['version'] or actual.get('nodeSourceCommit') != target['source']['commit'] or
+    any(actual.get('source', {}).get(k) != target['source'][k] for k in ['url','sha256'])):
+    raise SystemExit('Node simdjson provenance differs from the exact target; rebuild through the resolver')
+PYSIMDJSON
+export WASM_POSIX_DEP_NODE_SIMDJSON_DIR="$SIMDJSON_PREFIX"
+
+
+CARES_PREFIX="${WASM_POSIX_DEP_NODE_CARES_DIR:-}"
+if [ -z "$CARES_PREFIX" ]; then CARES_PREFIX="$(resolve_dep node-cares)"; fi
+[ -f "$CARES_PREFIX/lib/libcares.a" ] && [ -f "$CARES_PREFIX/include/ares.h" ] || {
+    echo "ERROR: node-cares resolve missing archive/header at $CARES_PREFIX" >&2
+    exit 1
+}
+python3 - "$CARES_PREFIX/share/node-cares/provenance.json" \
+    "$REPO_ROOT/packages/registry/node-compat/target.json" <<'PYCARES'
+import json,sys
+from pathlib import Path
+actual,target=[json.loads(Path(p).read_text()) for p in sys.argv[1:]]
+if (actual.get('compiled') is not True or actual.get('arch') != 'wasm32' or
+    actual.get('nodeVersion') != target['version'] or actual.get('nodeSourceCommit') != target['source']['commit'] or
+    any(actual.get('source', {}).get(k) != target['source'][k] for k in ['url','sha256'])):
+    raise SystemExit('Node c-ares provenance differs from the exact target; rebuild through the resolver')
+PYCARES
+export WASM_POSIX_DEP_NODE_CARES_DIR="$CARES_PREFIX"
+
+NCRYPTO_PREFIX="${WASM_POSIX_DEP_NODE_NCRYPTO_DIR:-}"
+if [ -z "$NCRYPTO_PREFIX" ]; then NCRYPTO_PREFIX="$(resolve_dep node-ncrypto)"; fi
+[ -f "$NCRYPTO_PREFIX/lib/libncrypto.a" ] && [ -f "$NCRYPTO_PREFIX/include/ncrypto.h" ] || {
+    echo "ERROR: node-ncrypto resolve missing archive/header at $NCRYPTO_PREFIX" >&2
+    exit 1
+}
+python3 - "$NCRYPTO_PREFIX/share/node-ncrypto/provenance.json" \
+    "$REPO_ROOT/packages/registry/node-compat/target.json" <<'PYNCRYPTO'
+import json,sys
+from pathlib import Path
+actual,target=[json.loads(Path(p).read_text()) for p in sys.argv[1:]]
+if (actual.get('compiled') is not True or actual.get('arch') != 'wasm32' or
+    actual.get('nodeVersion') != target['version'] or actual.get('nodeSourceCommit') != target['source']['commit'] or
+    any(actual.get('source', {}).get(k) != target['source'][k] for k in ['url','sha256'])):
+    raise SystemExit('Node ncrypto provenance differs from the exact target; rebuild through the resolver')
+PYNCRYPTO
+export WASM_POSIX_DEP_NODE_NCRYPTO_DIR="$NCRYPTO_PREFIX"
+
+LLHTTP_PREFIX="${WASM_POSIX_DEP_NODE_LLHTTP_DIR:-}"
+if [ -z "$LLHTTP_PREFIX" ]; then LLHTTP_PREFIX="$(resolve_dep node-llhttp)"; fi
+[ -f "$LLHTTP_PREFIX/lib/libllhttp.a" ] && [ -f "$LLHTTP_PREFIX/include/llhttp.h" ] || {
+    echo "ERROR: node-llhttp resolve missing archive/header at $LLHTTP_PREFIX" >&2
+    exit 1
+}
+python3 - "$LLHTTP_PREFIX/share/node-llhttp/provenance.json" \
+    "$REPO_ROOT/packages/registry/node-compat/target.json" <<'PYLLHTTP'
+import json,sys
+from pathlib import Path
+actual,target=[json.loads(Path(p).read_text()) for p in sys.argv[1:]]
+if (actual.get('compiled') is not True or actual.get('arch') != 'wasm32' or
+    actual.get('nodeVersion') != target['version'] or actual.get('nodeSourceCommit') != target['source']['commit'] or
+    any(actual.get('source', {}).get(k) != target['source'][k] for k in ['url','sha256'])):
+    raise SystemExit('Node llhttp provenance differs from the exact target; rebuild through the resolver')
+PYLLHTTP
+export WASM_POSIX_DEP_NODE_LLHTTP_DIR="$LLHTTP_PREFIX"
+
+
+export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
+export WASM_POSIX_DEP_OPENSSL_DIR="$OPENSSL_PREFIX"
+export WASM_POSIX_DEP_NODE_CODECS_DIR="$CODECS_PREFIX"
+# The codec projection also belongs in a private sysroot for direct builds;
+# replacing headers/archives in the shared SDK would affect other consumers.
+SYSROOT="$(
+    WASM_POSIX_DEP_WORK_DIR="$WORK_DIR" kandelo_package_prepare_private_sysroot \
+        spidermonkey "$SYSROOT" libcxx openssl node-codecs node-sqlite node-simdjson node-cares node-ncrypto node-llhttp
+)"
+export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # Mozilla's build uses the compiler driver directly and expects libc++ to be
 # visible from the target sysroot. Keep the sysroot as an index of cache-managed
@@ -192,8 +285,9 @@ ln -sf "$LIBCXX_PREFIX/lib/libc++.a" "$SYSROOT/lib/libc++.a"
 ln -sf "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
 ln -sf "$OPENSSL_PREFIX/lib/libssl.a" "$SYSROOT/lib/libssl.a"
 ln -sf "$OPENSSL_PREFIX/lib/libcrypto.a" "$SYSROOT/lib/libcrypto.a"
-ln -sf "$ZLIB_PREFIX/lib/libz.a" "$SYSROOT/lib/libz.a"
-ln -sf "$ZSTD_PREFIX/lib/libzstd.a" "$SYSROOT/lib/libzstd.a"
+ln -sf "$CODECS_PREFIX/lib/libz.a" "$SYSROOT/lib/libz.a"
+ln -sf "$CODECS_PREFIX/lib/libbrotli.a" "$SYSROOT/lib/libbrotli.a"
+ln -sf "$CODECS_PREFIX/lib/libzstd.a" "$SYSROOT/lib/libzstd.a"
 rm -rf "$SYSROOT/include/c++/v1"
 ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
 
@@ -223,6 +317,74 @@ if [ -d "$PATCH_DIR" ]; then
         fi
     done
 fi
+
+# Generate only into this resolve's private engine source tree. The excerpts
+# and generator are declared build inputs, and verify the exact Node source pin.
+python3 "$REPO_ROOT/third_party/node-core/generate-codec-contexts.py" \
+    --output "$SRC_DIR/js/src/shell/kandelo-node-codec-contexts.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-uv-error-table.py" \
+    --output "$SRC_DIR/js/src/shell/kandelo-node-uv-error-table.h"
+cp "$REPO_ROOT/third_party/node-core/upstream/uv-errors/deps/uv/include/uv/errno.h" \
+    "$SRC_DIR/js/src/shell/kandelo-node-uv-errno.h"
+cp "$REPO_ROOT/third_party/node-core/dns-errors.h" "$SRC_DIR/js/src/shell/kandelo-node-dns-errors.h"
+cp "$REPO_ROOT/third_party/node-core/dns-lookup.h" "$SRC_DIR/js/src/shell/kandelo-node-dns-lookup.h"
+cp "$REPO_ROOT/third_party/node-core/dns-records.h" "$SRC_DIR/js/src/shell/kandelo-node-dns-records.h"
+cp "$REPO_ROOT/third_party/node-core/dns-resolver.h" "$SRC_DIR/js/src/shell/kandelo-node-dns-resolver.h"
+# Canonical staged names preserve the portable backend/control header owner.
+python3 - "$SRC_DIR/js/src/shell/kandelo-node-dns-resolver.h" <<'PYDNS'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]);p.write_text(p.read_text().replace('#include "dns-records.h"', '#include "kandelo-node-dns-records.h"'))
+PYDNS
+python3 "$REPO_ROOT/third_party/node-core/generate-dns-constants.py" \
+    --output "$SRC_DIR/js/src/shell/kandelo-node-dns-constants.h"
+cp "$REPO_ROOT/third_party/node-core/process-state.h" "$SRC_DIR/js/src/shell/kandelo-node-process-state.h"
+cp "$REPO_ROOT/third_party/node-core/os-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-os-operations.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-dotenv.py" --check
+cp "$REPO_ROOT/third_party/node-core/dotenv-parser.h" "$SRC_DIR/js/src/shell/kandelo-node-dotenv-parser.h"
+cp "$REPO_ROOT/third_party/node-core/dotenv-file.h" "$SRC_DIR/js/src/shell/kandelo-node-dotenv-file.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-address-inet.py" --check
+cp "$REPO_ROOT/third_party/node-core/address-rules.h" "$SRC_DIR/js/src/shell/kandelo-node-address-rules.h"
+cp "$REPO_ROOT/third_party/node-core/address-inet.h" "$SRC_DIR/js/src/shell/kandelo-node-address-inet.h"
+cp "$REPO_ROOT/third_party/node-core/upstream/address-rules/src/node_hash.h" "$SRC_DIR/js/src/shell/kandelo-node-address-hash.h"
+cp "$REPO_ROOT/third_party/node-core/random-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-random-operations.h"
+cp "$REPO_ROOT/third_party/node-core/hkdf-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-hkdf-operations.h"
+cp "$REPO_ROOT/third_party/node-core/http-parser.h" "$SRC_DIR/js/src/shell/kandelo-node-http-parser.h"
+cp "$REPO_ROOT/third_party/node-core/kdf-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-kdf-operations.h"
+cp "$REPO_ROOT/third_party/node-core/path-metadata-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-path-metadata-operations.h"
+cp "$REPO_ROOT/third_party/node-core/write-file-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-write-file-operations.h"
+cp "$REPO_ROOT/third_party/node-core/key-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-key-operations.h"
+cp "$REPO_ROOT/third_party/node-core/digest-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-digest-operations.h"
+cp "$REPO_ROOT/third_party/node-core/child-wait.h" "$SRC_DIR/js/src/shell/kandelo-node-child-wait.h"
+cp "$REPO_ROOT/third_party/node-core/performance-clock.h" "$SRC_DIR/js/src/shell/kandelo-node-performance-clock.h"
+cp "$REPO_ROOT/third_party/node-core/monotonic-clock.h" "$SRC_DIR/js/src/shell/kandelo-node-monotonic-clock.h"
+cp "$REPO_ROOT/third_party/node-core/port-queue.h" "$SRC_DIR/js/src/shell/kandelo-node-port-queue.h"
+cp "$REPO_ROOT/third_party/node-core/sqlite-store.h" \
+    "$SRC_DIR/js/src/shell/kandelo-node-sqlite-store.h"
+cp "$REPO_ROOT/third_party/node-core/sqlite-limit-names.h" "$SRC_DIR/js/src/shell/kandelo-node-sqlite-limits.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-sqlite-constants.py" \
+    --output "$SRC_DIR/js/src/shell/kandelo-node-sqlite-constants.h"
+cp "$REPO_ROOT/third_party/node-core/callback-scope.h" "$SRC_DIR/js/src/shell/kandelo-node-callback-scope.h"
+cp "$REPO_ROOT/third_party/node-core/removal-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-removal-operations.h"
+cp "$REPO_ROOT/third_party/node-core/directory-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-directory-operations.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-fs-constants.py" \
+    --output "$SRC_DIR/js/src/shell/kandelo-node-fs-constants.h"
+
+cp "$REPO_ROOT/third_party/node-core/readdir-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-readdir-operations.h"
+cp "$REPO_ROOT/third_party/node-core/dir-cursor.h" "$SRC_DIR/js/src/shell/kandelo-node-dir-cursor.h"
+cp "$REPO_ROOT/third_party/node-core/package-config.h" "$SRC_DIR/js/src/shell/kandelo-node-package-config.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-tls-state.py" \
+    --output "$SRC_DIR/js/src/shell/kandelo-node-tls-state.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-package-parser.py" \
+    --output "$SRC_DIR/js/src/shell/kandelo-node-package-parser.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-dirent-types.py" \
+    --output "$SRC_DIR/js/src/shell/kandelo-node-dirent-types.h"
+cp "$REPO_ROOT/third_party/node-core/incremental-hash.h" "$SRC_DIR/js/src/shell/kandelo-node-incremental-hash.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-native-encoding.py" \
+    --output "$SRC_DIR/js/src/shell/kandelo-node-native-encoding.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-native-embedding.py" \
+    --shell-dir "$SRC_DIR/js/src/shell"
+
 
 NODE_ADAPTER_JS="$SCRIPT_DIR/node-compat/adapter.js"
 NODE_SHARED_BOOTSTRAP_JS="$REPO_ROOT/packages/registry/node-compat/bootstrap.js"
@@ -357,9 +519,9 @@ PROBE
     fi
     rm -rf "$PREFLIGHT_DIR"
 fi
-export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
-export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
-export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a -Wl,-z,stack-size=16777216"
+export CFLAGS="${CFLAGS:-} -pthread -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$CODECS_PREFIX/include -I$SQLITE_PREFIX/include -I$SIMDJSON_PREFIX/include -I$NCRYPTO_PREFIX/include"
+export CXXFLAGS="${CXXFLAGS:-} -pthread -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$CODECS_PREFIX/include -I$SQLITE_PREFIX/include -I$SIMDJSON_PREFIX/include -I$NCRYPTO_PREFIX/include"
+export LDFLAGS="${LDFLAGS:-} -pthread -lc++ -lc++abi $NCRYPTO_PREFIX/lib/libncrypto.a $LLHTTP_PREFIX/lib/libllhttp.a $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $CODECS_PREFIX/lib/libz.a $CODECS_PREFIX/lib/libbrotli.a $CODECS_PREFIX/lib/libzstd.a $SQLITE_PREFIX/lib/libsqlite3.a $SIMDJSON_PREFIX/lib/libsimdjson.a $CARES_PREFIX/lib/libcares.a -lm -Wl,-z,stack-size=16777216"
 
 if [ -f "$OBJ_DIR/config.status" ] && {
     ! grep -q 'getrandom_backend' "$OBJ_DIR/config.status" ||

@@ -1,0 +1,2969 @@
+{
+  "kind": "Original loading observations linked to partial shared resolution owners, not unique APIs or passes",
+  "matrixPath": "tests/nodejs/audit/api-matrix.json",
+  "matrixSha256": "2d3fde3b30ac0d28e804cc06a50424a90ecc94abb4507697a0ddbc7c977321f9",
+  "rows": [
+    {
+      "rowIndex": 457,
+      "id": "module.Module",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 458,
+      "id": "module.builtinModules",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 459,
+      "id": "module.isBuiltin",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 460,
+      "id": "module.createRequire",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 461,
+      "id": "module.findPackageJSON",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 462,
+      "id": "module.register",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 463,
+      "id": "module.registerHooks",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 464,
+      "id": "module.stripTypeScriptTypes",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 465,
+      "id": "module.syncBuiltinESMExports",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 466,
+      "id": "module.constants.compileCacheStatus",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 467,
+      "id": "module.enableCompileCache",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 468,
+      "id": "module.flushCompileCache",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 469,
+      "id": "module.getCompileCacheDir",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 470,
+      "id": "module.getSourceMapsSupport",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 471,
+      "id": "module.setSourceMapsSupport",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 472,
+      "id": "module.findSourceMap",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 473,
+      "id": "module.SourceMap",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 474,
+      "id": "module.SourceMap.prototype.payload",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 475,
+      "id": "module.SourceMap.prototype.findEntry",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 476,
+      "id": "module.SourceMap.prototype.findOrigin",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 477,
+      "id": "module.require",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 478,
+      "id": "module.require.cache",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 479,
+      "id": "module.require.extensions",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 480,
+      "id": "module.require.resolve",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 481,
+      "id": "module.require.resolve.paths",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 482,
+      "id": "module.module.children",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 483,
+      "id": "module.module.parent",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 484,
+      "id": "module.module.path",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 485,
+      "id": "module.module.isPreloading",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 486,
+      "id": "module.package exports/imports",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 487,
+      "id": "module.package configuration errors",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 488,
+      "id": "module.require(esm) cycles",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 489,
+      "id": "module.require(esm) cached TLA",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 490,
+      "id": "module.ESM/CJS format and namespaces",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 491,
+      "id": "module.CLI and NODE_OPTIONS",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 922,
+      "id": "module.SourceMap.prototype.lineLengths",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 923,
+      "id": "module.constants",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 924,
+      "id": "module.constants.compileCacheStatus.FAILED",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 925,
+      "id": "module.constants.compileCacheStatus.ENABLED",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 926,
+      "id": "module.constants.compileCacheStatus.ALREADY_ENABLED",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 927,
+      "id": "module.constants.compileCacheStatus.DISABLED",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 928,
+      "id": "module.module.paths",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 929,
+      "id": "module.require(esm) exports",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 930,
+      "id": "module.CJS ESM namespace names",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7115,
+      "id": "module.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7116,
+      "id": "module.[returned] ModuleHooks",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7117,
+      "id": "module.ModuleHooks.prototype.deregister",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7118,
+      "id": "module.ModuleHooks.prototype.Symbol(Symbol.dispose)",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7119,
+      "id": "module.[CJS require]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7120,
+      "id": "module.[CJS require].resolve",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7121,
+      "id": "module.[CJS require].resolve.paths",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7122,
+      "id": "module.[CJS require].cache",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7123,
+      "id": "module.[CJS require].extensions",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7124,
+      "id": "module.[CJS require].main",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7125,
+      "id": "module.[CJS module]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7126,
+      "id": "module.[CJS wrapper]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7127,
+      "id": "module.[package resolver]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7128,
+      "id": "module.[package map]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7129,
+      "id": "module.[ESM graph]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7130,
+      "id": "module.[ESM import.meta]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7131,
+      "id": "module.[ESM import.meta].resolve",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7132,
+      "id": "module.[ESM formats/attributes]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7133,
+      "id": "module.[require ESM]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7134,
+      "id": "module.[CJS ESM namespace]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7135,
+      "id": "module.[CLI]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7136,
+      "id": "module.[TypeScript]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7137,
+      "id": "module.[CJS module].children",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7138,
+      "id": "module.[CJS module].exports",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7139,
+      "id": "module.[CJS module].filename",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7140,
+      "id": "module.[CJS module].id",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7141,
+      "id": "module.[CJS module].isPreloading",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7142,
+      "id": "module.[CJS module].loaded",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7143,
+      "id": "module.[CJS module].parent",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7144,
+      "id": "module.[CJS module].path",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7145,
+      "id": "module.[CJS module].paths",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7146,
+      "id": "module.[CJS module].require",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7147,
+      "id": "module.[ESM import.meta].url",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7148,
+      "id": "module.[ESM import.meta].dirname",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7149,
+      "id": "module.[ESM import.meta].filename",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7150,
+      "id": "module.[ESM import.meta].main",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7151,
+      "id": "module.prototype.isPreloading",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7152,
+      "id": "module.prototype.parent",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7153,
+      "id": "module.prototype.load",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7154,
+      "id": "module.prototype.load.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7155,
+      "id": "module.prototype.require",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7156,
+      "id": "module.prototype.require.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7157,
+      "id": "module.prototype._compile",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7158,
+      "id": "module.prototype._compile.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7159,
+      "id": "module._stat",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7160,
+      "id": "module._cache",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7161,
+      "id": "module._pathCache",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7162,
+      "id": "module._extensions",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7163,
+      "id": "module._extensions..js",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7164,
+      "id": "module._extensions..js.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7165,
+      "id": "module._extensions..json",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7166,
+      "id": "module._extensions..json.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7167,
+      "id": "module._extensions..node",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7168,
+      "id": "module._extensions..node.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7169,
+      "id": "module.globalPaths",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7170,
+      "id": "module.wrap",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7171,
+      "id": "module.wrapper",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7172,
+      "id": "module._readPackage",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7173,
+      "id": "module._findPath",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7174,
+      "id": "module._findPath.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7175,
+      "id": "module._nodeModulePaths",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7176,
+      "id": "module._nodeModulePaths.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7177,
+      "id": "module._resolveLookupPaths",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7178,
+      "id": "module._resolveLookupPaths.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7179,
+      "id": "module._load",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7180,
+      "id": "module._load.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7181,
+      "id": "module._resolveFilename",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7182,
+      "id": "module._resolveFilename.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7183,
+      "id": "module.createRequire.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7184,
+      "id": "module._initPaths",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7185,
+      "id": "module._initPaths.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7186,
+      "id": "module._preloadModules",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7187,
+      "id": "module._preloadModules.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7188,
+      "id": "module.syncBuiltinESMExports.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7189,
+      "id": "module.registerHooks.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7190,
+      "id": "module.runMain",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7191,
+      "id": "module.runMain.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7192,
+      "id": "module.register.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7193,
+      "id": "module.enableCompileCache.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7194,
+      "id": "module.findPackageJSON.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7195,
+      "id": "module.getCompileCacheDir.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7196,
+      "id": "module.stripTypeScriptTypes.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7197,
+      "id": "module.findSourceMap.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7198,
+      "id": "module.SourceMap.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7199,
+      "id": "module.SourceMap.prototype.Symbol(kMappings)",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7200,
+      "id": "module.getSourceMapsSupport.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7201,
+      "id": "module.setSourceMapsSupport.prototype",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7202,
+      "id": "module.SourceMap.prototype.[kMappings]",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7203,
+      "id": "module.[doc] module.md Modules: `node:module` API @1",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7204,
+      "id": "module.[doc] module.md Class: `Module` @18",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7205,
+      "id": "module.[doc] module.md `module.builtinModules` @28",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7206,
+      "id": "module.[doc] module.md `module.createRequire(filename)` @54",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7207,
+      "id": "module.[doc] module.md `module.findPackageJSON(specifier[, base])` @73",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7208,
+      "id": "module.[doc] module.md `module.isBuiltin(moduleName)` @161",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7209,
+      "id": "module.[doc] module.md `module.register(specifier[, parentURL][, options])` @179",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7210,
+      "id": "module.[doc] module.md `module.registerHooks(options)` @227",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7211,
+      "id": "module.[doc] module.md `module.stripTypeScriptTypes(code[, options])` @256",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7212,
+      "id": "module.[doc] module.md `module.syncBuiltinESMExports()` @321",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7213,
+      "id": "module.[doc] module.md Module compile cache @360",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7214,
+      "id": "module.[doc] module.md Portability of the compile cache @402",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7215,
+      "id": "module.[doc] module.md Read-only compile cache @434",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7216,
+      "id": "module.[doc] module.md Limitations of the compile cache @443",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7217,
+      "id": "module.[doc] module.md `module.constants.compileCacheStatus` @454",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7218,
+      "id": "module.[doc] module.md `module.enableCompileCache([options])` @509",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7219,
+      "id": "module.[doc] module.md `module.flushCompileCache()` @575",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7220,
+      "id": "module.[doc] module.md `module.getCompileCacheDir()` @593",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7221,
+      "id": "module.[doc] module.md Customization Hooks @608",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7222,
+      "id": "module.[doc] module.md Synchronous customization hooks @655",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7223,
+      "id": "module.[doc] module.md Registration of synchronous customization hooks @661",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7224,
+      "id": "module.[doc] module.md Registering hooks before application code runs with flags @684",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7225,
+      "id": "module.[doc] module.md Registering hooks before application code runs programmatically @709",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7226,
+      "id": "module.[doc] module.md Registering hooks before application code runs with a `data:` URL @746",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7227,
+      "id": "module.[doc] module.md Convention of hooks and chaining @755",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7228,
+      "id": "module.[doc] module.md Deregistration of synchronous customization hooks @806",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7229,
+      "id": "module.[doc] module.md Hook functions accepted by `module.registerHooks()` @863",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7230,
+      "id": "module.[doc] module.md Synchronous `resolve(specifier, context, nextResolve)` @892",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7231,
+      "id": "module.[doc] module.md Synchronous `load(url, context, nextLoad)` @980",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7232,
+      "id": "module.[doc] module.md Accepted final formats returned by `load` @1049",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7233,
+      "id": "module.[doc] module.md Asynchronous customization hooks @1075",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7234,
+      "id": "module.[doc] module.md Caveats of asynchronous customization hooks @1079",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7235,
+      "id": "module.[doc] module.md Registration of asynchronous customization hooks @1106",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7236,
+      "id": "module.[doc] module.md Chaining of asynchronous customization hooks @1182",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7237,
+      "id": "module.[doc] module.md Communication with asynchronous module customization hooks @1224",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7238,
+      "id": "module.[doc] module.md Asynchronous hooks accepted by `module.register()` @1275",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7239,
+      "id": "module.[doc] module.md `initialize()` @1321",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7240,
+      "id": "module.[doc] module.md Asynchronous `resolve(specifier, context, nextResolve)` @1401",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7241,
+      "id": "module.[doc] module.md Asynchronous `load(url, context, nextLoad)` @1493",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7242,
+      "id": "module.[doc] module.md Examples @1584",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7243,
+      "id": "module.[doc] module.md Import from HTTPS @1590",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7244,
+      "id": "module.[doc] module.md Transpilation @1643",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7245,
+      "id": "module.[doc] module.md Asynchronous version @1651",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7246,
+      "id": "module.[doc] module.md Synchronous version @1701",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7247,
+      "id": "module.[doc] module.md Running hooks @1742",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7248,
+      "id": "module.[doc] module.md Import maps @1781",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7249,
+      "id": "module.[doc] module.md Asynchronous version @1788",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7250,
+      "id": "module.[doc] module.md Synchronous version @1805",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7251,
+      "id": "module.[doc] module.md Using the hooks @1825",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7252,
+      "id": "module.[doc] module.md Source Map Support @1852",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7253,
+      "id": "module.[doc] module.md `module.getSourceMapsSupport()` @1886",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7254,
+      "id": "module.[doc] module.md `module.findSourceMap(path)` @1906",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7255,
+      "id": "module.[doc] module.md `module.setSourceMapsSupport(enabled[, options])` @1921",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7256,
+      "id": "module.[doc] module.md Class: `module.SourceMap` @1948",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7257,
+      "id": "module.[doc] module.md `new SourceMap(payload[, { lineLengths }])` @1956",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7258,
+      "id": "module.[doc] module.md `sourceMap.payload` @1983",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7259,
+      "id": "module.[doc] module.md `sourceMap.findEntry(lineOffset, columnOffset)` @1989",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7260,
+      "id": "module.[doc] module.md `sourceMap.findOrigin(lineNumber, columnNumber)` @2025",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7261,
+      "id": "module.[doc] modules.md Modules: CommonJS modules @1",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7262,
+      "id": "module.[doc] modules.md Enabling @71",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7263,
+      "id": "module.[doc] modules.md Accessing the main module @103",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7264,
+      "id": "module.[doc] modules.md Package manager tips @117",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7265,
+      "id": "module.[doc] modules.md Loading ECMAScript modules using `require()` @170",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7266,
+      "id": "module.[doc] modules.md All together @330",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7267,
+      "id": "module.[doc] modules.md Caching @481",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7268,
+      "id": "module.[doc] modules.md Module caching caveats @497",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7269,
+      "id": "module.[doc] modules.md Built-in modules @512",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7270,
+      "id": "module.[doc] modules.md Built-in modules with mandatory `node:` prefix @544",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7271,
+      "id": "module.[doc] modules.md Cycles @559",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7272,
+      "id": "module.[doc] modules.md File modules @623",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7273,
+      "id": "module.[doc] modules.md Folders as modules @653",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7274,
+      "id": "module.[doc] modules.md Loading from `node_modules` folders @696",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7275,
+      "id": "module.[doc] modules.md Loading from the global folders @728",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7276,
+      "id": "module.[doc] modules.md The module wrapper @762",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7277,
+      "id": "module.[doc] modules.md The module scope @786",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7278,
+      "id": "module.[doc] modules.md `__dirname` @788",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7279,
+      "id": "module.[doc] modules.md `__filename` @808",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7280,
+      "id": "module.[doc] modules.md `exports` @845",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7281,
+      "id": "module.[doc] modules.md `module` @857",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7282,
+      "id": "module.[doc] modules.md `require(id)` @869",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7283,
+      "id": "module.[doc] modules.md `require.cache` @898",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7284,
+      "id": "module.[doc] modules.md `require.extensions` @929",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7285,
+      "id": "module.[doc] modules.md `require.main` @956",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7286,
+      "id": "module.[doc] modules.md `require.resolve(request[, options])` @996",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7287,
+      "id": "module.[doc] modules.md `require.resolve.paths(request)` @1021",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7288,
+      "id": "module.[doc] modules.md The `module` object @1034",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7289,
+      "id": "module.[doc] modules.md `module.children` @1049",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7290,
+      "id": "module.[doc] modules.md `module.exports` @1059",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7291,
+      "id": "module.[doc] modules.md `exports` shortcut @1114",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7292,
+      "id": "module.[doc] modules.md `module.filename` @1163",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7293,
+      "id": "module.[doc] modules.md `module.id` @1173",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7294,
+      "id": "module.[doc] modules.md `module.isPreloading` @1184",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7295,
+      "id": "module.[doc] modules.md `module.loaded` @1195",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7296,
+      "id": "module.[doc] modules.md `module.parent` @1206",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7297,
+      "id": "module.[doc] modules.md `module.path` @1224",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7298,
+      "id": "module.[doc] modules.md `module.paths` @1235",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7299,
+      "id": "module.[doc] modules.md `module.require(id)` @1245",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7300,
+      "id": "module.[doc] modules.md The `Module` object @1262",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7301,
+      "id": "module.[doc] modules.md Source map v3 support @1273",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7302,
+      "id": "module.[doc] esm.md Modules: ECMAScript modules @1",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7303,
+      "id": "module.[doc] esm.md Introduction @84",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7304,
+      "id": "module.[doc] esm.md Enabling @121",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7305,
+      "id": "module.[doc] esm.md Packages @146",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7306,
+      "id": "module.[doc] esm.md `import` Specifiers @150",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7307,
+      "id": "module.[doc] esm.md Terminology @152",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7308,
+      "id": "module.[doc] esm.md Mandatory file extensions @187",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7309,
+      "id": "module.[doc] esm.md URLs @196",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7310,
+      "id": "module.[doc] esm.md `file:` URLs @205",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7311,
+      "id": "module.[doc] esm.md `data:` imports @219",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7312,
+      "id": "module.[doc] esm.md `node:` imports @243",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7313,
+      "id": "module.[doc] esm.md Import attributes @267",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7314,
+      "id": "module.[doc] esm.md Built-in modules @302",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7315,
+      "id": "module.[doc] esm.md `import()` expressions @343",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7316,
+      "id": "module.[doc] esm.md `import.meta` @349",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7317,
+      "id": "module.[doc] esm.md `import.meta.dirname` @356",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7318,
+      "id": "module.[doc] esm.md `import.meta.filename` @376",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7319,
+      "id": "module.[doc] esm.md `import.meta.url` @398",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7320,
+      "id": "module.[doc] esm.md `import.meta.main` @412",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7321,
+      "id": "module.[doc] esm.md `import.meta.resolve(specifier)` @442",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7322,
+      "id": "module.[doc] esm.md Interoperability with CommonJS @507",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7323,
+      "id": "module.[doc] esm.md `import` statements @509",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7324,
+      "id": "module.[doc] esm.md `require` @520",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7325,
+      "id": "module.[doc] esm.md CommonJS Namespaces @527",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7326,
+      "id": "module.[doc] esm.md Differences between ES modules and CommonJS @633",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7327,
+      "id": "module.[doc] esm.md No `require`, `exports`, or `module.exports` @635",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7328,
+      "id": "module.[doc] esm.md No `__filename` or `__dirname` @642",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7329,
+      "id": "module.[doc] esm.md No Addon Loading @649",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7330,
+      "id": "module.[doc] esm.md No `require.main` @656",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7331,
+      "id": "module.[doc] esm.md No `require.resolve` @660",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7332,
+      "id": "module.[doc] esm.md No `NODE_PATH` @669",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7333,
+      "id": "module.[doc] esm.md No `require.extensions` @674",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7334,
+      "id": "module.[doc] esm.md No `require.cache` @679",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7335,
+      "id": "module.[doc] esm.md JSON modules @686",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7336,
+      "id": "module.[doc] esm.md Text modules @712",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7337,
+      "id": "module.[doc] esm.md Wasm modules @731",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7338,
+      "id": "module.[doc] esm.md Wasm Source Phase Imports @753",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7339,
+      "id": "module.[doc] esm.md JavaScript String Builtins @788",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7340,
+      "id": "module.[doc] esm.md Wasm Instance Phase Imports @852",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7341,
+      "id": "module.[doc] esm.md Reserved Wasm Namespaces @874",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7342,
+      "id": "module.[doc] esm.md Top-level `await` @895",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7343,
+      "id": "module.[doc] esm.md Loaders @940",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7344,
+      "id": "module.[doc] esm.md Resolution and loading algorithm @945",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7345,
+      "id": "module.[doc] esm.md Features @947",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7346,
+      "id": "module.[doc] esm.md Resolution algorithm @974",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7347,
+      "id": "module.[doc] esm.md Resolution Algorithm Specification @1022",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7348,
+      "id": "module.[doc] esm.md Customizing ESM specifier resolution algorithm @1316",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7349,
+      "id": "module.[doc] packages.md Modules: Packages @1",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7350,
+      "id": "module.[doc] packages.md Introduction @46",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7351,
+      "id": "module.[doc] packages.md Determining module system @56",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7352,
+      "id": "module.[doc] packages.md Introduction @58",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7353,
+      "id": "module.[doc] packages.md Syntax detection @108",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7354,
+      "id": "module.[doc] packages.md Module resolution and loading @145",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7355,
+      "id": "module.[doc] packages.md `package.json` and file extensions @196",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7356,
+      "id": "module.[doc] packages.md `--input-type` flag @252",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7357,
+      "id": "module.[doc] packages.md Package entry points @272",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7358,
+      "id": "module.[doc] packages.md Main entry point export @360",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7359,
+      "id": "module.[doc] packages.md Subpath exports @393",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7360,
+      "id": "module.[doc] packages.md Extensions in subpaths @426",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7361,
+      "id": "module.[doc] packages.md Path Rules and Validation for Export Targets @446",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7362,
+      "id": "module.[doc] packages.md Targets must be relative URLs @452",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7363,
+      "id": "module.[doc] packages.md No path traversal or invalid segments @478",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7364,
+      "id": "module.[doc] packages.md Exports sugar @499",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7365,
+      "id": "module.[doc] packages.md Subpath imports @524",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7366,
+      "id": "module.[doc] packages.md Subpath patterns @573",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7367,
+      "id": "module.[doc] packages.md Conditional exports @658",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7368,
+      "id": "module.[doc] packages.md Nested conditions @756",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7369,
+      "id": "module.[doc] packages.md Resolving user conditions @780",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7370,
+      "id": "module.[doc] packages.md Community Conditions Definitions @815",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7371,
+      "id": "module.[doc] packages.md Self-referencing a package using its name @862",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7372,
+      "id": "module.[doc] packages.md Dual CommonJS/ES module packages @946",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7373,
+      "id": "module.[doc] packages.md Package maps @950",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7374,
+      "id": "module.[doc] packages.md Configuration file format @972",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7375,
+      "id": "module.[doc] packages.md Resolution algorithm @1012",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7376,
+      "id": "module.[doc] packages.md Multiple package versions @1033",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7377,
+      "id": "module.[doc] packages.md Multiple packages for the same URL @1067",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7378,
+      "id": "module.[doc] packages.md Interaction with other resolution @1119",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7379,
+      "id": "module.[doc] packages.md Limitations @1129",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7380,
+      "id": "module.[doc] packages.md Node.js `package.json` field definitions @1136",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7381,
+      "id": "module.[doc] packages.md `\"name\"` @1155",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7382,
+      "id": "module.[doc] packages.md `\"main\"` @1184",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7383,
+      "id": "module.[doc] packages.md `\"type\"` @1212",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7384,
+      "id": "module.[doc] packages.md `\"exports\"` @1265",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7385,
+      "id": "module.[doc] packages.md `\"imports\"` @1318",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7386,
+      "id": "module.[doc] typescript.md Modules: TypeScript @1",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7387,
+      "id": "module.[doc] typescript.md Enabling @32",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7388,
+      "id": "module.[doc] typescript.md Full TypeScript support @42",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7389,
+      "id": "module.[doc] typescript.md Type stripping @67",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7390,
+      "id": "module.[doc] typescript.md Determining module system @120",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7391,
+      "id": "module.[doc] typescript.md TypeScript features @145",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7392,
+      "id": "module.[doc] typescript.md Importing types without `type` keyword @185",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7393,
+      "id": "module.[doc] typescript.md Non-file forms of input @206",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7394,
+      "id": "module.[doc] typescript.md Source maps @214",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7395,
+      "id": "module.[doc] typescript.md Type stripping in dependencies @219",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7396,
+      "id": "module.[doc] typescript.md Paths aliases @225",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7397,
+      "id": "module.[doc] cli.md Command-line API @1",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7398,
+      "id": "module.[doc] cli.md Synopsis @12",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7399,
+      "id": "module.[doc] cli.md Program entry point @24",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7400,
+      "id": "module.[doc] cli.md Options @45",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7401,
+      "id": "module.[doc] cli.md `-` @66",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7402,
+      "id": "module.[doc] cli.md `--` @76",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7403,
+      "id": "module.[doc] cli.md `--abort-on-uncaught-exception` @86",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7404,
+      "id": "module.[doc] cli.md `--allow-addons` @99",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7405,
+      "id": "module.[doc] cli.md `--allow-child-process` @142",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7406,
+      "id": "module.[doc] cli.md `--allow-ffi` @194",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7407,
+      "id": "module.[doc] cli.md `--allow-fs-read` @224",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7408,
+      "id": "module.[doc] cli.md `--allow-fs-vfs` @271",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7409,
+      "id": "module.[doc] cli.md `--allow-fs-write` @291",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7410,
+      "id": "module.[doc] cli.md `--allow-inspector` @320",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7411,
+      "id": "module.[doc] cli.md `--allow-net` @352",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7412,
+      "id": "module.[doc] cli.md `--allow-openssl-store` @384",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7413,
+      "id": "module.[doc] cli.md `--allow-wasi` @403",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7414,
+      "id": "module.[doc] cli.md `--allow-worker` @442",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7415,
+      "id": "module.[doc] cli.md `--bench` @473",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7416,
+      "id": "module.[doc] cli.md `--bench-isolation=mode` @501",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7417,
+      "id": "module.[doc] cli.md `--bench-name-pattern=pattern` @520",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7418,
+      "id": "module.[doc] cli.md `--bench-reporter-destination=destination` @531",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7419,
+      "id": "module.[doc] cli.md `--bench-reporter=reporter` @543",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7420,
+      "id": "module.[doc] cli.md `--bench-samples=count` @559",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7421,
+      "id": "module.[doc] cli.md `--bench-warmup=count` @571",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7422,
+      "id": "module.[doc] cli.md `--build-sea=config` @584",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7423,
+      "id": "module.[doc] cli.md `--build-snapshot` @601",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7424,
+      "id": "module.[doc] cli.md `--build-snapshot-config` @668",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7425,
+      "id": "module.[doc] cli.md `-c`, `--check` @698",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7426,
+      "id": "module.[doc] cli.md `--completion-bash` @712",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7427,
+      "id": "module.[doc] cli.md `-C condition`, `--conditions=condition` @725",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7428,
+      "id": "module.[doc] cli.md `--config-file=path`, `--config-file` @752",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7429,
+      "id": "module.[doc] cli.md `--cpu-prof` @909",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7430,
+      "id": "module.[doc] cli.md `--cpu-prof-dir` @948",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7431,
+      "id": "module.[doc] cli.md `--cpu-prof-interval` @966",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7432,
+      "id": "module.[doc] cli.md `--cpu-prof-name` @981",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7433,
+      "id": "module.[doc] cli.md `--diagnostic-dir=directory` @995",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7434,
+      "id": "module.[doc] cli.md `--disable-proto=mode` @1006",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7435,
+      "id": "module.[doc] cli.md `--disable-sigusr1` @1018",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7436,
+      "id": "module.[doc] cli.md `--disable-warning=code-or-type` @1035",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7437,
+      "id": "module.[doc] cli.md `--disable-wasm-trap-handler` @1092",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7438,
+      "id": "module.[doc] cli.md `--disallow-code-generation-from-strings` @1129",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7439,
+      "id": "module.[doc] cli.md `--dns-result-order=order` @1139",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7440,
+      "id": "module.[doc] cli.md `--enable-fips` @1166",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7441,
+      "id": "module.[doc] cli.md `--enable-fips-indicator-events` @1176",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7442,
+      "id": "module.[doc] cli.md `--enable-source-maps` @1187",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7443,
+      "id": "module.[doc] cli.md `--entry-url` @1225",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7444,
+      "id": "module.[doc] cli.md `--env-file-if-exists=file` @1248",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7445,
+      "id": "module.[doc] cli.md `--env-file=file` @1263",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7446,
+      "id": "module.[doc] cli.md `-e`, `--eval \"script\"` @1333",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7447,
+      "id": "module.[doc] cli.md `--experimental-addon-modules` @1359",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7448,
+      "id": "module.[doc] cli.md `--experimental-bench` @1375",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7449,
+      "id": "module.[doc] cli.md `--experimental-dtls` @1385",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7450,
+      "id": "module.[doc] cli.md `--experimental-eventsource` @1396",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7451,
+      "id": "module.[doc] cli.md `--experimental-import-meta-resolve` @1406",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7452,
+      "id": "module.[doc] cli.md `--experimental-import-text` @1427",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7453,
+      "id": "module.[doc] cli.md `--experimental-inspector-network-resource` @1439",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7454,
+      "id": "module.[doc] cli.md `--experimental-loader=module` @1451",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7455,
+      "id": "module.[doc] cli.md `--experimental-network-inspection` @1478",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7456,
+      "id": "module.[doc] cli.md `--experimental-package-map=<path>` @1490",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7457,
+      "id": "module.[doc] cli.md `--experimental-print-required-tla` @1511",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7458,
+      "id": "module.[doc] cli.md `--experimental-quic` @1526",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7459,
+      "id": "module.[doc] cli.md `--experimental-sea-config` @1536",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7460,
+      "id": "module.[doc] cli.md `--experimental-shadow-realm` @1548",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7461,
+      "id": "module.[doc] cli.md `--experimental-storage-inspection` @1558",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7462,
+      "id": "module.[doc] cli.md `--experimental-stream-iter` @1569",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7463,
+      "id": "module.[doc] cli.md `--experimental-test-coverage` @1579",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7464,
+      "id": "module.[doc] cli.md `--experimental-test-module-mocks` @1598",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7465,
+      "id": "module.[doc] cli.md `--experimental-test-tag-filter='<expr>'` @1620",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7466,
+      "id": "module.[doc] cli.md `--experimental-vfs` @1643",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7467,
+      "id": "module.[doc] cli.md `--experimental-vm-modules` @1653",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7468,
+      "id": "module.[doc] cli.md `--experimental-wasi-unstable-preview1` @1661",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7469,
+      "id": "module.[doc] cli.md `--experimental-web-worker` @1682",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7470,
+      "id": "module.[doc] cli.md `--experimental-worker-inspection` @1690",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7471,
+      "id": "module.[doc] cli.md `--force-context-aware` @1702",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7472,
+      "id": "module.[doc] cli.md `--force-fips[=mode]` @1710",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7473,
+      "id": "module.[doc] cli.md `--force-node-api-uncaught-exceptions-policy` @1736",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7474,
+      "id": "module.[doc] cli.md `--frozen-intrinsics` @1750",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7475,
+      "id": "module.[doc] cli.md `--heap-prof` @1767",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7476,
+      "id": "module.[doc] cli.md `--heap-prof-dir` @1794",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7477,
+      "id": "module.[doc] cli.md `--heap-prof-interval` @1812",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7478,
+      "id": "module.[doc] cli.md `--heap-prof-name` @1827",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7479,
+      "id": "module.[doc] cli.md `--heapsnapshot-near-heap-limit=max_count` @1841",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7480,
+      "id": "module.[doc] cli.md `--heapsnapshot-signal=signal` @1895",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7481,
+      "id": "module.[doc] cli.md `-h`, `--help` @1915",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7482,
+      "id": "module.[doc] cli.md `--icu-data-dir=file` @1924",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7483,
+      "id": "module.[doc] cli.md `--import=module` @1932",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7484,
+      "id": "module.[doc] cli.md `--input-type=type` @1953",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7485,
+      "id": "module.[doc] cli.md `--insecure-http-parser` @1994",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7486,
+      "id": "module.[doc] cli.md `--inspect-brk[=[host:]port]` @2021",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7487,
+      "id": "module.[doc] cli.md `--inspect-port=[host:]port` @2036",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7488,
+      "id": "module.[doc] cli.md `--inspect-publish-uid=stderr,http` @2052",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7489,
+      "id": "module.[doc] cli.md `--inspect-wait[=[host:]port]` @2059",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7490,
+      "id": "module.[doc] cli.md `--inspect[=[host:]port]` @2076",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7491,
+      "id": "module.[doc] cli.md Warning: binding inspector to a public IP:port combination is insecure @2094",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7492,
+      "id": "module.[doc] cli.md `-i`, `--interactive` @2110",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7493,
+      "id": "module.[doc] cli.md `--jitless` @2118",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7494,
+      "id": "module.[doc] cli.md `--localstorage-file=file` @2141",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7495,
+      "id": "module.[doc] cli.md `--max-http-header-size=size` @2153",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7496,
+      "id": "module.[doc] cli.md `--max-old-space-size-percentage=percentage` @2167",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7497,
+      "id": "module.[doc] cli.md `--network-family-autoselection-attempt-timeout` @2186",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7498,
+      "id": "module.[doc] cli.md `--no-addons` @2197",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7499,
+      "id": "module.[doc] cli.md `--no-async-context-frame` @2209",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7500,
+      "id": "module.[doc] cli.md `--no-deprecation` @2220",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7501,
+      "id": "module.[doc] cli.md `--no-experimental-detect-module` @2228",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7502,
+      "id": "module.[doc] cli.md `--no-experimental-ffi` @2244",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7503,
+      "id": "module.[doc] cli.md `--no-experimental-global-navigator` @2256",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7504,
+      "id": "module.[doc] cli.md `--no-experimental-repl-await` @2266",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7505,
+      "id": "module.[doc] cli.md `--no-experimental-require-module` @2274",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7506,
+      "id": "module.[doc] cli.md `--no-experimental-sqlite` @2298",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7507,
+      "id": "module.[doc] cli.md `--no-experimental-websocket` @2312",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7508,
+      "id": "module.[doc] cli.md `--no-experimental-webstorage` @2320",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7509,
+      "id": "module.[doc] cli.md `--no-extra-info-on-fatal-exception` @2334",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7510,
+      "id": "module.[doc] cli.md `--no-force-async-hooks-checks` @2342",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7511,
+      "id": "module.[doc] cli.md `--no-global-search-paths` @2351",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7512,
+      "id": "module.[doc] cli.md `--no-network-family-autoselection` @2360",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7513,
+      "id": "module.[doc] cli.md `--no-require-module` @2377",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7514,
+      "id": "module.[doc] cli.md `--no-strip-types` @2405",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7515,
+      "id": "module.[doc] cli.md `--no-warnings` @2426",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7516,
+      "id": "module.[doc] cli.md `--no-worker-snapshot` @2434",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7517,
+      "id": "module.[doc] cli.md `--node-memory-debug` @2445",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7518,
+      "id": "module.[doc] cli.md `--openssl-config=file` @2456",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7519,
+      "id": "module.[doc] cli.md `--openssl-legacy-provider` @2468",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7520,
+      "id": "module.[doc] cli.md `--openssl-shared-config` @2479",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7521,
+      "id": "module.[doc] cli.md `--pending-deprecation` @2497",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7522,
+      "id": "module.[doc] cli.md `--permission` @2512",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7523,
+      "id": "module.[doc] cli.md `--permission-audit` @2540",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7524,
+      "id": "module.[doc] cli.md `--preserve-symlinks` @2563",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7525,
+      "id": "module.[doc] cli.md `--preserve-symlinks-main` @2608",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7526,
+      "id": "module.[doc] cli.md `-p`, `--print \"script\"` @2628",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7527,
+      "id": "module.[doc] cli.md `--process-timeout=duration` @2640",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7528,
+      "id": "module.[doc] cli.md `--prof` @2693",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7529,
+      "id": "module.[doc] cli.md `--prof-process` @2701",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7530,
+      "id": "module.[doc] cli.md `--redirect-warnings=file` @2709",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7531,
+      "id": "module.[doc] cli.md `--report-compact` @2724",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7532,
+      "id": "module.[doc] cli.md `--report-dir=directory`, `--report-directory=directory` @2736",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7533,
+      "id": "module.[doc] cli.md `--report-exclude-env` @2754",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7534,
+      "id": "module.[doc] cli.md `--report-exclude-network` @2765",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7535,
+      "id": "module.[doc] cli.md `--report-filename=filename` @2776",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7536,
+      "id": "module.[doc] cli.md `--report-on-fatalerror` @2797",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7537,
+      "id": "module.[doc] cli.md `--report-on-process-timeout` @2820",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7538,
+      "id": "module.[doc] cli.md `--report-on-signal` @2837",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7539,
+      "id": "module.[doc] cli.md `--report-signal=signal` @2857",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7540,
+      "id": "module.[doc] cli.md `--report-uncaught-exception` @2876",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7541,
+      "id": "module.[doc] cli.md `-r`, `--require module` @2901",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7542,
+      "id": "module.[doc] cli.md `--run` @2924",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7543,
+      "id": "module.[doc] cli.md Intentional limitations @2981",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7544,
+      "id": "module.[doc] cli.md Environment variables @2993",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7545,
+      "id": "module.[doc] cli.md `--secure-heap-min=n` @3005",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7546,
+      "id": "module.[doc] cli.md `--secure-heap=n` @3016",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7547,
+      "id": "module.[doc] cli.md `--snapshot-blob=path` @3041",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7548,
+      "id": "module.[doc] cli.md `--test` @3066",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7549,
+      "id": "module.[doc] cli.md `--test-concurrency` @3088",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7550,
+      "id": "module.[doc] cli.md `--test-coverage-branches=threshold` @3102",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7551,
+      "id": "module.[doc] cli.md `--test-coverage-exclude` @3113",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7552,
+      "id": "module.[doc] cli.md `--test-coverage-functions=threshold` @3133",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7553,
+      "id": "module.[doc] cli.md `--test-coverage-include` @3144",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7554,
+      "id": "module.[doc] cli.md `--test-coverage-include-all` @3161",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7555,
+      "id": "module.[doc] cli.md `--test-coverage-lines=threshold` @3176",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7556,
+      "id": "module.[doc] cli.md `--test-force-exit` @3187",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7557,
+      "id": "module.[doc] cli.md `--test-global-setup=module` @3198",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7558,
+      "id": "module.[doc] cli.md `--test-isolation=mode` @3211",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7559,
+      "id": "module.[doc] cli.md `--test-name-pattern` @3228",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7560,
+      "id": "module.[doc] cli.md `--test-only` @3245",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7561,
+      "id": "module.[doc] cli.md `--test-random-seed` @3260",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7562,
+      "id": "module.[doc] cli.md `--test-randomize` @3274",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7563,
+      "id": "module.[doc] cli.md `--test-reporter` @3292",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7564,
+      "id": "module.[doc] cli.md `--test-reporter-destination` @3307",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7565,
+      "id": "module.[doc] cli.md `--test-rerun-failures` @3322",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7566,
+      "id": "module.[doc] cli.md `--test-shard` @3336",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7567,
+      "id": "module.[doc] cli.md `--test-skip-pattern` @3360",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7568,
+      "id": "module.[doc] cli.md `--test-timeout` @3374",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7569,
+      "id": "module.[doc] cli.md `--test-update-snapshots` @3385",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7570,
+      "id": "module.[doc] cli.md `--throw-deprecation` @3399",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7571,
+      "id": "module.[doc] cli.md `--title=title` @3407",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7572,
+      "id": "module.[doc] cli.md `--tls-cipher-list=list` @3415",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7573,
+      "id": "module.[doc] cli.md `--tls-keylog=file` @3424",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7574,
+      "id": "module.[doc] cli.md `--tls-max-v1.2` @3436",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7575,
+      "id": "module.[doc] cli.md `--tls-max-v1.3` @3447",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7576,
+      "id": "module.[doc] cli.md `--tls-min-v1.0` @3456",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7577,
+      "id": "module.[doc] cli.md `--tls-min-v1.1` @3467",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7578,
+      "id": "module.[doc] cli.md `--tls-min-v1.2` @3478",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7579,
+      "id": "module.[doc] cli.md `--tls-min-v1.3` @3490",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7580,
+      "id": "module.[doc] cli.md `--trace-deprecation` @3499",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7581,
+      "id": "module.[doc] cli.md `--trace-env` @3507",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7582,
+      "id": "module.[doc] cli.md `--trace-env-js-stack` @3532",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7583,
+      "id": "module.[doc] cli.md `--trace-env-native-stack` @3542",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7584,
+      "id": "module.[doc] cli.md `--trace-event-categories` @3552",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7585,
+      "id": "module.[doc] cli.md `--trace-event-file-pattern` @3561",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7586,
+      "id": "module.[doc] cli.md `--trace-events-enabled` @3570",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7587,
+      "id": "module.[doc] cli.md `--trace-exit` @3578",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7588,
+      "id": "module.[doc] cli.md `--trace-require-module=mode` @3589",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7589,
+      "id": "module.[doc] cli.md `--trace-sigint` @3603",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7590,
+      "id": "module.[doc] cli.md `--trace-sync-io` @3613",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7591,
+      "id": "module.[doc] cli.md `--trace-tls` @3622",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7592,
+      "id": "module.[doc] cli.md `--trace-uncaught` @3631",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7593,
+      "id": "module.[doc] cli.md `--trace-warnings` @3644",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7594,
+      "id": "module.[doc] cli.md `--track-heap-objects` @3652",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7595,
+      "id": "module.[doc] cli.md `--unhandled-rejections=mode` @3660",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7596,
+      "id": "module.[doc] cli.md `--use-bundled-ca`, `--use-openssl-ca` @3689",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7597,
+      "id": "module.[doc] cli.md `--use-env-proxy` @3710",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7598,
+      "id": "module.[doc] cli.md `--use-largepages=mode` @3732",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7599,
+      "id": "module.[doc] cli.md `--use-system-ca` @3754",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7600,
+      "id": "module.[doc] cli.md `--v8-options` @3813",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7601,
+      "id": "module.[doc] cli.md `--v8-pool-size=num` @3821",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7602,
+      "id": "module.[doc] cli.md `-v`, `--version` @3836",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7603,
+      "id": "module.[doc] cli.md `--vfs-load=source` @3844",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7604,
+      "id": "module.[doc] cli.md `--watch` @3901",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7605,
+      "id": "module.[doc] cli.md `--watch-kill-signal` @3938",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7606,
+      "id": "module.[doc] cli.md `--watch-path` @3954",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7607,
+      "id": "module.[doc] cli.md `--watch-preserve-output` @3988",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7608,
+      "id": "module.[doc] cli.md `--zero-fill-buffers` @4002",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7609,
+      "id": "module.[doc] cli.md Environment variables @4010",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7610,
+      "id": "module.[doc] cli.md `FORCE_COLOR=[1, 2, 3]` @4014",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7611,
+      "id": "module.[doc] cli.md `NODE_COMPILE_CACHE=dir` @4028",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7612,
+      "id": "module.[doc] cli.md `NODE_COMPILE_CACHE_PORTABLE=1` @4041",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7613,
+      "id": "module.[doc] cli.md `NODE_COMPILE_CACHE_READONLY=1` @4047",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7614,
+      "id": "module.[doc] cli.md `NODE_DEBUG=module[,\u2026]` @4056",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7615,
+      "id": "module.[doc] cli.md `NODE_DEBUG_NATIVE=module[,\u2026]` @4064",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7616,
+      "id": "module.[doc] cli.md `NODE_DISABLE_COLORS=1` @4068",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7617,
+      "id": "module.[doc] cli.md `NODE_DISABLE_COMPILE_CACHE=1` @4076",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7618,
+      "id": "module.[doc] cli.md `NODE_EXTRA_CA_CERTS=file` @4087",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7619,
+      "id": "module.[doc] cli.md `NODE_ICU_DATA=file` @4109",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7620,
+      "id": "module.[doc] cli.md `NODE_NO_WARNINGS=1` @4118",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7621,
+      "id": "module.[doc] cli.md `NODE_OPTIONS=options...` @4126",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7622,
+      "id": "module.[doc] cli.md `NODE_PATH=path[:\u2026]` @4379",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7623,
+      "id": "module.[doc] cli.md `NODE_PENDING_DEPRECATION=1` @4389",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7624,
+      "id": "module.[doc] cli.md `NODE_PENDING_PIPE_INSTANCES=instances` @4404",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7625,
+      "id": "module.[doc] cli.md `NODE_PRESERVE_SYMLINKS=1` @4409",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7626,
+      "id": "module.[doc] cli.md `NODE_REDIRECT_WARNINGS=file` @4418",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7627,
+      "id": "module.[doc] cli.md `NODE_REPL_EXTERNAL_MODULE=file` @4430",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7628,
+      "id": "module.[doc] cli.md `NODE_REPL_HISTORY=file` @4449",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7629,
+      "id": "module.[doc] cli.md `NODE_SKIP_PLATFORM_CHECK=value` @4459",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7630,
+      "id": "module.[doc] cli.md `NODE_TEST_CONTEXT=value` @4469",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7631,
+      "id": "module.[doc] cli.md `NODE_TLS_REJECT_UNAUTHORIZED=value` @4475",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7632,
+      "id": "module.[doc] cli.md `NODE_USE_ENV_PROXY=1` @4481",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7633,
+      "id": "module.[doc] cli.md `NODE_USE_SYSTEM_CA=1` @4503",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7634,
+      "id": "module.[doc] cli.md `NODE_V8_COVERAGE=dir` @4517",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7635,
+      "id": "module.[doc] cli.md Coverage output @4528",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7636,
+      "id": "module.[doc] cli.md Source map cache @4545",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7637,
+      "id": "module.[doc] cli.md `NO_COLOR=<any>` @4593",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7638,
+      "id": "module.[doc] cli.md `OPENSSL_CONF=file` @4598",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7639,
+      "id": "module.[doc] cli.md `SSL_CERT_DIR=dir` @4617",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7640,
+      "id": "module.[doc] cli.md `SSL_CERT_FILE=file` @4631",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7641,
+      "id": "module.[doc] cli.md `TZ` @4645",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7642,
+      "id": "module.[doc] cli.md `UV_THREADPOOL_SIZE=size` @4677",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7643,
+      "id": "module.[doc] cli.md Useful V8 options @4702",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7644,
+      "id": "module.[doc] cli.md `--abort-on-uncaught-exception` @4715",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7645,
+      "id": "module.[doc] cli.md `--disallow-code-generation-from-strings` @4717",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7646,
+      "id": "module.[doc] cli.md `--enable-etw-stack-walking` @4719",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7647,
+      "id": "module.[doc] cli.md `--expose-gc` @4721",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7648,
+      "id": "module.[doc] cli.md `--harmony-shadow-realm` @4723",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7649,
+      "id": "module.[doc] cli.md `--heap-snapshot-on-oom` @4725",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7650,
+      "id": "module.[doc] cli.md `--interpreted-frames-native-stack` @4727",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7651,
+      "id": "module.[doc] cli.md `--jitless` @4729",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7652,
+      "id": "module.[doc] cli.md `--max-heap-size` @4731",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7653,
+      "id": "module.[doc] cli.md `--max-old-space-size=SIZE` (in MiB) @4741",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7654,
+      "id": "module.[doc] cli.md `--max-semi-space-size=SIZE` (in MiB) @4758",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7655,
+      "id": "module.[doc] cli.md `--perf-basic-prof` @4787",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7656,
+      "id": "module.[doc] cli.md `--perf-basic-prof-only-functions` @4789",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7657,
+      "id": "module.[doc] cli.md `--perf-prof` @4791",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7658,
+      "id": "module.[doc] cli.md `--perf-prof-unwinding-info` @4793",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7659,
+      "id": "module.[doc] cli.md `--prof` @4795",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7660,
+      "id": "module.[doc] cli.md `--security-revert` @4797",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 7661,
+      "id": "module.[doc] cli.md `--stack-trace-limit=limit` @4799",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    },
+    {
+      "rowIndex": 13291,
+      "id": "audit-obligation.export:node:module:12",
+      "status": "partial shared policy/filename/URL/option foundation, no individual API closure"
+    }
+  ],
+  "individualApiClosure": false,
+  "fourHostConformance": false
+}

@@ -1,0 +1,16 @@
+{
+  "nodeVersion": "26.13.0",
+  "nodeSourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "source": {
+    "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+    "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+  },
+  "inputFiles": {
+    "deps/ncrypto/ncrypto.h": "bdbb7c65f6a6d8bcb7e8574a5ca6ae9b5fbc849625f0111e7bce4a627d98b0a8",
+    "deps/ncrypto/ncrypto.cc": "405d2a22d5aadca4f07fd9dc086dbc145d093b539bb1a788a78e959ad5cbd211",
+    "deps/ncrypto/engine.cc": "b3a3460a105c8fd8977eda724b80c11d656bddd1a57b87bc28a737032cd39fae",
+    "deps/ncrypto/ncrypto.gyp": "fda09cecaf8d8a03d56ef5a50561dc8c0b8c36e7e1e285796ed108b3ad4ba028",
+    "LICENSE": "8e603aa87c70d36e497004f0dec63111511cb61b7d65ace12e10ea791599286c"
+  },
+  "scope": "Unchanged pinned Node ncrypto backend; no public KeyObject/crypto conformance by presence alone"
+}

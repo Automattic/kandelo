@@ -1,0 +1,20 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3485,7 +3485,8 @@
+     return KandeloCodecResourceInfo(cx, unwrapped, args.rval());
+   }
+   if (unwrapped && (JS::GetClass(unwrapped) == &KandeloFsRequestClass || JS::GetClass(unwrapped) == &KandeloRandomRequestClass ||
+-                    JS::GetClass(unwrapped) == &KandeloPbkdf2RequestClass || JS::GetClass(unwrapped) == &KandeloScryptRequestClass)) {
++                    JS::GetClass(unwrapped) == &KandeloPbkdf2RequestClass || JS::GetClass(unwrapped) == &KandeloScryptRequestClass ||
++                    JS::GetClass(unwrapped) == &KandeloArgon2RequestClass)) {
+     return KandeloFsRequestResourceInfo(cx, unwrapped, args.rval());
+   }
+   if (unwrapped && JS::GetClass(unwrapped) == &KandeloDnsRequestClass) {
+@@ -3996,6 +3997,7 @@
+       JS_FN("secureRandomBuffer", (KandeloFsPromiseGuard<KandeloNativeSecureRandomBuffer>), 1, 0),
+       JS_FN("createRandomBytesJob", (KandeloFsPromiseGuard<KandeloNativeCreateRandomBytesJob>), 6, 0),
+       JS_FN("runRandomBytesJob", (KandeloFsPromiseGuard<KandeloNativeRunRandomBytesJob>), 1, 0),
++      JS_FN("argon2Supported", KandeloNativeArgon2Supported, 0, 0),
+       JS_FN("createKdfJob", (KandeloCryptoGuard<KandeloNativeCreateKdfJob>), 7, 0),
+       JS_FN("runKdfJob", (KandeloCryptoGuard<KandeloNativeRunKdfJob>), 1, 0),
+       JS_FN("hashDigest", (KandeloCryptoGuard<KandeloNativeOneShotDigest>), 4, 0),

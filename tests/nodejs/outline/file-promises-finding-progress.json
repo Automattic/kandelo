@@ -1,0 +1,122 @@
+{
+  "at": "2026-11-05T06:47:44.127673+00:00",
+  "recipeRevision": 99,
+  "nativePatch": null,
+  "auditFindings": [
+    "FS-013 partial: actual asynchronous promise paths",
+    "FS-015 transactional ownership dependencies partial",
+    "FS-020 namespace/returned-owner integration partial"
+  ],
+  "sourceImplemented": [
+    "Full unchanged pinned promise writeFile/appendFile replace descriptor-only truncation and synchronous pathname fallback",
+    "Small noniterable/unflushed writes use existing actual native WriteFileJob; large/flush/iterable paths use actual queued FileHandle I/O/sync/close",
+    "Pinned validation, pre/post-work abort checks, native Promise resources, caller-fd offsets/ownership, error aggregation and copied append options retained",
+    "Unreachable early synchronous read/write/append promise fallbacks removed; existing queued public readFile route preserved",
+    "Existing shared copyObject and native WriteFileJob supplied to full source; no new C++ job, fake AsyncResource, syscall/host/ABI change"
+  ],
+  "publicApiSourceOwners": [
+    "fs.promises.writeFile",
+    "fs.promises.appendFile"
+  ],
+  "existingReadNotNewImplementation": {
+    "at": "2026-11-05T06:47:44.127673+00:00",
+    "subject": "Promise whole-file routing in source98",
+    "incorrectEarlierDescription": "All pathname promise whole-file methods still use synchronous wrappers",
+    "actualEarlierRouting": "fs.promises.readFile already selected _nodeFileHandles.readFile, with actual ReadFileJob/FileHandle continuation. Only pathname writeFile/appendFile fell back to synchronous wrappers.",
+    "source98Evidence": {
+      "source98BeforeImage": ".context/node26-file-promises-before/packages/registry/node-compat/bootstrap.js",
+      "sha256": "0b496e2ebc797bd07a455210a60ad05890e0170a172c324558835a4a357d329f",
+      "route": "fs.promises.readFile = _nodeFileHandles.readFile;",
+      "meaning": "Already queued in98; earlier blanket legacy promise-read description was wrong. This pass does not newly implement promise reads."
+    },
+    "current99Change": "Full writeFile/appendFile and job/sync/close helpers replace the fallback; read remains existing implementation, not new work.",
+    "frozenAuditOrHistoricalSnapshotChanged": false
+  },
+  "frontendNative": {
+    "report": ".context/node26-file-promises-frontend-r1.json",
+    "sha256": "55ef39ff0899de6435cd69fa27ad8ae811b395380ab064b8b119b14673c8588f",
+    "passed": 6,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Full pinned public FileHandle/promise/job facade with actual native26 jobs/backing-store/fd/Promise/event/stream dependencies. No current guest JSAPI/libc/kernel/four-host evidence",
+    "sourceIdentities": {
+      "third_party/node-core/fs-handle-adapter.js": "b3748d8178658dfe81d1b972dd53c044cac5ddffd194a1048d1d353f76a52809",
+      "third_party/node-core/file-jobs-adapter.js": "421c39f5139be3c48861f6e881eba2520118d621d757c1cfa40351aa41168a60",
+      "third_party/node-core/build.py": "f180670811a9caac5448a8beb4484bab73c285b82ff6473bfe6bd0b08cac0c5d",
+      "third_party/node-core/sources.json": "c78ea83d594c9172c768f8a7a84af1d93cefed69bed0579576dae26e8a4c16f1",
+      "third_party/node-core/node-core.js": "10275fca855bdb3d0ba354feddb2b9b7790395495e50acf38074bea4dbf1f91b",
+      "host/test/fixtures/node-file-promises-platform.cjs": "c0e0f67aedfe795566f0e5b834b3b6cc9307e563c29ca072a04b068ec8cda5ae",
+      "host/test/fixtures/node-file-promises-controls.cjs": "42f1f0ddfa3c24fec9763935ddd6c8c28ce5bb4dfbc82e209a4870f8b15bec94",
+      "host/test/node-file-promises-platform.test.ts": "afe60dd05692fcdc327c1acc0f941141fda2c65b61562931b49bc874b69fe9ab"
+    }
+  },
+  "affectedNative": {
+    "report": ".context/node26-file-promises-affected-r1.json",
+    "sha256": "30949c4762c15033add13f3dfe0a39b321cee510bc15eef46430797bb03c8d7d",
+    "passed": 11,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing callback-write and sync-file native dependency controls; overlap earlier checkpoints, not new APIs"
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-file-promises-upstream-r1/report.json",
+    "sha256": "62b1df2778f989bdfc5a9d71384b746267f766257546d3c6939e0d005f0f66a8",
+    "scope": "Four unchanged write/append/flush files per native/candidate mode. Full pinned public FileHandle and promise read/write/append wrappers plus shared job facade over actual native26 jobs/fd/promises/stream/Buffer/EventEmitter owners. Other sync/callback/fs branches remain native. Not guest JSAPI/libc/kernel/four-host conformance or new read implementation.",
+    "counts": {
+      "native": {
+        "pass": 4,
+        "fail": 0,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      },
+      "candidate": {
+        "pass": 4,
+        "fail": 0,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      }
+    },
+    "files": [
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-promises-writefile.js",
+        "sourceSha256": "f76a292718a1e4605db5f60fef34a73406b2c50837701cee070b9e6e206bc898"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-promises-file-handle-append-file.js",
+        "sourceSha256": "03643b1857d3e4bc2ee16ff180a65ae3577a41e3a4c9d7f0ad3c87607e8975cc"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-write-file-flush.js",
+        "sourceSha256": "6e4898474cd954cd0c9607321547075b4214da08a677da0153d94396806c6561"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-append-file-flush.js",
+        "sourceSha256": "5f8670c10fe41708e77de3ba9ac10578f360767c954a5c4ed7a191a9007d540e"
+      }
+    ]
+  },
+  "sourceChecks": {
+    "report": ".context/node26-file-promises-source-r1/report.json",
+    "sha256": "d8da1b7bf483fa9f6954551f932575c276b640f9da50615585fabc35318a4c1d",
+    "checks": 5,
+    "selectedPinnedSections": 33,
+    "unchangedTestArchiveIdentities": 4,
+    "existingReadRouteVerified": true,
+    "evidenceRegistration": true
+  },
+  "remaining": [
+    "Current97\u201399 and reconciled host/kernel source require later targeted compilation/integration and identified-artifact four-host conformance",
+    "Full native backing-store leases/shared/resizable/transfer/reentry ownership, cancellation/GC/OOM/realm/fatal/ref/close-error races and actual guest FileHandle/stream/event dependencies",
+    "Complete promise namespace/descriptors/aliases and enabled Permission Model/public VFS; no family/API-wide closure",
+    "Other FS/backend/raw-byte/metadata/watch/copy/link/temp and remaining19-family source gaps; retained SQLite/Performance/host-typecheck nonpasses"
+  ],
+  "guestCompiled": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformExclusions": [],
+  "dependencyDocument": "tests/nodejs/outline/file-promises-implementation-dependencies.md"
+}

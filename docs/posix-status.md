@@ -258,8 +258,8 @@ to a different directory than the original OFD.
 | `link()` / `unlink()` | Partial | Served in the kernel for `/` (the in-kernel root filesystem built from the VFS image) and the scratch mounts (in-kernel tmpfs); host-delegated only under a host-mounted directory. Relative paths resolved via kernel cwd. Named-FIFO hard links share one pipe identity and update its authoritative link count; the backing survives the last unlink while an open description remains, with link count zero and ctime updated to the unlink time. Image loading and persistent checkpoints preserve shared inode identities and link counts for regular, deferred, symlink, and FIFO hard links. |
 | `rename()` | Partial | Served in the kernel for `/` (the in-kernel root filesystem built from the VFS image) and the scratch mounts (in-kernel tmpfs); host-delegated only under a host-mounted directory. Both paths resolved via kernel cwd. Named-FIFO identities follow file and containing-directory renames, including destination replacement. |
 | `stat()` / `lstat()` | Partial | Served in the kernel for `/` (the in-kernel root filesystem built from the VFS image) and the scratch mounts (in-kernel tmpfs); host-delegated only under a host-mounted directory. stat follows symlinks, lstat does not. Procfs fd magic links are validated against live fd/OFD pairs: following `/proc/<pid>/fd/N` returns the target OFD metadata even after its pathname is unlinked, while no-follow operations report the symlink and closed slots return ENOENT. Registered AF_UNIX pathname sockets preserve the backing VFS inode's uid, gid, permissions, timestamps, and link count while reporting `S_IFSOCK`. Registered named FIFOs likewise preserve VFS metadata while reporting `S_IFIFO`; `readdir()` and `getdents64()` report `DT_FIFO`. |
-| `statfs()` / `fstatfs()` | Partial | Host-backed and virtual filesystem statistics are reported. A persistent root reports its KIFS logical growth ceiling, composed block footprint, and live inode usage. Resizable creation returns `ENOSPC` when inode slots are exhausted; an unlinked inode retains its slot while descriptors or mappings reference it. Ordinary persistent writes charge new data and indirect pointers before accepting each cache-sized chunk, return an accepted prefix or `ENOSPC` when full, and permit overwriting allocated blocks at zero free space. Fixed-mode sparse holes are also charged. Namespace transactions reserve packed directory growth and new inode content before publication, crediting replaced or removed content only after its final reference. Sparse truncation does not allocate a missing boundary block. Mapped `msync`/`fsync`/`fdatasync` report logical `ENOSPC`, preserve dirty data, and permit retry after another descriptor reclaims space; Node and all three browser engines verify the sparse bytes after reboot and checkpoint. Persistent verified reads preserve deferred descriptions rather than charging cached content as embedded disk allocations. Broader persistence acceptance remains unfinished. The statistics do not report the browser's separate OPFS quota, which can cause earlier `ENOSPC`. Nonpersistent rootfs and scratch statistics remain nominal. Ordinary VFS mounts honor set-ID mode bits and clear `ST_NOSUID`; mounts configured with explicit `nosuid` set the flag. Node and browser use the same resolved mount option rather than trusting raw backend flags. The default writable root image honors set-ID, while scratch, device, and shared-memory mounts are explicitly `nosuid`. |
-| `chmod()` / `chown()` / `lchown()` | Partial | VFS metadata updates, plus persistent updates to the live devpts slave record. `chown()` follows the final symlink; `lchown()` changes the link itself, including dangling links. Ownership calls preserve either unchanged-ID sentinel and validate the selected object and authorization before delegation. Root may select arbitrary IDs; an unprivileged owner must preserve its user ID and may select its effective GID or any authoritative supplementary group. On regular files in the in-kernel filesystems, every successful ownership call clears S_ISUID, and clears S_ISGID when the group-execute bit is set; on Node host-backed regular files it clears both. Directories, symlinks, and character-device PTY slaves retain their modes. Node host-backed changes stay in virtual metadata; the in-kernel filesystems store them in their inodes. OPFS has neither symlinks nor ownership metadata, so its existing ownership operations are no-ops. |
+| `statfs()` / `fstatfs()` | Partial | Host-backed and virtual filesystem statistics are reported. A persistent root reports its KIFS logical growth ceiling, composed block footprint, and live inode usage. Resizable creation returns `ENOSPC` when inode slots are exhausted; an unlinked inode retains its slot while descriptors or mappings reference it. Ordinary persistent writes charge new data and indirect pointers before accepting each cache-sized chunk, return an accepted prefix or `ENOSPC` when full, and permit overwriting allocated blocks at zero free space. Fixed-mode sparse holes are also charged. Namespace transactions reserve packed directory growth and new inode content before publication, crediting replaced or removed content only after its final reference. Sparse truncation does not allocate a missing boundary block. Mapped `msync`/`fsync`/`fdatasync` report logical `ENOSPC`, preserve dirty data, and permit retry after another descriptor reclaims space; Node and all three browser engines verify the sparse bytes after reboot and checkpoint. Persistent verified reads preserve deferred descriptions rather than charging cached content as embedded disk allocations. Broader persistence acceptance remains unfinished. The statistics do not report the browser's separate OPFS quota, which can cause earlier `ENOSPC`. Nonpersistent rootfs and scratch statistics remain nominal. Ordinary VFS mounts honor set-ID mode bits and clear `ST_NOSUID`; mounts configured with explicit `nosuid` set the flag. Node and browser use the same resolved mount option rather than trusting raw backend flags. The default writable root image honors set-ID, while scratch, device, and shared-memory mounts are explicitly `nosuid`. Ordinary VFS mounts honor set-ID mode bits and clear `ST_NOSUID`; mounts configured with explicit `nosuid` set the flag. Node and browser use the same resolved mount option rather than trusting raw backend flags. The default writable root image honors set-ID, while scratch, device, and shared-memory mounts are explicitly `nosuid`. |
+| `chmod()` / `chown()` / `lchown()` | Partial | VFS metadata updates, plus persistent updates to the live devpts slave record. `chown()` follows the final symlink; `lchown()` changes the link itself, including dangling links. Ownership calls preserve either unchanged-ID sentinel and validate the selected object and authorization before delegation. Root may select arbitrary IDs; an unprivileged owner must preserve its user ID and may select its effective GID or any authoritative supplementary group. On regular files in the in-kernel filesystems, every successful ownership call clears S_ISUID, and clears S_ISGID when the group-execute bit is set; on Node host-backed regular files it clears both. Directories, symlinks, and character-device PTY slaves retain their modes. Node host-backed changes stay in virtual metadata; the in-kernel filesystems store them in their inodes. OPFS has no persistent guest ownership metadata; ownership operations now fail ENOTSUP instead of silently succeeding. This remains an implementation gap, not an accepted browser-wide exclusion. |
 | `access()` | Partial | Resolves the pathname component-wise and checks traversal plus target permissions with real credentials. `faccessat(..., AT_EACCESS)` selects effective credentials. Both use effective GID and the process's complete supplementary-group membership for group checks. |
 | `realpath()` | Full | Uses the global component walker against cwd, including mount crossings and relative or absolute symlinks; `missing/..` fails instead of being collapsed lexically, trailing slash requires a directory, and more than 40 symlinks returns ELOOP. |
 | `symlink()` / `readlink()` | Partial | Served in the kernel for `/` (the in-kernel root filesystem built from the VFS image) and the scratch mounts (in-kernel tmpfs); host-delegated only under a host-mounted directory. Symlink target stored as-is, linkpath resolved. |
@@ -342,7 +342,7 @@ proves and reserves only the 128-byte prefix the kernel can write.
 | `adjtimex()` / `clock_adjtime()` | Stub | Returns EPERM. Cannot adjust system clock from Wasm. |
 | `utimes()` | Full | Converts timeval to timespec, delegates to utimensat. |
 | `futimesat()` | Full | Like utimes but relative to dirfd. Delegates to utimensat. |
-| `utimensat()` / `futimens()` | Partial | Updates access and modification times for host-backed files and named FIFOs. Setting both timestamps to the current time accepts either ownership or write permission; explicit timestamps require ownership, while two `UTIME_OMIT` values are an authorization-free no-op after path/fd validation. Direct descriptor mutation through futimens rejects O_PATH/O_SEARCH descriptors with EBADF. |
+| `utimensat()` / `futimens()` | Partial | Updates access and modification times for host-backed files and named FIFOs. Setting both timestamps to the current time accepts either ownership or write permission; explicit timestamps require ownership, while two `UTIME_OMIT` values are an authorization-free no-op after path/fd validation. Direct descriptor mutation through futimens rejects O_PATH/O_SEARCH descriptors with EBADF. The current source now selects the final symlink inode for AT_SYMLINK_NOFOLLOW and preserves flags through the handle-only host operation; Node-backed adapters use native lstat/lutimes. Signed/pre-epoch fields, complete fd/flag semantics and host precision remain partial. OPFS timestamp mutation fails ENOTSUP until guest metadata is implemented. Focused native source checks pass, but the changed guest kernel Wasm is unbuilt; see [source scope](../tests/nodejs/outline/path-metadata-implementation-dependencies.md). |
 
 ## Scheduler
 
@@ -655,7 +655,7 @@ the SDK sysroot, so a program must define those functions itself (or use
 | **node-compat `spawnSync`/`execSync`/`execFileSync` always shell via `popen()`** | process / node-compat | The spidermonkey-node package's node-compat shim (`packages/registry/node-compat/bootstrap.js`) implements `child_process.spawnSync`/`execSync`/`execFileSync` by building a shell command line and running it through libc `popen()`, so every call requires `/bin/sh` on the target rootfs and cannot exec an argv array directly. `spawnSync` also ignores the caller's `encoding` option and always returns `Buffer`s. Child stderr is discarded (redirected to `/dev/null`) unless the caller passes `stdio: 'inherit'` (or an array with `stdio[2] === 'inherit'`), in which case it is not captured into `result.stderr` (always `''`) but is let through to the real process stderr instead. Surfaced by the `bun-run` bootstrap (`runtime/bun-run/bun-run.js`), which needs `stdio: 'inherit'` to let `bun-extract`'s own diagnostics reach the user. The async `spawn`/`exec`/`execFile` above no longer share this limitation. |
 | **spidermonkey-node interactive-runtime gaps for a full `claude` session** | tty / process / crypto / event-loop | Surfaced while porting the Claude Code CLI to run via `bun-run` on spidermonkey-node. (1) **(open)** `process.stdin.setRawMode()` is a no-op — the node-compat adapter (`packages/registry/spidermonkey/node-compat/adapter.js`) forwards to a `native.setRawMode` shell hook that the SpiderMonkey build never defines, so raw-mode terminal input for an interactive TUI is not yet wired. (2) **(resolved)** The `tls`/`https` outbound egress path is proven end-to-end: real TLS to `api.anthropic.com` with certificate verification against the system CA store (`SSL_CERT_FILE`/`SSL_CTX_set_default_verify_paths`), per-origin keep-alive connection-pool reuse, and chunked responses all work — a `fetch` POST to `/v1/messages` returns a real `401` with a dummy key, a GET returns `405`, and `claude -p` completes every one of its startup HTTP requests (`/api/claude_code/settings`, `/api/claude_code/policy_limits`, `/api/eval/*`, `/api/event_logging/*`). The residual `-p` blocker is Claude's own wait on auth-gated startup config when the key is invalid, not a transport gap. (3) **(resolved)** `crypto.randomBytes()`/`randomUUID()`/`randomInt()`/`randomFillSync()`/`getRandomValues()` are now a real CSPRNG — filled from reads of the `/dev/urandom` virtual device (`host_getrandom()`), never `Math.random()`; `randomInt` is unbiased (rejection sampling), `randomUUID` is a valid v4, and the fill fails loud rather than falling back. Guarded by `maincrypto.cjs` in `host/test/esm-probe-guest.test.ts`. (4) **(open) idle event-loop busy-loop:** the SpiderMonkey shell's `RunShellJobs` loop (`patches/0022-kandelo-async-subprocess.patch`) never truly sleeps when idle — it drives the adapter.js timer wheel (`__kandeloRunDueTimers`/`__kandeloNextTimerDelay`) every pass (≈2 `clock_gettime` calls each) and its idle `usleep()` is hard-capped at 1ms *and* produces no `nanosleep` syscall on the wasm target, so a process merely waiting on a timer or socket spins and pegs a CPU core instead of blocking. Timers and I/O still fire correctly (only wasted CPU). A proper fix is a single blocking `poll(watchedFds, nextTimerDelay)` in the idle branch — but `poll(timeout>0)` here is a cooperative blocking-retry syscall (`GENERIC_BLOCKING_SNAPSHOT_SYSCALLS` in `host/src/kernel-worker.ts`, host snapshots + re-drives it), so making the idle wait efficient spans the shell loop, the kernel `sys_poll` blocking path, and both the Node and browser host retry-wait schedulers, and needs event-loop/syscall-hot-path benchmarks on both hosts. Scoped as its own brainstorm→spec→plan effort; not a one-file change, and not what blocks `-p`. None of (1), (3), (4) block the one-shot `--version`/non-interactive `bun-run` path validated in `host/test/claude-run-native-guest.test.ts`. |
 | **spidermonkey-node `require()` of an ES module (supported)** | node-compat / esm | `require()` (and `import.meta.require` / the Bun `__breq` cross-chunk helper) of an ES module is supported on spidermonkey-node. When the resolved target is an ES module (a `.mjs` file, or a `.js`/extensionless file whose nearest `package.json` has `"type":"module"`, and not a `.cjs` file), the node-compat require loader (`packages/registry/node-compat/bootstrap.js`) routes it to the native `_nodeNative.__kandeloRequireModule(path)` C seam (SpiderMonkey shell `ModuleLoader::requireModuleNamespace`, `patches/0018-kandelo-require-module.patch`) instead of CommonJS-wrapping it (which would throw `import declarations may only appear at top level of a module`). The module is loaded, linked, and evaluated through the shell module registry, so `require`, static `import`, and dynamic `import()` of the same resolved path share one module instance and namespace. `require()` returns that namespace (named exports as properties, the default export as `.default`). **Boundary:** a required ES module with a pending *top-level await* cannot complete synchronously, so `require()` of it throws an `Error` whose `.code` is `ERR_REQUIRE_ASYNC_MODULE` (matching Node); load it with dynamic `import()` instead. A synchronous evaluation rejection is rethrown to the caller. **Cyclic `require(esm)`:** when the required ES module is *still evaluating* because it was re-entered through a dependency cycle (module A `require`s B, B `require`s A while A is mid-evaluation), the seam returns that module's *partial live namespace* instead of re-evaluating it (which would make the engine throw `module record has unexpected status: Evaluating`) — matching Node's circular `require(esm)`. The namespace is a live binding view: every exported name is present from link time, an export that has not run its initializer yet reads as a temporal-dead-zone `ReferenceError`, and the same key returns the value once the module runs that initializer (the binding fills in live through the same object, it is not a point-in-time copy). A module reached via a cycle while its *top-level await is still settling* (`EvaluatingAsync`) cannot complete synchronously and therefore throws `ERR_REQUIRE_ASYNC_MODULE`, the same boundary as a direct `require()` of a pending-TLA module. |
-| **spidermonkey-node `vm` module with real context isolation (supported)** | node-compat / vm | The node-compat `vm` module (`packages/registry/node-compat/bootstrap.js`) is a faithful implementation of Node's `vm` surface — `createContext`, `isContext`, `runInContext`, `runInNewContext`, `runInThisContext`, `Script` (with `runInContext`/`runInNewContext`/`runInThisContext`), and `compileFunction` — backed by a C seam in the SpiderMonkey shell (`patches/0020-kandelo-vm-context.patch`, delegated through `packages/registry/spidermonkey/node-compat/adapter.js`). `createContext(sandbox)` builds a genuinely isolated realm/global (a fresh compartment and zone) whose property operations delegate to the user's sandbox: a *new* global binding created by run code writes through to the sandbox on first assignment, deletions delete through, and enumeration enumerates through. **Context identity (divergence from Node):** `createContext` returns a *distinct* contextified global, not the sandbox object itself, and builds a fresh isolated context on each call (it does not contextify the sandbox in place). Consequently `isContext(theOriginalSandbox)` is `false` (pass the returned context to `runInContext`), and `createContext` is not idempotent-by-sandbox. Node instead contextifies the sandbox in place; Kandelo's fresh-context-per-call is behaviorally equivalent for the create-then-run flow but observably different if code inspects the sandbox's own context identity. `codeGeneration:{strings:false}` (and `{wasm:false}`) is honored per-context — `eval`/`new Function` (or WebAssembly compilation) inside such a context throw `EvalError`, while every other realm's `eval` is unaffected — enforced by a per-realm content-security-policy check installed with `JS_SetSecurityCallbacks` (existing callbacks preserved). Values and thrown errors are marshaled across the realm boundary, so `runInContext("throw new Error('x')", ctx)` rethrows to the caller, and a single compiled `vm.Script` runs in multiple contexts (compiled once to a realm-independent Stencil, instantiated per context). **Boundary — copy-on-first-access reads:** ESR 140's `JSClassOps` has no per-property get/set interceptors (removed upstream), so the read side is served by the realm's `resolve` hook, which fires once per not-yet-seen name and copies the sandbox value onto the context global. Seeding a sandbox and reading results back works exactly, but an *external* mutation of a sandbox property made *after* the context has already read that same property is not re-observed by the context (the global's own copy shadows the sandbox from then on). **The write side has the same boundary:** a *new* global binding writes through on its first assignment (via the `addProperty` hook), but *reassigning* an already-materialized property — one previously seeded-and-read or previously created by run code — does not propagate back to the sandbox, because the removed set interceptor means the update lands only on the context global's own copy. Delete-through and enumerate-through *are* fully live (their hooks fire on every operation). Fully-live per-access reads and writes would require a Proxy-backed global, which this seam intentionally does not use. **Unthreaded options:** `filename` and `lineOffset` are honored; `columnOffset` and `displayErrors` are accepted but not threaded through (they affect only error column numbers / decoration), and `compileFunction`'s `contextExtensions` is ignored. **Boundary — `timeout` unsupported:** the engine's interrupt-callback machinery is not wired, so `runInContext`/`Script`/`compileFunction` throw `"vm timeout is not supported on spidermonkey-node"` if an `options.timeout` is supplied rather than silently ignoring it. |
+| **spidermonkey-node VM source candidate (partial)** | node-compat / engine | Existing native code owns real isolated realms and reusable compiled Stencils, but complete Node contextification is not implemented. The post-audit source candidate uses pinned public VM validation/dispatch and a private sandbox-to-realm association for sandbox identity/idempotence. Patch 54 adds actual native function compilation with context-extension scopes, script column metadata and inheritance of caller shared-memory policy. Those native changes compile in the targeted wasm32 engine; guest behavior remains unvalidated. Six frontend controls pass over the exact native Node VM backend; they do not validate guest property hooks, compiler/rooting, metadata or shared-memory behavior. Live sandbox exotic properties, negative offsets, owned deadlines/interrupts, microtasks, dynamic imports, persistent caches, memory measurement and VM modules remain implementation gaps. The subsequent patch85/recipe78 source adds actual ordinary DONT_CONTEXTIFY globals and per-runtime chained/restored security callbacks; guest/runtime validation is separately recorded in tests/nodejs/outline/vm-plain-context-implementation-dependencies.md. Unsupported requested operations fail explicitly. Native shell interrupt support exists; missing VM deadline wiring is not an accepted engine boundary. See tests/nodejs/outline/vm-implementation-dependencies.md for source identities, retained native-reference nonpasses and later validation. |
 | **node-compat builtin exports that link but throw when called** | node-compat | The node-compat shim (`packages/registry/node-compat/bootstrap.js`) now exports 40 additional Node builtin names that the Claude Code CLI's extracted ESM app imports, so that its module graph links (a named import of a name a module doesn't export fails at ESM link time even if the name is never called). Most are real implementations (e.g. `os.availableParallelism`, `util.stripVTControlCharacters`, `crypto.timingSafeEqual`, `zlib.deflate`/`inflate`, `dns.promises.lookup`, `path/posix`). The remainder are honest stubs that link but throw `"<mod>.<name> is not implemented on spidermonkey-node"` if actually called: `fs.ftruncateSync` (no `ftruncate` primitive in the `qjs:os` native module), `fs/promises.link`/`lutimes`/`opendir`/`statfs`, `crypto.createCipheriv`/`createDecipheriv`/`createPrivateKey`/`createPublicKey`/`generateKeyPairSync`/`sign`/`verify` (`crypto.randomFillSync` is now real — a CSPRNG over `/dev/urandom`), `zlib.inflateRawSync`, and `tls.createSecureContext` (zstd decompression is now real — see the zstd rows below). Two constructable stubs (`net.BlockList`, `crypto.X509Certificate`) link and construct as no-ops/throw-on-construct rather than throwing at call time, since npm/CLI code commonly does `new BlockList()` at module scope. Phase B graduates whichever of these the app actually calls at runtime to a real implementation. |
 | **`bun-run` loader-class dispatch in `require()` (supported)** | node-compat / bun-run | Bun's standalone-executable format records a *loader class* per embedded module (`js`, `text`, `file`, `json`, `napi`, …) in its module-graph metadata, because file extension alone cannot disambiguate — a `.js`/`.mjs` path can legitimately carry any of these classes depending on how the original bundle imported it. `bun-extract --prepare` (M2 Phase I/J, `runtime/bun-extract`) records this per-file class into `cache/manifest.json`'s `loaders` map (`js` and `unknown` omitted, since they are `require()`'s existing default behavior). `bun-run.js` (`runtime/bun-run/bun-run.js`) reads that map after extraction and installs `globalThis.__kandeloAssetLoaders`, keyed by *absolute cache path* (`<cache-dir>/<relpath>`). The node-compat `require()` loader (`packages/registry/node-compat/bootstrap.js`) consults this map — keyed by the same realpath'd `resolved` path `require()` already computes — **before** shebang-stripping, the `.json`-extension check, and the ESM/CJS dispatch, so the recorded loader byte is authoritative over any extension-based guess: `text` returns the *raw, pre-shebang-strip* file contents as a string (a `.txt`/`.md` asset may legitimately start with `#!`, which is not a shebang to strip), `file` returns the absolute on-disk path (never reads/executes the contents), `json` returns `JSON.parse(source)` (same result `require()` already gives a `.json` file, made explicit for a non-`.json`-named module recorded with this class), and `js` behaves exactly as unmapped `require()` always has (falls through to shebang-strip + ESM/CJS dispatch). With no manifest present (an old cache, or a binary extracted before Task 1), `__kandeloAssetLoaders` is never installed and `require()` is behaviorally unchanged. **Boundary — static `import` of a non-JS asset is not covered:** this dispatch only wires `require()` (and the paths that call it: `import.meta.require`, the Bun `__breq` cross-chunk helper). The extracted Claude Code app loads its non-JS embedded assets exclusively via `require()`/`__breq()`, never via a static `import` statement, so this is a documented boundary of the current surface, not an observed live gap. **Boundary — `.node` native addons (`napi` class) are an honest throw:** `require()` of a module recorded as `napi` throws `"<id>: native Node addons (.node) are not supported on spidermonkey-node"` rather than silently returning an empty/broken exports object. Real N-API support is deferred future work that needs a wasm-side N-API ABI plus the in-Kandelo C/C++ toolchain (see the clang-toolchain plan) to compile `.node` addons for this target; there is no faked or partial addon loading today. Verified end-to-end: `require()` of a `.md` text asset, a `file`-class asset, an unmapped `.cjs` module, and a `napi`-class asset all dispatch correctly in `host/test/esm-probe-guest.test.ts`; the `json` class is behaviorally identical to the already-tested `.json`-extension `require()` path and is not separately exercised by the fixture. Headless `claude -p` advances past the `loopAutonomousPreamble.md` `SyntaxError` that this Phase closes. |
 
@@ -666,6 +666,50 @@ the same failures; whole-file writes continue after partial writes and reject
 an incomplete transfer. Zero-length reads and writes transfer no bytes.
 
 #### node-compat (spidermonkey-node) — stubbed & approximated Node core surface (tracked future work)
+
+Source99 installs full pinned promise writeFile/appendFile over existing
+actual queued jobs and FileHandle owners, replacing synchronous pathname
+fallbacks. Promise readFile already used its queued owner. Six focused and
+eleven affected controls plus four unchanged files per mode pass at native
+boundaries. Current97–99 and four-host guest integration remain unverified:
+[promise write/append scope](../tests/nodejs/outline/file-promises-implementation-dependencies.md).
+
+Source98 replaces legacy sync whole-file wrappers with unchanged pinned
+read/write/append algorithms over existing actual native I/O and private
+bytes. Six new and fourteen affected controls plus four selected unchanged
+upstream files per mode pass at explicit native boundaries. Source97/98
+remain guest-uncompiled; promise pathname jobs and full four-host behavior
+remain open. See [sync ownership](../tests/nodejs/outline/file-sync-implementation-dependencies.md).
+
+Current build checkpoint: engine96 compiles the source through95 with
+actual guest OpenSSL3.5.9. Four focused Node-host differentials pass; they
+do not validate the full public API surface or four hosts. Source97 adds
+actual linked OpenSSL metadata and target process-version descriptors;
+that correction is not guest-compiled. Changed kernel/host source remains
+unbuilt. Older recipe-stage build statements below are historical; see
+[the exact current receipt](../tests/nodejs/outline/engine96-integration.md).
+
+The source95 callback file-write candidate replaces sync callback wrappers
+with pinned write/append algorithms and actual queued POSIX open/write/close
+owners. Kernel permissions/errors and descriptor lifetimes remain real.
+Sync/path-promise and backing-store lease gaps remain; the new guest binding
+is uncompiled and not four-host validated. See
+[write-file scope](../tests/nodejs/outline/write-file-implementation-dependencies.md).
+
+The source93 Performance candidate adds actual mark/measure/resource/function
+entry buffers and observer scheduling over pinned algorithms. The previous
+zero-statistics monitorEventLoopDelay facade is removed; real native
+milestones/loop metrics/histograms and all-producer ownership remain missing.
+One selected unchanged upstream file fails at the missing milestone provider.
+These are implementation gaps, with guest/four-host validation still open:
+[Performance timeline ownership](../tests/nodejs/outline/performance-timeline-implementation-dependencies.md).
+
+The source92 candidate reuses pinned public Argon2 algorithms over actual
+OpenSSL3.5.9 KDF and shared job/resource source owners. Focused native/source
+controls pass, but the new guest dependency/binding and four-host conformance
+remain unverified. Key/WebCrypto and remaining crypto behavior are still
+incomplete; see [Argon2 ownership](../tests/nodejs/outline/argon2-implementation-dependencies.md).
+
 
 This is the single, complete inventory of Node core APIs the node-compat
 shim (`packages/registry/node-compat/bootstrap.js`, plus the
@@ -685,10 +729,27 @@ platform-values contract cares about most:
 
 **Fail-loud throwing stubs** (present for ESM link-time completeness, throw on call):
 
+The Node 26 source candidate replaces its engine dependency with
+matching full codec sources through `node-codecs`, and adds native
+constant/linked-version metadata. Its public compression handle, async,
+stream and ZIP integration still has implementation gaps. The older scoped
+observations below do not validate that candidate; library linkage is not
+passing Node compatibility. See the [source review](../tests/nodejs/outline/compression-backend-source-status.json).
+
+The shared native bindings now compile through the normal targeted wasm32
+engine build at recipe revision 67, including incremental Hash/Hmac context
+owners, public stream-facing classes and persistent Dir/native cursor owners.
+Real key-object input, provider algorithm/options parity and guest integration
+remain incomplete. This does not rebuild previously
+assembled product images or establish guest runtime behavior. The retained
+artifact and build scope are in
+[the native integration record](../tests/nodejs/outline/native-embedding-integration.md).
+
 | API | Note |
 |-----|------|
-| `fs.ftruncateSync` | no `ftruncate` primitive in the `qjs:os` native module |
-| `fs/promises.link`, `.lutimes`, `.opendir`, `.statfs` | no kernel/native primitive wired |
+| `fs.ftruncateSync` | Published artifact has the legacy stub. Unbuilt revision 45 source now routes pinned truncation functions through existing guest libc/kernel ftruncate, with native callback requests/work; no compilation or four-host conformance evidence yet. See [source status](../tests/nodejs/outline/fs-truncate-source-status.json). |
+| `fs/promises.link`, `.lutimes`, `.statfs` | no kernel/native primitive wired |
+| `fs.opendir`, `.opendirSync`, `fs/promises.opendir` | Source candidate now has pinned public Dir and real persistent native cursor/work/GC owners; targeted engine67 compiled. Previously assembled images were not rebuilt, and guest/four-host conformance remains pending. |
 | `crypto.createCipheriv`, `.createDecipheriv`, `.createPrivateKey`, `.createPublicKey`, `.generateKeyPairSync`, `.sign`, `.verify` | no libcrypto cipher/asymmetric-key surface wired (`randomFillSync` is now real — see the CSPRNG row below) |
 | `crypto.X509Certificate` | constructable stub — throws on `new` (links so module-scope imports succeed) |
 | `tls.createSecureContext` | no secure-context/cert-chain surface |
@@ -704,10 +765,10 @@ platform-values contract cares about most:
 
 | API | Behavior today | Risk if relied on |
 |-----|----------------|-------------------|
-| ~~`crypto.randomBytes`, `.randomUUID`, `.randomInt`, `.randomFillSync`, `getRandomValues`~~ | **Resolved.** Now a real CSPRNG: filled from reads of the `/dev/urandom` virtual device (`host_getrandom()`), never `Math.random()`. `randomInt` uses unbiased rejection sampling; `randomUUID` is a valid v4; the fill fails loud if the device returns no bytes rather than falling back. Guarded by the `maincrypto.cjs` case in `host/test/esm-probe-guest.test.ts`. | — |
+| `crypto.randomBytes`, `.randomFill`, `.randomUUID`, `.randomUUIDv7`, `.randomInt`, `.randomFillSync`, `getRandomValues` | **Partial Node 26 source candidate.** Pinned random/UUID algorithms now use a native OpenSSL RAND provider and real queued random-job source. The OpenSSL package enables actual pthread synchronization; its wasm32/wasm64 library builds and symbol-link probes pass, without guest execution. Focused algorithm controls use explicit native Node dependency boundaries. Guest JSAPI bindings compile in the targeted wasm32 engine; execution remains unvalidated. | Async copy-back lacks the target backing-store lease across transfer; resize/visibility/memory accounting, resource metadata, GC/realm, aliases and CLI/FIPS/snapshot/fork policies remain incomplete or unvalidated. The normal targeted engine build now consumes those dependencies. Current four-host guest product conformance is unestablished; see [random dependencies](../tests/nodejs/outline/random-implementation-dependencies.md). |
 | `tls.checkServerIdentity` | returns `undefined` (always "valid") | no hostname/identity verification on TLS peers |
-| `net.BlockList` | no-op class; `.check()` always returns `false` (never blocked) | address allow/deny lists silently ineffective |
-| `net.Server` | stub — spidermonkey-node ships client sockets only (no `listen()`) | inbound/listening sockets don't work |
+| `net.BlockList`, `net.SocketAddress` | **Partial source candidate.** Pinned public algorithms over actual native address/rule owners; live TCP checks consume the rules. Portable/native-boundary controls pass; the guest JSAPI compiles in the targeted wasm32 engine but remains unexecuted. | Clone/worker sharing, native metadata/error/GC/realm/accounting and current four-host runtime remain incomplete or unvalidated. See [address dependencies](../tests/nodejs/outline/address-rules-implementation-dependencies.md). |
+| `net.Server` | **Partial source candidate.** Real fd-backed listen/accept source, with live peer filtering before publication. | Full listener/socket controls, close/error/reentrancy/transfer/CLI/worker integration and current four-host conformance remain open. Source changes do not update the running product. |
 | `perf_hooks.monitorEventLoopDelay` | inert histogram; all percentiles/min/max/mean/stddev return `0` | event-loop-delay metrics are fake zeros |
 | `os.getPriority` / `os.setPriority` | returns `0` / no-op | scheduling niceness not reflected |
 | `os.version` | returns `''` | empty kernel-version string |
@@ -719,10 +780,14 @@ platform-values contract cares about most:
 
 | API | Behavior today | Gap |
 |-----|----------------|-----|
+| `fs.readdir`, `fs.readdirSync`, `fs.promises.readdir`, `fs.Dirent` | **Partial Node 26 source candidate.** Pinned public classes/helpers over actual typed-byte POSIX scans and native queued recursive work. The targeted wasm32 engine build succeeds; focused source/native controls pass. | Actual opendir/Dir, complete VFS/Permission Model, byte/storage and guest resource/GC/realm/lifecycle behavior remain incomplete or unvalidated. Invalid-UTF-8 filename setup is unsupported on the native APFS fixture, not a guest exclusion. No four-host conformance is established; see [directory scan dependencies](../tests/nodejs/outline/readdir-implementation-dependencies.md). |
+| Node package policy | **Partial source candidate.** Real reader/cache plus shared exports/imports/conditions/self/maps, public package-JSON discovery, actual CLI policy and selected filename identity. | Guest build/four-host runtime, complete source/type/addon/ESM execution/graphs/hooks/cache/URL/error/realm/VFS/lifecycle remain pending. See [package policy dependencies](../tests/nodejs/outline/package-policy-implementation-dependencies.md). |
+| Node Buffer construction/pool | **Partial source candidate.** Callable constructor and shared aligned/non-detachable backing pool, with real native zero-fill option state. Scoped source/native controls pass. | Guest engine/allocator/CLI compiled in targeted engine70; four-host execution, general worker marks, byte leases, GC/realm/accounting and remaining API/activation contracts remain pending. See [Buffer pool dependencies](../tests/nodejs/outline/buffer-pool-implementation-dependencies.md). |
+| Node TLS metadata | **Partial source candidate.** Protocol/cipher/reuse/Finished bytes and authorization now query the actual SSL connection. Scoped native/frontend comparisons pass. | Guest bridge compiled in targeted engine69; four-host execution and complete TLS socket/context/certificate/session/control/error/descriptor semantics remain pending. See [TLS state dependencies](../tests/nodejs/outline/tls-state-implementation-dependencies.md). |
 | Node TCP client dialing and `dns.lookup` | Validated family defaults drive actual libc address lookup and nonblocking IPv4/IPv6 attempts. Intermediate deadlines cancel by operation identity; failure/cancellation and late completion close descriptors. Socket endpoints use getsockname/getpeername. | Full DNS records, IPv6 hostname resolution, hosts-file behavior, listening servers, complete streams/socket controls and TLS handshake cancellation remain gaps. External/virtual IPv6 transport remains unavailable; loopback is supported. See `packages/registry/node-compat/README.md`. |
 | `path/win32` (subpath) and `path.win32` | resolves to `{...path.posix, sep: '\\'}` — only `sep`/`delimiter` differ; `join`/`resolve`/`parse`/`normalize` still use POSIX `/` | not real Windows-path semantics. Fine today because Claude Code imports `path/win32` in cross-platform code that only *calls* it under `process.platform === 'win32'` / `O() === 'windows'` guards, which are false on Kandelo (`process.platform` is `linux`). Would need real win32 semantics only if a feature parsed Windows paths regardless of host OS. |
 | `child_process.spawnSync` / `execSync` / `execFileSync` | synchronous, shell out through libc `popen()` (needs `/bin/sh`), `pid: 0`, no stdin, no streaming, ignores `encoding` (always `Buffer`), stderr discarded unless `stdio: 'inherit'` | see the dedicated row above; async `spawn`/`exec`/`execFile` are real subprocesses (see the supported row above) — only the `*Sync` variants remain on `popen()` |
-| `process.stdin.setRawMode` | forwards to a `native.setRawMode` shell hook the SpiderMonkey build does not define → effectively a no-op | see the interactive-runtime row above; raw-mode TTY input not wired |
+| `process.stdin.setRawMode` | Built runtime lacks the native terminal-mode hook. The unbuilt shared source candidate now rejects a missing hook instead of claiming raw mode changed | Real termios/mode/TTY ownership remains incomplete; no new guest or four-host evidence |
 | ~~`tls`/`https` egress keep-alive~~ | **Resolved.** Proven end-to-end: real TLS to `api.anthropic.com` with CA verification, per-origin keep-alive pool reuse, and chunked responses all work. See the interactive-runtime row above. |
 
 The `setRawMode` item and the idle event-loop busy-loop are also described in
@@ -1016,3 +1081,104 @@ Regression gate: `programs/cpp_throw_test.cpp` exercises throw → catch
 in a single program; `host/test/cpp-throw-test.test.ts` runs it via the
 kernel harness. The gap was first surfaced by the SpiderMonkey EH
 spike (see external `memory/spidermonkey-spike-eh-toolchain-gap.md`).
+
+
+## Node process-state binding source candidate
+
+The compatibility source now delegates environment mutation/enumeration to
+actual guest libc state, process.ppid to getppid, and process.umask to the
+existing creation-mask syscall through pinned public validation. It removes
+the JavaScript seed/cache/no-op setters and fixed mask/parent values. No
+existing syscall or ABI meaning changes. A native-host helper checks real
+libc state, copied storage lifetime, concurrent bridge access, created-file
+permission bits and the actual parent. Focused frontend and unchanged
+upstream controls use explicit native dependency substitutions. The guest
+engine bridge compiles in the targeted wasm32 engine and current four-host conformance is pending;
+worker/TZ/exotic-object/CLI policy remains partial. These source changes
+do not alter the scope of historical libc or product results above.
+
+
+## Node DNS source prerequisites
+
+Hostname lookup now has a native-work candidate so guest libc name-service
+work is not performed inline on the JS thread. Existing OS lookup still
+has its one-IPv4 routing interface and source limitations. Actual DNS
+records require a different owner: pinned c-ares now has a raw native
+channel/query/configuration/cancel/copy-lifetime implementation and a
+normal unbuilt wasm32/64 recipe. Native-host loopback UDP A/TTL results
+match native Node; guest transport/bridge and public Resolver semantics
+remain unimplemented or unvalidated. Default internet UDP egress still
+reports EHOSTUNREACH; local/session datagrams are separate real paths.
+No new syscall/host import/wire ABI is added. An explicit resolve failure
+replaces fabricated loopback success and does not count as compatibility.
+
+## Node StringDecoder source candidate
+
+The compatibility candidate uses the full pinned Node 26.13.0 public
+StringDecoder module over a real seven-byte incremental state buffer and
+the shared private Buffer codecs. Encoding normalization, proxy/accessor
+receivers, fresh legacy state views and byte/flush behavior now have source
+owners; mutable global TextDecoder/public Buffer conversion is not used by
+the private decoder. String limits come from the actual embedding ceiling.
+
+Focused native differential and unchanged upstream controls pass at their
+documented boundaries. Guest initialization, allocation/storage/error
+behavior and current Node/Chromium/Firefox/WebKit artifact conformance remain
+unvalidated. The shared bundle/bootstrap recipe is updated without a guest
+engine or full product rebuild. This does not establish complete Buffer,
+StringDecoder or WHATWG encoding compatibility. See the
+[decoder dependency record](../tests/nodejs/outline/string-decoder-implementation-dependencies.md).
+
+The partial Node DNS Resolver source now connects pinned public modules to
+actual c-ares channels, query providers, owned record conversion and native
+event completion/shutdown. This adds no host raw-DNS egress capability and no
+wire ABI change. Guest/four-host behavior, default configuration refresh,
+permission and remaining lifecycle contracts are unvalidated; see
+`tests/nodejs/outline/dns-channel-implementation-dependencies.md`.
+
+Node process usage frontends do not consume current getrusage placeholders
+or elapsed CPU approximations as real measurements. Missing Node CPU/thread/
+memory/RSS/resource/report/heap-space providers explicitly fail. The actual
+nominal engine GC budget is separately readable, with no memory ceiling change.
+Kernel CPU/resource accounting and complete four-host Node measurements remain
+open; see tests/nodejs/outline/resource-usage-implementation-dependencies.md.
+
+The subsequent HTTP source slice uses the complete pinned IncomingMessage
+module for actual response parsing, lazy/distinct headers/trailers and abort
+state. Socket release now waits for consumed response EOF and completed request
+writes. Recipe77 remains uncompiled; the last accepted engine76 predates it.
+Focused native-boundary controls are separate from guest/four-host conformance.
+Complete parser/Agent/server/HTTP2 and remaining lifecycle gaps stay open; see
+`tests/nodejs/outline/http-incoming-implementation-dependencies.md`.
+
+The VM ordinary-global source now owns a real isolated DONT_CONTEXTIFY
+global and per-ShellContext chained/restored security callbacks (patch85,
+recipe78). Ordinary sandbox live forwarding, imports/deadlines/microtasks and
+full realm/worker behavior remain gaps. Native-boundary controls and the
+retained complete-file dynamic-import failure do not establish guest or
+four-host conformance. See
+`tests/nodejs/outline/vm-plain-context-implementation-dependencies.md`.
+
+The later normal targeted engine78 build compiles actual VM ordinary globals/
+runtime security callback ownership and the preceding HTTP77 source. Narrow
+Node-host guest VM outcomes are separately identified in the VM plain-context
+dependency report; HTTP/worker/full API/four-host conformance remains open.
+The complete unchanged VM plain-context upstream candidate file still fails
+its missing dynamic-import requirement. No overall suite/full product rebuild.
+
+The subsequent Worker source replaces minimal-prelude/JSON/shared-mailbox
+launch with per-worker native context/thread/packet/endpoint ownership and
+normal Node bootstrap/loader, ready/error/exit and independent stop/join/ref
+state. Patches86–88 reached targeted engine83 acceptance; six identical
+native/Node-host guest cases pass. Options/stdio/fd/transfer/resource/lifecycle,
+ordinary stamped-consumer and four-host obligations remain open. Subsequent
+recipe84 Test/Suite/harness source is uncompiled; native-boundary controls
+are separate from guest execution. See worker-owner and testing dependency
+records under `tests/nodejs/outline/` for exact evidence and retained failures.
+
+The later targeted engine88 compiles actual SQLite iterator/column/limit/
+session/change-set and native callback owners, with real SQLite activation and
+process beforeExit idle/revival state. Exact focused native/Node-host guest
+outcomes and retained nonpasses are in the SQLite dependency/finding records.
+SQLite/testing/process and four-host conformance remain partial; no overall
+suite or full product rebuild ran.

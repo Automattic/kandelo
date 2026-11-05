@@ -1,0 +1,67 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -270,6 +270,7 @@
+ using mozilla::Utf8Unit;
+ 
+ #include "shell/kandelo-node-native-work.cpp"
++#include "shell/kandelo-node-native-async.cpp"
+ #include "shell/kandelo-node-codec-handle.cpp"
+ 
+ static JSObject* KandeloNewUint8ArrayCopy(JSContext* cx, const uint8_t* data,
+@@ -3346,6 +3347,10 @@
+     return false;
+   }
+   RootedObject resource(cx, &args[0].toObject());
++  RootedObject unwrapped(cx, js::CheckedUnwrapStatic(resource));
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloCodecClass) {
++    return KandeloCodecResourceInfo(cx, unwrapped, args.rval());
++  }
+   return js::GetKandeloAsyncResourceInfo(cx, resource, args.rval());
+ }
+ static bool KandeloNativeAsyncHookFatal(JSContext* cx, unsigned argc, Value* vp) {
+@@ -3763,6 +3768,9 @@
+       JS_FN("getAsyncContext", KandeloNativeGetAsyncContext, 0, 0),
+       JS_FN("allocateAsyncId", KandeloNativeAllocateAsyncId, 0, 0),
+       JS_FN("setAsyncLifecycle", KandeloNativeSetAsyncLifecycle, 1, 0),
++      JS_FN("setAsyncDestroyTracking", KandeloNativeSetDestroyTracking, 1, 0),
++      JS_FN("drainNativeAsyncDestroyIds", KandeloNativeDrainDestroyIds, 0, 0),
++      JS_FN("enqueueAsyncDestroyId", KandeloNativeEnqueueDestroyId, 2, 0),
+       JS_FN("getAsyncResourceInfo", KandeloNativeAsyncResourceInfo, 1, 0),
+       JS_FN("asyncHookFatal", KandeloNativeAsyncHookFatal, 1, 0),
+       JS_FN("enqueueMicrotask", KandeloNativeEnqueueMicrotask, 1, 0),
+@@ -3775,7 +3783,8 @@
+       JS_FN("markPromiseAsHandled", KandeloNativeMarkPromiseHandled, 1, 0),
+       JS_FN("getCompressionVersions", KandeloNativeCompressionVersions, 0, 0),
+       JS_FN("getCompressionConstants", KandeloNativeCompressionConstants, 0, 0),
+-      JS_FN("createCompressionHandle", KandeloNativeCreateCompressionHandle, 1, 0),
++      JS_FN("createCompressionHandle", KandeloNativeCreateCompressionHandle, 2, 0),
++      JS_FN("crc32", KandeloNativeCRC32, 2, 0),
+       JS_FN("getProxyDetails", KandeloNativeProxyDetails, 2, 0),
+       JS_FN("getConstructorName", KandeloNativeConstructorName, 1, 0),
+       JS_FN("previewEntries", KandeloNativePreviewEntries, 2, 0),
+@@ -16053,6 +16062,7 @@
+ ShellContext::~ShellContext() {
+   // Finish/cancel native jobs and retire pins/roots while the JSContext lives.
+   KandeloShutdownNativeWork(this);
++  KandeloShutdownNativeAsync(this);
+   markObservers.reset();
+   if (cx_) {
+     JS_SetContextPrivate(cx_, nullptr);
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -182,6 +182,7 @@
+ 
+ class OffThreadJob;
+ class KandeloNativeWorkQueue;
++struct KandeloNativeAsyncState;
+ 
+ // Per-context shell state.
+ struct ShellContext {
+@@ -195,6 +196,7 @@
+ 
+   // Owns real native jobs, completion roots and buffer leases until shutdown.
+   KandeloNativeWorkQueue* kandeloNativeWork = nullptr;
++  KandeloNativeAsyncState* kandeloNativeAsync = nullptr;
+ 
+   const IsWorkerEnum isWorker;
+   bool lastWarningEnabled;

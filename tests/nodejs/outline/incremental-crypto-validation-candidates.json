@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceArchiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+  "meaning": "Future unchanged upstream files, not executed cases/subtests/variant coverage",
+  "files": [
+    {
+      "upstreamPath": "test/parallel/test-crypto-hash-stream-error.js",
+      "sha256": "a66618446c45be0f5e53451e23698c56e3921f6e679b46c571aef8bde8e102ce",
+      "executed": false,
+      "requiredControls": [
+        "native target with original flags/environment",
+        "identified Kandelo artifact on each applicable host",
+        "original assertions and retained failures/skips/unsupported/timeouts/harness errors"
+      ]
+    },
+    {
+      "upstreamPath": "test/parallel/test-crypto-hash-stream-pipe.js",
+      "sha256": "bd6f1075ddde8ad76fe617fef506d8374357146611fead679be6a87389a82d94",
+      "executed": false,
+      "requiredControls": [
+        "native target with original flags/environment",
+        "identified Kandelo artifact on each applicable host",
+        "original assertions and retained failures/skips/unsupported/timeouts/harness errors"
+      ]
+    },
+    {
+      "upstreamPath": "test/parallel/test-crypto-hash.js",
+      "sha256": "ca959fa4125e1390ffadbb86fd9456d18e3b0ff1929670c487ef1fc3c79a4b9e",
+      "executed": false,
+      "requiredControls": [
+        "native target with original flags/environment",
+        "identified Kandelo artifact on each applicable host",
+        "original assertions and retained failures/skips/unsupported/timeouts/harness errors"
+      ]
+    },
+    {
+      "upstreamPath": "test/parallel/test-crypto-hmac.js",
+      "sha256": "b74d28dd149e09503a09b2ce50bb7e9eb9406aafbe14c7aadd11db347ee6c1a2",
+      "executed": false,
+      "requiredControls": [
+        "native target with original flags/environment",
+        "identified Kandelo artifact on each applicable host",
+        "original assertions and retained failures/skips/unsupported/timeouts/harness errors"
+      ]
+    }
+  ],
+  "allFourHostRuntimeConformance": false
+}

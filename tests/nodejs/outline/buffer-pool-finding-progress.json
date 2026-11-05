@@ -1,0 +1,794 @@
+{
+  "kind": "Original buffer observations linked to partial shared constructor/storage owner, not unique APIs or passes",
+  "matrixPath": "tests/nodejs/audit/api-matrix.json",
+  "matrixSha256": "2d3fde3b30ac0d28e804cc06a50424a90ecc94abb4507697a0ddbc7c977321f9",
+  "rows": [
+    {
+      "rowIndex": 11115,
+      "id": "buffer.[doc] buffer.md Buffer @1",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11116,
+      "id": "buffer.[doc] buffer.md Buffers and character encodings @85",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11117,
+      "id": "buffer.[doc] buffer.md Buffers and TypedArrays @236",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11118,
+      "id": "buffer.[doc] buffer.md Buffer methods are callable with `Uint8Array` instances @418",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11119,
+      "id": "buffer.[doc] buffer.md Buffers and iteration @433",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11122,
+      "id": "buffer.[doc] buffer.md `blob.arrayBuffer()` @518",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11131,
+      "id": "buffer.[doc] buffer.md Class: `Buffer` @684",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11132,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.alloc(size[, fill[, encoding]])` @689",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11133,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.allocUnsafe(size[, alignment])` @797",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11134,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.allocUnsafeSlow(size[, alignment])` @877",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11135,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.byteLength(string[, encoding])` @964",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11136,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.stringLength(input[, encoding])` @1016",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11137,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.compare(buf1, buf2)` @1069",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11138,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.concat(list[, totalLength])` @1112",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11139,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.copyBytesFrom(view[, offset[, length]])` @1187",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11140,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.from(array)` @1212",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11141,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.from(arrayBuffer[, byteOffset[, length]])` @1250",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11142,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.from(buffer)` @1367",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11143,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.from(object[, offsetOrEncoding[, length]])` @1410",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11144,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.from(string[, encoding])` @1470",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11145,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.isBuffer(obj)` @1517",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11146,
+      "id": "buffer.[doc] buffer.md Static method: `Buffer.isEncoding(encoding)` @1548",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11147,
+      "id": "buffer.[doc] buffer.md `Buffer.poolSize` @1592",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11154,
+      "id": "buffer.[doc] buffer.md `buf.equals(otherBuffer)` @1987",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11215,
+      "id": "buffer.[doc] buffer.md `new Buffer(array)` @5118",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11216,
+      "id": "buffer.[doc] buffer.md `new Buffer(arrayBuffer[, byteOffset[, length]])` @5141",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11217,
+      "id": "buffer.[doc] buffer.md `new Buffer(buffer)` @5175",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11218,
+      "id": "buffer.[doc] buffer.md `new Buffer(size)` @5199",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11219,
+      "id": "buffer.[doc] buffer.md `new Buffer(string[, encoding])` @5228",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11235,
+      "id": "buffer.[doc] buffer.md Buffer constants @5570",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11238,
+      "id": "buffer.[doc] buffer.md `Buffer.from()`, `Buffer.alloc()`, and `Buffer.allocUnsafe()` @5620",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 11240,
+      "id": "buffer.[doc] buffer.md What makes `Buffer.allocUnsafe()` and `Buffer.allocUnsafeSlow()` \"unsafe\"? @5715",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12116,
+      "id": "buffer.Buffer",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12117,
+      "id": "buffer.Buffer.prototype",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12118,
+      "id": "buffer.Buffer.prototype.readBigUInt64LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12119,
+      "id": "buffer.Buffer.prototype.readBigUInt64BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12120,
+      "id": "buffer.Buffer.prototype.readBigUint64LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12121,
+      "id": "buffer.Buffer.prototype.readBigUint64BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12122,
+      "id": "buffer.Buffer.prototype.readBigInt64LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12123,
+      "id": "buffer.Buffer.prototype.readBigInt64BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12124,
+      "id": "buffer.Buffer.prototype.writeBigUInt64LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12125,
+      "id": "buffer.Buffer.prototype.writeBigUInt64BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12126,
+      "id": "buffer.Buffer.prototype.writeBigUint64LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12127,
+      "id": "buffer.Buffer.prototype.writeBigUint64BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12128,
+      "id": "buffer.Buffer.prototype.writeBigInt64LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12129,
+      "id": "buffer.Buffer.prototype.writeBigInt64BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12130,
+      "id": "buffer.Buffer.prototype.readUIntLE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12131,
+      "id": "buffer.Buffer.prototype.readUInt32LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12132,
+      "id": "buffer.Buffer.prototype.readUInt16LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12133,
+      "id": "buffer.Buffer.prototype.readUInt8",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12134,
+      "id": "buffer.Buffer.prototype.readUIntBE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12135,
+      "id": "buffer.Buffer.prototype.readUInt32BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12136,
+      "id": "buffer.Buffer.prototype.readUInt16BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12137,
+      "id": "buffer.Buffer.prototype.readUintLE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12138,
+      "id": "buffer.Buffer.prototype.readUint32LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12139,
+      "id": "buffer.Buffer.prototype.readUint16LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12140,
+      "id": "buffer.Buffer.prototype.readUint8",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12141,
+      "id": "buffer.Buffer.prototype.readUintBE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12142,
+      "id": "buffer.Buffer.prototype.readUint32BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12143,
+      "id": "buffer.Buffer.prototype.readUint16BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12144,
+      "id": "buffer.Buffer.prototype.readIntLE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12145,
+      "id": "buffer.Buffer.prototype.readInt32LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12146,
+      "id": "buffer.Buffer.prototype.readInt16LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12147,
+      "id": "buffer.Buffer.prototype.readInt8",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12148,
+      "id": "buffer.Buffer.prototype.readIntBE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12149,
+      "id": "buffer.Buffer.prototype.readInt32BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12150,
+      "id": "buffer.Buffer.prototype.readInt16BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12151,
+      "id": "buffer.Buffer.prototype.writeUIntLE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12152,
+      "id": "buffer.Buffer.prototype.writeUInt32LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12153,
+      "id": "buffer.Buffer.prototype.writeUInt16LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12154,
+      "id": "buffer.Buffer.prototype.writeUInt8",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12155,
+      "id": "buffer.Buffer.prototype.writeUIntBE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12156,
+      "id": "buffer.Buffer.prototype.writeUInt32BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12157,
+      "id": "buffer.Buffer.prototype.writeUInt16BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12158,
+      "id": "buffer.Buffer.prototype.writeUintLE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12159,
+      "id": "buffer.Buffer.prototype.writeUint32LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12160,
+      "id": "buffer.Buffer.prototype.writeUint16LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12161,
+      "id": "buffer.Buffer.prototype.writeUint8",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12162,
+      "id": "buffer.Buffer.prototype.writeUintBE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12163,
+      "id": "buffer.Buffer.prototype.writeUint32BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12164,
+      "id": "buffer.Buffer.prototype.writeUint16BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12165,
+      "id": "buffer.Buffer.prototype.writeIntLE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12166,
+      "id": "buffer.Buffer.prototype.writeInt32LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12167,
+      "id": "buffer.Buffer.prototype.writeInt16LE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12168,
+      "id": "buffer.Buffer.prototype.writeInt8",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12169,
+      "id": "buffer.Buffer.prototype.writeIntBE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12170,
+      "id": "buffer.Buffer.prototype.writeInt32BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12171,
+      "id": "buffer.Buffer.prototype.writeInt16BE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12172,
+      "id": "buffer.Buffer.prototype.readFloatLE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12173,
+      "id": "buffer.Buffer.prototype.readFloatBE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12174,
+      "id": "buffer.Buffer.prototype.readDoubleLE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12175,
+      "id": "buffer.Buffer.prototype.readDoubleBE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12176,
+      "id": "buffer.Buffer.prototype.writeFloatLE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12177,
+      "id": "buffer.Buffer.prototype.writeFloatBE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12178,
+      "id": "buffer.Buffer.prototype.writeDoubleLE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12179,
+      "id": "buffer.Buffer.prototype.writeDoubleBE",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12180,
+      "id": "buffer.Buffer.prototype.asciiSlice",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12181,
+      "id": "buffer.Buffer.prototype.base64Slice",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12182,
+      "id": "buffer.Buffer.prototype.base64urlSlice",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12183,
+      "id": "buffer.Buffer.prototype.latin1Slice",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12184,
+      "id": "buffer.Buffer.prototype.hexSlice",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12185,
+      "id": "buffer.Buffer.prototype.ucs2Slice",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12186,
+      "id": "buffer.Buffer.prototype.utf8Slice",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12187,
+      "id": "buffer.Buffer.prototype.asciiWrite",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12188,
+      "id": "buffer.Buffer.prototype.base64Write",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12189,
+      "id": "buffer.Buffer.prototype.base64urlWrite",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12190,
+      "id": "buffer.Buffer.prototype.latin1Write",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12191,
+      "id": "buffer.Buffer.prototype.hexWrite",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12192,
+      "id": "buffer.Buffer.prototype.ucs2Write",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12193,
+      "id": "buffer.Buffer.prototype.utf8Write",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12194,
+      "id": "buffer.Buffer.prototype.parent",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12195,
+      "id": "buffer.Buffer.prototype.offset",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12196,
+      "id": "buffer.Buffer.prototype.copy",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12197,
+      "id": "buffer.Buffer.prototype.toString",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12198,
+      "id": "buffer.Buffer.prototype.equals",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12199,
+      "id": "buffer.Buffer.prototype.inspect",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12200,
+      "id": "buffer.Buffer.prototype.compare",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12201,
+      "id": "buffer.Buffer.prototype.indexOf",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12202,
+      "id": "buffer.Buffer.prototype.lastIndexOf",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12203,
+      "id": "buffer.Buffer.prototype.includes",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12204,
+      "id": "buffer.Buffer.prototype.fill",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12205,
+      "id": "buffer.Buffer.prototype.write",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12206,
+      "id": "buffer.Buffer.prototype.toJSON",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12207,
+      "id": "buffer.Buffer.prototype.subarray",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12208,
+      "id": "buffer.Buffer.prototype.slice",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12209,
+      "id": "buffer.Buffer.prototype.swap16",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12210,
+      "id": "buffer.Buffer.prototype.swap32",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12211,
+      "id": "buffer.Buffer.prototype.swap64",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12212,
+      "id": "buffer.Buffer.prototype.toLocaleString",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12213,
+      "id": "buffer.Buffer.prototype.Symbol(nodejs.util.inspect.custom)",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12214,
+      "id": "buffer.Buffer.poolSize",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12215,
+      "id": "buffer.Buffer.from",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12216,
+      "id": "buffer.Buffer.from.prototype",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12217,
+      "id": "buffer.Buffer.copyBytesFrom",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12218,
+      "id": "buffer.Buffer.copyBytesFrom.prototype",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12219,
+      "id": "buffer.Buffer.of",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12220,
+      "id": "buffer.Buffer.alloc",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12221,
+      "id": "buffer.Buffer.alloc.prototype",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12222,
+      "id": "buffer.Buffer.allocUnsafe",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12223,
+      "id": "buffer.Buffer.allocUnsafe.prototype",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12224,
+      "id": "buffer.Buffer.allocUnsafeSlow",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12225,
+      "id": "buffer.Buffer.allocUnsafeSlow.prototype",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12226,
+      "id": "buffer.Buffer.isBuffer",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12227,
+      "id": "buffer.Buffer.isBuffer.prototype",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12228,
+      "id": "buffer.Buffer.compare",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12229,
+      "id": "buffer.Buffer.compare.prototype",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12230,
+      "id": "buffer.Buffer.isEncoding",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12231,
+      "id": "buffer.Buffer.isEncoding.prototype",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12232,
+      "id": "buffer.Buffer.concat",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12233,
+      "id": "buffer.Buffer.concat.prototype",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12234,
+      "id": "buffer.Buffer.byteLength",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12235,
+      "id": "buffer.Buffer.byteLength.prototype",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12236,
+      "id": "buffer.Buffer.stringLength",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12237,
+      "id": "buffer.Buffer.stringLength.prototype",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12238,
+      "id": "buffer.Buffer.Symbol(Symbol.species)",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12239,
+      "id": "buffer.Buffer.Symbol(kIsEncodingSymbol)",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    },
+    {
+      "rowIndex": 12263,
+      "id": "buffer.Blob.prototype.arrayBuffer",
+      "status": "partial constructor/pool/transfer/option dependency implemented; no individual closure"
+    }
+  ],
+  "individualApiClosure": false,
+  "fourHostConformance": false
+}

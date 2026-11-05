@@ -1,0 +1,17 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3984,6 +3984,14 @@
+       JS_FN("gzipSync", KandeloNativeGzipSync, 2, 0),
+       JS_FN("gunzipSync", KandeloNativeGunzipSync, 1, 0),
+       JS_FN("createDnsRequest", KandeloNativeCreateDnsRequest, 2, 0),
++      JS_FN("createDnsChannel", KandeloNativeCreateDnsChannel, 4, 0),
++      JS_FN("dnsQuery", KandeloNativeDnsQuery, 4, 0),
++      JS_FN("dnsGetServers", KandeloNativeDnsGetServers, 1, 0),
++      JS_FN("dnsSetServers", KandeloNativeDnsSetServers, 2, 0),
++      JS_FN("dnsSetLocalIP", KandeloNativeDnsSetLocalIP, 3, 0),
++      JS_FN("dnsCancel", KandeloNativeDnsCancel, 1, 0),
++      JS_FN("dnsStrError", KandeloNativeDnsStrError, 1, 0),
++      JS_FN("dnsVersion", KandeloNativeDnsVersion, 0, 0),
+       JS_FN("dnsLookup", KandeloNativeDnsLookup, 5, 0),
+       JS_FN("dnsLookupService", KandeloNativeDnsLookupService, 3, 0),
+       JS_FN("dnsLookupConstants", KandeloNativeDnsLookupConstants, 0, 0),

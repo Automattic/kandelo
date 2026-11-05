@@ -1,0 +1,84 @@
+--- a/js/public/Class.h
++++ b/js/public/Class.h
+@@ -466,6 +466,12 @@
+    * This is used to compute the nursery promotion rate.
+    */
+   JSObjectMovedOp objectMovedOp;
++
++  // An embedder may own Object-valued properties in a live external store.
++  // Its ObjectOps/newEnumerate hooks supply the real property model; shape-
++  // only shortcuts must not establish a different value or fixed own-key set.
++  bool hasVirtualObjectProperties = false;
++  bool allowPreventExtensions = true;
+ };
+ 
+ struct MOZ_STATIC_CLASS ObjectOps {
+--- a/js/src/jsfriendapi.cpp
++++ b/js/src/jsfriendapi.cpp
+@@ -239,7 +239,9 @@
+     return Proxy::getBuiltinClass(cx, obj, cls);
+   }
+ 
+-  if (obj->is<PlainObject>()) {
++  if (obj->getClass()->ext && obj->getClass()->ext->hasVirtualObjectProperties) {
++    *cls = ESClass::Object;
++  } else if (obj->is<PlainObject>()) {
+     *cls = ESClass::Object;
+   } else if (obj->is<ArrayObject>()) {
+     *cls = ESClass::Array;
+--- a/js/src/vm/JSObject.cpp
++++ b/js/src/vm/JSObject.cpp
+@@ -1956,6 +1956,10 @@
+     return js::Proxy::preventExtensions(cx, obj, result);
+   }
+ 
++  if (obj->getClass()->ext && !obj->getClass()->ext->allowPreventExtensions) {
++    return result.failCantPreventExtensions();
++  }
++
+   if (obj->is<WasmGcObject>()) {
+     return result.failCantPreventExtensions();
+   }
+--- a/js/src/vm/NativeObject.h
++++ b/js/src/vm/NativeObject.h
+@@ -1907,6 +1907,10 @@
+ bool AddSlotAndCallAddPropHook(JSContext* cx, Handle<NativeObject*> obj,
+                                HandleValue v, Handle<Shape*> newShape);
+ 
++// OrdinarySet receiver policy reused by externally-backed virtual objects.
++bool SetPropertyByDefining(JSContext* cx, HandleId id, HandleValue value,
++                           HandleValue receiver, ObjectOpResult& result);
++
+ }  // namespace js
+ 
+ #endif /* vm_NativeObject_h */
+--- a/js/src/vm/NativeObject.cpp
++++ b/js/src/vm/NativeObject.cpp
+@@ -2426,7 +2426,7 @@
+  * This implements steps 2.b-e, but it is really old code and there are a few
+  * barnacles.
+  */
+-static bool SetPropertyByDefining(JSContext* cx, HandleId id, HandleValue v,
++bool js::SetPropertyByDefining(JSContext* cx, HandleId id, HandleValue v,
+                                   HandleValue receiverValue,
+                                   ObjectOpResult& result) {
+   // Step 2.b.
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2084,7 +2084,7 @@
+           JS::UTF8Chars(name.data(), name.size())));
+       if (!key) return false;
+       RootedValue value(cx, StringValue(key));
+-      if (!JS_SetElement(cx, result, index++, value)) return false;
++      if (!JS_DefineElement(cx, result, index++, value, JSPROP_ENUMERATE)) return false;
+     }
+     args.rval().setObject(*result); return true;
+   }
+@@ -3927,6 +3927,7 @@
+       JS_FN("evalScriptAsFunction", KandeloNativeEvalScriptAsFunction, 2, 0),
+       JS_FN("httpParser", KandeloNativeHttpParser, 5, 0),
+       JS_FN("objectMark", KandeloNativeObjectMark, 2, 0),
++      JS_FN("createEnvironmentObject", KandeloNativeCreateEnvironmentObject, 2, 0),
+       JS_FN("moduleSyntax", KandeloNativeModuleSyntax, 3, 0),
+       JS_FN("isPromise", KandeloNativeIsPromise, 1, 0),
+       JS_FN("hasObjectKind", KandeloNativeHasObjectKind, 2, 0),

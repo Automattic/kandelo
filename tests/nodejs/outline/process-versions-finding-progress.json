@@ -1,0 +1,46 @@
+{
+  "at": "2026-11-05T05:52:47.170557+00:00",
+  "recipeRevision": 97,
+  "nativePatch": 95,
+  "auditFindings": [
+    "PROC-015 partial: actual executable/build metadata and public version descriptors"
+  ],
+  "sourceImplemented": [
+    "Native OpenSSL_version(OPENSSL_VERSION_STRING) query reports actual linked backend through production private adapter",
+    "Process version/versions/entry descriptors now read-only, enumerable/configurable while version object remains extensible",
+    "Actual native compression/SQLite/c-ares versions retained; no unavailable V8/libuv/addon ABI advertisements"
+  ],
+  "frontendNative": {
+    "report": ".context/node26-version-metadata-frontend-r1.json",
+    "sha256": "677da3b40aa232c96af86c17995d2a6af041865490ec45349614f54fe3dd7da6",
+    "passed": 11,
+    "new": 2,
+    "affected": 9,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Shared process owner and full production prefix with explicit native26 dependency boundary; no new guest JSAPI execution"
+  },
+  "portableNative": {
+    "report": ".context/node26-version-metadata-native-r1/report.json",
+    "sha256": "0f8efac304e2988008456f899bbd11521605965631401942ae66e8b52ec2c2b4",
+    "passed": true,
+    "ownerSha256": "5d659e3a551ed6faa99b5499c9332dff34f79c25678fc26b560f3335db5e5365",
+    "scope": "Development-host actual linked OpenSSL helper, not guest JSAPI/wasm/four-host conformance"
+  },
+  "sourceChecks": {
+    "report": ".context/node26-version-metadata-source-r1/report.json",
+    "sha256": "9e6b34e2cc6fe6e3c9ce8ee6b8482c971ed1c1c56e215fe9e21aae2613cc7406",
+    "commands": 6,
+    "patchForwardReverseExact": true,
+    "stylePass": true
+  },
+  "remaining": [
+    "New private JSAPI version binding/source97 must be guest-compiled and runtime validated",
+    "Complete actual dependency/build/CLI/process/worker metadata, source-target distinction and descriptor/realm conformance across four hosts",
+    "All existing process, crypto and remaining19-family implementation gaps; this source correction does not close a family"
+  ],
+  "guestCompiled": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "dependencyDocument": "tests/nodejs/outline/engine96-integration.md"
+}

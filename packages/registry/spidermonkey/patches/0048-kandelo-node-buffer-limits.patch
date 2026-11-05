@@ -1,0 +1,51 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -215,6 +215,7 @@
+ #include "util/Text.h"
+ #include "util/WindowsWrapper.h"
+ #include "vm/ArgumentsObject.h"
++#include "vm/ArrayBufferObject.h"
+ #include "vm/Compression.h"
+ #include "vm/ErrorObject.h"
+ #include "vm/ErrorReporting.h"
+@@ -233,6 +234,7 @@
+ #include "vm/Shape.h"
+ #include "vm/SharedArrayObject.h"
+ #include "vm/StencilObject.h"  // js::StencilObject
++#include "vm/StringType.h"
+ #include "vm/Time.h"
+ #include "vm/ToSource.h"  // js::ValueToSource
+ #include "vm/TypedArrayObject.h"
+@@ -3516,6 +3518,24 @@
+ // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+ // USE OR OTHER DEALINGS IN THE SOFTWARE.
+ 
++// Public Buffer metadata describes the engine executing the guest program.
++// Do not copy V8/host limits or probe by reserving a maximum-sized allocation:
++// smaller real allocation failures still depend on the machine's live budget.
++static bool KandeloNativeBufferLimits(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  RootedObject target(cx, JS_NewPlainObject(cx));
++  if (!target ||
++      !JS_DefineProperty(cx, target, "MAX_LENGTH",
++                         double(js::TypedArrayObject::ByteLengthLimit),
++                         JSPROP_ENUMERATE) ||
++      !JS_DefineProperty(cx, target, "MAX_STRING_LENGTH",
++                         double(JSString::MAX_LENGTH), JSPROP_ENUMERATE)) {
++    return false;
++  }
++  args.rval().setObject(*target);
++  return true;
++}
++
+ static bool KandeloNativeCompressionConstants(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+   RootedObject target(cx, JS_NewPlainObject(cx));
+@@ -3782,6 +3802,7 @@
+       JS_FN("getPromiseDetails", KandeloNativePromiseDetails, 1, 0),
+       JS_FN("markPromiseAsHandled", KandeloNativeMarkPromiseHandled, 1, 0),
+       JS_FN("getCompressionVersions", KandeloNativeCompressionVersions, 0, 0),
++      JS_FN("getBufferLimits", KandeloNativeBufferLimits, 0, 0),
+       JS_FN("getCompressionConstants", KandeloNativeCompressionConstants, 0, 0),
+       JS_FN("createCompressionHandle", KandeloNativeCreateCompressionHandle, 2, 0),
+       JS_FN("crc32", KandeloNativeCRC32, 2, 0),

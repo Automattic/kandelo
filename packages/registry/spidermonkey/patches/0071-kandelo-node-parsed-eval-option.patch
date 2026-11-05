@@ -1,0 +1,39 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -11154,6 +11154,7 @@
+   bool noWarnings = false;
+   bool experimentalStreamIter = false;
+   bool version = false;
++  std::string evalSource;
+   std::vector<std::string> execArgs;
+   std::vector<std::string> parserArgs;
+   std::vector<char*> parserArgv;
+@@ -11223,6 +11224,7 @@
+       kandeloNodeCLI.execArgs.push_back(arg);
+       auto equals = arg.find('=');
+       if (equals != std::string::npos && name != "-e") {
++        kandeloNodeCLI.evalSource = arg.substr(equals + 1);
+         kandeloNodeCLI.parserArgs.push_back("--execute" + arg.substr(equals));
+       } else {
+         if (++i == argc) {
+@@ -11230,6 +11232,7 @@
+           return false;
+         }
+         kandeloNodeCLI.execArgs.emplace_back(argv[i]);
++        kandeloNodeCLI.evalSource = argv[i];
+         kandeloNodeCLI.parserArgs.emplace_back("--execute");
+         kandeloNodeCLI.parserArgs.emplace_back(argv[i]);
+       }
+@@ -16099,7 +16102,11 @@
+     for (const auto& arg : kandeloNodeCLI.execArgs) {
+       if (!append(arg.c_str())) return false;
+     }
+-    if (!JS_DefineProperty(cx, cli, "noWarnings", kandeloNodeCLI.noWarnings, 0) ||
++    UniqueChars evalUtf8 = JS::EncodeNarrowToUtf8(cx, kandeloNodeCLI.evalSource.c_str());
++    RootedString evalSource(cx, evalUtf8 ? NewStringCopyUTF8(cx, evalUtf8.get()) : nullptr);
++    if (!evalSource) return false;
++    if (!JS_DefineProperty(cx, cli, "evalSource", evalSource, 0) ||
++        !JS_DefineProperty(cx, cli, "noWarnings", kandeloNodeCLI.noWarnings, 0) ||
+         !JS_DefineProperty(cx, cli, "experimentalStreamIter", kandeloNodeCLI.experimentalStreamIter, 0) ||
+         !JS_DefineProperty(cx, cli, "execArgv", execArgs, 0) ||
+         !JS_DefineProperty(cx, cx->global(), "__kandeloNodeCliOptions", cli, 0)) return false;

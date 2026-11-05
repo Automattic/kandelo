@@ -1,0 +1,12 @@
+script_path = "packages/registry/node-simdjson/build-node-simdjson.sh"
+inputs = [
+  "packages/registry/node-simdjson/build-node-simdjson.sh",
+  "packages/registry/node-simdjson/build-node-simdjson.py",
+  "packages/registry/node-simdjson/sources.json",
+  "packages/registry/node-compat/target.json",
+  "scripts/package-build-roots.sh",
+  "sdk/activate.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1

@@ -1,0 +1,95 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2165,6 +2165,82 @@
+   return true;
+ }
+ 
++#include "kandelo-node-process-state.h"
++
++static bool KandeloNativeEnvironment(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() < 1) {
++    JS_ReportErrorASCII(cx, "environment operation is required"); return false;
++  }
++  RootedString operation(cx, ToString(cx, args[0]));
++  if (!operation) return false;
++  UniqueChars op = JS_EncodeStringToUTF8(cx, operation);
++  if (!op) return false;
++  if (strcmp(op.get(), "keys") == 0) {
++    const auto names = kandelo::process_state::EnvironmentNames();
++    RootedObject result(cx, NewArrayObject(cx, 0));
++    if (!result) return false;
++    uint32_t index = 0;
++    for (const auto& name : names) {
++      RootedString key(cx, JS_NewStringCopyUTF8N(cx,
++          JS::UTF8Chars(name.data(), name.size())));
++      if (!key) return false;
++      RootedValue value(cx, StringValue(key));
++      if (!JS_SetElement(cx, result, index++, value)) return false;
++    }
++    args.rval().setObject(*result); return true;
++  }
++  if (args.length() < 2) {
++    JS_ReportErrorASCII(cx, "environment key is required"); return false;
++  }
++  RootedString key(cx, ToString(cx, args[1]));
++  if (!key) return false;
++  UniqueChars name = JS_EncodeStringToUTF8(cx, key);
++  if (!name) return false;
++  if (strcmp(op.get(), "get") == 0) {
++    const auto found = kandelo::process_state::GetEnvironment(name.get());
++    if (!found) { args.rval().setUndefined(); return true; }
++    RootedString result(cx, JS_NewStringCopyUTF8N(cx,
++        JS::UTF8Chars(found->data(), found->size())));
++    if (!result) return false;
++    args.rval().setString(result); return true;
++  }
++  if (strcmp(op.get(), "unset") == 0) {
++    args.rval().setInt32(kandelo::process_state::UnsetEnvironment(name.get()));
++    return true;
++  }
++  if (strcmp(op.get(), "set") == 0) {
++    if (args.length() < 3) {
++      JS_ReportErrorASCII(cx, "environment value is required"); return false;
++    }
++    RootedString value(cx, ToString(cx, args[2]));
++    if (!value) return false;
++    UniqueChars bytes = JS_EncodeStringToUTF8(cx, value);
++    if (!bytes) return false;
++    args.rval().setInt32(kandelo::process_state::SetEnvironment(name.get(), bytes.get()));
++    return true;
++  }
++  JS_ReportErrorASCII(cx, "unknown environment operation"); return false;
++}
++
++static bool KandeloNativeProcessUmask(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  std::optional<uint32_t> mask;
++  if (args.length() && !args[0].isUndefined()) {
++    uint32_t value;
++    if (!JS::ToUint32(cx, args[0], &value)) return false;
++    mask = value;
++  }
++  args.rval().setNumber(double(kandelo::process_state::Umask(mask)));
++  return true;
++}
++
++static bool KandeloNativeProcessParentPid(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  args.rval().setNumber(double(kandelo::process_state::ParentPid()));
++  return true;
++}
++
+ // Read credentials from libc/kernel state rather than environment metadata.
+ static bool KandeloNativeCredentials(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+@@ -3916,6 +3992,9 @@
+       JS_FN("credentials", KandeloNativeCredentials, 0, 0),
+       JS_FN("monotonicTime", KandeloNativeMonotonicTime, 0, 0),
+       JS_FN("hrtime", KandeloNativeHrtime, 0, 0),
++      JS_FN("environment", KandeloNativeEnvironment, 3, 0),
++      JS_FN("processUmask", KandeloNativeProcessUmask, 1, 0),
++      JS_FN("processParentPid", KandeloNativeProcessParentPid, 0, 0),
+       JS_FS_END,
+   };
+   if (!JS_DefineFunctions(cx, native, funcs)) {

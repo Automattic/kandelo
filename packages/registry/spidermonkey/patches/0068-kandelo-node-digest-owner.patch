@@ -1,0 +1,116 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -308,11 +308,14 @@
+   out->clear();
+   if (value.isString()) {
+     RootedString strValue(cx, value.toString());
++    JSLinearString* linear = JS_EnsureLinearString(cx, strValue);
++    if (!linear) return false;
++    const size_t len = JS::GetDeflatedUTF8StringLength(linear);
++    if (len == SIZE_MAX) { JS_ReportOutOfMemory(cx); return false; }
+     UniqueChars str = JS_EncodeStringToUTF8(cx, strValue);
+     if (!str) {
+       return false;
+     }
+-    size_t len = strlen(str.get());
+     out->assign(reinterpret_cast<const uint8_t*>(str.get()),
+                 reinterpret_cast<const uint8_t*>(str.get()) + len);
+     return true;
+@@ -360,6 +363,8 @@
+   return *out != nullptr;
+ }
+ 
++#include "shell/kandelo-node-digests.cpp"
++
+ static JSObject* KandeloResolvedPromise(JSContext* cx, HandleValue value) {
+   RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
+   if (!promise) {
+@@ -398,17 +403,13 @@
+   HMAC_CTX* hmac = nullptr;
+ };
+ 
+-static const EVP_MD* KandeloResolveDigest(const char* name) {
+-  if (!strcmp(name, "sha1")) return EVP_sha1();
+-  if (!strcmp(name, "sha256")) return EVP_sha256();
+-  if (!strcmp(name, "sha512")) return EVP_sha512();
+-  if (!strcmp(name, "md5")) return EVP_md5();
+-  return nullptr;
++static kandelo::crypto::DigestOwner KandeloResolveDigest(const char* name) {
++  return kandelo::crypto::Fetch(name);
+ }
+ 
+ static void KandeloHashFinalize(JS::GCContext* gcx, JSObject* obj) {
+-  auto* state =
+-      static_cast<KandeloHashState*>(JS::GetReservedSlot(obj, 0).toPrivate());
++  const Value slot = JS::GetReservedSlot(obj, 0);
++  auto* state = slot.isUndefined() ? nullptr : static_cast<KandeloHashState*>(slot.toPrivate());
+   if (!state) {
+     return;
+   }
+@@ -438,8 +439,8 @@
+     JS_ReportErrorASCII(cx, "invalid hash receiver");
+     return nullptr;
+   }
+-  auto* state =
+-      static_cast<KandeloHashState*>(JS::GetReservedSlot(obj, 0).toPrivate());
++  const Value slot = JS::GetReservedSlot(obj, 0);
++  auto* state = slot.isUndefined() ? nullptr : static_cast<KandeloHashState*>(slot.toPrivate());
+   if (!state || (!state->md && !state->hmac)) {
+     JS_ReportErrorASCII(cx, "hash digest already called");
+     return nullptr;
+@@ -512,6 +513,7 @@
+   if (!obj) {
+     return false;
+   }
++  JS::SetReservedSlot(obj, 0, JS::PrivateValue(nullptr));
+   auto* state = js_new<KandeloHashState>();
+   if (!state) {
+     JS_ReportOutOfMemory(cx);
+@@ -554,12 +556,12 @@
+   if (!KandeloGetString(cx, args[0], &algorithm)) {
+     return false;
+   }
+-  const EVP_MD* md = KandeloResolveDigest(algorithm.get());
++  auto md = KandeloResolveDigest(algorithm.get());
+   if (!md) {
+     JS_ReportErrorASCII(cx, "unsupported hash algorithm");
+     return false;
+   }
+-  return KandeloCreateHashLike(cx, md, nullptr, args.rval());
++  return KandeloCreateHashLike(cx, md.get(), nullptr, args.rval());
+ }
+ 
+ static bool KandeloNativeCreateHmac(JSContext* cx, unsigned argc, Value* vp) {
+@@ -572,16 +574,16 @@
+   if (!KandeloGetString(cx, args[0], &algorithm)) {
+     return false;
+   }
+-  const EVP_MD* md = KandeloResolveDigest(algorithm.get());
++  auto md = KandeloResolveDigest(algorithm.get());
+   if (!md) {
+     JS_ReportErrorASCII(cx, "unsupported hmac algorithm");
+     return false;
+   }
+-  std::vector<uint8_t> key;
+-  if (!KandeloValueToBytes(cx, args[1], &key)) {
+-    return false;
+-  }
+-  return KandeloCreateHashLike(cx, md, &key, args.rval());
++  kandelo::crypto::Bytes key;
++  if (!KandeloValueToBytes(cx, args[1], &key.value)) {
++    return false;
++  }
++  return KandeloCreateHashLike(cx, md.get(), &key.value, args.rval());
+ }
+ 
+ struct KandeloZlibState {
+@@ -4065,6 +4067,9 @@
+       JS_FN("__kandeloVmCompileFunction", KandeloVmCompileFunction, 5, 0),
+       JS_FN("sqlite", KandeloNativeSqlite, 4, 0),
+       JS_FN("port", KandeloNativePort, 3, 0),
++      JS_FN("hashDigest", (KandeloCryptoGuard<KandeloNativeOneShotDigest>), 4, 0),
++      JS_FN("digestNames", (KandeloCryptoGuard<KandeloNativeDigestNames>), 0, 0),
++      JS_FN("timingSafeEqual", (KandeloCryptoGuard<KandeloNativeTimingSafeEqual>), 2, 0),
+       JS_FN("createHash", KandeloNativeCreateHash, 1, 0),
+       JS_FN("createHmac", KandeloNativeCreateHmac, 2, 0),
+       JS_FN("createDeflate", KandeloNativeCreateDeflate, 1, 0),

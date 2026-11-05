@@ -1,0 +1,12 @@
+script_path = "packages/registry/node-llhttp/build-node-llhttp.sh"
+inputs = [
+  "packages/registry/node-llhttp/build-node-llhttp.sh",
+  "packages/registry/node-llhttp/build-node-llhttp.py",
+  "packages/registry/node-llhttp/sources.json",
+  "packages/registry/node-compat/target.json",
+  "scripts/package-build-roots.sh",
+  "sdk/activate.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1

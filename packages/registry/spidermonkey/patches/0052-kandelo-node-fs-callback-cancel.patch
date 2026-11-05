@@ -1,0 +1,13 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3814,6 +3814,10 @@
+       JS_FN("getCompressionVersions", KandeloNativeCompressionVersions, 0, 0),
+       JS_FN("getBufferLimits", KandeloNativeBufferLimits, 0, 0),
+       JS_FN("createFsRequest", KandeloNativeCreateFsRequest, 2, 0),
++      JS_FN("cancelFsRequest", KandeloNativeCancelFsRequest, 1, 0),
++      JS_FN("fsOpenSync", (KandeloFsPromiseGuard<KandeloFsOpenSync>), 3, 0),
++      JS_FN("fsIoSync", (KandeloFsPromiseGuard<KandeloFsIoSync>), 6, 0),
++      JS_FN("fsVectorSync", (KandeloFsPromiseGuard<KandeloFsVectorSync>), 4, 0),
+       JS_FN("ftruncate", KandeloNativeFtruncate, 3, 0),
+       JS_FN("closeDescriptor", KandeloNativeCloseDescriptor, 2, 0),
+       JS_FN("adoptFileHandle", KandeloNativeAdoptFileHandle, 3, 0),

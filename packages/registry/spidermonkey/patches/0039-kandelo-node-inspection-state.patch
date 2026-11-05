@@ -1,0 +1,211 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -166,6 +166,11 @@
+ #include "js/Principals.h"
+ #include "js/Printer.h"  // QuoteString
+ #include "js/Printf.h"
++#include "builtin/WeakMapObject.h"
++#include "builtin/WeakSetObject.h"
++#include "js/WeakMap.h"
++#include "proxy/ScriptedProxyHandler.h"
++#include "vm/GeneratorObject.h"
+ #include "js/Promise.h"  // JS::IsPromiseObject
+ #include "js/PropertyAndElement.h"  // JS_DefineElement, JS_DefineFunction, JS_DefineFunctions, JS_DefineProperties, JS_DefineProperty, JS_GetElement, JS_GetProperty, JS_GetPropertyById, JS_HasProperty, JS_SetElement, JS_SetProperty, JS_SetPropertyById
+ #include "js/PropertySpec.h"
+@@ -3108,6 +3113,184 @@
+   return true;
+ }
+ 
++// Private inspection hooks read engine state without invoking user properties,
++// scheduling reactions, advancing iterators or marking rejections handled.
++static bool KandeloNativeHasObjectKind(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  args.rval().setBoolean(false);
++  if (args.length() < 2 || !args[0].isObject() || !args[1].isString()) return true;
++  RootedObject obj(cx, js::CheckedUnwrapStatic(&args[0].toObject()));
++  if (!obj) return true;
++  RootedString kindString(cx, args[1].toString());
++  JS::UniqueChars kind = JS_EncodeStringToUTF8(cx, kindString);
++  if (!kind) return false;
++  bool result = false;
++  if (strcmp(kind.get(), "Proxy") == 0) {
++    result = js::IsScriptedProxy(obj);
++  } else if (strcmp(kind.get(), "ModuleNamespace") == 0) {
++    result = obj->is<js::ModuleNamespaceObject>();
++  } else if (!js::IsProxy(obj)) {
++    if (strcmp(kind.get(), "Arguments") == 0) {
++      JSAutoRealm ar(cx, obj);
++      js::ESClass cls;
++      if (!JS::GetBuiltinClass(cx, obj, &cls)) return false;
++      result = cls == js::ESClass::Arguments;
++    } else if (strcmp(kind.get(), "AsyncFunction") == 0) {
++      result = obj->is<JSFunction>() && obj->as<JSFunction>().isAsync();
++    } else if (strcmp(kind.get(), "GeneratorFunction") == 0) {
++      result = obj->is<JSFunction>() && obj->as<JSFunction>().isGenerator();
++    } else if (strcmp(kind.get(), "GeneratorObject") == 0) {
++      result = obj->is<js::AbstractGeneratorObject>();
++    } else if (strcmp(kind.get(), "MapIterator") == 0) {
++      result = obj->is<js::MapIteratorObject>();
++    } else if (strcmp(kind.get(), "SetIterator") == 0) {
++      result = obj->is<js::SetIteratorObject>();
++    } else if (strcmp(kind.get(), "StackOverflowError") == 0 && obj->is<js::ErrorObject>()) {
++      JSAutoRealm ar(cx, obj);
++      JSErrorReport* report = obj->as<js::ErrorObject>().getOrCreateErrorReport(cx);
++      if (!report) return false;
++      result = report->errorNumber == JSMSG_OVER_RECURSED;
++    }
++  }
++  args.rval().setBoolean(result);
++  return true;
++}
++
++static bool KandeloNativePromiseDetails(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  args.rval().setUndefined();
++  if (!args.length() || !args[0].isObject()) return true;
++  RootedObject obj(cx, js::CheckedUnwrapStatic(&args[0].toObject()));
++  if (!obj || !JS::IsPromiseObject(obj)) return true;
++  int32_t state;
++  RootedValue value(cx, UndefinedValue());
++  {
++    JSAutoRealm ar(cx, obj);
++    JS::PromiseState engineState = JS::GetPromiseState(obj);
++    state = engineState == JS::PromiseState::Pending ? 0 :
++            engineState == JS::PromiseState::Fulfilled ? 1 : 2;
++    if (engineState != JS::PromiseState::Pending) value = JS::GetPromiseResult(obj);
++  }
++  if (!JS_WrapValue(cx, &value)) return false;
++  JS::RootedValueArray<2> entries(cx);
++  entries[0].setInt32(state);
++  entries[1].set(value);
++  RootedObject result(cx, JS::NewArrayObject(cx, entries));
++  if (!result) return false;
++  args.rval().setObject(*result);
++  return true;
++}
++
++static bool KandeloNativeProxyDetails(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  args.rval().setUndefined();
++  if (!args.length() || !args[0].isObject()) return true;
++  RootedObject obj(cx, js::CheckedUnwrapStatic(&args[0].toObject()));
++  if (!obj || !js::IsScriptedProxy(obj)) return true;
++  RootedValue target(cx, ObjectOrNullValue(js::GetProxyTargetObject(obj)));
++  if (!JS_WrapValue(cx, &target)) return false;
++  if (args.length() < 2 || !JS::ToBoolean(args[1])) {
++    args.rval().set(target);
++    return true;
++  }
++  RootedValue handler(cx, ObjectOrNullValue(js::ScriptedProxyHandler::handlerObject(obj)));
++  if (!JS_WrapValue(cx, &handler)) return false;
++  JS::RootedValueArray<2> entries(cx);
++  entries[0].set(target);
++  entries[1].set(handler);
++  RootedObject result(cx, JS::NewArrayObject(cx, entries));
++  if (!result) return false;
++  args.rval().setObject(*result);
++  return true;
++}
++
++static bool KandeloNativeConstructorName(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  args.rval().setUndefined();
++  if (!args.length() || !args[0].isObject()) return true;
++  RootedObject obj(cx, js::CheckedUnwrapStatic(&args[0].toObject()));
++  if (!obj) return true;
++  RootedString name(cx, JS_NewStringCopyZ(cx, JS::GetClass(obj)->name));
++  if (!name) return false;
++  args.rval().setString(name);
++  return true;
++}
++
++static bool KandeloNativePreviewEntries(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  args.rval().setUndefined();
++  if (!args.length() || !args[0].isObject()) return true;
++  RootedObject obj(cx, js::CheckedUnwrapStatic(&args[0].toObject()));
++  if (!obj) return true;
++  JS::Rooted<JS::GCVector<Value>> entries(cx, JS::GCVector<Value>(cx));
++  bool keyValue = false;
++  {
++    JSAutoRealm ar(cx, obj);
++    if (obj->is<js::MapIteratorObject>() || obj->is<js::SetIteratorObject>()) {
++      // CountSlot tracks live entries to the left of IndexSlot, including
++      // deletions/compaction. Snapshot the table and slice at that count;
++      // never call next() or mutate either the iterator or its table.
++      auto& iter = obj->as<js::NativeObject>();
++      auto kind = js::TableIteratorObject::Kind(
++          iter.getReservedSlot(js::TableIteratorObject::KindSlot).toPrivateUint32());
++      keyValue = kind == js::TableIteratorObject::Kind::Entries;
++      RootedValue target(cx, iter.getReservedSlot(js::TableIteratorObject::TargetSlot));
++      uint32_t count = iter.getReservedSlot(js::TableIteratorObject::CountSlot).toPrivateUint32();
++      if (target.isObject()) {
++        JS::Rooted<JS::GCVector<Value>> snapshot(cx, JS::GCVector<Value>(cx));
++        if (obj->is<js::MapIteratorObject>()) {
++          Rooted<js::MapObject*> map(cx, &target.toObject().as<js::MapObject>());
++          if (!map->getKeysAndValuesInterleaved(&snapshot)) return false;
++          for (size_t i = size_t(count) * 2; i + 1 < snapshot.length(); i += 2) {
++            if (kind != js::TableIteratorObject::Kind::Values && !entries.append(snapshot[i])) return false;
++            if (kind != js::TableIteratorObject::Kind::Keys && !entries.append(snapshot[i + 1])) return false;
++          }
++        } else {
++          Rooted<js::SetObject*> set(cx, &target.toObject().as<js::SetObject>());
++          if (!set->keys(&snapshot)) return false;
++          for (size_t i = count; i < snapshot.length(); i++) {
++            if (!entries.append(snapshot[i])) return false;
++            if (keyValue && !entries.append(snapshot[i])) return false;
++          }
++        }
++      }
++    } else if (obj->is<js::WeakCollectionObject>()) {
++      const bool isMap = obj->is<js::WeakMapObject>();
++      Rooted<js::WeakCollectionObject*> collection(cx, &obj->as<js::WeakCollectionObject>());
++      RootedObject keys(cx);
++      if (!js::WeakCollectionObject::nondeterministicGetKeys(cx, collection, &keys)) return false;
++      uint32_t length;
++      if (!JS::GetArrayLength(cx, keys, &length)) return false;
++      for (uint32_t i = 0; i < length; i++) {
++        RootedValue key(cx), value(cx);
++        if (!JS_GetElement(cx, keys, i, &key) || !entries.append(key)) return false;
++        if (isMap) {
++          if (!JS::GetWeakMapEntry(cx, obj, key, &value) || !entries.append(value)) return false;
++        }
++      }
++      keyValue = isMap;
++    } else {
++      return true;
++    }
++  }
++  for (size_t i = 0; i < entries.length(); i++) {
++    if (!JS_WrapValue(cx, entries[i])) return false;
++  }
++  RootedObject values(cx, JS::NewArrayObject(cx, JS::HandleValueArray::fromMarkedLocation(entries.length(), entries.begin())));
++  if (!values) return false;
++  if (args.length() > 1 && JS::ToBoolean(args[1])) {
++    JS::RootedValueArray<2> pair(cx);
++    pair[0].setObject(*values);
++    pair[1].setBoolean(keyValue);
++    RootedObject result(cx, JS::NewArrayObject(cx, pair));
++    if (!result) return false;
++    args.rval().setObject(*result);
++  } else {
++    args.rval().setObject(*values);
++  }
++  return true;
++}
++
+ static bool DefineKandeloNodeNative(JSContext* cx) {
+   RootedObject native(cx, JS_NewPlainObject(cx));
+   if (!native) {
+@@ -3116,6 +3299,11 @@
+   const JSFunctionSpec funcs[] = {
+       JS_FN("evalScriptAsFunction", KandeloNativeEvalScriptAsFunction, 2, 0),
+       JS_FN("isPromise", KandeloNativeIsPromise, 1, 0),
++      JS_FN("hasObjectKind", KandeloNativeHasObjectKind, 2, 0),
++      JS_FN("getPromiseDetails", KandeloNativePromiseDetails, 1, 0),
++      JS_FN("getProxyDetails", KandeloNativeProxyDetails, 2, 0),
++      JS_FN("getConstructorName", KandeloNativeConstructorName, 1, 0),
++      JS_FN("previewEntries", KandeloNativePreviewEntries, 2, 0),
+       JS_FN("__kandeloRequireModule", KandeloNativeRequireModule, 1, 0),
+       JS_FN("__kandeloZstdDecompress", KandeloNativeZstdDecompress, 1, 0),
+       JS_FN("__kandeloVmMakeContext", KandeloVmMakeContext, 2, 0),

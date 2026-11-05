@@ -1,0 +1,129 @@
+{
+  "at": "2026-11-05T11:06:50.956869+00:00",
+  "recipeRevision": 107,
+  "nativePatch": 100,
+  "auditFindings": [
+    "PROC-001/PROC-013 partial: actual live environment virtual Object and property interception",
+    "R-013 shared source dependency: non-Proxy environment owner/private marks/clone model;guest proof and full environment shape/store semantics remain"
+  ],
+  "sourceImplemented": [
+    "Native virtual Object with traced private callbacks over real main-process/libc and existing worker store,not public JS Proxy/cached key dictionary",
+    "Actual lookup/get/set/has/descriptor/define/delete/enumerate hooks;index-to-string keys,descriptor/symbol/coercion policy and live prototype fallback",
+    "Ordinary inherited-receiver set policy reused from existing engine helper;writes to child receivers do not mutate the external environment",
+    "Explicit generic virtual Object/extensibility model and actual hook-aware clone traversal;external mutable key sets refuse prevention of extensions",
+    "Native environment-name arrays define own elements;native-unit generator puts inline headers after ordinary declarations for the unchanged style checker"
+  ],
+  "frontendNative": {
+    "report": ".context/node26-environment-frontend-r4.json",
+    "sha256": "d33b66ea4e450653845c4ae84b3c1d438859be97ea8d50dafacb8f4d6ca93c7b",
+    "discovered": 16,
+    "passed": 15,
+    "newPassed": 4,
+    "newFailed": 1,
+    "affectedPassed": 11,
+    "failed": 1,
+    "skipped": 0,
+    "scope": "Actual candidate JS policies over explicit native V8 interceptor/environment/mask/lifetime dependencies;not guest JSAPI/GC/JIT/clone"
+  },
+  "preservedSnapshotNonpass": {
+    "rawStatus": "failed",
+    "rawFailureCount": 1,
+    "analysisClassification": "Native fixture serialization boundary;not established as guest behavior",
+    "reason": "Node native serializer recognizes its own environment template;custom V8 addon class remains unsupported even without internal fields. No synthetic clone/skip/accepted-exclusion replaces the preserved snapshot assertion.",
+    "assertionPreserved": true,
+    "countsAsPassingCompatibility": false
+  },
+  "nativeReference": {
+    "report": ".context/node26-environment-reference.json",
+    "sha256": "f9a7c487486b1d0f467c20f2dadef356c96ac83b5eaf9b007a95d8d873814782",
+    "scope": "Actual target environment prototype/receiver/symbol/integrity policy"
+  },
+  "nativeCloneReference": {
+    "report": ".context/node26-environment-clone-reference.json",
+    "sha256": "e13f06fc7957f6aa59c0a3921c8dcd53d3891a335c870a95505b552a47dd5491",
+    "scope": "Native actual environment template snapshot/marks pass;not guest owner"
+  },
+  "sourceChecks": {
+    "report": ".context/node26-environment-source-r2/report.json",
+    "sha256": "45012cb7bda3a307ececcfeddd96c45ba19ee419eb830ecde2aaf4d1fe6828cd",
+    "checks": 8,
+    "pinnedFiles": 2,
+    "engineFiles": 6,
+    "patchForwardReverseExact": true,
+    "bunRemainderUnchanged": true
+  },
+  "targetedEngine": {
+    "report": ".context/node26-engine-r107-accepted/report.json",
+    "sha256": "f4737b217b860851837df34ca0a0e40e0ce1aac56f147a775a38c7bf6158f296",
+    "exitCode": 0,
+    "revision": 107
+  },
+  "nativeControl": {
+    "path": ".context/node26-environment-evidence/native/owner.node",
+    "sha256": "fc8921e8f26e4eb1fdf09b00b8384d209604e8d78e12acf7744ef0a24f0dc71c",
+    "scope": "Actual V8 interceptor executes candidate JS policies over native environment;not guest JSAPI/GC/clone"
+  },
+  "evidence": {
+    "report": ".context/node26-environment-evidence/report.json",
+    "sha256": "9641c78d5164dd0c4a17f4641cd9167431f43ee7ff5b0eccf248a3305b1c101f"
+  },
+  "nonpasses": [
+    {
+      "path": ".context/node26-environment-source-r1.log",
+      "sha256": "6c6da20328e476f6cc0c9a4e4578dceb3503e2201f80a9df8cd62f7cfd2acfb4",
+      "kind": "Unchanged Mozilla checker rejected inline-header order;failed diagnostics also retained in source-r1/6.stdout"
+    },
+    {
+      "path": ".context/node26-environment-native-build-r1.log",
+      "sha256": "83b0f012146f0b85cb4081cdf816a95784263b87c4f387c0816f232e8084cf4d",
+      "kind": "Native helper compile failed:changed V8 API names/handler arity;original failed source retained"
+    },
+    {
+      "path": ".context/node26-environment-native-build-r4.log",
+      "sha256": "5d96e0741481412679af4fb132421cf637e21d7634e9004cdc2d992a6bdacbb6",
+      "kind": "Native helper compile failed:private constructor through make_unique;source retained"
+    },
+    {
+      "path": ".context/node26-environment-frontend-r2.json",
+      "sha256": "63931208316c8b48b6a5793a09c87ec92045953785b40515a7e526629a53962c",
+      "passed": 14,
+      "failed": 1,
+      "kind": "Original new snapshot assertion rejected by native addon class;input/source/binary preserved"
+    },
+    {
+      "path": ".context/node26-environment-frontend-r3.json",
+      "sha256": "ae255f66dc6a92dbc554234217b5ce0c76a3c360528e68c935a3efe7beb11d18",
+      "passed": 14,
+      "failed": 1,
+      "kind": "Removing internal fields did not provide Node environment-template serialization;failure retained"
+    }
+  ],
+  "remaining": [
+    "Admitted identified guest artifact must exercise actual virtual hooks/clone/private marks/GC/CCW/JIT/OOM/teardown;native helper snapshot assertion remains failed and is not a passing/accepted unsupported case",
+    "Complete actual environment prototype/anonymous native constructor/realm/descriptors;current earlier Object prototype remains a source gap",
+    "Integer-key ordering,overloads,invalid names/UTF8/NUL/POSIX/store errors and generic integrity-message policy need source/native/guest reconciliation",
+    "Pending warnings,TZ/date invalidation,permissions/privileged paths,environment replacement/full worker/shared stores and lifecycle remain independent implementation requirements",
+    "Native V8 fixture custom-class serialization does not supply Node env-template delegate;retain assertions and use faithful later boundary or actual guest evidence",
+    "Current kernel admission repaired by canonical targeted build and three actual107Node-host cases pass;full environment/engine lifecycle and browser conformance remain unestablished"
+  ],
+  "guestCompiled": true,
+  "guestCasesRun": 3,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformExclusions": [],
+  "dependencyDocument": "tests/nodejs/outline/environment-object-implementation-dependencies.md",
+  "focusedGuestFollowup": {
+    "report": ".context/node26-environment-guest-controls/report.json",
+    "sha256": "12844ef43fa6e173e035f276e29dfdc7f6e33bb0fcdc083d876034c5c220296f",
+    "counts": {
+      "pass": 3,
+      "fail": 0,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "recipeRevision": 107,
+    "scope": "Three public process.env Node-host cases only; native fixture snapshot failure remains separately failed"
+  }
+}

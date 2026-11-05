@@ -1,8 +1,16 @@
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+const { createDnsPlatform } = createRequire(import.meta.url)('./fixtures/node-dns-platform.cjs');
+const addressRulesPlatform = createRequire(import.meta.url)('./fixtures/node-address-rules-platform.cjs');
+const dnsCleanups: Array<() => void> = [];
 import * as native from 'node:net';
 import * as dns from 'node:dns';
+import * as nativeDiagnostics from 'node:diagnostics_channel';
+import * as nativeStreams from 'node:stream';
+import { addAbortListener } from 'node:events';
 import { inspect, types } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createDiagnosticsPlatform } from './fixtures/node-diagnostics-platform';
 
 const source = readFileSync(new URL('../../packages/registry/node-compat/bootstrap.js', import.meta.url), 'utf8');
 const target = JSON.parse(readFileSync(new URL('../../packages/registry/node-compat/target.json', import.meta.url), 'utf8'));
@@ -11,16 +19,26 @@ function section(start: string, end: string) {
   if (a < 0 || b < 0) throw Error('Missing network source boundary');
   return source.slice(a, b);
 }
-// Extract the actual modules, including Kandelo's own streams. Only the private
-// engine boundary changes in these source tests; guest tests exercise POSIX.
+// Extract the actual DNS and Socket/Server owners. The shared stream factory
+// and engine transport are explicit boundaries here; this cannot establish
+// Kandelo stream integration or guest POSIX/network conformance.
 function subject(boundary: any) {
-  return Function('_nodeNative', 'Buffer', 'util',
+  const diagnostics = createDiagnosticsPlatform();
+  const dnsContext = createDnsPlatform();
+  dnsCleanups.push(dnsContext.close);
+  return Function('_nodeNative', 'Buffer', 'util', '_nodeDiagnostics', '_nodeStreamPlatform', '_nodeValues', '_nodeEventPlatform', '_nodeDispose',
+    '_createNodeNetworkIP', '_createNodeDnsLookupPlatform', '_createNodePerformanceObserverPlatform',
+    '_nodeAsyncPlatform', '_nodeWebPlatform', 'process', 'timers', '_createNodeAddressRules', '_nodeClonePlatform', '_nodeInspection',
     section('function _errnoToCode(', 'function _checkErrno(') +
     section('const events =', '// events.setMaxListeners') +
-    section('const stream =', '// url module') +
-    section('const _nodeDnsLookup =', '// net.BlockList') +
-    ';return {net,dns:_nodeDnsLookup,begin:_nodeBeginSocketConnection};')
-    (boundary, Buffer, { inspect });
+    section('const stream =', 'const _nodePortIO =') +
+    section('const _nodeNetworkIP =', '// tls module') +
+    ';return {net,dns:_nodeDnsLookup,begin:_nodeBeginSocketConnection,diagnostics:_nodeDiagnostics.api};')
+    ({ ...addressRulesPlatform.native, ...dnsContext.native, ...boundary }, Buffer, { inspect }, diagnostics, { api: nativeStreams }, dnsContext.values,
+      { ...dnsContext.event, addAbortListener }, Symbol.dispose, dnsContext.factories.ip, dnsContext.factories.dns, dnsContext.factories.perf,
+      { api: { asyncWrapProviders: dnsContext.asyncProviders } }, dnsContext.web, process,
+      { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout, setImmediate: globalThis.setImmediate },
+      addressRulesPlatform.factories.address, addressRulesPlatform.clone, { inspect });
 }
 function deferred<T = number>() {
   let resolve!: (value: T) => void, reject!: (reason: any) => void;
@@ -45,10 +63,149 @@ const records = [
   { address: 'bad', family: 4 }, { address: '127.0.0.2', family: 4 },
 ];
 const lookup = (_host: string, _options: any, cb: Function) => cb(null, records);
+describe.skipIf(process.versions.node !== target.version)('live TCP BlockList consumers', () => {
+  it('validates constructor options and keeps the actual supplied rule owner', () => {
+    const s = controlled();
+    for (const name of ['BlockList', 'SocketAddress'] as const) {
+      const actual = Object.getOwnPropertyDescriptor(s.net, name)!;
+      // ESM namespaces reify bindings as data properties. This compares
+      // the actual CommonJS module object that the bootstrap implements.
+      const expected = Object.getOwnPropertyDescriptor(createRequire(import.meta.url)('node:net'), name)!;
+      expect([actual.enumerable, actual.configurable, actual.set, actual.get?.name, actual.get?.length])
+        .toEqual([expected.enumerable, expected.configurable, expected.set, expected.get?.name, expected.get?.length]);
+      Reflect.get(s.net, name);
+      expect(Object.getOwnPropertyDescriptor(s.net, name)?.get).toBe(actual.get);
+    }
+    for (const value of [1, true, {}, []]) {
+      for (const name of ['Socket', 'Server'] as const) {
+        expect(outcome(() => new s.net[name]({ blockList: value }))).toEqual(
+          outcome(() => new (native[name] as any)({ blockList: value })));
+      }
+    }
+    const list = new s.net.BlockList();
+    const socket = new s.net.Socket({ blockList: list });
+    const server = new s.net.Server({ blockList: list });
+    expect(socket.blockList).toBe(list); expect(server.blockList).toBe(list);
+    expect(s.net.Stream).toBe(s.net.Socket); socket.destroy();
+  });
+
+  it('uses live rules after the single-address attempt event and never opens a blocked transport', async () => {
+    const s = controlled(), list = new s.net.BlockList();
+    const socket = new s.net.Socket({ blockList: list });
+    socket.on('connectionAttempt', (address: string) => list.addAddress(address));
+    const failed = new Promise<any>(resolve => socket.once('error', resolve));
+    socket.connect({ host: '127.0.0.1', port: 123 });
+    expect((await failed).code).toBe('ERR_IP_BLOCKED');
+    expect(s.attempts).toHaveLength(0); expect(socket.destroyed).toBe(true);
+  });
+
+  it('skips blocked family candidates before transport and retains their real failure', async () => {
+    const s = controlled(), list = new s.net.BlockList(), seen: any[] = [];
+    list.addAddress('::1', 'ipv6');
+    const operation = s.begin({ port: 123, host: 'controlled.test', blockList: list,
+      lookup: (_h: string, _o: any, cb: Function) => cb(null, [
+        { address: '::1', family: 6 }, { address: '127.0.0.1', family: 4 },
+      ]) }, (event: string, ...args: any[]) => seen.push([event, ...args]));
+    const rejected = operation.promise.catch((error: any) => error);
+    operation.start();
+    await new Promise(resolve => setImmediate(resolve));
+    expect(s.attempts).toHaveLength(1);
+    expect(s.attempts[0].args.slice(0, 3)).toEqual(['127.0.0.1', 123, 4]);
+    expect(seen.filter(row => row[0] === 'connectionAttempt').map(row => row[1])).toEqual(['127.0.0.1']);
+    expect(seen.find(row => row[0] === 'connectionAttemptFailed')[4].code).toBe('ERR_IP_BLOCKED');
+    s.attempts[0].reject({ code: 'ECONNREFUSED', errno: -111 });
+    const error = await rejected;
+    expect(error.errors.map((item: any) => item.code)).toEqual(['ERR_IP_BLOCKED', 'ECONNREFUSED']);
+  });
+
+  it('filters actual accepted peers, closes blocked fds and observes later rule removal', async () => {
+    const accepts: ReturnType<typeof deferred>[] = [], closed: number[] = [];
+    const s = subject({ isNativeError: types.isNativeError,
+      socketListen() { return 7; }, socketAccept() { const item = deferred(); accepts.push(item); return item.promise; },
+      socketClose(fd: number) { closed.push(fd); },
+      socketAddress() { return { address: '127.0.0.1', family: 'IPv4', port: 123 }; },
+      socketRead() { return new Promise(() => {}); },
+    });
+    const list = new s.net.BlockList(), accepted: any[] = [], drops: any[] = [];
+    list.addAddress('127.0.0.1');
+    const server = s.net.createServer({ blockList: list, pauseOnConnect: true }, (socket: any) => accepted.push(socket));
+    server.on('drop', (...args: any[]) => drops.push(args));
+    await new Promise<void>(resolve => server.listen({ port: 0, host: '127.0.0.1' }, resolve));
+    accepts[0].resolve(11); await new Promise(resolve => setImmediate(resolve));
+    expect(closed).toEqual([11]); expect(accepted).toHaveLength(0); expect(drops).toHaveLength(0);
+    list.removeAddress('127.0.0.1');
+    accepts[1].resolve(12); await new Promise(resolve => setImmediate(resolve));
+    expect(accepted).toHaveLength(1); expect(accepted[0].remoteAddress).toBe('127.0.0.1');
+    accepted[0].destroy(); await new Promise(resolve => setImmediate(resolve));
+    await new Promise<void>(resolve => server.close(resolve));
+    expect(closed).toEqual([11, 12, 7]);
+  });
+});
 function outcome(fn: () => unknown) {
   try { return { value: fn() }; } catch (error: any) { return { name: error.name, code: error.code }; }
 }
-afterEach(() => vi.useRealTimers());
+afterEach(() => { for (const close of dnsCleanups.splice(0)) close(); vi.useRealTimers(); });
+
+describe.skipIf(process.versions.node !== target.version)('TCP diagnostic producer controls', () => {
+  it('publishes attempted clients before callback registration and option rejection', () => {
+    function run(api: any, diagnostics: any) {
+      const socket = new api.Socket(), events: unknown[] = [];
+      const observer = (message: any) => events.push([Object.keys(message), message.socket === socket,
+        message.socket.connecting, socket.listenerCount('connect')]);
+      diagnostics.subscribe('net.client.socket', observer);
+      try {
+        expect(() => socket.connect({ port: -1 }, () => {})).toThrow();
+      } finally { diagnostics.unsubscribe('net.client.socket', observer); socket.destroy(); }
+      return events;
+    }
+    const s = controlled();
+    expect(run(s.net, s.diagnostics)).toEqual(run(native, nativeDiagnostics));
+  });
+
+  it('publishes adopted server sockets after the public connection handler', async () => {
+    const accept = deferred();
+    let accepted = false;
+    const s = subject({
+      isNativeError: types.isNativeError,
+      socketListen() { return 7; },
+      socketAccept() { if (!accepted) { accepted = true; return accept.promise; } return new Promise(() => {}); },
+      socketAddress() { return { address: '127.0.0.1', family: 'IPv4', port: 123 }; },
+      socketClose() {}, socketRead() { return new Promise(() => {}); },
+    });
+    async function run(api: any, diagnostics: any, drive?: () => void) {
+      const server = api.createServer({ pauseOnConnect: true }), events: unknown[] = [];
+      let peer: any, adopted: any;
+      let resolve!: () => void;
+      const publication = new Promise<void>(r => { resolve = r; });
+      const observer = (message: any) => {
+        if (message.socket.server !== server) return;
+        events.push(['publication', Object.keys(message), message.socket === adopted,
+          message.socket instanceof api.Socket, message.socket.destroyed]);
+        resolve();
+      };
+      diagnostics.subscribe('net.server.socket', observer);
+      server.on('connection', (socket: any) => {
+        adopted = socket;
+        events.push(['connection', socket.server === server]);
+        socket.destroy();
+      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.once('error', reject); server.listen(0, '127.0.0.1', resolve);
+        });
+        if (drive) drive(); else peer = native.connect(server.address().port, '127.0.0.1');
+        await publication;
+        return events;
+      } finally {
+        diagnostics.unsubscribe('net.server.socket', observer);
+        peer?.destroy(); adopted?.destroy();
+        await new Promise<void>(resolve => server.close(resolve));
+      }
+    }
+    expect(await run(s.net, s.diagnostics, () => accept.resolve(8)))
+      .toEqual(await run(native, nativeDiagnostics));
+  });
+});
 
 describe('shared TCP connection policy', () => {
   it('alternates deduplicated families and preserves real errors in the aggregate', async () => {

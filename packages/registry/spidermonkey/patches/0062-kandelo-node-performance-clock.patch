@@ -1,0 +1,48 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -1995,6 +1995,26 @@
+ }
+ 
+ #include "kandelo-node-monotonic-clock.h"
++#include "kandelo-node-performance-clock.h"
++static kandelo::clock::PerformanceOrigin kandeloPerformanceOrigin;
++static bool KandeloNativePerformanceNow(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  double milliseconds;
++  if (kandeloPerformanceOrigin.Now(&milliseconds) != 0) {
++    const int error = errno;
++    JS_ReportErrorUTF8(cx, "performance clock: %s", strerror(error));
++    KandeloDecoratePendingError(cx, error); return false;
++  }
++  args.rval().setDouble(milliseconds); return true;
++}
++static bool KandeloNativePerformanceTimeOrigin(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (!kandeloPerformanceOrigin.initialized) {
++    JS_ReportErrorASCII(cx, "Performance process origin is unavailable"); return false;
++  }
++  args.rval().setDouble(kandeloPerformanceOrigin.unixMilliseconds); return true;
++}
++
+ static bool KandeloNativeHrtime(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+   uint64_t value;
+@@ -4052,6 +4072,8 @@
+       JS_FN("credentials", KandeloNativeCredentials, 0, 0),
+       JS_FN("monotonicTime", KandeloNativeMonotonicTime, 0, 0),
+       JS_FN("hrtime", KandeloNativeHrtime, 0, 0),
++      JS_FN("performanceNow", KandeloNativePerformanceNow, 0, 0),
++      JS_FN("performanceTimeOrigin", KandeloNativePerformanceTimeOrigin, 0, 0),
+       JS_FN("getUvErrorData", KandeloNativeUvErrorData, 0, 0),
+       JS_FN("environment", KandeloNativeEnvironment, 3, 0),
+       JS_FN("processUmask", KandeloNativeProcessUmask, 1, 0),
+@@ -16662,6 +16684,9 @@
+ }
+ 
+ int main(int argc, char** argv) {
++  if (kandeloPerformanceOrigin.Initialize() != 0) {
++    perror("performance process origin"); return EXIT_FAILURE;
++  }
+   PreInit();
+ 
+   sArgc = argc;

@@ -1,0 +1,134 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -884,6 +884,77 @@
+   return JS::RejectPromise(cx, promise, value);
+ }
+ 
++#include "kandelo-node-dns-lookup.h"
++static const char* KandeloErrnoCode(int err);
++
++class KandeloDnsLookupWork final : public js::shell::KandeloNativeWork {
++  JS::PersistentRootedObject promise_;
++  UniqueChars hostname_;
++  int family_;
++  int flags_;
++  kandelo::dns::LookupResult result_;
++
++ public:
++  KandeloDnsLookupWork(JSContext* cx, JSObject* promise, UniqueChars&& hostname,
++                       int family, int flags)
++      : promise_(cx, promise), hostname_(std::move(hostname)),
++        family_(family), flags_(flags) {
++    workClass = WorkClass::SlowIo;
++  }
++
++  void Run() override {
++    result_ = kandelo::dns::Lookup(hostname_.get(), family_, flags_);
++  }
++
++  bool Complete(JSContext* cx) override {
++    RootedObject promise(cx, promise_);
++    if (failure != Failure::None) {
++      if (failure == Failure::OutOfMemory)
++        return KandeloRejectSocketOperation(cx, promise, 3006, "getaddrinfo", "EAI_MEMORY");
++      return KandeloRejectSocketOperation(cx, promise, EIO, "getaddrinfo", "EIO");
++    }
++    const int status = result_.status;
++    if (status != 0) {
++      if (status == EAI_SYSTEM)
++        return KandeloRejectSocketOperation(cx, promise, result_.system_error,
++            "getaddrinfo", KandeloErrnoCode(result_.system_error));
++      const char* code = "EAI_FAIL";
++      int number = 3004;
++      switch (status) {
++        case EAI_AGAIN: code = "EAI_AGAIN"; number = 3001; break;
++        case EAI_BADFLAGS: code = "EAI_BADFLAGS"; number = 3002; break;
++        case EAI_FAMILY: code = "EAI_FAMILY"; number = 3005; break;
++        case EAI_MEMORY: code = "EAI_MEMORY"; number = 3006; break;
++#if defined(EAI_NODATA) && EAI_NODATA != EAI_NONAME
++        case EAI_NODATA: code = "ENOTFOUND"; number = 3007; break;
++#endif
++        case EAI_NONAME: code = "ENOTFOUND"; number = 3008; break;
++        case EAI_SERVICE: code = "EAI_SERVICE"; number = 3010; break;
++        case EAI_SOCKTYPE: code = "EAI_SOCKTYPE"; number = 3011; break;
++      }
++      return KandeloRejectSocketOperation(cx, promise, number, "getaddrinfo", code);
++    }
++    RootedObject records(cx, JS::NewArrayObject(cx, 0));
++    if (!records) return false;
++    uint32_t index = 0;
++    for (const auto& address : result_.addresses) {
++      RootedObject record(cx, JS_NewPlainObject(cx));
++      if (!record || !KandeloDefineSocketString(cx, record, "address", address.address.c_str()) ||
++          !KandeloDefineSocketInt(cx, record, "family", address.family)) return false;
++      RootedValue value(cx, ObjectValue(*record));
++      if (!JS_SetElement(cx, records, index++, value)) return false;
++    }
++    RootedValue value(cx, ObjectValue(*records));
++    return JS::ResolvePromise(cx, promise, value);
++  }
++
++  void Cancel(JSContext*) override {
++    // Queue shutdown joins running work before retiring this JS-owned root.
++    // No user callback is entered while the realm is being destroyed.
++    promise_.reset();
++  }
++};
++
+ static bool KandeloNativeSocketLookup(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+   UniqueChars host;
+@@ -893,44 +964,16 @@
+       (args.length() >= 3 && !JS::ToInt32(cx, args[2], &flags))) return false;
+   RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
+   if (!promise) return false;
++  auto* queue = js::shell::KandeloGetNativeWorkQueue(cx);
++  if (!queue) return false;
++  auto* work = js_new<KandeloDnsLookupWork>(cx, promise.get(), std::move(host), family, flags);
++  if (!work) { JS_ReportOutOfMemory(cx); return false; }
++  if (!queue->Submit(work)) {
++    js_delete(work);
++    JS_ReportErrorASCII(cx, "Native DNS lookup work queue is closing"); return false;
++  }
+   args.rval().setObject(*promise);
+-  addrinfo hints = {};
+-  hints.ai_family = family == 6 ? AF_INET6 : family == 4 ? AF_INET : AF_UNSPEC;
+-  hints.ai_socktype = SOCK_STREAM;
+-  hints.ai_flags = flags;
+-  addrinfo* result = nullptr;
+-  const int status = getaddrinfo(host.get(), nullptr, &hints, &result);
+-  if (status != 0) {
+-    const char* code = status == EAI_NONAME ? "ENOTFOUND"
+-        : status == EAI_AGAIN ? "EAI_AGAIN"
+-        : status == EAI_FAMILY ? "EAI_FAMILY"
+-        : status == EAI_MEMORY ? "EAI_MEMORY" : "EAI_FAIL";
+-    const int nodeError = status == EAI_NONAME ? 3008 : status == EAI_AGAIN ? 3001
+-        : status == EAI_FAMILY ? 3005 : status == EAI_MEMORY ? 3006 : 3004;
+-    return KandeloRejectSocketOperation(cx, promise, nodeError, "getaddrinfo", code);
+-  }
+-  auto cleanup = mozilla::MakeScopeExit([&] { freeaddrinfo(result); });
+-  RootedObject records(cx, JS::NewArrayObject(cx, 0));
+-  if (!records) return false;
+-  uint32_t count = 0;
+-  for (addrinfo* item = result; item; item = item->ai_next) {
+-    char text[INET6_ADDRSTRLEN];
+-    const void* address;
+-    const int recordFamily = item->ai_family == AF_INET6 ? 6 : 4;
+-    if (item->ai_family == AF_INET) {
+-      address = &reinterpret_cast<sockaddr_in*>(item->ai_addr)->sin_addr;
+-    } else if (item->ai_family == AF_INET6) {
+-      address = &reinterpret_cast<sockaddr_in6*>(item->ai_addr)->sin6_addr;
+-    } else continue;
+-    if (!inet_ntop(item->ai_family, address, text, sizeof(text))) continue;
+-    RootedObject record(cx, JS_NewPlainObject(cx));
+-    if (!record || !KandeloDefineSocketString(cx, record, "address", text) ||
+-        !KandeloDefineSocketInt(cx, record, "family", recordFamily)) return false;
+-    RootedValue value(cx, ObjectValue(*record));
+-    if (!JS_SetElement(cx, records, count++, value)) return false;
+-  }
+-  RootedValue value(cx, ObjectValue(*records));
+-  return JS::ResolvePromise(cx, promise, value);
++  return true;
+ }
+ 
+ 

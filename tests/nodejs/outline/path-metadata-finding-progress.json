@@ -1,0 +1,179 @@
+{
+  "at": "2026-11-05T04:34:01.553149+00:00",
+  "recipeRevision": 91,
+  "nativePatch": 92,
+  "auditFindings": [
+    "FS-001 partial",
+    "FS-013 partial",
+    "FS-017 partial",
+    "FS-019 partial"
+  ],
+  "sourceImplemented": [
+    "18 exact selected public sync/callback/promise metadata wrappers over actual POSIX access/chmod/chown/lchown/utimensat",
+    "Native owned path/scalar/work/request/error completion through shared guest queue/resources; atomic per-byte path copying",
+    "Shared native UVException construction with actual guest errno data, raw/empty paths and destination/descriptor field order",
+    "Kernel selects and checks final symlink inode for NOFOLLOW, rejects unknown flags and forwards existing handle-only host flags",
+    "Both Node-backed host adapters use actual lstat/lutimes for final symlinks, including dangling links",
+    "Six OPFS metadata mutation no-ops removed; honest ENOTSUP exposes persistent guest metadata implementation gap"
+  ],
+  "publicApiSourceOwners": [
+    "fs.access",
+    "fs.accessSync",
+    "fs.promises.access",
+    "fs.chmod",
+    "fs.chmodSync",
+    "fs.promises.chmod",
+    "fs.chown",
+    "fs.chownSync",
+    "fs.promises.chown",
+    "fs.lchown",
+    "fs.lchownSync",
+    "fs.promises.lchown",
+    "fs.utimes",
+    "fs.utimesSync",
+    "fs.promises.utimes",
+    "fs.lutimes",
+    "fs.lutimesSync",
+    "fs.promises.lutimes"
+  ],
+  "frontendNative": {
+    "report": ".context/node26-path-metadata-frontend-r2.json",
+    "sha256": "e54e787ce7cca9e46c7cb61532fd83270337f05d5159b044171a2a681f436558",
+    "scope": "7 paired public-source/native dependency controls plus2 real Node-backed host-adapter inode tests. Not guest JSAPI/POSIX queue or browser/OPFS.",
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "sourceIdentities": {
+      "host/test/node-path-metadata.test.ts": "48af6f2ab36ab7dd12362f69b05849748770d67f3e14831b8f3de00b75ca757f",
+      "host/test/path-metadata-nofollow.test.ts": "c48415b9375aaf16c568a84a22945477dabb6e2c16165ca4b3e1f1d132f34e1f",
+      "host/test/fixtures/node-path-metadata-platform.cjs": "ee346f4dfec81a490c0e6a0a0d0d349e556f037de6ac16707027793adb9551ed",
+      "host/test/fixtures/node-path-metadata-controls.cjs": "e34f28247165640eb66dc7972477dad859ce1e1ba8b2f45149af0abc835afda5",
+      "third_party/node-core/node-core.js": "963613faa8062151de0c0aecd3d366676855781d619370dbccd2de5bbdedf984",
+      "third_party/node-core/path-metadata-adapter.js": "9644e03d5e5fa979d344a325d97508b95a08d03ec3c8d5958a565aa523643388",
+      "third_party/node-core/fs-system-errors-adapter.js": "d2541bb65fa772be497d54bdea11f4192fb1b6934ef48c6e0397328b04418ffa",
+      "third_party/node-core/fs-truncate-adapter.js": "84ed757db4ae817e1ada4d17c4ef7f61ba25e18faa967defe37eebc6cc4ab8da",
+      "packages/registry/node-compat/bootstrap.js": "b124d999daece9b125399c5ecdcacbe50201515c5f5f4cdc67a96df7596390e9"
+    },
+    "identityCapture": "Checkpoint identities match source/upstream preflight; no production/test source edits after r2, not a runtime-built artifact receipt"
+  },
+  "portableNative": {
+    "report": ".context/node26-path-metadata-native-r1/report.json",
+    "sha256": "c358e0a211d61364cac3aa662ea3068351041dba5bc164b39ce601c1b38b6874",
+    "scope": "Actual portable POSIX pathname metadata owner/native26 filesystem state differential on the development host; not guest kernel/JSAPI or four-host conformance",
+    "passed": true,
+    "nativeReferenceSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+    "artifactSha256": "b0be34351ed00363ccd57b9cdb312b3d4f7bc0d340c11570130c426578863f6f"
+  },
+  "kernelNative": {
+    "report": ".context/node26-path-metadata-kernel-r2/report.json",
+    "sha256": "ffc91c5bf793e789b1102a8e5b38dce2c59d052603b1fb21d3ffc5af25ee6a5c",
+    "scope": "Native Rust runtime-core unit target, actual syscall code with mock handle-only host. No guest kernel Wasm or browser execution.",
+    "passed": 2,
+    "failed": 0
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-path-metadata-upstream-r1/report.json",
+    "sha256": "383ef9913eeeb7d298166aac9430b8dcb1d3fddde85a50b8bac7c87b79aa2a2b",
+    "scope": "Eight unchanged public metadata test files over candidate generated JavaScript and actual native26 filesystem/request/async owners; not guest POSIX/JSAPI/queue or four-host conformance. Other APIs in these files remain native controls.",
+    "counts": {
+      "native": {
+        "pass": 8,
+        "fail": 0,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      },
+      "candidate": {
+        "pass": 8,
+        "fail": 0,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      }
+    },
+    "files": [
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-access.js",
+        "sourceSha256": "118cac1e5910782e1e7bba47c1f2f28c8217f65383a2b3b933cdfdf9385c008d"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-chmod.js",
+        "sourceSha256": "e7dc59a7a92bee3a12c06a736b64cd3a61077c8bbe05b96152550c63d3a09e21"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-chmod-mask.js",
+        "sourceSha256": "8fa081832b4e7d83ff83fcee883d91e69f742ac1d3bc1835659551eea73c7535"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-lchown.js",
+        "sourceSha256": "ee43f3d7c8d3aac455ade2e1a521aee8485d2d56cceaa7a03ba5732adf44b445"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-lchown-negative-one.js",
+        "sourceSha256": "5df32b8ec61a8c8b098c5ecefdbdd3dd67f573b51aa55b7b406f7e7018d8ac3d"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-chown-negative-one.js",
+        "sourceSha256": "b2b6c1f36a5ffaa959888770f55f4a14ac851fe5d6542f9df6350db26f273820"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-chown-type-check.js",
+        "sourceSha256": "5e2c3b8fde40516b408632caead66d299a748216894dc443988dcc86e0e96229"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-utimes.js",
+        "sourceSha256": "5194d5e9c8c50b5b0d404de60ec92595b0de17e7e906107ca6e313a229502d44"
+      }
+    ],
+    "denominatorMeaning": "Eight focused files per mode, not assertion/API/family totals"
+  },
+  "sourceChecks": {
+    "report": ".context/node26-path-metadata-source-r1/report.json",
+    "sha256": "b98a24bbb782e0fe08e5712e67c7e4d57665a81ce99fc9152b41415ef7bd378b",
+    "scope": "Pinned archive/frozen audit/bundle/bootstrap/patch/style/evidence registration; no guest compile",
+    "checks": 6
+  },
+  "typecheck": {
+    "result": "fail",
+    "diagnostics": 39,
+    "log": ".context/node26-path-metadata-typecheck-r2.log",
+    "sha256": "e558faa5de562164707d31c0bd37ed03b2bc4eda9ac9f59eac517d395cb5cb3e",
+    "command": "cd host && ../scripts/dev-shell.sh ./node_modules/.bin/tsc --noEmit",
+    "scope": "Plain host project typecheck fails outside changed source files. No preexisting/regression-free claim without a prior-source differential."
+  },
+  "retainedNonpasses": [
+    {
+      "report": ".context/node26-path-metadata-frontend-r1.json",
+      "sha256": "c4393268a9644db626509cef85e6e2862d2fa2b696301dd7f6769f2bcc2dff1f",
+      "pass": 8,
+      "fail": 1,
+      "cause": "Missing captured PromiseReject replaced actual promise I/O failures with ReferenceError",
+      "originalInputs": ".context/node26-path-metadata-first-nonpass",
+      "fixed": true
+    },
+    {
+      "log": ".context/node26-path-metadata-typecheck.log",
+      "sha256": "32371e51f76fe57c99c7e770dca7b081019cab321f9faef2d99c6596c1431d0e",
+      "result": "harness-error",
+      "cause": "Initial typecheck invoked nonexistent typescript/bin/tsc rather than declared @typescript/native executable"
+    }
+  ],
+  "abiScope": "Existing host_utimensat import already carries flags; no new imports, layouts, signatures, constants or identity files. Restores final-inode selection semantics; structural source check only, not full ABI conformance.",
+  "remaining": [
+    "Compile actual guest engine91 and changed kernel; native JSAPI/resource/queue/GC/cancellation/ref/OOM/realm/worker behavior and all four hosts",
+    "Signed/pre-epoch kernel stat/VFS times, host timestamp precision, fd/O_PATH/AT_EMPTY_PATH and full UTIME_NOW/OMIT/error ordering",
+    "Persistent OPFS metadata owner and complete guest permission/backend capabilities; ENOTSUP is not a passing implementation or accepted platform exclusion",
+    "FS-022 raw byte component identity across host string decoding; guest atomic byte copies do not close it",
+    "Filesystem namespace/alias/descriptor/public VFS, statfs/link/copy/cp/glob/openAsBlob/watch and remaining file-job/audit requirements",
+    "Shared system-error consumer/stack/diagnostic integration through actual guest artifacts",
+    "All other-family obligations, uncompiled process89/KDF90 and guest OpenSSL3.5.9 source prerequisite, retained SQLite load failure"
+  ],
+  "guestCompiled": false,
+  "kernelWasmCompiled": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "newAcceptedPlatformExclusions": [],
+  "dependencyDocument": "tests/nodejs/outline/path-metadata-implementation-dependencies.md"
+}

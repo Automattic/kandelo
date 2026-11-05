@@ -1,0 +1,10 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3870,6 +3870,7 @@
+       JS_FN("digestNames", (KandeloCryptoGuard<KandeloNativeDigestNames>), 0, 0),
+       JS_FN("timingSafeEqual", (KandeloCryptoGuard<KandeloNativeTimingSafeEqual>), 2, 0),
+       JS_FN("incrementalHash", KandeloNativeIncrementalHash, 1, 0),
++      JS_FN("dirOperation", KandeloNativeDirOperation, 1, 0),
+       JS_FN("createDeflate", KandeloNativeCreateDeflate, 1, 0),
+       JS_FN("createInflate", KandeloNativeCreateInflate, 0, 0),
+       JS_FN("createGzip", KandeloNativeCreateGzip, 1, 0),

@@ -1,0 +1,29 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -274,6 +274,7 @@
+ #include "shell/kandelo-node-native-work.cpp"
+ #include "shell/kandelo-node-native-async.cpp"
+ #include "shell/kandelo-node-codec-handle.cpp"
++#include "shell/kandelo-node-native-fs.cpp"
+ 
+ static JSObject* KandeloNewUint8ArrayCopy(JSContext* cx, const uint8_t* data,
+                                           size_t len) {
+@@ -3353,6 +3354,9 @@
+   if (unwrapped && JS::GetClass(unwrapped) == &KandeloCodecClass) {
+     return KandeloCodecResourceInfo(cx, unwrapped, args.rval());
+   }
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloFsRequestClass) {
++    return KandeloFsRequestResourceInfo(cx, unwrapped, args.rval());
++  }
+   return js::GetKandeloAsyncResourceInfo(cx, resource, args.rval());
+ }
+ static bool KandeloNativeAsyncHookFatal(JSContext* cx, unsigned argc, Value* vp) {
+@@ -3803,6 +3807,8 @@
+       JS_FN("markPromiseAsHandled", KandeloNativeMarkPromiseHandled, 1, 0),
+       JS_FN("getCompressionVersions", KandeloNativeCompressionVersions, 0, 0),
+       JS_FN("getBufferLimits", KandeloNativeBufferLimits, 0, 0),
++      JS_FN("createFsRequest", KandeloNativeCreateFsRequest, 2, 0),
++      JS_FN("ftruncate", KandeloNativeFtruncate, 3, 0),
+       JS_FN("getCompressionConstants", KandeloNativeCompressionConstants, 0, 0),
+       JS_FN("createCompressionHandle", KandeloNativeCreateCompressionHandle, 2, 0),
+       JS_FN("crc32", KandeloNativeCRC32, 2, 0),

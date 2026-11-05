@@ -2,15 +2,29 @@
 import { build } from 'esbuild';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 const root = fileURLToPath(new URL('.', import.meta.url));
 // stream-state.cjs reads this implementation's actual internal slots. Upgrade
 // it and the disturbance/byte-stream contract tests together with the package.
 const streamVersion = JSON.parse(readFileSync(new URL('node_modules/web-streams-polyfill/package.json', import.meta.url), 'utf8')).version;
 if (streamVersion !== '4.3.0') throw Error('Review the stream-state boundary before upgrading Web Streams');
 const result = await build({
-  stdin: { contents: 'module.exports = { ...require("whatwg-url"), domainToUnicode: require("tr46").toUnicode, streams: require("web-streams-polyfill"), streamState: require("./stream-state.cjs") };', resolveDir: root },
+  stdin: { contents: 'module.exports = { ...require("whatwg-url"), domainToUnicode: require("tr46").toUnicode, hostnameToUnicode: require("./host-idna.cjs").toUnicode, hostnameToASCII: require("./host-idna.cjs").toASCII, streams: require("web-streams-polyfill"), streamState: require("./stream-state.cjs") };', resolveDir: root },
   bundle: true, write: false, format: 'cjs', platform: 'neutral', target: 'es2022',
   legalComments: 'inline', charset: 'utf8', mainFields: ['main'],
+  plugins: [{ name: 'node-special-host-idna', setup(plugin) {
+    plugin.onLoad({ filter: /whatwg-url\/lib\/url-state-machine\.js$/ }, ({ path }) => {
+      const source = readFileSync(path, 'utf8');
+      if (createHash('sha256').update(source).digest('hex') !==
+          '42b04c1134efa5940fcc87963fe38536befa98462cb0fd112ba4e92e2cd720d7') {
+        throw Error('Review the special-host IDNA contract before upgrading whatwg-url');
+      }
+      const original = 'const result = tr46.toASCII(domain, {';
+      if (source.split(original).length !== 2) throw Error('Review the domain-to-ASCII call site');
+      return { contents: source.replace(original,
+        `const result = require(${JSON.stringify(root + 'host-idna.cjs')}).toASCII(domain, {`), loader: 'js' };
+    });
+  } }],
 });
 const licenses = ['whatwg-url', 'webidl-conversions', 'tr46', 'punycode', 'web-streams-polyfill'].map(name => {
   const license = name === 'punycode' ? 'LICENSE-MIT.txt' : name === 'whatwg-url' ? 'LICENSE.txt' : name === 'web-streams-polyfill' ? 'LICENSE' : 'LICENSE.md';

@@ -1,0 +1,11 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4025,6 +4025,8 @@
+       JS_FN("fsOpenPromise", (KandeloFsPromiseGuard<KandeloFsOpenPromise>), 4, 0),
+       JS_FN("fsRmSync", (KandeloFsPromiseGuard<KandeloNativeRmSync>), 4, 0),
+       JS_FN("fsScandir", (KandeloFsPromiseGuard<KandeloNativeScandir>), 3, 0),
++      JS_FN("fsReaddirSync", (KandeloFsPromiseGuard<KandeloNativeReaddirSync>), 4, 0),
++      JS_FN("fsReaddirPromise", (KandeloFsPromiseGuard<KandeloNativeReaddirPromise>), 5, 0),
+       JS_FN("fsPathSync", (KandeloFsPromiseGuard<KandeloFsPathSync>), 4, 0),
+       JS_FN("fsPathPromise", (KandeloFsPromiseGuard<KandeloFsPathPromise>), 5, 0),
+       JS_FN("getFsConstants", KandeloNativeFsConstants, 0, 0),

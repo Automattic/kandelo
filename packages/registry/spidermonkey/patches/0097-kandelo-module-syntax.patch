@@ -1,0 +1,10 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3921,6 +3921,7 @@
+   }
+   const JSFunctionSpec funcs[] = {
+       JS_FN("evalScriptAsFunction", KandeloNativeEvalScriptAsFunction, 2, 0),
++      JS_FN("moduleSyntax", KandeloNativeModuleSyntax, 3, 0),
+       JS_FN("isPromise", KandeloNativeIsPromise, 1, 0),
+       JS_FN("hasObjectKind", KandeloNativeHasObjectKind, 2, 0),
+       JS_FN("getAsyncContext", KandeloNativeGetAsyncContext, 0, 0),

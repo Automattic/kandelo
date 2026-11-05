@@ -1,0 +1,93 @@
+{
+  "at": "2026-11-05T13:43:34.538370+00:00",
+  "recipeRevision": 112,
+  "auditFindings": [
+    "ZIP-007 partial:shared/growable and synchronous resizable byte ownership"
+  ],
+  "sourceImplemented": [
+    "Codec synchronous/dictionary/CRC view admission uses actual shared/growable/resizable byte storage;ordinary detached checks remain",
+    "Actual queue leases distinguish rooted stable shared backing stores from counted fixed ordinary-buffer length pins",
+    "Shared leases permit growth outside the originally captured span and release roots without changing length-pin ownership",
+    "Actual callback writeFile/appendFile consumer uses the same shared queue lease,not a codec-specific path"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-compression-storage-source/report.json",
+    "sha256": "4e2ad351fb3da5c5dc6f9280e55f299d4e9dcf1850a218dc65817ef093b06996",
+    "checks": 2,
+    "pinnedReferenceInputs": 8
+  },
+  "baselineGuest": {
+    "report": ".context/node26-compression-storage-baseline/report.json",
+    "sha256": "1098a71415b7f52248eb33a53b7c6c6e52eae35da5f760fb5c5d1febc8d84f58",
+    "engineRevision": 110,
+    "counts": {
+      "pass": 0,
+      "fail": 7,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "nativeReferenceCases": 7,
+    "nativeReferencePassed": 7
+  },
+  "targetedEngine": {
+    "report": ".context/node26-engine-r112-accepted/report.json",
+    "sha256": "d52f108e5945d55b37f346a364d526bf5a78784bfd6e0d94850af2270ad8f047",
+    "recipeRevision": 112,
+    "exitCode": 0
+  },
+  "focusedGuest": {
+    "report": ".context/node26-compression-storage-candidate/report.json",
+    "sha256": "41ee512b4d4eaa4b4b801aa18be760b7e8e72d76a92843ea8e066a1c4f9297de",
+    "counts": {
+      "pass": 3,
+      "fail": 4,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "nativeReferenceCases": 7,
+    "nativeReferencePassed": 7,
+    "scope": "Seven same-source exact-native/Node-host actual guest cases;no browser/overall conformance"
+  },
+  "retainedBuildFailure": {
+    "jobId": "node26-core-engine-r112-1105-082051-1278",
+    "exitCode": 1,
+    "directory": ".context/node26-compression-storage-r112-failed",
+    "log": {
+      "report": ".context/node26-compression-storage-r112-failed/output.log",
+      "sha256": "d37ea412836963322434288c9243811d1e9b6f989e9a3007e459a64d024e1a33"
+    },
+    "prebuildSource": {
+      "report": ".context/node26-compression-storage-r112-failed/source/report.json",
+      "sha256": "af798f91395ee7202a2435515d063378f0f193967f75c8e4599df327883590fb"
+    },
+    "diagnosis": "Our missing js/SharedArrayBuffer.h include hid declarations for public checked shared-buffer APIs;header added and normal build retried. No outside-runtime fault."
+  },
+  "remaining": [
+    "Ordinary asynchronous resizable backing-store leases with correct observable resize/transfer behavior",
+    "Pending ordinary transfer,unrelated boolean pins,detached/out-of-bounds errors,cross-owner/realm/GC/cancel/teardown/failure cases",
+    "Complete codec/ZIP/iterable/Web/stream/filesystem lifecycle and accounting;ZIP-011/012 reference questions",
+    "Identified current artifacts and full audited API evidence on all four hosts"
+  ],
+  "gzipMetadataDiagnosis": {
+    "report": ".context/node26-compression-storage-gzip-boundary/report.json",
+    "sha256": "edb1b7cd6f47c3786a8603b287010bbae5e59fe0f22cd82b101b918146024a5a",
+    "originalFailuresReclassified": false,
+    "reproducedOutputs": 6
+  },
+  "guestCompiled": true,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": [
+    {
+      "api": "gzip/gzipSync default OS header metadata",
+      "boundary": "Exact native macOS gzip OS byte19 versus unchanged guest zlib Unix-default3;not an exclusion of gzip/shared storage",
+      "evidence": ".context/node26-compression-storage-gzip-boundary/report.json",
+      "allFourOriginalComparisonFailuresPreserved": true
+    }
+  ]
+}

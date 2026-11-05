@@ -1,0 +1,50 @@
+{
+  "at": "2026-11-05T01:31:53.799695+00:00",
+  "recipeRevision": 84,
+  "sourceImplemented": [
+    "Actual full unchanged pinned Test/Suite/harness/utils over existing process/async/stream/timer/assertion owners",
+    "Source-derived target default option state; parser still rejects unsupported test/watch/coverage/CLI",
+    "Actual saved-frame caller-of-caller location route and private existing assertion utility owner",
+    "Full pinned rerun reporter dependency; actual failure/skip/todo/expected-failure and automatic per-test mock source paths"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-testing-owner-static/report.json",
+    "sha256": "ee7c09dec93461fd1eed09e77f36d55798fd4f43e3a7952e3d33da770fba88d4"
+  },
+  "nativeBoundaryControls": {
+    "log": ".context/node26-testing-owner-controls-r2.log",
+    "sha256": "bced4e33ecd3e9ab87d8a3f8f809678aa78fec129b0258900cfb9bf2c2bf44de",
+    "counts": {
+      "pass": 9,
+      "fail": 0,
+      "skip": 0
+    },
+    "scope": "Source owners over actual native dependencies, not guest/four-host."
+  },
+  "pairedNativeDifferential": {
+    "report": ".context/node26-testing-owner-differential/report.json",
+    "sha256": "71a721ff37d032d4b8dd3dbffb945f8ce9cc3e878c28640f08d12e2f4390310d",
+    "observations": 6,
+    "defaultPublicTestCountsEach": {
+      "pass": 2,
+      "fail": 0,
+      "skip": 1
+    },
+    "deliberateFailureCountsEach": {
+      "pass": 0,
+      "fail": 1,
+      "exitCode": 1
+    },
+    "scope": "Preserve actual skips/failures; expected failure control is not passing compatibility."
+  },
+  "guestCompiled": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "remaining": [
+    "Guest caller/async/fatal/ref/phase/process/tree/cleanup/lifecycle integration",
+    "run/discovery/isolation/CLI/preload/watch/global setup/full reporters",
+    "Measured coverage and benchmark execution/statistics",
+    "Complete snapshots/module mocks/structured stacks/source maps and activation",
+    "All unreconciled original observations and identified-artifact four-host validation"
+  ]
+}

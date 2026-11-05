@@ -578,6 +578,11 @@ pipe pair.
   `fsync()` succeeds after already-completed directory operations because the
   File System API exposes no directory flush primitive; it is not an
   additional crash-durability barrier.
+  OPFS mode/ownership/timestamp mutation currently reports `ENOTSUP`;
+  the source removes previous success no-ops. Persistent guest POSIX metadata
+  is still an implementation gap, not an inherent browser-wide exclusion.
+  This backend change has no new browser runtime validation; ordinary guest
+  rootfs/tmpfs metadata is owned separately by the kernel.
 - `DeviceFileSystem` — `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`
 - Stable-identity regular files, including OPFS regular files on supported
   browsers, can be shared across process memories through the host mapping
@@ -4392,6 +4397,38 @@ proxy boundary. Kandelo does not rewrite registry URLs, package metadata, or
 tarball locations and has no npm- or package-specific proxy routing.
 
 #### Node core compatibility
+
+Source99 installs full pinned promise writeFile/appendFile over existing
+actual queued jobs and FileHandle owners, replacing synchronous pathname
+fallbacks. Promise readFile already used its queued owner. Six focused and
+eleven affected controls plus four unchanged files per mode pass at native
+boundaries. Current97–99 and four-host guest integration remain unverified:
+[promise write/append scope](../tests/nodejs/outline/file-promises-implementation-dependencies.md).
+
+Source98 replaces legacy sync whole-file wrappers with unchanged pinned
+read/write/append algorithms over existing actual native I/O and private
+bytes. Six new and fourteen affected controls plus four selected unchanged
+upstream files per mode pass at explicit native boundaries. Source97/98
+remain guest-uncompiled; promise pathname jobs and full four-host behavior
+remain open. See [sync ownership](../tests/nodejs/outline/file-sync-implementation-dependencies.md).
+
+Current build checkpoint: engine96 compiles the source through95 with
+actual guest OpenSSL3.5.9. Four focused Node-host differentials pass; they
+do not validate the full public API surface or four hosts. Source97 adds
+actual linked OpenSSL metadata and target process-version descriptors;
+that correction is not guest-compiled. Changed kernel/host source remains
+unbuilt. Older recipe-stage build statements below are historical; see
+[the exact current receipt](../tests/nodejs/outline/engine96-integration.md).
+
+The source93 candidate supplies a shared Performance timeline/EventTarget
+owner for globals and perf_hooks, pinned mark/measure/resource/timerify
+algorithms and actual observer buffering. It uses guest clock and clone
+owners, not the embedding browser's timeline. Native milestones, loop
+metrics, histograms and several producers remain missing; their APIs report
+explicit failure instead of preset statistics. Focused native/source controls
+do not establish browser guest behavior. See
+[Performance timeline limits](../tests/nodejs/outline/performance-timeline-implementation-dependencies.md).
+
 
 The shared Node compatibility runtime implements `buffer.isUtf8` and
 `buffer.isAscii` for typed arrays and ordinary/shared ArrayBuffers, with byte

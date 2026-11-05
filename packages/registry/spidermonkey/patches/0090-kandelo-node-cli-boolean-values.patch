@@ -1,0 +1,37 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -16141,6 +16141,15 @@
+   return glob;
+ }
+ 
++// JSAPI has numeric property overloads, but no bool overload. Publish the
++// actual boolean primitive instead of promoting guest CLI state to int32.
++static bool KandeloDefineBooleanProperty(JSContext* cx, HandleObject object,
++                                         const char* name, bool value,
++                                         unsigned attributes) {
++  RootedValue boolean(cx, BooleanValue(value));
++  return JS_DefineProperty(cx, object, name, boolean, attributes);
++}
++
+ static bool BindScriptArgs(JSContext* cx, OptionParser* op) {
+   AutoReportException are(cx);
+ 
+@@ -16226,12 +16235,12 @@
+     if (!JS_DefineProperty(cx, cli, "evalSource", evalSource, 0) ||
+         !JS_DefineProperty(cx, cli, "conditions", conditions, 0) ||
+         !JS_DefineProperty(cx, cli, "packageMapPath", packageMapPath, 0) ||
+-        !JS_DefineProperty(cx, cli, "preserveSymlinks", kandeloNodeCLI.preserveSymlinks, 0) ||
+-        !JS_DefineProperty(cx, cli, "preserveSymlinksMain", kandeloNodeCLI.preserveSymlinksMain, 0) ||
+-        !JS_DefineProperty(cx, cli, "zeroFillBuffers", gKandeloZeroFillBuffers, 0) ||
+-        !JS_DefineProperty(cx, cli, "noWarnings", kandeloNodeCLI.noWarnings, 0) ||
+-        !JS_DefineProperty(cx, cli, "experimentalStreamIter", kandeloNodeCLI.experimentalStreamIter, 0) ||
+-        !JS_DefineProperty(cx, cli, "experimentalSqlite", kandeloNodeCLI.experimentalSqlite, 0) ||
++        !KandeloDefineBooleanProperty(cx, cli, "preserveSymlinks", kandeloNodeCLI.preserveSymlinks, 0) ||
++        !KandeloDefineBooleanProperty(cx, cli, "preserveSymlinksMain", kandeloNodeCLI.preserveSymlinksMain, 0) ||
++        !KandeloDefineBooleanProperty(cx, cli, "zeroFillBuffers", gKandeloZeroFillBuffers, 0) ||
++        !KandeloDefineBooleanProperty(cx, cli, "noWarnings", kandeloNodeCLI.noWarnings, 0) ||
++        !KandeloDefineBooleanProperty(cx, cli, "experimentalStreamIter", kandeloNodeCLI.experimentalStreamIter, 0) ||
++        !KandeloDefineBooleanProperty(cx, cli, "experimentalSqlite", kandeloNodeCLI.experimentalSqlite, 0) ||
+         !JS_DefineProperty(cx, cli, "execArgv", execArgs, 0) ||
+         !JS_DefineProperty(cx, cx->global(), "__kandeloNodeCliOptions", cli, 0)) return false;
+   }

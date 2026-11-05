@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "nodeVersion": "26.13.0",
+  "nodeSourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sqliteVersion": "3.54.0",
+  "source": {
+    "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+    "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+  },
+  "inputFiles": {
+    "deps/sqlite/sqlite3.c": "2da161e310ef0aba3465f22a4d12b8a43723236f0942fa76e8aac523c3317243",
+    "deps/sqlite/sqlite3.h": "cd20a2877bc82b94e36c1093b727dd87cfa3c1d581aac6e240925535cbd90166",
+    "deps/sqlite/sqlite3ext.h": "48963abfefb41ac329ef9d706acb5eadba952a99a748285c9ded6b5e0942721b",
+    "deps/sqlite/sqlite.gyp": "66d47d8ed22d8828d372f7b611cdd05d4636a1c644d26d4be72f7f1faddcd665",
+    "LICENSE": "8e603aa87c70d36e497004f0dec63111511cb61b7d65ace12e10ea791599286c"
+  },
+  "defines": [
+    "SQLITE_DEFAULT_MEMSTATUS=0",
+    "SQLITE_ENABLE_COLUMN_METADATA",
+    "SQLITE_ENABLE_DBSTAT_VTAB",
+    "SQLITE_ENABLE_FTS3",
+    "SQLITE_ENABLE_FTS3_PARENTHESIS",
+    "SQLITE_ENABLE_FTS5",
+    "SQLITE_ENABLE_GEOPOLY",
+    "SQLITE_ENABLE_MATH_FUNCTIONS",
+    "SQLITE_ENABLE_PERCENTILE",
+    "SQLITE_ENABLE_PREUPDATE_HOOK",
+    "SQLITE_ENABLE_RBU",
+    "SQLITE_ENABLE_RTREE",
+    "SQLITE_ENABLE_SESSION"
+  ],
+  "cflags": [
+    "-fvisibility=hidden"
+  ]
+}

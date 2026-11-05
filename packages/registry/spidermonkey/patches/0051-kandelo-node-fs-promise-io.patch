@@ -1,0 +1,39 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -180,7 +180,8 @@
+ #include "proxy/ScriptedProxyHandler.h"
+ #include "vm/GeneratorObject.h"
+ #include "js/Promise.h"  // JS::IsPromiseObject
+-#include "js/PropertyAndElement.h"  // JS_DefineElement, JS_DefineFunction, JS_DefineFunctions, JS_DefineProperties, JS_DefineProperty, JS_GetElement, JS_GetProperty, JS_GetPropertyById, JS_HasProperty, JS_SetElement, JS_SetProperty, JS_SetPropertyById
++#include "js/PropertyAndElement.h"
++#include "js/BigInt.h"  // JS_DefineElement, JS_DefineFunction, JS_DefineFunctions, JS_DefineProperties, JS_DefineProperty, JS_GetElement, JS_GetProperty, JS_GetPropertyById, JS_HasProperty, JS_SetElement, JS_SetProperty, JS_SetPropertyById
+ #include "js/String.h"
+ #include "js/PropertySpec.h"
+ #include "js/Realm.h"
+@@ -277,6 +278,9 @@
+ #include "shell/kandelo-node-codec-handle.cpp"
+ #include "shell/kandelo-node-native-fs.cpp"
+ #include "shell/kandelo-node-file-handle.cpp"
++#include "shell/kandelo-node-fs-promise.cpp"
++#include "shell/kandelo-node-fs-constants.h"
++#include "shell/kandelo-node-buffer.cpp"
+ 
+ static JSObject* KandeloNewUint8ArrayCopy(JSContext* cx, const uint8_t* data,
+                                           size_t len) {
+@@ -3813,6 +3817,16 @@
+       JS_FN("ftruncate", KandeloNativeFtruncate, 3, 0),
+       JS_FN("closeDescriptor", KandeloNativeCloseDescriptor, 2, 0),
+       JS_FN("adoptFileHandle", KandeloNativeAdoptFileHandle, 3, 0),
++      JS_FN("fsControlSync", (KandeloFsPromiseGuard<KandeloFsControlSync>), 4, 0),
++      JS_FN("fsControlPromise", (KandeloFsPromiseGuard<KandeloFsControlPromise>), 5, 0),
++      JS_FN("fsIoPromise", (KandeloFsPromiseGuard<KandeloFsIoPromise>), 7, 0),
++      JS_FN("fsVectorPromise", (KandeloFsPromiseGuard<KandeloFsVectorPromise>), 5, 0),
++      JS_FN("fsStatPromise", (KandeloFsPromiseGuard<KandeloFsStatPromise>), 3, 0),
++      JS_FN("fsStatSync", (KandeloFsPromiseGuard<KandeloFsStatSync>), 3, 0),
++      JS_FN("fsOpenPromise", (KandeloFsPromiseGuard<KandeloFsOpenPromise>), 4, 0),
++      JS_FN("getFsConstants", KandeloNativeFsConstants, 0, 0),
++      JS_FN("createUnsafeArrayBuffer", KandeloNativeUnsafeArrayBuffer, 1, 0),
++      JS_FN("arrayBufferAlignedOffset", KandeloNativeArrayBufferAlignedOffset, 2, 0),
+       JS_FN("peekFsGcCloseError", KandeloNativePeekFsGcClose, 0, 0),
+       JS_FN("ackFsGcCloseError", KandeloNativeAckFsGcClose, 0, 0),
+       JS_FN("getCompressionConstants", KandeloNativeCompressionConstants, 0, 0),

@@ -521,6 +521,30 @@ name = "node-browser-bundle"
 class = "browser-product"
 
 [[packages]]
+name = "node-cares"
+class = "platform"
+
+[[packages]]
+name = "node-codecs"
+class = "platform"
+
+[[packages]]
+name = "node-llhttp"
+class = "platform"
+
+[[packages]]
+name = "node-ncrypto"
+class = "platform"
+
+[[packages]]
+name = "node-simdjson"
+class = "platform"
+
+[[packages]]
+name = "node-sqlite"
+class = "platform"
+
+[[packages]]
 name = "openssl"
 class = "platform"
 

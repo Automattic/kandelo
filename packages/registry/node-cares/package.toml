@@ -1,0 +1,41 @@
+kind = "library"
+name = "node-cares"
+version = "26.13.0"
+kernel_abi = 55
+depends_on = []
+arches = ["wasm32", "wasm64"]
+
+[source]
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz"
+sha256 = "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/c-ares/c-ares/blob/main/LICENSE.md"
+
+[build]
+script_path = "packages/registry/node-cares/build-node-cares.sh"
+
+[outputs]
+libs = ["lib/libcares.a"]
+headers = ["include/ares.h", "include/ares_build.h", "include/ares_dns.h", "include/ares_dns_record.h", "include/ares_nameser.h", "include/ares_version.h"]
+files = ["share/node-cares/provenance.json", "share/licenses/node-cares/LICENSE.md"]
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "scripts/dev-shell.sh", linux = "scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.16"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "scripts/dev-shell.sh", linux = "scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "scripts/dev-shell.sh", linux = "scripts/dev-shell.sh" }

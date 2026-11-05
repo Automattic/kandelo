@@ -1,0 +1,97 @@
+{
+  "at": "2026-11-05T02:58:47.056152+00:00",
+  "recipeRevision": 89,
+  "auditFindings": [
+    "PROC-010 partial",
+    "PROC-009 dependency only"
+  ],
+  "sourceImplemented": [
+    "Full unchanged pinned process weak finalization registry with actual WeakRef/FinalizationRegistry and process event ownership",
+    "Exact public lazy finalization getter/setter, descriptors, replaceability and module cache",
+    "Exact symbol-first ref/unref dispatch, fallback order, receiver, undefined result and primary exceptions",
+    "Pinned on-exit-leak-free MIT notice retained in generated bundle and explicit package input"
+  ],
+  "sourceOnly": true,
+  "lastAcceptedEngine": 88,
+  "guestCompiled": false,
+  "frontendNativeEvidence": {
+    "report": ".context/node26-process-lifetime-native-r3/report.json",
+    "sha256": "094323c3198bf538f7d4f686e2a6fd8d4ad008b6fdb059883d8f89f412250889",
+    "counts": {
+      "focusedPass": 6,
+      "focusedFail": 0,
+      "upstreamPassPerMode": 2,
+      "upstreamFail": 0
+    },
+    "scope": "Candidate generated JS with actual native process events, timers, workers, WeakRef and FinalizationRegistry; not guest engine/kernel or four-host conformance",
+    "nativeReferenceSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+    "unchangedUpstreamTests": [
+      {
+        "name": "test-process-ref-unref.js",
+        "sourceSha256": "603d83fdf569c1926e15fcb4ecacd6b9a2adf191732765f5bc99c2c9b08f71a7",
+        "nativeExitCode": 0,
+        "candidateExitCode": 0,
+        "candidatePreloadReceipts": 1,
+        "candidateWorkerPreloadReceipts": 0,
+        "scope": "Unchanged assertions with real native process/GC/worker dependencies, not guest hosts"
+      },
+      {
+        "name": "test-process-finalization.mjs",
+        "sourceSha256": "f0924ed2ae797171066193e5f77d0be50be901e50c25be7b6da570b44313b5fc",
+        "nativeExitCode": 0,
+        "candidateExitCode": 0,
+        "candidatePreloadReceipts": 10,
+        "candidateWorkerPreloadReceipts": 2,
+        "scope": "Unchanged assertions with real native process/GC/worker dependencies, not guest hosts"
+      }
+    ],
+    "actualNonzeroControls": [
+      {
+        "name": "explicitExit",
+        "expectedExitCode": 9,
+        "candidateExitCode": 9,
+        "nativeExitCode": 9
+      },
+      {
+        "name": "deferredCallbackError",
+        "expectedExitCode": 1,
+        "candidateExitCode": 1,
+        "nativeExitCode": 1
+      }
+    ],
+    "upstreamTestAccountingPerMode": {
+      "tests": 9,
+      "pass": 9,
+      "fail": 0,
+      "skip": 0,
+      "cancelled": 0,
+      "todo": 0
+    }
+  },
+  "focusedVitest": {
+    "report": ".context/node26-process-lifetime-native-r3/vitest.json",
+    "sha256": "544eda33e91498bf4727991ef6d08020604ace56397e2dfd0c00f0982768cdbd",
+    "pass": 9,
+    "fail": 0,
+    "skip": 0,
+    "scope": "Six same public lifetime controls plus three affected process-state controls; counts overlap standalone evidence"
+  },
+  "sourceChecks": {
+    "report": ".context/node26-process-lifetime-source-checks/report.json",
+    "sha256": "45a1ea210df453c999ae3586d101f05c6e0ead63799ff1542aabcb99d639251d",
+    "checks": 7,
+    "frozenAuditIdentitiesVerified": 136
+  },
+  "remaining": [
+    "Guest compilation/normal stamped artifact, actual GC cleanup scheduling and teardown, beforeExit/exit error integration and per-worker registries across all four hosts",
+    "Complete resource-specific ref/unref/close ownership; dispatcher does not repair existing inert/missing resource methods",
+    "Complete fatal/rejection/monitor/capture policy, process accounting, CLI/permission/environment/signal/IPC/worker ownership",
+    "Separate enabled SQLite module-load WebAssembly exception remains an unresolved guest implementation/integration failure",
+    "Individual API reconciliation, all other family gaps, and identified-artifact four-host conformance"
+  ],
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "historicalFailuresReclassified": false,
+  "overallSuiteRun": false,
+  "fullProductRebuild": false
+}

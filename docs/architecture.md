@@ -179,6 +179,14 @@ them only for host directories mounted beneath its own `/`
 (`crates/runtime-core/src/hostdir.rs`). The listing above is abridged;
 `crates/shared/src/lib.rs` and `abi/snapshot.json` hold the full import set.
 
+Normal host_getrandom calls use an independent ordinary host buffer and
+invoke the host Web Crypto provider in chunks of at most 65,536 bytes.
+Only a fully successful fill is copied back into the Rust-lent kernel
+destination; no provider receives a kernel-memory view. A missing secure
+provider returns ENOSYS and provider failures remain errors. There is no
+Math.random entropy fallback. This shared Node/browser host owner is
+separate from the explicitly seeded image-build mode described below.
+
 `host_proc_read_bytes` / `host_proc_write_bytes` take a 64-bit guest address,
 so a wasm64 process's pointer above 4 GiB reaches the kernel intact. They are
 how the kernel reads the arguments it dereferences itself (see "Opaque syscall
@@ -5954,3 +5962,656 @@ effects; it does not call kernel exports. Gateways forward only the
 original operation and the gate callback's exact scope and effect
 registrar. Notification callbacks and their captured state are created
 only on the active-watch path.
+
+### Node stdio stream source candidate
+
+The Node compatibility source now routes process stdio through
+third_party/node-core/fd-stream-platform-adapter.js and the pinned stream
+state machines. Native fd writes own bytes through partial-write/readiness
+completion; Writable owns queue/HWM/drain/callback state above that seam.
+Native read requests remain exact Promise-identified owners, and Readable
+owns buffered input/encoding/EOF. Pause retires the pending read without
+closing a reused numeric descriptor; ref state applies to actual requests.
+The target's unchanged stdout/stderr dummyDestroy keeps process-owned fds
+open while preserving stream close observation and subsequent use.
+
+This is an unbuilt guest source candidate shared by all four hosts. Native
+pipe/file controls cover the JS owner route, using real native engine and
+I/O dependencies rather than the guest fd watches. Exact public Socket/
+TTY/file subclasses, type-specific descriptor adoption/close policy,
+terminal modes/window/signal routing, native error/async lineage/EINTR and
+inherited-descriptor nonblocking/readiness behavior remain implementation
+and validation work. It does not alter the host/kernel wire ABI or prove
+four-host runtime conformance.
+
+### Node message-port source candidate
+
+The proposed Node message transport owns synchronized entangled endpoints in
+third_party/node-core/port-queue.h. Its queue orders actual serialized packets
+and peer-close markers; ref/start/stop/close and acknowledgement are distinct
+states. native-ports.cpp roots serialized engine buffers within their owning
+JS context and clears them before context teardown. Those rooted JS values
+are not a cross-thread serialization format and cannot be moved to another
+worker. Native peer/ref/close state, not an artificial timer, determines loop
+liveness. The engine loop gains a messaging dispatch phase; its existing
+polling/idle-wait implementation still needs later validation/work.
+
+Pinned worker IO owns public NodeEventTarget/listener/close behavior over
+these endpoints. Full pinned Undici message/close/error event classes share
+WebIDL and the same constructors used by global, module and stream routes.
+This is an unbuilt guest source candidate. The C++ queue is exercised by a
+native-host threaded fixture, and the shared frontend by actual native Node
+queues/serialization. Neither establishes the guest bridge/GC/provider/realm/
+loop path or any four-host conformance. Actual cross-worker bootstrap,
+transfer/adoption, broadcast groups and exact Worker stop/join/environment/
+identity remain separate owners to implement.
+
+### Node testing and process-clock source candidates
+
+The partial testing namespace uses unchanged pinned Node mock/virtual-clock,
+assert/snapshot configuration, structured result stream and reporter source.
+Its mocks own actual calls/accesses/descriptors/restoration and selected
+virtual timer/Date state. The guest runner still has no implemented test-tree/
+execution/context/hook/CLI/isolation owner. Those routes reject explicitly,
+without running callbacks or emitting invented passing records. Reporter
+formatting and manual producer-record controls are not real test outcomes or
+measured coverage. Module mocks remain dependent on activation, normal loader
+hooks/cache identity and actual caller stacks.
+
+Process hrtime now has a source route to monotonic-clock.h, the existing guest
+clock_gettime(CLOCK_MONOTONIC) syscall, kernel clock translation and host time
+providers. Normal Node hosts use outer process.hrtime.bigint; browser hosts
+use performance.now through VirtualPlatformIO. Deterministic image-build mode
+retains its existing guest logical-clock policy. These sources are independent
+of the guest Date object. Nanosecond units do not promise nanosecond physical
+resolution. Existing CPU-clock approximations and clock_getres limitations are
+unchanged. process.uptime/performance and actual process-start metadata remain
+separate gaps; this change does not make every timing API correct.
+
+The POSIX nanosecond helper is compiled/executed only on the native host.
+Shared algorithm controls use a real native reference clock boundary. The
+engine hook, guest kernel route, virtual-clock interaction and four-host
+conformance are not established. No full product rebuild or overall suite
+was run for these source changes.
+
+
+### Pathname metadata source owners
+
+The recipe91 candidate reuses pinned public access/chmod/chown/lchown/
+utimes/lutimes algorithms over actual POSIX sync/queued work. One private
+system-error owner uses real guest errno data and preserves raw/empty paths.
+The kernel selects the final symlink inode for nofollow timestamps, checks
+that inode's permissions and forwards existing flags through the handle-only
+host operation. Both Node-backed adapters use native lstat/lutimes in that
+case. OPFS metadata mutations fail ENOTSUP until persistent guest metadata
+exists; this is an implementation gap. Native/source checks do not compile
+the new guest bridge or kernel Wasm, nor establish four-host conformance.
+See [path metadata ownership](../tests/nodejs/outline/path-metadata-implementation-dependencies.md).
+
+### Callback whole-file write owners
+
+Recipe95 selects unchanged public callback write/append algorithms over a
+native FSREQCALLBACK job and shared work/callback scope. Actual guest POSIX
+open/write-all/close owns one descriptor, exact error pathname policy and
+byte lifetime through completion. Resizable views copy after init; regular
+views use the existing dispatch pin, with full detach/shared/transfer lease
+semantics still incomplete. Flush/user-fd paths retain their real asynchronous
+descriptor operations. Sync and path-promise file jobs remain separate gaps.
+Native/source controls pass, but the new guest bridge is uncompiled and
+four-host conformance remains open. See
+[write-file source and evidence](../tests/nodejs/outline/write-file-implementation-dependencies.md).
+
+### Public source-map query owners
+
+Recipe94 embeds the full unchanged pinned SourceMap class over shared
+primordials and validators. The actual Module namespace supplies its public
+constructor with real VLQ/indexed-map/query and payload state. Exact pinned
+input array/nested-section aliases are retained; no deep clone is invented.
+Native/source controls verify this helper and its bootstrap binding. Actual
+loader capture, source URL/map cache lifetime and enabled stack remapping
+remain missing. No guest compile or four-host conformance is established.
+See [SourceMap source and dependencies](../tests/nodejs/outline/source-map-implementation-dependencies.md).
+
+### Performance timeline source owners
+
+Recipe93 reuses complete pinned Performance, mark/measure, resource entry,
+NodeTiming and timerify modules over the actual monotonic process clock,
+structured clone and EventTarget owners. Timeline storage and observer queues
+are shared with installed DNS/function/user/resource producers. Global and
+builtin Performance objects share one owner and the pinned replaceable
+attribute helper. Missing native milestones, idle/loop metrics, histogram
+storage/sampling and other producers remain explicit implementation gaps.
+The zero-statistics monitor facade is removed. Focused native/source checks
+pass, while one unchanged upstream file still fails at the missing milestone
+provider. Guest source93 and four-host conformance are unvalidated. See
+[Performance timeline source and evidence](../tests/nodejs/outline/performance-timeline-implementation-dependencies.md).
+
+### Argon2 source owners
+
+Recipe92 adds unchanged public Argon2 validation/callback/result algorithms
+over the actual OpenSSL provider derivation and shared KDF/native resource
+owners. Four byte inputs have async-before-init versus sync-after-init
+snapshot ownership. The native compile capability is independent of actual
+provider/FIPS availability; the real default context gates private thread
+contexts. Actual Argon2 lanes remain independent of available worker threads.
+Source/native and affected controls pass, including provider error records.
+The new guest request class/bridge and OpenSSL dependency remain unbuilt,
+and four-host conformance is unestablished. Key/WebCrypto and remaining
+crypto dependencies stay open. See
+[Argon2 source and evidence](../tests/nodejs/outline/argon2-implementation-dependencies.md).
+
+### Password-KDF source owners
+
+Source99 installs full pinned promise writeFile/appendFile over existing
+actual queued jobs and FileHandle owners, replacing synchronous pathname
+fallbacks. Promise readFile already used its queued owner. Six focused and
+eleven affected controls plus four unchanged files per mode pass at native
+boundaries. Current97–99 and four-host guest integration remain unverified:
+[promise write/append scope](../tests/nodejs/outline/file-promises-implementation-dependencies.md).
+
+Source98 replaces legacy sync whole-file wrappers with unchanged pinned
+read/write/append algorithms over existing actual native I/O and private
+bytes. Six new and fourteen affected controls plus four selected unchanged
+upstream files per mode pass at explicit native boundaries. Source97/98
+remain guest-uncompiled; promise pathname jobs and full four-host behavior
+remain open. See [sync ownership](../tests/nodejs/outline/file-sync-implementation-dependencies.md).
+
+Current build checkpoint: engine96 compiles the source through95 with
+actual guest OpenSSL3.5.9. Four focused Node-host differentials pass; they
+do not validate the full public API surface or four hosts. Source97 adds
+actual linked OpenSSL metadata and target process-version descriptors;
+that correction is not guest-compiled. Changed kernel/host source remains
+unbuilt. Older recipe-stage build statements below are historical; see
+[the exact current receipt](../tests/nodejs/outline/engine96-integration.md).
+
+The recipe90 candidate selects complete pinned PBKDF2/scrypt public modules
+over actual OpenSSL derivation and shared native work/resource source owners.
+Async inputs are copied before resource init; sync inputs are read after init
+and before native execution. Guest pthread work owns native bytes, and the
+owning realm enters the shared callback scope for completion. The shared
+OpenSSL source pin is3.5.9, matching the audited Node reference. Native
+derivation/frontend/affected-consumer controls pass. Neither the new guest
+dependency nor engine90 is compiled; four-host conformance remains open.
+See [KDF source and evidence](../tests/nodejs/outline/kdf-implementation-dependencies.md).
+
+### Process finalization and Refable source owners
+
+The recipe89 source candidate reuses the full pinned Node weak finalization
+registry, public lazy accessor and symbol-first process.ref/unref algorithms.
+It uses captured engine weak-reference primitives and the guest process
+EventEmitter, with actual idle/exit hooks and the existing shell GC cleanup
+queue. Resource methods own their real reference state; adding the dispatcher
+does not repair incomplete resource methods. Native-dependency controls pass,
+but this source slice is not in the accepted engine88. Guest GC/exit/worker
+integration and four-host conformance remain unvalidated. The exact evidence
+and remaining process gaps are in
+[process lifetime ownership](../tests/nodejs/outline/process-lifetime-implementation-dependencies.md).
+
+### Process-state source owners
+
+The Node compatibility candidate now routes environment reads, mutation,
+deletion and enumeration through a private native owner backed by the guest
+libc store. It copies borrowed values/names while its mutations are excluded,
+then creates JS strings after releasing the lock. The adapter no longer
+discards setters, seeds a whitelist or caches stale environment values.
+Existing child snapshots consume the resulting live enumeration.
+
+Pinned creation-mask wrappers validate arguments before calling the real
+libc umask operation; a serialized query restores the original mask. A live
+parent getter uses getppid. Both reuse existing guest kernel process state
+and syscalls without adding a host import or changing the wire ABI. The
+standalone C++ helper and frontend/native controls pass; the engine bridge
+is uncompiled. Complete worker environment/state ownership, timezone cache
+refresh, exotic-object metadata, warning/trace/CLI policy and four-host
+conformance remain open in the process-state dependency record.
+
+
+### DNS source owner prerequisites
+
+The Node compatibility hostname lookup now has a native-work source route:
+actual guest libc getaddrinfo runs as slow I/O, and its owning JS context
+dispatches rooted address/name request completions in the owning realm.
+Pinned callback/promise lookup and lookupService now share those owners. The OS name
+service's one-address routing interface remains distinct from DNS records;
+fetch/TLS routing addresses must not become fabricated RR/TTL answers.
+
+A separate resolver uses the exact Node-vendored c-ares library, actual
+poll-driven channel threads/configuration and independently copied records.
+Full pinned callback/promise Resolver modules now consume native channel/query
+owners. Native event completions enter the owning JS loop through the shared
+external-work queue without blocking a pool worker; teardown interrupts producers and waits for terminal publication before
+rooted request retirement. Channel destruction joins its native event thread;
+complete idle-channel/context shutdown behavior still needs guest validation. JSAPI conversion preserves
+sparse arrays, Latin-1 strings, binary storage and ordinary CAA assignments.
+The engine recipe declares and provenance-checks node-cares. Its linked version
+is read with ares_version(), not inferred from an installed public namespace.
+
+This remains partial source implementation. Native-boundary controls do not
+establish guest behavior, host UDP egress, default configuration refresh,
+permission policy or four-host conformance. The OS routing-address interface
+is not a DNS-record service. See tests/nodejs/outline/dns-channel-implementation-dependencies.md
+for source owners, evidence and remaining requirements.
+
+### Shared Node system-error data
+
+The compatibility source now has a dedicated native-data owner for the
+pinned libuv error table. It expands the actual target errno definitions
+and portable libuv codes at compile time, then marshals rooted rows to
+private JS constants/maps. Internal error constructors and pinned util
+name/map/message helpers share this owner. Public map mutation cannot
+alter the private cache. This does not add a libuv runtime, event-loop ABI,
+or process.versions entry, and no existing wire ABI changes. Native-host
+map/field controls do not validate the guest marshalling or full delivery/
+stack/integer-edge behavior; all four guest hosts remain pending.
+
+The private DNS request candidate (patch 61) adds actual native address/name
+request resources, captured async identity, rooted slow-I/O jobs, completion
+in the request realm and deterministic retirement. getnameinfo uses real libc
+with NI_NAMEREQD. Shared EAI translation and compiler netdb constants replace
+hardcoded data assumptions in this boundary. No host import or wire ABI is
+added. The request engine bridge is uncompiled; pinned public lookup/lookupService
+frontends now use it in source; native-helper evidence does not validate guest
+request lifecycle or any of the four hosts. Public Resolver/record/transport
+and complete name-service behavior remain open.
+
+
+### DNS performance and shared process origin candidate
+
+Pinned observer/entry/list algorithms now track real DNS registrations,
+queue actual completed entries and publish lookup/lookupService timing.
+The capability list includes only installed DNS producers; other target
+entry types remain implementation gaps. mark/measure throw rather than
+silently succeeding. A POSIX origin captured at engine main entry supplies
+monotonic elapsed performance time and process uptime across contexts;
+global and builtin performance share this owner. The clock helper has
+native controls, but the engine bridge is uncompiled. Full Performance/
+EventTarget/producer and callback-scope tick/microtask-before-retirement
+semantics remain open; native boundary controls are not four-host evidence.
+
+### Shared native callback-scope source owner
+
+The Node engine candidate now shares actual callback depth/context ownership
+across DNS, filesystem and codec completions. Successful outermost callbacks
+run after hooks, restore context, then process owning ticks/jobs before
+native retirement. Nested/failed/stopping paths preserve their proper
+scope. Actual bootstrap/timer/tick/job entries supply depth guards without
+inventing resource IDs or hooks, and explicit quit status survives native
+dispatch. No kernel/host/syscall wire interface changes occur.
+
+The shared C++ policy has native Node-API/libuv differential controls, while
+the JSAPI adapter remains uncompiled. Full rejection/fatal recovery, GC/
+weak-reference, VM/worker and complete phase ownership remain unfinished or
+unvalidated. Source/static/native policy evidence does not establish Node/
+Chromium/Firefox/WebKit behavior for the new candidate. See the callback
+scope dependency record for the subsequent engine and lifecycle gates.
+
+### Shared guest Buffer codec source owner
+
+The Buffer codec adapter owns actual branded-byte UTF-8/ASCII/Latin-1/
+UTF-16LE/hex/base64/base64url conversion. Pinned public wrappers preserve
+overloads, aliases, lengths, fill/write ranges and exclusive-end searches.
+The existing byte adapter delegates string conversion to it. Unsafe backing
+allocation remains with the real native unpooled allocator; public alloc and
+fill capture private owners instead of consulting mutable public allocators.
+Shared slices copy bytes before creating strings. No host/kernel wire change
+is introduced, and all four hosts use the same guest bootstrap source.
+
+Native-reference JS controls and unchanged public upstream tests cover this
+slice, with fixed ArrayBuffers as the test allocation boundary. Guest native
+allocation and the combined engine remain uncompiled. Pooling, untransferable
+ownership, callable legacy construction, allocation options and backing-store
+edge behavior remain implementation gaps. Source progress does not establish
+Node/Chromium/Firefox/WebKit conformance; see the Buffer codec dependency record.
+
+### Distinct guest filesystem pathname operations
+
+The directory source candidate uses actual guest mkdir/unlink/rmdir instead
+of C remove(). Its portable recursive mkdir continuation retains original
+path bytes, leaf-first/first-created semantics, existing-file errors, mode
+zero and the target's different sync/async failed-parent policies. Copied
+pathnames and request roots remain owned by native filesystem work until
+completion, using shared callback scopes and real cancellation/stopping state.
+No host path adapter or syscall/kernel wire interface is added.
+
+Pinned public sync/callback/promise wrappers share the actual path validators,
+private native operations and VFS dispatch state. Portable-helper/native Node
+controls and unchanged public upstream tests cover scoped source behavior;
+the JSAPI bridge and combined engine remain uncompiled on all four hosts.
+Removal traversal/retries, directory handles, raw-byte filesystem behavior,
+metadata/watch and complete lifecycle/error/permission semantics remain open.
+See the directory dependency record under tests/nodejs/outline.
+
+### CommonJS record and safe lookup source owners
+
+The CommonJS source now creates actual Module instances and shares the public
+cache, first-parent/children graph, dynamic require/load and extension tables.
+Compilation/execution failures remove both cache and failed-parent ownership.
+Pinned createRequire/require/lookup/load/JSON algorithms supply ordinary CJS
+behavior; hidden native fields have WeakMap owners rather than observable
+stand-in Symbols. Safe HOME/NODE_PATH queries use actual guest credentials
+and libc secure startup state. The existing environment mutex protects copied
+values. Patch 65 adds this private operation without changing a wire ABI.
+
+Scoped native-reference/source controls and selected unchanged upstream tests
+are distinct from guest artifact evidence. Guest native compilation, secure startup,
+CJS/ESM realm/status/async-graph/cycle ownership and four-host behavior remain
+unverified or incomplete. Package maps/config/exports, hooks, TS/CLI/preloads,
+source maps/cache and addons remain open. Pending ESM status fails explicitly;
+a CJS record's empty initial exports never substitutes for a native namespace.
+The separate Bun asset dispatch source is retained; see the module-record
+dependency record under tests/nodejs/outline for scope and remaining gates.
+
+### Child wait outcome and lifecycle source owners
+
+The Node compatibility source now owns exact-pid asynchronous wait results
+until their JavaScript sink succeeds. Actual waitpid WNOHANG exit, signal and
+error outcomes are retained after reap; interrupted waits retry and stopped
+notifications never become exit zero. Promise initialization claims ownership
+before hooks may reenter. Existing prepared same-context requests share their
+owner; context shutdown releases its child roots without callbacks or reaping
+again. Failed conversion stops the current loop pass rather than losing status.
+
+Bootstrap publishes actual child status fields, gates close and exec callbacks
+once, retires failed stream owners and selects live ref/unref by wait token.
+The source is shared across all four guest hosts and reuses existing guest
+spawn/wait/signal syscalls without host imports or a wire ABI change. Compiled
+native policy and focused JS/native-reference controls are separate from the
+uncompiled engine/JSAPI and unvalidated guest lifecycle.
+
+Exceptional wait loss currently emits an error and closes with unknown status.
+Pinned libuv ignores ECHILD without an exit callback and aborts on other
+unexpected wait errors. This remains a semantic gap, not a justified platform
+boundary. The private POSIX errno name does not alter public libuv error maps.
+Full process normalization/IPC/stdio/subclass/fatal/GC/realm and four-host
+validation remain open; see the child-wait dependency record under
+tests/nodejs/outline.
+
+### Dotenv parser and file/environment source owners
+
+The Node compatibility candidate selects the pinned native dotenv parser
+through a hash-checked portable C++17 header and unchanged public parseEnv/
+loadEnvFile wrappers. Native conversion retains embedded NUL lengths and
+creates null-prototype property records; file loading owns actual guest
+open/read/close and consults the real process environment before setting
+missing values. JS string conversion happens outside the environment lock.
+Provided empty paths retain their native error metadata. The loader does
+not execute NODE_OPTIONS after startup.
+
+Compiled parser/file and focused frontend controls are separate from the
+uncompiled JSAPI bridge and guest four-host behavior. CLI env-file handling,
+Node permission policy, worker environments and complete byte/realm/GC/
+concurrency ownership remain unfinished. Unexpected close failure currently
+throws instead of the target's native abort; this remains an implementation
+deviation. No host import or wire ABI changes. See the dotenv dependency
+record under tests/nodejs/outline for exact evidence and remaining gates.
+
+### Digest and byte-comparison source owners
+
+The Node compatibility candidate selects pinned one-shot hashing/validation
+and actual OpenSSL provider digest, output-length and comparison owners.
+Names are derived from fetchable provider/legacy aliases, not a four-name
+preset. Owned temporary input/output bytes are cleansed; native strings
+preserve embedded NUL lengths and actual buffer views retain their spans.
+Shared bytes are captured with relaxed atomic reads. Comparison uses
+CRYPTO_memcmp after real brand/length checks rather than a JS XOR/coercion
+loop. No measured timing guarantee follows from value controls.
+
+Incremental Hash/Hmac now select full pinned public classes, lazy Transform
+hooks, copy/finalization/encoding validation and constructor deprecation
+wrappers. Actual EVP_MD_CTX/HMAC_CTX owners preserve branching state, cached
+hash digests, zero-length XOF policy and Hmac retirement. Encoding functions
+come from the exact pinned native parser; actual private byte codecs own
+conversion. Temporary secrets are cleansed and native wrappers/cache bytes
+are accounted, with provider-internal accounting still incomplete.
+
+The normal targeted wasm32 engine revision 65 compiled these bindings and
+passed unchanged upstream build checks. Seven bounded frontend controls and
+five portable OpenSSL/native-reference comparisons are separate evidence;
+none establishes guest execution or four-host conformance. Real key-object
+owners, target backend algorithm/options/FIPS parity, backing-store and
+GC/realm/error/lifecycle integration remain implementation gaps. No host
+import/wire ABI or full product image was changed. See the digest and
+incremental-crypto dependency records under tests/nodejs/outline.
+
+### Readline interface input and lifecycle source owners
+
+The Node compatibility candidate selects full pinned callback/promise/shared
+readline interfaces, key decoding and history source. Actual input/data/end/
+error listeners and decoder/question/prompt/abort/iterator/close state replace
+the no-input EventEmitter facade and immediate empty answers. A private
+module cache preserves circular class/symbol identity; event helpers and
+private iterator symbols use the same event owner. Streams, StringDecoder,
+timers, filesystem and inspection remain their existing shared guest owners.
+
+The source is common to all four hosts. Focused native dependency controls
+and selected unchanged upstream tests do not validate guest TTY/raw/resize,
+Unicode width, persistent history, REPL or engine/stream/event integration.
+Persistent history's absent Node permission-policy owner fails explicitly;
+public process mutation never enables it. No syscall/import/wire ABI change
+or guest engine/package/product rebuild. See the readline-interface
+dependency record under tests/nodejs/outline for scope and remaining gates.
+
+
+### Console namespace, output and state source candidate
+
+The compatibility candidate selects pinned full Console/public/global/table/
+debug-timer source over actual shared guest streams, inspection, diagnostics,
+readline controls and native iterator/monotonic owners. Builtin/global identity,
+format/options/error policy and counter/group/timer state replace separate
+facades. Direct diagnostic publication replaces wrapping, avoiding duplicates.
+A private trace collector owns active subscriptions and retirement; public
+trace files/CLI/native producer/inspector integration remain incomplete.
+
+Missing V8 stack recapture uses a real engine Error stack; exact filtering
+and inspector methods remain implementation gaps. Nine focused Console and
+ten diagnostics controls plus four unchanged upstream files in candidate/
+native modes use explicit native dependencies, not built guest evidence.
+Recipe revision 52 adds no engine patch/import/wire ABI. Four-host stream/
+TTY/width/error/GC/realm integration, ESM identity and full observability remain
+unvalidated. See tests/nodejs/outline/console-implementation-dependencies.md.
+
+
+### Shared Headers and Fetch header source candidate
+
+The shared FormData/WebIDL owner now loads pinned full Undici Headers and
+checked header/iterator primitives. Private lists/guards and actual brands,
+validation, normalization, sorted iteration and cookie ownership replace the
+public map facade. Fetch uses that same global class, preserves immutable
+transport/clone guards, reduces owned lists without prototype-name loss,
+keeps set-cookie arrays and replaces Request headers when init supplies them.
+Full Request/Response/Body/Fetch and guest transport remain incomplete.
+
+Six new/26 affected native-boundary controls and one unchanged upstream file
+in candidate/native modes pass. The in-memory HTTP fixture performs no
+network access; body regressions retain their explicit polyfill stream
+boundary. Recipe revision 53 adds no engine patch/import/wire ABI or rebuilt
+guest artifact. Four-host brand/clone/stream/HTTP/GC/realm conformance remains
+open. See tests/nodejs/outline/headers-implementation-dependencies.md for
+retained failed evidence, native constructor-record behavior and remaining
+implementation/integration gates.
+
+
+### Query-string and Unicode codec source candidate
+
+Full pinned public/private querystring and punycode algorithms replace split/
+URI shortcuts and identity-only functions. Actual query options, tolerant
+Buffer-byte decoding, null dictionaries, public hooks and exact surrogate
+encoding share the guest byte/error owners. Punycode loads lazily with real
+Bootstring/UCS-2/domain functions and its actual warning call. The prefix's
+existing saved-frame capability supplies a bounded first-external-source
+origin decision; no caller/platform metadata is fabricated.
+
+Eight new/16 affected controls and five unchanged upstream files in candidate/
+native modes pass. Candidate-Buffer controls use a fixed allocator; upstream
+files use native Buffer/origin/warnings. The initial unexpected fixture
+warning failure is retained; awaited standard preload setup keeps warnings
+visible and assertions unchanged. Recipe revision 54 adds no engine patch,
+import/wire ABI or guest build. Full byte/realm/loader/CLI/worker/warning and
+saved-frame depth/ESM/native-entry behavior remain open across all four hosts.
+See tests/nodejs/outline/query-codecs-implementation-dependencies.md.
+
+
+### OS frontend and actual POSIX state source candidate
+
+Pinned full OS source now uses actual guest uname/hostname, environment/passwd
+home/user bytes, safe temp policy, endianness and priority operations through
+os-operations.h/native-os.cpp and patch 0069. Owned byte copies and actual
+libc errors replace presets; the existing module identity is retained.
+Kernel getrusage/sysinfo still have fixed accounting, so CPU/memory/load/
+interface/uptime/parallelism APIs explicitly throw rather than presenting
+those values as real measurements. These are implementation gaps. Guest OS
+constants, priority cross-process/credential/scheduler effects and five other
+process/heap/report false claims remain open.
+
+Seven new/eighteen affected native-boundary controls and three unchanged upstream
+files in candidate/native modes pass. The helper compiles real portable
+POSIX owners; native Node supplies Buffer/UV/constants and the transport
+maps self priority to its owned Node control process. Candidate preload
+propagates to the homedir child. None proves guest libc/kernel/JSAPI or
+four-host conformance. Recipe revision 55 adds no host import/syscall/wire
+ABI; guest compilation/full rebuild remain deferred. See
+tests/nodejs/outline/os-implementation-dependencies.md for exact limits.
+
+### Persistent directory cursor and Dir lifecycle source owners
+
+The Node candidate selects the full unchanged pinned Dir module over actual
+persistent libc DIR cursors and shared native FSReqCallback open/read/close
+jobs. Native resource ownership and pending-parent roots keep each cursor
+alive through work, release reservations before completion/reentry and close
+actual descriptors on disposal or GC. Worker data consists of owned native
+names/types, never JS pointers. Byte-conversion exceptions reject the actual
+request within its callback scope. Interrupted batches follow pinned libuv's
+partial-batch discard and cursor retry policy.
+
+Abandoned native cursors close synchronously, then defer diagnostics outside
+GC. Successful Dir warning records do not own an event-loop reference; failed
+closes and FileHandle fatal records do. Full pinned queues, recursive reads,
+async iteration and sync/async disposal consume these owners. The normal
+targeted wasm32 engine67 compiled the bridge and passed unchanged upstream
+build checks; bounded native/source controls are not guest/four-host evidence.
+Actual GC/ref/scopes, cancellation/realm/OOM, opaque libc accounting, public
+VFS/permissions and backend directory behavior remain implementation and
+validation requirements. No full product image rebuild or host/syscall/wire
+ABI change occurred. See the Dir dependency record under tests/nodejs/outline.
+
+### Live Node TLS metadata source candidate
+
+The shared Node candidate now reads protocol, cipher, session reuse, peer
+verification and local/peer Finished data from the actual SSL object owned
+by its existing native TLS handle. Returned bytes are independent copies.
+Authorization no longer mirrors the caller's rejectUnauthorized policy.
+Allowed-error connections continue certificate verification and retain its
+final result; default rejecting connections keep OpenSSL's aborting callback.
+The guest TLS metadata describes that connection, including a browser's
+local TLS bridge, rather than the separate upstream Fetch TLS session.
+
+Portable OpenSSL/native Node and actual frontend controls cover TLS1.2/1.3
+and trusted/untrusted peers. The normal targeted wasm32 engine69 build compiles the guest binding;
+four-host runtime validation remains pending. This does not complete SecureContext, certificate
+objects/identity callbacks, socket inheritance, sessions, cancellation,
+servers or public metadata/function descriptors. See
+[tls-state dependencies](../tests/nodejs/outline/tls-state-implementation-dependencies.md).
+
+### Public Buffer constructor and pooled storage source candidate
+
+Public Buffer now uses the pinned callable constructor over a separate
+FastBuffer typed-array constructor. A shared native aligned pool serves
+allocUnsafe, strings, array-like copies and their actual consumers. The
+engine records a permanent non-detachable ArrayBuffer storage property;
+direct transfer/JSAPI detach and both structured-clone transfer phases obey
+that state. The real option parser and private native process setting own
+--zero-fill-buffers allocation policy. No JS metadata property substitutes
+for alignment, storage ownership, detachment prevention or zero filling.
+
+Scoped controls use exact native dependencies, and unchanged upstream files
+retain their original assertions. The normal targeted engine70 build compiles this guest engine/storage/CLI
+source; four-host runtime validation remains pending. General
+worker marks, shared/resizable byte leases, GC/realm/accounting/activation
+and remaining public Buffer contracts remain open; see
+[Buffer pool dependencies](../tests/nodejs/outline/buffer-pool-implementation-dependencies.md).
+
+### Shared Node package-resolution source candidate
+
+The actual package reader/cache now feeds shared exports/imports, conditions,
+self-reference and package-map owners. Pinned CJS filename/path algorithms
+and the full ESM URL resolver consume those owners. Maps use their real
+files and exclusive dependency rules. Public findPackageJSON uses its actual
+reader/resolver dependencies. The CLI supplies conditions/map/symlink modes
+through actual parsing and an immutable private snapshot; CJS load/cache
+identity no longer canonicalizes a preserved filename a second time.
+
+The existing native resolver callback now propagates package errors rather
+than swallowing them and bypassing policy. Its resolution-only consumer
+returns actual URL resolution. Complete ESM execution/cache/namespace/URL
+identity, source syntax/TypeScript/addon execution, hooks and lifecycle remain
+open; classification does not establish execution. Scoped source/native and
+CLI controls are separate from guest build/runtime/four-host conformance.
+See [package policy dependencies](../tests/nodejs/outline/package-policy-implementation-dependencies.md).
+
+### Owned Node message packet source
+
+Message queues now retain actual engine SameProcess structured-clone data,
+with no context-rooted shell buffer payloads. Publication and consumption are
+single-use; failed writes/publication and reads retire native storage. The
+pinned engine defines this buffer as thread-movable, but full Node worker
+bootstrap, endpoint transfer/adoption, broadcast and lifecycle remain gaps.
+Native close acknowledgement retires the actual endpoint notification.
+The production JS adapter forwards these packet operations and the new DNS
+channel/configuration/version bindings; earlier engine compilation alone did
+not verify that adapter connection. See tests/nodejs/outline/port-packets-implementation-dependencies.md.
+No kernel/host wire ABI or host memory ceiling changes here. Four-host guest
+conformance and complete native byte accounting remain unestablished.
+
+### Node resource accounting gaps and engine GC budget
+
+Pinned process usage validation/delta/field algorithms now have shared source
+owners. Current guest getrusage zeros and elapsed-time CPU approximations are
+not suitable providers; process CPU/thread/memory/RSS/resource calls explicitly
+fail until actual accounting exists. Report generation no longer invents a
+loaded musl object, and heap-space queries no longer claim an empty measured
+list. These remain implementation gaps, not accepted platform exclusions.
+The partial heap statistic reads its nominal configured GC-things soft budget
+from actual SpiderMonkey JS_GetGCParameter/JSGC_MAX_BYTES. This changes no
+limit, reservation, physical memory or kernel/host ABI, and does not establish
+full heap-use/space/statistics equivalence or reachable process capacity.
+See tests/nodejs/outline/resource-usage-implementation-dependencies.md.
+
+The subsequent HTTP source slice uses the complete pinned IncomingMessage
+module for actual response parsing, lazy/distinct headers/trailers and abort
+state. Socket release now waits for consumed response EOF and completed request
+writes. Recipe77 remains uncompiled; the last accepted engine76 predates it.
+Focused native-boundary controls are separate from guest/four-host conformance.
+Complete parser/Agent/server/HTTP2 and remaining lifecycle gaps stay open; see
+`tests/nodejs/outline/http-incoming-implementation-dependencies.md`.
+
+The VM ordinary-global source now owns a real isolated DONT_CONTEXTIFY
+global and per-ShellContext chained/restored security callbacks (patch85,
+recipe78). Ordinary sandbox live forwarding, imports/deadlines/microtasks and
+full realm/worker behavior remain gaps. Native-boundary controls and the
+retained complete-file dynamic-import failure do not establish guest or
+four-host conformance. See
+`tests/nodejs/outline/vm-plain-context-implementation-dependencies.md`.
+
+The later normal targeted engine78 build compiles actual VM ordinary globals/
+runtime security callback ownership and the preceding HTTP77 source. Narrow
+Node-host guest VM outcomes are separately identified in the VM plain-context
+dependency report; HTTP/worker/full API/four-host conformance remains open.
+The complete unchanged VM plain-context upstream candidate file still fails
+its missing dynamic-import requirement. No overall suite/full product rebuild.
+
+The subsequent Worker source replaces minimal-prelude/JSON/shared-mailbox
+launch with per-worker native context/thread/packet/endpoint ownership and
+normal Node bootstrap/loader, ready/error/exit and independent stop/join/ref
+state. Patches86–88 reached targeted engine83 acceptance; six identical
+native/Node-host guest cases pass. Options/stdio/fd/transfer/resource/lifecycle,
+ordinary stamped-consumer and four-host obligations remain open. Subsequent
+recipe84 Test/Suite/harness source is uncompiled; native-boundary controls
+are separate from guest execution. See worker-owner and testing dependency
+records under `tests/nodejs/outline/` for exact evidence and retained failures.
+
+The later targeted engine88 compiles actual SQLite iterator/column/limit/
+session/change-set and native callback owners, with real SQLite activation and
+process beforeExit idle/revival state. Exact focused native/Node-host guest
+outcomes and retained nonpasses are in the SQLite dependency/finding records.
+SQLite/testing/process and four-host conformance remain partial; no overall
+suite or full product rebuild ran.

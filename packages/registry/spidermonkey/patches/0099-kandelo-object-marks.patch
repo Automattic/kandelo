@@ -1,0 +1,152 @@
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -609,6 +609,7 @@
+   js::ContextData<JS::PersistentRooted<JS::Value>> kandeloAsyncLifecycleHook_;
+   js::ContextData<double> kandeloAsyncIdCounter_;
+   js::ContextData<double> kandeloAsyncParentId_;
++  js::ContextData<JS::PersistentRootedObject> kandeloObjectMarks_;
+   js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneModeSymbol_;
+   js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneErrorFactory_;
+   js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneSerialize_;
+@@ -638,6 +639,16 @@
+     if (!kandeloCloneDeserialize_.ref().initialized()) kandeloCloneDeserialize_.ref().init(this);
+     return kandeloCloneDeserialize_.ref().get();
+   }
++  enum KandeloObjectMark : uint32_t {
++    KandeloUntransferable = 1,
++    KandeloUncloneable = 2
++  };
++  JSObject*& kandeloObjectMarks() {
++    if (!kandeloObjectMarks_.ref().initialized()) kandeloObjectMarks_.ref().init(this);
++    return kandeloObjectMarks_.ref().get();
++  }
++  bool getKandeloObjectMarks(JS::HandleObject object, uint32_t* marks);
++  bool setKandeloObjectMarks(JS::HandleObject object, uint32_t marks);
+   bool hasKandeloCloneErrors() { return !kandeloCloneErrorFactory().isUndefined(); }
+   bool reportKandeloCloneError(const char* message);
+   bool getKandeloCloneMode(JS::HandleObject object, int32_t* mode);
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -1175,6 +1175,7 @@
+       kandeloAsyncLifecycleHook_(this),
+       kandeloAsyncIdCounter_(this, 0),
+       kandeloAsyncParentId_(this, -1),
++      kandeloObjectMarks_(this),
+       kandeloCloneModeSymbol_(this),
+       kandeloCloneErrorFactory_(this),
+       kandeloCloneSerialize_(this),
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -58,6 +58,7 @@
+ #include "js/RegExpFlags.h"         // JS::RegExpFlag, JS::RegExpFlags
+ #include "js/ScalarType.h"          // js::Scalar::Type
+ #include "js/SharedArrayBuffer.h"   // JS::IsSharedArrayBufferObject
++#include "js/WeakMap.h"
+ #include "js/Wrapper.h"
+ #include "util/DifferentialTesting.h"
+ #include "vm/BigIntType.h"
+@@ -714,6 +715,38 @@
+   return false;
+ }
+ 
++// A rooted weak registry models private own marks even on frozen objects,
++// functions and proxies. Keys never traverse prototypes or trigger JS traps.
++bool JSContext::getKandeloObjectMarks(HandleObject object, uint32_t* marks) {
++  *marks = 0;
++  RootedObject map(this, kandeloObjectMarks());
++  if (!map) return true;
++  RootedObject key(this, CheckedUnwrapStatic(object));
++  if (!key) { ReportAccessDenied(this); return false; }
++  AutoRealm ar(this, map);
++  if (!JS_WrapObject(this, &key)) return false;
++  RootedValue value(this), keyValue(this, ObjectValue(*key));
++  if (!JS::GetWeakMapEntry(this, map, keyValue, &value)) return false;
++  if (value.isInt32()) *marks = uint32_t(value.toInt32());
++  return true;
++}
++
++bool JSContext::setKandeloObjectMarks(HandleObject object, uint32_t marks) {
++  RootedObject map(this, kandeloObjectMarks());
++  if (!map) {
++    if (!marks) return true;
++    map = JS::NewWeakMapObject(this);
++    if (!map) return false;
++    kandeloObjectMarks() = map;
++  }
++  RootedObject key(this, CheckedUnwrapStatic(object));
++  if (!key) { ReportAccessDenied(this); return false; }
++  AutoRealm ar(this, map);
++  if (!JS_WrapObject(this, &key)) return false;
++  RootedValue keyValue(this, ObjectValue(*key)), value(this, Int32Value(int32_t(marks)));
++  return JS::SetWeakMapEntry(this, map, keyValue, value);
++}
++
+ bool JSContext::getKandeloCloneMode(HandleObject object, int32_t* mode) {
+   *mode = -1;
+   RootedValue marker(this, kandeloCloneModeSymbol());
+@@ -1283,6 +1316,13 @@
+       return reportDataCloneError(JS_SCERR_TRANSFERABLE);
+     }
+     tObj = &v.toObject();
++    uint32_t objectMarks;
++    if (!cx->getKandeloObjectMarks(tObj, &objectMarks)) return false;
++    if (objectMarks & JSContext::KandeloUntransferable) {
++      if (cx->hasKandeloCloneErrors())
++        return cx->reportKandeloCloneError("Cannot transfer object of unsupported type.");
++      return reportDataCloneError(JS_SCERR_TRANSFERABLE);
++    }
+     int32_t hostMode;
+     if (!cx->getKandeloCloneMode(tObj, &hostMode)) return false;
+     if (hostMode >= 0) {
+@@ -2224,6 +2264,18 @@
+ 
+   int32_t hostMode;
+   if (!context()->getKandeloCloneMode(obj, &hostMode)) return false;
++  uint32_t objectMarks;
++  if (!context()->getKandeloObjectMarks(obj, &objectMarks)) return false;
++  ESClass cls;
++  if (!GetBuiltinClass(context(), obj, &cls)) return false;
++  // V8 consults custom-host marks for ordinary/API objects and Errors. Its
++  // native Array/Buffer/Map/Set/Date/etc. serializers ignore that clone mark.
++  if ((objectMarks & JSContext::KandeloUncloneable) &&
++      (cls == ESClass::Object || cls == ESClass::Error || hostMode >= 0)) {
++    if (context()->hasKandeloCloneErrors())
++      return context()->reportKandeloCloneError("Cannot clone object of unsupported type.");
++    return reportDataCloneError(JS_SCERR_UNSUPPORTED_TYPE);
++  }
+   if (hostMode >= 0) {
+     if (hostMode == 0) return context()->reportKandeloCloneError("Cannot clone object of unsupported type.");
+     if (hostMode & 1) return context()->reportKandeloCloneError("Transferring registered host objects is not implemented");
+@@ -2234,11 +2286,6 @@
+     uint32_t index = kandeloHostObjects.length();
+     return kandeloHostObjects.append(ObjectValue(*obj)) &&
+            out.writePair(SCTAG_KANDELO_HOST_OBJECT, index);
+-  }
+-
+-  ESClass cls;
+-  if (!GetBuiltinClass(context(), obj, &cls)) {
+-    return false;
+   }
+ 
+   switch (cls) {
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3584,6 +3584,10 @@
+     RootedId id(cx, PropertyKey::Symbol(marker.toSymbol()));
+     if (!js::DefineDataProperty(cx, object, id, mode, 0)) return false;
+   }
++  uint32_t marks;
++  if (!cx->getKandeloObjectMarks(object, &marks)) return false;
++  if ((marks & JSContext::KandeloUncloneable) &&
++      !cx->setKandeloObjectMarks(object, marks & ~JSContext::KandeloUncloneable)) return false;
+   args.rval().setUndefined();
+   return true;
+ }
+@@ -3922,6 +3926,7 @@
+   const JSFunctionSpec funcs[] = {
+       JS_FN("evalScriptAsFunction", KandeloNativeEvalScriptAsFunction, 2, 0),
+       JS_FN("httpParser", KandeloNativeHttpParser, 5, 0),
++      JS_FN("objectMark", KandeloNativeObjectMark, 2, 0),
+       JS_FN("moduleSyntax", KandeloNativeModuleSyntax, 3, 0),
+       JS_FN("isPromise", KandeloNativeIsPromise, 1, 0),
+       JS_FN("hasObjectKind", KandeloNativeHasObjectKind, 2, 0),

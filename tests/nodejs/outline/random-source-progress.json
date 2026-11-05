@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "updatedAt": "2026-11-04T16:22:02.798279+00:00",
+  "status": "in-progress source slice; complete immutable source snapshot and static preflight still pending",
+  "sourceIdentities": {
+    "docs/package-management.md": "f059d009d67c88ab653f60817ab2b0487cccd4ae8db7de8602d7f4cc81d6aba2",
+    "docs/posix-status.md": "af2e182bfc389e057d4104c866ab2692ac2c8b42aa814d2ec5b68a3d26ce8ca4",
+    "host/test/fixtures/node-random-owner.cpp": "ab1bb03f0d9cabfafb01d9bc5fb02a3c98d949057fa9cce66dbcb11cb3a189c3",
+    "host/test/node-crypto-random-sync.test.ts": "4160ad21c9b8e1e1b7b0e4a199e4edf3a06f060bd90b03586ccf1107fab5a005",
+    "packages/registry/node-compat/bootstrap.js": "b8085698ee683a9eafc45aa1d75b5226942e3ec1e52f2e2b66c3cdd7fe308c3f",
+    "packages/registry/openssl/build-openssl.sh": "fd6f0b69387a861b497db37c402a76e81f0107b6b6ed55999995833a98228bc5",
+    "packages/registry/openssl/build.toml": "9aad8eeb68b7a917d3c8ae1f2e03e9fd9e7432c18dacecdbe799a06dd4453dfa",
+    "packages/registry/openssl/package.toml": "865dc8ce9577ce1cc7af69d85c063336a5b586a28b759aa926b3aa98c0fd6e19",
+    "packages/registry/spidermonkey/build-spidermonkey.sh": "5c595bcf8d3b7214152bed22abdd8f18d2c101b531ee3dc4f8bff8e0b2354ce5",
+    "packages/registry/spidermonkey/build.toml": "7a5d9392355a97e0fc0fcaec149c8ea31a6963397db97502476229a8f2e3d47b",
+    "packages/registry/spidermonkey/node-compat/adapter.js": "644aca6ff8abb35fd4ccb4b23b6dd398a1fa4ac88019a325ae3029dfb9d226b6",
+    "packages/registry/spidermonkey/patches/0072-kandelo-node-random-jobs.patch": "491ae7723c9afc5aba5c3c3abf532fbdaaed3afd3c1ab5074ed789c3a5210188",
+    "tests/nodejs/outline/breadth-first-implementation.md": "3b3781cc9abd01c05f4f6c2b1e267ebe6e62ffe067695cd6df1b82eb3cec2de4",
+    "tests/nodejs/outline/digest-implementation-dependencies.md": "d32c2c928bd87907c45c8093d0580e829d9ab2c8fbfe97e1220e745e53ec991d",
+    "tests/nodejs/outline/random-implementation-dependencies.md": "0d14d44be5c1d2f6d84dfd7665ffb2be82bda0fa8ce0aebc8a28100ffd921196",
+    "third_party/node-core/async-platform-adapter.js": "cd2a8eaa576695ae0e4301d91fae11c686703b3cbe37e86c50f5a9c540236432",
+    "third_party/node-core/build.py": "e5fcf10ce9f21679aa8c99a5f71ce7a651874219e44fadea7ab3ab6ed0b15bcb",
+    "third_party/node-core/crypto-random-jobs-adapter.js": "39016acae87c2d40b2d3e83eeff5bafd15c83b6b7bc7360fbf722756f9857a0a",
+    "third_party/node-core/digest-operations.h": "0ee40771bb4d3f5d17012bebba36a9cb29a57b1836993e30aa12ddd6932149bd",
+    "third_party/node-core/native-fs.cpp": "69080fffc2cfd78968fb5b8b0393e9bc9001978bff1ab380aab17e8884ebf7a0",
+    "third_party/node-core/native-random.cpp": "69183cd6fe601262851eb704eeac26c54160e9bf080800d79277bce9856f4062",
+    "third_party/node-core/node-core.js": "256cfb890119d3d6400675dc21156c553c008849b57c1e653cac4c4a32d328dd",
+    "third_party/node-core/random-operations.h": "bfc5b9b95b6e41f1759c7e99267cfd4362b27d9f6f351910f7d958e8549e5510",
+    "third_party/node-core/sources.json": "2ebc1f1a9faf7ab132f3b1054483c0d7b142ba45946fd21d747bc818672b1c29",
+    "third_party/node-core/upstream/random-jobs/deps/ncrypto/ncrypto.cc": "405d2a22d5aadca4f07fd9dc086dbc145d093b539bb1a788a78e959ad5cbd211",
+    "third_party/node-core/upstream/random-jobs/lib/internal/crypto/random.js": "fc597a435a494f6d0dbe1631d9c5ad42972b2f521c5c0db8d2c6fc3c444d11ce",
+    "third_party/node-core/upstream/random-jobs/src/async_wrap.h": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6",
+    "third_party/node-core/upstream/random-jobs/src/crypto/crypto_random.cc": "03d441e91c8656235de3ec2da735fb92dcb88b0baa4e3a1d97497090b37df9b8",
+    "third_party/node-core/upstream/random-jobs/src/crypto/crypto_random.h": "095bf83904bb55698eade620a80f3460d18ebb733251b37be7d50c57795201d6",
+    "third_party/node-core/upstream/random-jobs/src/crypto/crypto_util.cc": "78f87b6979b666fb49d74698333e79c40aef549dfa362e3a040caeebf8edde3c",
+    "third_party/node-core/upstream/random-jobs/src/crypto/crypto_util.h": "17ef1d34245c0c4eac4b4b9a154e3350dcb3ad8fcbbfb2673a43472afde6a78f"
+  },
+  "evidenceIdentities": {
+    ".context/node26-random-controls-r3/report.json": "06c9cf3cd27b025ad4533ed8690f259ee5767e768070109215c121a714edd447",
+    ".context/node26-random-controls-r3.log": "066ab13c3eb6b20a14d96280ca69db29f25a0d20f653475f3abfbdf2308b67f6",
+    ".context/node26-random-upstream-r1/report.json": "0b3b0b1fb7f061d88c4fccb9fe95d220d7abe06df4dd573051fccbdb5be87bf5",
+    ".context/node26-random-threaded/target-builds.json": "2cf9e178755de597d222517a45cad293305e9cc047a234fa2bcc0a4d73e7730b",
+    ".context/node26-random-threaded-controls-r3.log": "48f78042542e972cb708c86f86435cc8317c8c6591298fbc2f9ee257763657d9",
+    ".context/node26-random-native-r1.log": "5f211e763c05a42726d03b55ed66fc289d5962a184cc89942ddd6abc7cbb73d5",
+    ".context/node26-random-native-r2.log": "84c3e45bcd4826063a640896a7419d625b60a840e267ecb4ccacf99149475a97",
+    ".context/node26-random-native/owner-failed-r2": "c3b4dec34891fb4a20e2edf90cc6dfdac8a478cb2c87b4542ebb90272fd9972f",
+    ".context/node26-random-native/owner-failed-r2-crash.ips": "752bce1461975a350790ccb0b444ae99eea95c14eb055b31c0e239031351fff5",
+    ".context/node26-random-threaded/owner": "49970d6d0f5bb51db410ed1bd958cd86c35925e26c98552327cea53b0b41860d",
+    ".context/node26-random-threaded/openssl-3.3.2/libcrypto.a": "44cefd7d012c1c157165236490fb67f2b15047a919787fce03b1d04caa75b3f9",
+    ".context/node26-random-threaded/openssl-3.3.2/configdata.pm": "49e5bb76f67cb8c757305a50e0848f2452dfb6673287e69231a53dcdee916d1f",
+    ".context/node26-random-threaded/openssl-3.3.2/Makefile": "04a32e0a77b4d3191bd7bdbc475b75edd511eb55dff5ff81ad819fb92432dac1",
+    ".context/node26-random-threaded/include/kandelo-node-digest-operations.h": "0ee40771bb4d3f5d17012bebba36a9cb29a57b1836993e30aa12ddd6932149bd",
+    ".context/node26-random-target-link.log": "2cb97c8c2aa149513cf3c75405ff22c66b0f4a22d4fd6270626f2a81b484675b",
+    ".context/node26-random-main-fetch-final.log": "90350fb88a57c119cc78660ab07ca2eb3cbd1daaee9e4aa9a7d63b8860fd3fa8",
+    ".context/node26-random-controls-r1.log": "90bfa9c0479a08fd9eba78e4e1cf3eb146ccbb0633ba7401a1b7743f5f802521",
+    ".context/node26-random-controls-r2.log": "bb7a9320d3e928f512e667540541afc6cadfd2a87a06f212fe07fd3496bb3e44"
+  },
+  "focusedEvidence": {
+    "algorithmScenarios": 6,
+    "affectedSyncControls": 6,
+    "unchangedUpstreamCandidateFiles": 4,
+    "unchangedUpstreamNativeFiles": 4,
+    "nativeThreadedProviderOperations": 512,
+    "nativeProviderOperationsAreAPICases": false
+  },
+  "compilationEvidence": {
+    "normalTargetLibraryBuilds": [
+      "openssl wasm32",
+      "openssl wasm64"
+    ],
+    "targetProbesExecuted": false,
+    "guestEngineCompiled": false,
+    "fullProductRebuilt": false
+  },
+  "preservedFailures": [
+    "Source selection initially lacked the real crypto provider entry; source parser corrected against pinned provider list.",
+    "First algorithm fixture compared nondeterministic valid bytes; assertion normalization corrected, original results retained.",
+    "Affected sync fixture used the removed legacy entropy-loop source anchor; fixture now checks actual provider boundary.",
+    "Old no-thread native OpenSSL concurrency SIGTRAP (exit133); binary, crash report and logs retained. Prior single pass does not establish thread safety."
+  ],
+  "knownImplementationGaps": [
+    "Async copy-back does not lease original backing store across transfer: native control succeeds and fills transferred destination; candidate source rejects original detached input.",
+    "Resize/early visibility/scratch-memory accounting/allocation failure/GC/realm/resource prototype semantics incomplete or unvalidated.",
+    "Guest worker, libc, entropy, error, ref/cancel/shutdown integration unvalidated.",
+    "Deprecated aliases, CLI/FIPS/snapshot/fork-sensitive policies and backend feature/version gaps remain open."
+  ],
+  "mainReconciliation": {
+    "head": "0a1bff02d8d19bd9adbab76722d72b20b841487a",
+    "originMain": "689bfc19978d6195604facbeac0a8513d7628fbc",
+    "aheadBehind": "50\t0"
+  },
+  "checkpointLimit": "Previous 447-source identities and sourceSnapshot remain historical; this record is selected current-source/evidence metadata, not a complete reproducibility closure or four-host conformance.",
+  "all19FamiliesComplete": false,
+  "fourHostConformance": false
+}

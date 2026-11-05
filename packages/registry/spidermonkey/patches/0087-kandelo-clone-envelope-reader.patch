@@ -1,0 +1,29 @@
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -4275,9 +4275,10 @@
+   // main graph. This table never consumes object IDs from allObjs.
+   Maybe<SCInput::BufferIterator> hostTableStart, hostTableEnd, hostPayloadStart;
+   uint32_t tag, version;
+-  const bool hostProtocol = context()->hasKandeloCloneErrors();
+-  if (hostProtocol && !in.getPair(&tag, &version)) return false;
+-  if (hostProtocol && tag == SCTAG_KANDELO_HOST_HEADER) {
++  // The envelope is a wire property, independent of receiver initialization.
++  // Plain bootstrap graphs can be read before host constructors are installed.
++  if (!in.getPair(&tag, &version)) return false;
++  if (tag == SCTAG_KANDELO_HOST_HEADER) {
+     if (allowedScope != JS::StructuredCloneScope::SameProcess || version != 1) {
+       JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
+                                 JSMSG_SC_BAD_SERIALIZED_DATA, "invalid host envelope");
+@@ -4300,6 +4301,12 @@
+     if (!in.readPair(&tag, &count) || tag != SCTAG_KANDELO_HOST_TABLE) {
+       JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
+                                 JSMSG_SC_BAD_SERIALIZED_DATA, "invalid host table");
++      return false;
++    }
++    if (count && !context()->hasKandeloCloneErrors()) {
++      JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
++                                JSMSG_SC_BAD_SERIALIZED_DATA,
++                                "host clone protocol is not initialized");
+       return false;
+     }
+     for (uint32_t i = 0; i < count; ++i) {

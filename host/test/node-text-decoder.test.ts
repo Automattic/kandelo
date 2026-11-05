@@ -2,9 +2,11 @@ import { readFileSync } from 'node:fs';
 import { isUtf8 } from 'node:buffer';
 import { StringDecoder as NativeStringDecoder } from 'node:string_decoder';
 import { runInNewContext } from 'node:vm';
+import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 
 const source = readFileSync(new URL('../../packages/registry/node-compat/bootstrap.js', import.meta.url), 'utf8');
+const decoderPlatform = createRequire(import.meta.url)('./fixtures/node-string-decoder-platform.cjs');
 function section(start: string, end: string) {
   const a = source.indexOf(start), b = source.indexOf(end, a);
   if (a < 0 || b < 0) throw Error(`Decoder source boundaries missing: ${start}, ${end}`);
@@ -14,10 +16,10 @@ function implementation(nativeHook: boolean) {
   return runInNewContext(
     section("if (typeof globalThis.TextEncoder === 'undefined') {", '// Some JavaScript engine parsers') +
     section('function _bufferInputBytes(', 'const _builtinModules =') +
-    section('const Buffer = (() => {', '// process module') +
-    section('const string_decoder = (() => {', '// timers module') +
+    section('const string_decoder = _createNodeStringDecoder({', '// timers module') +
     ';({TextEncoder, TextDecoder, Buffer, StringDecoder:string_decoder.StringDecoder})', {
-      Uint8Array, ArrayBuffer, SharedArrayBuffer, DataView, TypeError, RangeError, Buffer, btoa, atob,
+      ...decoderPlatform.environment(),
+      Uint8Array, ArrayBuffer, SharedArrayBuffer, DataView, TypeError, RangeError, btoa, atob,
       _nodeNative: nativeHook ? { decodeUtf8(bytes: Uint8Array) {
         if (bytes.buffer instanceof SharedArrayBuffer) throw Error('one-shot native converter received a live shared span');
         if (!isUtf8(bytes)) throw Error('one-shot native converter received malformed or partial UTF-8');

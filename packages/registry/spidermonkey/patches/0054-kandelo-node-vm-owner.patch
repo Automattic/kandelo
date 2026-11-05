@@ -1,0 +1,61 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2771,7 +2771,8 @@
+   JS::RealmOptions options;
+   options.creationOptions()
+       .setNewCompartmentAndZone()
+-      .setSharedMemoryAndAtomicsEnabled(false);
++      .setSharedMemoryAndAtomicsEnabled(
++          JS::RealmCreationOptionsRef(cx).getSharedMemoryAndAtomicsEnabled());
+ 
+   RootedObject global(cx,
+                       JS_NewGlobalObject(cx, &gKandeloVmContextifyClass, nullptr,
+@@ -2832,7 +2833,7 @@
+   RootedString code(cx, args[0].toString());
+ 
+   RootedString filenameStr(cx);
+-  int32_t lineOffset = 0;
++  int32_t lineOffset = 0, columnOffset = 0;
+   if (args.length() >= 2 && args[1].isObject()) {
+     RootedObject o(cx, &args[1].toObject());
+     RootedValue v(cx);
+@@ -2848,6 +2849,8 @@
+     if (v.isInt32()) {
+       lineOffset = v.toInt32();
+     }
++    if (!JS_GetProperty(cx, o, "columnOffset", &v)) return false;
++    if (v.isInt32()) columnOffset = v.toInt32();
+   }
+   UniqueChars filenameBytes;
+   const char* filename = "evalmachine.<anonymous>";
+@@ -2860,7 +2863,12 @@
+   }
+ 
+   JS::CompileOptions compileOptions(cx);
+-  compileOptions.setFileAndLine(filename, 1 + lineOffset);
++  if (lineOffset < 0 || columnOffset < 0) {
++    JS_ReportErrorASCII(cx, "Negative VM source offsets require metadata support");
++    return false;
++  }
++  compileOptions.setFileAndLine(filename, uint32_t(lineOffset) + 1)
++      .setColumn(JS::ColumnNumberOneOrigin::fromZeroOrigin(uint32_t(columnOffset)));
+ 
+   AutoStableStringChars stable(cx);
+   if (!stable.initTwoByte(cx, code)) {
+@@ -3007,6 +3015,8 @@
+   }
+   return false;
+ }
++
++#include "kandelo-node-vm.cpp"
+ 
+ // Kandelo: native zstd DECOMPRESSION. Input: a string, ArrayBuffer, or typed
+ // array holding a zstd frame. Output: a fresh Uint8Array of the decoded bytes.
+@@ -3848,6 +3858,7 @@
+       JS_FN("__kandeloVmIsContext", KandeloVmIsContext, 1, 0),
+       JS_FN("__kandeloVmRunInContext", KandeloVmRunInContext, 3, 0),
+       JS_FN("__kandeloVmCompile", KandeloVmCompile, 2, 0),
++      JS_FN("__kandeloVmCompileFunction", KandeloVmCompileFunction, 5, 0),
+       JS_FN("createHash", KandeloNativeCreateHash, 1, 0),
+       JS_FN("createHmac", KandeloNativeCreateHmac, 2, 0),
+       JS_FN("createDeflate", KandeloNativeCreateDeflate, 1, 0),

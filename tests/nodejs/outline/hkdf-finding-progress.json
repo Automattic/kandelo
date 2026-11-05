@@ -1,0 +1,87 @@
+{
+  "at": "2026-11-05T08:26:14.864185+00:00",
+  "recipeRevision": 102,
+  "auditFindings": [
+    "C-001/C-015 partial: public HKDF and real key/native job consumers",
+    "C-009 partial: shared configuration ownership/cleanup/accounting and common queue/resource lifecycle",
+    "C-011 partial: actual public HKDF metadata/ArrayBuffer/callback routes"
+  ],
+  "sourceImplemented": [
+    "Complete unchanged pinned HKDF public module and exact byte/coercion helpers with full-source/section hashes",
+    "Actual ncrypto Digest::FromName/checkHkdfLength/hkdf implementation over the existing exact SDK dependency; no reimplementation of the cryptographic algorithm",
+    "Shared KdfOperation owns derivation, name and concrete size/input/output accounting; password and HKDF configurations remain separate concrete owners",
+    "Actual DERIVEBITSREQUEST/HKDFJob request dispatch on common CPU queue, raw async snapshots before init, actual native secret handles, rooted sync inputs and cleansed owned bytes",
+    "Production bootstrap supplies shared key/types/buffer-bound owners; public callback/order/validation/ArrayBuffer semantics use pinned JS"
+  ],
+  "portableNative": {
+    "report": ".context/node26-hkdf-native-r1/report.json",
+    "sha256": "7632cb8633c83bea91d2107583b0f6d5f8580c34e69da2aa28516de522a8a7ef",
+    "counts": {
+      "pass": 18,
+      "fail": 0
+    },
+    "scope": "Real ncrypto HKDF and shared native operation polymorphism vs exact native26; no guest JSAPI/queue/key-handle or four-host evidence."
+  },
+  "portablePasswordRegression": {
+    "report": ".context/node26-hkdf-password-regression-r1/report.json",
+    "sha256": "76d900518d8083ca4f1086e7fabd581102dfd813deed3a4173428f20f0e65585",
+    "counts": {
+      "pass": 20,
+      "fail": 0
+    },
+    "scope": "Existing PBKDF2/scrypt operation now exercised through actual shared virtual interface; same native26 differentials"
+  },
+  "frontendNative": {
+    "report": ".context/node26-hkdf-frontend-r2.json",
+    "sha256": "0fbf3531c05b8b4b2b50823fcf6fb22ba841447080cfd0f7de5983bc6b062705",
+    "passed": 17,
+    "new": 6,
+    "affected": 11,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Pinned public HKDF/password JS over actual native26 key/job/resource owners. Does not execute current guest JSAPI/queue."
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-hkdf-upstream-r1/report.json",
+    "sha256": "ef977797fc0d0c7a51811987fca0f7d4fb94aa913c35935d613f09bf1c440f5c",
+    "pairedFilePass": 1,
+    "scope": "Unchanged public HKDF test over candidate generated JS/packet conversion and actual native26 KDF jobs. Not guest OpenSSL/queue/JSAPI or four-host conformance.",
+    "files": [
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-hkdf.js",
+        "sha256": "80ab4c156a924ca99ff94de0c781745ba506ac3dd186b0429f42f11c413e068a"
+      }
+    ]
+  },
+  "sourceChecks": {
+    "report": ".context/node26-hkdf-source-r1/report.json",
+    "sha256": "c0d13e3647cf46712392eba4ff5443ade768ad7cc2417168113f9f65e7d369df",
+    "checks": 8,
+    "pinnedInputs": 17,
+    "helpers": 3,
+    "bunRemainderUnchanged": true
+  },
+  "workflowNotes": {
+    "report": ".context/node26-hkdf-workflow-notes.json",
+    "sha256": "223019cf18f6eb0595c83865e0c9b2ee057f0f13f86dad28057e7bd5d5fb4def"
+  },
+  "remaining": [
+    "Current source103 compiles101/102 followups; current admitted kernel/image and actual guest/four-host conformance remain outstanding.",
+    "Admitted identified kernel/image required for guest validation; prior artifact-policy rejection remains unresolved and must not be bypassed",
+    "Full native backing-store leases/shared/resizable/detached/init-hook/OOM/GC/cancellation/fatal/ref/realm/provider-allocation-accounting and permissions conformance",
+    "WebCrypto HKDF algorithms/normalization/usages/extractability/import/export/derive and Promise job modes remain incomplete; copied internal exports do not establish support",
+    "Remaining key/cipher/signature/certificate/FIPS/other-KDF/provider/namespace and all19-family obligations; no accepted new platform exclusions"
+  ],
+  "guestCompiled": true,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformExclusions": [],
+  "dependencyDocument": "tests/nodejs/outline/hkdf-implementation-dependencies.md",
+  "compilationFollowup": {
+    "report": ".context/node26-engine-r103-accepted/report.json",
+    "sha256": "a76e2d94124b2681aff5779639a0b2cd772e82b702bc0e9b6cbfc3232e8a4121",
+    "engineRevision": 103,
+    "meaning": "Source101 comparison and102 HKDF/common operation followups now compiled; no new runtime/API/four-host evidence inferred."
+  },
+  "sourceStageGuestCompiled": false
+}

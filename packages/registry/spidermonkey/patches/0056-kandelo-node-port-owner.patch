@@ -1,0 +1,56 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3018,6 +3018,7 @@
+ 
+ #include "kandelo-node-vm.cpp"
+ #include "kandelo-node-sqlite.cpp"
++#include "kandelo-node-ports.cpp"
+ 
+ // Kandelo: native zstd DECOMPRESSION. Input: a string, ArrayBuffer, or typed
+ // array holding a zstd frame. Output: a fresh Uint8Array of the decoded bytes.
+@@ -3861,6 +3862,7 @@
+       JS_FN("__kandeloVmCompile", KandeloVmCompile, 2, 0),
+       JS_FN("__kandeloVmCompileFunction", KandeloVmCompileFunction, 5, 0),
+       JS_FN("sqlite", KandeloNativeSqlite, 4, 0),
++      JS_FN("port", KandeloNativePort, 3, 0),
+       JS_FN("createHash", KandeloNativeCreateHash, 1, 0),
+       JS_FN("createHmac", KandeloNativeCreateHmac, 2, 0),
+       JS_FN("createDeflate", KandeloNativeCreateDeflate, 1, 0),
+@@ -5210,7 +5212,8 @@
+       // Wakeup deadlines are not references. Leave unref timers scheduled,
+       // but do not enter another turn when no referenced owner remains.
+       if (!timerReferences && !KandeloSocketHasWatches() &&
+-          !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx)) return;
++          !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
++          !KandeloPortsHaveReferences(cx)) return;
+     }
+ 
+     // Run tasks (only finalization registry clean tasks are possible).
+@@ -5253,10 +5256,18 @@
+       if (gcCloseErrors) continue;
+     }
+     if (ranWork) continue;
++    if (IsKandeloNodeMode()) {
++      double ranPorts;
++      if (!KandeloCallAsyncQueue(cx, "__kandeloDispatchPorts", &ranPorts)) {
++        AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++      }
++      if (ranPorts) continue;
++    }
+ 
+     if (!ranTasks && ranNative == 0 && ranTimers == 0 &&
+         !KandeloSocketHasWatches() && !timersPending &&
+-        !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx)) {
++        !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
++          !KandeloPortsHaveReferences(cx)) {
+       break;
+     }
+     if (!ranTasks && ranNative == 0 && ranTimers == 0) {
+@@ -16136,6 +16147,7 @@
+ ShellContext::~ShellContext() {
+   // Finish/cancel native jobs and retire pins/roots while the JSContext lives.
+   KandeloShutdownNativeWork(this);
++  KandeloShutdownPorts(cx_);
+   KandeloShutdownNativeAsync(this);
+   markObservers.reset();
+   if (cx_) {

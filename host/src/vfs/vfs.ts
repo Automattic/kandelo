@@ -530,9 +530,9 @@ export class VirtualPlatformIO implements PlatformIO {
     backend.lchown(relativePath, uid, gid);
   }
 
-  utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
+  utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number, flags = 0): void {
     const { backend, relativePath } = this.resolve(path);
-    backend.utimensat(relativePath, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
+    backend.utimensat(relativePath, atimeSec, atimeNsec, mtimeSec, mtimeNsec, flags);
   }
 
   // --- Directory operations ---
@@ -725,6 +725,7 @@ export class VirtualPlatformIO implements PlatformIO {
     atimeNsec: number,
     mtimeSec: number,
     mtimeNsec: number,
+    flags = 0,
   ): void {
     const dir = this.getDirHandle(dirHandle);
     dir.backend.utimensat(
@@ -733,6 +734,7 @@ export class VirtualPlatformIO implements PlatformIO {
       atimeNsec,
       mtimeSec,
       mtimeNsec,
+      flags,
     );
   }
 

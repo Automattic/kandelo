@@ -1,0 +1,555 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "auditMatrixSha256": "2d3fde3b30ac0d28e804cc06a50424a90ecc94abb4507697a0ddbc7c977321f9",
+  "scope": "Navigation from original observations to actual source implementation slice, not individual API closure. Counts are observations, not unique APIs or tests.",
+  "sourceReport": "tests/nodejs/outline/readdir-implementation-dependencies.md",
+  "sourceOwners": [
+    "third_party/node-core/readdir-platform-adapter.js",
+    "third_party/node-core/readdir-operations.h",
+    "third_party/node-core/native-readdir.cpp"
+  ],
+  "observations": [
+    {
+      "matrixRowIndex": 806,
+      "id": "fs.readdirSync",
+      "module": "node:fs",
+      "api": "readdirSync",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 807,
+      "id": "fs.Dirent",
+      "module": "node:fs",
+      "api": "Dirent",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9873,
+      "id": "fs.readdir",
+      "module": "node:fs",
+      "api": "readdir",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9979,
+      "id": "fs.Dirent.prototype.name",
+      "module": "node:fs",
+      "api": "Dirent.prototype.name",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9980,
+      "id": "fs.Dirent.prototype.parentPath",
+      "module": "node:fs",
+      "api": "Dirent.prototype.parentPath",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9981,
+      "id": "fs.Dirent.prototype.isFile",
+      "module": "node:fs",
+      "api": "Dirent.prototype.isFile",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9982,
+      "id": "fs.Dirent.prototype.isDirectory",
+      "module": "node:fs",
+      "api": "Dirent.prototype.isDirectory",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9983,
+      "id": "fs.Dirent.prototype.isBlockDevice",
+      "module": "node:fs",
+      "api": "Dirent.prototype.isBlockDevice",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9984,
+      "id": "fs.Dirent.prototype.isCharacterDevice",
+      "module": "node:fs",
+      "api": "Dirent.prototype.isCharacterDevice",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9985,
+      "id": "fs.Dirent.prototype.isFIFO",
+      "module": "node:fs",
+      "api": "Dirent.prototype.isFIFO",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9986,
+      "id": "fs.Dirent.prototype.isSocket",
+      "module": "node:fs",
+      "api": "Dirent.prototype.isSocket",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9987,
+      "id": "fs.Dirent.prototype.isSymbolicLink",
+      "module": "node:fs",
+      "api": "Dirent.prototype.isSymbolicLink",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10083,
+      "id": "fs.readdir.prototype",
+      "module": "node:fs",
+      "api": "readdir.prototype",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10084,
+      "id": "fs.readdirSync.prototype",
+      "module": "node:fs",
+      "api": "readdirSync.prototype",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10128,
+      "id": "fs.Dirent.prototype",
+      "module": "node:fs",
+      "api": "Dirent.prototype",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10153,
+      "id": "fs.constants.UV_DIRENT_UNKNOWN",
+      "module": "node:fs",
+      "api": "constants.UV_DIRENT_UNKNOWN",
+      "relation": "shared enum navigation only; public constant completeness not established",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10154,
+      "id": "fs.constants.UV_DIRENT_FILE",
+      "module": "node:fs",
+      "api": "constants.UV_DIRENT_FILE",
+      "relation": "shared enum navigation only; public constant completeness not established",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10155,
+      "id": "fs.constants.UV_DIRENT_DIR",
+      "module": "node:fs",
+      "api": "constants.UV_DIRENT_DIR",
+      "relation": "shared enum navigation only; public constant completeness not established",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10156,
+      "id": "fs.constants.UV_DIRENT_LINK",
+      "module": "node:fs",
+      "api": "constants.UV_DIRENT_LINK",
+      "relation": "shared enum navigation only; public constant completeness not established",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10157,
+      "id": "fs.constants.UV_DIRENT_FIFO",
+      "module": "node:fs",
+      "api": "constants.UV_DIRENT_FIFO",
+      "relation": "shared enum navigation only; public constant completeness not established",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10158,
+      "id": "fs.constants.UV_DIRENT_SOCKET",
+      "module": "node:fs",
+      "api": "constants.UV_DIRENT_SOCKET",
+      "relation": "shared enum navigation only; public constant completeness not established",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10159,
+      "id": "fs.constants.UV_DIRENT_CHAR",
+      "module": "node:fs",
+      "api": "constants.UV_DIRENT_CHAR",
+      "relation": "shared enum navigation only; public constant completeness not established",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10160,
+      "id": "fs.constants.UV_DIRENT_BLOCK",
+      "module": "node:fs",
+      "api": "constants.UV_DIRENT_BLOCK",
+      "relation": "shared enum navigation only; public constant completeness not established",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10259,
+      "id": "fs.[doc] fs.md `fsPromises.readdir(path[, options])` @1794",
+      "module": "node:fs",
+      "api": "[doc] fs.md `fsPromises.readdir(path[, options])` @1794",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10308,
+      "id": "fs.[doc] fs.md `fs.readdir(path[, options], callback)` @4328",
+      "module": "node:fs",
+      "api": "[doc] fs.md `fs.readdir(path[, options], callback)` @4328",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10366,
+      "id": "fs.[doc] fs.md `fs.readdirSync(path[, options])` @6611",
+      "module": "node:fs",
+      "api": "[doc] fs.md `fs.readdirSync(path[, options])` @6611",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10400,
+      "id": "fs.[doc] fs.md Class: `fs.Dirent` @7442",
+      "module": "node:fs",
+      "api": "[doc] fs.md Class: `fs.Dirent` @7442",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10401,
+      "id": "fs.[doc] fs.md `dirent.isBlockDevice()` @7463",
+      "module": "node:fs",
+      "api": "[doc] fs.md `dirent.isBlockDevice()` @7463",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10402,
+      "id": "fs.[doc] fs.md `dirent.isCharacterDevice()` @7473",
+      "module": "node:fs",
+      "api": "[doc] fs.md `dirent.isCharacterDevice()` @7473",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10403,
+      "id": "fs.[doc] fs.md `dirent.isDirectory()` @7483",
+      "module": "node:fs",
+      "api": "[doc] fs.md `dirent.isDirectory()` @7483",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10404,
+      "id": "fs.[doc] fs.md `dirent.isFIFO()` @7494",
+      "module": "node:fs",
+      "api": "[doc] fs.md `dirent.isFIFO()` @7494",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10405,
+      "id": "fs.[doc] fs.md `dirent.isFile()` @7505",
+      "module": "node:fs",
+      "api": "[doc] fs.md `dirent.isFile()` @7505",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10406,
+      "id": "fs.[doc] fs.md `dirent.isSocket()` @7515",
+      "module": "node:fs",
+      "api": "[doc] fs.md `dirent.isSocket()` @7515",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10407,
+      "id": "fs.[doc] fs.md `dirent.isSymbolicLink()` @7525",
+      "module": "node:fs",
+      "api": "[doc] fs.md `dirent.isSymbolicLink()` @7525",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10408,
+      "id": "fs.[doc] fs.md `dirent.name` @7535",
+      "module": "node:fs",
+      "api": "[doc] fs.md `dirent.name` @7535",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10409,
+      "id": "fs.[doc] fs.md `dirent.parentPath` @7547",
+      "module": "node:fs",
+      "api": "[doc] fs.md `dirent.parentPath` @7547",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10523,
+      "id": "fs/promises.readdir",
+      "module": "node:fs/promises",
+      "api": "readdir",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10612,
+      "id": "fs/promises.constants.UV_DIRENT_UNKNOWN",
+      "module": "node:fs/promises",
+      "api": "constants.UV_DIRENT_UNKNOWN",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10613,
+      "id": "fs/promises.constants.UV_DIRENT_FILE",
+      "module": "node:fs/promises",
+      "api": "constants.UV_DIRENT_FILE",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10614,
+      "id": "fs/promises.constants.UV_DIRENT_DIR",
+      "module": "node:fs/promises",
+      "api": "constants.UV_DIRENT_DIR",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10615,
+      "id": "fs/promises.constants.UV_DIRENT_LINK",
+      "module": "node:fs/promises",
+      "api": "constants.UV_DIRENT_LINK",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10616,
+      "id": "fs/promises.constants.UV_DIRENT_FIFO",
+      "module": "node:fs/promises",
+      "api": "constants.UV_DIRENT_FIFO",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10617,
+      "id": "fs/promises.constants.UV_DIRENT_SOCKET",
+      "module": "node:fs/promises",
+      "api": "constants.UV_DIRENT_SOCKET",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10618,
+      "id": "fs/promises.constants.UV_DIRENT_CHAR",
+      "module": "node:fs/promises",
+      "api": "constants.UV_DIRENT_CHAR",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10619,
+      "id": "fs/promises.constants.UV_DIRENT_BLOCK",
+      "module": "node:fs/promises",
+      "api": "constants.UV_DIRENT_BLOCK",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10684,
+      "id": "vfs.VirtualFileSystem.prototype.readdirSync",
+      "module": "node:vfs",
+      "api": "VirtualFileSystem.prototype.readdirSync",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10715,
+      "id": "vfs.VirtualFileSystem.prototype.readdir",
+      "module": "node:vfs",
+      "api": "VirtualFileSystem.prototype.readdir",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10745,
+      "id": "vfs.VirtualProvider.prototype.readdir",
+      "module": "node:vfs",
+      "api": "VirtualProvider.prototype.readdir",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10746,
+      "id": "vfs.VirtualProvider.prototype.readdirSync",
+      "module": "node:vfs",
+      "api": "VirtualProvider.prototype.readdirSync",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10790,
+      "id": "vfs.MemoryProvider.prototype.readdirSync",
+      "module": "node:vfs",
+      "api": "MemoryProvider.prototype.readdirSync",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10791,
+      "id": "vfs.MemoryProvider.prototype.readdir",
+      "module": "node:vfs",
+      "api": "MemoryProvider.prototype.readdir",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10828,
+      "id": "vfs.ComposableProvider.prototype.readdirSync",
+      "module": "node:vfs",
+      "api": "ComposableProvider.prototype.readdirSync",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10829,
+      "id": "vfs.ComposableProvider.prototype.readdir",
+      "module": "node:vfs",
+      "api": "ComposableProvider.prototype.readdir",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10881,
+      "id": "vfs.RealFSProvider.prototype.readdirSync",
+      "module": "node:vfs",
+      "api": "RealFSProvider.prototype.readdirSync",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10882,
+      "id": "vfs.RealFSProvider.prototype.readdir",
+      "module": "node:vfs",
+      "api": "RealFSProvider.prototype.readdir",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10926,
+      "id": "vfs.ZipProvider.prototype.readdir",
+      "module": "node:vfs",
+      "api": "ZipProvider.prototype.readdir",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10927,
+      "id": "vfs.ZipProvider.prototype.readdirSync",
+      "module": "node:vfs",
+      "api": "ZipProvider.prototype.readdirSync",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 11011,
+      "id": "fs.[returned Dirent].name",
+      "module": "node:fs",
+      "api": "[returned Dirent].name",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 11012,
+      "id": "fs.[returned Dirent].parentPath",
+      "module": "node:fs",
+      "api": "[returned Dirent].parentPath",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 11057,
+      "id": "vfs.[returned VirtualFileSystem].promises.readdir",
+      "module": "node:vfs",
+      "api": "[returned VirtualFileSystem].promises.readdir",
+      "relation": "Dirent/readdir source slice; original full requirements remain subject to reconciliation",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    }
+  ]
+}

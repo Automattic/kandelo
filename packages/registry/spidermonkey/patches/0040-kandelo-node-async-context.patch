@@ -1,0 +1,186 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3291,6 +3291,27 @@
+   return true;
+ }
+ 
++static bool KandeloNativeGetAsyncJobActive(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  args.rval().setBoolean(cx->kandeloAsyncJobActive());
++  return true;
++}
++
++static bool KandeloNativeGetAsyncContext(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  RootedValue value(cx, cx->kandeloAsyncContext());
++  if (!JS_WrapValue(cx, &value)) return false;
++  args.rval().set(value);
++  return true;
++}
++
++static bool KandeloNativeSetAsyncContext(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  cx->kandeloAsyncContext() = args.get(0);
++  args.rval().setUndefined();
++  return true;
++}
++
+ static bool DefineKandeloNodeNative(JSContext* cx) {
+   RootedObject native(cx, JS_NewPlainObject(cx));
+   if (!native) {
+@@ -3300,6 +3321,9 @@
+       JS_FN("evalScriptAsFunction", KandeloNativeEvalScriptAsFunction, 2, 0),
+       JS_FN("isPromise", KandeloNativeIsPromise, 1, 0),
+       JS_FN("hasObjectKind", KandeloNativeHasObjectKind, 2, 0),
++      JS_FN("getAsyncContext", KandeloNativeGetAsyncContext, 0, 0),
++      JS_FN("getAsyncJobActive", KandeloNativeGetAsyncJobActive, 0, 0),
++      JS_FN("setAsyncContext", KandeloNativeSetAsyncContext, 1, 0),
+       JS_FN("getPromiseDetails", KandeloNativePromiseDetails, 1, 0),
+       JS_FN("getProxyDetails", KandeloNativeProxyDetails, 2, 0),
+       JS_FN("getConstructorName", KandeloNativeConstructorName, 1, 0),
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -114,7 +114,16 @@
+ #endif
+ 
+  private:
+-  using Queue = js::TraceableFifo<JSObject*, 0, SystemAllocPolicy>;
++  struct QueuedJob {
++    JSObject* job;
++    JS::Value context;
++
++    void trace(JSTracer* trc) {
++      JS::GCPolicy<JSObject*>::trace(trc, &job, "queued job");
++      JS::GCPolicy<JS::Value>::trace(trc, &context, "queued async context");
++    }
++  };
++  using Queue = js::TraceableFifo<QueuedJob, 0, SystemAllocPolicy>;
+ 
+   JS::PersistentRooted<Queue> queue;
+ 
+@@ -589,6 +598,22 @@
+  private:
+   // Indicates if an exception is pending and the reason for it.
+   js::ContextData<JS::ExceptionStatus> status;
++  js::ContextData<JS::PersistentRooted<JS::Value>> kandeloAsyncContext_;
++  js::ContextData<bool> kandeloAsyncJobActive_;
++
++ public:
++  bool& kandeloAsyncJobActive() { return kandeloAsyncJobActive_.ref(); }
++
++  // Private embedding state, rooted independently of the active realm. Job
++  // host data takes a snapshot at reaction registration, not resolution.
++  JS::Value& kandeloAsyncContext() {
++    if (!kandeloAsyncContext_.ref().initialized()) {
++      kandeloAsyncContext_.ref().init(this);
++    }
++    return kandeloAsyncContext_.ref().get();
++  }
++
++ private:
+   js::ContextData<JS::PersistentRooted<JS::Value>>
+       unwrappedException_; /* most-recently-thrown exception */
+   js::ContextData<JS::PersistentRooted<js::SavedFrame*>>
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -7,6 +7,8 @@
+ /*
+  * JS execution context.
+  */
++
++#include "mozilla/ScopeExit.h"
+ 
+ #include "vm/JSContext-inl.h"
+ 
+@@ -772,8 +774,8 @@
+     return nullptr;
+   }
+ 
+-  for (const JSObject* unwrappedJob : queue.get()) {
+-    RootedObject job(cx, const_cast<JSObject*>(unwrappedJob));
++  for (const auto& entry : queue.get()) {
++    RootedObject job(cx, entry.job);
+     if (!cx->compartment()->wrap(cx, &job)) {
+       return nullptr;
+     }
+@@ -814,9 +816,24 @@
+   JS::ClearKeptObjects(cx);
+ }
+ 
++// Even an undefined snapshot needs an object: otherwise a reaction
++// registered outside a scope could inherit its resolver's later scope.
++class KandeloJobContextData : public NativeObject {
++ public:
++  static const JSClass class_;
++};
++const JSClass KandeloJobContextData::class_ = {
++    "KandeloJobContextData", JSCLASS_HAS_RESERVED_SLOTS(1)};
++
+ bool InternalJobQueue::getHostDefinedData(
+     JSContext* cx, JS::MutableHandle<JSObject*> data) const {
+-  data.set(nullptr);
++  RootedValue snapshot(cx, cx->kandeloAsyncContext());
++  if (!cx->compartment()->wrap(cx, &snapshot)) return false;
++  Rooted<KandeloJobContextData*> record(
++      cx, NewBuiltinClassInstance<KandeloJobContextData>(cx));
++  if (!record) return false;
++  record->setReservedSlot(0, snapshot);
++  data.set(record);
+   return true;
+ }
+ 
+@@ -826,7 +843,16 @@
+                                          JS::HandleObject allocationSite,
+                                          JS::HandleObject hostDefinedData) {
+   MOZ_ASSERT(job);
+-  if (!queue.pushBack(job)) {
++  RootedValue snapshot(cx, cx->kandeloAsyncContext());
++  if (hostDefinedData) {
++    RootedObject data(cx, CheckedUnwrapStatic(hostDefinedData));
++    if (!data || !data->is<KandeloJobContextData>()) {
++      JS_ReportErrorASCII(cx, "Invalid promise async-context host data");
++      return false;
++    }
++    snapshot = data->as<KandeloJobContextData>().getReservedSlot(0);
++  }
++  if (!queue.pushBack(QueuedJob{job, snapshot})) {
+     ReportOutOfMemory(cx);
+     return false;
+   }
+@@ -863,8 +889,17 @@
+ 
+       cx->runtime()->offThreadPromiseState.ref().internalDrain(cx);
+ 
+-      job = queue.front();
++      job = queue.front().job;
++      RootedValue snapshot(cx, queue.front().context);
+       queue.popFront();
++      RootedValue priorContext(cx, cx->kandeloAsyncContext());
++      const bool priorJobActive = cx->kandeloAsyncJobActive();
++      cx->kandeloAsyncContext() = snapshot;
++      cx->kandeloAsyncJobActive() = true;
++      auto restoreContext = mozilla::MakeScopeExit([&] {
++        cx->kandeloAsyncContext() = priorContext;
++        cx->kandeloAsyncJobActive() = priorJobActive;
++      });
+ 
+       // If the next job is the last job in the job queue, allow
+       // skipping the standard job queuing behavior.
+@@ -916,7 +951,7 @@
+     return nullptr;
+   }
+ 
+-  return queue.get().front();
++  return queue.get().front().job;
+ }
+ 
+ class js::InternalJobQueue::SavedQueue : public JobQueue::SavedJobQueue {
+@@ -1012,6 +1047,8 @@
+                      js::MallocArena),
+       debuggerMutations(this, 0),
+       status(this, JS::ExceptionStatus::None),
++      kandeloAsyncContext_(this),
++      kandeloAsyncJobActive_(this, false),
+       unwrappedException_(this),
+       unwrappedExceptionStack_(this),
+ #ifdef DEBUG

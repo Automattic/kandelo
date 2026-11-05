@@ -1,0 +1,27 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -201,6 +201,7 @@
+ #include "shell/jsoptparse.h"
+ #include "shell/jsshell.h"
+ #include "shell/kandelo-node-bootstrap.h"
++#include "shell/kandelo-node-codec-contexts.h"
+ #include "shell/OSObject.h"
+ #include "shell/ShellModuleObjectWrapper.h"
+ #include "shell/WasmTesting.h"
+@@ -267,6 +268,8 @@
+ using mozilla::TimeDuration;
+ using mozilla::TimeStamp;
+ using mozilla::Utf8Unit;
++
++#include "shell/kandelo-node-codec-handle.cpp"
+ 
+ static JSObject* KandeloNewUint8ArrayCopy(JSContext* cx, const uint8_t* data,
+                                           size_t len) {
+@@ -3771,6 +3774,7 @@
+       JS_FN("markPromiseAsHandled", KandeloNativeMarkPromiseHandled, 1, 0),
+       JS_FN("getCompressionVersions", KandeloNativeCompressionVersions, 0, 0),
+       JS_FN("getCompressionConstants", KandeloNativeCompressionConstants, 0, 0),
++      JS_FN("createCompressionHandle", KandeloNativeCreateCompressionHandle, 1, 0),
+       JS_FN("getProxyDetails", KandeloNativeProxyDetails, 2, 0),
+       JS_FN("getConstructorName", KandeloNativeConstructorName, 1, 0),
+       JS_FN("previewEntries", KandeloNativePreviewEntries, 2, 0),

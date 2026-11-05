@@ -1,0 +1,18 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2265,6 +2265,7 @@
+ }
+ 
+ #include "kandelo-node-process-state.h"
++#include "shell/kandelo-node-os.cpp"
+ #include "shell/kandelo-node-dotenv.cpp"
+ 
+ static bool KandeloNativeEnvironmentImpl(JSContext* cx, unsigned argc, Value* vp) {
+@@ -4119,6 +4120,7 @@
+       JS_FN("environment", KandeloNativeEnvironment, 3, 0),
+       JS_FN("processUmask", KandeloNativeProcessUmask, 1, 0),
+       JS_FN("processParentPid", KandeloNativeProcessParentPid, 0, 0),
++      JS_FN("operatingSystem", (KandeloFsPromiseGuard<KandeloNativeOS>), 3, 0),
+       JS_FN("parseEnv", (KandeloFsPromiseGuard<KandeloNativeParseEnv>), 1, 0),
+       JS_FN("loadEnvFile", (KandeloFsPromiseGuard<KandeloNativeLoadEnvFile>), 1, 0),
+       JS_FS_END,

@@ -1,0 +1,289 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -51,6 +51,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <string>
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <utility>
+@@ -3431,6 +3432,28 @@
+   return true;
+ }
+ 
++// Native promise metadata is the owner of rejection handling. This does not
++// install reactions, call a user-visible then method or change async lineage.
++static bool KandeloNativeMarkPromiseHandled(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (!args.get(0).isObject()) {
++    JS_ReportErrorASCII(cx, "markPromiseAsHandled requires a native Promise");
++    return false;
++  }
++  RootedObject promise(cx, CheckedUnwrapStatic(&args[0].toObject()));
++  if (!promise) { ReportAccessDenied(cx); return false; }
++  if (!JS::IsPromiseObject(promise)) {
++    JS_ReportErrorASCII(cx, "markPromiseAsHandled requires a native Promise");
++    return false;
++  }
++  {
++    AutoRealm ar(cx, promise);
++    if (!JS::SetAnyPromiseIsHandled(cx, promise)) return false;
++  }
++  args.rval().setUndefined();
++  return true;
++}
++
+ static bool DefineKandeloNodeNative(JSContext* cx) {
+   RootedObject native(cx, JS_NewPlainObject(cx));
+   if (!native) {
+@@ -3452,6 +3475,7 @@
+       JS_FN("getAsyncJobActive", KandeloNativeGetAsyncJobActive, 0, 0),
+       JS_FN("setAsyncContext", KandeloNativeSetAsyncContext, 1, 0),
+       JS_FN("getPromiseDetails", KandeloNativePromiseDetails, 1, 0),
++      JS_FN("markPromiseAsHandled", KandeloNativeMarkPromiseHandled, 1, 0),
+       JS_FN("getProxyDetails", KandeloNativeProxyDetails, 2, 0),
+       JS_FN("getConstructorName", KandeloNativeConstructorName, 1, 0),
+       JS_FN("previewEntries", KandeloNativePreviewEntries, 2, 0),
+@@ -10351,6 +10375,171 @@
+   return sArgc > 0 && sArgv && IsKandeloNodeProgramName(sArgv[0]);
+ }
+ 
++/*
++Copyright Node.js contributors. All rights reserved.
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to
++deal in the Software without restriction, including without limitation the
++rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
++sell copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in
++all copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++IN THE SOFTWARE.
++
++Unchanged tokenizer from pinned Node src/node_options.cc.
++*/
++namespace {
++std::vector<std::string> ParseNodeOptionsEnvVar(
++    const std::string& node_options, std::vector<std::string>* errors) {
++  std::vector<std::string> env_argv;
++
++  bool is_in_string = false;
++  bool will_start_new_arg = true;
++  for (std::string::size_type index = 0; index < node_options.size(); ++index) {
++    char c = node_options.at(index);
++
++    // Backslashes escape the following character
++    if (c == '\\' && is_in_string) {
++      if (index + 1 == node_options.size()) {
++        errors->push_back("invalid value for NODE_OPTIONS "
++                          "(invalid escape)\n");
++        return env_argv;
++      } else {
++        c = node_options.at(++index);
++      }
++    } else if (c == ' ' && !is_in_string) {
++      will_start_new_arg = true;
++      continue;
++    } else if (c == '"') {
++      is_in_string = !is_in_string;
++      continue;
++    }
++
++    if (will_start_new_arg) {
++      env_argv.emplace_back(std::string(1, c));
++      will_start_new_arg = false;
++    } else {
++      env_argv.back() += c;
++    }
++  }
++
++  if (is_in_string) {
++    errors->push_back("invalid value for NODE_OPTIONS "
++                      "(unterminated string)\n");
++  }
++  return env_argv;
++}
++
++// These are guest process options. Keep original CLI arguments for execArgv;
++// NODE_OPTIONS contributes values but never appears in that CLI-only array.
++struct KandeloNodeCLIState {
++  bool noWarnings = false;
++  bool experimentalStreamIter = false;
++  bool version = false;
++  std::vector<std::string> execArgs;
++  std::vector<std::string> parserArgs;
++  std::vector<char*> parserArgv;
++};
++static KandeloNodeCLIState kandeloNodeCLI;
++
++static std::string KandeloNodeOptionName(const std::string& arg) {
++  std::string name = arg.substr(0, arg.find('='));
++  for (size_t i = 2; i < name.size(); ++i) {
++    if (name[i] == '_') name[i] = '-';
++  }
++  return name;
++}
++
++static bool ApplyKandeloNodeBooleanOption(const std::string& arg) {
++  std::string name = KandeloNodeOptionName(arg);
++  bool value = true;
++  if (name.find("--no-") == 0) {
++    name.erase(2, 3);
++    value = false;
++  }
++  // Node's boolean parser uses presence/negation; an '=...' suffix does not
++  // supply the boolean value (see pinned node_options-inl.h, kBoolean).
++  if (name == "--warnings") {
++    kandeloNodeCLI.noWarnings = !value;
++    return true;
++  }
++  if (name == "--experimental-stream-iter") {
++    kandeloNodeCLI.experimentalStreamIter = value;
++    return true;
++  }
++  return false;
++}
++
++static bool PrepareKandeloNodeCLI(int argc, char** argv) {
++  if (const char* value = getenv("NODE_OPTIONS")) {
++    std::vector<std::string> errors;
++    auto envArgs = ParseNodeOptionsEnvVar(value, &errors);
++    if (!errors.empty()) {
++      for (const auto& error : errors) fprintf(stderr, "%s: %s", argv[0], error.c_str());
++      return false;
++    }
++    for (const auto& arg : envArgs) {
++      if (!ApplyKandeloNodeBooleanOption(arg)) {
++        // Do not silently accept unsupported allowed Node options or treat
++        // guest environment text as a SpiderMonkey shell command line.
++        fprintf(stderr, "%s: NODE_OPTIONS option is not implemented: %s\n",
++                argv[0], arg.c_str());
++        return false;
++      }
++    }
++  }
++  kandeloNodeCLI.parserArgs.emplace_back(argv[0]);
++  for (int i = 1; i < argc; ++i) {
++    std::string arg = argv[i];
++    if (ApplyKandeloNodeBooleanOption(arg)) {
++      kandeloNodeCLI.execArgs.push_back(arg);
++      continue;
++    }
++    std::string name = KandeloNodeOptionName(arg);
++    if (name == "--version" || name == "--no-version" || arg == "-v") {
++      kandeloNodeCLI.version = name != "--no-version";
++      kandeloNodeCLI.execArgs.push_back(arg);
++      continue;
++    }
++    if (name == "-e" || name == "--eval" || name == "--execute") {
++      kandeloNodeCLI.execArgs.push_back(arg);
++      auto equals = arg.find('=');
++      if (equals != std::string::npos && name != "-e") {
++        kandeloNodeCLI.parserArgs.push_back("--execute" + arg.substr(equals));
++      } else {
++        if (++i == argc) {
++          fprintf(stderr, "%s: %s requires an argument\n", argv[0], arg.c_str());
++          return false;
++        }
++        kandeloNodeCLI.execArgs.emplace_back(argv[i]);
++        kandeloNodeCLI.parserArgs.emplace_back("--execute");
++        kandeloNodeCLI.parserArgs.emplace_back(argv[i]);
++      }
++      continue;
++    }
++    // Positional arguments/-- belong to the user; existing shell-specific
++    // options retain their original parser and argument-consumption behavior.
++    for (; i < argc; ++i) kandeloNodeCLI.parserArgs.emplace_back(argv[i]);
++    break;
++  }
++  // Strings are stable only after all vector growth has finished.
++  for (auto& arg : kandeloNodeCLI.parserArgs) kandeloNodeCLI.parserArgv.push_back(arg.data());
++  kandeloNodeCLI.parserArgv.push_back(nullptr);
++  return true;
++}
++}  // namespace
++
++
+ static bool RunKandeloNodeBootstrap(JSContext* cx) {
+   if (!DefineKandeloNodeNative(cx)) {
+     return false;
+@@ -15197,19 +15386,11 @@
+       RootedString text(cx, utf8 ? NewStringCopyUTF8(cx, utf8.get()) : nullptr);
+       return text && JS_DefineElement(cx, execArgs, index++, text, JSPROP_ENUMERATE);
+     };
+-    // Preserve the real supported execution options in order, including
+-    // duplicates and eval source. Stop before positional user arguments.
+-    for (int n = 1; n < sArgc; n++) {
+-      const char* arg = sArgv[n];
+-      if (strcmp(arg, "--no-warnings") == 0) {
+-        if (!append(arg)) return false;
+-      } else if (strcmp(arg, "-e") == 0 || strcmp(arg, "--execute") == 0) {
+-        if (!append(arg) || ++n >= sArgc || !append(sArgv[n])) return false;
+-      } else {
+-        break;
+-      }
+-    }
+-    if (!JS_DefineProperty(cx, cli, "noWarnings", op->getBoolOption("no-warnings"), 0) ||
++    for (const auto& arg : kandeloNodeCLI.execArgs) {
++      if (!append(arg.c_str())) return false;
++    }
++    if (!JS_DefineProperty(cx, cli, "noWarnings", kandeloNodeCLI.noWarnings, 0) ||
++        !JS_DefineProperty(cx, cli, "experimentalStreamIter", kandeloNodeCLI.experimentalStreamIter, 0) ||
+         !JS_DefineProperty(cx, cli, "execArgv", execArgs, 0) ||
+         !JS_DefineProperty(cx, cx->global(), "__kandeloNodeCliOptions", cli, 0)) return false;
+   }
+@@ -15924,10 +16105,12 @@
+   signal(SIGPIPE, SIG_IGN);
+ #endif
+ 
+-  if (IsKandeloNodeProgramName(argc > 0 ? argv[0] : nullptr) && argc == 2 &&
+-      (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
+-    puts(KANDELO_NODE_COMPAT_VERSION);
+-    return EXIT_SUCCESS;
++  int parserArgc = argc;
++  char** parserArgv = argv;
++  if (IsKandeloNodeMode()) {
++    if (!PrepareKandeloNodeCLI(argc, argv)) return 9;
++    parserArgc = static_cast<int>(kandeloNodeCLI.parserArgs.size());
++    parserArgv = kandeloNodeCLI.parserArgv.data();
+   }
+ 
+   // Special-case stdout and stderr. We bump their refcounts to prevent them
+@@ -15951,7 +16134,7 @@
+     return EXIT_FAILURE;
+   }
+ 
+-  switch (op.parseArgs(argc, argv)) {
++  switch (op.parseArgs(parserArgc, parserArgv)) {
+     case OptionParser::EarlyExit:
+       return EXIT_SUCCESS;
+     case OptionParser::ParseError:
+@@ -15963,6 +16146,10 @@
+       break;
+   }
+ 
++  if (IsKandeloNodeMode() && kandeloNodeCLI.version) {
++    puts(KANDELO_NODE_COMPAT_VERSION);
++    return EXIT_SUCCESS;
++  }
+   if (op.getHelpOption()) {
+     return EXIT_SUCCESS;
+   }
+@@ -16130,6 +16317,7 @@
+       !op.addMultiStringOption('p', "prelude", "PATH", "Prelude path to run") ||
+       !op.addMultiStringOption('e', "execute", "CODE", "Inline code to run") ||
+       !op.addBoolOption('\0', "no-warnings", "Suppress Node's default warning output") ||
++      !op.addBoolOption('\0', "experimental-stream-iter", "Enable Node's iterable stream modules") ||
+       !op.addStringOption('\0', "selfhosted-xdr-path", "[filename]",
+                           "Read/Write selfhosted script data from/to the given "
+                           "XDR file") ||

@@ -1,0 +1,12 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2072,6 +2072,9 @@
+   if (!operation) return false;
+   UniqueChars op = JS_EncodeStringToUTF8(cx, operation);
+   if (!op) return false;
++  if (strcmp(op.get(), "allowed") == 0) {
++    args.rval().setBoolean(kandelo::process_state::EnvironmentReadAllowed()); return true;
++  }
+   if (strcmp(op.get(), "keys") == 0) {
+     const auto names = kandelo::process_state::EnvironmentNames();
+     RootedObject result(cx, NewArrayObject(cx, 0));

@@ -1,0 +1,14 @@
+{
+  "at": "2026-11-05T06:47:44.127673+00:00",
+  "subject": "Promise whole-file routing in source98",
+  "incorrectEarlierDescription": "All pathname promise whole-file methods still use synchronous wrappers",
+  "actualEarlierRouting": "fs.promises.readFile already selected _nodeFileHandles.readFile, with actual ReadFileJob/FileHandle continuation. Only pathname writeFile/appendFile fell back to synchronous wrappers.",
+  "source98Evidence": {
+    "source98BeforeImage": ".context/node26-file-promises-before/packages/registry/node-compat/bootstrap.js",
+    "sha256": "0b496e2ebc797bd07a455210a60ad05890e0170a172c324558835a4a357d329f",
+    "route": "fs.promises.readFile = _nodeFileHandles.readFile;",
+    "meaning": "Already queued in98; earlier blanket legacy promise-read description was wrong. This pass does not newly implement promise reads."
+  },
+  "current99Change": "Full writeFile/appendFile and job/sync/close helpers replace the fallback; read remains existing implementation, not new work.",
+  "frozenAuditOrHistoricalSnapshotChanged": false
+}

@@ -3,7 +3,7 @@
 kind = "library"
 
 name = "openssl"
-version = "3.3.2"
+version = "3.5.9"
 kernel_abi = 7
 depends_on = []
 # OpenSSL is one of the low-level packages that opts into both target arches;
@@ -11,13 +11,13 @@ depends_on = []
 arches = ["wasm32", "wasm64"]
 
 [source]
-url = "https://github.com/openssl/openssl/releases/download/openssl-3.3.2/openssl-3.3.2.tar.gz"
-sha256 = "2e8a40b01979afe8be0bbfb3de5dc1c6709fedb46d6c89c10da114ab5fc3d281"
+url = "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz"
+sha256 = "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
 provider = "archive"
 
 [license]
 spdx = "Apache-2.0"
-url = "https://github.com/openssl/openssl/blob/openssl-3.3.2/LICENSE.txt"
+url = "https://github.com/openssl/openssl/blob/openssl-3.5.9/LICENSE.txt"
 
 [build]
 script_path = "packages/registry/openssl/build-openssl.sh"

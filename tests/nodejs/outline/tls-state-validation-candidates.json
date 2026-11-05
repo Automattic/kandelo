@@ -1,0 +1,44 @@
+{
+  "kind": "Future unchanged upstream candidates only; no execution or fixture closure",
+  "targetVersion": "26.13.0",
+  "files": [
+    {
+      "path": "test/parallel/test-tls-finished.js",
+      "sha256": "2d96541dca2ed4da0daded589ea6d94eeb50867498c7e81831b666e19df6f9d3",
+      "executed": false,
+      "remainingPrerequisites": [
+        "TLS server/context/certificate/session options and actual socket owners",
+        "Identified artifact guest/four-host launcher and source pin/fixture closure"
+      ]
+    },
+    {
+      "path": "test/parallel/test-tls-getcipher.js",
+      "sha256": "251a419f00c8c6b9a87fe4a9f12bb2c7b88d8ee395b87b3097849bd76d167346",
+      "executed": false,
+      "remainingPrerequisites": [
+        "TLS server/context/certificate/session options and actual socket owners",
+        "Identified artifact guest/four-host launcher and source pin/fixture closure"
+      ]
+    },
+    {
+      "path": "test/parallel/test-tls-client-auth.js",
+      "sha256": "c75f760b2a2d6df8c78be4e37cde13ff9b1c9dfc4d983cd2fb5e2bbf49d87b02",
+      "executed": false,
+      "remainingPrerequisites": [
+        "TLS server/context/certificate/session options and actual socket owners",
+        "Identified artifact guest/four-host launcher and source pin/fixture closure"
+      ]
+    },
+    {
+      "path": "test/parallel/test-tls-session-reuse-different-servername.js",
+      "sha256": "3ffe6e0333cba366a2d175880bd8ab9fb9bcc2a49fed92a64f037e686d471e71",
+      "executed": false,
+      "remainingPrerequisites": [
+        "TLS server/context/certificate/session options and actual socket owners",
+        "Identified artifact guest/four-host launcher and source pin/fixture closure"
+      ]
+    }
+  ],
+  "executedFiles": 0,
+  "archiveVerified": true
+}

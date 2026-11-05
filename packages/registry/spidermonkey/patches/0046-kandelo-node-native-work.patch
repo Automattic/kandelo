@@ -1,0 +1,81 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -269,6 +269,7 @@
+ using mozilla::TimeStamp;
+ using mozilla::Utf8Unit;
+ 
++#include "shell/kandelo-node-native-work.cpp"
+ #include "shell/kandelo-node-codec-handle.cpp"
+ 
+ static JSObject* KandeloNewUint8ArrayCopy(JSContext* cx, const uint8_t* data,
+@@ -5132,7 +5133,8 @@
+       }
+       // Wakeup deadlines are not references. Leave unref timers scheduled,
+       // but do not enter another turn when no referenced owner remains.
+-      if (!timerReferences && !KandeloSocketHasWatches()) return;
++      if (!timerReferences && !KandeloSocketHasWatches() &&
++          !KandeloNativeWorkPending(cx)) return;
+     }
+ 
+     // Run tasks (only finalization registry clean tasks are possible).
+@@ -5148,8 +5150,30 @@
+       return;
+     }
+ 
++    // Socket/timer/finalization callbacks can queue ticks or promise jobs.
++    // Complete those checkpoints before another native completion callback.
++    if (IsKandeloNodeMode() && (ranTasks || ranNative || ranTimers)) {
++      double ticks;
++      if (!KandeloCallAsyncQueue(cx, "__kandeloRunNextTicks", &ticks)) {
++        AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++      }
++      js::RunJobs(cx);
++      if (cx->isExceptionPending()) {
++        AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++      }
++      if (sc->quitting) return;
++    }
++    // One completion per turn, so its callback's ticks/jobs run before the
++    // next completion. The work queue owns loop liveness even without timers.
++    int ranWork = KandeloDispatchNativeWork(cx);
++    if (ranWork < 0) {
++      AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++    }
++    if (ranWork) continue;
++
+     if (!ranTasks && ranNative == 0 && ranTimers == 0 &&
+-        !KandeloSocketHasWatches() && !timersPending) {
++        !KandeloSocketHasWatches() && !timersPending &&
++        !KandeloNativeWorkPending(cx)) {
+       break;
+     }
+     if (!ranTasks && ranNative == 0 && ranTimers == 0) {
+@@ -16027,6 +16051,8 @@
+ }
+ 
+ ShellContext::~ShellContext() {
++  // Finish/cancel native jobs and retire pins/roots while the JSContext lives.
++  KandeloShutdownNativeWork(this);
+   markObservers.reset();
+   if (cx_) {
+     JS_SetContextPrivate(cx_, nullptr);
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -181,6 +181,7 @@
+ #endif
+ 
+ class OffThreadJob;
++class KandeloNativeWorkQueue;
+ 
+ // Per-context shell state.
+ struct ShellContext {
+@@ -191,6 +192,9 @@
+   ~ShellContext();
+ 
+   JSContext* cx_;
++
++  // Owns real native jobs, completion roots and buffer leases until shutdown.
++  KandeloNativeWorkQueue* kandeloNativeWork = nullptr;
+ 
+   const IsWorkerEnum isWorker;
+   bool lastWarningEnabled;

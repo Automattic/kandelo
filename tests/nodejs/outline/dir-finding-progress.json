@@ -1,0 +1,235 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "auditMatrixSha256": "2d3fde3b30ac0d28e804cc06a50424a90ecc94abb4507697a0ddbc7c977321f9",
+  "scope": "Original observation navigation, not unique API/test counts or closure",
+  "sourceReport": "tests/nodejs/outline/dir-implementation-dependencies.md",
+  "sourceOwners": [
+    "third_party/node-core/dir-platform-adapter.js",
+    "third_party/node-core/dir-cursor.h",
+    "third_party/node-core/native-dir.cpp",
+    "third_party/node-core/native-fs.cpp",
+    "third_party/node-core/native-async.cpp"
+  ],
+  "observations": [
+    {
+      "matrixRowIndex": 818,
+      "id": "fs/promises.opendir",
+      "module": "node:fs/promises",
+      "api": "opendir",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9896,
+      "id": "fs.opendir",
+      "module": "node:fs",
+      "api": "opendir",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9897,
+      "id": "fs.opendirSync",
+      "module": "node:fs",
+      "api": "opendirSync",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9909,
+      "id": "fs.Dir",
+      "module": "node:fs",
+      "api": "Dir",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9996,
+      "id": "fs.Dir.prototype.path",
+      "module": "node:fs",
+      "api": "Dir.prototype.path",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9997,
+      "id": "fs.Dir.prototype.read",
+      "module": "node:fs",
+      "api": "Dir.prototype.read",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9998,
+      "id": "fs.Dir.prototype.readSync",
+      "module": "node:fs",
+      "api": "Dir.prototype.readSync",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 9999,
+      "id": "fs.Dir.prototype.close",
+      "module": "node:fs",
+      "api": "Dir.prototype.close",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10000,
+      "id": "fs.Dir.prototype.closeSync",
+      "module": "node:fs",
+      "api": "Dir.prototype.closeSync",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10001,
+      "id": "fs.Dir.prototype.Symbol(Symbol.dispose)",
+      "module": "node:fs",
+      "api": "Dir.prototype.Symbol(Symbol.dispose)",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10002,
+      "id": "fs.Dir.prototype.Symbol(Symbol.asyncDispose)",
+      "module": "node:fs",
+      "api": "Dir.prototype.Symbol(Symbol.asyncDispose)",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10142,
+      "id": "fs.Dir.prototype",
+      "module": "node:fs",
+      "api": "Dir.prototype",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10143,
+      "id": "fs.Dir.prototype.entries",
+      "module": "node:fs",
+      "api": "Dir.prototype.entries",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10144,
+      "id": "fs.Dir.prototype.Symbol(Symbol.asyncIterator)",
+      "module": "node:fs",
+      "api": "Dir.prototype.Symbol(Symbol.asyncIterator)",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10145,
+      "id": "fs.opendir.prototype",
+      "module": "node:fs",
+      "api": "opendir.prototype",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10146,
+      "id": "fs.opendirSync.prototype",
+      "module": "node:fs",
+      "api": "opendirSync.prototype",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10258,
+      "id": "fs.[doc] fs.md `fsPromises.opendir(path[, options])` @1741",
+      "module": "node:fs",
+      "api": "[doc] fs.md `fsPromises.opendir(path[, options])` @1741",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10304,
+      "id": "fs.[doc] fs.md `fs.opendir(path[, options], callback)` @4155",
+      "module": "node:fs",
+      "api": "[doc] fs.md `fs.opendir(path[, options], callback)` @4155",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10364,
+      "id": "fs.[doc] fs.md `fs.opendirSync(path[, options])` @6549",
+      "module": "node:fs",
+      "api": "[doc] fs.md `fs.opendirSync(path[, options])` @6549",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10603,
+      "id": "fs/promises.opendir.prototype",
+      "module": "node:fs/promises",
+      "api": "opendir.prototype",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10604,
+      "id": "fs/promises.opendir.Symbol(nodejs.util.promisify.custom)",
+      "module": "node:fs/promises",
+      "api": "opendir.Symbol(nodejs.util.promisify.custom)",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10704,
+      "id": "vfs.VirtualFileSystem.prototype.opendirSync",
+      "module": "node:vfs",
+      "api": "VirtualFileSystem.prototype.opendirSync",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 10729,
+      "id": "vfs.VirtualFileSystem.prototype.opendir",
+      "module": "node:vfs",
+      "api": "VirtualFileSystem.prototype.opendir",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 11077,
+      "id": "vfs.[returned VirtualFileSystem].promises.opendir",
+      "module": "node:vfs",
+      "api": "[returned VirtualFileSystem].promises.opendir",
+      "relation": "Persistent Dir source slice; original full requirements/shared/native ownership remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    }
+  ],
+  "implementationComplete": false,
+  "fourHostRuntimeConformance": false
+}

@@ -1,0 +1,40 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -884,6 +884,29 @@
+   return JS::RejectPromise(cx, promise, value);
+ }
+ 
++#include "kandelo-node-uv-error-table.h"
++static bool KandeloNativeUvErrorData(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  RootedObject output(cx, JS::NewArrayObject(cx, 0));
++  if (!output) return false;
++  uint32_t index = 0;
++  for (const auto& entry : kandelo::errors::entries) {
++    JS::RootedValueArray<3> row(cx);
++    row[0].setInt32(entry.number);
++    RootedString name(cx, JS_NewStringCopyZ(cx, entry.name));
++    if (!name) return false;
++    row[1].setString(name);
++    RootedString message(cx, JS_NewStringCopyZ(cx, entry.message));
++    if (!message) return false;
++    row[2].setString(message);
++    RootedObject data(cx, JS::NewArrayObject(cx, row));
++    if (!data) return false;
++    RootedValue value(cx, ObjectValue(*data));
++    if (!JS_SetElement(cx, output, index++, value)) return false;
++  }
++  args.rval().setObject(*output); return true;
++}
++
+ #include "kandelo-node-dns-lookup.h"
+ static const char* KandeloErrnoCode(int err);
+ 
+@@ -4035,6 +4058,7 @@
+       JS_FN("credentials", KandeloNativeCredentials, 0, 0),
+       JS_FN("monotonicTime", KandeloNativeMonotonicTime, 0, 0),
+       JS_FN("hrtime", KandeloNativeHrtime, 0, 0),
++      JS_FN("getUvErrorData", KandeloNativeUvErrorData, 0, 0),
+       JS_FN("environment", KandeloNativeEnvironment, 3, 0),
+       JS_FN("processUmask", KandeloNativeProcessUmask, 1, 0),
+       JS_FN("processParentPid", KandeloNativeProcessParentPid, 0, 0),

@@ -1,0 +1,11 @@
+script_path = "packages/registry/node-codecs/build-node-codecs.sh"
+inputs = [
+  "packages/registry/node-codecs/build-node-codecs.sh",
+  "packages/registry/node-codecs/build-node-codecs.py",
+  "packages/registry/node-codecs/sources.json",
+  "scripts/package-build-roots.sh",
+  "sdk/activate.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1

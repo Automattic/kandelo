@@ -1,0 +1,146 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -11052,6 +11052,10 @@
+ struct KandeloNodeCLIState {
+   bool noWarnings = false;
+   bool experimentalStreamIter = false;
++  bool preserveSymlinks = false;
++  bool preserveSymlinksMain = false;
++  std::vector<std::string> conditions;
++  std::string packageMapPath;
+   bool version = false;
+   std::string evalSource;
+   std::vector<std::string> execArgs;
+@@ -11085,11 +11089,35 @@
+     gKandeloZeroFillBuffers = value;
+     return true;
+   }
++  if (name == "--preserve-symlinks") {
++    kandeloNodeCLI.preserveSymlinks = value;
++    return true;
++  }
++  if (name == "--preserve-symlinks-main") {
++    kandeloNodeCLI.preserveSymlinksMain = value;
++    return true;
++  }
+   if (name == "--experimental-stream-iter") {
+     kandeloNodeCLI.experimentalStreamIter = value;
+     return true;
+   }
+   return false;
++}
++
++static bool KandeloNodeStringOption(const std::string& arg) {
++  const auto name = KandeloNodeOptionName(arg);
++  return name == "--conditions" || name == "-C" ||
++         name == "--experimental-package-map";
++}
++
++static void ApplyKandeloNodeStringOption(const std::string& arg,
++                                         const std::string& value) {
++  const auto name = KandeloNodeOptionName(arg);
++  if (name == "--conditions" || name == "-C") {
++    kandeloNodeCLI.conditions.push_back(value);
++  } else {
++    kandeloNodeCLI.packageMapPath = value;
++  }
+ }
+ 
+ static bool PrepareKandeloNodeCLI(int argc, char** argv) {
+@@ -11100,21 +11128,61 @@
+       for (const auto& error : errors) fprintf(stderr, "%s: %s", argv[0], error.c_str());
+       return false;
+     }
+-    for (const auto& arg : envArgs) {
+-      if (!ApplyKandeloNodeBooleanOption(arg)) {
+-        // Do not silently accept unsupported allowed Node options or treat
+-        // guest environment text as a SpiderMonkey shell command line.
+-        fprintf(stderr, "%s: NODE_OPTIONS option is not implemented: %s\n",
+-                argv[0], arg.c_str());
+-        return false;
++    for (size_t i = 0; i < envArgs.size(); ++i) {
++      const std::string arg = envArgs[i];
++      if (ApplyKandeloNodeBooleanOption(arg)) continue;
++      if (KandeloNodeStringOption(arg)) {
++        const auto equals = arg.find('=');
++        std::string option;
++        if (equals != std::string::npos) {
++          option = arg.substr(equals + 1);
++          if (option.empty()) {
++            fprintf(stderr, "%s: %s requires an argument\n", argv[0], arg.c_str());
++            return false;
++          }
++        } else {
++          if (++i == envArgs.size() ||
++              (envArgs[i].empty() || envArgs[i][0] == '-')) {
++            fprintf(stderr, "%s: %s requires an argument\n", argv[0], arg.c_str());
++            return false;
++          }
++          option = envArgs[i];
++        }
++        ApplyKandeloNodeStringOption(arg, option);
++        continue;
+       }
+-    }
+-  }
++      fprintf(stderr, "%s: NODE_OPTIONS option is not implemented: %s\n",
++              argv[0], arg.c_str());
++      return false;
++    }
++  }
++
+   kandeloNodeCLI.parserArgs.emplace_back(argv[0]);
+   for (int i = 1; i < argc; ++i) {
+     std::string arg = argv[i];
+     if (ApplyKandeloNodeBooleanOption(arg)) {
+       kandeloNodeCLI.execArgs.push_back(arg);
++      continue;
++    }
++    if (KandeloNodeStringOption(arg)) {
++      kandeloNodeCLI.execArgs.push_back(arg);
++      const auto equals = arg.find('=');
++      std::string option;
++      if (equals != std::string::npos) {
++        option = arg.substr(equals + 1);
++        if (option.empty()) {
++          fprintf(stderr, "%s: %s requires an argument\n", argv[0], arg.c_str());
++          return false;
++        }
++      } else {
++        if (++i == argc || (argv[i][0] == '\0' || argv[i][0] == '-')) {
++          fprintf(stderr, "%s: %s requires an argument\n", argv[0], arg.c_str());
++          return false;
++        }
++        option = argv[i];
++        kandeloNodeCLI.execArgs.push_back(option);
++      }
++      ApplyKandeloNodeStringOption(arg, option);
+       continue;
+     }
+     std::string name = KandeloNodeOptionName(arg);
+@@ -16005,10 +16073,25 @@
+     for (const auto& arg : kandeloNodeCLI.execArgs) {
+       if (!append(arg.c_str())) return false;
+     }
++    RootedObject conditions(cx, JS::NewArrayObject(cx, 0));
++    if (!conditions) return false;
++    uint32_t conditionIndex = 0;
++    for (const auto& arg : kandeloNodeCLI.conditions) {
++      UniqueChars utf8 = JS::EncodeNarrowToUtf8(cx, arg.c_str());
++      RootedString text(cx, utf8 ? NewStringCopyUTF8(cx, utf8.get()) : nullptr);
++      if (!text || !JS_DefineElement(cx, conditions, conditionIndex++, text, JSPROP_ENUMERATE)) return false;
++    }
++    UniqueChars mapUtf8 = JS::EncodeNarrowToUtf8(cx, kandeloNodeCLI.packageMapPath.c_str());
++    RootedString packageMapPath(cx, mapUtf8 ? NewStringCopyUTF8(cx, mapUtf8.get()) : nullptr);
++    if (!packageMapPath) return false;
+     UniqueChars evalUtf8 = JS::EncodeNarrowToUtf8(cx, kandeloNodeCLI.evalSource.c_str());
+     RootedString evalSource(cx, evalUtf8 ? NewStringCopyUTF8(cx, evalUtf8.get()) : nullptr);
+     if (!evalSource) return false;
+     if (!JS_DefineProperty(cx, cli, "evalSource", evalSource, 0) ||
++        !JS_DefineProperty(cx, cli, "conditions", conditions, 0) ||
++        !JS_DefineProperty(cx, cli, "packageMapPath", packageMapPath, 0) ||
++        !JS_DefineProperty(cx, cli, "preserveSymlinks", kandeloNodeCLI.preserveSymlinks, 0) ||
++        !JS_DefineProperty(cx, cli, "preserveSymlinksMain", kandeloNodeCLI.preserveSymlinksMain, 0) ||
+         !JS_DefineProperty(cx, cli, "zeroFillBuffers", gKandeloZeroFillBuffers, 0) ||
+         !JS_DefineProperty(cx, cli, "noWarnings", kandeloNodeCLI.noWarnings, 0) ||
+         !JS_DefineProperty(cx, cli, "experimentalStreamIter", kandeloNodeCLI.experimentalStreamIter, 0) ||

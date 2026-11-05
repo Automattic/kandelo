@@ -1,0 +1,118 @@
+{
+  "at": "2026-11-05T10:21:22.198080+00:00",
+  "recipeRevision": 106,
+  "nativePatch": 99,
+  "auditFindings": [
+    "R-013 partial: real public untransferable/clone marks and predicate with actual serializer/Buffer pool admission",
+    "Shared values/worker/clone policy partial; process.env native exotic representation remains an explicit implementation gap"
+  ],
+  "sourceImplemented": [
+    "GC-traced private weak object registry with own marks, independent transfer/clone policies and checked realm wrapping",
+    "Actual transfer-list admission before graph/detachment, ordinary/custom-host/Error clone denial with separate native builtin dispatch, and internal re-registration policy",
+    "Buffer pool detach restriction and public predicate share native marks; only marked state is reported,not every reason transfer is impossible",
+    "Pinned public marking functions/private-access adaptations and actual shared builtin aliases; primitive guards/reflection/metadata preserved",
+    "Native binding rejects scripted/callable/revoked proxies with actual TypeError/message and no traps,while reads return false"
+  ],
+  "frontendNative": {
+    "report": ".context/node26-object-marks-frontend-r3.json",
+    "sha256": "21c572decc6909929f7a2153e39da83109275a1063ed478343490e2b986938e4",
+    "passed": 15,
+    "new": 4,
+    "affected": 11,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Candidate public wrappers/port/Buffer sources over actual native Node mark/serializer/port/realm/loop dependencies;not guest registry/admission/GC"
+  },
+  "upstream": {
+    "report": ".context/node26-object-marks-upstream/report.json",
+    "sha256": "e56737b2449967a1472aba0c3798c95f2b3beada362a0e2fee28a95dcac14f17",
+    "unchangedFiles": 2,
+    "candidateExecutions": 2,
+    "nativeExecutions": 2,
+    "scope": "Only marking frontend replacements;native ports/Blob/Response/private marks/serialization remain explicit dependencies"
+  },
+  "proxyReference": {
+    "report": ".context/node26-object-mark-proxy-reference.json",
+    "sha256": "22391f6d7b55f301fd0a3b07fa21fbbbaf3e44ea880441acbbef217da51758aa",
+    "proxyForms": 7,
+    "scope": "Native target observation;not engine defect or guest evidence"
+  },
+  "environmentReference": {
+    "report": ".context/node26-object-marks-env-reference.json",
+    "sha256": "f634cfd924fab0b14d1664ad1ba8931c94d9824078893f20f002e779542438d6",
+    "scope": "Native environment accepts marks;candidate envProxy is unresolved process-owner prerequisite"
+  },
+  "sourceChecks": {
+    "report": ".context/node26-object-marks-source-r2/report.json",
+    "sha256": "38552af182c823840387f7c2435032dee4a8f5605088874391f36986b5ac4c44",
+    "checks": 8,
+    "pinnedFiles": 7,
+    "pinnedSelections": 1,
+    "privateAccessAdaptations": 3,
+    "patchForwardReverseExact": true,
+    "bunRemainderUnchanged": true
+  },
+  "targetedEngine": {
+    "report": ".context/node26-engine-r106-accepted/report.json",
+    "sha256": "9e74bb3b53050875de1da22d814b04cf2121f7966e374616052319addada1ec8",
+    "exitCode": 0,
+    "revision": 106
+  },
+  "supersededEngine": {
+    "report": ".context/node26-engine-r105-accepted/report.json",
+    "sha256": "b7922822af9e20353a710c35f1b6f32ac54f60fcf8f300e22a13cc3b21b00d75",
+    "exitCode": 0,
+    "revision": 105,
+    "scope": "Compiled initial marks but before required Proxy rejection;not current-source behavior"
+  },
+  "evidence": {
+    "report": ".context/node26-object-marks-evidence/report.json",
+    "sha256": "343c7a9264616a3c3a260c3e3f7b09e5f677af26f2ba6390f889a38e58d58232"
+  },
+  "nonpasses": [
+    {
+      "path": ".context/node26-object-marks-frontend-r1.json",
+      "sha256": "63f8b96aebc30f4c5b82083910b0dcc218c2f733b4c765001a068fa3ee7f6469",
+      "passed": 14,
+      "failed": 1,
+      "kind": "New Proxy test assumed successful private assignment;native control rejected it. Corrected expectations and actual native source;no upstream assertion weakened."
+    }
+  ],
+  "nonpassSourceLimitation": "Initial14/15 report and source105compiled inputs are preserved. Exact whole frontend fixture input was not separately snapshotted before correcting its new Proxy expectation;the retained diagnostic identifies that assumption. This is not a byte-identical original test-input archive.",
+  "remaining": [
+    "Native environment representation compiled107and three Node-host clone/mark/property cases pass;full prototype/constructor/store/warning/shared-worker/GC/realm and four-host obligations remain",
+    "Real guest weak registry/GC/CCW identity/OOM/reflection/revocation/teardown and native error/serializer/detach/lifecycle semantics require admitted identified-artifact execution across all4hosts",
+    "Target builtin/prototype/host/Error and standard ArrayBuffer transfer variants,error details and all clone/transfer entry points remain reconciliation/validation obligations",
+    "Endpoint/context/host-object movement,BroadcastChannel/thread routing/locks/full Worker options/stdio/resource/ref/failure/parent-descendant ownership remain implementation gaps",
+    "Current106engine compiled but no current guest or four-host validation;old83guest results stay bound to those bytes,and kernel/image admission remains prerequisite"
+  ],
+  "guestCompiled": true,
+  "guestCasesRun": 0,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformExclusions": [],
+  "dependencyDocument": "tests/nodejs/outline/object-marks-implementation-dependencies.md",
+  "environmentRepresentationFollowup": {
+    "report": ".context/node26-environment-evidence/report.json",
+    "sha256": "9641c78d5164dd0c4a17f4641cd9167431f43ee7ff5b0eccf248a3305b1c101f",
+    "engineRevision": 107,
+    "sourceProvided": true,
+    "guestCompiled": true,
+    "guestRuntimeValidated": false,
+    "meaning": "Scripted Proxy representation replaced by actual virtual Object;full prototype/store/clone/GC/runtime obligations remain. Native frontend15pass/1snapshot nonpass.",
+    "focusedGuest": {
+      "report": ".context/node26-environment-guest-controls/report.json",
+      "sha256": "12844ef43fa6e173e035f276e29dfdc7f6e33bb0fcdc083d876034c5c220296f",
+      "counts": {
+        "pass": 3,
+        "fail": 0,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      },
+      "recipeRevision": 107,
+      "scope": "Three public process.env Node-host cases only; native fixture snapshot failure remains separately failed"
+    }
+  }
+}

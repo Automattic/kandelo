@@ -1,0 +1,12 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path');
+const root=process.argv[2],file=path.join(root,'file'),link=path.join(root,'link'),dangling=path.join(root,'dangling'),missing=path.join(root,'missing');
+fs.writeFileSync(file,'actual',{flag:'wx',mode:0o600});fs.symlinkSync('file',link);fs.symlinkSync('missing',dangling);
+const call=(name,...args)=>{try{fs[name+'Sync'](...args);return 0;}catch(e){return e.errno;}};
+const result={exists:call('access',file,fs.constants.F_OK),noexec:call('access',file,fs.constants.X_OK),chmod:call('chmod',file,0o640)};
+result.mode=fs.statSync(file).mode&0o7777;
+result.chown=call('chown',file,process.getuid(),process.getgid());result.lchownDangling=call('lchown',dangling,process.getuid(),process.getgid());result.chownDangling=call('chown',dangling,process.getuid(),process.getgid());result.keepOwner=call('chown',file,-1,-1);
+result.utimes=call('utimes',link,1000.125,2000.25);result.targetTime=String(fs.statSync(file,{bigint:true}).mtimeNs);
+result.lutimes=call('lutimes',link,3000.125,4000.25);result.finalTargetTime=String(fs.statSync(file,{bigint:true}).mtimeNs);result.linkTime=String(fs.lstatSync(link,{bigint:true}).mtimeNs);
+result.missing=[call('access',missing,fs.constants.F_OK),call('chmod',missing,0),call('chown',missing,-1,-1),call('lchown',missing,-1,-1),call('utimes',missing,3000.125,4000.25),call('lutimes',missing,3000.125,4000.25)];
+console.log(JSON.stringify(result));

@@ -1,0 +1,58 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -181,6 +181,7 @@
+ #include "vm/GeneratorObject.h"
+ #include "js/Promise.h"  // JS::IsPromiseObject
+ #include "js/PropertyAndElement.h"  // JS_DefineElement, JS_DefineFunction, JS_DefineFunctions, JS_DefineProperties, JS_DefineProperty, JS_GetElement, JS_GetProperty, JS_GetPropertyById, JS_HasProperty, JS_SetElement, JS_SetProperty, JS_SetPropertyById
++#include "js/String.h"
+ #include "js/PropertySpec.h"
+ #include "js/Realm.h"
+ #include "js/RegExp.h"  // JS::ObjectIsRegExp
+@@ -275,6 +276,7 @@
+ #include "shell/kandelo-node-native-async.cpp"
+ #include "shell/kandelo-node-codec-handle.cpp"
+ #include "shell/kandelo-node-native-fs.cpp"
++#include "shell/kandelo-node-file-handle.cpp"
+ 
+ static JSObject* KandeloNewUint8ArrayCopy(JSContext* cx, const uint8_t* data,
+                                           size_t len) {
+@@ -3809,6 +3811,10 @@
+       JS_FN("getBufferLimits", KandeloNativeBufferLimits, 0, 0),
+       JS_FN("createFsRequest", KandeloNativeCreateFsRequest, 2, 0),
+       JS_FN("ftruncate", KandeloNativeFtruncate, 3, 0),
++      JS_FN("closeDescriptor", KandeloNativeCloseDescriptor, 2, 0),
++      JS_FN("adoptFileHandle", KandeloNativeAdoptFileHandle, 3, 0),
++      JS_FN("peekFsGcCloseError", KandeloNativePeekFsGcClose, 0, 0),
++      JS_FN("ackFsGcCloseError", KandeloNativeAckFsGcClose, 0, 0),
+       JS_FN("getCompressionConstants", KandeloNativeCompressionConstants, 0, 0),
+       JS_FN("createCompressionHandle", KandeloNativeCreateCompressionHandle, 2, 0),
+       JS_FN("crc32", KandeloNativeCRC32, 2, 0),
+@@ -5170,7 +5176,7 @@
+       // Wakeup deadlines are not references. Leave unref timers scheduled,
+       // but do not enter another turn when no referenced owner remains.
+       if (!timerReferences && !KandeloSocketHasWatches() &&
+-          !KandeloNativeWorkPending(cx)) return;
++          !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx)) return;
+     }
+ 
+     // Run tasks (only finalization registry clean tasks are possible).
+@@ -5205,11 +5211,18 @@
+     if (ranWork < 0) {
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+     }
++    if (IsKandeloNodeMode()) {
++      double gcCloseErrors;
++      if (!KandeloCallAsyncQueue(cx, "__kandeloRunFsGcCloseError", &gcCloseErrors)) {
++        AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++      }
++      if (gcCloseErrors) continue;
++    }
+     if (ranWork) continue;
+ 
+     if (!ranTasks && ranNative == 0 && ranTimers == 0 &&
+         !KandeloSocketHasWatches() && !timersPending &&
+-        !KandeloNativeWorkPending(cx)) {
++        !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx)) {
+       break;
+     }
+     if (!ranTasks && ranNative == 0 && ranTimers == 0) {

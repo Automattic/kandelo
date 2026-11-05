@@ -1,0 +1,72 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -907,6 +907,7 @@
+   args.rval().setObject(*output); return true;
+ }
+ 
++#include "kandelo-node-native-dns-lookup.cpp"
+ #include "kandelo-node-dns-lookup.h"
+ static const char* KandeloErrnoCode(int err);
+ 
+@@ -931,31 +932,17 @@
+ 
+   bool Complete(JSContext* cx) override {
+     RootedObject promise(cx, promise_);
+-    if (failure != Failure::None) {
+-      if (failure == Failure::OutOfMemory)
+-        return KandeloRejectSocketOperation(cx, promise, 3006, "getaddrinfo", "EAI_MEMORY");
+-      return KandeloRejectSocketOperation(cx, promise, EIO, "getaddrinfo", "EIO");
+-    }
+-    const int status = result_.status;
++    int status = kandelo::dns::ErrorStatus(result_.status, result_.system_error);
++    if (failure != Failure::None) status = failure == Failure::OutOfMemory ? UV__EAI_MEMORY :
++        failure == Failure::Cancelled ? UV__EAI_CANCELED : UV__EIO;
++    if (status == 0 && result_.addresses.empty()) status = UV__EAI_NODATA;
+     if (status != 0) {
+-      if (status == EAI_SYSTEM)
+-        return KandeloRejectSocketOperation(cx, promise, result_.system_error,
+-            "getaddrinfo", KandeloErrnoCode(result_.system_error));
+-      const char* code = "EAI_FAIL";
+-      int number = 3004;
+-      switch (status) {
+-        case EAI_AGAIN: code = "EAI_AGAIN"; number = 3001; break;
+-        case EAI_BADFLAGS: code = "EAI_BADFLAGS"; number = 3002; break;
+-        case EAI_FAMILY: code = "EAI_FAMILY"; number = 3005; break;
+-        case EAI_MEMORY: code = "EAI_MEMORY"; number = 3006; break;
+-#if defined(EAI_NODATA) && EAI_NODATA != EAI_NONAME
+-        case EAI_NODATA: code = "ENOTFOUND"; number = 3007; break;
+-#endif
+-        case EAI_NONAME: code = "ENOTFOUND"; number = 3008; break;
+-        case EAI_SERVICE: code = "EAI_SERVICE"; number = 3010; break;
+-        case EAI_SOCKTYPE: code = "EAI_SOCKTYPE"; number = 3011; break;
++      const char* code = "UNKNOWN";
++      if (status == UV__EAI_NODATA || status == UV__EAI_NONAME) code = "ENOTFOUND";
++      else for (const auto& entry : kandelo::errors::entries) {
++        if (entry.number == status) { code = entry.name; break; }
+       }
+-      return KandeloRejectSocketOperation(cx, promise, number, "getaddrinfo", code);
++      return KandeloRejectSocketOperation(cx, promise, -status, "getaddrinfo", code);
+     }
+     RootedObject records(cx, JS::NewArrayObject(cx, 0));
+     if (!records) return false;
+@@ -3532,6 +3519,9 @@
+   if (unwrapped && JS::GetClass(unwrapped) == &KandeloFsRequestClass) {
+     return KandeloFsRequestResourceInfo(cx, unwrapped, args.rval());
+   }
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloDnsRequestClass) {
++    return KandeloDnsRequestResourceInfo(cx, unwrapped, args.rval());
++  }
+   return js::GetKandeloAsyncResourceInfo(cx, resource, args.rval());
+ }
+ static bool KandeloNativeAsyncHookFatal(JSContext* cx, unsigned argc, Value* vp) {
+@@ -4030,6 +4020,10 @@
+       JS_FN("inflateSync", KandeloNativeInflateSync, 1, 0),
+       JS_FN("gzipSync", KandeloNativeGzipSync, 2, 0),
+       JS_FN("gunzipSync", KandeloNativeGunzipSync, 1, 0),
++      JS_FN("createDnsRequest", KandeloNativeCreateDnsRequest, 2, 0),
++      JS_FN("dnsLookup", KandeloNativeDnsLookup, 5, 0),
++      JS_FN("dnsLookupService", KandeloNativeDnsLookupService, 3, 0),
++      JS_FN("dnsLookupConstants", KandeloNativeDnsLookupConstants, 0, 0),
+       JS_FN("socketLookup", KandeloNativeSocketLookup, 3, 0),
+       JS_FN("socketConnect", KandeloNativeSocketConnect, 5, 0),
+       JS_FN("socketCancelConnect", KandeloNativeSocketCancelConnect, 1, 0),

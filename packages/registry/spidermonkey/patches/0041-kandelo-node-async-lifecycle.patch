@@ -1,0 +1,487 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3312,6 +3312,67 @@
+   return true;
+ }
+ 
++static bool KandeloNativeAllocateAsyncId(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  args.rval().setNumber(cx->allocateKandeloAsyncId());
++  return true;
++}
++static bool KandeloNativeSetAsyncLifecycle(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (!args.get(0).isObject() || !JS::IsCallable(&args[0].toObject())) {
++    JS_ReportErrorASCII(cx, "Async lifecycle callback must be callable");
++    return false;
++  }
++  cx->kandeloAsyncLifecycleHook() = args[0];
++  args.rval().setUndefined();
++  return true;
++}
++static bool KandeloNativeAsyncResourceInfo(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (!args.get(0).isObject()) {
++    JS_ReportErrorASCII(cx, "Async resource must be an object");
++    return false;
++  }
++  RootedObject resource(cx, &args[0].toObject());
++  return js::GetKandeloAsyncResourceInfo(cx, resource, args.rval());
++}
++static bool KandeloNativeAsyncHookFatal(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  JS_SetPendingException(cx, args.get(0));
++  { AutoReportException report(cx); }
++  ShellContext* sc = GetShellContext(cx);
++  sc->exitCode = EXIT_FAILURE;
++  sc->quitting = true;
++  js::StopDrainingJobQueue(cx);
++  JS_ClearPendingException(cx);
++  return false; // Uncatchable: a hook error cannot be converted into rejection.
++}
++
++static bool KandeloRunMicrotask(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  RootedValue callback(cx, args.callee().as<JSFunction>().getExtendedSlot(0));
++  if (!JS::Call(cx, UndefinedHandleValue, callback, HandleValueArray::empty(), args.rval())) {
++    GetShellContext(cx)->exitCode = EXIT_FAILURE;
++    js::StopDrainingJobQueue(cx);
++    return false;
++  }
++  return true;
++}
++static bool KandeloNativeEnqueueMicrotask(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (!args.get(0).isObject() || !JS::IsCallable(&args[0].toObject())) {
++    JS_ReportErrorASCII(cx, "Microtask callback must be callable");
++    return false;
++  }
++  RootedFunction job(cx, NewNativeFunction(cx, KandeloRunMicrotask, 0, nullptr,
++      gc::AllocKind::FUNCTION_EXTENDED, GenericObject));
++  if (!job) return false;
++  job->setExtendedSlot(0, args[0]);
++  if (!js::EnqueueJob(cx, job)) return false;
++  args.rval().setUndefined();
++  return true;
++}
++
+ static bool DefineKandeloNodeNative(JSContext* cx) {
+   RootedObject native(cx, JS_NewPlainObject(cx));
+   if (!native) {
+@@ -3322,6 +3383,11 @@
+       JS_FN("isPromise", KandeloNativeIsPromise, 1, 0),
+       JS_FN("hasObjectKind", KandeloNativeHasObjectKind, 2, 0),
+       JS_FN("getAsyncContext", KandeloNativeGetAsyncContext, 0, 0),
++      JS_FN("allocateAsyncId", KandeloNativeAllocateAsyncId, 0, 0),
++      JS_FN("setAsyncLifecycle", KandeloNativeSetAsyncLifecycle, 1, 0),
++      JS_FN("getAsyncResourceInfo", KandeloNativeAsyncResourceInfo, 1, 0),
++      JS_FN("asyncHookFatal", KandeloNativeAsyncHookFatal, 1, 0),
++      JS_FN("enqueueMicrotask", KandeloNativeEnqueueMicrotask, 1, 0),
+       JS_FN("getAsyncJobActive", KandeloNativeGetAsyncJobActive, 0, 0),
+       JS_FN("setAsyncContext", KandeloNativeSetAsyncContext, 1, 0),
+       JS_FN("getPromiseDetails", KandeloNativePromiseDetails, 1, 0),
+@@ -4619,6 +4685,19 @@
+ 
+ [[nodiscard]] static bool ReportUnhandledRejections(JSContext* cx);
+ 
++static bool KandeloCallAsyncQueue(JSContext* cx, const char* name, double* value) {
++  *value = 0;
++  RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
++  if (!global) return true;
++  RootedValue callback(cx), result(cx);
++  if (!JS_GetProperty(cx, global, name, &callback)) return false;
++  if (callback.isUndefined()) return true; // Node bootstrap is not yet linked.
++  if (!JS_CallFunctionValue(cx, global, callback, HandleValueArray::empty(), &result)) return false;
++  *value = result.isBoolean() ? double(result.toBoolean()) :
++           result.isNumber() ? result.toNumber() : 0;
++  return true;
++}
++
+ static void RunShellJobs(JSContext* cx) {
+   ShellContext* sc = GetShellContext(cx);
+   if (sc->quitting) {
+@@ -4626,12 +4705,32 @@
+   }
+ 
+   while (true) {
+-    // Run microtasks.
++    if (IsKandeloNodeMode()) {
++      double ticks;
++      if (!KandeloCallAsyncQueue(cx, "__kandeloRunNextTicks", &ticks)) {
++        AutoReportException report(cx);
++        sc->exitCode = EXIT_FAILURE;
++        return;
++      }
++    }
++    // A nextTick callback can queue microtasks; the whole tick queue runs first.
+     js::RunJobs(cx);
++    if (IsKandeloNodeMode() && cx->isExceptionPending()) {
++      AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++    }
+     if (sc->quitting) {
+       return;
+     }
+     if (IsKandeloNodeMode()) {
++      double ticks, destroyed;
++      if (!KandeloCallAsyncQueue(cx, "__kandeloHasNextTicks", &ticks)) {
++        AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++      }
++      if (ticks) continue;
++      if (!KandeloCallAsyncQueue(cx, "__kandeloRunAsyncDestroys", &destroyed)) {
++        AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++      }
++      if (destroyed) continue;
+       // Check at the microtask checkpoint, after same-turn rejection handlers
+       // have run. Waiting until every handle/timer drains can wait forever.
+       AutoReportException report(cx);
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -80,6 +80,10 @@
+ };
+ 
+ struct AutoResolving;
++[[nodiscard]] bool InitKandeloPromiseResource(JSContext* cx, JS::HandleObject promise);
++[[nodiscard]] bool ResolveKandeloPromiseResource(JSContext* cx, JS::HandleObject promise);
++[[nodiscard]] bool GetKandeloAsyncResourceInfo(JSContext* cx, JS::HandleObject resource,
++                                              JS::MutableHandleValue result);
+ 
+ class InternalJobQueue : public JS::JobQueue {
+  public:
+@@ -117,10 +121,12 @@
+   struct QueuedJob {
+     JSObject* job;
+     JS::Value context;
++    JSObject* resource;
+ 
+     void trace(JSTracer* trc) {
+       JS::GCPolicy<JSObject*>::trace(trc, &job, "queued job");
+       JS::GCPolicy<JS::Value>::trace(trc, &context, "queued async context");
++      JS::GCPolicy<JSObject*>::trace(trc, &resource, "queued async resource");
+     }
+   };
+   using Queue = js::TraceableFifo<QueuedJob, 0, SystemAllocPolicy>;
+@@ -600,9 +606,24 @@
+   js::ContextData<JS::ExceptionStatus> status;
+   js::ContextData<JS::PersistentRooted<JS::Value>> kandeloAsyncContext_;
+   js::ContextData<bool> kandeloAsyncJobActive_;
++  js::ContextData<JS::PersistentRooted<JS::Value>> kandeloAsyncLifecycleHook_;
++  js::ContextData<double> kandeloAsyncIdCounter_;
++  js::ContextData<double> kandeloAsyncParentId_;
+ 
+  public:
+   bool& kandeloAsyncJobActive() { return kandeloAsyncJobActive_.ref(); }
++  double allocateKandeloAsyncId() { return ++kandeloAsyncIdCounter_.ref(); }
++  double& kandeloAsyncParentId() { return kandeloAsyncParentId_.ref(); }
++  JS::Value& kandeloAsyncLifecycleHook() {
++    if (!kandeloAsyncLifecycleHook_.ref().initialized()) kandeloAsyncLifecycleHook_.ref().init(this);
++    return kandeloAsyncLifecycleHook_.ref().get();
++  }
++  bool hasKandeloAsyncLifecycleHook() {
++    return !kandeloAsyncLifecycleHook().isUndefined();
++  }
++  bool kandeloAsyncProperty(const char* name, JS::MutableHandleValue value);
++  bool notifyKandeloAsyncLifecycle(const char* kind, JS::HandleObject resource,
++                                   JS::HandleValue frame);
+ 
+   // Private embedding state, rooted independently of the active realm. Job
+   // host data takes a snapshot at reaction registration, not resolution.
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -10,6 +10,8 @@
+ 
+ #include "mozilla/ScopeExit.h"
+ 
++#include "js/Array.h"
++#include "vm/PromiseObject.h"
+ #include "vm/JSContext-inl.h"
+ 
+ #include "mozilla/CheckedInt.h"
+@@ -816,6 +818,110 @@
+   JS::ClearKeptObjects(cx);
+ }
+ 
++class KandeloAsyncResourceData : public NativeObject {
++ public:
++  static const JSClass class_;
++};
++const JSClass KandeloAsyncResourceData::class_ = {
++    "KandeloAsyncResourceData", JSCLASS_HAS_RESERVED_SLOTS(4)};
++
++bool JSContext::kandeloAsyncProperty(const char* name, MutableHandleValue result) {
++  result.setUndefined();
++  RootedValue current(this, kandeloAsyncContext());
++  if (!current.isObject()) return true;
++  RootedObject object(this, &current.toObject());
++  {
++    AutoRealm ar(this, object);
++    if (!JS_GetProperty(this, object, name, result)) return false;
++  }
++  return JS_WrapValue(this, result);
++}
++
++bool JSContext::notifyKandeloAsyncLifecycle(const char* kind,
++                                           HandleObject resource,
++                                           HandleValue frame) {
++  RootedValue callback(this, kandeloAsyncLifecycleHook());
++  if (callback.isUndefined()) return true;
++  if (!JS_WrapValue(this, &callback)) return false;
++  RootedString name(this, JS_NewStringCopyZ(this, kind));
++  if (!name) return false;
++  JS::RootedValueArray<3> args(this);
++  args[0].setString(name);
++  args[1].setObject(*resource);
++  args[2].set(frame);
++  if (!JS_WrapValue(this, args[1]) || !JS_WrapValue(this, args[2])) return false;
++  RootedValue result(this);
++  return JS::Call(this, UndefinedHandleValue, callback, args, &result);
++}
++
++static bool NewKandeloAsyncData(JSContext* cx,
++                                 MutableHandle<KandeloAsyncResourceData*> result) {
++  RootedValue frame(cx), currentId(cx);
++  if (!cx->kandeloAsyncProperty("frame", &frame) ||
++      !cx->kandeloAsyncProperty("id", &currentId)) return false;
++  double trigger = cx->kandeloAsyncParentId();
++  if (trigger < 0) trigger = currentId.isNumber() ? currentId.toNumber() : 0;
++  result.set(NewBuiltinClassInstance<KandeloAsyncResourceData>(cx));
++  if (!result) return false;
++  result->setReservedSlot(0, NumberValue(cx->allocateKandeloAsyncId()));
++  result->setReservedSlot(1, NumberValue(trigger));
++  result->setReservedSlot(2, frame);
++  result->setReservedSlot(3, BooleanValue(false));
++  return true;
++}
++
++bool js::InitKandeloPromiseResource(JSContext* cx, HandleObject promise) {
++  Rooted<KandeloAsyncResourceData*> data(cx);
++  if (!NewKandeloAsyncData(cx, &data)) return false;
++  promise->as<PromiseObject>().setReservedSlot(PromiseSlot_KandeloAsyncResource,
++                                              ObjectValue(*data));
++  const double parent = cx->kandeloAsyncParentId();
++  cx->kandeloAsyncParentId() = -1;
++  auto restore = mozilla::MakeScopeExit([&] { cx->kandeloAsyncParentId() = parent; });
++  RootedValue frame(cx, data->getReservedSlot(2));
++  return cx->notifyKandeloAsyncLifecycle("promise:init", promise, frame);
++}
++
++bool js::ResolveKandeloPromiseResource(JSContext* cx, HandleObject promise) {
++  RootedObject object(cx, CheckedUnwrapStatic(promise));
++  if (!object || !object->is<PromiseObject>()) return true;
++  RootedValue slot(cx, object->as<PromiseObject>().getReservedSlot(PromiseSlot_KandeloAsyncResource));
++  if (!slot.isObject()) {
++    JS_ReportErrorASCII(cx, "Promise has no native async resource record");
++    return false;
++  }
++  Rooted<KandeloAsyncResourceData*> data(cx, &slot.toObject().as<KandeloAsyncResourceData>());
++  if (data->getReservedSlot(3).toBoolean()) return true;
++  data->setReservedSlot(3, BooleanValue(true));
++  RootedValue frame(cx, data->getReservedSlot(2));
++  return cx->notifyKandeloAsyncLifecycle("promise:resolve", promise, frame);
++}
++
++bool js::GetKandeloAsyncResourceInfo(JSContext* cx, HandleObject resource,
++                                     MutableHandleValue result) {
++  RootedObject object(cx, CheckedUnwrapStatic(resource));
++  RootedValue slot(cx);
++  if (object && object->is<PromiseObject>()) {
++    slot = object->as<PromiseObject>().getReservedSlot(PromiseSlot_KandeloAsyncResource);
++  } else if (object && object->is<KandeloAsyncResourceData>()) {
++    slot.setObject(*object);
++  }
++  if (!slot.isObject()) {
++    JS_ReportErrorASCII(cx, "Object has no native async resource record");
++    return false;
++  }
++  Rooted<KandeloAsyncResourceData*> data(cx, &slot.toObject().as<KandeloAsyncResourceData>());
++  JS::RootedValueArray<3> entries(cx);
++  for (size_t i = 0; i < 3; i++) {
++    entries[i].set(data->getReservedSlot(i));
++    if (!JS_WrapValue(cx, entries[i])) return false;
++  }
++  RootedObject array(cx, JS::NewArrayObject(cx, entries));
++  if (!array) return false;
++  result.setObject(*array);
++  return true;
++}
++
+ // Even an undefined snapshot needs an object: otherwise a reaction
+ // registered outside a scope could inherit its resolver's later scope.
+ class KandeloJobContextData : public NativeObject {
+@@ -827,8 +933,8 @@
+ 
+ bool InternalJobQueue::getHostDefinedData(
+     JSContext* cx, JS::MutableHandle<JSObject*> data) const {
+-  RootedValue snapshot(cx, cx->kandeloAsyncContext());
+-  if (!cx->compartment()->wrap(cx, &snapshot)) return false;
++  RootedValue snapshot(cx);
++  if (!cx->kandeloAsyncProperty("frame", &snapshot)) return false;
+   Rooted<KandeloJobContextData*> record(
+       cx, NewBuiltinClassInstance<KandeloJobContextData>(cx));
+   if (!record) return false;
+@@ -843,7 +949,8 @@
+                                          JS::HandleObject allocationSite,
+                                          JS::HandleObject hostDefinedData) {
+   MOZ_ASSERT(job);
+-  RootedValue snapshot(cx, cx->kandeloAsyncContext());
++  RootedValue snapshot(cx);
++  if (!cx->kandeloAsyncProperty("frame", &snapshot)) return false;
+   if (hostDefinedData) {
+     RootedObject data(cx, CheckedUnwrapStatic(hostDefinedData));
+     if (!data || !data->is<KandeloJobContextData>()) {
+@@ -852,7 +959,14 @@
+     }
+     snapshot = data->as<KandeloJobContextData>().getReservedSlot(0);
+   }
+-  if (!queue.pushBack(QueuedJob{job, snapshot})) {
++  RootedObject resource(cx, promise);
++  if (!resource) {
++    Rooted<KandeloAsyncResourceData*> task(cx);
++    if (!NewKandeloAsyncData(cx, &task)) return false;
++    resource = task;
++    if (!cx->notifyKandeloAsyncLifecycle("task:init", resource, snapshot)) return false;
++  }
++  if (!queue.pushBack(QueuedJob{job, snapshot, resource})) {
+     ReportOutOfMemory(cx);
+     return false;
+   }
+@@ -891,10 +1005,10 @@
+ 
+       job = queue.front().job;
+       RootedValue snapshot(cx, queue.front().context);
++      RootedObject resource(cx, queue.front().resource);
+       queue.popFront();
+       RootedValue priorContext(cx, cx->kandeloAsyncContext());
+       const bool priorJobActive = cx->kandeloAsyncJobActive();
+-      cx->kandeloAsyncContext() = snapshot;
+       cx->kandeloAsyncJobActive() = true;
+       auto restoreContext = mozilla::MakeScopeExit([&] {
+         cx->kandeloAsyncContext() = priorContext;
+@@ -908,6 +1022,15 @@
+       }
+ 
+       AutoRealm ar(cx, &job->as<JSFunction>());
++      if (!cx->notifyKandeloAsyncLifecycle("before", resource, snapshot)) {
++        interrupted_ = true;
++        break;
++      }
++      auto afterResource = mozilla::MakeScopeExit([&] {
++        // Any failure here is fatal to the owning Node process, not a
++        // fabricated successful callback. The embedder sets exit status.
++        if (!cx->notifyKandeloAsyncLifecycle("after", resource, snapshot)) interrupted_ = true;
++      });
+       {
+         if (!JS::Call(cx, UndefinedHandleValue, job, args, &rval)) {
+           // Nothing we can do about uncatchable exceptions.
+@@ -1049,6 +1172,9 @@
+       status(this, JS::ExceptionStatus::None),
+       kandeloAsyncContext_(this),
+       kandeloAsyncJobActive_(this, false),
++      kandeloAsyncLifecycleHook_(this),
++      kandeloAsyncIdCounter_(this, 0),
++      kandeloAsyncParentId_(this, -1),
+       unwrappedException_(this),
+       unwrappedExceptionStack_(this),
+ #ifdef DEBUG
+--- a/js/src/vm/PromiseObject.h
++++ b/js/src/vm/PromiseObject.h
+@@ -51,6 +51,8 @@
+   // * otherwise a PromiseDebugInfo object
+   PromiseSlot_DebugInfo,
+ 
++  // Owned metadata for the embedding's observable async lifecycle.
++  PromiseSlot_KandeloAsyncResource,
+   PromiseSlots,
+ };
+ 
+--- a/js/src/builtin/Promise.cpp
++++ b/js/src/builtin/Promise.cpp
+@@ -5,6 +5,7 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include "builtin/Promise.h"
++#include "mozilla/ScopeExit.h"
+ 
+ #include "mozilla/Atomics.h"
+ #include "mozilla/Maybe.h"
+@@ -1336,6 +1337,7 @@
+     JS::Handle<JS::Value> resolutionVal) {
+   cx->check(promise, resolutionVal);
+   MOZ_ASSERT(!IsSettledMaybeWrappedPromise(promise));
++  if (!ResolveKandeloPromiseResource(cx, promise)) return false;
+ 
+   // (reordered)
+   // Step 8. If Type(resolution) is not Object, then
+@@ -1746,6 +1748,7 @@
+   // RejectPromise
+   // Step 7. If promise.[[PromiseIsHandled]] is false, perform
+   //         HostPromiseRejectionTracker(promise, "reject").
++  if (!ResolveKandeloPromiseResource(cx, promise)) return false;
+   PromiseObject::onSettled(cx, promise, unwrappedRejectionStack);
+ 
+   // FulfillPromise
+@@ -2772,6 +2775,9 @@
+   // (implicit)
+   // The handled flag is unset by default.
+ 
++  Rooted<PromiseObject*> asyncPromise(cx, promise);
++  if (!InitKandeloPromiseResource(cx, asyncPromise)) return nullptr;
++  promise = asyncPromise;
+   if (MOZ_LIKELY(!JS::IsAsyncStackCaptureEnabledForRealm(cx))) {
+     return promise;
+   }
+@@ -5406,6 +5412,14 @@
+ 
+   // Step 3. Let C be ? SpeciesConstructor(promise, %Promise%).
+   // Step 4. Let resultCapability be ? NewPromiseCapability(C).
++  RootedValue parentInfo(cx);
++  if (!GetKandeloAsyncResourceInfo(cx, unwrappedPromise, &parentInfo)) return nullptr;
++  RootedObject parentArray(cx, &parentInfo.toObject());
++  RootedValue parentId(cx);
++  if (!JS_GetElement(cx, parentArray, 0, &parentId)) return nullptr;
++  const double priorParent = cx->kandeloAsyncParentId();
++  cx->kandeloAsyncParentId() = parentId.toNumber();
++  auto restoreParent = mozilla::MakeScopeExit([&] { cx->kandeloAsyncParentId() = priorParent; });
+   Rooted<PromiseObject*> newPromise(
+       cx, CreatePromiseObjectWithoutResolutionFunctions(cx));
+   if (!newPromise) {
+@@ -5559,13 +5573,21 @@
+   Rooted<PromiseObject*> promise(cx,
+                                  &promiseVal.toObject().as<PromiseObject>());
+ 
+-  bool rvalUsed = rvalExplicitlyUsed ||
++  bool rvalUsed = cx->hasKandeloAsyncLifecycleHook() || rvalExplicitlyUsed ||
+                   IsPromiseThenOrCatchRetValImplicitlyUsed(cx, promise);
+ 
+   // Step 3. Let C be ? SpeciesConstructor(promise, %Promise%).
+   // Step 4. Let resultCapability be ? NewPromiseCapability(C).
+   Rooted<PromiseCapability> resultCapability(cx);
+   if (rvalUsed) {
++    RootedValue parentInfo(cx);
++    if (!GetKandeloAsyncResourceInfo(cx, promise, &parentInfo)) return false;
++    RootedObject parentArray(cx, &parentInfo.toObject());
++    RootedValue parentId(cx);
++    if (!JS_GetElement(cx, parentArray, 0, &parentId)) return false;
++    const double priorParent = cx->kandeloAsyncParentId();
++    cx->kandeloAsyncParentId() = parentId.toNumber();
++    auto restoreParent = mozilla::MakeScopeExit([&] { cx->kandeloAsyncParentId() = priorParent; });
+     PromiseObject* resultPromise =
+         CreatePromiseObjectWithoutResolutionFunctions(cx);
+     if (!resultPromise) {
+@@ -6144,7 +6166,7 @@
+   }
+ 
+   bool rvalUsed =
+-      rvalExplicitlyUsed ||
++      cx->hasKandeloAsyncLifecycleHook() || rvalExplicitlyUsed ||
+       IsPromiseThenOrCatchRetValImplicitlyUsed(cx, unwrappedPromise);
+ 
+   // Step 3. Let C be ? SpeciesConstructor(promise, %Promise%).
+@@ -7105,7 +7127,7 @@
+ 
+ [[nodiscard]] bool js::CanSkipAwait(JSContext* cx, HandleValue val,
+                                     bool* canSkip) {
+-  if (!cx->canSkipEnqueuingJobs) {
++  if (cx->hasKandeloAsyncLifecycleHook() || !cx->canSkipEnqueuingJobs) {
+     *canSkip = false;
+     return true;
+   }

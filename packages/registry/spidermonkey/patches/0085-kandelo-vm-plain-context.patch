@@ -1,0 +1,211 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2675,11 +2675,10 @@
+ // content-security-policy eval checker installed with JS_SetSecurityCallbacks,
+ // keyed on a reserved-slot bitmask and scoped by the current global.
+ //
+-// Read liveness is copy-on-first-access, not fully-live-per-access: ESR 140's
+-// JSClassOps has no get/set interceptors (removed upstream), so the read-side
+-// hook (`resolve`) fires once per missing name and must define the value onto
+-// the global, after which the global's own copy shadows the sandbox. This is a
+-// documented engine boundary (see docs/posix-status.md).
++// Ordinary sandbox forwarding remains copy-on-first-access. Complete live
++// sandbox exotic semantics require a separate implementation; this is not an
++// accepted engine boundary. DONT_CONTEXTIFY instead owns a real ordinary global
++// with standard class operations and no sandbox property mirroring.
+ //
+ // This seam precedes the ShellPrincipals definition and the shell's own
+ // sandbox_class/SetStandardRealmOptions, so it is fully self-contained: it
+@@ -2790,8 +2789,11 @@
+     &gKandeloVmContextifyClassOps,
+ };
+ 
+-static JSSecurityCallbacks gKandeloVmSecurityCallbacks;
+-static bool gKandeloVmSecurityInstalled = false;
++static const JSClass gKandeloVmPlainClass = {
++    "KandeloVmPlainContext",
++    JSCLASS_GLOBAL_FLAGS_WITH_SLOTS(KANDELO_VM_CONTEXTIFY_SLOTS),
++    &JS::DefaultGlobalClassOps,
++};
+ 
+ static bool KandeloVmCSPAllows(
+     JSContext* cx, JS::RuntimeCode kind, JS::Handle<JSString*> codeString,
+@@ -2801,7 +2803,8 @@
+     JS::Handle<JS::StackGCVector<JS::Value>> parameterArgs,
+     JS::Handle<JS::Value> bodyArg, bool* outCanCompileStrings) {
+   JSObject* g = JS::CurrentGlobalOrNull(cx);
+-  if (g && JS::GetClass(g) == &gKandeloVmContextifyClass) {
++  if (g && (JS::GetClass(g) == &gKandeloVmContextifyClass ||
++            JS::GetClass(g) == &gKandeloVmPlainClass)) {
+     JS::Value flag = JS::GetReservedSlot(g, KANDELO_VM_CODEGEN_SLOT);
+     int32_t mask = flag.isInt32() ? flag.toInt32() : 0;
+     bool blocked =
+@@ -2811,40 +2814,41 @@
+       return true;
+     }
+   }
++  const JSSecurityCallbacks* previous =
++      GetShellContext(cx)->kandeloVmPreviousSecurityCallbacks;
++  if (previous && previous->contentSecurityPolicyAllows) {
++    return previous->contentSecurityPolicyAllows(
++        cx, kind, codeString, compilationType, parameterStrings, bodyString,
++        parameterArgs, bodyArg, outCanCompileStrings);
++  }
+   *outCanCompileStrings = true;
+   return true;
+ }
+ 
+ static void EnsureKandeloVmSecurityCallbacks(JSContext* cx) {
+-  if (gKandeloVmSecurityInstalled) {
++  ShellContext* sc = GetShellContext(cx);
++  const JSSecurityCallbacks* existing = JS_GetSecurityCallbacks(cx);
++  if (existing == &sc->kandeloVmSecurityCallbacks) {
+     return;
+   }
+-  const JSSecurityCallbacks* existing = JS_GetSecurityCallbacks(cx);
+-  if (existing) {
+-    gKandeloVmSecurityCallbacks = *existing;
+-  }
+-  gKandeloVmSecurityCallbacks.contentSecurityPolicyAllows = KandeloVmCSPAllows;
+-  JS_SetSecurityCallbacks(cx, &gKandeloVmSecurityCallbacks);
+-  gKandeloVmSecurityInstalled = true;
+-}
+-
+-// __kandeloVmMakeContext(sandbox, { strings, wasm }) -> contextified global.
++  sc->kandeloVmPreviousSecurityCallbacks = existing;
++  sc->kandeloVmSecurityCallbacks = existing ? *existing : JSSecurityCallbacks{};
++  sc->kandeloVmSecurityCallbacks.contentSecurityPolicyAllows = KandeloVmCSPAllows;
++  JS_SetSecurityCallbacks(cx, &sc->kandeloVmSecurityCallbacks);
++}
++
++// __kandeloVmMakeContext(sandbox, { strings, wasm, noContextify }) -> global.
+ static bool KandeloVmMakeContext(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+-  RootedObject sandbox(cx);
+-  if (args.length() >= 1 && args[0].isObject()) {
+-    sandbox = &args[0].toObject();
+-  } else {
+-    sandbox = JS_NewPlainObject(cx);
+-    if (!sandbox) {
+-      return false;
+-    }
+-  }
+-
++  bool noContextify = false;
+   int32_t codegenMask = 0;
+   if (args.length() >= 2 && args[1].isObject()) {
+     RootedObject opts(cx, &args[1].toObject());
+     RootedValue v(cx);
++    if (!JS_GetProperty(cx, opts, "noContextify", &v)) {
++      return false;
++    }
++    noContextify = v.isBoolean() && v.toBoolean();
+     if (!JS_GetProperty(cx, opts, "strings", &v)) {
+       return false;
+     }
+@@ -2856,6 +2860,16 @@
+     }
+     if (v.isBoolean() && !v.toBoolean()) {
+       codegenMask |= 2;
++    }
++  }
++
++  RootedObject sandbox(cx);
++  if (!noContextify) {
++    sandbox = args.length() >= 1 && args[0].isObject()
++                  ? &args[0].toObject()
++                  : JS_NewPlainObject(cx);
++    if (!sandbox) {
++      return false;
+     }
+   }
+ 
+@@ -2867,31 +2881,34 @@
+       .setSharedMemoryAndAtomicsEnabled(
+           JS::RealmCreationOptionsRef(cx).getSharedMemoryAndAtomicsEnabled());
+ 
+-  RootedObject global(cx,
+-                      JS_NewGlobalObject(cx, &gKandeloVmContextifyClass, nullptr,
+-                                         JS::DontFireOnNewGlobalHook, options));
++  const JSClass* clasp =
++      noContextify ? &gKandeloVmPlainClass : &gKandeloVmContextifyClass;
++  RootedObject global(cx, JS_NewGlobalObject(cx, clasp, nullptr,
++                                            JS::DontFireOnNewGlobalHook, options));
+   if (!global) {
+     return false;
+   }
+ 
+   {
+     JSAutoRealm ar(cx, global);
++    JS::SetReservedSlot(global, KANDELO_VM_CODEGEN_SLOT,
++                        JS::Int32Value(codegenMask));
+     if (!JS::InitRealmStandardClasses(cx)) {
+       return false;
+     }
+-    JS_FireOnNewGlobalObject(cx, global);
+-
+     // Attach the sandbox only after standard-class + global setup completes so
+     // the write-through addProperty hook does not mirror engine internals onto
+     // the sandbox (the hook no-ops while the slot is unset).
+-    RootedObject wrappedSandbox(cx, sandbox);
+-    if (!JS_WrapObject(cx, &wrappedSandbox)) {
+-      return false;
+-    }
+-    JS::SetReservedSlot(global, KANDELO_VM_SANDBOX_SLOT,
+-                        JS::ObjectValue(*wrappedSandbox));
+-    JS::SetReservedSlot(global, KANDELO_VM_CODEGEN_SLOT,
+-                        JS::Int32Value(codegenMask));
++    if (sandbox) {
++      RootedObject wrappedSandbox(cx, sandbox);
++      if (!JS_WrapObject(cx, &wrappedSandbox)) {
++        return false;
++      }
++      JS::SetReservedSlot(global, KANDELO_VM_SANDBOX_SLOT,
++                          JS::ObjectValue(*wrappedSandbox));
++    }
++    // Publish only after policy and sandbox ownership are initialized.
++    JS_FireOnNewGlobalObject(cx, global);
+   }
+ 
+   RootedObject result(cx, global);
+@@ -2908,7 +2925,8 @@
+   bool result = false;
+   if (args.length() >= 1 && args[0].isObject()) {
+     JSObject* o = js::UncheckedUnwrap(&args[0].toObject());
+-    result = o && JS::GetClass(o) == &gKandeloVmContextifyClass;
++    result = o && (JS::GetClass(o) == &gKandeloVmContextifyClass ||
++                   JS::GetClass(o) == &gKandeloVmPlainClass);
+   }
+   args.rval().setBoolean(result);
+   return true;
+@@ -16449,6 +16467,9 @@
+   KandeloShutdownNativeAsync(this);
+   markObservers.reset();
+   if (cx_) {
++    if (JS_GetSecurityCallbacks(cx_) == &kandeloVmSecurityCallbacks) {
++      JS_SetSecurityCallbacks(cx_, kandeloVmPreviousSecurityCallbacks);
++    }
+     JS_SetContextPrivate(cx_, nullptr);
+     JS::SetHostCleanupFinalizationRegistryCallback(cx_, nullptr, nullptr);
+     JS_SetGrayGCRootsTracer(cx_, nullptr, nullptr);
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -14,6 +14,7 @@
+ #include "builtin/MapObject.h"
+ #include "js/CompileOptions.h"
+ #include "js/GCVector.h"
++#include "js/Principals.h"
+ #include "shell/ModuleLoader.h"
+ #include "threading/ConditionVariable.h"
+ #include "threading/LockGuard.h"
+@@ -198,6 +199,10 @@
+   KandeloNativeWorkQueue* kandeloNativeWork = nullptr;
+   KandeloNativeAsyncState* kandeloNativeAsync = nullptr;
+ 
++  // Security callbacks are installed per runtime and retired before this owner.
++  JSSecurityCallbacks kandeloVmSecurityCallbacks{};
++  const JSSecurityCallbacks* kandeloVmPreviousSecurityCallbacks = nullptr;
++
+   const IsWorkerEnum isWorker;
+   bool lastWarningEnabled;
+ 

@@ -41,6 +41,14 @@ and source-tree extracts. Programs continue to statically link;
 this work caches the build outputs, not the linker step. Runtime
 `.so` loading is out of scope (see "Out of scope" below).
 
+The unbuilt Node 26 source candidate declares a `node-codecs` library
+variant whose source archive matches the exact Node API/reference pin.
+It supplies that release's zlib, Brotli and Zstd C sources through the
+normal SDK/resolver path. Its [recipe documentation](../packages/registry/node-codecs/README.md)
+describes input identity, private build roots, provenance and pending
+validation. Library presence and version metadata are not Node API
+conformance; native handle/async/stream integration remains required.
+
 ## Quick reference (jump-table)
 
 Most readers want one of these. Detailed sections follow further down.
@@ -1205,6 +1213,30 @@ declared runtime archive through the resolver; it does not read a
 recipe-directory install tree or user cache. Its opt-in VFS image copies the
 complete archive under `/usr/local/lib/erlang`, preserves executable modes,
 and includes ABI metadata. Staging does not publish that image.
+
+### OpenSSL thread ownership
+
+The OpenSSL recipe enables real pthread synchronization on both Wasm
+architectures. Engine crypto workers require its actual locks, once-only
+initialization and thread-local error/random-generator state. A no-thread
+library is unsafe for these consumers even if a single-thread control passes.
+Recipe 5 keeps the OpenSSL 3.3.2 source pin and enables `threads` with
+`-pthread`; it does not emulate synchronization in a package wrapper.
+
+Both architecture libraries have been built through the normal resolver,
+with compile/link-only pthread and random-provider probes. Guest runtime
+behavior and dependent engine integration remain unvalidated. Changed
+library outputs must reach consumers through the normal dependency rebuild;
+existing product artifacts do not acquire this change automatically.
+
+The later OpenSSL source recipe6 selects3.5.9 from its official release
+archive and checksum, matching the audited Node26 source/reference backend.
+It retains the thread and normal SDK build configuration. Only an identified
+native control library has been built at that pin; the earlier wasm32/wasm64
+library evidence above remains tied to3.3.2. Neither guest architecture nor
+the dependent product has been rebuilt for3.5.9. See
+[KDF dependency ownership](../tests/nodejs/outline/kdf-implementation-dependencies.md)
+for the checksum, native controls and remaining integration obligations.
 
 ### `arches`
 
@@ -2588,3 +2620,26 @@ not Kandelo defects. They stay until the engine or the upstream code changes.
 - **Semver ranges**: exact-pinning only. Adding a resolver that picks
   one version per lib across the overall graph is real work; we punt
   until two consumers actually conflict.
+
+### Node-owned SQLite source identity
+
+The node-sqlite library recipe uses SQLite 3.54.0 from the exact Node 26.13.0
+archive used by node-compat; its package version identifies that Node release.
+The standalone sqlite recipe remains independent. The Node recipe hashes
+its amalgamation, headers, gyp configuration and license, builds with the
+repository SDK under resolver-owned roots, and installs actual archive
+provenance. SpiderMonkey declares the dependency and verifies the Node pin
+before linking it into its private sysroot. This is an unbuilt guest source
+candidate; native-host fixture evidence does not establish a Wasm package,
+guest VFS or engine behavior.
+
+## OpenSSL direct-consumer source coherence
+
+The current direct consumers curl, elinks, freeciv, git, libcurl, php,
+spidermonkey and wget declare OpenSSL3.5.9, with recipe revisions advanced
+together. The normal resolver validates all eight dependency graphs. The
+targeted wasm32 SpiderMonkey96 build compiled that dependency at recipe6;
+the other consumers and current wasm64 library have not been built here.
+Historical indexes and artifacts retain their original identities. See
+[the scoped build receipt](../tests/nodejs/outline/engine96-integration.md)
+for the original preflight failure, corrected graphs and exact artifacts.

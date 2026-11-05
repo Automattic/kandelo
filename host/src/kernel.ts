@@ -29,6 +29,7 @@ import type {
 } from "./types";
 import { checkedHostFileOffset } from "./file-offset";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
+import { createSecureRandomBytes } from "./secure-random";
 import { isHostAppendContractError } from "./append-contract";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { FramebufferRegistry } from "./framebuffer/registry";
@@ -2328,17 +2329,7 @@ export class WasmPosixKernel {
               bufLen,
               "host_getrandom destination",
             );
-            const random = new IntrinsicUint8Array(destination.capacity);
-            if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
-              // crypto.getRandomValues rejects SharedArrayBuffer-backed views
-              // in browsers. The owned temporary also ensures no host callback
-              // retains a live view of kernel memory.
-              globalThis.crypto.getRandomValues(random);
-            } else {
-              for (let i = 0; i < destination.capacity; i++) {
-                random[i] = (Math.random() * 256) | 0;
-              }
-            }
+            const random = createSecureRandomBytes(destination.capacity);
             this.#writeKernelBytes(destination, random);
             return destination.capacity;
           } catch (error) {
@@ -4246,7 +4237,7 @@ export class WasmPosixKernel {
     atimeNsec: bigint,
     mtimeSec: bigint,
     mtimeNsec: bigint,
-    _flags: number,
+    flags: number,
   ): number {
     try {
       this.io.utimensatAt(
@@ -4256,6 +4247,7 @@ export class WasmPosixKernel {
         Number(atimeNsec),
         Number(mtimeSec),
         Number(mtimeNsec),
+        flags,
       );
       return 0;
     } catch (e) {

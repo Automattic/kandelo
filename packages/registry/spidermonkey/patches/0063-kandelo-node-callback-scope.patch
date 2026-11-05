@@ -1,0 +1,185 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -275,6 +275,7 @@
+ 
+ #include "shell/kandelo-node-native-work.cpp"
+ #include "shell/kandelo-node-native-async.cpp"
++#include "shell/kandelo-node-native-callback.cpp"
+ #include "shell/kandelo-node-codec-handle.cpp"
+ #include "shell/kandelo-node-native-fs.cpp"
+ #include "shell/kandelo-node-file-handle.cpp"
+@@ -5268,6 +5269,11 @@
+   if (JS_GetProperty(cx, global, "__kandeloRunDueTimers", &runFn) &&
+       runFn.isObject() && JS::IsCallable(&runFn.toObject())) {
+     RootedValue rval(cx);
++    KandeloNativeJsEntryScope entry(cx);
++    if (!entry.Ready()) {
++      if (GetShellContext(cx)->quitting) return fired;
++      AutoReportException report(cx); GetShellContext(cx)->exitCode = EXIT_FAILURE; return fired;
++    }
+     if (JS_CallFunctionValue(cx, global, runFn, JS::HandleValueArray::empty(),
+                              &rval)) {
+       if (rval.isNumber()) {
+@@ -5276,6 +5282,7 @@
+     } else if (IsKandeloNodeMode()) {
+       // A thrown timer callback is an uncaught exception, not a completed
+       // callback. Report it before leaving the Node event loop.
++      if (GetShellContext(cx)->quitting) return fired;
+       AutoReportException report(cx);
+       GetShellContext(cx)->exitCode = EXIT_FAILURE;
+       return fired;
+@@ -5297,6 +5304,7 @@
+         }
+       }
+     } else if (IsKandeloNodeMode()) {
++      if (GetShellContext(cx)->quitting) return fired;
+       AutoReportException report(cx);
+       GetShellContext(cx)->exitCode = EXIT_FAILURE;
+     } else {
+@@ -5333,9 +5341,44 @@
+   RootedValue callback(cx), result(cx);
+   if (!JS_GetProperty(cx, global, name, &callback)) return false;
+   if (callback.isUndefined()) return true; // Node bootstrap is not yet linked.
++  KandeloNativeJsEntryScope entry(cx);
++  if (!entry.Ready()) return false;
+   if (!JS_CallFunctionValue(cx, global, callback, HandleValueArray::empty(), &result)) return false;
+   *value = result.isBoolean() ? double(result.toBoolean()) :
+            result.isNumber() ? result.toNumber() : 0;
++  return true;
++}
++
++// Depth here is a real embedding entry, not a synthetic async resource.
++static bool KandeloRunMicrotaskCheckpoint(JSContext* cx) {
++  if (!IsKandeloNodeMode()) { js::RunJobs(cx); return true; }
++  KandeloNativeJsEntryScope entry(cx);
++  if (!entry.Ready()) return false;
++  js::RunJobs(cx);
++  return !cx->isExceptionPending();
++}
++
++// Drain only this context's ticks/jobs; never dispatch another native work
++// item, timer, socket or async destroy before the request retirement fence.
++static bool KandeloPerformCallbackCheckpoint(JSContext* cx) {
++  if (!IsKandeloNodeMode()) return true;
++  ShellContext* sc = GetShellContext(cx);
++  while (!sc->quitting) {
++    double ticks;
++    if (!KandeloCallAsyncQueue(cx, "__kandeloHasNextTicks", &ticks)) return false;
++    if (ticks && !KandeloCallAsyncQueue(cx, "__kandeloRunNextTicks", &ticks)) return false;
++    if (!KandeloRunMicrotaskCheckpoint(cx)) return false;
++    if (sc->quitting) return true;
++    if (!KandeloCallAsyncQueue(cx, "__kandeloHasNextTicks", &ticks)) return false;
++    if (ticks) continue;
++    // Reuse actual embedding rejection data; complete Node rejection
++    // event/mode/fatal recovery remains an independent open owner.
++    if (!ReportUnhandledRejections(cx)) return false;
++    if (cx->isExceptionPending()) return false;
++    if (sc->quitting) return true;
++    if (!KandeloCallAsyncQueue(cx, "__kandeloHasNextTicks", &ticks)) return false;
++    if (!ticks) return true;
++  }
+   return true;
+ }
+ 
+@@ -5346,17 +5389,23 @@
+   }
+ 
+   while (true) {
++    if (sc->quitting) return;
+     if (IsKandeloNodeMode()) {
+       double ticks;
+       if (!KandeloCallAsyncQueue(cx, "__kandeloRunNextTicks", &ticks)) {
++        if (sc->quitting) return;
+         AutoReportException report(cx);
+         sc->exitCode = EXIT_FAILURE;
+         return;
+       }
+     }
+     // A nextTick callback can queue microtasks; the whole tick queue runs first.
+-    js::RunJobs(cx);
++    if (!KandeloRunMicrotaskCheckpoint(cx)) {
++      if (sc->quitting) return;
++      AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++    }
+     if (IsKandeloNodeMode() && cx->isExceptionPending()) {
++      if (sc->quitting) return;
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+     }
+     if (sc->quitting) {
+@@ -5365,15 +5414,18 @@
+     if (IsKandeloNodeMode()) {
+       double ticks, destroyed;
+       if (!KandeloCallAsyncQueue(cx, "__kandeloHasNextTicks", &ticks)) {
++        if (sc->quitting) return;
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+       }
+       if (ticks) continue;
+       if (!KandeloCallAsyncQueue(cx, "__kandeloRunAsyncDestroys", &destroyed)) {
++        if (sc->quitting) return;
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+       }
+       if (destroyed) continue;
+       // Check at the microtask checkpoint, after same-turn rejection handlers
+       // have run. Waiting until every handle/timer drains can wait forever.
++      if (sc->quitting) return;
+       AutoReportException report(cx);
+       if (!ReportUnhandledRejections(cx)) sc->exitCode = EXIT_FAILURE;
+       if (sc->exitCode) return;
+@@ -5382,6 +5434,7 @@
+     if (IsKandeloNodeMode()) {
+       bool timerReferences;
+       if (!KandeloNodeTimersHaveReferences(cx, &timerReferences)) {
++        if (sc->quitting) return;
+         AutoReportException report(cx);
+         sc->exitCode = EXIT_FAILURE;
+         return;
+@@ -5411,10 +5464,15 @@
+     if (IsKandeloNodeMode() && (ranTasks || ranNative || ranTimers)) {
+       double ticks;
+       if (!KandeloCallAsyncQueue(cx, "__kandeloRunNextTicks", &ticks)) {
++        if (sc->quitting) return;
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+       }
+-      js::RunJobs(cx);
++      if (!KandeloRunMicrotaskCheckpoint(cx)) {
++        if (sc->quitting) return;
++        AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++      }
+       if (cx->isExceptionPending()) {
++        if (sc->quitting) return;
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+       }
+       if (sc->quitting) return;
+@@ -5422,12 +5480,15 @@
+     // One completion per turn, so its callback's ticks/jobs run before the
+     // next completion. The work queue owns loop liveness even without timers.
+     int ranWork = KandeloDispatchNativeWork(cx);
++    if (sc->quitting) return; // Preserve explicit exit/hook-fatal status. No further JS.
+     if (ranWork < 0) {
++      if (sc->quitting) return;
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+     }
+     if (IsKandeloNodeMode()) {
+       double gcCloseErrors;
+       if (!KandeloCallAsyncQueue(cx, "__kandeloRunFsGcCloseError", &gcCloseErrors)) {
++        if (sc->quitting) return;
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+       }
+       if (gcCloseErrors) continue;
+@@ -5436,6 +5497,7 @@
+     if (IsKandeloNodeMode()) {
+       double ranPorts;
+       if (!KandeloCallAsyncQueue(cx, "__kandeloDispatchPorts", &ranPorts)) {
++        if (sc->quitting) return;
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+       }
+       if (ranPorts) continue;
+@@ -11153,6 +11215,8 @@
+   }
+ 
+   RootedValue rval(cx);
++  KandeloNativeJsEntryScope entry(cx);
++  if (!entry.Ready()) return false;
+   return JS::Evaluate(cx, opts, srcBuf, &rval);
+ }
+ 

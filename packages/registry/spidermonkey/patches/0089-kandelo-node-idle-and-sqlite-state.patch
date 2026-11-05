@@ -1,0 +1,70 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -5367,6 +5367,7 @@
+     return;
+   }
+ 
++  bool beforeExitEmittedForIdle = false;
+   while (true) {
+     if (sc->quitting) return;
+     if (IsKandeloNodeMode()) {
+@@ -5422,7 +5423,22 @@
+       // but do not enter another turn when no referenced owner remains.
+       if (!timerReferences && !KandeloSocketHasWatches(cx) &&
+           !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
+-          !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx)) return;
++          !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx)) {
++        if (beforeExitEmittedForIdle) return;
++        beforeExitEmittedForIdle = true;
++        double ignored;
++        KandeloNativeJsEntryScope entry(cx);
++        if (!entry.Ready() || !KandeloCallAsyncQueue(cx, "__kandeloNodeBeforeExit", &ignored)) {
++          if (sc->quitting) return;
++          AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++        }
++        // The actual listeners may queue ticks/jobs or revive referenced I/O.
++        // Drain those checkpoints before deciding whether the loop is idle.
++        continue;
++      }
++      // A referenced owner revived a real loop turn. The next idle transition
++      // must emit again; microtasks alone do not manufacture another turn.
++      beforeExitEmittedForIdle = false;
+     }
+ 
+     // Run tasks (only finalization registry clean tasks are possible).
+@@ -5496,6 +5512,7 @@
+         !KandeloSocketHasWatches(cx) && !timersPending &&
+         !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
+           !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx)) {
++      if (IsKandeloNodeMode()) continue;
+       break;
+     }
+     if (!ranTasks && ranNative == 0 && ranTimers == 0) {
+@@ -11161,6 +11178,8 @@
+ struct KandeloNodeCLIState {
+   bool noWarnings = false;
+   bool experimentalStreamIter = false;
++  // The declared recipe links the actual SQLite backend (target HAVE_SQLITE).
++  bool experimentalSqlite = true;
+   bool preserveSymlinks = false;
+   bool preserveSymlinksMain = false;
+   std::vector<std::string> conditions;
+@@ -11204,6 +11223,10 @@
+   }
+   if (name == "--preserve-symlinks-main") {
+     kandeloNodeCLI.preserveSymlinksMain = value;
++    return true;
++  }
++  if (name == "--experimental-sqlite") {
++    kandeloNodeCLI.experimentalSqlite = value;
+     return true;
+   }
+   if (name == "--experimental-stream-iter") {
+@@ -16208,6 +16231,7 @@
+         !JS_DefineProperty(cx, cli, "zeroFillBuffers", gKandeloZeroFillBuffers, 0) ||
+         !JS_DefineProperty(cx, cli, "noWarnings", kandeloNodeCLI.noWarnings, 0) ||
+         !JS_DefineProperty(cx, cli, "experimentalStreamIter", kandeloNodeCLI.experimentalStreamIter, 0) ||
++        !JS_DefineProperty(cx, cli, "experimentalSqlite", kandeloNodeCLI.experimentalSqlite, 0) ||
+         !JS_DefineProperty(cx, cli, "execArgv", execArgs, 0) ||
+         !JS_DefineProperty(cx, cx->global(), "__kandeloNodeCliOptions", cli, 0)) return false;
+   }

@@ -1,0 +1,176 @@
+{
+  "at": "2026-11-05T06:28:12.958890+00:00",
+  "recipeRevision": 98,
+  "nativePatch": null,
+  "auditFindings": [
+    "FS-015 source descriptor transaction addressed; guest conformance pending",
+    "FS-001\u2013010 public whole-file prerequisites partial; no blanket closure"
+  ],
+  "sourceImplemented": [
+    "Nine unchanged pinned lib/fs.js sections install sync readFile/writeFile/appendFile over shared flags/options/path/read-buffer/fd utilities",
+    "UTF8 internal bindings use existing actual native open/read/write/close with private real allocation/encoding/decoding; read to EOF and preserve multibyte boundaries",
+    "Conversion precedes open; after open, allocation/read/decode/write cleanup owns fd immediately; caller-supplied fds remain open",
+    "Frozen append options copied, actual encodings/modes/flags/fd offsets/user-buffer factories preserved; UTF8 target flush behavior retained exactly",
+    "Only private native synchronous I/O accepts signed int32 to actual POSIX; public descriptor and fstat validation retained"
+  ],
+  "publicApiSourceOwners": [
+    "fs.readFileSync",
+    "fs.writeFileSync",
+    "fs.appendFileSync"
+  ],
+  "frontendNative": {
+    "report": ".context/node26-file-sync-frontend-r6.json",
+    "sha256": "9b97cebc6d3001ab8adb9b9f223e9874a3d2e7976b82a7c660bc813be00fa2f5",
+    "passed": 20,
+    "failed": 0,
+    "skipped": 0,
+    "new": 6,
+    "affected": 14,
+    "controlMeaning": "5 authored behavioral controls plus1 actual-fd cleanup control with explicit allocator/decoder failure injection;14 affected callback/Buffer controls. No complete API/family score.",
+    "scope": "Full candidate public/Buffer/private codec/allocation source with native26 backing-store and fd dependencies; no changed guest C++/libc/kernel/four-host conformance",
+    "sourceIdentities": {
+      "third_party/node-core/file-sync-adapter.js": "a764abfd8bb8697006b467a4c32f9a6a7c2f4eb3f616b250cbfa6151996dd767",
+      "third_party/node-core/native-fs-promise.cpp": "e75846911ec9094dbb68f41aba34313417087d7ef68864ec0bf19dd2c7667f66",
+      "third_party/node-core/buffer-codecs-adapter.js": "de9373d9f1ab96f82dc3f9087a7d4e5a66db9cf997f83986ac14076f0ae9a552",
+      "third_party/node-core/build.py": "57f69575d3edaeeadd01174e470a56858973e1ff077f6e228321d40300594ba4",
+      "third_party/node-core/sources.json": "5607e9ae8bd8abce69ce04461e88e5202ee666ab778ba350bdb9d8f865fe4877",
+      "third_party/node-core/node-core.js": "c64e548c297f2f424653782db4ade973013dbab20dfcb77d650f9282277628ed",
+      "host/test/fixtures/node-file-sync-platform.cjs": "9f94ed962f671dac3b0a0857f6c5aca9503ee5d924ec83a4a09671a110a4ec5e",
+      "host/test/fixtures/node-file-sync-controls.cjs": "275a9e0dfb6cda634e04662222f4f8a3a546dddbf05f7bbdcf6bea7d03f7cbc1",
+      "host/test/node-file-sync-platform.test.ts": "c70c6445f850e197e7f9111158197964224a5b1e4218ce824899caf0cf127de2"
+    },
+    "runBeforeMainSync": true,
+    "postSyncPreservation": {
+      "report": ".context/node26-file-sync-main-reconciliation/preservation.json",
+      "sha256": "ce7661ffcc961a99ada0ca70c45470b821dda6c4ca39872e2d92fd8d69a740c7",
+      "scope": "All executed compatibility/fixture input bytes unchanged across main synchronization; selected metadata/host/base source changes require separate validation"
+    }
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-file-sync-upstream-r3/report.json",
+    "sha256": "4dfb6d755e3bf7a2f51e48c205b2fbd5404dc6315a68356c28c4af914311cef2",
+    "scope": "Four unchanged sync-file candidate/native source files. Candidate public sync wrappers and private candidate Buffer codecs/allocator, actual native26 fd/OS bindings. Upstream preload retains native public Buffer and other async/promise/fs methods; not complete candidate Buffer/guest C++/libc/kernel/four-host conformance.",
+    "counts": {
+      "native": {
+        "pass": 4,
+        "fail": 0,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      },
+      "candidate": {
+        "pass": 4,
+        "fail": 0,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      }
+    },
+    "files": [
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-write-file-sync.js",
+        "sourceSha256": "2caf8de62b82d9e7f879e23647a374f0cae7723de63fd081e84b744f0dbdf62e"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-append-file-sync.js",
+        "sourceSha256": "97ab894a23d3f609d10868c5a7418c5c8640f6762d8617ab3957dd67b419a210"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-readfile-utf8-fast-path.js",
+        "sourceSha256": "8c455b7d82bc83448e85d155dafddf2f6a91f1b23d2129e27a22dac2c516d28d"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-readfile-buffer-option.js",
+        "sourceSha256": "e5088b9c544430de4d90e988aa3cd0cde8e48ab3ad703e589f39d6a2660d8b0f"
+      }
+    ]
+  },
+  "sourceChecks": {
+    "report": ".context/node26-file-sync-source-r3/report.json",
+    "sha256": "79158e176562510861d7c0f8d034f65fba4f6e7d7561632ab91fdd1c13bcaab2",
+    "checks": 7,
+    "selectedPinnedSections": 9,
+    "unchangedUpstreamArchiveIdentities": 4,
+    "stylePass": true,
+    "evidenceRegistration": true
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-file-sync-frontend-r1.json",
+      "sha256": "6d69d6f687334c34661bee1c400e4d817bce22524b1e6917c5d2a4ce4bf046a1",
+      "classification": "harness-error",
+      "log": ".context/node26-file-sync-frontend-r1.log",
+      "inputs": ".context/node26-file-sync-frontend-r1-inputs",
+      "reason": "Native private WriteBuffer fixture argc5 instead of7 caused assertion abort; no completed individual-case passes"
+    },
+    {
+      "report": ".context/node26-file-sync-frontend-r2.json",
+      "sha256": "ece631b0510b8e6b564551687c1b5dfc2093f0b878a2803eb9e32d72fcc2cfd3",
+      "classification": "4pass/1fail at incorrect native boundary",
+      "inputs": ".context/node26-file-sync-frontend-r2-inputs",
+      "details": ".context/node26-file-sync-control-r2-details.json",
+      "reason": "Native generic bindings rejected negative fds; exact native UTF8 path instead reaches POSIX. Corrected fixture uses actual pinned fast bindings, not fabricated errno."
+    },
+    {
+      "report": ".context/node26-file-sync-preparation-r1.json",
+      "sha256": "a2e0c08b1e6f2a8367264de7004dd991957ee2e4db77b98d9463e5e50395ade9",
+      "classification": "preparation harness error",
+      "reason": "Overbroad source selector stopped before guarded writes; bounded source owner selection corrected"
+    }
+  ],
+  "earlierOverlappingPasses": [
+    {
+      "report": ".context/node26-file-sync-frontend-r3.json",
+      "sha256": "3688eb14e01281649dd8047da5514386c27617920e9c4a944aa8f02e6928731a",
+      "scope": "Earlier source/helper/fstat-guard checkpoint, overlapping controls, not additional passing cases"
+    },
+    {
+      "report": ".context/node26-file-sync-frontend-r4.json",
+      "sha256": "724adbb4e9b8f803941492458ced67637d2a3719c7c783dacae3da0e6be35b32",
+      "scope": "Earlier source/helper/fstat-guard checkpoint, overlapping controls, not additional passing cases"
+    },
+    {
+      "report": ".context/node26-file-sync-frontend-r5.json",
+      "sha256": "cb827253cfc1a3060bc75cd5076e9d8aba8ec941dc4322007905a32f6596ba17",
+      "scope": "Earlier source/helper/fstat-guard checkpoint, overlapping controls, not additional passing cases"
+    },
+    {
+      "report": ".context/node26-file-sync-upstream-r1/report.json",
+      "sha256": "a266a75b58138e72b4669577a6cfce9df75fadeece32c244b287406ac09ba19f",
+      "scope": "Earlier source/helper/fstat-guard checkpoint, overlapping controls, not additional passing cases"
+    },
+    {
+      "report": ".context/node26-file-sync-upstream-r2/report.json",
+      "sha256": "cb0af9d6156239fd520b3b5a321e1db5dab71b3f00822a47b41a03fd2440f8c4",
+      "scope": "Earlier source/helper/fstat-guard checkpoint, overlapping controls, not additional passing cases"
+    },
+    {
+      "report": ".context/node26-file-sync-source-r1/report.json",
+      "sha256": "fa45795ac02aa4ad0e1f32e1e3310b601a321901850d427b43f9e388e5cc901a",
+      "scope": "Earlier source/helper/fstat-guard checkpoint, overlapping controls, not additional passing cases"
+    },
+    {
+      "report": ".context/node26-file-sync-source-r2/report.json",
+      "sha256": "3c53065988d2e7486a521db83fd83b31e35fccec57f4a88f07519c193973998f",
+      "scope": "Earlier source/helper/fstat-guard checkpoint, overlapping controls, not additional passing cases"
+    }
+  ],
+  "remaining": [
+    "Guest compile/integration of current97 metadata and98 whole-file/native signed-I/O source; changed kernel/host and identified four-host conformance",
+    "In98 only pathname promise writeFile/appendFile fell back to sync; readFile was already queued. Source99 now connects pinned queued write/append owners; full guest/byte/ref/close and four-host conformance remain unestablished.",
+    "Full native byte leases/shared/resizable/transfer/reentry, activated permission/VFS, raw paths/backend/mounts, all other FS findings and full namespace/loader/aliases",
+    "Huge strings/allocations and exceptional close precedence, actual guest pipes/devices, concurrent file changes, GC/OOM/realm/lifecycle and performance evidence",
+    "Retain SQLite public-load/Performance milestone/host typecheck nonpasses and all other19-family gaps"
+  ],
+  "guestCompiled": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformExclusions": [],
+  "dependencyDocument": "tests/nodejs/outline/file-sync-implementation-dependencies.md",
+  "routingDescriptionCorrection": {
+    "path": "tests/nodejs/outline/file-promises-routing-correction.json",
+    "sha256": "7aece6ecb1868ab3d6ed4fa0811de97d830a2d1e3ff4b24b56eef7c838294834"
+  }
+}

@@ -1,0 +1,226 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -28,6 +28,7 @@
+ 
+ #include <algorithm>
+ #include <cctype>
++#include <cmath>
+ #include <chrono>
+ #ifdef XP_WIN
+ #  include <direct.h>
+@@ -790,6 +791,8 @@
+   return KandeloZlibOneShot(cx, args, false, 31, 0);
+ }
+ 
++#include "shell/kandelo-node-child-wait.h"
++
+ enum class KandeloSocketWatchKind {
+   Connect,
+   Accept,
+@@ -814,7 +817,7 @@
+   int tlsHandle = -1;
+   bool closeFdOnCleanup = false;
+   bool referenced = true;
+-  pid_t childPid = -1;
++  kandelo::child_wait::State childWait;
+   KandeloSocketWatch* next = nullptr;
+ 
+   KandeloSocketWatch(JSContext* cx, int fd, KandeloSocketWatchKind kind,
+@@ -852,8 +855,9 @@
+   }
+ }
+ 
+-static bool KandeloSocketHasWatches() {
++static bool KandeloSocketHasWatches(JSContext* cx) {
+   for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
++    if (watch->kind == KandeloSocketWatchKind::Child && watch->cx != cx) continue;
+     if (watch->referenced) return true;
+   }
+   return false;
+@@ -1095,18 +1099,37 @@
+   return JS::ResolvePromise(cx, promise, resolved);
+ }
+ 
+-// Resolve a __kandeloWaitPid promise from a raw waitpid() status word.
+-static bool KandeloResolveChildFromStatus(JSContext* cx, HandleObject promise,
+-                                          int status) {
+-  if (WIFEXITED(status)) {
+-    return KandeloResolveChild(cx, promise, true, WEXITSTATUS(status), nullptr);
+-  }
+-  if (WIFSIGNALED(status)) {
+-    return KandeloResolveChild(cx, promise, false, 0,
+-                               KandeloSignalName(WTERMSIG(status)));
+-  }
+-  // Stopped/continued or otherwise not terminated: report no code yet.
+-  return KandeloResolveChild(cx, promise, true, 0, nullptr);
++static const char* KandeloErrnoCode(int err);
++
++// Convert one retained wait outcome in its promise's actual realm. Failed
++// conversion leaves the outcome in the registered owner for failure/teardown.
++static bool KandeloDeliverChildWatch(JSContext* cx, KandeloSocketWatch* watch) {
++  RootedObject promise(cx, watch->promise.get());
++  JSAutoRealm realm(cx, promise);
++  return watch->childWait.Deliver([&](const kandelo::child_wait::Outcome& result) {
++    using Kind = kandelo::child_wait::Kind;
++    if (result.kind == Kind::Error)
++      return KandeloRejectSocketOperation(cx, promise, result.error, "waitpid",
++                                          KandeloErrnoCode(result.error));
++    if (result.kind == Kind::Exit)
++      return KandeloResolveChild(cx, promise, true, result.code, nullptr);
++    if (result.kind == Kind::Signal)
++      return KandeloResolveChild(cx, promise, false, 0, KandeloSignalName(result.signal));
++    MOZ_CRASH("Cannot deliver a pending child wait");
++  });
++}
++
++static void KandeloShutdownChildWatches(JSContext* cx) {
++  auto** link = &gKandeloSocketWatches;
++  while (*link) {
++    auto* watch = *link;
++    if (watch->kind == KandeloSocketWatchKind::Child && watch->cx == cx) {
++      *link = watch->next;
++      // WNOHANG owns no outstanding syscall. Release only this context's JS
++      // roots, without a callback, invented status, signal or second reap.
++      js_delete(watch);
++    } else link = &watch->next;
++  }
+ }
+ 
+ // A successful accept transfers one nonblocking, close-on-exec fd to JS.
+@@ -1133,19 +1156,10 @@
+     KandeloSocketWatch* watch = gKandeloSocketWatches;
+     while (watch) {
+       KandeloSocketWatch* next = watch->next;
+-      if (watch->kind == KandeloSocketWatchKind::Child) {
+-        int status = 0;
+-        pid_t r = waitpid(watch->childPid, &status, WNOHANG);
+-        bool done = false;
+-        if (r == watch->childPid) {
+-          KandeloResolveChildFromStatus(cx, watch->promise, status);
+-          done = true;
+-        } else if (r == -1 && errno == ECHILD) {
+-          // Already reaped elsewhere: report a benign success exit.
+-          KandeloResolveChild(cx, watch->promise, true, 0, nullptr);
+-          done = true;
+-        }
+-        if (done) {
++      if (watch->kind == KandeloSocketWatchKind::Child && watch->cx == cx && watch->promise.get() != nullptr) {
++        watch->childWait.Poll();
++        if (watch->childWait.Ready()) {
++          if (!KandeloDeliverChildWatch(cx, watch)) return -1;
+           KandeloSocketWatchUnlink(watch);
+           js_delete(watch);
+           processed++;
+@@ -1721,7 +1735,7 @@
+       watch->referenced = args[1].toBoolean();
+       return true;
+     }
+-    RootedObject promise(cx, watch->promise);
++    RootedObject promise(cx, watch->promise.get());
+     KandeloSocketWatchUnlink(watch);
+     js_delete(watch);
+     return KandeloResolvePromiseWithErrno(cx, promise, ECANCELED, nullptr);
+@@ -1959,33 +1973,41 @@
+ // waitpid, registering a Child watch when the child is still running.
+ static bool KandeloNativeWaitPid(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+-  int32_t pid;
+-  if (args.length() < 1 || !JS::ToInt32(cx, args[0], &pid)) {
+-    return false;
+-  }
++  if (args.length() != 1 || !args[0].isNumber() ||
++      !std::isfinite(args[0].toNumber()) || std::floor(args[0].toNumber()) != args[0].toNumber() ||
++      args[0].toNumber() <= 0 || args[0].toNumber() > INT32_MAX) {
++    JS_ReportErrorASCII(cx, "Child wait requires an exact positive int32 pid"); return false;
++  }
++  const pid_t pid = pid_t(args[0].toNumber());
++  for (auto* existing = gKandeloSocketWatches; existing; existing = existing->next) {
++    if (existing->kind != KandeloSocketWatchKind::Child || existing->childWait.Pid() != pid) continue;
++    if (existing->cx != cx || existing->promise.get() == nullptr) {
++      JS_ReportErrorASCII(cx, "Child wait already has an initializing or different-context owner"); return false;
++    }
++    RootedObject promise(cx, existing->promise.get());
++    if (!JS_WrapObject(cx, &promise)) return false;
++    args.rval().setObject(*promise); return true;
++  }
++  RootedObject empty(cx);
++  auto* watch = js_new<KandeloSocketWatch>(cx, -1, KandeloSocketWatchKind::Child, empty);
++  if (!watch) { JS_ReportOutOfMemory(cx); return false; }
++  watch->childWait = kandelo::child_wait::State(pid);
++  // Claim before Promise init hooks can reenter. No waitpid runs until the
++  // promise and watch are both prepared; init failure consumes no child status.
++  KandeloSocketWatchLink(watch);
++  bool prepared = false;
++  auto abandon = mozilla::MakeScopeExit([&] {
++    if (!prepared) { KandeloSocketWatchUnlink(watch); js_delete(watch); }
++  });
+   RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
+-  if (!promise) {
+-    return false;
+-  }
++  if (!promise) return false;
++  watch->promise = promise;
+   args.rval().setObject(*promise);
+-
+-  int status = 0;
+-  pid_t r = waitpid(pid_t(pid), &status, WNOHANG);
+-  if (r == pid_t(pid)) {
+-    return KandeloResolveChildFromStatus(cx, promise, status);
+-  }
+-  if (r == -1 && errno == ECHILD) {
+-    return KandeloResolveChild(cx, promise, true, 0, nullptr);
+-  }
+-
+-  auto* watch = js_new<KandeloSocketWatch>(cx, -1, KandeloSocketWatchKind::Child,
+-                                           promise);
+-  if (!watch) {
+-    JS_ReportOutOfMemory(cx);
+-    return false;
+-  }
+-  watch->childPid = pid_t(pid);
+-  KandeloSocketWatchLink(watch);
++  prepared = true;
++  watch->childWait.Poll();
++  if (!watch->childWait.Ready()) return true;
++  if (!KandeloDeliverChildWatch(cx, watch)) return false;
++  KandeloSocketWatchUnlink(watch); js_delete(watch);
+   return true;
+ }
+ 
+@@ -5453,7 +5475,7 @@
+       }
+       // Wakeup deadlines are not references. Leave unref timers scheduled,
+       // but do not enter another turn when no referenced owner remains.
+-      if (!timerReferences && !KandeloSocketHasWatches() &&
++      if (!timerReferences && !KandeloSocketHasWatches(cx) &&
+           !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
+           !KandeloPortsHaveReferences(cx)) return;
+     }
+@@ -5461,6 +5483,10 @@
+     // Run tasks (only finalization registry clean tasks are possible).
+     bool ranTasks = MaybeRunFinalizationRegistryCleanupTasks(cx);
+     int ranNative = KandeloSocketDispatch(cx);
++    if (ranNative < 0) {
++      if (sc->quitting) return;
++      AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++    }
+ 
+     // Fire real-delay timers and learn when the next one is due. A pending
+     // timer keeps the loop alive just like a pending native watch.
+@@ -5516,7 +5542,7 @@
+     }
+ 
+     if (!ranTasks && ranNative == 0 && ranTimers == 0 &&
+-        !KandeloSocketHasWatches() && !timersPending &&
++        !KandeloSocketHasWatches(cx) && !timersPending &&
+         !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
+           !KandeloPortsHaveReferences(cx)) {
+       break;
+@@ -16400,6 +16426,7 @@
+ ShellContext::~ShellContext() {
+   // Finish/cancel native jobs and retire pins/roots while the JSContext lives.
+   KandeloShutdownNativeWork(this);
++  KandeloShutdownChildWatches(cx_);
+   KandeloShutdownPorts(cx_);
+   KandeloShutdownNativeAsync(this);
+   markObservers.reset();

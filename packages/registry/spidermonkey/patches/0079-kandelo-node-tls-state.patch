@@ -1,0 +1,132 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -204,6 +204,7 @@
+ #include "shell/jsshell.h"
+ #include "shell/kandelo-node-bootstrap.h"
+ #include "shell/kandelo-node-codec-contexts.h"
++#include "shell/kandelo-node-tls-state.h"
+ #include "shell/OSObject.h"
+ #include "shell/ShellModuleObjectWrapper.h"
+ #include "shell/WasmTesting.h"
+@@ -2377,7 +2378,7 @@
+     SSL_CTX_set_default_verify_paths(ctx);
+   }
+   SSL_CTX_set_verify(ctx, rejectUnauthorized ? SSL_VERIFY_PEER : SSL_VERIFY_NONE,
+-                     nullptr);
++                     rejectUnauthorized ? nullptr : kandelo::tls::ContinueVerification);
+   return ctx;
+ }
+ 
+@@ -2500,6 +2501,104 @@
+   }
+   args.rval().setUndefined();
+   return true;
++}
++
++static bool
++KandeloNativeTlsInfo(JSContext* cx, unsigned argc, Value* vp)
++{
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int32_t handle, operation;
++  if (args.length() < 2 || !JS::ToInt32(cx, args[0], &handle) ||
++      !JS::ToInt32(cx, args[1], &operation))
++    return false;
++  KandeloTlsHandle* owner = KandeloGetTlsHandle(handle);
++  if (!owner) {
++    args.rval().setNull();
++    return true;
++  }
++  SSL* ssl = owner->ssl;
++  auto text = [&](const char* bytes, MutableHandleValue result) {
++    if (!bytes) {
++      result.setUndefined();
++      return true;
++    }
++    RootedString string(cx, JS_NewStringCopyZ(cx, bytes));
++    if (!string)
++      return false;
++    result.setString(string);
++    return true;
++  };
++  try {
++    switch (operation) {
++      case 1:
++        return text(SSL_get_version(ssl), args.rval());
++      case 2: {
++        const SSL_CIPHER* cipher = SSL_get_current_cipher(ssl);
++        if (!cipher) {
++          args.rval().setUndefined();
++          return true;
++        }
++        RootedObject object(cx, JS_NewPlainObject(cx));
++        if (!object)
++          return false;
++        const char* names[] = { "name", "standardName", "version" };
++        const char* values[] = { SSL_CIPHER_get_name(cipher),
++                                 SSL_CIPHER_standard_name(cipher),
++                                 SSL_CIPHER_get_version(cipher) };
++        for (size_t i = 0; i < 3; i++) {
++          RootedValue value(cx);
++          if (!text(values[i], &value) ||
++              !JS_DefineProperty(cx, object, names[i], value, JSPROP_ENUMERATE))
++            return false;
++        }
++        args.rval().setObject(*object);
++        return true;
++      }
++      case 3:
++        args.rval().setBoolean(SSL_session_reused(ssl));
++        return true;
++      case 4: {
++        const long result = kandelo::tls::VerifyPeer(ssl);
++        if (result == X509_V_OK) {
++          args.rval().setNull();
++          return true;
++        }
++        RootedObject object(cx, JS_NewPlainObject(cx));
++        if (!object)
++          return false;
++        RootedValue code(cx), message(cx);
++        if (!text(kandelo::tls::VerificationErrorCode(int32_t(result)),
++                  &code) ||
++            !text(X509_verify_cert_error_string(result), &message) ||
++            !JS_DefineProperty(cx, object, "code", code, JSPROP_ENUMERATE) ||
++            !JS_DefineProperty(
++              cx, object, "message", message, JSPROP_ENUMERATE))
++          return false;
++        args.rval().setObject(*object);
++        return true;
++      }
++      case 5:
++      case 6: {
++        const auto bytes = kandelo::tls::Finished(ssl, operation == 6);
++        if (bytes.empty()) {
++          args.rval().setUndefined();
++          return true;
++        }
++        RootedObject output(
++          cx, KandeloNewUint8ArrayCopy(cx, bytes.data(), bytes.size()));
++        if (!output)
++          return false;
++        args.rval().setObject(*output);
++        return true;
++      }
++      default:
++        JS_ReportErrorASCII(cx, "Invalid TLS metadata operation");
++        return false;
++    }
++  } catch (const std::bad_alloc&) {
++    JS_ReportOutOfMemory(cx);
++    return false;
++  }
+ }
+ 
+ static bool KandeloNativeEvalScriptAsFunction(JSContext* cx, unsigned argc,
+@@ -3901,6 +4000,7 @@
+       JS_FN("tlsRead", KandeloNativeTlsRead, 2, 0),
+       JS_FN("tlsWrite", KandeloNativeTlsWrite, 2, 0),
+       JS_FN("tlsClose", KandeloNativeTlsClose, 1, 0),
++      JS_FN("tlsInfo", KandeloNativeTlsInfo, 2, 0),
+       JS_FN("__kandeloPipe", KandeloNativePipe, 2, 0),
+       JS_FN("__kandeloSpawn", KandeloNativeSpawn, 5, 0),
+       JS_FN("__kandeloFdRead", KandeloNativeFdRead, 2, 0),

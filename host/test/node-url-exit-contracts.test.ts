@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
 import * as nativeUrl from "node:url";
 import path from "node:path";
@@ -15,8 +16,9 @@ function section(start: string, end: string) {
 }
 const vendor = readFileSync(new URL("../../third_party/node-web-platform/node-web-platform.js", import.meta.url), "utf8");
 const web = runInNewContext(`${vendor};_createNodeWebPlatform()`, { TextEncoder, TextDecoder });
-const url = runInNewContext(`${section("const url = (() => {", "url.domainToASCII")};url`,
-  { _nodeWebPlatform: web, path });
+const urlPaths = createRequire(import.meta.url)('./fixtures/node-url-path-platform.cjs').create({ web });
+const url = runInNewContext(`${section("const url = (() => {", "url.domainToASCII =")};url`,
+  { _nodeWebPlatform: web, path, _nodeURLPathPlatform: urlPaths });
 const pathToString = runInNewContext(`${section("    function _pathToString(p)", "    function _flagsToMode")};_pathToString`,
   { URL: url.URL, url, Buffer });
 const posixUrlOptions = { windows: false };
@@ -24,20 +26,41 @@ function outcome(fn: () => unknown) {
   try { return { value: fn() }; }
   catch (error: any) { return { name: error.name, code: error.code }; }
 }
-function guestProcess() {
+function guestProcess(cliOptions: { execArgv?: string[]; noWarnings?: boolean } = {}) {
   let status: number | undefined;
   const context = {
+    _nodeProcessState: createRequire(import.meta.url)('./fixtures/node-process-state.cjs').createProcessState(),
+    // Actual native clock boundary; the dedicated clock fixture checks its shared adapter.
+    _nodeProcessClock: { hrtime: process.hrtime },
     _nodeCompatibilityTarget: JSON.parse(readFileSync(new URL("../../packages/registry/node-compat/target.json", import.meta.url), "utf8")),
+    // The extracted process factory now reads its codec provider at startup.
+    // This source fixture uses the actual native provider's version metadata;
+    // it does not exercise or establish guest compression availability.
+    _nodeNative: { cliOptions, sqlite(operation: string) {
+      if (operation !== 'version') throw Error('Unexpected SQLite operation in process fixture');
+      return process.versions.sqlite;
+    }, getCompressionVersions: () => ({
+      zlib: process.versions.zlib, brotli: process.versions.brotli,
+      zstd: process.versions.zstd,
+    }) },
     events: { EventEmitter }, os: { getcwd: () => ["/tmp"], getpid: () => 1 },
     std: { getenv: () => undefined, exit: (code: number) => { status = code; } },
   };
-  const proc = runInNewContext(`${section("const process = (() => {", "const _startTime")};process`, context);
+  const proc = runInNewContext(`${section("const process = (() => {", "// The pinned path module consumes")};process`, context);
   const naturalExit = runInNewContext(`${section("function _runNaturalExit(", "function _runCommonJsMain(")};_runNaturalExit`,
     { process: proc, std: context.std });
   return { proc, naturalExit, status: () => status };
 }
 
 describe("shared Node URL and exit contracts", () => {
+  it("copies actual execution options without exposing private metadata", () => {
+    const options = { execArgv: ["--no-warnings", "-e", "'雪'"], noWarnings: true };
+    const { proc } = guestProcess(options);
+    expect(Array.from(proc.execArgv)).toEqual(options.execArgv);
+    proc.execArgv.length = 0;
+    expect(options.execArgv).toEqual(["--no-warnings", "-e", "'雪'"]);
+    expect(options.noWarnings).toBe(true);
+  });
   it("converts POSIX file URLs using validated, decoded pathnames", () => {
     for (const value of ["file:///tmp/a%20b", "file:///tmp/%E6%B8%AC%E8%A9%A6", "file:///tmp/%2520%23%3F",
       "file://localhost/tmp/a?query#hash", "file:///tmp/%5c", "file://host/tmp/a", "https://example.org/a",

@@ -1,0 +1,238 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -28,8 +28,8 @@
+ 
+ #include <algorithm>
+ #include <cctype>
++#include <chrono>
+ #include <cmath>
+-#include <chrono>
+ #ifdef XP_WIN
+ #  include <direct.h>
+ #  include <process.h>
+@@ -39,8 +39,8 @@
+ #if defined(XP_WIN)
+ #  include <io.h> /* for isatty() */
+ #endif
++#include <limits>
+ #include <locale.h>
+-#include <limits>
+ #if defined(MALLOC_H)
+ #  include MALLOC_H /* for malloc_usable_size, malloc_size, _msize */
+ #endif
+@@ -50,16 +50,16 @@
+ #ifndef __wasi__
+ #  include <signal.h>
+ #endif
++#include <brotli/decode.h>
++#include <brotli/encode.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <string>
+ #include <string.h>
+-#include <string>
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <utility>
+ #include <vector>
+-#include <brotli/decode.h>
+-#include <brotli/encode.h>
+ #include <zlib.h>
+ #ifndef ZSTD_STATIC_LINKING_ONLY
+ #define ZSTD_STATIC_LINKING_ONLY
+@@ -104,6 +104,8 @@
+ #include "builtin/RegExp.h"
+ #include "builtin/TestingFunctions.h"
+ #include "builtin/TestingUtility.h"  // js::ParseCompileOptions, js::ParseDebugMetadata, js::CreateScriptPrivate
++#include "builtin/WeakMapObject.h"
++#include "builtin/WeakSetObject.h"
+ #include "debugger/DebugAPI.h"
+ #include "frontend/CompilationStencil.h"
+ #include "frontend/FrontendContext.h"  // AutoReportFrontendContext
+@@ -137,6 +139,7 @@
+ #include "jit/shared/CodeGenerator-shared.h"
+ #include "js/Array.h"        // JS::NewArrayObject
+ #include "js/ArrayBuffer.h"  // JS::{CreateMappedArrayBufferContents,NewMappedArrayBufferWithContents,IsArrayBufferObject,GetArrayBufferLengthAndData}
++#include "js/BigInt.h"  // JS_DefineElement, JS_DefineFunction, JS_DefineFunctions, JS_DefineProperties, JS_DefineProperty, JS_GetElement, JS_GetProperty, JS_GetPropertyById, JS_HasProperty, JS_SetElement, JS_SetProperty, JS_SetPropertyById
+ #include "js/BuildId.h"      // JS::BuildIdCharVector, JS::SetProcessBuildIdOp
+ #include "js/CallAndConstruct.h"  // JS::Call, JS::IsCallable, JS_CallFunction, JS_CallFunctionValue
+ #include "js/CharacterEncoding.h"  // JS::StringIsASCII
+@@ -175,15 +178,8 @@
+ #include "js/Principals.h"
+ #include "js/Printer.h"  // QuoteString
+ #include "js/Printf.h"
+-#include "builtin/WeakMapObject.h"
+-#include "builtin/WeakSetObject.h"
+-#include "js/WeakMap.h"
+-#include "proxy/ScriptedProxyHandler.h"
+-#include "vm/GeneratorObject.h"
+ #include "js/Promise.h"  // JS::IsPromiseObject
+ #include "js/PropertyAndElement.h"
+-#include "js/BigInt.h"  // JS_DefineElement, JS_DefineFunction, JS_DefineFunctions, JS_DefineProperties, JS_DefineProperty, JS_GetElement, JS_GetProperty, JS_GetPropertyById, JS_HasProperty, JS_SetElement, JS_SetProperty, JS_SetPropertyById
+-#include "js/String.h"
+ #include "js/PropertySpec.h"
+ #include "js/Realm.h"
+ #include "js/RegExp.h"  // JS::ObjectIsRegExp
+@@ -192,6 +188,7 @@
+ #include "js/StableStringChars.h"
+ #include "js/Stack.h"
+ #include "js/StreamConsumer.h"
++#include "js/String.h"
+ #include "js/StructuredClone.h"
+ #include "js/SweepingAPI.h"
+ #include "js/Transcoding.h"  // JS::TranscodeBuffer, JS::TranscodeRange, JS::IsTranscodeFailureResult
+@@ -199,8 +196,10 @@
+ #include "js/Warnings.h"      // JS::SetWarningReporter
+ #include "js/WasmFeatures.h"  // JS_FOR_WASM_FEATURES
+ #include "js/WasmModule.h"    // JS::WasmModule
++#include "js/WeakMap.h"
+ #include "js/Wrapper.h"
+ #include "proxy/DeadObjectProxy.h"  // js::IsDeadProxyObject
++#include "proxy/ScriptedProxyHandler.h"
+ #include "shell/jsoptparse.h"
+ #include "shell/jsshell.h"
+ #include "shell/kandelo-node-bootstrap.h"
+@@ -222,6 +221,7 @@
+ #include "vm/Compression.h"
+ #include "vm/ErrorObject.h"
+ #include "vm/ErrorReporting.h"
++#include "vm/GeneratorObject.h"
+ #include "vm/HelperThreads.h"
+ #include "vm/JSAtomUtils.h"  // AtomizeUTF8Chars, AtomizeString, ToAtom
+ #include "vm/JSContext.h"
+@@ -274,18 +274,7 @@
+ using mozilla::TimeStamp;
+ using mozilla::Utf8Unit;
+ 
+-#include "shell/kandelo-node-native-work.cpp"
+-#include "shell/kandelo-node-native-async.cpp"
+-#include "shell/kandelo-node-native-callback.cpp"
+-#include "shell/kandelo-node-codec-handle.cpp"
+-#include "shell/kandelo-node-native-fs.cpp"
+-#include "shell/kandelo-node-file-handle.cpp"
+-#include "shell/kandelo-node-fs-promise.cpp"
+-#include "shell/kandelo-node-directory.cpp"
+-#include "shell/kandelo-node-removal.cpp"
+-#include "shell/kandelo-node-file-jobs.cpp"
+-#include "shell/kandelo-node-fs-constants.h"
+-#include "shell/kandelo-node-buffer.cpp"
++#include "shell/kandelo-node-native.cpp"
+ 
+ static JSObject* KandeloNewUint8ArrayCopy(JSContext* cx, const uint8_t* data,
+                                           size_t len) {
+@@ -364,9 +353,6 @@
+   return *out != nullptr;
+ }
+ 
+-#include "shell/kandelo-node-digests.cpp"
+-#include "shell/kandelo-node-random.cpp"
+-#include "shell/kandelo-node-address-rules.cpp"
+ 
+ static JSObject* KandeloResolvedPromise(JSContext* cx, HandleValue value) {
+   RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
+@@ -796,7 +782,6 @@
+   return KandeloZlibOneShot(cx, args, false, 31, 0);
+ }
+ 
+-#include "shell/kandelo-node-child-wait.h"
+ 
+ enum class KandeloSocketWatchKind {
+   Connect,
+@@ -895,7 +880,6 @@
+   return JS::RejectPromise(cx, promise, value);
+ }
+ 
+-#include "kandelo-node-uv-error-table.h"
+ static bool KandeloNativeUvErrorData(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+   RootedObject output(cx, JS::NewArrayObject(cx, 0));
+@@ -918,8 +902,6 @@
+   args.rval().setObject(*output); return true;
+ }
+ 
+-#include "kandelo-node-native-dns-lookup.cpp"
+-#include "kandelo-node-dns-lookup.h"
+ static const char* KandeloErrnoCode(int err);
+ 
+ class KandeloDnsLookupWork final : public js::shell::KandeloNativeWork {
+@@ -2023,8 +2005,6 @@
+   return (TimeStamp::Now() - origin).ToMilliseconds();
+ }
+ 
+-#include "kandelo-node-monotonic-clock.h"
+-#include "kandelo-node-performance-clock.h"
+ static kandelo::clock::PerformanceOrigin kandeloPerformanceOrigin;
+ static bool KandeloNativePerformanceNow(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+@@ -2267,9 +2247,6 @@
+   return true;
+ }
+ 
+-#include "kandelo-node-process-state.h"
+-#include "shell/kandelo-node-os.cpp"
+-#include "shell/kandelo-node-dotenv.cpp"
+ 
+ static bool KandeloNativeEnvironmentImpl(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+@@ -3219,9 +3196,6 @@
+   return false;
+ }
+ 
+-#include "kandelo-node-vm.cpp"
+-#include "kandelo-node-sqlite.cpp"
+-#include "kandelo-node-ports.cpp"
+ 
+ // Kandelo: native zstd DECOMPRESSION. Input: a string, ArrayBuffer, or typed
+ // array holding a zstd frame. Output: a fresh Uint8Array of the decoded bytes.
+--- a/js/src/builtin/Promise.cpp
++++ b/js/src/builtin/Promise.cpp
+@@ -5,10 +5,10 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include "builtin/Promise.h"
+-#include "mozilla/ScopeExit.h"
+ 
+ #include "mozilla/Atomics.h"
+ #include "mozilla/Maybe.h"
++#include "mozilla/ScopeExit.h"
+ #include "mozilla/TimeStamp.h"
+ 
+ #include "jsapi.h"
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -8,19 +8,19 @@
+  * JS execution context.
+  */
+ 
+-#include "mozilla/ScopeExit.h"
+-
+-#include "js/Array.h"
+-#include "vm/PromiseObject.h"
+ #include "vm/JSContext-inl.h"
+ 
+ #include "mozilla/CheckedInt.h"
+ #include "mozilla/DebugOnly.h"
+ #include "mozilla/MemoryReporting.h"
++#include "mozilla/ScopeExit.h"
+ #include "mozilla/Sprintf.h"
+ #include "mozilla/Utf8.h"  // mozilla::ConvertUtf16ToUtf8
+ 
+ #include <string.h>
++
++#include "js/Array.h"
++#include "vm/PromiseObject.h"
+ #ifdef ANDROID
+ #  include <android/log.h>
+ #  include <fstream>
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -45,8 +45,8 @@
+ #include "builtin/MapObject.h"
+ #include "gc/GC.h"           // AutoSelectGCHeap
+ #include "js/Array.h"        // JS::GetArrayLength, JS::IsArrayObject
++#include "js/ArrayBuffer.h"  // JS::{ArrayBufferHasData,DetachArrayBuffer,IsArrayBufferObject,New{,Mapped}ArrayBufferWithContents,ReleaseMappedArrayBufferContents}
+ #include "js/CallAndConstruct.h"  // JS::Call
+-#include "js/ArrayBuffer.h"  // JS::{ArrayBufferHasData,DetachArrayBuffer,IsArrayBufferObject,New{,Mapped}ArrayBufferWithContents,ReleaseMappedArrayBufferContents}
+ #include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin, JS::TaggedColumnNumberOneOrigin
+ #include "js/Date.h"
+ #include "js/experimental/TypedData.h"  // JS_NewDataView, JS_New{{Ui,I}nt{8,16,32},Float{32,64},Uint8Clamped,Big{Ui,I}nt64}ArrayWithBuffer

@@ -1,0 +1,174 @@
+{
+  "at": "2026-11-05T03:34:29.733006+00:00",
+  "recipeRevision": 90,
+  "nativePatch": 91,
+  "auditFindings": [
+    "C-001 partial",
+    "C-008 partial",
+    "C-015 partial"
+  ],
+  "sourceImplemented": [
+    "Full unchanged pinned PBKDF2/scrypt public validation, overloads/options and callback/Buffer result modules",
+    "Actual OpenSSL derivation/parameter/provider errors and target zero-allocation semantics with cleansed native storage",
+    "Actual per-request PBKDF2/Scrypt resources and provider IDs, async snapshots before init, sync post-init byte capture, guest CPU queue/callback scope/cancellation ownership",
+    "Shared official OpenSSL3.5.9 source pin and recipe6 preserving thread/SDK/static configuration; native control artifact only",
+    "Own-field native packet decoding rejects prototype poisoning without consulting inherited error properties"
+  ],
+  "publicApiSourceOwners": [
+    "crypto.pbkdf2",
+    "crypto.pbkdf2Sync",
+    "crypto.scrypt",
+    "crypto.scryptSync"
+  ],
+  "portableNative": {
+    "report": ".context/node26-kdf-native-r6/report.json",
+    "sha256": "7d6d634a184ee9a9315721714ef4f200ddcf0705c364b3e30b43642e8e191fac",
+    "scope": "Actual portable KDF owner over OpenSSL3.5.9 vs pinned native26 public KDFs. No guest work queue/JSAPI or four-host evidence.",
+    "pass": 20,
+    "fail": 0,
+    "nativeReferenceSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+    "ownerArtifactSha256": "5730b8e28df18ff0046002663a1135d60a1d29ee60a4c2d7011ffed5a3230588",
+    "expectedErrorRecordsRemainVisible": true
+  },
+  "frontendNative": {
+    "report": ".context/node26-kdf-frontend-r3.json",
+    "sha256": "d889754f563aea177fa9e540cc1c871d0331b82bf764af60d8dc730a4dd44aef",
+    "scope": "Six actual public source/packet/callback contracts with real native26 job, async hook/ALS/resource and GC dependencies; not guest bridge",
+    "pass": 7,
+    "fail": 0,
+    "skip": 0,
+    "sourceIdentities": {
+      "host/test/node-kdf-platform.test.ts": "33464d2e5e4ce7e35f1c5991a347bec96118187adb7c1a027f102088b4c55bc9",
+      "host/test/fixtures/node-kdf-controls.cjs": "e07e08605bd2c371bb6925f2debd9ae65a6e6fbffd395d3c4870d9aa741b7eda",
+      "host/test/fixtures/node-kdf-platform.cjs": "8cd1f774f82ed4350474a984d8db3d4784c8dfdebbfa1173aa1dc66573ac0315",
+      "third_party/node-core/kdf-platform-adapter.js": "b71c80923354a4e247c5d2abcb33c6e4fd2b738e62fb03fc3ca8be1b256eb3aa",
+      "third_party/node-core/node-core.js": "6d32f8803baf1e42385d8ab1c83cac1103dbf6767e36642906371975e81224e2"
+    }
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-kdf-upstream-r2/report.json",
+    "sha256": "c465467715cdcc5e2f63d8a2f05a87fd6f9a0bee114391f1bd532e878116a694",
+    "scope": "Unchanged public PBKDF2/scrypt tests over candidate generated JS/packet conversion and actual native26 KDF jobs. Not guest OpenSSL/queue/JSAPI or four-host conformance.",
+    "candidateFilePass": 2,
+    "nativeFilePass": 2,
+    "fileSkip": 0,
+    "fileFail": 0,
+    "files": [
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-pbkdf2.js",
+        "sourceSha256": "49d96218f9e3c17405b1cb1e391967381932a6010611f46ef3a922a10eb3c17b"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-scrypt.js",
+        "sourceSha256": "2c2aa57069dc248aa31eaa8912052c29ed0bd3381ca17105337ed3864d549f8f"
+      }
+    ],
+    "denominatorMeaning": "Two focused files, not all assertions/APIs or a full suite"
+  },
+  "affectedNativeConsumers": {
+    "report": ".context/node26-kdf-dependency-consumers/report.json",
+    "sha256": "8bd690146b9d921efebd32a6e770132a96a4d46c2271dcaf50c912b5734c74cf",
+    "scope": "Existing unchanged portable crypto consumers with newly pinned native OpenSSL3.5.9; not guest TLS/engine/SDK or full consumer conformance",
+    "counts": {
+      "compilePass": 3,
+      "compileFail": 0,
+      "pass": 11,
+      "fail": 0
+    },
+    "sourceIdentityNote": "Consumer digest header differs from current source only by the obsolete3.3.2 recipe comment. Exact old header retained in node26-kdf-r5-inputs; no new combined guest candidate claim."
+  },
+  "sourceChecks": {
+    "report": ".context/node26-kdf-source-r4/report.json",
+    "sha256": "8461dd982ad5fd28676a0c1c10813b9cf4ae4b1ac83aafead4b0b4035e8876a7",
+    "scope": "Source/pin/generated-bootstrap/patch/style/evidence-registration checks only",
+    "checks": 6,
+    "guestCompiled": false
+  },
+  "openSSLSourceDecision": {
+    "at": "2026-11-05T03:16:47.874440+00:00",
+    "release": "3.5.9",
+    "source": "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz",
+    "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a",
+    "officialDownloads": "https://www.openssl-library.org/source/",
+    "officialRelease": "https://github.com/openssl/openssl/releases/tag/openssl-3.5.9",
+    "checksumURL": "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz.sha256",
+    "checksumFileSha256": "f482705825eb43b47ce08d5cf4287ae062cdbada1a142d728a8d89c387300bf0",
+    "archiveVerified": true,
+    "reason": "Match exact audited Node source bundled VERSION.dat and native reference backend; old3.3.2 retains two observed KDF semantic nonpasses",
+    "nodeTargetChanged": false,
+    "guestDependencyCompiled": false,
+    "fullProductRebuild": false
+  },
+  "nativeOpenSSLControlLibrary": {
+    "report": ".context/node26-kdf-openssl-native/report.json",
+    "sha256": "3234919b0a2a53ca8f4cf85a58eacd2cd3fd9fc402017642e9d23a3ab5825444",
+    "scope": "Native Darwin control only; not a guest resolver artifact",
+    "job": "build-node26-kdf-openssl-native.sh-1104-221648-4d6a",
+    "elapsedSeconds": 55,
+    "parallelMakeJobs": 4
+  },
+  "privateScratchCleanup": {
+    "report": ".context/node26-kdf-openssl-native/scratch-cleanup.json",
+    "sha256": "c12792777cd0a0bc5d21ad559461defda1b3ae4e0620c48d5b2384205ab0420c",
+    "scope": "141060218 bytes reclaimed only from owned native build scratch; verified libraries/config/headers/archive/logs retained"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-kdf-native-r1/report.json",
+      "sha256": "24a9557d3d480bff18e43322098006d282e6522f81a8456b23a9dd388356c4e2",
+      "scope": "Actual original portable/native comparison",
+      "pass": 15,
+      "fail": 5,
+      "cause": "Legacy PBKDF2 provider path, forced one-byte zero output allocation and leaked scrypt parameter-error stack"
+    },
+    {
+      "report": ".context/node26-kdf-native-r2/report.json",
+      "sha256": "ba7f008160f44573791fa3b0f374508878e01bf237dff0ac4cf921c50efcbd30",
+      "scope": "After actual provider path and parameter-error correction with old3.3.2 library",
+      "pass": 18,
+      "fail": 2,
+      "cause": "XOF provider metadata still differed; zero-output adapter allocation remained wrong"
+    },
+    {
+      "report": ".context/node26-kdf-native-r3/report.json",
+      "sha256": "6e8ff176110d7326d176f8822ec2a8b51054d81f60edddcc5dc3888fc6c11f19",
+      "scope": "New3.5.9 library",
+      "pass": 19,
+      "fail": 1,
+      "cause": "Separate own forced-one-byte allocation remained wrong; upgrading backend alone did not fix it"
+    },
+    {
+      "report": ".context/node26-kdf-frontend-r1.json",
+      "sha256": "3b7cedf10de99f6f0d434e9bcdce7aedd82659ecf6b91121872233560934e427",
+      "scope": "Original authored control with wrong PBKDF2 zero-success expectation",
+      "pass": 5,
+      "fail": 1,
+      "cause": "Exact native target fails zero-length PBKDF2; current authored control requires that real failure. No upstream assertion changed"
+    }
+  ],
+  "remaining": [
+    "Guest OpenSSL3.5.9 wasm32/wasm64 builds, targeted engine90 compilation and exact four-host consumer/GC/work/realm/worker evidence",
+    "Native request init-hook reentry, detach/resize changes during sync init, cancellation/OOM/error/memory-accounting/lifetime fidelity",
+    "HKDF/Argon2, native KeyObject/CryptoKey/import/export/generation and WebCrypto KDF jobs",
+    "Ciphers/signatures/exchange/KEM/certificates/FIPS/provider/namespace policy and remaining crypto audit",
+    "All other-family gaps, including source-only process lifetime and actual enabled SQLite module-load failure; individual API and four-host reconciliation"
+  ],
+  "sourceOnly": true,
+  "lastAcceptedEngine": 88,
+  "guestDependencyCompiled": false,
+  "guestBridgeCompiled": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "historicalFailuresReclassified": false,
+  "overallSuitesRun": 0,
+  "fullProductRebuilds": 0,
+  "packetGuardReview": {
+    "at": "2026-11-05T03:34:29.733006+00:00",
+    "originalSource": ".context/node26-kdf-packet-before",
+    "oldBehavior": "Success packets inherited Object.prototype.error; a getter could throw before real work",
+    "currentBehavior": "Captured ObjectPrototypeHasOwnProperty decides whether a packet owns an error; inherited property is never consulted",
+    "control": "poisonedPacketPrototype",
+    "nativeAndCandidateControlPass": true,
+    "sourceOnlyGuestBridge": true
+  }
+}

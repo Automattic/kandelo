@@ -1,0 +1,199 @@
+  NODE_DEFINE_CONSTANT(target, UV_FS_SYMLINK_DIR);
+  NODE_DEFINE_CONSTANT(target, UV_FS_SYMLINK_JUNCTION);
+  // file access modes
+  NODE_DEFINE_CONSTANT(target, O_RDONLY);
+  NODE_DEFINE_CONSTANT(target, O_WRONLY);
+  NODE_DEFINE_CONSTANT(target, O_RDWR);
+
+  // file types from readdir
+  NODE_DEFINE_CONSTANT(target, UV_DIRENT_UNKNOWN);
+  NODE_DEFINE_CONSTANT(target, UV_DIRENT_FILE);
+  NODE_DEFINE_CONSTANT(target, UV_DIRENT_DIR);
+  NODE_DEFINE_CONSTANT(target, UV_DIRENT_LINK);
+  NODE_DEFINE_CONSTANT(target, UV_DIRENT_FIFO);
+  NODE_DEFINE_CONSTANT(target, UV_DIRENT_SOCKET);
+  NODE_DEFINE_CONSTANT(target, UV_DIRENT_CHAR);
+  NODE_DEFINE_CONSTANT(target, UV_DIRENT_BLOCK);
+
+  NODE_DEFINE_CONSTANT(target, S_IFMT);
+  NODE_DEFINE_CONSTANT(target, S_IFREG);
+  NODE_DEFINE_CONSTANT(target, S_IFDIR);
+  NODE_DEFINE_CONSTANT(target, S_IFCHR);
+#ifdef S_IFBLK
+  NODE_DEFINE_CONSTANT(target, S_IFBLK);
+#endif
+
+#ifdef S_IFIFO
+  NODE_DEFINE_CONSTANT(target, S_IFIFO);
+#endif
+
+#ifdef S_IFLNK
+  NODE_DEFINE_CONSTANT(target, S_IFLNK);
+#endif
+
+#ifdef S_IFSOCK
+  NODE_DEFINE_CONSTANT(target, S_IFSOCK);
+#endif
+
+#ifdef O_CREAT
+  NODE_DEFINE_CONSTANT(target, O_CREAT);
+#endif
+
+#ifdef O_EXCL
+  NODE_DEFINE_CONSTANT(target, O_EXCL);
+#endif
+
+  // Windows-only open flags honored by libuv. They are 0 on other platforms.
+  NODE_DEFINE_CONSTANT(target, UV_FS_O_FILEMAP);
+  NODE_DEFINE_CONSTANT(target, UV_FS_O_TEMPORARY);
+  NODE_DEFINE_CONSTANT(target, UV_FS_O_SHORT_LIVED);
+  NODE_DEFINE_CONSTANT(target, UV_FS_O_SEQUENTIAL);
+  NODE_DEFINE_CONSTANT(target, UV_FS_O_RANDOM);
+
+#ifdef O_NOCTTY
+  NODE_DEFINE_CONSTANT(target, O_NOCTTY);
+#endif
+
+#ifdef O_TRUNC
+  NODE_DEFINE_CONSTANT(target, O_TRUNC);
+#endif
+
+#ifdef O_APPEND
+  NODE_DEFINE_CONSTANT(target, O_APPEND);
+#endif
+
+#ifdef O_DIRECTORY
+  NODE_DEFINE_CONSTANT(target, O_DIRECTORY);
+#endif
+
+#ifdef O_NOATIME
+  NODE_DEFINE_CONSTANT(target, O_NOATIME);
+#endif
+
+#ifdef O_NOFOLLOW
+  NODE_DEFINE_CONSTANT(target, O_NOFOLLOW);
+#endif
+
+#ifdef O_SYNC
+  NODE_DEFINE_CONSTANT(target, O_SYNC);
+#elif UV_FS_O_SYNC != 0
+// Windows lacks the POSIX O_SYNC macro, but libuv maps UV_FS_O_SYNC to
+// FILE_FLAG_WRITE_THROUGH, so expose it under the portable name.
+#define O_SYNC UV_FS_O_SYNC
+  NODE_DEFINE_CONSTANT(target, O_SYNC);
+#undef O_SYNC
+#endif
+
+#ifdef O_DSYNC
+  NODE_DEFINE_CONSTANT(target, O_DSYNC);
+#elif UV_FS_O_DSYNC != 0
+// Windows lacks the POSIX O_DSYNC macro, but libuv maps UV_FS_O_DSYNC to
+// FILE_FLAG_WRITE_THROUGH, so expose it under the portable name.
+#define O_DSYNC UV_FS_O_DSYNC
+  NODE_DEFINE_CONSTANT(target, O_DSYNC);
+#undef O_DSYNC
+#endif
+
+
+#ifdef O_SYMLINK
+  NODE_DEFINE_CONSTANT(target, O_SYMLINK);
+#endif
+
+#ifdef O_DIRECT
+  NODE_DEFINE_CONSTANT(target, O_DIRECT);
+#elif UV_FS_O_DIRECT != 0
+// Windows lacks the POSIX O_DIRECT macro, but libuv maps UV_FS_O_DIRECT to
+// FILE_FLAG_NO_BUFFERING, so expose it under the portable name.
+#define O_DIRECT UV_FS_O_DIRECT
+  NODE_DEFINE_CONSTANT(target, O_DIRECT);
+#undef O_DIRECT
+#endif
+
+#ifdef O_NONBLOCK
+  NODE_DEFINE_CONSTANT(target, O_NONBLOCK);
+#endif
+
+#ifdef S_IRWXU
+  NODE_DEFINE_CONSTANT(target, S_IRWXU);
+#endif
+
+#ifdef S_IRUSR
+  NODE_DEFINE_CONSTANT(target, S_IRUSR);
+#endif
+
+#ifdef S_IWUSR
+  NODE_DEFINE_CONSTANT(target, S_IWUSR);
+#endif
+
+#ifdef S_IXUSR
+  NODE_DEFINE_CONSTANT(target, S_IXUSR);
+#endif
+
+#ifdef S_IRWXG
+  NODE_DEFINE_CONSTANT(target, S_IRWXG);
+#endif
+
+#ifdef S_IRGRP
+  NODE_DEFINE_CONSTANT(target, S_IRGRP);
+#endif
+
+#ifdef S_IWGRP
+  NODE_DEFINE_CONSTANT(target, S_IWGRP);
+#endif
+
+#ifdef S_IXGRP
+  NODE_DEFINE_CONSTANT(target, S_IXGRP);
+#endif
+
+#ifdef S_IRWXO
+  NODE_DEFINE_CONSTANT(target, S_IRWXO);
+#endif
+
+#ifdef S_IROTH
+  NODE_DEFINE_CONSTANT(target, S_IROTH);
+#endif
+
+#ifdef S_IWOTH
+  NODE_DEFINE_CONSTANT(target, S_IWOTH);
+#endif
+
+#ifdef S_IXOTH
+  NODE_DEFINE_CONSTANT(target, S_IXOTH);
+#endif
+
+#ifdef F_OK
+  NODE_DEFINE_CONSTANT(target, F_OK);
+#endif
+
+#ifdef R_OK
+  NODE_DEFINE_CONSTANT(target, R_OK);
+#endif
+
+#ifdef W_OK
+  NODE_DEFINE_CONSTANT(target, W_OK);
+#endif
+
+#ifdef X_OK
+  NODE_DEFINE_CONSTANT(target, X_OK);
+#endif
+
+#ifdef UV_FS_COPYFILE_EXCL
+# define COPYFILE_EXCL UV_FS_COPYFILE_EXCL
+  NODE_DEFINE_CONSTANT(target, UV_FS_COPYFILE_EXCL);
+  NODE_DEFINE_CONSTANT(target, COPYFILE_EXCL);
+# undef COPYFILE_EXCL
+#endif
+
+#ifdef UV_FS_COPYFILE_FICLONE
+# define COPYFILE_FICLONE UV_FS_COPYFILE_FICLONE
+  NODE_DEFINE_CONSTANT(target, UV_FS_COPYFILE_FICLONE);
+  NODE_DEFINE_CONSTANT(target, COPYFILE_FICLONE);
+# undef COPYFILE_FICLONE
+#endif
+
+#ifdef UV_FS_COPYFILE_FICLONE_FORCE
+# define COPYFILE_FICLONE_FORCE UV_FS_COPYFILE_FICLONE_FORCE
+  NODE_DEFINE_CONSTANT(target, UV_FS_COPYFILE_FICLONE_FORCE);
+  NODE_DEFINE_CONSTANT(target, COPYFILE_FICLONE_FORCE);
+# undef COPYFILE_FICLONE_FORCE
+#endif

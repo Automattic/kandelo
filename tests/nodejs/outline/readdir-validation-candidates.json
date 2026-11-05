@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+  "scope": "Future unchanged upstream validation, not executed tests, case coverage or results. Original flags/Env/assertions must remain intact; compare native and all applicable guest hosts.",
+  "files": [
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir-buffer.js",
+      "sha256": "c08df60c5ca76dbf0625a2a5d2dc6019e426406c27d7be5a58be2d6af35045f7",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir-pipe.js",
+      "sha256": "ab0450b75b7ac69b8193d77abb942d7745ac280de9114f31cedaf63b9ba5acc5",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir-promise-recursive-with-buffer.js",
+      "sha256": "6a5e141aa8372c51ed211cce5155e5f39543f0f7181530aa6736d920bb091319",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir-recursive-permission.js",
+      "sha256": "9caabbc1724a95cbe863cd1000957961781f61b66dabe5ae85bf63e5759d0bdb",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir-recursive-tree.js",
+      "sha256": "7764d25d4a1ee7354808ba1647968d892a5754b0f30be478810228eeda3b82d7",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir-recursive-with-buffer.js",
+      "sha256": "b7297c6c92c6e7904fdcb0669d28f0a3c4777246fab8490eea73066e48f1c15a",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir-recursive.js",
+      "sha256": "7cd54ac62cc79d372dd3b0c8ac92c0758203475d111368f91d711fae6ee79c61",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir-stack-overflow.js",
+      "sha256": "78f28623d711a5027a9bf73b56b289290f57f5b4b9412b1577b37d4cf137d1cb",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir-sync-recursive-with-buffer.js",
+      "sha256": "e6a13a4af2e68b28ec566fdf0bb166ab5fcc0871385fb67c8eee6daebd9602fd",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir-types-symlinks.js",
+      "sha256": "a38579af8f334cdc9c43037c796bb6bf887241d1259b7505e3870ba30e550cde",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir-types.js",
+      "sha256": "2718f8b4600026ff5a6e848373528ae4fd8c8e0045752064978dede7294dd226",
+      "flags": [
+        "--expose-internals"
+      ],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir-ucs2.js",
+      "sha256": "700467c26b34af4b0dce1ad6c1b8ef10763542cefbaf33f24f76ce73f6ba7997",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/parallel/test-fs-readdir.js",
+      "sha256": "d43a3be68bd32b7b58a40446359734c9e0e34238fb0a238f2961c7dd539816c9",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    },
+    {
+      "upstreamPath": "test/sequential/test-fs-readdir-recursive.js",
+      "sha256": "9339d3aef58cee3c15957ef8f707f10aa0ba1be66dbd43d49db0909e85438a4b",
+      "flags": [],
+      "environmentDirectives": [],
+      "executed": false
+    }
+  ]
+}

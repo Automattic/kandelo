@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "nodeVersion": "26.13.0",
+  "nodeSourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "source": {
+    "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+    "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+  },
+  "inputFiles": {
+    "deps/simdjson/simdjson.cpp": "f44b2798458dd6473afcd3c564a3433c657e38493a10bd50812589a20e2ec00d",
+    "deps/simdjson/simdjson.h": "c23412d6a5aedb3215ca6617db882eee47642318c330173c319a8fca454b9f3d",
+    "deps/simdjson/simdjson.gyp": "2dcdf50a5cdf3f3c24391cd9574bbaced5416732470459a0692de96d0a8e5826",
+    "deps/simdjson/LICENSE": "5fa8894e890bd77958f93b165433e0fb0dffa5bc982bfb147e4748e95bad24e5",
+    "LICENSE": "8e603aa87c70d36e497004f0dec63111511cb61b7d65ace12e10ea791599286c"
+  }
+}

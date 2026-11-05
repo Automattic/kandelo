@@ -409,11 +409,14 @@ export class NodePlatformIO implements PlatformIO {
     );
   }
 
-  utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
+  utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number, flags = 0): void {
     const nativePath = this.rewritePath(path);
+    const nofollow = (flags & AT_FLAGS.AT_SYMLINK_NOFOLLOW) !== 0;
+    const readStat = nofollow ? fs.lstatSync : fs.statSync;
+    const setTimes = nofollow ? fs.lutimesSync : fs.utimesSync;
     if (atimeNsec === UTIME_OMIT && mtimeNsec === UTIME_OMIT) return;
 
-    const stat = fs.statSync(nativePath, { bigint: true });
+    const stat = readStat(nativePath, { bigint: true });
     const current = this.metadata.toStatResult(stat);
     const nowMs = Date.now();
     const atimeMs = atimeNsec === UTIME_OMIT
@@ -426,12 +429,12 @@ export class NodePlatformIO implements PlatformIO {
       : mtimeNsec === UTIME_NOW
         ? nowMs
         : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
-    fs.utimesSync(nativePath, atimeMs / 1000, mtimeMs / 1000);
+    setTimes(nativePath, atimeMs / 1000, mtimeMs / 1000);
     this.metadata.utimens(
       stat,
       atimeMs,
       mtimeMs,
-      fs.statSync(nativePath, { bigint: true }),
+      readStat(nativePath, { bigint: true }),
     );
   }
 
@@ -547,6 +550,7 @@ export class NodePlatformIO implements PlatformIO {
     atimeNsec: number,
     mtimeSec: number,
     mtimeNsec: number,
+    flags = 0,
   ): void {
     this.utimensat(
       this.at(dirHandle, name),
@@ -554,6 +558,7 @@ export class NodePlatformIO implements PlatformIO {
       atimeNsec,
       mtimeSec,
       mtimeNsec,
+      flags,
     );
   }
 

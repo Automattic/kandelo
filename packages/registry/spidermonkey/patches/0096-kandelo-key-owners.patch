@@ -1,0 +1,37 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -69,7 +69,6 @@
+ #ifdef XP_UNIX
+ #  ifndef __wasi__
+ #    include <arpa/inet.h>
+-#    include <netdb.h>
+ #    include <netinet/in.h>
+ #    include <spawn.h>
+ #    include <sys/mman.h>
+@@ -4006,6 +4005,7 @@
+       JS_FN("digestNames", (KandeloCryptoGuard<KandeloNativeDigestNames>), 0, 0),
+       JS_FN("getOpenSSLVersion", KandeloNativeOpenSSLVersion, 0, 0),
+       JS_FN("timingSafeEqual", (KandeloCryptoGuard<KandeloNativeTimingSafeEqual>), 2, 0),
++      JS_FN("keyOperation", (KandeloCryptoGuard<KandeloNativeKeyOperation>), 2, 0),
+       JS_FN("incrementalHash", KandeloNativeIncrementalHash, 1, 0),
+       JS_FN("dirOperation", KandeloNativeDirOperation, 1, 0),
+       JS_FN("packageOperation", KandeloPackageOperation, 0, 0),
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -15,7 +15,6 @@
+ include("../js-standalone.mozbuild")
+ 
+ UNIFIED_SOURCES += [
+-    "js.cpp",
+     "jsoptparse.cpp",
+     "jsshell.cpp",
+     "ModuleLoader.cpp",
+@@ -64,3 +63,8 @@
+     LDFLAGS += [
+         "-Wl,-rpath=$ORIGIN",
+     ]
++
++# The exact Node-vendored ncrypto headers require C++20. Keep this
++# requirement on the shell embedding that consumes them.
++SOURCES += ["js.cpp"]
++SOURCES["js.cpp"].flags += ["-std=c++20"]

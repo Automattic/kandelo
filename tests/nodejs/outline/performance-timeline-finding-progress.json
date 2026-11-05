@@ -1,0 +1,183 @@
+{
+  "at": "2026-11-05T04:59:02.787599+00:00",
+  "recipeRevision": 93,
+  "newNativePatch": false,
+  "auditFindings": [
+    "O-019 partial",
+    "O-020 partial",
+    "O-021 partial"
+  ],
+  "sourceImplemented": [
+    "Five full unchanged pinned Performance/usertiming/resource/NodeTiming/timerify modules over real existing guest clock/clone/EventTarget owners",
+    "Actual mark/measure indexes/cloned detail/timeline buffers, live resource getters/body fields/overflow events and observer queue state",
+    "Function/constructor/Promise timing producer with actual entries; shared target timerify source on singleton and namespace",
+    "Shared global/builtin Performance and seven interfaces, unchanged replaceable-global getter/setter helper; eager interface load remains partial",
+    "Four real newly installed entry types alongside DNS, with unimplemented native producer capabilities kept explicit",
+    "Zero-statistics/inert ELD facade removed; missing histogram/loop measurement factories fail explicitly instead of reporting success"
+  ],
+  "publicApiSourceOwners": [
+    "Performance",
+    "PerformanceEntry",
+    "PerformanceMark",
+    "PerformanceMeasure",
+    "PerformanceResourceTiming",
+    "performance.mark",
+    "performance.measure",
+    "performance.clearMarks",
+    "performance.clearMeasures",
+    "performance.clearResourceTimings",
+    "performance.getEntries",
+    "performance.getEntriesByName",
+    "performance.getEntriesByType",
+    "performance.setResourceTimingBufferSize",
+    "performance.markResourceTiming",
+    "performance.timerify",
+    "perf_hooks.timerify",
+    "performance/EventTarget buffer-full events and replaceable global"
+  ],
+  "frontendNative": {
+    "report": ".context/node26-performance-timeline-frontend-r1.json",
+    "sha256": "8720cbcac8633a3e6c6a0961843160a06d47b5376f51ee7d8d2a714ea65d4020",
+    "scope": "Generated source with real native Node clock/clone/EventTarget/brand dependencies plus affected DNS/socket controls, not guest/browsers",
+    "newPass": 7,
+    "affectedPass": 36,
+    "fail": 0,
+    "skip": 0,
+    "sourceIdentities": {
+      "third_party/node-core/performance-observer-adapter.js": "2d5092b103b7d75e5c7da2b936da1c4d46703c753f6b1f6a9dd32734a3b3e16e",
+      "third_party/node-core/node-core.js": "053bb46250cb8236473eed8372786ecbc2b4c701b2d62ca247eb8de2eea0fc9e",
+      "host/test/node-performance-timeline.test.ts": "b5b965c0327f5f73c39b2bd7213d258d40492d1c8374e5c9708da32d476cd873",
+      "host/test/fixtures/node-performance-timeline-controls.cjs": "5e7d292d325aeb4c936896c2f848ae00f127a5599e18be4026058d4dd8776a75",
+      "host/test/fixtures/node-performance-platform.cjs": "7369f30a2b17156b6b58da31a2a934f564d1b898fd305f159fd131ee7a328ff1",
+      "host/test/fixtures/node-dns-platform.cjs": "70b52f41478b9dd932068c7bf31fa24409fddbc52605b87218fd3e0b847a8748",
+      "host/test/fixtures/node-dns-platform-control.cjs": "1bc28df624e6b432b08405d9974e8757f001cc953da1de540ad408efafe44ef3",
+      "host/test/node-dns-platform.test.ts": "9da3dc2ac2f261157defde31b63a77ecdc4e094814a3653092a64595b4d68aec",
+      "host/test/node-network-attempts.test.ts": "2dd4f1cee7a6d649c99b8df68a9800f5efd18a5da0017cca02145f2a1c3e4ff8",
+      "host/test/node-socket-timeouts.test.ts": "373a36eaa8297554f0e401fc80de7e668ad9ee0c99376e8575b48e22cc1fd69c",
+      "packages/registry/node-compat/bootstrap.js": "b04c66a0fa24addde2b2c538d0c3331373eddf3b32795b9537bf777897e5e25c"
+    },
+    "identityCapture": "Checkpoint source identities; production/front-end/test inputs unchanged after the run"
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-performance-timeline-upstream-r1/report.json",
+    "sha256": "59178c50f125640138f03fb1e0bec2234cf67f35f475e0e57d2e7c818c499c1a",
+    "scope": "Eight unchanged timeline/entry/resource/observer/timerify files over candidate generated JavaScript and actual native26 clock/clone/EventTarget/brand owners. Guest milestone/metrics absent and expected to remain visible; no guest or four-host conformance.",
+    "counts": {
+      "native": {
+        "pass": 8,
+        "fail": 0,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      },
+      "candidate": {
+        "pass": 7,
+        "fail": 1,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      }
+    },
+    "files": [
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-perf-hooks-usertiming.js",
+        "sourceSha256": "167b4c8232487dca2d6e175a0b70583f625dd0b2c5658751698009342be4f06c",
+        "native": "pass",
+        "candidate": "fail"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-performance-measure.js",
+        "sourceSha256": "4ab713cf832b90adb9428d5a7dc98f2c719f3591cdbfa0caa597af91a27cedbe",
+        "native": "pass",
+        "candidate": "pass"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-performance-measure-detail.js",
+        "sourceSha256": "f87939187ab0e972ee368c0c24f68b3b5b4570b2e1ebf80aedb1c84150ff95c8",
+        "native": "pass",
+        "candidate": "pass"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-perf-hooks-resourcetiming.js",
+        "sourceSha256": "1ce42b5a83a949ec851909da63f3dc7dcefbb3c48fe32b8168bd084f51020656",
+        "native": "pass",
+        "candidate": "pass"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-perf-hooks-resourcetiming-attributes.js",
+        "sourceSha256": "7002ad55ae3e01cf80c6ab4f725c54563ae77c621d860a6734ac9418988c39b1",
+        "native": "pass",
+        "candidate": "pass"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-perf-hooks-timerify-basic.js",
+        "sourceSha256": "d9509b41f6c7e7408aac61fc9cea57e7cab32903c570215aae7024ab06a7f92e",
+        "native": "pass",
+        "candidate": "pass"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-perf-hooks-timerify-constructor.js",
+        "sourceSha256": "137a18527beaa78a346ee77f06c5457fe3079c2a652a3565dfb1408422f0f528",
+        "native": "pass",
+        "candidate": "pass"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-performance-resourcetimingbufferfull.js",
+        "sourceSha256": "9e47d0a4168bbfdce6c9989781459e731fa93fdad82877db7930168b235003d4",
+        "native": "pass",
+        "candidate": "pass"
+      }
+    ],
+    "denominatorMeaning": "Eight selected unchanged files per mode, not complete perf coverage or assertion/API scores"
+  },
+  "sourceChecks": {
+    "report": ".context/node26-performance-timeline-source-r2/report.json",
+    "sha256": "a34e17284009438e042d5c17c10bdd3ac36cec3143572e3de6f34258da4bd196",
+    "scope": "Pinned source/archive/audit/bootstrap/previous-patch/style/evidence preflight only; no native/guest compile",
+    "checks": 6
+  },
+  "retainedNonpasses": [
+    {
+      "report": ".context/node26-performance-timeline-upstream-r1/report.json",
+      "sha256": "59178c50f125640138f03fb1e0bec2234cf67f35f475e0e57d2e7c818c499c1a",
+      "case": "test-perf-hooks-usertiming.js",
+      "native": "pass",
+      "candidate": "fail",
+      "cause": "Actual milestone provider absent at a measure using nodeTiming.nodeStart, upstream line141",
+      "disposition": "Open implementation dependency; retained as failure, not unsupported/skip/pass"
+    },
+    {
+      "log": ".context/node26-performance-timeline-source-r1.log",
+      "sha256": "76fd1053e6207c6541666a36dc32818f3012a8d4210e50a9dbc195dd7f451183",
+      "result": "harness-error",
+      "cause": "Source checker copy2 call accidentally gained extra positional arguments during script adaptation",
+      "script": ".context/node26-performance-timeline-source-first-error.py",
+      "scriptSha256": "2632d65eb33a3823e15a8c1d1a4a7c66157ad4be0603821d8d72b74152293a46",
+      "correctedRerun": ".context/node26-performance-timeline-source-r2/report.json"
+    }
+  ],
+  "remaining": [
+    "Real per-process/native engine/bootstrap/loop milestone recording, idle/iteration/event measurements and per-field V8-phase mapping decision",
+    "Real histogram storage/distributions/QRDE/sliding/import/transfer/worker ownership and ELD sampler/retirement; explicit errors are not implementation",
+    "Native GC/HTTP/HTTP2/net/QUIC and actual Fetch resource producers; supportedEntryTypes remains5 vs target10, no accepted exclusion",
+    "Native histogram branding/options in product timerify, exact constants/namespace, lazy globals/realm/property and full inspector/JSON measurement dependencies",
+    "Actual guest clock/clone/EventTarget/async/fatal/ref/GC/worker/overflow/lifetime and current combined-source four-host conformance",
+    "All other partial families, source89-92/OpenSSL3.5.9/changed kernel compilation debt, retained SQLite failure and complete individual API reconciliation"
+  ],
+  "unsupportedMeasurementMethods": [
+    "monitorEventLoopDelay",
+    "createHistogram",
+    "createSlidingWindowHistogram",
+    "importHistogram",
+    "eventLoopUtilization",
+    "milestones",
+    "idle/loop metrics"
+  ],
+  "acceptedPlatformExclusions": [],
+  "guestCompiled": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "dependencyDocument": "tests/nodejs/outline/performance-timeline-implementation-dependencies.md"
+}

@@ -51,15 +51,17 @@ kandelo_package_stage_primary_source openssl "$SRC_DIR" "$WORK_DIR"
 
 cd "$SRC_DIR"
 echo "==> Configuring OpenSSL for $TARGET_ARCH..."
+# Engine crypto/TLS consumers run on real guest pthreads. OpenSSL must own
+# its real locks, once initialization and thread-local error/DRBG state.
 CC="$CC" AR="$AR" RANLIB="$RANLIB" \
-CFLAGS="-O2" \
+CFLAGS="-O2 -pthread" \
 perl Configure "$CONFIGURE_TARGET" \
     -DHAVE_FORK=0 \
     -DOPENSSL_NO_AFALGENG=1 \
     -DOPENSSL_NO_UI_CONSOLE=1 \
     -DNO_SYSLOG=1 \
     no-asm \
-    no-threads \
+    threads \
     no-dso \
     no-shared \
     no-async \

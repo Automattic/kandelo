@@ -1,0 +1,515 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3373,6 +3373,64 @@
+   return true;
+ }
+ 
++static bool KandeloNativeConfigureClone(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (!args.get(0).isSymbol()) {
++    JS_ReportErrorASCII(cx, "Clone configuration requires a private mode symbol");
++    return false;
++  }
++  for (unsigned i = 1; i < 5; ++i) {
++    if (!args.get(i).isObject() || !JS::IsCallable(&args[i].toObject())) {
++      JS_ReportErrorASCII(cx, "Clone configuration requires callable hooks");
++      return false;
++    }
++  }
++  cx->kandeloCloneModeSymbol() = args[0];
++  cx->kandeloCloneErrorFactory() = args[1];
++  cx->kandeloCloneSerialize() = args[2];
++  cx->kandeloCloneCreate() = args[3];
++  cx->kandeloCloneDeserialize() = args[4];
++  args.rval().setUndefined();
++  return true;
++}
++
++static bool KandeloNativeCreateCloneModeSymbol(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  Rooted<JS::Symbol*> marker(cx, NewPrivateName(cx, cx->names().empty_.toHandle()));
++  if (!marker) return false;
++  args.rval().setSymbol(marker);
++  return true;
++}
++
++static bool KandeloNativeSetCloneMode(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (!args.get(0).isObject() || !args.get(1).isInt32() ||
++      args[1].toInt32() < 0 || args[1].toInt32() > 3) {
++    JS_ReportErrorASCII(cx, "Invalid host clone registration");
++    return false;
++  }
++  RootedValue marker(cx, cx->kandeloCloneModeSymbol());
++  if (!marker.isSymbol()) {
++    JS_ReportErrorASCII(cx, "Host clone registration is not configured");
++    return false;
++  }
++  RootedObject object(cx, CheckedUnwrapStatic(&args[0].toObject()));
++  if (!object) { ReportAccessDenied(cx); return false; }
++  if (!object->is<NativeObject>()) {
++    JS_ReportErrorASCII(cx, "Host clone registration requires a native object");
++    return false;
++  }
++  RootedValue mode(cx, args[1]);
++  {
++    AutoRealm ar(cx, object);
++    if (!JS_WrapValue(cx, &marker)) return false;
++    RootedId id(cx, PropertyKey::Symbol(marker.toSymbol()));
++    if (!js::DefineDataProperty(cx, object, id, mode, 0)) return false;
++  }
++  args.rval().setUndefined();
++  return true;
++}
++
+ static bool DefineKandeloNodeNative(JSContext* cx) {
+   RootedObject native(cx, JS_NewPlainObject(cx));
+   if (!native) {
+@@ -3388,6 +3446,9 @@
+       JS_FN("getAsyncResourceInfo", KandeloNativeAsyncResourceInfo, 1, 0),
+       JS_FN("asyncHookFatal", KandeloNativeAsyncHookFatal, 1, 0),
+       JS_FN("enqueueMicrotask", KandeloNativeEnqueueMicrotask, 1, 0),
++      JS_FN("configureClone", KandeloNativeConfigureClone, 5, 0),
++      JS_FN("createCloneModeSymbol", KandeloNativeCreateCloneModeSymbol, 0, 0),
++      JS_FN("setCloneMode", KandeloNativeSetCloneMode, 2, 0),
+       JS_FN("getAsyncJobActive", KandeloNativeGetAsyncJobActive, 0, 0),
+       JS_FN("setAsyncContext", KandeloNativeSetAsyncContext, 1, 0),
+       JS_FN("getPromiseDetails", KandeloNativePromiseDetails, 1, 0),
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -609,10 +609,38 @@
+   js::ContextData<JS::PersistentRooted<JS::Value>> kandeloAsyncLifecycleHook_;
+   js::ContextData<double> kandeloAsyncIdCounter_;
+   js::ContextData<double> kandeloAsyncParentId_;
++  js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneModeSymbol_;
++  js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneErrorFactory_;
++  js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneSerialize_;
++  js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneCreate_;
++  js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneDeserialize_;
+ 
+  public:
+   bool& kandeloAsyncJobActive() { return kandeloAsyncJobActive_.ref(); }
+   double allocateKandeloAsyncId() { return ++kandeloAsyncIdCounter_.ref(); }
++  JS::Value& kandeloCloneModeSymbol() {
++    if (!kandeloCloneModeSymbol_.ref().initialized()) kandeloCloneModeSymbol_.ref().init(this);
++    return kandeloCloneModeSymbol_.ref().get();
++  }
++  JS::Value& kandeloCloneErrorFactory() {
++    if (!kandeloCloneErrorFactory_.ref().initialized()) kandeloCloneErrorFactory_.ref().init(this);
++    return kandeloCloneErrorFactory_.ref().get();
++  }
++  JS::Value& kandeloCloneSerialize() {
++    if (!kandeloCloneSerialize_.ref().initialized()) kandeloCloneSerialize_.ref().init(this);
++    return kandeloCloneSerialize_.ref().get();
++  }
++  JS::Value& kandeloCloneCreate() {
++    if (!kandeloCloneCreate_.ref().initialized()) kandeloCloneCreate_.ref().init(this);
++    return kandeloCloneCreate_.ref().get();
++  }
++  JS::Value& kandeloCloneDeserialize() {
++    if (!kandeloCloneDeserialize_.ref().initialized()) kandeloCloneDeserialize_.ref().init(this);
++    return kandeloCloneDeserialize_.ref().get();
++  }
++  bool hasKandeloCloneErrors() { return !kandeloCloneErrorFactory().isUndefined(); }
++  bool reportKandeloCloneError(const char* message);
++  bool getKandeloCloneMode(JS::HandleObject object, int32_t* mode);
+   double& kandeloAsyncParentId() { return kandeloAsyncParentId_.ref(); }
+   JS::Value& kandeloAsyncLifecycleHook() {
+     if (!kandeloAsyncLifecycleHook_.ref().initialized()) kandeloAsyncLifecycleHook_.ref().init(this);
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -1175,6 +1175,11 @@
+       kandeloAsyncLifecycleHook_(this),
+       kandeloAsyncIdCounter_(this, 0),
+       kandeloAsyncParentId_(this, -1),
++      kandeloCloneModeSymbol_(this),
++      kandeloCloneErrorFactory_(this),
++      kandeloCloneSerialize_(this),
++      kandeloCloneCreate_(this),
++      kandeloCloneDeserialize_(this),
+       unwrappedException_(this),
+       unwrappedExceptionStack_(this),
+ #ifdef DEBUG
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -45,6 +45,7 @@
+ #include "builtin/MapObject.h"
+ #include "gc/GC.h"           // AutoSelectGCHeap
+ #include "js/Array.h"        // JS::GetArrayLength, JS::IsArrayObject
++#include "js/CallAndConstruct.h"  // JS::Call
+ #include "js/ArrayBuffer.h"  // JS::{ArrayBufferHasData,DetachArrayBuffer,IsArrayBufferObject,New{,Mapped}ArrayBufferWithContents,ReleaseMappedArrayBufferContents}
+ #include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin, JS::TaggedColumnNumberOneOrigin
+ #include "js/Date.h"
+@@ -445,6 +446,7 @@
+ 
+   bool readHeader();
+   bool readTransferMap();
++  bool readValue(MutableHandleValue vp);
+ 
+   [[nodiscard]] bool readUint32(uint32_t* num);
+ 
+@@ -536,6 +538,8 @@
+   // The values in this vector are objects, except it can temporarily have
+   // one `undefined` placeholder value (the readTypedArray hack).
+   RootedValueVector allObjs;
++  // Allocated before graph decoding, populated only by a host-reference tag.
++  RootedValueVector kandeloHostObjects;
+ 
+   size_t numItemsRead;
+ 
+@@ -584,6 +588,8 @@
+         objectEntries(cx),
+         otherEntries(cx),
+         memory(cx),
++        kandeloHostObjects(cx),
++        kandeloHostInfo(cx),
+         transferable(cx, tVal),
+         transferableObjects(cx, TransferableObjectsList(cx)),
+         cloneDataPolicy(cloneDataPolicy) {
+@@ -671,6 +677,11 @@
+                                 StableCellHasher<JSObject*>, SystemAllocPolicy>;
+   Rooted<CloneMemory> memory;
+ 
++  // Host payloads must be serialized through the original graph's memory map.
++  RootedValueVector kandeloHostObjects;
++  RootedValueVector kandeloHostInfo;
++  bool writeValue(HandleValue v);
++
+   // Set of transferable objects
+   RootedValue transferable;
+   using TransferableObjectsList = GCVector<JSObject*>;
+@@ -691,6 +702,55 @@
+ static_assert(SCTAG_END_OF_BUILTIN_TYPES <= JS_SCTAG_USER_MIN);
+ static_assert(JS_SCTAG_USER_MIN <= JS_SCTAG_USER_MAX);
+ static_assert(Scalar::Int8 == 0);
++
++bool JSContext::reportKandeloCloneError(const char* message) {
++  RootedValue callback(this, kandeloCloneErrorFactory());
++  if (!JS_WrapValue(this, &callback)) return false;
++  RootedString text(this, JS_NewStringCopyZ(this, message));
++  if (!text) return false;
++  RootedValue arg(this, StringValue(text)), exception(this);
++  if (!JS::Call(this, UndefinedHandleValue, callback, JS::HandleValueArray(arg), &exception)) return false;
++  JS_SetPendingException(this, exception);
++  return false;
++}
++
++bool JSContext::getKandeloCloneMode(HandleObject object, int32_t* mode) {
++  *mode = -1;
++  RootedValue marker(this, kandeloCloneModeSymbol());
++  if (!marker.isSymbol()) return true;
++  RootedObject unwrapped(this, CheckedUnwrapStatic(object));
++  // A proxy is not its target's host object. Do not trigger a proxy trap to
++  // inspect private registration; the ordinary serializer rejects proxies.
++  if (!unwrapped || !unwrapped->is<NativeObject>()) return true;
++  AutoRealm ar(this, unwrapped);
++  if (!JS_WrapValue(this, &marker)) return false;
++  RootedId id(this, PropertyKey::Symbol(marker.toSymbol()));
++  Rooted<Maybe<PropertyDescriptor>> desc(this);
++  if (!GetOwnPropertyDescriptor(this, unwrapped, id, &desc)) return false;
++  if (desc.isNothing()) return true;
++  if (!desc->isDataDescriptor() || !desc->value().isInt32() ||
++      desc->value().toInt32() < 0 || desc->value().toInt32() > 3) {
++    JS_ReportErrorASCII(this, "Invalid private host clone mode");
++    return false;
++  }
++  *mode = desc->value().toInt32();
++  return true;
++}
++
++// Embedding-local, SameProcess-only envelope. This is not a persistent SpiderMonkey
++// or V8 serialization format. Version 1 carries the graph, deferred host payloads,
++// and a string-only constructor table addressed by a checked relative offset.
++static constexpr uint32_t SCTAG_KANDELO_HOST_HEADER = JS_SCTAG_USER_MAX - 2;
++static constexpr uint32_t SCTAG_KANDELO_HOST_OBJECT = JS_SCTAG_USER_MAX - 1;
++static constexpr uint32_t SCTAG_KANDELO_HOST_TABLE = JS_SCTAG_USER_MAX;
++
++static bool CallKandeloCloneHook(JSContext* cx, HandleValue hook,
++                                 const JS::HandleValueArray& args,
++                                 MutableHandleValue result) {
++  RootedValue callback(cx, hook);
++  if (!JS_WrapValue(cx, &callback)) return false;
++  return JS::Call(cx, UndefinedHandleValue, callback, args, result);
++}
+ 
+ template <typename... Args>
+ static void ReportDataCloneError(JSContext* cx,
+@@ -740,6 +800,15 @@
+       break;
+   }
+ 
++  if (cx->hasKandeloCloneErrors()) {
++    JSErrorReport report;
++    report.errorNumber = errorNumber;
++    if (JS_ExpandErrorArgumentsASCII(cx, GetErrorMessage, errorNumber, &report,
++                                     std::forward<Args>(aArgs)...) && report.message()) {
++      (void)cx->reportKandeloCloneError(report.message().c_str());
++    }
++    return;
++  }
+   if (callbacks && callbacks->reportError) {
+     MOZ_RELEASE_ASSERT(!cx->isExceptionPending());
+ 
+@@ -1214,6 +1283,13 @@
+       return reportDataCloneError(JS_SCERR_TRANSFERABLE);
+     }
+     tObj = &v.toObject();
++    int32_t hostMode;
++    if (!cx->getKandeloCloneMode(tObj, &hostMode)) return false;
++    if (hostMode >= 0) {
++      return cx->reportKandeloCloneError((hostMode & 1)
++          ? "Transferring registered host objects is not implemented"
++          : "Found invalid object in transferList");
++    }
+ 
+     RootedObject unwrappedObj(cx, CheckedUnwrapStatic(tObj));
+     if (!unwrappedObj) {
+@@ -2137,6 +2213,20 @@
+     return true;
+   }
+ 
++  int32_t hostMode;
++  if (!context()->getKandeloCloneMode(obj, &hostMode)) return false;
++  if (hostMode >= 0) {
++    if (hostMode == 0) return context()->reportKandeloCloneError("Cannot clone object of unsupported type.");
++    if (hostMode & 1) return context()->reportKandeloCloneError("Transferring registered host objects is not implemented");
++    if (!context()->hasKandeloCloneErrors() ||
++        output().scope() != JS::StructuredCloneScope::SameProcess) {
++      return reportDataCloneError(JS_SCERR_UNSUPPORTED_TYPE);
++    }
++    uint32_t index = kandeloHostObjects.length();
++    return kandeloHostObjects.append(ObjectValue(*obj)) &&
++           out.writePair(SCTAG_KANDELO_HOST_OBJECT, index);
++  }
++
+   ESClass cls;
+   if (!GetBuiltinClass(context(), obj, &cls)) {
+     return false;
+@@ -2445,7 +2535,7 @@
+   return true;
+ }
+ 
+-bool JSStructuredCloneWriter::write(HandleValue v) {
++bool JSStructuredCloneWriter::writeValue(HandleValue v) {
+   if (!startWrite(v)) {
+     return false;
+   }
+@@ -2547,8 +2637,57 @@
+     }
+   }
+ 
++  return true;
++}
++
++bool JSStructuredCloneWriter::write(HandleValue v) {
++  const bool hostProtocol = context()->hasKandeloCloneErrors() &&
++      output().scope() == JS::StructuredCloneScope::SameProcess;
++  uint64_t headerOffset = out.tell();
++  if (hostProtocol && (!out.writePair(SCTAG_KANDELO_HOST_HEADER, 1) ||
++                       !out.write(0) || !out.write(0))) {
++    return false;
++  }
++  if (!writeValue(v)) return false;
++
++  if (hostProtocol) {
++    // Node detaches transferred ArrayBuffers after serializing the main graph,
++    // before any host payload hook. Stored resizable-buffer tails occupy the
++    // gap before payloadStart; the reader checks and consumes that exact gap.
++    if (!transferOwnership()) return false;
++    uint64_t payloadStart = out.tell();
++    // Match Node's host hook order: all main-graph getters run first. A host
++    // payload can discover more hosts, so read length again on each iteration.
++    for (size_t i = 0; i < kandeloHostObjects.length(); ++i) {
++      RootedValue object(context(), kandeloHostObjects[i]);
++      RootedValue hook(context(), context()->kandeloCloneSerialize());
++      RootedValue result(context());
++      if (!CallKandeloCloneHook(context(), hook, JS::HandleValueArray(object), &result)) return false;
++      if (!result.isObject()) return context()->reportKandeloCloneError("Invalid host clone payload");
++      RootedObject record(context(), &result.toObject());
++      RootedValue info(context()), payload(context());
++      if (!JS_GetElement(context(), record, 0, &info) ||
++          !JS_GetElement(context(), record, 1, &payload)) return false;
++      if (!info.isString()) return context()->reportKandeloCloneError("Invalid host constructor info");
++      if (!kandeloHostInfo.append(info) || !writeValue(payload)) return false;
++    }
++    uint64_t tableOffset = out.tell();
++    if (!out.writePair(SCTAG_KANDELO_HOST_TABLE, kandeloHostInfo.length())) return false;
++    for (size_t i = 0; i < kandeloHostInfo.length(); ++i) {
++      RootedString info(context(), kandeloHostInfo[i].toString());
++      if (!writeString(SCTAG_STRING, info)) return false;
++    }
++    // Reacquire the iterator after appending; growth can invalidate it.
++    auto point = out.iter();
++    point += headerOffset + sizeof(uint64_t);
++    point.write(NativeEndian::swapToLittleEndian(
++        tableOffset - headerOffset - 3 * sizeof(uint64_t)));
++    MOZ_ALWAYS_TRUE(point.advance());
++    point.write(NativeEndian::swapToLittleEndian(
++        payloadStart - headerOffset - 3 * sizeof(uint64_t)));
++  }
+   memory.clear();
+-  return transferOwnership();
++  return hostProtocol || transferOwnership();
+ }
+ 
+ JSStructuredCloneReader::JSStructuredCloneReader(
+@@ -2561,6 +2700,7 @@
+       objs(in.context()),
+       objState(in.context(), in.context()),
+       allObjs(in.context()),
++      kandeloHostObjects(in.context()),
+       numItemsRead(0),
+       callbacks(cb),
+       closure(cbClosure),
+@@ -3110,6 +3250,17 @@
+ 
+   numItemsRead++;
+ 
++  // Leave the embedding tag range available to custom callbacks outside Node.
++  if (tag == SCTAG_KANDELO_HOST_OBJECT && context()->hasKandeloCloneErrors()) {
++    if (data >= kandeloHostObjects.length()) {
++      JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
++                                JSMSG_SC_BAD_SERIALIZED_DATA, "invalid host reference");
++      return false;
++    }
++    vp.set(kandeloHostObjects[data]);
++    return allObjs.append(vp);
++  }
++
+   switch (tag) {
+     case SCTAG_NULL:
+       vp.setNull();
+@@ -3983,20 +4134,7 @@
+ }
+ 
+ // Perform the whole recursive reading procedure.
+-bool JSStructuredCloneReader::read(MutableHandleValue vp, size_t nbytes) {
+-  if (!readHeader()) {
+-    return false;
+-  }
+-  MOZ_ASSERT(allowedScope <= JS::StructuredCloneScope::LastResolvedScope,
+-             "allowedScope should have been resolved by now");
+-
+-  if (!readTransferMap()) {
+-    return false;
+-  }
+-
+-  MOZ_ASSERT(objs.length() == 0);
+-  MOZ_ASSERT(objState.length() == 1);
+-
++bool JSStructuredCloneReader::readValue(MutableHandleValue vp) {
+   // Start out by reading in the main object and pushing it onto the 'objs'
+   // stack. The data related to this object and its descendants extends from
+   // here to the SCTAG_END_OF_KEYS at the end of the stream.
+@@ -4106,6 +4244,111 @@
+     }
+   }
+ 
++  return true;
++}
++
++bool JSStructuredCloneReader::read(MutableHandleValue vp, size_t nbytes) {
++  if (!readHeader()) {
++    return false;
++  }
++  MOZ_ASSERT(allowedScope <= JS::StructuredCloneScope::LastResolvedScope,
++             "allowedScope should have been resolved by now");
++
++  if (!readTransferMap()) {
++    return false;
++  }
++
++  MOZ_ASSERT(objs.length() == 0);
++  MOZ_ASSERT(objState.length() == 1);
++
++  // Read the string-only table ahead of the graph. Construct every official
++  // host object first so payloads can point to hosts not yet encountered in the
++  // main graph. This table never consumes object IDs from allObjs.
++  Maybe<SCInput::BufferIterator> hostTableStart, hostTableEnd, hostPayloadStart;
++  uint32_t tag, version;
++  const bool hostProtocol = context()->hasKandeloCloneErrors();
++  if (hostProtocol && !in.getPair(&tag, &version)) return false;
++  if (hostProtocol && tag == SCTAG_KANDELO_HOST_HEADER) {
++    if (allowedScope != JS::StructuredCloneScope::SameProcess || version != 1) {
++      JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
++                                JSMSG_SC_BAD_SERIALIZED_DATA, "invalid host envelope");
++      return false;
++    }
++    uint64_t offset, payloadOffset;
++    if (!in.readPair(&tag, &version) || !in.read(&offset) || !in.read(&payloadOffset)) return false;
++    auto graphStart = in.tell();
++    if (offset > SIZE_MAX || offset % sizeof(uint64_t) != 0 ||
++        payloadOffset > offset || payloadOffset % sizeof(uint64_t) != 0) {
++      JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
++                                JSMSG_SC_BAD_SERIALIZED_DATA, "invalid host offsets");
++      return false;
++    }
++    if (!in.seekBy(static_cast<size_t>(payloadOffset))) return false;
++    hostPayloadStart = mozilla::Some(in.tell());
++    if (!in.seekBy(static_cast<size_t>(offset - payloadOffset))) return false;
++    hostTableStart = mozilla::Some(in.tell());
++    uint32_t count;
++    if (!in.readPair(&tag, &count) || tag != SCTAG_KANDELO_HOST_TABLE) {
++      JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
++                                JSMSG_SC_BAD_SERIALIZED_DATA, "invalid host table");
++      return false;
++    }
++    for (uint32_t i = 0; i < count; ++i) {
++      uint32_t length;
++      if (!in.readPair(&tag, &length)) return false;
++      if (tag != SCTAG_STRING) {
++        JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
++                                  JSMSG_SC_BAD_SERIALIZED_DATA, "invalid host constructor info");
++        return false;
++      }
++      RootedString info(context(), readString(length, DontAtomizeStrings));
++      if (!info) return false;
++      RootedValue arg(context(), StringValue(info));
++      RootedValue hook(context(), context()->kandeloCloneCreate()), object(context());
++      if (!CallKandeloCloneHook(context(), hook, JS::HandleValueArray(arg), &object)) return false;
++      if (!object.isObject()) return context()->reportKandeloCloneError("Invalid host deserializer result");
++      RootedObject host(context(), &object.toObject());
++      int32_t mode;
++      if (!context()->getKandeloCloneMode(host, &mode)) return false;
++      if (mode < 0) return context()->reportKandeloCloneError("Unregistered host deserializer result");
++      if (!kandeloHostObjects.append(object)) return false;
++    }
++    hostTableEnd = mozilla::Some(in.tell());
++    in.seekTo(graphStart);
++  }
++  if (!readValue(vp)) return false;
++  if (hostPayloadStart.isSome()) {
++    // Only transferred resizable buffers may live between graph and payloads.
++    bool validGap = tailStartPos.isSome()
++        ? in.tell() == *tailStartPos && *tailEndPos == *hostPayloadStart
++        : in.tell() == *hostPayloadStart;
++    if (!validGap) {
++      JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
++                                JSMSG_SC_BAD_SERIALIZED_DATA, "invalid host payload gap");
++      return false;
++    }
++    in.seekTo(*hostPayloadStart);
++    tailStartPos.reset();
++    tailEndPos.reset();
++  }
++  for (size_t i = 0; i < kandeloHostObjects.length(); ++i) {
++    RootedValue payload(context());
++    if (!readValue(&payload)) return false;
++    JS::RootedValueArray<2> args(context());
++    args[0].set(kandeloHostObjects[i]);
++    args[1].set(payload);
++    RootedValue hook(context(), context()->kandeloCloneDeserialize()), ignored(context());
++    if (!CallKandeloCloneHook(context(), hook, args, &ignored)) return false;
++  }
++  if (hostTableStart.isSome()) {
++    if (in.tell() != *hostTableStart) {
++      JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
++                                JSMSG_SC_BAD_SERIALIZED_DATA, "misaligned host payloads");
++      return false;
++    }
++    in.seekTo(*hostTableEnd);
++  }
++
+   allObjs.clear();
+ 
+   // For fuzzing, it is convenient to allow extra data at the end

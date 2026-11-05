@@ -1,0 +1,18 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3017,6 +3017,7 @@
+ }
+ 
+ #include "kandelo-node-vm.cpp"
++#include "kandelo-node-sqlite.cpp"
+ 
+ // Kandelo: native zstd DECOMPRESSION. Input: a string, ArrayBuffer, or typed
+ // array holding a zstd frame. Output: a fresh Uint8Array of the decoded bytes.
+@@ -3859,6 +3860,7 @@
+       JS_FN("__kandeloVmRunInContext", KandeloVmRunInContext, 3, 0),
+       JS_FN("__kandeloVmCompile", KandeloVmCompile, 2, 0),
+       JS_FN("__kandeloVmCompileFunction", KandeloVmCompileFunction, 5, 0),
++      JS_FN("sqlite", KandeloNativeSqlite, 4, 0),
+       JS_FN("createHash", KandeloNativeCreateHash, 1, 0),
+       JS_FN("createHmac", KandeloNativeCreateHmac, 2, 0),
+       JS_FN("createDeflate", KandeloNativeCreateDeflate, 1, 0),

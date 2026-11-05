@@ -1,0 +1,65 @@
+{
+  "at": "2026-11-05T08:59:59.491700+00:00",
+  "recipeRevision": 103,
+  "nativePatch": 97,
+  "auditFindings": [
+    "L-010/L-011 partial: actual source-syntax goals, format selection and ESM consumer dependency",
+    "L-026 partial: real CommonJS body compiler with existing exports receiver",
+    "L-033 partial: actual compiler/source ownership; source-map/cache/hooks still open"
+  ],
+  "sourceImplemented": [
+    "Actual SpiderMonkey CompileFunction CJS goal with5formal bindings and CompileModule goal; no source body execution for detection",
+    "Private syntax reports distinguish syntax rejection from OOM/interruption; engine diagnostic ordering/grammar remain validation obligations",
+    "Stable full UTF16 source storage replaces native C-string-truncated/conjoined CJS wrapper source evaluation; actual function and referring-source metadata retained",
+    "Pinned full-source/section checked CJS filename/package/type setup and entry-selection; shared pinned ESM get_format uses real source parser",
+    "Actual ordinary CJS load, ambiguous format selection and ESM consumer routing use same owners; explicit CJS stays CJS and rejected loads retain cache rollback"
+  ],
+  "frontendNative": {
+    "report": ".context/node26-module-syntax-frontend-r2.json",
+    "sha256": "8edab63e3156d63986e522a56c77cb4222d60be2fa1e3aa6fde544b3f1337855",
+    "passed": 24,
+    "new": 6,
+    "affected": 18,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Production source owners over actual native26 contextify/VM/fs/URL/package dependencies; not new SpiderMonkey predicate or guest execution"
+  },
+  "sourceChecks": {
+    "report": ".context/node26-module-syntax-source-r1/report.json",
+    "sha256": "018a5fcfa3716e8c62cc0293d304e253b9ca4456a12a5ec8161a84651c8742fc",
+    "checks": 9,
+    "pinnedFiles": 3,
+    "pinnedSections": 2,
+    "patchForwardReverseExact": true,
+    "bunRemainderUnchanged": true
+  },
+  "targetedEngine": {
+    "report": ".context/node26-engine-r103-accepted/report.json",
+    "sha256": "a76e2d94124b2681aff5779639a0b2cd772e82b702bc0e9b6cbfc3232e8a4121",
+    "compiled": true,
+    "recipeRevision": 103
+  },
+  "integration": {
+    "report": ".context/node26-engine-r103-accepted/integration.json",
+    "sha256": "ade66dd1d73513a3801a7c9b5dcb129a6860167b8451917f04af72b636ab6574",
+    "newGuestCasesRun": 0,
+    "guestRuntimeValidated": false
+  },
+  "retainedFailures": [
+    "Initial new frontend controls had21pass/3fail: VM-realm SyntaxErrors compared with outer-realm constructor. Original report/control preserved; corrected assertions require actual native error brand+SyntaxError name, no execution and cache rollback. No upstream assertion changed.",
+    "Prior old-kernel policy rejection retained; no new guest attempt, artifact-policy bypass, admission or restamp"
+  ],
+  "remaining": [
+    "Actual engine103 parser, CJS compiler and native dispatch require identified-artifact guest/four-host evidence with admitted kernel/image",
+    "Diagnostic order/grammar, lexical collisions, source/filename/stack and dynamic-import origins, shared/raw/UTF16/realm/OOM/interruption/lifecycle behavior remain unproven",
+    "Module._compile explicit ESM/TypeScript provided-source, wrapper overrides/hooks/source transformations, permission/CLI/preload/cache/source-map APIs remain incomplete",
+    "Native ESM URL/query/fragment/symlink/JSON attributes/namespace/export discovery/static-async/cycle/source/cache identity and lifecycle remain open",
+    "TypeScript stripping, Wasm/addons/data/text and other execution/source owners are gaps, not supported by copied format labels; all19families partial"
+  ],
+  "guestCompiled": true,
+  "guestCasesRun": 0,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformExclusions": [],
+  "dependencyDocument": "tests/nodejs/outline/module-syntax-implementation-dependencies.md"
+}

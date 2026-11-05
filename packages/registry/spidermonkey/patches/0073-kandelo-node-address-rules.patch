@@ -1,0 +1,18 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -366,6 +366,7 @@
+ 
+ #include "shell/kandelo-node-digests.cpp"
+ #include "shell/kandelo-node-random.cpp"
++#include "shell/kandelo-node-address-rules.cpp"
+ 
+ static JSObject* KandeloResolvedPromise(JSContext* cx, HandleValue value) {
+   RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
+@@ -4072,6 +4073,7 @@
+       JS_FN("__kandeloVmCompileFunction", KandeloVmCompileFunction, 5, 0),
+       JS_FN("sqlite", KandeloNativeSqlite, 4, 0),
+       JS_FN("port", KandeloNativePort, 3, 0),
++      JS_FN("addressRules", (KandeloFsPromiseGuard<KandeloNativeAddressRules>), 6, 0),
+       JS_FN("randomFillBytes", (KandeloFsPromiseGuard<KandeloNativeRandomFill>), 1, 0),
+       JS_FN("secureRandomBuffer", (KandeloFsPromiseGuard<KandeloNativeSecureRandomBuffer>), 1, 0),
+       JS_FN("createRandomBytesJob", (KandeloFsPromiseGuard<KandeloNativeCreateRandomBytesJob>), 6, 0),

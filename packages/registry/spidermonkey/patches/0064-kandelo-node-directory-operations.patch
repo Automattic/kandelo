@@ -1,0 +1,19 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -280,6 +280,7 @@
+ #include "shell/kandelo-node-native-fs.cpp"
+ #include "shell/kandelo-node-file-handle.cpp"
+ #include "shell/kandelo-node-fs-promise.cpp"
++#include "shell/kandelo-node-directory.cpp"
+ #include "shell/kandelo-node-file-jobs.cpp"
+ #include "shell/kandelo-node-fs-constants.h"
+ #include "shell/kandelo-node-buffer.cpp"
+@@ -4010,6 +4011,8 @@
+       JS_FN("fsStatPromise", (KandeloFsPromiseGuard<KandeloFsStatPromise>), 3, 0),
+       JS_FN("fsStatSync", (KandeloFsPromiseGuard<KandeloFsStatSync>), 3, 0),
+       JS_FN("fsOpenPromise", (KandeloFsPromiseGuard<KandeloFsOpenPromise>), 4, 0),
++      JS_FN("fsPathSync", (KandeloFsPromiseGuard<KandeloFsPathSync>), 4, 0),
++      JS_FN("fsPathPromise", (KandeloFsPromiseGuard<KandeloFsPathPromise>), 5, 0),
+       JS_FN("getFsConstants", KandeloNativeFsConstants, 0, 0),
+       JS_FN("createUnsafeArrayBuffer", KandeloNativeUnsafeArrayBuffer, 1, 0),
+       JS_FN("arrayBufferAlignedOffset", KandeloNativeArrayBufferAlignedOffset, 2, 0),

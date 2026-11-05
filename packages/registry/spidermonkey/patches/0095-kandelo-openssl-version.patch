@@ -1,0 +1,10 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4004,6 +4004,7 @@
+       JS_FN("runKdfJob", (KandeloCryptoGuard<KandeloNativeRunKdfJob>), 1, 0),
+       JS_FN("hashDigest", (KandeloCryptoGuard<KandeloNativeOneShotDigest>), 4, 0),
+       JS_FN("digestNames", (KandeloCryptoGuard<KandeloNativeDigestNames>), 0, 0),
++      JS_FN("getOpenSSLVersion", KandeloNativeOpenSSLVersion, 0, 0),
+       JS_FN("timingSafeEqual", (KandeloCryptoGuard<KandeloNativeTimingSafeEqual>), 2, 0),
+       JS_FN("incrementalHash", KandeloNativeIncrementalHash, 1, 0),
+       JS_FN("dirOperation", KandeloNativeDirOperation, 1, 0),

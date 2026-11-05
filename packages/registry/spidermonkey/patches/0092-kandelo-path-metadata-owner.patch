@@ -1,0 +1,11 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3966,6 +3966,8 @@
+       JS_FN("fsReaddirPromise", (KandeloFsPromiseGuard<KandeloNativeReaddirPromise>), 5, 0),
+       JS_FN("fsPathSync", (KandeloFsPromiseGuard<KandeloFsPathSync>), 4, 0),
+       JS_FN("fsPathPromise", (KandeloFsPromiseGuard<KandeloFsPathPromise>), 5, 0),
++      JS_FN("fsMetadataSync", (KandeloFsPromiseGuard<KandeloFsMetadataSync>), 4, 0),
++      JS_FN("fsMetadataPromise", (KandeloFsPromiseGuard<KandeloFsMetadataPromise>), 5, 0),
+       JS_FN("getFsConstants", KandeloNativeFsConstants, 0, 0),
+       JS_FN("createUnsafeArrayBuffer", KandeloNativeUnsafeArrayBuffer, 1, 0),
+       JS_FN("markBufferUntransferable", KandeloNativeMarkBufferUntransferable, 1, 0),

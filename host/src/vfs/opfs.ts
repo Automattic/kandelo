@@ -237,11 +237,13 @@ export class OpfsFileSystem implements FileSystemBackend {
   }
 
   fchmod(_handle: number, _mode: number): void {
-    // OPFS has no permission model
+    // The guest metadata owner for OPFS is missing; do not claim a mutation.
+    throw new Error("ENOTSUP");
   }
 
   fchown(_handle: number, _uid: number, _gid: number): void {
-    // OPFS has no ownership model
+    // The guest metadata owner for OPFS is missing; do not claim a mutation.
+    throw new Error("ENOTSUP");
   }
 
   // --- Path operations ---
@@ -314,20 +316,23 @@ export class OpfsFileSystem implements FileSystemBackend {
   }
 
   chmod(_path: string, _mode: number): void {
-    // OPFS has no permission model
+    // The guest metadata owner for OPFS is missing; do not claim a mutation.
+    throw new Error("ENOTSUP");
   }
 
   chown(_path: string, _uid: number, _gid: number): void {
-    // OPFS has no ownership model
+    // The guest metadata owner for OPFS is missing; do not claim a mutation.
+    throw new Error("ENOTSUP");
   }
 
   lchown(_path: string, _uid: number, _gid: number): void {
-    // OPFS has neither symlinks nor an ownership model, so this has the same
-    // existing no-op boundary as chown.
+    // The guest metadata owner for OPFS is missing; do not claim a mutation.
+    throw new Error("ENOTSUP");
   }
 
-  utimensat(_path: string, _atimeSec: number, _atimeNsec: number, _mtimeSec: number, _mtimeNsec: number): void {
-    // OPFS doesn't support setting timestamps — no-op
+  utimensat(_path: string, _atimeSec: number, _atimeNsec: number, _mtimeSec: number, _mtimeNsec: number, _flags = 0): void {
+    // The guest metadata owner for OPFS is missing; do not claim a mutation.
+    throw new Error("ENOTSUP");
   }
 
   // --- Directory iteration ---

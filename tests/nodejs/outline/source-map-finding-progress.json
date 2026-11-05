@@ -1,0 +1,101 @@
+{
+  "at": "2026-11-05T05:08:06.537893+00:00",
+  "recipeRevision": 94,
+  "auditFindings": [
+    "L-009 partial",
+    "L-033 partial"
+  ],
+  "sourceImplemented": [
+    "Complete unchanged pinned SourceMap class over shared primordials/validators with preserved V8/Blink copyright/license notices",
+    "Real VLQ signed decoding, indexed-section offsets, sorted mapping/range lookup, actual names/source fields and entry/origin queries",
+    "Actual payload/getter copy and constructor input/nested-section reference semantics matching exact native pin",
+    "Public constructor on the actual bootstrap Module owner and shared module/node:module aliases with ordinary target descriptor"
+  ],
+  "publicApiSourceOwners": [
+    "module.SourceMap",
+    "SourceMap.prototype.payload",
+    "SourceMap.prototype.lineLengths",
+    "SourceMap.prototype.findEntry",
+    "SourceMap.prototype.findOrigin"
+  ],
+  "frontendNative": {
+    "report": ".context/node26-source-map-frontend-r1.json",
+    "sha256": "796375469920b7f53c476569a377ffbaf71b1e00f1c851e57c15cae7a7994e7b",
+    "scope": "4 public constructor/query/alias/descriptor controls plus actual Module/bootstrap installation and8 affected module-record controls; native JS/VM/fs dependencies, not guest/four-host conformance",
+    "newPass": 5,
+    "affectedPass": 8,
+    "fail": 0,
+    "skip": 0,
+    "sourceIdentities": {
+      "third_party/node-core/source-map-platform-adapter.js": "cf215318dcfa6a95edd314d85b71a98c4b52f12dc10c646f3ed13a4a4b42c9fc",
+      "third_party/node-core/node-core.js": "ecf46ba3d6e6dfd25cea909ebe390cb6a5c1183cdd8e2e44a7d3d82a88edc1ec",
+      "host/test/node-source-map-platform.test.ts": "d9f2cf6c05fa6bb160687fdbae9dad47735ad77335c98fff36633a86b8b25e77",
+      "host/test/fixtures/node-source-map-controls.cjs": "0d0e47687f5d8c4401822eba73e2b60e19083fec7784d3892c0823419b804e80",
+      "host/test/fixtures/node-source-map-platform.cjs": "a89380b9c5b8b11001c15dacdcbdc362236099df8ee9c9ca6992d145b2741a5d",
+      "host/test/fixtures/node-module-records.cjs": "c564ae1fc397fd6dcddecc010844ed345db8c84f4fae8c72335d0e8d53099130",
+      "packages/registry/node-compat/bootstrap.js": "28e3f72e6729a9fbdc4ca7625d1fd9877ba2ead4cb6dbfd1bdbe0548d36c4301"
+    },
+    "identityCapture": "Checkpoint source identities; production/test inputs unchanged after the run"
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-source-map-upstream-r1/report.json",
+    "sha256": "9a5bbeb533a4f141698b9312876a0b4b04c93a853b87ba823ca6fdc2f786ea03",
+    "scope": "One unchanged upstream SourceMap API file. Adapted mode substitutes only the public SourceMap constructor; loader capture/findSourceMap/stack/cache portions remain native Node controls and do not validate guest integration.",
+    "nativeFilePass": 1,
+    "candidateFilePass": 1,
+    "fileFail": 0,
+    "fileSkip": 0,
+    "fileTimeout": 0,
+    "harnessError": 0,
+    "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-source-map-api.js",
+    "sourceSha256": "f011f3abbea841bd4ce739d410deb220b485a5ca34d2e867ff50843ac69ef7e1",
+    "nativeReferenceSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+    "cacheStackBranchesRemainNative": true,
+    "denominatorMeaning": "One mixed unchanged public file per mode, not full loader/cache/stack or unique API conformance"
+  },
+  "sourceChecks": {
+    "report": ".context/node26-source-map-source-r1/report.json",
+    "sha256": "e86debea29e7e2a1f7c769c7898c7ce94cf2ebeda7edd9bbc40ff52ab3c767fc",
+    "scope": "4 bundle/bootstrap/syntax/diff commands and archive/pin/frozen audit/fixture/license/registration checks; no native or guest compile",
+    "checks": 4
+  },
+  "targetContractClarifications": [
+    {
+      "topic": "lineLengths",
+      "source": "Pinned source_map.js constructor retains nonempty input array; getter copies it",
+      "nativeControl": "payloadCopiesAndRetainedInputs",
+      "nativeControlPass": true,
+      "meaning": "Later mutation of original input is visible; getter result mutations are isolated. Audit general copy wording does not establish constructor snapshot."
+    },
+    {
+      "topic": "nested section payload",
+      "source": "cloneSourceMapV3 copies top-level arrays only; nested objects remain references",
+      "nativeControl": "payloadCopiesAndRetainedInputs",
+      "nativeControlPass": true,
+      "meaning": "Payload reflects later nested map mutations, but decoded mapping array retains original query results"
+    },
+    {
+      "topic": "sourceRoot",
+      "source": "Standalone constructor uses provided sources; loader/cache normalization is a separate owner",
+      "nativeControl": "payloadCopiesAndRetainedInputs",
+      "nativeControlPass": true,
+      "targetPinChanged": false
+    }
+  ],
+  "referenceSourcesNotInstalled": [
+    "lib/internal/source_map/source_map_cache.js",
+    "lib/module.js"
+  ],
+  "remaining": [
+    "Actual CJS/ESM/generated source-map capture, inline/external map reads, root/file/data/URL normalization and Module/error/worker/VFS/cache retention/invalidation",
+    "Public findSourceMap/getSourceMapsSupport/setSourceMapsSupport and real enabled/node_modules/generated policy connected to native callsite/stack remapping",
+    "Exact guest private-field/error/descriptor/realm and normal product integration across all four hosts; no native cache substitution counts as guest evidence",
+    "Remaining L-009/L-033 hooks/compile cache and complete loader/CLI/module-identity obligations; all19 families remain partial",
+    "Prior source89-93/OpenSSL3.5.9/changed kernel compilation debt, retained Performance milestone failure and SQLite module-load failure"
+  ],
+  "guestCompiled": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformExclusions": [],
+  "dependencyDocument": "tests/nodejs/outline/source-map-implementation-dependencies.md"
+}

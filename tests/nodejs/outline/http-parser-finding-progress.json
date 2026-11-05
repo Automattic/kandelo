@@ -1,0 +1,112 @@
+{
+  "at": "2026-11-05T09:47:17.624873+00:00",
+  "recipeRevision": 104,
+  "nativePatch": 98,
+  "auditFindings": [
+    "H-003 partial: exact llhttp backend, pinned callbacks and real header/chunk-extension/error framing owners",
+    "H-004 partial: information/HEAD and CONNECT/upgrade socket/head source",
+    "H-010 partial: unconditional request replay removed; public reusedSocket/error/Agent behavior still incomplete",
+    "H-011/H-013 partial: same-feed leftovers retired, parser keepalive selection; idle/lifecycle/resource integration remains"
+  ],
+  "sourceImplemented": [
+    "Unchanged Node-vendored llhttp library with six verified selected inputs, native target builds and provenance on both wasm architectures",
+    "Stable owned parser/settings/callback state; fragmented Latin1 status/headers, strict/insecure/relaxed options, Node byte budgets, real body/trailer events and final-message stop",
+    "C callback exception containment, independent input/event bytes, sticky native errors without stale error_pos arithmetic",
+    "Opaque GC-owned JSAPI parser brand, actual persistent capacity accounting/finalizer and packet conversion",
+    "Unchanged pinned common header/body/completion/error callbacks and client option validation connected to actual IncomingMessage in HTTP/HTTPS client",
+    "Information/continue/final response, HEAD and upgrade/CONNECT socket/head handling; unconditional pooled replay and same-feed leftover reuse removed"
+  ],
+  "portableNative": {
+    "report": ".context/node26-http-parser-controls-r4.json",
+    "sha256": "e95800cf4b0f17008a30f65c2fee878fa461af96efc63c05d47c4925cf22b635",
+    "passed": 25,
+    "failed": 0,
+    "scope": "Portable C++/llhttp owner vs actual native Node parser; native reference supplied bytes incrementally;not guest execution"
+  },
+  "frontendNative": {
+    "report": ".context/node26-http-parser-frontend-r4.json",
+    "sha256": "e2320e65822773154643d2bf32f68825bdbc5db788ecd878da1e59b8aceecfb8",
+    "passed": 20,
+    "new": 8,
+    "affected": 12,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Actual candidate JS frontend/client with explicit native parser/stream/abort/URL/Buffer/loopback dependencies"
+  },
+  "sourceChecks": {
+    "report": ".context/node26-http-parser-source-r1/report.json",
+    "sha256": "f0f652a15f4ffb970a8fac95d04ec34fcae2563d06f0b0554631e198149bfd3a",
+    "checks": 10,
+    "pinnedFiles": 4,
+    "pinnedSections": 3,
+    "llhttpInputs": 6,
+    "patchForwardReverseExact": true,
+    "bunRemainderUnchanged": true
+  },
+  "targetedEngine": {
+    "report": ".context/node26-engine-r104-accepted/report.json",
+    "sha256": "b6ce416ad52957cb8b2df5025937d66c4d6422b6f4e791bafaa45d44b254878d",
+    "exitCode": 0,
+    "revision": 104
+  },
+  "libraries": {
+    "report": ".context/node26-llhttp-packages-accepted/report.json",
+    "sha256": "0255ca21922fc890b3137be0d3817591f54adc29f308dd2ec9cad48e97769299",
+    "architectures": [
+      "wasm32",
+      "wasm64"
+    ],
+    "scope": "Normal resolver library builds;wasm64 SDK preparation also refreshed its musl core"
+  },
+  "evidence": {
+    "report": ".context/node26-http-parser-evidence/report.json",
+    "sha256": "5f3bd4d0b9dd439a19f4c12ca1f505220e3cb86d89d33a21cd91ae3c38a2f3c0"
+  },
+  "nonpasses": [
+    {
+      "path": ".context/node26-http-parser-controls-r1.stderr",
+      "sha256": "67fb6094afc2e01b9399383e5f4688d9fecd4273a3155c3d1da897d9b00061bb",
+      "kind": "launch/harness failure: process.binding http_parser unavailable;0cases"
+    },
+    {
+      "path": ".context/node26-http-parser-frontend-r1.json",
+      "sha256": "b7877d0ff8be5642d316c02014c326a7db08f776519b1f465d1e7158bfb6dd0f",
+      "kind": "wrong cwd:0cases discovered;not passing"
+    },
+    {
+      "path": ".context/node26-http-parser-source-r1.log",
+      "sha256": "7a4302df4d9c34b423d9a967bd068ea411d6d15ab4561910ab445cdfa451cc48",
+      "kind": "source style failure;original launcher log retained;corrected include ordering without checker changes",
+      "observedDiagnostic": "js/src/shell/kandelo-node-http-parser.h:5:6: <llhttp.h> should be included after <cstdint>; raw source-check diagnostic file was overwritten on retry, so this observed transcription and launcher are the retained initial-failure evidence"
+    },
+    {
+      "path": ".context/node26-http-parser-frontend-r3.json",
+      "sha256": "745f71d03bba38b583c54599652b9e7a1ddd0c0f2bf2db3a5d18ddc81dd2842a",
+      "kind": "19pass/1fail: unresolved unsolicited-response Promise, subprocess0with no result; native dependency overran final-message boundary"
+    },
+    {
+      "path": ".context/node26-http-parser-reference-before-boundary.cjs",
+      "sha256": "2a68aa2eddade0e6f23c24498cfde55ffc465ec442af7fd5a1b376b95d24519b",
+      "kind": "initial native dependency preserved;pause in JS did not stop same-buffer second response"
+    },
+    {
+      "path": ".context/debug-http-leftover-r2.stderr",
+      "sha256": "a07b15429504dfcf83640f876979bf9a97fd9c9b58ae628033a5403dbc9b37e2",
+      "kind": "actual native event diagnostic:two messages in one feed before boundary correction"
+    }
+  ],
+  "remaining": [
+    "Synchronous JS callback/reentry/abort/exception/byte-mutation and socket pause/read equivalence during native execute remain implementation/validation obligations of the packet bridge",
+    "Transient native input/event/packet allocations and complete GC/OOM/shared/resizable/detached/cross-realm ownership/accounting remain unverified/incomplete",
+    "Full parser/error/rawPacket/EOF/close ordering and public request/response socket lifecycle still need upstream/native/identified guest evidence",
+    "Actual Agent/options/TLS pool keys/idle unsolicited bytes, OutgoingMessage/request body/chunk/trailer framing, server/request parser/response and HTTP2 owners remain absent/partial",
+    "Public aliases/descriptors/METHODS/options/CLI warnings/permissions/diagnostics and the remaining frozen HTTP requirements stay open",
+    "Current engine104 compiled but no current guest or four-host validation; admitted kernel/image closure remains prerequisite;not an accepted platform exclusion"
+  ],
+  "guestCompiled": true,
+  "guestCasesRun": 0,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformExclusions": [],
+  "dependencyDocument": "tests/nodejs/outline/http-parser-implementation-dependencies.md"
+}

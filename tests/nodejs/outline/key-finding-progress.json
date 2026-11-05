@@ -1,0 +1,102 @@
+{
+  "at": "2026-11-05T08:00:51.081522+00:00",
+  "recipeRevision": 101,
+  "nativeSourceCompiledRevision": 100,
+  "nativePatch": 96,
+  "auditFindings": [
+    "C-001 partial: key import/export/material and actual HMAC consumer",
+    "C-007 partial: real key-brand/storage prerequisites, not WebCrypto algorithms",
+    "C-009 partial: native lifetime/secret cleansing, provider allocation accounting still open",
+    "C-011/C-015 partial: public key routes and comparison dependencies"
+  ],
+  "sourceImplemented": [
+    "Full unchanged pinned internal/crypto/keys.js over actual ncrypto material and private engine slots",
+    "Normal resolver library compiles unchanged pinned ncrypto/engine C++20 against actual SDK OpenSSL; consuming shell translation unit explicitly C++20",
+    "Actual secret ownership/copy/equality, PEM/DER private/public/encrypted serialization, actual RSA/PSS/EC/DSA metadata and supported raw export/EC check routes",
+    "HMAC consumes actual secret handles; util.types probes engine brands without user property access",
+    "Source101 wires upstream deep comparison lazy private-key dependency to the same owner; source-only followup after engine100"
+  ],
+  "portableNative": {
+    "report": ".context/node26-keys-native-controls-r1/report.json",
+    "sha256": "81fe56b844b4d7e88110213e63a248fd14ddd1b7b14f491208e58862228d97b1",
+    "passed": 18,
+    "scope": "Portable material owner and unchanged pinned ncrypto against native OpenSSL3.5.9 plus exact Node26.13 reference. Does not exercise guest bindings, key slots, async scheduling or any host conformance."
+  },
+  "frontendNative": {
+    "report": ".context/node26-keys-frontend-r4.json",
+    "sha256": "f2f349bd89719179b4c5000f5686cf3143e299845ad52515dea99ca3b2576ec7",
+    "passed": 7,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Pinned public JS plus private bridge over actual native26 key handles/base classes; not guest JSAPI or four-host conformance"
+  },
+  "affectedNative": {
+    "report": ".context/node26-keys-affected-r3/report.json",
+    "sha256": "3b400713768ebe4765f9cc5c26b21d1b0deec23be0cd845a23a1eb9eeb65565f",
+    "passed": 7,
+    "failed": 0,
+    "scope": "Seven existing incremental digest/HMAC JS differential controls over native26 dependencies. No current guest/four-host claim and no new key API passes.",
+    "parserHelperSha256": "b4784311139db977cf170614d0480408b16f777030be0353787e59c0026afc08"
+  },
+  "sourceChecks": {
+    "report": ".context/node26-keys-source-r5/report.json",
+    "sha256": "bd2a14ea29ddf751d59eb090f2ff225a7f9c96a4b45a0de058f3589c66263736",
+    "checks": 9,
+    "pinnedInputs": 9,
+    "patchForwardReverseExact": true
+  },
+  "wasm32Library": {
+    "report": ".context/node26-ncrypto-wasm32-accepted/report.json",
+    "sha256": "57eba71306e91b5941c9013e8c0403fdd436701cd4aa4e36d93b8e50b2d62c29",
+    "compiled": true,
+    "wasm64Compiled": false
+  },
+  "targetedEngine": {
+    "report": ".context/node26-engine-r100-accepted/report.json",
+    "sha256": "d7346320c21c752e3d92e9e73b2e5e8d87e29ac7fa37cc6efd1aa64061f366e5",
+    "compiled": true,
+    "recipeRevision": 100
+  },
+  "guestIntegration": {
+    "report": ".context/node26-engine-r100-accepted/integration.json",
+    "sha256": "6c1eb221380390395c4a0e2b4e882ce748cf7d1f2bc52cdce891e1dadc418d26",
+    "casesLaunched": 0,
+    "counts": {
+      "pass": 0,
+      "fail": 0,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 1
+    },
+    "currentCandidateValidated": false
+  },
+  "retainedFailures": [
+    "Initial native and wasm32 library C++17 failures; native standalone omitted libssl linkage",
+    "Initial frontend runner module path error and abort caused by missing native detail target; adapter contract corrected",
+    "First native passphrase assertion contradicted exact reference; corrected comparison retains actual OpenSSL error",
+    "Initial engine100 BigInt helper/include-order failures; exact failed source/log retained before correction",
+    "Partial encoding-parser fixture6pass/1fail retained; actual identical native parser dependency restores7pass including additional quirks, no assertions changed",
+    "Guest runner missing locked host dependency resolved with npm ci; subsequent artifact-policy kernel rejection remains a harness error with zero cases"
+  ],
+  "remaining": [
+    "Current source103 compiles101/102 followups; current admitted kernel/image and actual guest/four-host conformance remain outstanding.",
+    "Asymmetric JWK import/export, raw imports, store/URI/PKCS11/PKCS12 and complete format/options/error/namespace policies",
+    "WebCrypto algorithms and usage/extractability/import/export/derive/wrap/unwrap; storage/classes do not establish these routes",
+    "Cross-worker/realm serialization/transfer/reconstruction; native byte leases/shared/resizable/detached/OOM/GC/cancellation/permission policies and exact provider allocation accounting",
+    "HKDF, cipher/decipher, key generation/exchange, signatures, certificates, provider/FIPS and TLS consumers; remaining19-family obligations"
+  ],
+  "guestNativeCompiled": true,
+  "currentJavaScriptFollowupCompiled": true,
+  "guestCasesRun": 0,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformExclusions": [],
+  "dependencyDocument": "tests/nodejs/outline/key-implementation-dependencies.md",
+  "compilationFollowup": {
+    "report": ".context/node26-engine-r103-accepted/report.json",
+    "sha256": "a76e2d94124b2681aff5779639a0b2cd772e82b702bc0e9b6cbfc3232e8a4121",
+    "engineRevision": 103,
+    "meaning": "Source101 comparison and102 HKDF/common operation followups now compiled; no new runtime/API/four-host evidence inferred."
+  }
+}

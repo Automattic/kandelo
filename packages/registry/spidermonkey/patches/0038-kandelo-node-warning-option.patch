@@ -1,0 +1,43 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -14815,6 +14815,32 @@
+     return false;
+   }
+ 
++  if (IsKandeloNodeMode()) {
++    RootedObject cli(cx, JS_NewPlainObject(cx));
++    RootedObject execArgs(cx, JS::NewArrayObject(cx, 0));
++    if (!cli || !execArgs) return false;
++    uint32_t index = 0;
++    auto append = [&](const char* value) {
++      UniqueChars utf8 = JS::EncodeNarrowToUtf8(cx, value);
++      RootedString text(cx, utf8 ? NewStringCopyUTF8(cx, utf8.get()) : nullptr);
++      return text && JS_DefineElement(cx, execArgs, index++, text, JSPROP_ENUMERATE);
++    };
++    // Preserve the real supported execution options in order, including
++    // duplicates and eval source. Stop before positional user arguments.
++    for (int n = 1; n < sArgc; n++) {
++      const char* arg = sArgv[n];
++      if (strcmp(arg, "--no-warnings") == 0) {
++        if (!append(arg)) return false;
++      } else if (strcmp(arg, "-e") == 0 || strcmp(arg, "--execute") == 0) {
++        if (!append(arg) || ++n >= sArgc || !append(sArgv[n])) return false;
++      } else {
++        break;
++      }
++    }
++    if (!JS_DefineProperty(cx, cli, "noWarnings", op->getBoolOption("no-warnings"), 0) ||
++        !JS_DefineProperty(cx, cli, "execArgv", execArgs, 0) ||
++        !JS_DefineProperty(cx, cx->global(), "__kandeloNodeCliOptions", cli, 0)) return false;
++  }
+   return true;
+ }
+ 
+@@ -15731,6 +15757,7 @@
+       !op.addMultiStringOption('m', "module", "PATH", "Module path to run") ||
+       !op.addMultiStringOption('p', "prelude", "PATH", "Prelude path to run") ||
+       !op.addMultiStringOption('e', "execute", "CODE", "Inline code to run") ||
++      !op.addBoolOption('\0', "no-warnings", "Suppress Node's default warning output") ||
+       !op.addStringOption('\0', "selfhosted-xdr-path", "[filename]",
+                           "Read/Write selfhosted script data from/to the given "
+                           "XDR file") ||

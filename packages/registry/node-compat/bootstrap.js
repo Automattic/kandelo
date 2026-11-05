@@ -9,6 +9,12 @@ import * as std from 'qjs:std';
 import * as os from 'qjs:os';
 import * as _nodeNative from 'qjs:node';
 
+const _nodeMonotonicStart = os.timerNow();
+const _nodeParsedEvalSource = _nodeNative.cliOptions?.evalSource;
+const _nodeDispose = Symbol.dispose;
+let _nodeEventPlatform;
+let _nodeValues;
+
 // ============================================================
 // TextEncoder/TextDecoder polyfill for engines that do not provide it.
 // ============================================================
@@ -373,7 +379,9 @@ function _makeNodeError(message, code, errno, syscall, path) {
     return err;
 }
 
-function _throwErrno(errno, syscall, path) {
+let _nodeFsSystemErrors;
+function _throwErrno(errno, syscall, path, dest) {
+    if (_nodeFsSystemErrors !== undefined) throw _nodeFsSystemErrors.fromErrno(errno, syscall, path, dest);
     const code = _errnoToCode(errno);
     const msg = `${code}: ${syscall}` + (path ? ` '${path}'` : '');
     throw _makeNodeError(msg, code, errno, syscall, path);
@@ -397,289 +405,772 @@ function _notImpl(mod, name) {
 // path module
 // ============================================================
 
-const path = (() => {
-    const sep = '/';
-    const delimiter = ':';
-
-    function normalize(p) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
-        if (p.length === 0) return '.';
-        const isAbsolute = p.charCodeAt(0) === 47; // '/'
-        const parts = p.split('/');
-        const result = [];
-        for (const part of parts) {
-            if (part === '' || part === '.') continue;
-            if (part === '..') {
-                if (result.length > 0 && result[result.length - 1] !== '..') {
-                    result.pop();
-                } else if (!isAbsolute) {
-                    result.push('..');
-                }
-            } else {
-                result.push(part);
-            }
-        }
-        let out = result.join('/');
-        if (isAbsolute) out = '/' + out;
-        return out || (isAbsolute ? '/' : '.');
-    }
-
-    function join(...args) {
-        if (args.length === 0) return '.';
-        let joined = '';
-        for (const arg of args) {
-            if (typeof arg !== 'string') throw new TypeError('Arguments must be strings');
-            if (arg.length > 0) {
-                joined = joined ? joined + '/' + arg : arg;
-            }
-        }
-        return joined ? normalize(joined) : '.';
-    }
-
-    function resolve(...args) {
-        let resolved = '';
-        for (let i = args.length - 1; i >= 0; i--) {
-            const p = args[i];
-            if (typeof p !== 'string') throw new TypeError('Arguments must be strings');
-            if (p.length === 0) continue;
-            resolved = p + (resolved ? '/' + resolved : '');
-            if (p.charCodeAt(0) === 47) break;
-        }
-        if (resolved.charCodeAt(0) !== 47) {
-            const [cwd] = os.getcwd();
-            resolved = cwd + '/' + resolved;
-        }
-        return normalize(resolved);
-    }
-
-    function dirname(p) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
-        if (p.length === 0) return '.';
-        const idx = p.lastIndexOf('/');
-        if (idx === -1) return '.';
-        if (idx === 0) return '/';
-        return p.slice(0, idx);
-    }
-
-    function basename(p, ext) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
-        let base = p;
-        const idx = p.lastIndexOf('/');
-        if (idx !== -1) base = p.slice(idx + 1);
-        if (ext && base.endsWith(ext)) base = base.slice(0, -ext.length);
-        return base;
-    }
-
-    function extname(p) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
-        const base = basename(p);
-        const idx = base.lastIndexOf('.');
-        if (idx <= 0) return '';
-        return base.slice(idx);
-    }
-
-    function isAbsolute(p) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
-        return p.length > 0 && p.charCodeAt(0) === 47;
-    }
-
-    function relative(from, to) {
-        from = resolve(from);
-        to = resolve(to);
-        if (from === to) return '';
-        const fromParts = from.split('/').filter(Boolean);
-        const toParts = to.split('/').filter(Boolean);
-        let common = 0;
-        while (common < fromParts.length && common < toParts.length &&
-               fromParts[common] === toParts[common]) {
-            common++;
-        }
-        const ups = fromParts.length - common;
-        const result = [];
-        for (let i = 0; i < ups; i++) result.push('..');
-        for (let i = common; i < toParts.length; i++) result.push(toParts[i]);
-        return result.join('/');
-    }
-
-    function parse(p) {
-        const dir = dirname(p);
-        const base = basename(p);
-        const ext = extname(p);
-        const name = ext ? base.slice(0, -ext.length) : base;
-        const root = isAbsolute(p) ? '/' : '';
-        return { root, dir, base, ext, name };
-    }
-
-    function format(obj) {
-        const dir = obj.dir || obj.root || '';
-        const base = obj.base || ((obj.name || '') + (obj.ext || ''));
-        return dir ? (dir === obj.root ? dir + base : dir + '/' + base) : base;
-    }
-
-    return {
-        sep, delimiter, normalize, join, resolve, dirname,
-        basename, extname, isAbsolute, relative, parse, format,
-        posix: null, // set below
-    };
-})();
-path.posix = path;
-// tar/cacache/minimatch read `path.win32.{sep,parse,isAbsolute}` at module init.
-path.win32 = { ...path, sep: '\\' };
-
 // ============================================================
 // events module (EventEmitter)
 // ============================================================
 
 const events = (() => {
-    class EventEmitter {
-        constructor() {
-            this._events = Object.create(null);
-            this._maxListeners = EventEmitter.defaultMaxListeners;
+'use strict';
+// Adapted from Node.js v26.13.0 lib/events.js, source commit
+// 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b. The listener core is shared
+// behavior. EventTarget metadata is linked to the pinned event platform;
+// Async-resource integration is linked to the pinned async platform below.
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+const { Reflect, Object, Array, Function, Symbol, Boolean, Error, TypeError,
+        RangeError, String, Number } = globalThis;
+const ReflectApply = Reflect.apply;
+const ReflectOwnKeys = Reflect.ownKeys;
+const ObjectDefineProperty = Object.defineProperty;
+const ObjectDefineProperties = Object.defineProperties;
+const ObjectGetPrototypeOf = Object.getPrototypeOf;
+const ArrayPrototypeSlice = Function.prototype.call.bind(Array.prototype.slice);
+const ArrayPrototypePush = Function.prototype.call.bind(Array.prototype.push);
+function spliceOne(list, index) {
+  for (; index + 1 < list.length; index++)
+    list[index] = list[index + 1];
+  list.pop();
+}
+const kRejection = Symbol.for('nodejs.rejection');
+const kCapture = Symbol('kCapture');
+const kErrorMonitor = Symbol('events.errorMonitor');
+const kShapeMode = Symbol('shapeMode');
+const kEmitting = Symbol('events.emitting');
+const kMaxEventTargetListeners = Symbol('events.maxEventTargetListeners');
+const kMaxEventTargetListenersWarned = Symbol('events.maxEventTargetListenersWarned');
+const inspect = (...args) => util.inspect(...args);
+function invalidType(name, expected, value) {
+  if (_nodeValues) return new _nodeValues.errors.codes.ERR_INVALID_ARG_TYPE(name, expected, value);
+  let received;
+  if (value === null) received = 'null';
+  else if (value === undefined) received = 'undefined';
+  else if (typeof value === 'object' || typeof value === 'function') received = `an instance of ${value.constructor?.name || 'Object'}`;
+  else received = `type ${typeof value} (${inspect(value)})`;
+  const error = new TypeError(`The "${name}" argument must be of type ${expected}. Received ${received}`);
+  error.code = 'ERR_INVALID_ARG_TYPE';
+  return error;
+}
+function ERR_INVALID_ARG_TYPE(name, expected, value) {
+  return invalidType(name, expected, value);
+}
+function validateFunction(value, name) {
+  if (_nodeValues) return _nodeValues.validators.validateFunction(value, name);
+  if (typeof value !== 'function') throw invalidType(name, 'function', value);
+}
+function validateBoolean(value, name) {
+  if (_nodeValues) return _nodeValues.validators.validateBoolean(value, name);
+  if (typeof value !== 'boolean') throw invalidType(name, 'boolean', value);
+}
+function validateNumber(value, name, minimum) {
+  if (_nodeValues) return _nodeValues.validators.validateNumber(value, name, minimum);
+  if (typeof value !== 'number') throw invalidType(name, 'number', value);
+  if (Number.isNaN(value) || value < minimum) {
+    const error = new RangeError(`The value of "${name}" is out of range. It must be >= ${minimum}. Received ${inspect(value)}`);
+    error.code = 'ERR_OUT_OF_RANGE'; throw error;
+  }
+}
+function genericNodeError(message, properties) {
+  if (_nodeValues) return _nodeValues.errors.genericNodeError(message, properties);
+  return Object.assign(new Error(message), properties);
+}
+function isPublicEventTarget(value) {
+  return _nodeEventPlatform ? _nodeEventPlatform.eventTarget.isEventTarget(value) : false;
+}
+function EventEmitter(opts) {
+  EventEmitter.init.call(this, opts);
+}
+EventEmitter.EventEmitter = EventEmitter;
+EventEmitter.usingDomains = false;
+EventEmitter.captureRejectionSymbol = kRejection;
+EventEmitter.errorMonitor = kErrorMonitor;
+ObjectDefineProperty(EventEmitter, 'captureRejections', {
+  get() { return EventEmitter.prototype[kCapture]; },
+  set(value) { validateBoolean(value, 'EventEmitter.captureRejections'); EventEmitter.prototype[kCapture] = value; },
+  enumerable: true,
+});
+ObjectDefineProperty(EventEmitter.prototype, kCapture, {value:false, writable:true});
+EventEmitter.prototype._events = undefined;
+EventEmitter.prototype._eventsCount = 0;
+EventEmitter.prototype._maxListeners = undefined;
+
+// By default EventEmitters will print a warning if more than 10 listeners are
+// added to it. This is a useful default which helps finding memory leaks.
+let defaultMaxListeners = 10;
+let isEventTarget;
+
+function checkListener(listener) {
+  validateFunction(listener, 'listener');
+}
+
+ObjectDefineProperty(EventEmitter, 'defaultMaxListeners', {
+  __proto__: null,
+  enumerable: true,
+  get: function() {
+    return defaultMaxListeners;
+  },
+  set: function(arg) {
+    validateNumber(arg, 'defaultMaxListeners', 0);
+    defaultMaxListeners = arg;
+  },
+});
+
+ObjectDefineProperties(EventEmitter, {
+  kMaxEventTargetListeners: {
+    __proto__: null,
+    value: kMaxEventTargetListeners,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  },
+  kMaxEventTargetListenersWarned: {
+    __proto__: null,
+    value: kMaxEventTargetListenersWarned,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  },
+});
+
+/**
+ * Sets the max listeners.
+ * @param {number} n
+ * @param {EventTarget[] | EventEmitter[]} [eventTargets]
+ * @returns {void}
+ */
+EventEmitter.setMaxListeners =
+  function(n = defaultMaxListeners, ...eventTargets) {
+    validateNumber(n, 'setMaxListeners', 0);
+    if (eventTargets.length === 0) {
+      defaultMaxListeners = n;
+    } else {
+      if (isEventTarget === undefined)
+        isEventTarget = isPublicEventTarget;
+
+      for (let i = 0; i < eventTargets.length; i++) {
+        const target = eventTargets[i];
+        if (isEventTarget(target)) {
+          target[kMaxEventTargetListeners] = n;
+          target[kMaxEventTargetListenersWarned] = false;
+        } else if (typeof target.setMaxListeners === 'function') {
+          target.setMaxListeners(n);
+        } else {
+          throw new ERR_INVALID_ARG_TYPE(
+            'eventTargets',
+            ['EventEmitter', 'EventTarget'],
+            target);
         }
+      }
+    }
+  };
 
-        static get defaultMaxListeners() { return 10; }
-        static set defaultMaxListeners(n) { /* ignored for now */ }
+// If you're updating this function definition, please also update any
+// re-definitions, such as the one in the Domain module (lib/domain.js).
+EventEmitter.init = function(opts) {
 
-        setMaxListeners(n) { this._maxListeners = n; return this; }
-        getMaxListeners() { return this._maxListeners; }
+  if (this._events === undefined ||
+      this._events === ObjectGetPrototypeOf(this)._events) {
+    this._events = { __proto__: null };
+    this._eventsCount = 0;
+    this[kShapeMode] = false;
+  } else {
+    this[kShapeMode] = true;
+  }
 
-        emit(event, ...args) {
-            const listeners = this._events[event];
-            if (!listeners || listeners.length === 0) {
-                if (event === 'error') {
-                    const err = args[0] instanceof Error ? args[0] : new Error('Unhandled error');
-                    throw err;
-                }
-                return false;
-            }
-            const copy = listeners.slice();
-            for (const { fn, once } of copy) {
-                if (once) this.removeListener(event, fn);
-                fn.apply(this, args);
-            }
-            return true;
+  this._maxListeners ||= undefined;
+
+
+  if (opts?.captureRejections) {
+    validateBoolean(opts.captureRejections, 'options.captureRejections');
+    this[kCapture] = Boolean(opts.captureRejections);
+  } else {
+    // Assigning the kCapture property directly saves an expensive
+    // prototype lookup in a very sensitive hot path.
+    this[kCapture] = EventEmitter.prototype[kCapture];
+  }
+};
+
+function addCatch(that, promise, type, args) {
+  if (!that[kCapture]) {
+    return;
+  }
+
+  // Handle Promises/A+ spec, then could be a getter
+  // that throws on second use.
+  try {
+    const then = promise.then;
+
+    if (typeof then === 'function') {
+      then.call(promise, undefined, function(err) {
+        // The callback is called with nextTick to avoid a follow-up
+        // rejection from this promise.
+        process.nextTick(emitUnhandledRejectionOrErr, that, err, type, args);
+      });
+    }
+  } catch (err) {
+    that.emit('error', err);
+  }
+}
+
+function emitUnhandledRejectionOrErr(ee, err, type, args) {
+  if (typeof ee[kRejection] === 'function') {
+    ee[kRejection](err, type, ...args);
+  } else {
+    // We have to disable the capture rejections mechanism, otherwise
+    // we might end up in an infinite loop.
+    const prev = ee[kCapture];
+
+    // If the error handler throws, it is not catchable and it
+    // will end up in 'uncaughtException'. We restore the previous
+    // value of kCapture in case the uncaughtException is present
+    // and the exception is handled.
+    try {
+      ee[kCapture] = false;
+      ee.emit('error', err);
+    } finally {
+      ee[kCapture] = prev;
+    }
+  }
+}
+
+/**
+ * Increases the max listeners of the event emitter.
+ * @param {number} n
+ * @returns {EventEmitter}
+ */
+EventEmitter.prototype.setMaxListeners = function setMaxListeners(n) {
+  validateNumber(n, 'setMaxListeners', 0);
+  this._maxListeners = n;
+  return this;
+};
+
+function _getMaxListeners(that) {
+  if (that._maxListeners === undefined)
+    return EventEmitter.defaultMaxListeners;
+  return that._maxListeners;
+}
+
+/**
+ * Returns the current max listener value for the event emitter.
+ * @returns {number}
+ */
+EventEmitter.prototype.getMaxListeners = function getMaxListeners() {
+  return _getMaxListeners(this);
+};
+
+function getUnhandledErrorException(ee, args) {
+  const value = args[0];
+  if (value instanceof Error) return value;
+  let rendered;
+  try { rendered = inspect(value); } catch { rendered = value; }
+  const error = new Error(rendered === undefined ? 'Unhandled error.' : `Unhandled error. (${rendered})`);
+  error.code = 'ERR_UNHANDLED_ERROR';
+  error.context = value;
+  return error;
+}
+
+/**
+ * Synchronously calls each of the listeners registered
+ * for the event.
+ * @param {string | symbol} type
+ * @param {...any} [args]
+ * @returns {boolean}
+ */
+EventEmitter.prototype.emit = function emit(type, ...args) {
+  let doError = (type === 'error');
+
+  const events = this._events;
+  if (events !== undefined) {
+    if (doError && events[kErrorMonitor] !== undefined)
+      this.emit(kErrorMonitor, ...args);
+    doError &&= events.error === undefined;
+  } else if (!doError)
+    return false;
+
+  // If there is no 'error' event listener then throw.
+  if (doError) {
+    const er = getUnhandledErrorException(this, args);
+    // Note: The comments on the `throw` lines are intentional, they show
+    // up in Node's output if this results in an unhandled exception.
+    throw er; // Unhandled 'error' event
+  }
+
+  const handler = events[type];
+
+  if (handler === undefined)
+    return false;
+
+  if (typeof handler === 'function') {
+    const result = ReflectApply(handler, this, args);
+
+    // We check if result is undefined first because that
+    // is the most common case so we do not pay any perf
+    // penalty
+    if (result !== undefined && result !== null) {
+      addCatch(this, result, type, args);
+    }
+  } else {
+    handler[kEmitting]++;
+    try {
+      for (let i = 0; i < handler.length; ++i) {
+        const result = ReflectApply(handler[i], this, args);
+
+        // We check if result is undefined first because that
+        // is the most common case so we do not pay any perf
+        // penalty.
+        // This code is duplicated because extracting it away
+        // would make it non-inlineable.
+        if (result !== undefined && result !== null) {
+          addCatch(this, result, type, args);
         }
+      }
+    } finally {
+      handler[kEmitting]--;
+    }
+  }
 
-        on(event, fn) {
-            if (!this._events[event]) this._events[event] = [];
-            this._events[event].push({ fn, once: false });
-            return this;
-        }
+  return true;
+};
 
-        once(event, fn) {
-            if (!this._events[event]) this._events[event] = [];
-            this._events[event].push({ fn, once: true });
-            return this;
-        }
+function _addListener(target, type, listener, prepend) {
+  let m;
+  let events;
+  let existing;
 
-        off(event, fn) {
-            const list = this._events[event];
-            if (!list) return this;
-            this._events[event] = list.filter(l => l.fn !== fn);
-            return this;
-        }
+  checkListener(listener);
 
-        removeAllListeners(event) {
-            if (event) {
-                delete this._events[event];
-            } else {
-                this._events = Object.create(null);
-            }
-            return this;
-        }
+  events = target._events;
+  if (events === undefined) {
+    events = target._events = { __proto__: null };
+    target._eventsCount = 0;
+  } else {
+    // To avoid recursion in the case that type === "newListener"! Before
+    // adding it to the listeners, first emit "newListener".
+    if (events.newListener !== undefined) {
+      target.emit('newListener', type,
+                  listener.listener ?? listener);
 
-        listeners(event) {
-            return (this._events[event] || []).map(l => l.fn);
-        }
+      // Re-assign `events` because a newListener handler could have caused the
+      // this._events to be assigned to a new object
+      events = target._events;
+    }
+    existing = events[type];
+  }
 
-        rawListeners(event) {
-            return (this._events[event] || []).slice();
-        }
-
-        listenerCount(event) {
-            return (this._events[event] || []).length;
-        }
-
-        eventNames() {
-            return Object.keys(this._events).filter(k => this._events[k].length > 0);
-        }
-
-        prependListener(event, fn) {
-            if (!this._events[event]) this._events[event] = [];
-            this._events[event].unshift({ fn, once: false });
-            return this;
-        }
-
-        prependOnceListener(event, fn) {
-            if (!this._events[event]) this._events[event] = [];
-            this._events[event].unshift({ fn, once: true });
-            return this;
-        }
+  if (existing === undefined) {
+    // Optimize the case of one listener. Don't need the extra array object.
+    events[type] = listener;
+    ++target._eventsCount;
+  } else {
+    if (typeof existing === 'function') {
+      // Adding the second element, need to change to array.
+      existing = prepend ? [listener, existing] : [existing, listener];
+      existing[kEmitting] = 0;
+      events[type] = existing;
+      // If we've already got an array, just append.
+    } else {
+      existing = ensureMutableListenerArray(events, type, existing);
+      if (prepend) {
+        existing.unshift(listener);
+      } else {
+        existing.push(listener);
+      }
     }
 
-    // addListener/removeListener share function references with on/off so that
-    // Minipass overriding one half and calling super.<other-half> dispatches to
-    // the same body — `this.<half>` aliasing would infinite-loop.
-    EventEmitter.prototype.addListener = EventEmitter.prototype.on;
-    EventEmitter.prototype.removeListener = EventEmitter.prototype.off;
+    // Check for listener leak
+    m = _getMaxListeners(target);
+    if (m > 0 && existing.length > m && !existing.warned)
+      warnMaxListenersExceeded(target, type, existing, m);
+  }
 
-    // require('events') returns the EventEmitter class itself (Node compat).
-    // Subclassing via `class Foo extends require('events')` only works if the
-    // export IS the class — extending a function that returns `new EE()` makes
-    // super() override `this`, leaving derived methods on an unused prototype.
-    EventEmitter.EventEmitter = EventEmitter;
-    EventEmitter.once = function(emitter, event) {
-        return new Promise((resolve, reject) => {
-            let settled = false;
-            const cleanup = () => {
-                emitter.removeListener(event, onEvent);
-                if (event !== 'error') emitter.removeListener('error', onError);
-            };
-            const onEvent = (...args) => {
-                if (settled) return;
-                settled = true;
-                cleanup();
-                resolve(args);
-            };
-            const onError = (err) => {
-                if (settled) return;
-                settled = true;
-                cleanup();
-                reject(err);
-            };
-            // Use .on() plus explicit cleanup instead of emitter.once(). Some
-            // npm streams cache selected metadata events and replay them from a
-            // custom .on() implementation; routing events.once() through .once()
-            // misses those replayed events and can leave callers hung forever.
-            if (event !== 'error') emitter.on('error', onError);
-            emitter.on(event, onEvent);
-        });
+  return target;
+}
+
+function warnMaxListenersExceeded(target, type, existing, m) {
+  existing.warned = true;
+  // No error code for this since it is a Warning
+  const w = genericNodeError(
+    `Possible EventEmitter memory leak detected. ${existing.length} ${String(type)} listeners ` +
+    `added to ${inspect(target, { depth: -1 })}. MaxListeners is ${m}. Use emitter.setMaxListeners() to increase limit`,
+    { name: 'MaxListenersExceededWarning', emitter: target, type: type, count: existing.length });
+  process.emitWarning(w);
+}
+
+/**
+ * Adds a listener to the event emitter.
+ * @param {string | symbol} type
+ * @param {Function} listener
+ * @returns {EventEmitter}
+ */
+EventEmitter.prototype.addListener = function addListener(type, listener) {
+  return _addListener(this, type, listener, false);
+};
+
+EventEmitter.prototype.on = EventEmitter.prototype.addListener;
+
+/**
+ * Adds the `listener` function to the beginning of
+ * the listeners array.
+ * @param {string | symbol} type
+ * @param {Function} listener
+ * @returns {EventEmitter}
+ */
+EventEmitter.prototype.prependListener =
+    function prependListener(type, listener) {
+      return _addListener(this, type, listener, true);
     };
+
+function _onceWrap(target, type, listener) {
+  let fired = false;
+  function wrapper(...args) {
+    if (fired) return;
+    fired = true;
+    target.removeListener(type, wrapper);
+    return ReflectApply(listener, target, args);
+  }
+  wrapper.listener = listener;
+  return wrapper;
+}
+
+/**
+ * Adds a one-time `listener` function to the event emitter.
+ * @param {string | symbol} type
+ * @param {Function} listener
+ * @returns {EventEmitter}
+ */
+EventEmitter.prototype.once = function once(type, listener) {
+  checkListener(listener);
+
+  this.on(type, _onceWrap(this, type, listener));
+  return this;
+};
+
+/**
+ * Adds a one-time `listener` function to the beginning of
+ * the listeners array.
+ * @param {string | symbol} type
+ * @param {Function} listener
+ * @returns {EventEmitter}
+ */
+EventEmitter.prototype.prependOnceListener =
+    function prependOnceListener(type, listener) {
+      checkListener(listener);
+
+      this.prependListener(type, _onceWrap(this, type, listener));
+      return this;
+    };
+
+/**
+ * Removes the specified `listener` from the listeners array.
+ * @param {string | symbol} type
+ * @param {Function} listener
+ * @returns {EventEmitter}
+ */
+EventEmitter.prototype.removeListener =
+    function removeListener(type, listener) {
+      checkListener(listener);
+
+      const events = this._events;
+      if (events === undefined)
+        return this;
+
+      let list = events[type];
+      if (list === undefined)
+        return this;
+
+      if (list === listener || list.listener === listener) {
+        this._eventsCount -= 1;
+
+        if (this[kShapeMode]) {
+          events[type] = undefined;
+        } else if (this._eventsCount === 0) {
+          this._events = { __proto__: null };
+        } else {
+          delete events[type];
+        }
+
+        if (events.removeListener !== undefined)
+          this.emit('removeListener', type, list.listener || listener);
+      } else if (typeof list !== 'function') {
+        list = ensureMutableListenerArray(events, type, list);
+        let position = -1;
+
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (list[i] === listener || list[i].listener === listener) {
+            position = i;
+            break;
+          }
+        }
+
+        if (position < 0)
+          return this;
+
+        if (position === 0)
+          list.shift();
+        else {
+          spliceOne(list, position);
+        }
+
+        if (list.length === 1)
+          events[type] = list[0];
+
+        if (events.removeListener !== undefined)
+          this.emit('removeListener', type, listener);
+      }
+
+      return this;
+    };
+
+EventEmitter.prototype.off = EventEmitter.prototype.removeListener;
+
+/**
+ * Removes all listeners from the event emitter. (Only
+ * removes listeners for a specific event name if specified
+ * as `type`).
+ * @param {string | symbol} [type]
+ * @returns {EventEmitter}
+ */
+EventEmitter.prototype.removeAllListeners =
+    function removeAllListeners(type) {
+      const events = this._events;
+      if (events === undefined)
+        return this;
+
+      // Not listening for removeListener, no need to emit
+      if (events.removeListener === undefined) {
+        if (arguments.length === 0) {
+          this._events = { __proto__: null };
+          this._eventsCount = 0;
+        } else if (events[type] !== undefined) {
+          if (--this._eventsCount === 0)
+            this._events = { __proto__: null };
+          else
+            delete events[type];
+        }
+        this[kShapeMode] = false;
+        return this;
+      }
+
+      // Emit removeListener for all listeners on all events
+      if (arguments.length === 0) {
+        for (const key of ReflectOwnKeys(events)) {
+          if (key === 'removeListener') continue;
+          this.removeAllListeners(key);
+        }
+        this.removeAllListeners('removeListener');
+        this._events = { __proto__: null };
+        this._eventsCount = 0;
+        this[kShapeMode] = false;
+        return this;
+      }
+
+      const listeners = events[type];
+
+      if (typeof listeners === 'function') {
+        this.removeListener(type, listeners);
+      } else if (listeners !== undefined) {
+        // LIFO order
+        for (let i = listeners.length - 1; i >= 0; i--) {
+          this.removeListener(type, listeners[i]);
+        }
+      }
+
+      return this;
+    };
+
+function _listeners(target, type, unwrap) {
+  const events = target._events;
+
+  if (events === undefined)
+    return [];
+
+  const evlistener = events[type];
+  if (evlistener === undefined)
+    return [];
+
+  if (typeof evlistener === 'function')
+    return unwrap ? [evlistener.listener || evlistener] : [evlistener];
+
+  return unwrap ?
+    unwrapListeners(evlistener) : arrayClone(evlistener);
+}
+
+/**
+ * Returns a copy of the array of listeners for the event name
+ * specified as `type`.
+ * @param {string | symbol} type
+ * @returns {Function[]}
+ */
+EventEmitter.prototype.listeners = function listeners(type) {
+  return _listeners(this, type, true);
+};
+
+/**
+ * Returns a copy of the array of listeners and wrappers for
+ * the event name specified as `type`.
+ * @param {string | symbol} type
+ * @returns {Function[]}
+ */
+EventEmitter.prototype.rawListeners = function rawListeners(type) {
+  return _listeners(this, type, false);
+};
+
+/**
+ * Returns the number of listeners listening to event name
+ * specified as `type`.
+ * @param {string | symbol} type
+ * @param {Function} [listener]
+ * @returns {number}
+ */
+EventEmitter.prototype.listenerCount = function listenerCount(type, listener) {
+  const events = this._events;
+
+  if (events !== undefined) {
+    const evlistener = events[type];
+
+    if (typeof evlistener === 'function') {
+      if (listener != null) {
+        return listener === evlistener || listener === evlistener.listener ? 1 : 0;
+      }
+
+      return 1;
+    } else if (evlistener !== undefined) {
+      if (listener != null) {
+        let matching = 0;
+
+        for (let i = 0, l = evlistener.length; i < l; i++) {
+          if (evlistener[i] === listener || evlistener[i].listener === listener) {
+            matching++;
+          }
+        }
+
+        return matching;
+      }
+
+      return evlistener.length;
+    }
+  }
+
+  return 0;
+};
+
+/**
+ * Returns an array listing the events for which
+ * the emitter has registered listeners.
+ * @returns {(string | symbol)[]}
+ */
+EventEmitter.prototype.eventNames = function eventNames() {
+  if (this._eventsCount === 0)
+    return [];
+  const events = this._events;
+  const names = [];
+  for (const key of ReflectOwnKeys(events)) {
+    // Removed listeners leave the key in place with an `undefined` value.
+    if (events[key] !== undefined)
+      ArrayPrototypePush(names, key);
+  }
+  return names;
+};
+
+function arrayClone(arr) {
+  switch (arr.length) {
+    case 2: return [arr[0], arr[1]];
+    case 3: return [arr[0], arr[1], arr[2]];
+    case 4: return [arr[0], arr[1], arr[2], arr[3]];
+    case 5: return [arr[0], arr[1], arr[2], arr[3], arr[4]];
+    case 6: return [arr[0], arr[1], arr[2], arr[3], arr[4], arr[5]];
+  }
+  return ArrayPrototypeSlice(arr);
+}
+
+function cloneEventListenerArray(arr) {
+  const copy = arrayClone(arr);
+  copy[kEmitting] = 0;
+  if (arr.warned) {
+    copy.warned = true;
+  }
+  return copy;
+}
+
+function ensureMutableListenerArray(events, type, handler) {
+  if (handler[kEmitting] > 0) {
+    const copy = cloneEventListenerArray(handler);
+    events[type] = copy;
+    return copy;
+  }
+  return handler;
+}
+
+function unwrapListeners(arr) {
+  const ret = arrayClone(arr);
+  for (let i = 0; i < ret.length; ++i) {
+    const orig = ret[i].listener;
+    if (typeof orig === 'function')
+      ret[i] = orig;
+  }
+  return ret;
+}
+
+
+
+EventEmitter.getEventListeners = function getEventListeners(emitter, type) {
+  if (typeof emitter?.listeners === 'function') return emitter.listeners(type);
+  if (isPublicEventTarget(emitter)) return _nodeEventPlatform.helpers.getEventListeners(emitter, type);
+  throw new ERR_INVALID_ARG_TYPE('emitter', ['EventEmitter', 'EventTarget'], emitter);
+};
+EventEmitter.getMaxListeners = function getMaxListeners(emitter) {
+  if (typeof emitter?.getMaxListeners === 'function') return emitter.getMaxListeners();
+  if (isPublicEventTarget(emitter)) return emitter[kMaxEventTargetListeners];
+  throw new ERR_INVALID_ARG_TYPE('emitter', ['EventEmitter', 'EventTarget'], emitter);
+};
+EventEmitter.listenerCount = function listenerCount(emitter, type) {
+  if (typeof emitter?.listenerCount === 'function') return emitter.listenerCount(type);
+  return ReflectApply(EventEmitter.prototype.listenerCount, emitter, [type]);
+};
+    // Public once/on/abort helpers are linked with EventTarget below, after
+    // the process, timer and inspection dependencies have been initialized.
     return EventEmitter;
 })();
 
-// events.setMaxListeners(n, ...emitters) — Claude Code's undici transport
-// calls this at startup to raise the default cap; forward it to each
-// target emitter (or is a no-op for the process-wide default we don't
-// track separately).
-events.setMaxListeners = function (n, ...emitters) {
-    for (const em of emitters) {
-        if (em && typeof em.setMaxListeners === 'function') em.setMaxListeners(n);
-    }
-};
+// events.setMaxListeners is implemented by the shared listener core above.
 
 // ============================================================
 // Buffer class
 // ============================================================
 
-const Buffer = (() => {
+const _FastBuffer = (() => {
     const _encoder = new TextEncoder();
     const _decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+    const typedPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+    const typedLength = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(typedPrototype, 'length').get);
+    const typedTag = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(typedPrototype, Symbol.toStringTag).get);
+    const hexMin = Math.min;
+    const SingleByteArray = Uint8Array;
+    const singleByteCharCode = Function.prototype.call.bind(String.prototype.charCodeAt);
+    const normalizeSingleByteEncoding = Function.prototype.call.bind(String.prototype.toLowerCase);
+    const singleByteBacking = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(typedPrototype, 'buffer').get);
 
-    class Buffer extends Uint8Array {
+    class FastBuffer extends Uint8Array {
         // Static factory methods
         static alloc(size, fill, encoding) {
-            const buf = new Buffer(size);
+            const buf = new FastBuffer(size);
             if (fill !== undefined) {
                 if (typeof fill === 'number') {
                     buf.fill(fill);
@@ -692,41 +1183,48 @@ const Buffer = (() => {
         }
 
         static allocUnsafe(size) {
-            return new Buffer(size);
+            return new FastBuffer(size);
         }
 
         static from(value, encodingOrOffset, length) {
             if (typeof value === 'string') {
-                const encoding = encodingOrOffset || 'utf8';
+                const encoding = typeof encodingOrOffset === 'string' ? normalizeSingleByteEncoding(encodingOrOffset) : 'utf8';
+                if (encoding === 'latin1' || encoding === 'binary' || encoding === 'ascii') {
+                    // Node's single-byte encoders retain the low eight bits
+                    // of each UTF-16 code unit (ASCII decoding is separate).
+                    const bytes = new SingleByteArray(value.length);
+                    for (let i = 0; i < value.length; i++) bytes[i] = singleByteCharCode(value, i);
+                    return new FastBuffer(singleByteBacking(bytes));
+                }
                 if (encoding === 'hex') {
                     const bytes = [];
                     for (let i = 0; i < value.length; i += 2) {
                         bytes.push(parseInt(value.substr(i, 2), 16));
                     }
-                    return new Buffer(bytes);
+                    return new FastBuffer(bytes);
                 }
                 if (encoding === 'base64') {
                     const binary = atob(value);
                     const bytes = new Uint8Array(binary.length);
                     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-                    return new Buffer(bytes.buffer);
+                    return new FastBuffer(bytes.buffer);
                 }
-                // utf8 or ascii or latin1
-                return new Buffer(_encoder.encode(value));
+                // Other string codecs remain a separate implementation gap.
+                return new FastBuffer(_encoder.encode(value));
             }
             if (value instanceof ArrayBuffer || value instanceof SharedArrayBuffer) {
-                return new Buffer(value, encodingOrOffset, length);
+                return new FastBuffer(value, encodingOrOffset, length);
             }
             if (ArrayBuffer.isView(value)) {
-                return new Buffer(value.buffer, value.byteOffset, value.byteLength);
+                return new FastBuffer(value.buffer, value.byteOffset, value.byteLength);
             }
             if (Array.isArray(value)) {
-                return new Buffer(value);
+                return new FastBuffer(value);
             }
-            if (typeof value === 'object' && value.type === 'Buffer' && Array.isArray(value.data)) {
-                return new Buffer(value.data);
+            if (typeof value === 'object' && value.type === 'FastBuffer' && Array.isArray(value.data)) {
+                return new FastBuffer(value.data);
             }
-            throw new TypeError('Invalid argument for Buffer.from');
+            throw new TypeError('Invalid argument for FastBuffer.from');
         }
 
         static concat(list, totalLength) {
@@ -734,10 +1232,10 @@ const Buffer = (() => {
                 totalLength = 0;
                 for (const buf of list) totalLength += buf.length;
             }
-            const result = Buffer.alloc(totalLength);
+            const result = FastBuffer.alloc(totalLength);
             let offset = 0;
             for (const buf of list) {
-                const src = buf instanceof Uint8Array ? buf : Buffer.from(buf);
+                const src = buf instanceof Uint8Array ? buf : FastBuffer.from(buf);
                 result.set(src, offset);
                 offset += src.length;
                 if (offset >= totalLength) break;
@@ -746,7 +1244,7 @@ const Buffer = (() => {
         }
 
         static isBuffer(obj) {
-            return obj instanceof Buffer;
+            return obj instanceof FastBuffer;
         }
 
         static isEncoding(encoding) {
@@ -792,6 +1290,18 @@ const Buffer = (() => {
             return _decoder.decode(slice);
         }
 
+        hexSlice(start = 0, end) {
+            if (typedTag(this) !== 'Uint8Array') throw new TypeError('hexSlice requires a Uint8Array');
+            const length = typedLength(this);
+            let result = '';
+            start = start >>> 0;
+            end = end === undefined ? length : hexMin(end >>> 0, length);
+            for (let i = start; i < end; i++) {
+                result += '0123456789abcdef'[this[i] >>> 4] + '0123456789abcdef'[this[i] & 15];
+            }
+            return result;
+        }
+
         write(string, offset, length, encoding) {
             if (typeof offset === 'string') { encoding = offset; offset = 0; length = this.length; }
             else if (typeof length === 'string') { encoding = length; length = this.length - (offset || 0); }
@@ -804,18 +1314,18 @@ const Buffer = (() => {
         }
 
         toJSON() {
-            return { type: 'Buffer', data: Array.from(this) };
+            return { type: 'FastBuffer', data: Array.from(this) };
         }
 
         equals(other) {
-            return Buffer.compare(this, other) === 0;
+            return FastBuffer.compare(this, other) === 0;
         }
 
         compare(other, targetStart, targetEnd, sourceStart, sourceEnd) {
             const src = this.subarray(sourceStart || 0, sourceEnd);
-            const tgt = (other instanceof Uint8Array ? other : Buffer.from(other))
+            const tgt = (other instanceof Uint8Array ? other : FastBuffer.from(other))
                         .subarray(targetStart || 0, targetEnd);
-            return Buffer.compare(src, tgt);
+            return FastBuffer.compare(src, tgt);
         }
 
         copy(target, targetStart, sourceStart, sourceEnd) {
@@ -829,12 +1339,12 @@ const Buffer = (() => {
 
         slice(start, end) {
             const sliced = super.subarray(start, end);
-            return Object.setPrototypeOf(sliced, Buffer.prototype);
+            return Object.setPrototypeOf(sliced, FastBuffer.prototype);
         }
 
         subarray(start, end) {
             const sliced = super.subarray(start, end);
-            return Object.setPrototypeOf(sliced, Buffer.prototype);
+            return Object.setPrototypeOf(sliced, FastBuffer.prototype);
         }
 
         indexOf(value, byteOffset, encoding) {
@@ -845,7 +1355,7 @@ const Buffer = (() => {
                 }
                 return -1;
             }
-            if (typeof value === 'string') value = Buffer.from(value, encoding);
+            if (typeof value === 'string') value = FastBuffer.from(value, encoding);
             for (let i = byteOffset; i <= this.length - value.length; i++) {
                 let found = true;
                 for (let j = 0; j < value.length; j++) {
@@ -860,92 +1370,49 @@ const Buffer = (() => {
             return this.indexOf(value, byteOffset, encoding) !== -1;
         }
 
-        // Read/write integers (little-endian and big-endian)
-        readUInt8(offset) { return this[offset]; }
-        readUInt16LE(offset) { return this[offset] | (this[offset + 1] << 8); }
-        readUInt16BE(offset) { return (this[offset] << 8) | this[offset + 1]; }
-        readUInt32LE(offset) { return (this[offset] | (this[offset+1] << 8) | (this[offset+2] << 16) | (this[offset+3] << 24)) >>> 0; }
-        readUInt32BE(offset) { return ((this[offset] << 24) | (this[offset+1] << 16) | (this[offset+2] << 8) | this[offset+3]) >>> 0; }
-        readInt8(offset) { const v = this[offset]; return v > 127 ? v - 256 : v; }
-        readInt16LE(offset) { const v = this.readUInt16LE(offset); return v > 32767 ? v - 65536 : v; }
-        readInt16BE(offset) { const v = this.readUInt16BE(offset); return v > 32767 ? v - 65536 : v; }
-        readInt32LE(offset) { return this[offset] | (this[offset+1] << 8) | (this[offset+2] << 16) | (this[offset+3] << 24); }
-        readInt32BE(offset) { return (this[offset] << 24) | (this[offset+1] << 16) | (this[offset+2] << 8) | this[offset+3]; }
-
-        writeUInt8(value, offset) { this[offset] = value & 0xff; return offset + 1; }
-        writeUInt16LE(value, offset) { this[offset] = value & 0xff; this[offset+1] = (value >> 8) & 0xff; return offset + 2; }
-        writeUInt16BE(value, offset) { this[offset] = (value >> 8) & 0xff; this[offset+1] = value & 0xff; return offset + 2; }
-        writeUInt32LE(value, offset) { this[offset] = value & 0xff; this[offset+1] = (value >> 8) & 0xff; this[offset+2] = (value >> 16) & 0xff; this[offset+3] = (value >> 24) & 0xff; return offset + 4; }
-        writeUInt32BE(value, offset) { this[offset] = (value >> 24) & 0xff; this[offset+1] = (value >> 16) & 0xff; this[offset+2] = (value >> 8) & 0xff; this[offset+3] = value & 0xff; return offset + 4; }
-        writeInt8(value, offset) { if (value < 0) value = 256 + value; return this.writeUInt8(value, offset); }
-        writeInt16LE(value, offset) { if (value < 0) value = 65536 + value; return this.writeUInt16LE(value, offset); }
-        writeInt16BE(value, offset) { if (value < 0) value = 65536 + value; return this.writeUInt16BE(value, offset); }
-        writeInt32LE(value, offset) { if (value < 0) value = 4294967296 + value; return this.writeUInt32LE(value, offset); }
-        writeInt32BE(value, offset) { if (value < 0) value = 4294967296 + value; return this.writeUInt32BE(value, offset); }
-
-        // Float read/write via DataView
-        readFloatLE(offset) { return new DataView(this.buffer, this.byteOffset).getFloat32(offset, true); }
-        readFloatBE(offset) { return new DataView(this.buffer, this.byteOffset).getFloat32(offset, false); }
-        readDoubleLE(offset) { return new DataView(this.buffer, this.byteOffset).getFloat64(offset, true); }
-        readDoubleBE(offset) { return new DataView(this.buffer, this.byteOffset).getFloat64(offset, false); }
-        writeFloatLE(value, offset) { new DataView(this.buffer, this.byteOffset).setFloat32(offset, value, true); return offset + 4; }
-        writeFloatBE(value, offset) { new DataView(this.buffer, this.byteOffset).setFloat32(offset, value, false); return offset + 4; }
-        writeDoubleLE(value, offset) { new DataView(this.buffer, this.byteOffset).setFloat64(offset, value, true); return offset + 8; }
-        writeDoubleBE(value, offset) { new DataView(this.buffer, this.byteOffset).setFloat64(offset, value, false); return offset + 8; }
     }
 
-    return Buffer;
+    return FastBuffer;
 })();
+
+const _nodeBufferConstructor = _createNodeBufferConstructor({
+    FastBuffer: _FastBuffer,
+    isInsideNodeModules: _nodeNative.isInsideNodeModules,
+    getOptionValue(name) {
+        if (name === '--pending-deprecation') return _nodeBufferPendingDeprecation;
+        throw new Error('Unknown Buffer constructor option: ' + name);
+    },
+});
+const Buffer = _nodeBufferConstructor.Buffer;
+const _nodeBufferPendingDeprecation = _nodeNative.environment('safeget', 'NODE_PENDING_DEPRECATION') === '1';
+
+const _nodeBufferLimits = _nodeNative.getBufferLimits();
+const _nodeBufferConstants = Object.defineProperties({}, {
+    MAX_LENGTH: { value: _nodeBufferLimits.MAX_LENGTH, enumerable: true },
+    MAX_STRING_LENGTH: { value: _nodeBufferLimits.MAX_STRING_LENGTH, enumerable: true },
+});
+const _nodeBufferModule = {
+    Buffer,
+    atob: globalThis.atob,
+    btoa: globalThis.btoa,
+    isAscii: _bufferIsAscii,
+    isUtf8: _bufferIsUtf8,
+    constants: _nodeBufferConstants,
+    kMaxLength: _nodeBufferConstants.MAX_LENGTH,
+    kStringMaxLength: _nodeBufferConstants.MAX_STRING_LENGTH,
+};
+
 
 // ============================================================
 // process module
 // ============================================================
 
+const _nodeProcessClock = _createNodeProcessClock({ native: _nodeNative, getValues: () => _nodeValues });
+const _nodeProcessState = _createNodeProcessState({ native: _nodeNative, getValues: () => _nodeValues });
 const process = (() => {
     const [cwd_val] = os.getcwd();
     let _cwd = cwd_val || '/';
-    const _env = {};
-
-    // Populate env from /proc/self/environ or common vars
-    for (const key of ['HOME', 'USER', 'PATH', 'SHELL', 'TERM', 'LANG', 'PWD',
-                        'TMPDIR', 'TMP', 'TEMP', 'NODE_ENV', 'NODE_PATH',
-                        'NODE_DEBUG', 'NODE_OPTIONS',
-                        'npm_config_cache', 'npm_config_registry',
-                        'npm_config_fund', 'npm_config_audit',
-                        'npm_config_progress', 'npm_config_update_notifier',
-                        'NPM_CONFIG_CACHE', 'NPM_CONFIG_REGISTRY',
-                        'NPM_CONFIG_FUND', 'NPM_CONFIG_AUDIT',
-                        'NPM_CONFIG_PROGRESS', 'NPM_CONFIG_UPDATE_NOTIFIER']) {
-        const val = std.getenv(key);
-        if (val !== null && val !== undefined) _env[key] = val;
-    }
-    if (!_env.PATH) _env.PATH = '/usr/local/bin:/usr/bin:/bin';
-
-    // Proxy env to catch all gets/sets
-    const envProxy = new Proxy(_env, {
-        get(target, prop) {
-            if (typeof prop === 'symbol') return target[prop];
-            // Try live lookup for unknown keys
-            if (!(prop in target)) {
-                const val = std.getenv(String(prop));
-                if (val !== null && val !== undefined) {
-                    target[prop] = val;
-                    return val;
-                }
-            }
-            return target[prop];
-        },
-        set(target, prop, value) {
-            target[prop] = String(value);
-            std.setenv(String(prop), String(value));
-            return true;
-        },
-        deleteProperty(target, prop) {
-            delete target[prop];
-            std.unsetenv(String(prop));
-            return true;
-        },
-    });
+    const envProxy = _nodeProcessState.createEnvironment();
 
     // Create process as an EventEmitter instance without calling the class constructor
     const proc = new events.EventEmitter();
@@ -953,28 +1420,29 @@ const process = (() => {
 
     Object.assign(proc, {
         title: 'node',
-        version: 'v' + _nodeCompatibilityTarget.version, // API target, not a conformance claim
-        versions: {
-            node: _nodeCompatibilityTarget.version,
-            spidermonkey: '140.11.0esr',
-            // Native Node addons, V8 and libuv are not provided by this runtime.
-        },
         arch: 'wasm32',
         platform: 'kandelo', // POSIX platform, not a Linux runtime
         env: envProxy,
         argv: [],  // Set by node-main.c
         argv0: '',
-        execArgv: [],
+        execArgv: Array.from(_nodeNative.cliOptions?.execArgv || []),
         execPath: '/usr/bin/node',
         pid: os.getpid(),
-        ppid: 0,  // Not easily available
         // Absence is observable: applications use an assigned exitCode to
         // distinguish a requested shutdown from a running process.
         exitCode: undefined,
         _exiting: false,
 
-        cwd() { return _cwd; },
+        cwd() {
+            if (_nodeNative.workerEnvironment) {
+                const [directory, error] = os.getcwd();
+                if (error) _throwErrno(error, 'cwd');
+                return directory;
+            }
+            return _cwd;
+        },
         chdir(dir) {
+            if (_nodeNative.workerEnvironment) throw new _nodeValues.errors.codes.ERR_WORKER_UNSUPPORTED_OPERATION('process.chdir()');
             const err = os.chdir(dir);
             if (err !== 0) _throwErrno(err, 'chdir', dir);
             const [newCwd] = os.getcwd();
@@ -1028,34 +1496,7 @@ const process = (() => {
             return true;
         },
 
-        hrtime: Object.assign(function hrtime(prev) {
-            const now = _hrtimeNow();
-            if (prev) {
-                let sec = now[0] - prev[0];
-                let nsec = now[1] - prev[1];
-                if (nsec < 0) { sec--; nsec += 1e9; }
-                return [sec, nsec];
-            }
-            return now;
-        }, {
-            bigint() {
-                const [sec, nsec] = _hrtimeNow();
-                return BigInt(sec) * 1000000000n + BigInt(nsec);
-            }
-        }),
-
-        memoryUsage() {
-            return { rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 };
-        },
-
-        cpuUsage(prev) {
-            const usage = { user: 0, system: 0 };
-            if (prev) {
-                usage.user -= prev.user;
-                usage.system -= prev.system;
-            }
-            return usage;
-        },
+        hrtime: _nodeProcessClock.hrtime,
 
         emitWarning(warning, type, code, ctor) {
             if (proc.noDeprecation && type === 'DeprecationWarning') return;
@@ -1086,31 +1527,26 @@ const process = (() => {
         },
 
         nextTick(fn, ...args) {
-            // This compatibility layer does not have a real nextTick queue,
-            // but queueMicrotask preserves the ordering expected here.
-            queueMicrotask(() => fn(...args));
+            _nodeAsyncPlatform.enqueueTick(fn, ...args);
         },
 
         uptime() {
-            return (Date.now() - _startTime) / 1000;
+            return _nodeNative.performanceNow() / 1000;
         },
 
-        umask(mask) {
-            // TODO: implement via syscall
-            if (mask !== undefined) return 0o022;
-            return 0o022;
-        },
+        umask: _nodeNative.workerEnvironment ? undefined : _nodeProcessState.createUmask(),
 
         features: {},
         config: { variables: {} },
         release: { name: 'node', lts: _nodeCompatibilityTarget.lts },
         moduleLoadList: [],
-        // npm-install-checks reads `process.report.getReport().sharedObjects`
-        // to detect glibc-vs-musl when /usr/bin/ldd is unavailable.
         report: {
-            getReport() { return { sharedObjects: ['/lib/ld-musl-wasm32.so.1'] }; },
+            getReport() { throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('process.report.getReport measurements and loaded objects'); },
         },
     });
+
+    Object.defineProperty(proc, 'ppid', { enumerable: true, configurable: true,
+        get: _nodeProcessState.parentPid });
 
     // Node stores a validated integer in its native int32 exit-info field.
     // Clearing with null or undefined restores absence, rather than storing
@@ -1146,22 +1582,24 @@ const process = (() => {
     });
 
     proc.on('warning', warning => {
-        if (proc.env.NODE_NO_WARNINGS === '1') return;
+        if (_nodeNative.cliOptions?.noWarnings || proc.env.NODE_NO_WARNINGS === '1') return;
         const prefix = '(' + proc.release.name + ':' + proc.pid + ') ';
         const code = warning.code ? '[' + warning.code + '] ' : '';
         std.err.puts(prefix + code + (proc.traceDeprecation && warning.name === 'DeprecationWarning' ? warning.stack : warningToString(warning)) + '\n');
         if (warning.detail) std.err.puts(warning.detail + '\n');
     });
 
+    // Target version states the requested API; dependency versions come from
+    // the native owners and never imply complete Node conformance.
+    _nodeProcessState.installVersions(proc, _nodeCompatibilityTarget.version, '140.11.0esr');
     return proc;
 })();
 
-const _startTime = Date.now();
+// The pinned path module consumes the actual process cwd/environment. Both
+// path variants are independent algorithms; the guest remains POSIX Kandelo.
+const path = _createNodePathPlatform({ process, inspect: value => util.inspect(value), getValues: () => _nodeValues });
 
-function _hrtimeNow() {
-    const ms = Date.now();
-    return [Math.floor(ms / 1000), (ms % 1000) * 1e6];
-}
+const _startTime = Date.now();
 
 // Lazy stream creation for stdout/stderr/stdin
 let _stdout, _stderr, _stdin;
@@ -1176,133 +1614,33 @@ function _refreshWs(fd) {
     return _wsCache.get(fd) || null;
 }
 
-function _writeControl(stream, seq, cb) {
-    stream.write(seq);
-    if (typeof cb === 'function') cb();
-    return true;
-}
-
-function _cursorTo(stream, x, y, cb) {
-    if (typeof y === 'function') { cb = y; y = undefined; }
-    x = Math.max(0, x | 0);
-    if (typeof y === 'number') {
-        return _writeControl(stream, `\x1b[${Math.max(0, y | 0) + 1};${x + 1}H`, cb);
-    }
-    return _writeControl(stream, `\x1b[${x + 1}G`, cb);
-}
-
-function _moveCursor(stream, dx, dy, cb) {
-    let seq = '';
-    dx = dx | 0;
-    dy = dy | 0;
-    if (dx < 0) seq += `\x1b[${-dx}D`;
-    else if (dx > 0) seq += `\x1b[${dx}C`;
-    if (dy < 0) seq += `\x1b[${-dy}A`;
-    else if (dy > 0) seq += `\x1b[${dy}B`;
-    return _writeControl(stream, seq, cb);
-}
-
-function _clearLine(stream, dir, cb) {
-    if (typeof dir === 'function') { cb = dir; dir = 0; }
-    const mode = dir < 0 ? 1 : dir > 0 ? 0 : 2;
-    return _writeControl(stream, `\x1b[${mode}K`, cb);
-}
-
-function _clearScreenDown(stream, cb) {
-    return _writeControl(stream, '\x1b[0J', cb);
-}
+let _nodeReadlinePlatform;
+function _cursorTo(...args) { return _nodeReadlinePlatform.callbacks.cursorTo(...args); }
+function _moveCursor(...args) { return _nodeReadlinePlatform.callbacks.moveCursor(...args); }
+function _clearLine(...args) { return _nodeReadlinePlatform.callbacks.clearLine(...args); }
+function _clearScreenDown(...args) { return _nodeReadlinePlatform.callbacks.clearScreenDown(...args); }
 
 function _createWriteStream(fd) {
     if (fd === 1 && _stdout) return _stdout;
     if (fd === 2 && _stderr) return _stderr;
-    const listeners = new Map();
-    const s = {
-        fd,
-        writable: true,
-        write(data, encoding, cb) {
-            if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
-            if (typeof data === 'string') {
-                const sink = fd === 2 ? std.err : std.out;
-                sink.puts(data);
-                sink.flush();
-            } else if (data instanceof Uint8Array) {
-                os.write(fd, data.buffer, data.byteOffset, data.byteLength);
-            }
-            if (cb) cb();
-            return true;
-        },
-        end(data, encoding, cb) {
-            if (data) s.write(data, encoding);
-            if (typeof cb === 'function') cb();
-        },
-        on(event, cb) {
-            if (typeof cb !== 'function') return s;
-            if (!listeners.has(event)) listeners.set(event, []);
-            listeners.get(event).push(cb);
-            return s;
-        },
-        addListener(event, cb) { return s.on(event, cb); },
-        once(event, cb) {
-            const wrap = (...a) => { s.removeListener(event, wrap); cb(...a); };
-            return s.on(event, wrap);
-        },
-        emit(event, ...args) {
-            const arr = listeners.get(event);
-            if (!arr || arr.length === 0) return false;
-            for (const cb of arr.slice()) {
-                try { cb(...args); } catch (e) { Promise.reject(e); }
-            }
-            return true;
-        },
-        removeListener(event, cb) {
-            const arr = listeners.get(event);
-            if (!arr) return s;
-            const i = arr.indexOf(cb);
-            if (i >= 0) arr.splice(i, 1);
-            return s;
-        },
-        off(event, cb) { return s.removeListener(event, cb); },
-        removeAllListeners(event) {
-            if (event === undefined) listeners.clear();
-            else listeners.delete(event);
-            return s;
-        },
-        listenerCount(event) {
-            const arr = listeners.get(event);
-            return arr ? arr.length : 0;
-        },
-        cursorTo(x, y, cb) { return _cursorTo(s, x, y, cb); },
-        moveCursor(dx, dy, cb) { return _moveCursor(s, dx, dy, cb); },
-        clearLine(dir, cb) { return _clearLine(s, dir, cb); },
-        clearScreenDown(cb) { return _clearScreenDown(s, cb); },
-        isTTY: os.isatty(fd),
-    };
-    Object.defineProperties(s, {
-        // Cached TIOCGWINSZ-backed accessors. TUIs (ink, blessed, pi-coding-agent)
-        // read these hundreds of times per render and route the result into
-        // cursor-position math; an ioctl per read is slow and risks racing
-        // the kernel's PTY state during resize. The cache is invalidated by
-        // the SIGWINCH handler below.
-        columns: {
-            get() {
-                const ws = _wsCache.get(fd) || _refreshWs(fd);
-                return ws ? ws[0] : 80;
-            },
-            enumerable: true,
-            configurable: true,
-        },
-        rows: {
-            get() {
-                const ws = _wsCache.get(fd) || _refreshWs(fd);
-                return ws ? ws[1] : 24;
-            },
-            enumerable: true,
-            configurable: true,
-        },
-    });
-    if (fd === 1) _stdout = s;
-    if (fd === 2) _stderr = s;
-    return s;
+    const output = _nodeFdStreamPlatform.writable(fd);
+    if (os.isatty(fd)) {
+        output.isTTY = true;
+        output.cursorTo = (x, y, cb) => _cursorTo(output, x, y, cb);
+        output.moveCursor = (dx, dy, cb) => _moveCursor(output, dx, dy, cb);
+        output.clearLine = (dir, cb) => _clearLine(output, dir, cb);
+        output.clearScreenDown = cb => _clearScreenDown(output, cb);
+        Object.defineProperties(output, {
+            columns: { configurable: true, enumerable: true,
+                get() { const ws = _wsCache.get(fd) || _refreshWs(fd); return ws ? ws[0] : undefined; } },
+            rows: { configurable: true, enumerable: true,
+                get() { const ws = _wsCache.get(fd) || _refreshWs(fd); return ws ? ws[1] : undefined; } },
+        });
+        output.getWindowSize = () => [output.columns, output.rows];
+    }
+    if (fd === 1) _stdout = output;
+    if (fd === 2) _stderr = output;
+    return output;
 }
 
 // SIGWINCH (signum 28 on Linux). The kernel raises it on every kernel_pty_set_winsize
@@ -1328,203 +1666,25 @@ try {
 
 function _createReadStream(fd) {
     if (_stdin) return _stdin;
-    // Real readable-stream surface for stdin. TUI libraries (readline,
-    // prompts, etc.) call resume()+on('data',cb) and expect bytes from fd 0.
-    // SpiderMonkey uses cancellable native read promises; QuickJS uses its
-    // real os.setReadHandler. Both deliver pipe EOF and terminal input.
-    const listeners = new Map(); // event → cb[]
-    const READ_BUF = new ArrayBuffer(4096);
-    const READ_VIEW = new Uint8Array(READ_BUF);
-    let watchInstalled = false;
-    let ended = false;
-    let _encoding = null;
-    let _decoder = null;
-    const nativeRead = typeof _nodeNative.__kandeloFdReadControl === 'function';
-    let pendingRead = null;
-    let pendingChunk = null;
-    let deliveryScheduled = false;
-    let referenced = true;
-    let destroyed = false;
-
-    function _emit(event, ...args) {
-        const arr = listeners.get(event);
-        if (!arr || arr.length === 0) {
-            if (event === 'error') throw args[0] instanceof Error ? args[0] : new Error(String(args[0]));
-            return false;
-        }
-        for (const cb of arr.slice()) {
-            try { cb(...args); }
-            catch (e) { Promise.reject(e); }
-        }
-        return true;
-    }
-
-    function _acceptBytes(bytes) {
-        if (bytes.byteLength === 0) {
-            ended = true;
-            _uninstall();
-            if (_decoder) { const tail = _decoder.end(); if (tail) _emit('data', tail); }
-            s.readable = false;
-            s.readableEnded = true;
-            _emit('end');
-            _emit('close');
-            return;
-        }
-        if (_decoder) {
-            const text = _decoder.write(bytes);
-            if (text) _emit('data', text);
-        } else {
-            const copy = Buffer.alloc(bytes.byteLength);
-            copy.set(bytes);
-            _emit('data', copy);
-        }
-    }
-
-    function _readError(error) {
-        ended = true;
-        _uninstall();
-        s.readable = false;
-        _emit('error', error instanceof Error ? error : new Error(String(error)));
-        _emit('close');
-    }
-
-    function _pumpNative() {
-        if (!watchInstalled || ended || destroyed || pendingRead || deliveryScheduled) return;
-        if (pendingChunk !== null) {
-            deliveryScheduled = true;
-            queueMicrotask(() => {
-                deliveryScheduled = false;
-                if (!watchInstalled || ended || destroyed) return;
-                const chunk = pendingChunk;
-                pendingChunk = null;
-                _acceptBytes(chunk);
-                _pumpNative();
-            });
-            return;
-        }
-        const request = { promise: _nodeNative.__kandeloFdRead(fd, 4096, true), cancelled: false };
-        pendingRead = request;
-        if (!referenced) _nodeNative.__kandeloFdReadControl(request.promise, false);
-        request.promise.then(bytes => {
-            pendingRead = null;
-            if (destroyed) return;
-            pendingChunk = bytes;
-            _pumpNative();
-        }, error => {
-            pendingRead = null;
-            if (!request.cancelled && !destroyed) {
-                _readError(error);
+    const input = _nodeFdStreamPlatform.readable(fd);
+    if (os.isatty(fd)) {
+        input.isTTY = true;
+        input.isRaw = false;
+        input.setRawMode = function setRawMode(raw) {
+            // The old adapter silently accepted a missing native operation.
+            // Never claim terminal state changed without an actual setter.
+            if (typeof _nodeNative.setRawMode !== 'function') {
+                const error = new Error('Terminal mode ownership is not implemented');
+                error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
             }
-            _pumpNative();
-        });
-    }
-
-    function _onReadable() {
-        let n;
-        try { n = os.read(fd, READ_BUF, 0, READ_VIEW.byteLength); }
-        catch (e) { _readError(e); return; }
-        if (n < 0) {
-            if (n === -11 || n === -4) return; // EAGAIN / EINTR are not EOF.
-            try { _throwErrno(-n, 'read'); }
-            catch (error) { _readError(error); }
-            return;
-        }
-        _acceptBytes(READ_VIEW.subarray(0, n));
-    }
-
-    function _install() {
-        if (watchInstalled || ended || destroyed) return;
-        watchInstalled = true;
-        if (nativeRead) _pumpNative();
-        else os.setReadHandler(fd, _onReadable);
-    }
-
-    function _uninstall() {
-        if (!watchInstalled) return;
-        watchInstalled = false;
-        if (nativeRead) {
-            if (pendingRead && !pendingRead.cancelled) {
-                pendingRead.cancelled = _nodeNative.__kandeloFdReadControl(pendingRead.promise, null);
-            }
-        } else os.setReadHandler(fd, null);
-    }
-
-    const s = {
-        fd,
-        readable: true,
-        readableEnded: false,
-        isTTY: os.isatty(fd),
-        isRaw: false,
-        read() { return null; },
-        on(event, cb) {
-            if (typeof cb !== 'function') return s;
-            if (!listeners.has(event)) listeners.set(event, []);
-            listeners.get(event).push(cb);
-            if (event === 'data') _install();
-            return s;
-        },
-        addListener(event, cb) { return s.on(event, cb); },
-        once(event, cb) {
-            const wrap = (...a) => { s.removeListener(event, wrap); cb(...a); };
-            return s.on(event, wrap);
-        },
-        emit(event, ...args) { return _emit(event, ...args); },
-        removeListener(event, cb) {
-            const arr = listeners.get(event);
-            if (!arr) return s;
-            const i = arr.indexOf(cb);
-            if (i >= 0) arr.splice(i, 1);
-            return s;
-        },
-        off(event, cb) { return s.removeListener(event, cb); },
-        removeAllListeners(event) {
-            if (event === undefined) listeners.clear();
-            else listeners.delete(event);
-            return s;
-        },
-        listenerCount(event) {
-            const arr = listeners.get(event);
-            return arr ? arr.length : 0;
-        },
-        resume() { _install(); return s; },
-        pause() { _uninstall(); return s; },
-        pipe(dest, options) { return stream.Stream.prototype.pipe.call(s, dest, options); },
-        unpipe() { return s; },
-        get readableEncoding() { return _decoder ? _decoder.encoding : null; },
-        setEncoding(enc) {
-            const decoder = new string_decoder.StringDecoder(enc);
-            _decoder = decoder;
-            _encoding = decoder.encoding;
-            s._encoding = decoder.encoding;
-            return s;
-        },
-        setRawMode(raw) {
-            // Real Node's process.stdin.setRawMode flips the TTY via
-            // tcsetattr (clears ICANON/ECHO/ICRNL/OPOST, sets VMIN=1/VTIME=0).
-            // TUIs depend on this: without it, ICRNL turns Enter `\r` into
-            // `\n`, ICANON line-buffers input until Enter, and the kernel
-            // double-echoes. See node-native.c for the tcsetattr plumbing.
             const want = !!raw;
-            if (s.isTTY && typeof _nodeNative.setRawMode === 'function') {
-                _nodeNative.setRawMode(fd, want);
-            }
-            s.isRaw = want;
-            return s;
-        },
-        unref() {
-            referenced = false;
-            if (nativeRead && pendingRead) _nodeNative.__kandeloFdReadControl(pendingRead.promise, false);
-            return s;
-        },
-        ref() {
-            referenced = true;
-            if (nativeRead && pendingRead) _nodeNative.__kandeloFdReadControl(pendingRead.promise, true);
-            return s;
-        },
-        destroy() { destroyed = true; _uninstall(); pendingChunk = null; listeners.clear(); return s; },
-    };
-    _stdin = s;
-    return s;
+            _nodeNative.setRawMode(fd, want);
+            input.isRaw = want;
+            return input;
+        };
+    }
+    _stdin = input;
+    return input;
 }
 
 // ============================================================
@@ -1532,63 +1692,7 @@ function _createReadStream(fd) {
 // ============================================================
 
 const fs = (() => {
-    const constants = {
-        O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 0o100,
-        O_EXCL: 0o200, O_TRUNC: 0o1000, O_APPEND: 0o2000,
-        O_DIRECTORY: 0o200000, O_NOFOLLOW: 0o400000,
-        S_IFMT: 0o170000, S_IFREG: 0o100000, S_IFDIR: 0o40000,
-        S_IFCHR: 0o20000, S_IFBLK: 0o60000, S_IFIFO: 0o10000,
-        S_IFLNK: 0o120000, S_IFSOCK: 0o140000,
-        S_IRWXU: 0o700, S_IRUSR: 0o400, S_IWUSR: 0o200, S_IXUSR: 0o100,
-        S_IRWXG: 0o70, S_IRGRP: 0o40, S_IWGRP: 0o20, S_IXGRP: 0o10,
-        S_IRWXO: 0o7, S_IROTH: 0o4, S_IWOTH: 0o2, S_IXOTH: 0o1,
-        F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
-        COPYFILE_EXCL: 1, COPYFILE_FICLONE: 2,
-    };
-
-    class Stats {
-        constructor(st) {
-            this.dev = st.dev || 0;
-            this.ino = st.ino || 0;
-            this.mode = st.mode || 0;
-            this.nlink = st.nlink || 0;
-            this.uid = st.uid || 0;
-            this.gid = st.gid || 0;
-            this.rdev = st.rdev || 0;
-            this.size = st.size || 0;
-            this.blksize = st.blocks ? 512 : 4096;
-            this.blocks = st.blocks || 0;
-            this.atimeMs = (st.atime || 0) * 1000;
-            this.mtimeMs = (st.mtime || 0) * 1000;
-            this.ctimeMs = (st.ctime || 0) * 1000;
-            this.birthtimeMs = this.ctimeMs;
-            this.atime = new Date(this.atimeMs);
-            this.mtime = new Date(this.mtimeMs);
-            this.ctime = new Date(this.ctimeMs);
-            this.birthtime = new Date(this.birthtimeMs);
-        }
-        isFile() { return (this.mode & constants.S_IFMT) === constants.S_IFREG; }
-        isDirectory() { return (this.mode & constants.S_IFMT) === constants.S_IFDIR; }
-        isSymbolicLink() { return (this.mode & constants.S_IFMT) === constants.S_IFLNK; }
-        isBlockDevice() { return (this.mode & constants.S_IFMT) === constants.S_IFBLK; }
-        isCharacterDevice() { return (this.mode & constants.S_IFMT) === constants.S_IFCHR; }
-        isFIFO() { return (this.mode & constants.S_IFMT) === constants.S_IFIFO; }
-        isSocket() { return (this.mode & constants.S_IFMT) === constants.S_IFSOCK; }
-    }
-
-    class Dirent {
-        constructor(name, type) {
-            this.name = name;
-            this._type = type;
-        }
-        isFile() { return this._type === 'file'; }
-        isDirectory() { return this._type === 'directory'; }
-        isSymbolicLink() { return this._type === 'symlink'; }
-        isBlockDevice() { return false; }
-        isCharacterDevice() { return false; }
-        isFIFO() { return false; }
-        isSocket() { return false; }
-    }
+    const constants = _nodeNative.getFsConstants();
 
     function _pathToString(p) {
         let result;
@@ -1632,180 +1736,37 @@ const fs = (() => {
     }
 
     function statSync(filepath, options) {
-        const p = _pathToString(filepath);
-        const [st, err] = os.stat(p);
-        if (err !== 0) _throwErrno(-err, 'stat', p);
-        const stats = new Stats(st);
-        if (options && options.bigint) {
-            // TODO: bigint stat
-        }
-        return stats;
+        return _nodeFsStats.statSync(filepath, options);
     }
 
     function lstatSync(filepath, options) {
-        const p = _pathToString(filepath);
-        const [st, err] = os.lstat(p);
-        if (err !== 0) _throwErrno(-err, 'lstat', p);
-        return new Stats(st);
+        return _nodeFsStats.lstatSync(filepath, options);
     }
 
-    function readFileSync(filepath, options) {
-        const p = _pathToString(filepath);
-        let encoding = null;
-        if (typeof options === 'string') encoding = options;
-        else if (options && options.encoding) encoding = options.encoding;
+    function readFileSync(filepath, options) { return _nodeFileSync.readFileSync(...arguments); }
 
-        const f = std.open(p, 'rb');
-        if (!f) {
-            _throwErrno(2, 'open', p); // ENOENT
-        }
-        f.seek(0, std.SEEK_END);
-        const size = f.tell();
-        f.seek(0, std.SEEK_SET);
-        const buf = new Uint8Array(size);
-        f.read(buf.buffer, 0, size);
-        f.close();
+    function writeFileSync(filepath, data, options) { return _nodeFileSync.writeFileSync(...arguments); }
 
-        if (encoding) {
-            return Buffer.from(buf).toString(encoding);
-        }
-        return Buffer.from(buf);
-    }
-
-    function writeFileSync(filepath, data, options) {
-        const p = _pathToString(filepath);
-        let encoding = 'utf8';
-        let mode = 0o666;
-        let flag = 'w';
-        if (typeof options === 'string') encoding = options;
-        else if (options) {
-            if (options.encoding) encoding = options.encoding;
-            if (options.mode) mode = options.mode;
-            if (options.flag) flag = options.flag;
-        }
-
-        const flags = _flagsToMode(flag);
-        const fd = os.open(p, flags, mode);
-        if (fd < 0) _throwErrno(-fd, 'open', p);
-
-        let buf;
-        if (typeof data === 'string') {
-            buf = new TextEncoder().encode(data);
-        } else if (data instanceof Uint8Array) {
-            buf = data;
-        } else {
-            buf = new TextEncoder().encode(String(data));
-        }
-        try {
-            let written = 0;
-            while (written < buf.byteLength) {
-                const n = writeSync(fd, buf, written, buf.byteLength - written);
-                if (n === 0) _throwErrno(5, 'write', p);
-                written += n;
-            }
-        } finally {
-            closeSync(fd);
-        }
-    }
-
-    function appendFileSync(filepath, data, options) {
-        const opts = typeof options === 'string' ? { encoding: options } : (options || {});
-        opts.flag = opts.flag || 'a';
-        writeFileSync(filepath, data, opts);
-    }
+    function appendFileSync(filepath, data, options) { return _nodeFileSync.appendFileSync(...arguments); }
 
     function readdirSync(dirpath, options) {
-        const p = _pathToString(dirpath);
-        const [entries, err] = os.readdir(p);
-        if (err !== 0) _throwErrno(-err, 'scandir', p);
-
-        const withFileTypes = options && options.withFileTypes;
-        const result = [];
-        for (const name of entries) {
-            if (name === '.' || name === '..') continue;
-            if (withFileTypes) {
-                const fullPath = p.endsWith('/') ? p + name : p + '/' + name;
-                const [st, serr] = os.lstat(fullPath);
-                let type = 'file';
-                if (serr === 0) {
-                    if ((st.mode & constants.S_IFMT) === constants.S_IFDIR) type = 'directory';
-                    else if ((st.mode & constants.S_IFMT) === constants.S_IFLNK) type = 'symlink';
-                }
-                result.push(new Dirent(name, type));
-            } else {
-                result.push(name);
-            }
-        }
-        return result;
+        return _nodeReaddirPlatform.api.readdirSync(...arguments);
     }
 
     function mkdirSync(dirpath, options) {
-        const p = _pathToString(dirpath);
-        const recursive = options && options.recursive;
-        const mode = (options && options.mode) || 0o777;
-
-        if (recursive) {
-            const parts = p.split('/').filter(Boolean);
-            let current = p.startsWith('/') ? '' : '.';
-            for (const part of parts) {
-                current += '/' + part;
-                const [, err] = os.stat(current);
-                if (err !== 0) {
-                    const mkErr = os.mkdir(current, mode);
-                    if (mkErr !== 0 && mkErr !== -17) { // not EEXIST
-                        _throwErrno(-mkErr, 'mkdir', current);
-                    }
-                }
-            }
-            return p;
-        }
-        const err = os.mkdir(p, mode);
-        if (err !== 0) _throwErrno(-err, 'mkdir', p);
+        return _nodeDirectoryPlatform.api.mkdirSync(...arguments);
     }
 
     function rmdirSync(dirpath, options) {
-        const p = _pathToString(dirpath);
-        const err = os.remove(p);
-        if (err !== 0) _throwErrno(-err, 'rmdir', p);
+        return _nodeDirectoryPlatform.api.rmdirSync(...arguments);
     }
 
-    // fs.rm: cacache cleans tmp dirs after content writes; tar uses it too.
-    // force=true silences ENOENT.
     function rmSync(targetPath, options) {
-        const opts = options || {};
-        const recursive = opts.recursive === true;
-        const force = opts.force === true;
-        const p = _pathToString(targetPath);
-        const [st, statErr] = os.lstat(p);
-        if (statErr !== 0) {
-            if (force) return;
-            _throwErrno(statErr, 'lstat', p);
-        }
-        const isDir = (st.mode & constants.S_IFMT) === constants.S_IFDIR;
-        const isSymlink = (st.mode & constants.S_IFMT) === constants.S_IFLNK;
-        if (isDir && !isSymlink) {
-            if (recursive) {
-                const [entries, dirErr] = os.readdir(p);
-                if (dirErr === 0) {
-                    for (const name of entries) {
-                        if (name === '.' || name === '..') continue;
-                        const child = p.endsWith('/') ? p + name : p + '/' + name;
-                        rmSync(child, opts);
-                    }
-                }
-            }
-            const err = os.remove(p);
-            if (err !== 0 && !force) _throwErrno(err < 0 ? -err : err, 'rmdir', p);
-        } else {
-            const err = os.remove(p);
-            if (err !== 0 && !force) _throwErrno(err < 0 ? -err : err, 'unlink', p);
-        }
+        return _nodeRemovalPlatform.api.rmSync(...arguments);
     }
 
     function unlinkSync(filepath) {
-        const p = _pathToString(filepath);
-        const err = os.remove(p);
-        if (err !== 0) _throwErrno(-err, 'unlink', p);
+        return _nodeDirectoryPlatform.api.unlinkSync(...arguments);
     }
 
     function renameSync(oldPath, newPath) {
@@ -1843,363 +1804,47 @@ const fs = (() => {
     }
 
     function chmodSync(filepath, mode) {
-        const p = _pathToString(filepath);
-        if (typeof mode === 'string') {
-            if (!/^[0-7]+$/.test(mode)) {
-                const error = new TypeError('The mode argument must be an octal string');
-                error.code = 'ERR_INVALID_ARG_VALUE';
-                throw error;
-            }
-            mode = parseInt(mode, 8);
-        }
-        if (typeof mode !== 'number') {
-            const error = new TypeError('The mode argument must be a number or octal string');
-            error.code = 'ERR_INVALID_ARG_TYPE';
-            throw error;
-        }
-        if (!Number.isInteger(mode) || mode < 0 || mode > 0xffffffff) {
-            const error = new RangeError('The mode argument must be a 32-bit unsigned integer');
-            error.code = 'ERR_OUT_OF_RANGE';
-            throw error;
-        }
-        const err = typeof os.chmod === 'function' ? os.chmod(p, mode) : -38;
-        if (err !== 0) _throwErrno(-err, 'chmod', p);
+        return _nodePathMetadata.api.chmodSync(...arguments);
     }
 
     function chownSync(filepath, uid, gid) {
-        const p = _pathToString(filepath);
-        const [, err] = os.stat(p);
-        if (err !== 0) _throwErrno(-err, 'chown', p);
-        void uid;
-        void gid;
+        return _nodePathMetadata.api.chownSync(...arguments);
     }
 
     function utimesSync(filepath, atime, mtime) {
-        const p = _pathToString(filepath);
-        const a = typeof atime === 'number' ? atime : atime.getTime() / 1000;
-        const m = typeof mtime === 'number' ? mtime : mtime.getTime() / 1000;
-        os.utimes(p, a, m);
-    }
-
-    function truncateSync(filepath, len) {
-        const p = _pathToString(filepath);
-        const fd = os.open(p, os.O_WRONLY);
-        if (fd < 0) _throwErrno(-fd, 'open', p);
-        // ftruncate not in os module — write approach
-        os.close(fd);
+        return _nodePathMetadata.api.utimesSync(...arguments);
     }
 
     function accessSync(filepath, mode) {
-        const p = _pathToString(filepath);
-        const [, err] = os.stat(p);
-        if (err !== 0) _throwErrno(-err, 'access', p);
+        return _nodePathMetadata.api.accessSync(...arguments);
     }
 
-    function openSync(filepath, flags, mode) {
-        const p = _pathToString(filepath);
-        const f = _flagsToMode(flags || 'r');
-        const m = mode || 0o666;
-        const fd = os.open(p, f, m);
-        if (fd < 0) _throwErrno(-fd, 'open', p);
-        return fd;
-    }
+    function openSync(filepath, flags, mode) { return _nodeFsStats.openSync(...arguments); }
 
     function closeSync(fd) {
         const result = os.close(fd);
         if (result < 0) _throwErrno(-result, 'close');
     }
 
-    function _ioArgumentError(name, range = false) {
-        const error = range ? new RangeError('The ' + name + ' argument is out of range')
-            : new TypeError('The ' + name + ' argument has an invalid type');
-        error.code = range ? 'ERR_OUT_OF_RANGE' : 'ERR_INVALID_ARG_TYPE';
-        throw error;
-    }
-
-    const _ioTypedPrototype = Object.getPrototypeOf(Uint8Array.prototype);
-    const _ioViewGet = (proto, name) => Function.prototype.call.bind(Object.getOwnPropertyDescriptor(proto, name).get);
-    const _ioTypedName = _ioViewGet(_ioTypedPrototype, Symbol.toStringTag);
-    const _ioTypedBuffer = _ioViewGet(_ioTypedPrototype, 'buffer');
-    const _ioTypedOffset = _ioViewGet(_ioTypedPrototype, 'byteOffset');
-    const _ioTypedLength = _ioViewGet(_ioTypedPrototype, 'byteLength');
-    const _ioDataBuffer = _ioViewGet(DataView.prototype, 'buffer');
-    const _ioDataOffset = _ioViewGet(DataView.prototype, 'byteOffset');
-    const _ioDataLength = _ioViewGet(DataView.prototype, 'byteLength');
-    const _ioIsView = ArrayBuffer.isView;
-    function _ioView(value) {
-        if (!_ioIsView(value)) _ioArgumentError('buffer');
-        const typed = _ioTypedName(value) !== undefined;
-        return { buffer: typed ? _ioTypedBuffer(value) : _ioDataBuffer(value),
-            byteOffset: typed ? _ioTypedOffset(value) : _ioDataOffset(value),
-            byteLength: typed ? _ioTypedLength(value) : _ioDataLength(value) };
-    }
-    function _ioInteger(value, name, min = 0, max = Number.MAX_SAFE_INTEGER) {
-        if (typeof value !== 'number') _ioArgumentError(name);
-        if (!Number.isInteger(value) || value < min || value > max) _ioArgumentError(name, true);
-    }
-    function _ioFd(fd) { _ioInteger(fd, 'fd', 0, 0x7fffffff); }
-    function _readPosition(position, length) {
-        if (position == null) return null;
-        if (typeof position === 'bigint') {
-            if (position < -1n || position > 0x7fffffffffffffffn - BigInt(length)) _ioArgumentError('position', true);
-        } else _ioInteger(position, 'position', -1);
-        return position === -1 || position === -1n ? null : position;
-    }
-
-    function _readParameters(buffer, offset, length, position) {
-        const view = _ioView(buffer);
-        if (offset === undefined) offset = 0;
-        else _ioInteger(offset, 'offset');
-        length |= 0;
-        position = _readPosition(position, length);
-        if (length !== 0) {
-            if (view.byteLength === 0) {
-                const error = new TypeError('The buffer is empty and cannot be written');
-                error.code = 'ERR_INVALID_ARG_VALUE';
-                throw error;
-            }
-            if (length < 0 || offset + length > view.byteLength) _ioArgumentError('length', true);
-        }
-        return { view, offset, length, position };
-    }
-    function _readTransfer(fd, { view, offset, length, position }) {
-        if (length === 0) return 0;
-        const result = position === null
-            ? os.read(fd, view.buffer, view.byteOffset + offset, length)
-            : os.pread(fd, view.buffer, view.byteOffset + offset, length, position);
-        if (result < 0) _throwErrno(-result, 'read');
-        return result;
-    }
-    function _readOptions(options) {
-        if (options != null && (typeof options !== 'object' || Array.isArray(options))) _ioArgumentError('options');
-        return options ?? {};
-    }
-    function readSync(fd, buffer, offsetOrOptions, length, position) {
-        const view = _ioView(buffer);
-        let offset = offsetOrOptions;
-        if (arguments.length <= 3 || typeof offsetOrOptions === 'object') {
-            ({ offset = 0, length = view.byteLength - offset, position = null } = _readOptions(offsetOrOptions));
-        }
-        const params = _readParameters(buffer, offset, length, position);
-        // Node returns before touching the descriptor for a zero-byte read.
-        if (params.length !== 0) _ioFd(fd);
-        return _readTransfer(fd, params);
-    }
-    function read(fd, buffer, offsetOrOptions, length, position, cb) {
-        _ioFd(fd);
-        let offset = offsetOrOptions;
-        if (arguments.length <= 4) {
-            let options = null;
-            if (arguments.length === 4) {
-                cb = length;
-                options = _readOptions(offsetOrOptions);
-            } else if (arguments.length === 3) {
-                cb = offsetOrOptions;
-                if (!_ioIsView(buffer)) {
-                    options = _readOptions(buffer);
-                    ({ buffer = Buffer.alloc(16384) } = options);
-                }
-            } else {
-                cb = buffer;
-                buffer = Buffer.alloc(16384);
-            }
-            ({ offset = 0, length = _ioView(buffer).byteLength - offset, position = null } = options ?? {});
-        }
-        _ioView(buffer);
-        if (typeof cb !== 'function') _ioArgumentError('cb');
-        // Unlike readSync, the callback overload accepts a null byte offset.
-        const params = _readParameters(buffer, offset == null ? 0 : offset, length, position);
-        let result;
-        try { result = _readTransfer(fd, params); }
-        catch (error) { queueMicrotask(() => cb(error, 0, buffer)); return; }
-        queueMicrotask(() => cb(null, result, buffer));
-    }
-
-    function writeSync(fd, data, offsetOrPosition, lengthOrEncoding, position) {
-        let offset = offsetOrPosition, length = lengthOrEncoding, view;
-        if (typeof data === 'string') {
-            view = _ioView(Buffer.from(data, lengthOrEncoding));
-            position = offsetOrPosition;
-            offset = 0;
-            length = view.byteLength;
-        } else {
-            view = _ioView(data);
-            if (typeof offset === 'object') {
-                ({ offset = 0, length = view.byteLength - offset, position = null } = offset ?? {});
-            }
-            if (offset == null) offset = 0;
-            else _ioInteger(offset, 'offset');
-            if (typeof length !== 'number') length = view.byteLength - offset;
-            if (offset > view.byteLength) _ioArgumentError('offset', true);
-            if (length < 0 || length > view.byteLength - offset) _ioArgumentError('length', true);
-            _ioInteger(length, 'length', 0, 0x7fffffff);
-        }
-        _ioFd(fd);
-        // Node's write binding accepts a safe integer position; other values
-        // (including bigint) select the sequential path. Reads are stricter.
-        const positioned = Number.isSafeInteger(position) && position >= 0;
-        const result = positioned
-            ? os.pwrite(fd, view.buffer, view.byteOffset + offset, length, position)
-            : os.write(fd, view.buffer, view.byteOffset + offset, length);
-        if (result < 0) _throwErrno(-result, 'write');
-        return result;
-    }
+    function readSync(fd, buffer, offsetOrOptions, length, position) { return _nodeFsStats.readSync(...arguments); }
+    function writeSync(fd, data, offsetOrPosition, lengthOrEncoding, position) { return _nodeFsStats.writeSync(...arguments); }
 
     // fs-minipass guards on `if (!fs.writev)` and falls back to
     // `process.binding('fs')` (unimplemented here) when absent.
-    function writevSync(fd, buffers, position) {
-        let total = 0;
-        for (const buf of buffers) {
-            const len = buf.byteLength ?? buf.length;
-            if (!len) continue;
-            const pos = position == null ? null : position + total;
-            let written;
-            try {
-                written = writeSync(fd, buf, 0, len, pos);
-            } catch (error) {
-                if (total === 0) throw error;
-                return total;
-            }
-            total += written;
-            if (written !== len) break;
-        }
-        return total;
+    function writevSync(fd, buffers, position) { return _nodeFsStats.writevSync(...arguments); }
+
+    function fsyncSync(fd) { return _nodeFsStats.fsyncSync(fd); }
+    function fdatasyncSync(fd) { return _nodeFsStats.fdatasyncSync(fd); }
+
+    function fstatSync(fd, options) {
+        return _nodeFsStats.fstatSync(fd, options);
     }
 
-    function _syncDescriptor(fd, syscall) {
-        if (typeof fd !== 'number') {
-            const error = new TypeError('The fd argument must be a number');
-            error.code = 'ERR_INVALID_ARG_TYPE';
-            throw error;
-        }
-        if (!Number.isInteger(fd) || fd < 0 || fd > 0x7fffffff) {
-            const error = new RangeError('The fd argument must be a non-negative 32-bit integer');
-            error.code = 'ERR_OUT_OF_RANGE';
-            throw error;
-        }
-        const err = typeof os.fsync === 'function' ? os.fsync(fd) : -38;
-        if (err !== 0) _throwErrno(-err, syscall);
-    }
+    function fchmodSync(fd, mode) { return _nodeFsStats.fchmodSync(fd, mode); }
 
-    function fsyncSync(fd) { return _syncDescriptor(fd, 'fsync'); }
-    // The kernel implements fdatasync with the same durability barrier.
-    function fdatasyncSync(fd) { return _syncDescriptor(fd, 'fdatasync'); }
+    function fchownSync(fd, uid, gid) { return _nodeFsStats.fchownSync(fd, uid, gid); }
 
-    function fstatSync(fd) {
-        // Use /proc/self/fd approach or direct syscall
-        // For simplicity, use a basic approach
-        const [st, err] = os.fstat ? os.fstat(fd) : [null, -1];
-        if (err !== 0) _throwErrno(-err, 'fstat');
-        return new Stats(st);
-    }
-
-    function fchmodSync(fd, mode) {
-        fstatSync(fd);
-        void mode;
-    }
-
-    function fchownSync(fd, uid, gid) {
-        fstatSync(fd);
-        void uid;
-        void gid;
-    }
-
-    function futimesSync(fd, atime, mtime) {
-        fstatSync(fd);
-        void atime;
-        void mtime;
-    }
-
-    class FileHandle {
-        constructor(fd, path) {
-            this.fd = fd;
-            this._path = path;
-            this._closed = false;
-        }
-
-        _assertOpen(syscall = 'close') {
-            if (this._closed) {
-                const err = new Error('file closed');
-                err.code = 'EBADF';
-                err.errno = -9;
-                err.syscall = syscall;
-                throw err;
-            }
-        }
-
-        async close() {
-            if (this._closed) return;
-            closeSync(this.fd);
-            this._closed = true;
-        }
-
-        async read(buffer, offset, length, position) {
-            this._assertOpen('read');
-            if (!_ioIsView(buffer)) {
-                const options = _readOptions(buffer);
-                ({ buffer = Buffer.alloc(16384), offset = 0, length = _ioView(buffer).byteLength - offset, position = null } = options);
-            } else if (typeof offset === 'object') {
-                ({ offset = 0, length = _ioView(buffer).byteLength - offset, position = null } = _readOptions(offset));
-            } else {
-                offset = offset === undefined ? 0 : offset;
-                length = length === undefined ? _ioView(buffer).byteLength - offset : length;
-            }
-            const bytesRead = readSync(this.fd, buffer, offset, length, position);
-            return { bytesRead, buffer };
-        }
-
-        async write(data, offsetOrPosition, lengthOrEncoding, position) {
-            this._assertOpen();
-            const bytesWritten = writeSync(this.fd, data, offsetOrPosition, lengthOrEncoding, position);
-            return { bytesWritten, buffer: data };
-        }
-
-        async writev(buffers, position = null) {
-            this._assertOpen();
-            const bytesWritten = writevSync(this.fd, buffers, position);
-            return { bytesWritten, buffers };
-        }
-
-        async sync() {
-            this._assertOpen('fsync');
-            return fsyncSync(this.fd);
-        }
-
-        async datasync() {
-            this._assertOpen('fdatasync');
-            return fdatasyncSync(this.fd);
-        }
-
-        async stat() {
-            this._assertOpen();
-            return fstatSync(this.fd);
-        }
-
-        async chmod(mode) {
-            this._assertOpen();
-            return fchmodSync(this.fd, mode);
-        }
-
-        async chown(uid, gid) {
-            this._assertOpen();
-            return fchownSync(this.fd, uid, gid);
-        }
-
-        async utimes(atime, mtime) {
-            this._assertOpen();
-            return futimesSync(this.fd, atime, mtime);
-        }
-
-        async readFile(options) {
-            this._assertOpen();
-            return readFileSync(this._path, options);
-        }
-
-        async writeFile(data, options) {
-            this._assertOpen();
-            return writeFileSync(this._path, data, options);
-        }
-    }
+    function futimesSync(fd, atime, mtime) { return _nodeFsStats.futimesSync(fd, atime, mtime); }
 
     function mkdtempSync(prefix, options) {
         const p = _pathToString(prefix);
@@ -2232,8 +1877,6 @@ const fs = (() => {
 
     const mod = {
         constants,
-        Stats,
-        Dirent,
         existsSync,
         statSync,
         lstatSync,
@@ -2253,7 +1896,6 @@ const fs = (() => {
         chmodSync,
         chownSync,
         utimesSync,
-        truncateSync,
         accessSync,
         openSync,
         closeSync,
@@ -2275,11 +1917,8 @@ const fs = (() => {
         futimesSync,
         fsyncSync,
         fdatasyncSync,
-        // No ftruncate primitive in the qjs:os native module.
-        ftruncateSync: _notImpl('fs', 'ftruncateSync'),
         // No statfs primitive either; mirrors fs/promises.statfs (honest stub).
         statfsSync: _notImpl('fs', 'statfsSync'),
-        FileHandle,
         mkdtempSync,
 
         // Async versions
@@ -2314,7 +1953,6 @@ const fs = (() => {
         futimes: _callbackify(futimesSync),
         fsync: _callbackify(fsyncSync),
         fdatasync: _callbackify(fdatasyncSync),
-        read,
         write(fd, data, ...rest) {
             const cb = rest.pop();
             try {
@@ -2325,46 +1963,6 @@ const fs = (() => {
             }
         },
 
-        createReadStream(filepath, options) {
-            const data = readFileSync(filepath, options);
-            // Return a minimal readable stream
-            return {
-                data,
-                on(ev, fn) {
-                    if (ev === 'data') queueMicrotask(() => fn(data));
-                    if (ev === 'end') queueMicrotask(() => fn());
-                    return this;
-                },
-                pipe(dest) {
-                    dest.write(data);
-                    dest.end();
-                    return dest;
-                },
-            };
-        },
-
-        createWriteStream(filepath, options) {
-            const chunks = [];
-            return {
-                writable: true,
-                write(data, encoding, cb) {
-                    chunks.push(typeof data === 'string' ? Buffer.from(data, encoding) : data);
-                    if (typeof cb === 'function') cb();
-                    return true;
-                },
-                end(data, encoding, cb) {
-                    if (data) this.write(data, encoding);
-                    writeFileSync(filepath, Buffer.concat(chunks));
-                    if (typeof cb === 'function') cb();
-                },
-                on() { return this; },
-            };
-        },
-
-        // No filesystem-watch primitive in our wasm sysroot — return an
-        // inert FSWatcher so callers can listen() and close() without
-        // exploding. CLI tools that call fs.watch for live updates simply
-        // won't get them, which is fine for one-shot invocations.
         watch(_path, _options, listener) {
             const w = {
                 on() { return this; },
@@ -2387,7 +1985,8 @@ const fs = (() => {
     // fs.promises
     mod.promises = {};
     for (const key of Object.keys(mod)) {
-        if (key.endsWith('Sync') || key === 'constants' || key === 'Stats' ||
+        if (key === 'readFile' || key === 'writeFile' || key === 'appendFile' ||
+            key.endsWith('Sync') || key === 'constants' || key === 'Stats' ||
             key === 'Dirent' || key === 'promises' || key === 'createReadStream' ||
             key === 'createWriteStream') continue;
         const syncKey = key + 'Sync';
@@ -2397,8 +1996,6 @@ const fs = (() => {
             };
         }
     }
-    mod.promises.readFile = async (p, o) => readFileSync(p, o);
-    mod.promises.writeFile = async (p, d, o) => writeFileSync(p, d, o);
     mod.promises.mkdir = async (p, o) => mkdirSync(p, o);
     mod.promises.mkdtemp = async (p, o) => mkdtempSync(p, o);
     mod.promises.readdir = async (p, o) => readdirSync(p, o);
@@ -2419,13 +2016,11 @@ const fs = (() => {
     mod.promises.fchmod = async (fd, m) => fchmodSync(fd, m);
     mod.promises.fchown = async (fd, u, g) => fchownSync(fd, u, g);
     mod.promises.futimes = async (fd, a, m) => futimesSync(fd, a, m);
-    mod.promises.open = async (p, flags, mode) => new FileHandle(openSync(p, flags, mode), _pathToString(p));
     mod.promises.constants = constants;
     // Throwing stubs: link-time completeness for the Claude Code import
     // surface without a real implementation. See docs/posix-status.md.
     mod.promises.link = _notImpl('fs/promises', 'link');
     mod.promises.lutimes = _notImpl('fs/promises', 'lutimes');
-    mod.promises.opendir = _notImpl('fs/promises', 'opendir');
     mod.promises.statfs = _notImpl('fs/promises', 'statfs');
 
     return mod;
@@ -2435,42 +2030,9 @@ const fs = (() => {
 // os module (Node.js)
 // ============================================================
 
-const nodeOs = (() => {
-    const [cwd_val] = os.getcwd();
-    return {
-        EOL: '\n',
-        arch() { return 'wasm32'; },
-        platform() { return process.platform; },
-        type() { return 'Kandelo'; },
-        release() { return '6.0.0-wasm'; },
-        hostname() {
-            try {
-                const f = std.open('/etc/hostname', 'r');
-                if (f) {
-                    const name = f.getline();
-                    f.close();
-                    return name ? name.trim() : 'localhost';
-                }
-            } catch {}
-            return 'localhost';
-        },
-        homedir() { return std.getenv('HOME') || '/root'; },
-        tmpdir() { return std.getenv('TMPDIR') || '/tmp'; },
-        cpus() { return [{ model: 'wasm32', speed: 0, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }]; },
-        totalmem() { return 1073741824; }, // 1GB
-        freemem() { return 536870912; }, // 512MB
-        loadavg() { return [0, 0, 0]; },
-        uptime() { return (Date.now() - _startTime) / 1000; },
-        networkInterfaces() { return {}; },
-        userInfo() {
-            return {
-                uid: 0, gid: 0,
-                username: std.getenv('USER') || 'root',
-                homedir: std.getenv('HOME') || '/root',
-                shell: std.getenv('SHELL') || '/bin/sh',
-            };
-        },
-        endianness() { return 'LE'; },
+// OS constants remain a separately audited partial owner. The public
+// methods below install the actual pinned frontend after shared errors/codecs.
+const nodeOs = {
         constants: {
             signals: {
                 SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4,
@@ -2489,74 +2051,59 @@ const nodeOs = (() => {
                 EINVAL: 22,
             },
         },
-    };
-})();
-
-nodeOs.availableParallelism = function () {
-    try { return Math.max(1, (nodeOs.cpus && nodeOs.cpus().length) || 1); }
-    catch (_) { return 1; }
 };
-nodeOs.devNull = '/dev/null';
-nodeOs.version = function () { return ''; };
-nodeOs.getPriority = function () { return 0; };
-nodeOs.setPriority = function () { /* no-op */ };
 
 // ============================================================
 // util module
 // ============================================================
 
+let _nodeInspectionPathToFileURL;
+const _nodeInspection = _createNodeInspection({
+    native: _nodeNative, Buffer,
+    isBuiltin: name => _nodeBuiltinPolicy.isBuiltin(name),
+    getURL: () => _nodeWebPlatform.URL,
+    pathToFileURL: path => _nodeInspectionPathToFileURL(path),
+});
 const util = (() => {
-    function format(fmt, ...args) {
-        if (typeof fmt !== 'string') {
-            return [fmt, ...args].map(a => inspect(a)).join(' ');
-        }
-        let i = 0;
-        return fmt.replace(/%[sdifjoO%]/g, (match) => {
-            if (match === '%%') return '%';
-            if (i >= args.length) return match;
-            const arg = args[i++];
-            switch (match) {
-                case '%s': return String(arg);
-                case '%d': return Number(arg).toString();
-                case '%i': return parseInt(arg).toString();
-                case '%f': return parseFloat(arg).toString();
-                case '%j': try { return JSON.stringify(arg); } catch { return '[Circular]'; }
-                case '%o': case '%O': return inspect(arg);
-                default: return match;
-            }
-        }) + (i < args.length ? ' ' + args.slice(i).map(a => inspect(a)).join(' ') : '');
-    }
+    'use strict';
+    const { inspect, format, formatWithOptions } = _nodeInspection;
 
-    function inspect(obj, options) {
-        if (obj === null) return 'null';
-        if (obj === undefined) return 'undefined';
-        if (typeof obj === 'string') return `'${obj}'`;
-        if (typeof obj === 'number' || typeof obj === 'boolean' || typeof obj === 'bigint') return String(obj);
-        if (typeof obj === 'symbol') return obj.toString();
-        if (typeof obj === 'function') return `[Function: ${obj.name || 'anonymous'}]`;
-        if (obj instanceof Date) return obj.toISOString();
-        if (obj instanceof RegExp) return obj.toString();
-        if (obj instanceof Error) return `${obj.name}: ${obj.message}`;
-        if (Array.isArray(obj)) {
-            const items = obj.map(v => inspect(v, options));
-            return `[ ${items.join(', ')} ]`;
-        }
-        if (ArrayBuffer.isView(obj)) {
-            return `<${obj.constructor.name} ${Array.from(obj.slice(0, 50)).join(' ')}${obj.length > 50 ? ' ...' : ''}>`;
-        }
-        try {
-            const keys = Object.keys(obj);
-            const pairs = keys.map(k => `${k}: ${inspect(obj[k], options)}`);
-            return `{ ${pairs.join(', ')} }`;
-        } catch {
-            return String(obj);
-        }
+    // Adapted from the pinned lib/util.js. The Node copyright/permission
+    // notice is retained with the EventEmitter implementation above.
+    const utilApply = Reflect.apply;
+    const utilDefine = Object.defineProperty;
+    const utilDefineProperties = Object.defineProperties;
+    const utilDescriptors = Object.getOwnPropertyDescriptors;
+    const utilSetPrototype = Object.setPrototypeOf;
+    const utilValues = Object.values;
+    const utilPop = Function.prototype.call.bind(Array.prototype.pop);
+    const utilBind = Function.prototype.call.bind(Function.prototype.bind);
+    const utilToWellFormed = Function.prototype.call.bind(String.prototype.toWellFormed);
+    const UtilTypeError = TypeError, UtilError = Error;
+    function invalidUtilityArgument(name, expected, value) {
+        // Full shared Node error formatting remains a separate foundation.
+        const received = value === null ? 'null' : typeof value === 'undefined'
+            ? 'undefined' : 'type ' + typeof value + ' (' + inspect(value) + ')';
+        const error = new UtilTypeError('The "' + name + '" argument must be of type ' +
+            expected + '. Received ' + received);
+        error.code = 'ERR_INVALID_ARG_TYPE';
+        return error;
     }
-    inspect.defaultOptions = {};
-
+    function validateUtilityFunction(value, name) {
+        if (typeof value !== 'function') throw invalidUtilityArgument(name, 'function', value);
+    }
     function inherits(ctor, superCtor) {
-        Object.setPrototypeOf(ctor.prototype, superCtor.prototype);
-        Object.setPrototypeOf(ctor, superCtor);
+        if (ctor === undefined || ctor === null) throw invalidUtilityArgument('ctor', 'function', ctor);
+        if (superCtor === undefined || superCtor === null) throw invalidUtilityArgument('superCtor', 'function', superCtor);
+        if (superCtor.prototype === undefined) {
+            throw invalidUtilityArgument('superCtor.prototype', 'Object', superCtor.prototype);
+        }
+        // Legacy util.inherits sets the instance chain and super_, while
+        // leaving the constructor's static chain exactly as the caller set it.
+        utilDefine(ctor, 'super_', {
+            __proto__: null, value: superCtor, writable: true, configurable: true,
+        });
+        utilSetPrototype(ctor.prototype, superCtor.prototype);
     }
 
     function deprecate(fn, msg) {
@@ -2570,73 +2117,42 @@ const util = (() => {
         };
     }
 
-    const promisifyApply = Reflect.apply;
-    function promisify(fn) {
-        const custom = Symbol.for('nodejs.util.promisify.custom');
-        const invalid = name => { const error = new TypeError('The "' + name + '" argument must be of type function'); error.code = 'ERR_INVALID_ARG_TYPE'; return error; };
-        if (typeof fn !== 'function') throw invalid('original');
-        const selected = fn[custom];
-        if (selected !== undefined) {
-            if (typeof selected !== 'function') throw invalid('util.promisify.custom');
-            Object.defineProperty(selected, custom, { value: selected, configurable: true, writable: false, enumerable: false });
-            return selected;
+    function callbackifyOnRejected(reason, cb) {
+        // A falsy rejection must remain distinguishable from callback success.
+        if (!reason) {
+            const error = new UtilError('Promise was rejected with falsy value');
+            error.code = 'ERR_FALSY_VALUE_REJECTION';
+            error.reason = reason;
+            reason = error;
         }
-        function wrapped(...args) {
-            return new Promise((resolve, reject) => {
-                promisifyApply(fn, this, [...args, (err, result) => err ? reject(err) : resolve(result)]);
-            });
-        }
-        Object.setPrototypeOf(wrapped, Object.getPrototypeOf(fn));
-        Object.defineProperty(wrapped, custom, { value: wrapped, configurable: true, writable: false, enumerable: false });
-        return Object.defineProperties(wrapped, Object.getOwnPropertyDescriptors(fn));
+        return cb(reason);
     }
-    Object.defineProperty(promisify, 'custom', { value: Symbol.for('nodejs.util.promisify.custom'), enumerable: true });
-
-    function callbackify(fn) {
-        return function(...args) {
-            const cb = args.pop();
-            fn(...args).then(
-                result => cb(null, result),
-                err => cb(err)
+    function callbackify(original) {
+        validateUtilityFunction(original, 'original');
+        function callbackified(...args) {
+            const maybeCb = utilPop(args);
+            validateUtilityFunction(maybeCb, 'last argument');
+            const cb = utilBind(maybeCb, this);
+            // nextTick owns callback delivery: a throwing callback must reach
+            // process exception policy rather than reject a discarded promise.
+            utilApply(original, this, args).then(
+                result => process.nextTick(cb, null, result),
+                reason => process.nextTick(callbackifyOnRejected, reason, cb)
             );
-        };
+        }
+        const descriptors = utilDescriptors(original);
+        if (typeof descriptors.length.value === 'number') descriptors.length.value++;
+        if (typeof descriptors.name.value === 'string') descriptors.name.value += 'Callbackified';
+        for (const descriptor of utilValues(descriptors)) utilSetPrototype(descriptor, null);
+        utilDefineProperties(callbackified, descriptors);
+        return callbackified;
     }
 
     function isDeepStrictEqual(...args) {
         return _nodeCore.comparisons.isDeepStrictEqual(...args);
     }
 
-    const types = {
-        isDate(v) { return v instanceof Date; },
-        isRegExp(v) { return v instanceof RegExp; },
-        isNativeError(v) { return v instanceof Error; },
-        isPromise(v) { return v instanceof Promise; },
-        isArrayBuffer(v) { return v instanceof ArrayBuffer; },
-        isTypedArray(v) { return ArrayBuffer.isView(v) && !(v instanceof DataView); },
-        isMap(v) { return v instanceof Map; },
-        isSet(v) { return v instanceof Set; },
-        isWeakMap(v) { return v instanceof WeakMap; },
-        isWeakSet(v) { return v instanceof WeakSet; },
-        isDataView(v) { return v instanceof DataView; },
-        isUint8Array(v) { return v instanceof Uint8Array; },
-        isArgumentsObject(v) { return Object.prototype.toString.call(v) === '[object Arguments]'; },
-        isBigIntObject(v) { return typeof v === 'object' && Object.prototype.toString.call(v) === '[object BigInt]'; },
-        isBooleanObject(v) { return Object.prototype.toString.call(v) === '[object Boolean]' && typeof v === 'object'; },
-        isGeneratorObject(v) { return Object.prototype.toString.call(v) === '[object Generator]'; },
-        isMapIterator(v) { return Object.prototype.toString.call(v) === '[object Map Iterator]'; },
-        isModuleNamespaceObject(v) { return v != null && typeof v === 'object' && v[Symbol.toStringTag] === 'Module'; },
-        isNumberObject(v) { return Object.prototype.toString.call(v) === '[object Number]' && typeof v === 'object'; },
-        isSetIterator(v) { return Object.prototype.toString.call(v) === '[object Set Iterator]'; },
-        isSharedArrayBuffer(v) { return typeof SharedArrayBuffer !== 'undefined' && Object.prototype.toString.call(v) === '[object SharedArrayBuffer]'; },
-        isStringObject(v) { return Object.prototype.toString.call(v) === '[object String]' && typeof v === 'object'; },
-        isSymbolObject(v) { return Object.prototype.toString.call(v) === '[object Symbol]' && typeof v === 'object'; },
-    };
-
-    // Node's util.formatWithOptions(opts, ...args). Our inspect() ignores
-    // the options bag (no color/depth knobs yet) so this is just format()
-    // with the leading options dropped — npm's lib/utils/format.js is the
-    // primary caller.
-    function formatWithOptions(_opts, ...args) { return format(...args); }
+    const types = _createNodeCoreTypes(_nodeNative);
 
     // util.debuglog(set) — Node returns a stderr logger gated on the
     // NODE_DEBUG env var. undici/diagnostics calls this at module init and
@@ -2698,39 +2214,21 @@ const util = (() => {
     }
 
     return {
-        format, formatWithOptions, inspect, inherits, deprecate, promisify, callbackify,
-        isDeepStrictEqual, types,
+        format, formatWithOptions, inspect, inherits, deprecate, promisify: undefined, callbackify,
+        isDeepStrictEqual,
+        isPartialDeepStrictEqual: (a, b) => _nodeCore.comparisons.isPartialStrictEqual(a, b),
+        toUSVString: input => utilToWellFormed(`${input}`),
+        types,
         debuglog, debug: debuglog, getCallSites,
         TextDecoder, TextEncoder,
-        // Deprecated but widely used
-        isArray: Array.isArray,
-        isBoolean: v => typeof v === 'boolean',
-        isNull: v => v === null,
-        isNullOrUndefined: v => v == null,
-        isNumber: v => typeof v === 'number',
-        isString: v => typeof v === 'string',
-        isUndefined: v => v === undefined,
-        isObject: v => typeof v === 'object' && v !== null,
-        isFunction: v => typeof v === 'function',
-        isRegExp: v => v instanceof RegExp,
     };
 })();
 
-util.stripVTControlCharacters = function (s) {
-    return String(s).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
-};
-util.getSystemErrorName = function (err) {
-    if (typeof err !== 'number') {
-        const error = new TypeError('The "err" argument must be of type number');
-        error.code = 'ERR_INVALID_ARG_TYPE'; throw error;
-    }
-    if (err >= 0 || !Number.isSafeInteger(err)) {
-        const error = new RangeError('The "err" argument must be a negative integer');
-        error.code = 'ERR_OUT_OF_RANGE'; throw error;
-    }
-    const name = _errnoToCode(err);
-    return /^E[0-9]+$/.test(name) ? 'Unknown system error ' + err : name;
-};
+util.stripVTControlCharacters = _nodeInspection.stripVTControlCharacters;
+const _nodeUv = _createNodeUvPlatform({ native: _nodeNative });
+util.getSystemErrorName = _nodeUv.getSystemErrorName;
+util.getSystemErrorMessage = _nodeUv.getSystemErrorMessage;
+util.getSystemErrorMap = _nodeUv.getSystemErrorMap;
 
 // ============================================================
 // assert module
@@ -2740,214 +2238,485 @@ util.getSystemErrorName = function (err) {
 // module. Initialize the shared Web platform before either consumer loads.
 const _nodeWebPlatform = _createNodeWebPlatform();
 const _nodeCore = _createNodeCore({
+    process, getValues: () => _nodeValues,
     Buffer, inspect: util.inspect, format: util.format,
     URL: _nodeWebPlatform.URL,
     isPromise: _nodeNative.isPromise,
     isNativeError: _nodeNative.isNativeError,
     isProxy: _nodeNative.isProxy,
+    isKeyObject: _nodeNative.isKeyObject,
+    isCryptoKey: _nodeNative.isCryptoKey,
+    getCryptoKeys: () => _nodeCryptoKeys,
+    hasObjectKind: _nodeNative.hasObjectKind,
 });
 Object.assign(util.types, _nodeCore.types);
-const assert = _nodeCore.assert;
+_nodeValues = _createNodeValuesPlatform({
+    process, Buffer, util, inspection: _nodeInspection, os: nodeOs, uv: _nodeUv,
+    signals: nodeOs.constants.signals,
+    getDOMException: () => _nodeEventPlatform.dom.DOMException,
+});
+// OS accounting currently returns placeholder getrusage data. Keep that
+// owner gap explicit; do not reinterpret elapsed time or host-wide totals.
+if (_nodeNative.workerEnvironment) process.umask = _nodeProcessState.createUmask(false);
+Object.assign(process, _createNodeProcessUsage({
+    process, values: _nodeValues, binding: _createNodeUnavailableProcessUsage(_nodeValues),
+}));
+_installNodeProcessLifetime({ process, values: _nodeValues });
+util.promisify = _nodeValues.util.promisify;
+Object.assign(util, _createNodePublicUtil({ values: _nodeValues, native: _nodeNative, util }));
+_nodeBufferConstructor.initialize({ process, values: _nodeValues });
+_installNodeBufferNumeric({ Buffer, values: _nodeValues });
+const _nodeBufferAllocator = _installNodeBufferUnpooled({ Buffer, FastBuffer: _FastBuffer, values: _nodeValues, native: _nodeNative,
+    kMaxLength: _nodeBufferModule.constants.MAX_LENGTH });
+const _nodeBufferPool = _createNodeBufferPool({ Buffer, FastBuffer: _FastBuffer,
+    values: _nodeValues, allocator: _nodeBufferAllocator, native: _nodeNative,
+    kMaxLength: _nodeBufferModule.constants.MAX_LENGTH, getCodecs: () => _nodeBufferCodecs });
+const _nodeBufferCodecs = _installNodeBufferCodecs({ Buffer, FastBuffer: _FastBuffer, pool: _nodeBufferPool, values: _nodeValues, allocator: _nodeBufferAllocator,
+    kMaxLength: _nodeBufferModule.constants.MAX_LENGTH,
+    kStringMaxLength: _nodeBufferModule.constants.MAX_STRING_LENGTH });
+_nodeBufferModule.isLatin1 = _nodeBufferCodecs.isLatin1;
+_installNodeBufferBytes({ Buffer, FastBuffer: _FastBuffer, pool: _nodeBufferPool, values: _nodeValues,
+    codecs: _nodeBufferCodecs,
+    kMaxLength: _nodeBufferModule.constants.MAX_LENGTH });
+_nodeFsSystemErrors = _createNodeFsSystemErrors({ uv: _nodeUv, codecs: _nodeBufferCodecs });
+const _nodeOSPlatform = _createNodeOSPlatform({
+    process, values: _nodeValues, codecs: _nodeBufferCodecs, uv: _nodeUv, native: _nodeNative,
+    constants: nodeOs.constants,
+});
+_nodeOSPlatform.install(nodeOs);
+const _nodeClonePlatform = _createNodeClonePlatform({
+    native: _nodeNative, values: _nodeValues,
+    getDOMException: () => _nodeEventPlatform.dom.DOMException,
+    getWebIDL: () => _nodeEventPlatform.require('internal/webidl'),
+    getModule: name => name === 'internal/blob' ? _nodeBodyData :
+        name === 'internal/file' ? _nodeFilePlatform :
+        name === 'internal/blocklist' || name === 'internal/socketaddress' ? _nodeAddressRules.require(name) :
+        _nodeStreamPlatform.require(name),
+});
+const _nodeDebug = _nodeValues.require('internal/util/debuglog');
+_nodeDebug.initializeDebugEnv(process.env.NODE_DEBUG);
+util.debug = util.debuglog = _nodeDebug.debuglog;
+const _nodeAsyncPlatform = _createNodeAsyncPlatform({ native: _nodeNative, process, inspection: _nodeInspection, values: _nodeValues });
+const _nodeDiagnostics = _createNodeDiagnosticsPlatform({ process, values: _nodeValues, types: util.types });
+const _nodeFsTruncation = _createNodeFsTruncation({
+    fs, Buffer, process, native: _nodeNative, values: _nodeValues, throwErrno: _throwErrno,
+    runInternalImmediate: _nodeAsyncPlatform.runInternalImmediate,
+});
+for (const name of ['truncate', 'truncateSync', 'ftruncate', 'ftruncateSync', 'close', 'closeSync']) fs[name] = _nodeFsTruncation[name];
+const _nodeFsStats = _createNodeFsStats({
+    fs, process, Buffer, types: util.types, values: _nodeValues,
+    throwErrno: _throwErrno, native: _nodeNative, truncation: _nodeFsTruncation,
+    toPathIfFileURL: value => value instanceof _nodeWebPlatform.URL ? url.fileURLToPath(value) : value,
+    permissionEnabled: () => false,
+});
+const _nodeFileSync = _createNodeFileSync({
+    fs, Buffer, values: _nodeValues, types: util.types, utils: _nodeFsStats,
+    native: _nodeNative, truncation: _nodeFsTruncation,
+    codecs: _nodeBufferCodecs, allocator: _nodeBufferAllocator,
+});
+fs.Stats = _nodeFsStats.publicStats;
+fs.readvSync = _nodeFsStats.readvSync;
+const _nodeFileJobs = _createNodeFileJobs({ Buffer, native: _nodeNative, truncation: _nodeFsTruncation });
+const _nodeFsCallbacks = _createNodeFsCallbacks({
+    fs, Buffer, process, native: _nodeNative, values: _nodeValues, types: util.types,
+    utils: _nodeFsStats, fileJobs: _nodeFileJobs, truncation: _nodeFsTruncation, permissionEnabled: () => false,
+    require: name => name === 'internal/event_target' ? _nodeEventPlatform.eventTarget : _nodeStreamPlatform.require(name),
+});
+Object.assign(fs, _nodeFsCallbacks);
+const _nodeDirectoryPlatform = _createNodeDirectoryPlatform({
+    native: _nodeNative, values: _nodeValues, utils: _nodeFsStats, truncation: _nodeFsTruncation,
+});
+Object.assign(fs, _nodeDirectoryPlatform.api);
+Object.assign(fs.promises, _nodeDirectoryPlatform.promises);
+const _nodePathMetadata = _createNodePathMetadata({
+    native: _nodeNative, values: _nodeValues, utils: _nodeFsStats,
+    truncation: _nodeFsTruncation, constants: fs.constants,
+});
+Object.assign(fs, _nodePathMetadata.api);
+Object.assign(fs.promises, _nodePathMetadata.promises);
+const _nodeReaddirPlatform = _createNodeReaddirPlatform({
+    fs, Buffer, process, path, values: _nodeValues, types: util.types,
+    utils: _nodeFsStats, truncation: _nodeFsTruncation, native: _nodeNative,
+    codecs: _nodeBufferCodecs, promisify: util.promisify, permissionEnabled: () => false,
+    internalModuleStat(path) {
+        const value = _nodeNative.fsStatSync(path, true, false);
+        if (typeof value === 'number') return value;
+        return (value[1] & fs.constants.S_IFMT) === fs.constants.S_IFDIR ? 1 : 0;
+    },
+});
+Object.assign(fs, _nodeReaddirPlatform.api);
+Object.assign(fs.promises, _nodeReaddirPlatform.promises);
+const _nodeDirPlatform = _createNodeDirPlatform({
+    native: _nodeNative, values: _nodeValues, utils: _nodeFsStats,
+    truncation: _nodeFsTruncation, dirents: _nodeReaddirPlatform.utilities,
+    Buffer, process, path, codecs: _nodeBufferCodecs,
+});
+Object.assign(fs, _nodeDirPlatform.api);
+Object.assign(fs.promises, _nodeDirPlatform.promises);
 
-// ============================================================
-// stream module (minimal)
-// ============================================================
-
-const stream = (() => {
-    class Stream extends events.EventEmitter {
-        pipe(dest, options) {
-            this.on('data', (chunk) => dest.write(chunk));
-            this.on('end', () => { if (!options || options.end !== false) dest.end(); });
-            return dest;
-        }
+process.loadEnvFile = _createNodeDotenvPlatform({
+    native: _nodeNative, values: _nodeValues, uv: _nodeUv, utils: _nodeFsStats,
+}).loadEnvFile;
+Object.defineProperty(events, 'EventEmitterAsyncResource', {
+    enumerable: true, configurable: true,
+    get: _createNodeEventEmitterAsyncResourceGetter(events, _nodeAsyncPlatform),
+    set: undefined,
+});
+Object.defineProperties(globalThis, {
+    __kandeloRunNextTicks: { value: _nodeAsyncPlatform.drainTicks },
+    __kandeloHasNextTicks: { value: _nodeAsyncPlatform.hasTicks },
+    __kandeloRunAsyncDestroys: { value: _nodeAsyncPlatform.drainDestroys },
+    __kandeloRunFsGcCloseError: { value: _nodeFsTruncation.runGcCloseError },
+});
+globalThis.queueMicrotask = function queueMicrotask(callback) {
+    if (typeof callback !== 'function') {
+        const error = new TypeError('The "callback" argument must be of type function');
+        error.code = 'ERR_INVALID_ARG_TYPE'; throw error;
     }
+    _nodeNative.enqueueMicrotask(callback);
+};
 
-    class Readable extends Stream {
-        constructor(options) {
-            super();
-            this.readable = true;
-            this._readableState = { ended: false, flowing: null, buffer: [], endPending: false };
-            if (options && options.read) this._read = options.read;
+// ============================================================
+// string_decoder module
+// ============================================================
+
+const string_decoder = _createNodeStringDecoder({
+    Buffer, values: _nodeValues, codecs: _nodeBufferCodecs,
+    kStringMaxLength: _nodeBufferConstants.MAX_STRING_LENGTH,
+});
+
+// ============================================================
+// timers module
+// ============================================================
+
+const timers = (() => {
+    const refed = Symbol('refed'), token = Symbol('timer'), id = Symbol('timerId');
+    const known = new Map();
+    let nextId = 1, warnedNegative = false, warnedNaN = false;
+    function invalid(name, expected) {
+        const error = new TypeError('The "' + name + '" argument must be of type ' + expected);
+        error.code = 'ERR_INVALID_ARG_TYPE'; return error;
+    }
+    function validateCallback(callback) {
+        if (typeof callback !== 'function') throw invalid('callback', 'function');
+    }
+    function duration(after) {
+        if (after === undefined) return 1;
+        after *= 1;
+        if (!(after >= 1 && after <= 2147483647)) {
+            if (after > 2147483647) process.emitWarning(after + ' does not fit into a 32-bit signed integer.\nTimeout duration was set to 1.', 'TimeoutOverflowWarning');
+            else if (after < 0 && !warnedNegative) {
+                warnedNegative = true;
+                process.emitWarning(after + ' is a negative number.\nTimeout duration was set to 1.', 'TimeoutNegativeWarning');
+            } else if (Number.isNaN(after) && !warnedNaN) {
+                warnedNaN = true;
+                process.emitWarning(after + ' is not a number.\nTimeout duration was set to 1.', 'TimeoutNaNWarning');
+            }
+            return 1;
         }
-        _read(size) {}
-        // Buffer until a consumer attaches: pipelines that wire up the data
-        // listener one microtask later (minipass-fetch's gzip decoder)
-        // otherwise drop chunks pushed synchronously from the parser.
-        push(chunk) {
-            if (chunk === null) {
-                if (this._readableState.flowing || this.listenerCount('end') > 0
-                    || this._readableState.buffer.length === 0) {
-                    this._readableState.ended = true;
-                    this.emit('end');
-                } else {
-                    this._readableState.endPending = true;
+        return after;
+    }
+    function activate(timer, start = os.timerNow()) {
+        if (timer._idleTimeout < 0 || !timer._onTimeout) return;
+        os.clearTimeout(timer[token]);
+        if (timer._destroyed) {
+            known.delete(String(timer[id])); timer[id] = nextId++;
+            timer._destroyed = false;
+            _nodeAsyncPlatform.createTask(timer, 'Timeout');
+            if (timer._destroyed || !timer._onTimeout) return;
+        }
+        timer._idleStart = start;
+        timer[token] = os.setTimeout(() => {
+            timer[token] = undefined;
+            const entered = os.timerNow();
+            try {
+                if (timer._onTimeout) _nodeAsyncPlatform.runTask(
+                    timer, timer._onTimeout, timer, timer._timerArgs || []);
+            }
+            finally {
+                if (timer._repeat && timer._idleTimeout !== -1) {
+                    timer._idleTimeout = timer._repeat; activate(timer, entered);
+                } else if (timer[token] === undefined) {
+                    timer._destroyed = true; known.delete(String(timer[id]));
+                    _nodeAsyncPlatform.retireTask(timer);
                 }
-                return false;
             }
-            if (this._readableState.flowing || this.listenerCount('data') > 0) {
-                this._readableState.flowing = true;
-                this.emit('data', chunk);
-            } else {
-                this._readableState.buffer.push(chunk);
-            }
-            return true;
-        }
-        read(size) {
-            if (this._readableState.buffer.length === 0) return null;
-            return this._readableState.buffer.shift();
-        }
-        _drain() {
-            this._readableState.flowing = true;
-            const buf = this._readableState.buffer;
-            this._readableState.buffer = [];
-            for (const c of buf) this.emit('data', c);
-            if (this._readableState.endPending) {
-                this._readableState.endPending = false;
-                this._readableState.ended = true;
-                this.emit('end');
-            }
-        }
-        _maybeDrain(event) {
-            if (event === 'data' && this._readableState.buffer.length > 0) this._drain();
-        }
-        on(event, fn) { const r = super.on(event, fn); this._maybeDrain(event); return r; }
-        addListener(event, fn) { const r = super.addListener(event, fn); this._maybeDrain(event); return r; }
-        resume() { this._drain(); return this; }
-        pause() { this._readableState.flowing = false; return this; }
-        destroy() { this.emit('close'); return this; }
+        }, timer._idleTimeout, !!timer[refed], start);
     }
-
-    class Writable extends Stream {
-        constructor(options) {
-            super();
-            this.writable = true;
-            this._writableState = { ended: false, ending: false, pending: 0 };
-            if (options && options.write) this._write = options.write;
-            // `final` (Node's Writable option): invoked once `end()` has been
-            // called AND every in-flight `_write` callback has fired, right
-            // before 'finish'. child_process's stdin pipe relies on this to
-            // close the write fd only after the last chunk has actually gone
-            // through fdWrite — closing it eagerly (or before an async write
-            // settles) would either lose data or deliver EOF too early.
-            if (options && options.final) this._final = options.final;
+    class Timeout {
+        constructor(callback, after, args, repeat, isRefed) {
+            this._idleTimeout = duration(after);
+            this._onTimeout = callback; this._timerArgs = args;
+            this._repeat = repeat ? this._idleTimeout : null;
+            this._destroyed = false; this[refed] = isRefed; this[id] = nextId++;
+            _nodeAsyncPlatform.createTask(this, 'Timeout');
+            activate(this);
         }
-        _write(chunk, encoding, cb) { cb(); }
-        write(chunk, encoding, cb) {
-            if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
-            this._writableState.pending++;
-            this._write(chunk, encoding || 'utf8', (err) => {
-                this._writableState.pending--;
-                if (err) this.emit('error', err);
-                if (cb) cb(err);
-                this._maybeFinish();
-            });
-            return true;
+        refresh() { activate(this); return this; }
+        unref() { if (this[refed]) { this[refed] = false; os.timerRef(this[token], false); } return this; }
+        ref() { if (!this[refed]) { this[refed] = true; os.timerRef(this[token], true); } return this; }
+        hasRef() { return this[refed]; }
+        close() { clearTimeout(this); return this; }
+        [Symbol.toPrimitive]() {
+            if (!this._destroyed) known.set(String(this[id]), this);
+            return this[id];
         }
-        end(chunk, encoding, cb) {
-            if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
-            if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
-            if (cb) this.once('finish', cb);
-            this._writableState.ending = true;
-            if (chunk) this.write(chunk, encoding);
-            this._maybeFinish();
-            return this;
-        }
-        // Gate 'finish' (and `_final`) on every write callback having
-        // settled, not just on `end()` having been called. Without this an
-        // `end()` that races an in-flight async `_write` (e.g. a pending
-        // `__kandeloFdWrite` promise) would fire `_final`/'finish' before the
-        // data landed.
-        _maybeFinish() {
-            const st = this._writableState;
-            if (!st.ending || st.pending > 0 || st.ended) return;
-            st.ended = true;
-            if (this._final) {
-                this._final((err) => {
-                    if (err) this.emit('error', err);
-                    this.emit('finish');
-                });
-            } else {
-                this.emit('finish');
-            }
-        }
-        destroy() { this.emit('close'); return this; }
+        [Symbol.dispose]() { clearTimeout(this); }
     }
-
-    class Duplex extends Readable {
-        constructor(options) {
-            super(options);
-            // Inline Writable's init — ES class constructors can't be .call()'d.
-            // Mirror Writable's full `_writableState` shape (ending/pending) so
-            // the shared write/end/_maybeFinish machinery below behaves
-            // identically on every Duplex-derived stream (net.Socket,
-            // tls.TLSSocket, Transform, PassThrough, zlib). Omitting these left
-            // `pending` NaN and `ending` undefined and `_maybeFinish` missing,
-            // which made the base write/end throw on those streams.
-            this.writable = true;
-            this._writableState = { ended: false, ending: false, pending: 0 };
-            if (options && options.write) this._write = options.write;
-            if (options && options.final) this._final = options.final;
-        }
+    function setTimeout(callback, after, ...args) {
+        validateCallback(callback); return new Timeout(callback, after, args.length ? args : undefined, false, true);
     }
-    // Mixin Writable methods — include `_maybeFinish` so `write`/`end`, which
-    // both call it, resolve to the same implementation on the Duplex chain.
-    for (const method of ['write', 'end', 'destroy', '_maybeFinish']) {
-        if (!Duplex.prototype[method] || method === 'destroy') {
-            Duplex.prototype[method] = Writable.prototype[method];
-        }
+    function setInterval(callback, repeat, ...args) {
+        validateCallback(callback); return new Timeout(callback, repeat, args.length ? args : undefined, true, true);
     }
-
-    class Transform extends Duplex {
-        constructor(options) {
-            super(options);
-            if (options && options.transform) this._transform = options.transform;
-        }
-        _transform(chunk, encoding, cb) { cb(null, chunk); }
-        _write(chunk, encoding, cb) {
-            this._transform(chunk, encoding, (err, data) => {
-                if (data) this.push(data);
-                cb(err);
+    function clearTimeout(timer) {
+        if (typeof timer === 'number' || typeof timer === 'string') timer = known.get(String(timer));
+        if (!timer?._onTimeout) return;
+        timer._onTimeout = undefined; timer._timerArgs = undefined;
+        // A fired owner is already unenrolled. Clear its retained arguments
+        // without changing the original delay or retiring the resource twice.
+        if (timer._destroyed) return;
+        timer._idleTimeout = -1; timer._destroyed = true;
+        os.clearTimeout(timer[token]); timer[token] = undefined; known.delete(String(timer[id]));
+        _nodeAsyncPlatform.retireTask(timer);
+    }
+    function clearInterval(timer) { clearTimeout(timer); }
+    class Immediate {
+        constructor(callback, args) {
+            this._onImmediate = callback; this._argv = args;
+            this._destroyed = false; this[refed] = true;
+            _nodeAsyncPlatform.createTask(this, 'Immediate');
+            if (this._destroyed) return;
+            this[token] = os.setImmediate(() => {
+                const fn = this._onImmediate;
+                this._destroyed = true; this[refed] = null;
+                this._onImmediate = null; this[token] = undefined;
+                try { _nodeAsyncPlatform.runTask(this, fn, this, this._argv || []); }
+                finally { this._argv = null; _nodeAsyncPlatform.retireTask(this); }
             });
         }
+        ref() { if (this[refed] === false) { this[refed] = true; os.timerRef(this[token], true); } return this; }
+        unref() { if (this[refed] === true) { this[refed] = false; os.timerRef(this[token], false); } return this; }
+        hasRef() { return !!this[refed]; }
+        [Symbol.dispose]() { clearImmediate(this); }
     }
-
-    class PassThrough extends Transform {
-        _transform(chunk, encoding, cb) { cb(null, chunk); }
+    function setImmediate(callback, ...args) {
+        validateCallback(callback); return new Immediate(callback, args.length ? args : undefined);
     }
-
-    // `class X extends require('stream')` (Minipass) needs the export to be
-    // a constructor, so attach helpers onto Stream itself.
-    Object.assign(Stream, {
-        Stream, Readable, Writable, Duplex, Transform, PassThrough,
-        pipeline(...streams) {
-            const cb = typeof streams[streams.length - 1] === 'function' ? streams.pop() : null;
-            for (let i = 0; i < streams.length - 1; i++) streams[i].pipe(streams[i + 1]);
-            if (cb) {
-                const last = streams[streams.length - 1];
-                last.on('finish', () => cb(null));
-                last.on('error', cb);
-            }
-            return streams[streams.length - 1];
-        },
-        finished(stream, cb) {
-            const onEnd = () => { cleanup(); cb(null); };
-            const onError = (err) => { cleanup(); cb(err); };
-            const cleanup = () => {
-                stream.removeListener('end', onEnd);
-                stream.removeListener('finish', onEnd);
-                stream.removeListener('error', onError);
-            };
-            stream.on('end', onEnd);
-            stream.on('finish', onEnd);
-            stream.on('error', onError);
-        },
-    });
-    return Stream;
+    function clearImmediate(immediate) {
+        if (!immediate?._onImmediate || immediate._destroyed) return;
+        os.clearTimeout(immediate[token]); immediate[token] = undefined;
+        immediate._destroyed = true; immediate[refed] = null;
+        immediate._onImmediate = null; immediate._argv = null;
+        _nodeAsyncPlatform.retireTask(immediate);
+    }
+    for (const key of ['close', Symbol.toPrimitive, Symbol.dispose]) Object.defineProperty(Timeout.prototype, key, { enumerable: true });
+    Object.defineProperty(Immediate.prototype, Symbol.dispose, { enumerable: true });
+    const api = { setTimeout, clearTimeout, setImmediate, clearImmediate, setInterval, clearInterval };
+    Object.defineProperty(api, 'promises', { enumerable: true, configurable: true, get() { return timersPromises; } });
+    const custom = Symbol.for('nodejs.util.promisify.custom');
+    Object.defineProperty(setTimeout, custom, { enumerable: true, get() { return timersPromises.setTimeout; } });
+    Object.defineProperty(setImmediate, custom, { enumerable: true, get() { return timersPromises.setImmediate; } });
+    return api;
 })();
+
+const _nodeRemovalPlatform = _createNodeRemovalPlatform({
+    fs, Buffer, process, path, timers, values: _nodeValues, utils: _nodeFsStats,
+    truncation: _nodeFsTruncation, directory: _nodeDirectoryPlatform, native: _nodeNative,
+    errno: nodeOs.constants.errno, uv: _nodeUv,
+});
+Object.assign(fs, _nodeRemovalPlatform.api);
+Object.assign(fs.promises, _nodeRemovalPlatform.promises);
+
+
+const timersPromises = (() => {
+    function invalid(name, expected) {
+        const error = new TypeError('The "' + name + '" argument must be of type ' + expected);
+        error.code = 'ERR_INVALID_ARG_TYPE'; return error;
+    }
+    function validate(delay, options, checkDelay) {
+        if (checkDelay && delay !== undefined && typeof delay !== 'number') throw invalid('delay', 'number');
+        if (options === null || typeof options !== 'object' || Array.isArray(options)) throw invalid('options', 'Object');
+        const { signal, ref = true } = options;
+        _nodeEventPlatform.validators.validateAbortSignal(signal, 'options.signal');
+        if (typeof ref !== 'boolean') throw invalid('options.ref', 'boolean');
+        return { signal, ref };
+    }
+    function aborted(signal) {
+        const error = new Error('The operation was aborted', { cause: signal.reason });
+        error.name = 'AbortError'; error.code = 'ABORT_ERR'; return error;
+    }
+    function schedule(immediate, delay, value, options) {
+        return new Promise((resolve, reject) => {
+            const { signal, ref } = validate(delay, options, !immediate);
+            if (signal?.aborted) { reject(aborted(signal)); return; }
+            let abortDisposable;
+            const cleanup = () => abortDisposable?.[_nodeDispose]();
+            const finish = () => { cleanup(); resolve(value); };
+            const handle = immediate ? timers.setImmediate(finish) : timers.setTimeout(finish, delay);
+            if (!ref) handle.unref();
+            function cancel() {
+                if (immediate) timers.clearImmediate(handle); else timers.clearTimeout(handle);
+                cleanup(); reject(aborted(signal));
+            }
+            if (signal) abortDisposable = _nodeEventPlatform.addAbortListener(signal, cancel);
+        });
+    }
+    function setTimeout(delay, value, options = {}) { return schedule(false, delay, value, options); }
+    function setImmediate(value, options = {}) { return schedule(true, undefined, value, options); }
+    async function* setInterval(delay, value, options = {}) {
+        const { signal, ref } = validate(delay, options, true);
+        if (signal?.aborted) throw aborted(signal);
+        let count = 0, wake;
+        const handle = timers.setInterval(() => {
+            count++;
+            if (wake) { const resolve = wake; wake = undefined; resolve(); }
+        }, delay);
+        if (!ref) handle.unref();
+        const cancel = () => { timers.clearInterval(handle); if (wake) { const resolve = wake; wake = undefined; resolve(); } };
+        let abortDisposable;
+        try {
+            if (signal) abortDisposable = _nodeEventPlatform.addAbortListener(signal, cancel);
+            while (!signal?.aborted) {
+                if (count === 0) await new Promise(resolve => { wake = resolve; });
+                // Values already delivered by the interval remain queued while
+                // the consumer is paused, including when abort races delivery.
+                while (count > 0) { count--; yield value; }
+            }
+            throw aborted(signal);
+        } finally { timers.clearInterval(handle); abortDisposable?.[_nodeDispose](); }
+    }
+    const schedulerBrand = Symbol('kScheduler');
+    class Scheduler {
+        constructor() { const error = new TypeError('Illegal constructor'); error.code = 'ERR_ILLEGAL_CONSTRUCTOR'; throw error; }
+        yield() { checkScheduler(this); return setImmediate(); }
+        wait(delay, options) { checkScheduler(this); return setTimeout(delay, undefined, options); }
+    }
+    function checkScheduler(value) {
+        if (!value[schedulerBrand]) { const error = new TypeError('Value of "this" must be of type Scheduler'); error.code = 'ERR_INVALID_THIS'; throw error; }
+    }
+    const scheduler = Object.create(Scheduler.prototype); scheduler[schedulerBrand] = true;
+    return { setTimeout, setImmediate, setInterval, scheduler };
+})();
+
+_nodeEventPlatform = _createNodeEventPlatform({
+    native: _nodeNative, events, inspection: _nodeInspection, process, timers, values: _nodeValues, clone: _nodeClonePlatform,
+    now: () => os.timerNow() - _nodeMonotonicStart,
+    queueMicrotask: globalThis.queueMicrotask,
+});
+Object.assign(globalThis, {
+    Event: _nodeEventPlatform.eventTarget.Event,
+    EventTarget: _nodeEventPlatform.eventTarget.EventTarget,
+    CustomEvent: _nodeEventPlatform.eventTarget.CustomEvent,
+    AbortSignal: _nodeEventPlatform.abort.AbortSignal,
+    AbortController: _nodeEventPlatform.abort.AbortController,
+    DOMException: _nodeEventPlatform.dom.DOMException,
+    QuotaExceededError: _nodeEventPlatform.dom.QuotaExceededError,
+});
+// Util call-control captures the real abort helper after its owner exists.
+const _nodeUtilClockFloor = _createNodePrimordials().MathFloor;
+const _nodeUtilTimerBase = _nodeUtilClockFloor(_nodeMonotonicStart);
+const _nodeUtilAlgorithms = _installNodeUtilAlgorithms({
+    util, values: _nodeValues, process, timers,
+    addAbortListener: _nodeEventPlatform.addAbortListener,
+    markPromiseAsHandled: value => _nodeNative.markPromiseAsHandled(value),
+    getLibuvNow: () => _nodeUtilClockFloor(os.timerNow()) - _nodeUtilTimerBase,
+    getOptionValue(name) {
+        if (name === '--eval' && typeof _nodeParsedEvalSource === 'string') return _nodeParsedEvalSource;
+        throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Node util option ' + name);
+    },
+});
+
+
+for (const name of ['aborted', 'transferableAbortSignal', 'transferableAbortController']) {
+    Object.defineProperty(util, name, {
+        enumerable: true, configurable: true, get: () => _nodeEventPlatform.abort[name],
+    });
+}
+// Native endpoint constructors exist before streams. Pinned worker IO then
+// installs its event prototypes after streams, preserving one identity.
+const _nodePortsPlatform = _createNodePortsPlatform({
+    native: _nodeNative, values: _nodeValues, process, clone: _nodeClonePlatform,
+    eventTarget: _nodeEventPlatform.eventTarget, DOMException: _nodeEventPlatform.dom.DOMException,
+    inspection: _nodeInspection, AsyncResource: _nodeAsyncPlatform.api.AsyncResource,
+    markUncloneable: value => _nodeClonePlatform.protocol.markTransferMode(value, false, false),
+    getMessageEvents: () => _nodeFormDataPlatform.messageEvents,
+});
+globalThis.__kandeloDispatchPorts = _nodePortsPlatform.dispatch;
+// ============================================================
+// stream modules: pinned Node state machines
+// ============================================================
+
+const _nodeCompressionConstants = _nodeNative.getCompressionConstants();
+const _nodeFileHandles = _createNodeFileHandlePlatform({
+    fs, process, Buffer, events, path, types: util.types, values: _nodeValues,
+    native: _nodeNative, truncation: _nodeFsTruncation, utils: _nodeFsStats, fileJobs: _nodeFileJobs,
+    getStringDecoder: string_decoder.StringDecoder,
+    permissionEnabled: () => false,
+    require: name => _nodeStreamPlatform.require(name),
+});
+fs.promises.open = _nodeFileHandles.open;
+fs.promises.truncate = _nodeFileHandles.truncate;
+fs.promises.readFile = _nodeFileHandles.readFile;
+fs.promises.stat = _nodeFileHandles.stat;
+fs.promises.lstat = _nodeFileHandles.lstat;
+fs.promises.writeFile = _nodeFileHandles.writeFile;
+fs.promises.appendFile = _nodeFileHandles.appendFile;
+const _nodeStreamPlatform = _createNodeStreamPlatform({
+    process, events, Buffer, FastBuffer: _FastBuffer, stringDecoder: string_decoder, util, ports: _nodePortsPlatform,
+    buffer: _nodeBufferModule, fs, fileHandles: _nodeFileHandles, fsUtils: _nodeFsStats,
+    toPathIfFileURL: value => value instanceof _nodeWebPlatform.URL ? url.fileURLToPath(value) : value,
+    values: _nodeValues, async: _nodeAsyncPlatform, event: _nodeEventPlatform,
+    clone: _nodeClonePlatform, native: _nodeNative,
+    experimentalStreamIter: _nodeNative.cliOptions?.experimentalStreamIter === true,
+    compressionConstants: _nodeCompressionConstants,
+    TextEncoder: globalThis.TextEncoder, TextDecoder: globalThis.TextDecoder,
+    queueMicrotask: globalThis.queueMicrotask, webState: _nodeWebPlatform.streamState,
+    getBodyData: () => _nodeBodyData,
+});
+const stream = _nodeStreamPlatform.api;
+const _nodePortIO = _nodePortsPlatform.initialize(stream);
+const _nodeFdStreamPlatform = _createNodeFdStreamPlatform({
+    stream, Buffer, process, native: _nodeNative,
+});
+// Assertion diagnostics load the shared color module, which observes the real
+// stderr stream immediately. Its FD owner must exist before that module loads.
+const assert = _nodeCore.assert;
+_nodeReadlinePlatform = _createNodeReadlinePlatform({
+    process, values: _nodeValues, isTTY: fd => os.isatty(fd),
+    streamUtils: _nodeStreamPlatform.require('internal/streams/utils'),
+    events, stringDecoder: string_decoder, inspection: _nodeInspection,
+    requireEvent: name => _nodeEventPlatform.require(name),
+    path, fs, os: nodeOs, timers,
+    // Persistent REPL history still needs the actual Node permission-policy
+    // owner. Do not infer enabled policy from a mutable public process field.
+    permission: { isEnabled() {
+        throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Node permission policy for persistent REPL history');
+    } },
+});
+const _nodeConsolePlatform = _createNodeConsolePlatform({
+    process, values: _nodeValues, inspection: _nodeInspection, Buffer,
+    types: util.types, diagnostics: _nodeDiagnostics, readline: _nodeReadlinePlatform,
+    previewEntries: (value, pairs) => _nodeNative.previewEntries(value, pairs),
+    monotonicNanoseconds: () => _nodeNative.hrtime(),
+});
+_nodeConsolePlatform.install(globalThis);
+_installNodeFileStreams({ fs, truncation: _nodeFsTruncation,
+    require: name => _nodeStreamPlatform.require(name) });
+_nodeWebPlatform.streams = _nodeStreamPlatform.web;
+_nodeWebPlatform.streamState = _nodeStreamPlatform.webState;
+_nodeClonePlatform.protocol.setup();
+globalThis.structuredClone = _nodeClonePlatform.protocol.structuredClone;
 
 // ============================================================
 // url module
 // ============================================================
+
+const _nodeDomainHelpers = _createNodeDomainHelpers({ values: _nodeValues, web: _nodeWebPlatform });
+const _nodeURLPathPlatform = _createNodeURLPathPlatform({
+    process, path, Buffer, web: _nodeWebPlatform, values: _nodeValues,
+    domainToUnicode: _nodeDomainHelpers.domainToUnicode,
+});
 
 const url = (() => {
     function parse(urlStr, parseQueryString) {
@@ -3096,434 +2865,29 @@ const url = (() => {
     // state machine here. In particular, query mutation must update href and
     // canParse must reject the same invalid input as the constructor.
     const { URL: URLClass, URLSearchParams: SearchParamsClass } = _nodeWebPlatform;
-    function fileURLToPath(u) {
-        if (typeof u === 'string') u = new URLClass(u);
-        if (!(u instanceof URLClass)) {
-            const error = new TypeError('The path argument must be a string or URL');
-            error.code = 'ERR_INVALID_ARG_TYPE';
-            throw error;
-        }
-        if (u.protocol !== 'file:') {
-            const error = new TypeError('The URL must be of scheme file');
-            error.code = 'ERR_INVALID_URL_SCHEME';
-            throw error;
-        }
-        if (u.hostname !== '') {
-            const error = new TypeError('File URL host must be localhost or empty on POSIX');
-            error.code = 'ERR_INVALID_FILE_URL_HOST';
-            throw error;
-        }
-        if (/%2f/i.test(u.pathname)) {
-            const error = new TypeError('File URL path must not include encoded / characters');
-            error.code = 'ERR_INVALID_FILE_URL_PATH';
-            throw error;
-        }
-        return decodeURIComponent(u.pathname);
-    }
-    function pathToFileURL(p) {
-        if (typeof p !== 'string') {
-            const error = new TypeError('The path argument must be a string');
-            error.code = 'ERR_INVALID_ARG_TYPE';
-            throw error;
-        }
-        const trailingSlash = p.endsWith('/');
-        p = path.resolve(p);
-        if (trailingSlash && !p.endsWith('/')) p += '/';
-        const result = new URLClass('file:///');
-        // pathname's setter percent-encodes Unicode and spaces, but leaves
-        // percent escapes and URL delimiters alone. Encode those literally.
-        result.pathname = p.replace(/%/g, '%25').replace(/\\/g, '%5C')
-            .replace(/\n/g, '%0A').replace(/\r/g, '%0D').replace(/\t/g, '%09')
-            .replace(/\?/g, '%3F').replace(/#/g, '%23');
-        return result;
-    }
     return {
         parse, format, resolve,
         URL: URLClass,
         URLSearchParams: SearchParamsClass,
-        fileURLToPath, pathToFileURL,
+        fileURLToPath: _nodeURLPathPlatform.fileURLToPath,
+        fileURLToPathBuffer: _nodeURLPathPlatform.fileURLToPathBuffer,
+        pathToFileURL: _nodeURLPathPlatform.pathToFileURL,
+        urlToHttpOptions: _nodeURLPathPlatform.urlToHttpOptions,
     };
 })();
 
-url.domainToASCII = function (d) { return String(d); };
+url.domainToASCII = _nodeDomainHelpers.domainToASCII;
+url.domainToUnicode = _nodeDomainHelpers.domainToUnicode;
 
 // ============================================================
 // querystring module
 // ============================================================
 
-const querystring = (() => {
-    function parse(qs, sep, eq) {
-        sep = sep || '&';
-        eq = eq || '=';
-        const result = {};
-        if (!qs) return result;
-        const pairs = qs.split(sep);
-        for (const pair of pairs) {
-            const idx = pair.indexOf(eq);
-            const key = idx >= 0 ? decodeURIComponent(pair.slice(0, idx)) : decodeURIComponent(pair);
-            const val = idx >= 0 ? decodeURIComponent(pair.slice(idx + 1)) : '';
-            if (key in result) {
-                if (Array.isArray(result[key])) result[key].push(val);
-                else result[key] = [result[key], val];
-            } else {
-                result[key] = val;
-            }
-        }
-        return result;
-    }
-
-    function stringify(obj, sep, eq) {
-        sep = sep || '&';
-        eq = eq || '=';
-        const pairs = [];
-        for (const key of Object.keys(obj)) {
-            const val = obj[key];
-            if (Array.isArray(val)) {
-                for (const v of val) pairs.push(encodeURIComponent(key) + eq + encodeURIComponent(v));
-            } else {
-                pairs.push(encodeURIComponent(key) + eq + encodeURIComponent(val));
-            }
-        }
-        return pairs.join(sep);
-    }
-
-    function escape(str) { return encodeURIComponent(str); }
-    function unescape(str) { return decodeURIComponent(str); }
-
-    return { parse, stringify, escape, unescape, decode: parse, encode: stringify };
-})();
-
-// ============================================================
-// string_decoder module
-// ============================================================
-
-// Byte-boundary accounting adapted from Node.js v26.13.0
-// src/string_decoder.cc; WHATWG and Node StringDecoder flush rules differ.
-/*
-Copyright Node.js contributors. All rights reserved.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to
-deal in the Software without restriction, including without limitation the
-rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
-sell copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-IN THE SOFTWARE.
-*/
-const string_decoder = (() => {
-    const states = new WeakMap();
-    function characters(bytes, encoding) {
-        if (!bytes.length) return '';
-        if (encoding === 'utf8') return new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes);
-        if (encoding === 'hex' || encoding === 'base64' || encoding === 'base64url') {
-            const encoded = Buffer.from(bytes).toString(encoding === 'hex' ? 'hex' : 'base64');
-            return encoding === 'base64url' ? encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '') : encoded;
-        }
-        const parts = [];
-        let units = [];
-        for (let i = 0; i < bytes.length;) {
-            if (encoding === 'utf16le') { units.push(bytes[i] | (bytes[i + 1] << 8)); i += 2; }
-            else units.push(bytes[i++] & (encoding === 'ascii' ? 0x7f : 0xff));
-            if (units.length >= 8192) { parts.push(String.fromCharCode(...units)); units = []; }
-        }
-        if (units.length) parts.push(String.fromCharCode(...units));
-        return parts.join('');
-    }
-    function StringDecoder(encoding) {
-        'use strict';
-        let name = encoding == null ? 'utf8' : encoding;
-        if (typeof name !== 'string') {
-            try { name = String.prototype.valueOf.call(name); } catch (_) { name = undefined; }
-        }
-        if (name !== undefined) {
-            name = name.toLowerCase();
-            if (name === '' || name === 'utf-8') name = 'utf8';
-            if (name === 'utf-16le' || name === 'ucs-2' || name === 'ucs2') name = 'utf16le';
-            if (name === 'binary') name = 'latin1';
-        }
-        if (!['utf8', 'utf16le', 'latin1', 'ascii', 'hex', 'base64', 'base64url'].includes(name)) {
-            const error = new TypeError('Unknown encoding: ' + String(encoding));
-            error.code = 'ERR_UNKNOWN_ENCODING';
-            throw error;
-        }
-        this.encoding = name;
-        states.set(this, { encoding: name, buffered: 0, missing: 0, lastChar: Buffer.alloc(4) });
-    }
-    StringDecoder.prototype.write = function write(buf) {
-        if (typeof buf === 'string') return buf;
-        let bytes = _nodeBufferSourceBytes(buf);
-        const state = states.get(this);
-        if (!state) {
-            const error = new TypeError('Value of this must be of type StringDecoder');
-            error.code = 'ERR_INVALID_THIS';
-            throw error;
-        }
-        const encoding = state.encoding;
-        if (encoding === 'ascii' || encoding === 'latin1' || encoding === 'hex') return characters(bytes, encoding);
-        let prefix = '';
-        if (state.missing) {
-            let take = Math.min(bytes.length, state.missing), interrupted = false;
-            if (encoding === 'utf8') {
-                for (let i = 0; i < take; i++) if ((bytes[i] & 0xc0) !== 0x80) {
-                    take = i;
-                    state.missing = 0;
-                    interrupted = true;
-                    break;
-                }
-            }
-            state.lastChar.set(bytes.subarray(0, take), state.buffered);
-            state.buffered += take;
-            if (!interrupted) state.missing -= take;
-            bytes = bytes.subarray(take);
-            if (!state.missing) {
-                prefix = characters(state.lastChar.subarray(0, state.buffered), encoding);
-                state.buffered = 0;
-            }
-        }
-        if (!bytes.length) return prefix;
-        let buffered = 0, missing = 0;
-        if (encoding === 'utf8' && (bytes[bytes.length - 1] & 0x80)) {
-            for (let i = bytes.length - 1; i >= 0; i--) {
-                buffered++;
-                if ((bytes[i] & 0xc0) === 0x80) {
-                    if (buffered >= 4 || i === 0) { buffered = 0; break; }
-                    continue;
-                }
-                let total = 0;
-                if ((bytes[i] & 0xe0) === 0xc0) total = 2;
-                else if ((bytes[i] & 0xf0) === 0xe0) total = 3;
-                else if ((bytes[i] & 0xf8) === 0xf0) total = 4;
-                if (!total || buffered >= total) buffered = 0;
-                else missing = total - buffered;
-                break;
-            }
-        } else if (encoding === 'utf16le') {
-            if (bytes.length % 2) { buffered = 1; missing = 1; }
-            else if ((bytes[bytes.length - 1] & 0xfc) === 0xd8) { buffered = 2; missing = 2; }
-        } else if (encoding === 'base64' || encoding === 'base64url') {
-            buffered = bytes.length % 3;
-            if (buffered) missing = 3 - buffered;
-        }
-        state.buffered = buffered; state.missing = missing;
-        const length = bytes.length - buffered;
-        if (buffered) state.lastChar.set(bytes.subarray(length));
-        return prefix + characters(bytes.subarray(0, length), encoding);
-    };
-    StringDecoder.prototype.end = function end(buf) {
-        let text = buf === undefined ? '' : this.write(buf);
-        const state = states.get(this);
-        if (state.encoding === 'utf16le' && state.buffered % 2) { state.buffered--; state.missing--; }
-        text += characters(state.lastChar.subarray(0, state.buffered), state.encoding);
-        state.buffered = state.missing = 0;
-        return text;
-    };
-    StringDecoder.prototype.text = function text(buf, offset) {
-        const state = states.get(this);
-        state.buffered = state.missing = 0;
-        return this.write(buf.slice(offset));
-    };
-    Object.defineProperties(StringDecoder.prototype, {
-        lastChar: { configurable: true, enumerable: true, get() { return states.get(this).lastChar; } },
-        lastNeed: { configurable: true, enumerable: true, get() { return states.get(this).missing; } },
-        lastTotal: { configurable: true, enumerable: true, get() { const state = states.get(this); return state.missing + state.buffered; } },
-    });
-    return { StringDecoder };
-})();
-
-// ============================================================
-// timers module
-// ============================================================
-
-const timers = (() => {
-    const apply = Reflect.apply;
-    const refed = Symbol('refed'), token = Symbol('timer'), id = Symbol('timerId');
-    const known = new Map();
-    let nextId = 1, warnedNegative = false, warnedNaN = false;
-    function invalid(name, expected) {
-        const error = new TypeError('The "' + name + '" argument must be of type ' + expected);
-        error.code = 'ERR_INVALID_ARG_TYPE'; return error;
-    }
-    function validateCallback(callback) {
-        if (typeof callback !== 'function') throw invalid('callback', 'function');
-    }
-    function duration(after) {
-        if (after === undefined) return 1;
-        after *= 1;
-        if (!(after >= 1 && after <= 2147483647)) {
-            if (after > 2147483647) process.emitWarning(after + ' does not fit into a 32-bit signed integer.\nTimeout duration was set to 1.', 'TimeoutOverflowWarning');
-            else if (after < 0 && !warnedNegative) {
-                warnedNegative = true;
-                process.emitWarning(after + ' is a negative number.\nTimeout duration was set to 1.', 'TimeoutNegativeWarning');
-            } else if (Number.isNaN(after) && !warnedNaN) {
-                warnedNaN = true;
-                process.emitWarning(after + ' is not a number.\nTimeout duration was set to 1.', 'TimeoutNaNWarning');
-            }
-            return 1;
-        }
-        return after;
-    }
-    function activate(timer, start = os.timerNow()) {
-        if (timer._idleTimeout < 0 || !timer._onTimeout) return;
-        os.clearTimeout(timer[token]);
-        if (timer._destroyed) { known.delete(String(timer[id])); timer[id] = nextId++; }
-        timer._destroyed = false; timer._idleStart = start;
-        timer[token] = os.setTimeout(() => {
-            timer[token] = undefined;
-            const entered = os.timerNow();
-            try { if (timer._onTimeout) apply(timer._onTimeout, timer, timer._timerArgs || []); }
-            finally {
-                if (timer._repeat && timer._idleTimeout !== -1) {
-                    timer._idleTimeout = timer._repeat; activate(timer, entered);
-                } else if (timer[token] === undefined) {
-                    timer._destroyed = true; known.delete(String(timer[id]));
-                }
-            }
-        }, timer._idleTimeout, !!timer[refed], start);
-    }
-    class Timeout {
-        constructor(callback, after, args, repeat, isRefed) {
-            this._idleTimeout = duration(after);
-            this._onTimeout = callback; this._timerArgs = args;
-            this._repeat = repeat ? this._idleTimeout : null;
-            this._destroyed = false; this[refed] = isRefed; this[id] = nextId++;
-            activate(this);
-        }
-        refresh() { activate(this); return this; }
-        unref() { if (this[refed]) { this[refed] = false; os.timerRef(this[token], false); } return this; }
-        ref() { if (!this[refed]) { this[refed] = true; os.timerRef(this[token], true); } return this; }
-        hasRef() { return this[refed]; }
-        close() { clearTimeout(this); return this; }
-        [Symbol.toPrimitive]() {
-            if (!this._destroyed) known.set(String(this[id]), this);
-            return this[id];
-        }
-        [Symbol.dispose]() { clearTimeout(this); }
-    }
-    function setTimeout(callback, after, ...args) {
-        validateCallback(callback); return new Timeout(callback, after, args.length ? args : undefined, false, true);
-    }
-    function setInterval(callback, repeat, ...args) {
-        validateCallback(callback); return new Timeout(callback, repeat, args.length ? args : undefined, true, true);
-    }
-    function clearTimeout(timer) {
-        if (typeof timer === 'number' || typeof timer === 'string') timer = known.get(String(timer));
-        if (!timer?._onTimeout) return;
-        timer._onTimeout = null; timer._idleTimeout = -1; timer._destroyed = true;
-        os.clearTimeout(timer[token]); timer[token] = undefined; known.delete(String(timer[id]));
-    }
-    function clearInterval(timer) { clearTimeout(timer); }
-    class Immediate {
-        constructor(callback, args) {
-            this._onImmediate = callback; this._argv = args;
-            this._destroyed = false; this[refed] = true;
-            this[token] = os.setImmediate(() => {
-                const fn = this._onImmediate;
-                this._destroyed = true; this[refed] = null;
-                this._onImmediate = null; this[token] = undefined;
-                try { apply(fn, this, this._argv || []); } finally { this._argv = null; }
-            });
-        }
-        ref() { if (this[refed] === false) { this[refed] = true; os.timerRef(this[token], true); } return this; }
-        unref() { if (this[refed] === true) { this[refed] = false; os.timerRef(this[token], false); } return this; }
-        hasRef() { return !!this[refed]; }
-        [Symbol.dispose]() { clearImmediate(this); }
-    }
-    function setImmediate(callback, ...args) {
-        validateCallback(callback); return new Immediate(callback, args.length ? args : undefined);
-    }
-    function clearImmediate(immediate) {
-        if (!immediate?._onImmediate || immediate._destroyed) return;
-        os.clearTimeout(immediate[token]); immediate[token] = undefined;
-        immediate._destroyed = true; immediate[refed] = null;
-        immediate._onImmediate = null; immediate._argv = null;
-    }
-    for (const key of ['close', Symbol.toPrimitive, Symbol.dispose]) Object.defineProperty(Timeout.prototype, key, { enumerable: true });
-    Object.defineProperty(Immediate.prototype, Symbol.dispose, { enumerable: true });
-    const api = { setTimeout, clearTimeout, setImmediate, clearImmediate, setInterval, clearInterval };
-    Object.defineProperty(api, 'promises', { enumerable: true, configurable: true, get() { return timersPromises; } });
-    const custom = Symbol.for('nodejs.util.promisify.custom');
-    Object.defineProperty(setTimeout, custom, { enumerable: true, get() { return timersPromises.setTimeout; } });
-    Object.defineProperty(setImmediate, custom, { enumerable: true, get() { return timersPromises.setImmediate; } });
-    return api;
-})();
-
-const timersPromises = (() => {
-    function invalid(name, expected) {
-        const error = new TypeError('The "' + name + '" argument must be of type ' + expected);
-        error.code = 'ERR_INVALID_ARG_TYPE'; return error;
-    }
-    function validate(delay, options, checkDelay) {
-        if (checkDelay && delay !== undefined && typeof delay !== 'number') throw invalid('delay', 'number');
-        if (options === null || typeof options !== 'object' || Array.isArray(options)) throw invalid('options', 'Object');
-        const { signal, ref = true } = options;
-        if (signal !== undefined && (signal === null || typeof signal !== 'object' || !('aborted' in signal))) throw invalid('options.signal', 'AbortSignal');
-        if (typeof ref !== 'boolean') throw invalid('options.ref', 'boolean');
-        return { signal, ref };
-    }
-    function aborted(signal) {
-        const error = new Error('The operation was aborted', { cause: signal.reason });
-        error.name = 'AbortError'; error.code = 'ABORT_ERR'; return error;
-    }
-    function schedule(immediate, delay, value, options) {
-        return new Promise((resolve, reject) => {
-            const { signal, ref } = validate(delay, options, !immediate);
-            if (signal?.aborted) { reject(aborted(signal)); return; }
-            const cleanup = () => signal?.removeEventListener('abort', cancel);
-            const finish = () => { cleanup(); resolve(value); };
-            const handle = immediate ? timers.setImmediate(finish) : timers.setTimeout(finish, delay);
-            if (!ref) handle.unref();
-            function cancel() {
-                if (immediate) timers.clearImmediate(handle); else timers.clearTimeout(handle);
-                cleanup(); reject(aborted(signal));
-            }
-            if (signal) signal.addEventListener('abort', cancel, { once: true });
-        });
-    }
-    function setTimeout(delay, value, options = {}) { return schedule(false, delay, value, options); }
-    function setImmediate(value, options = {}) { return schedule(true, undefined, value, options); }
-    async function* setInterval(delay, value, options = {}) {
-        const { signal, ref } = validate(delay, options, true);
-        if (signal?.aborted) throw aborted(signal);
-        let count = 0, wake;
-        const handle = timers.setInterval(() => {
-            count++;
-            if (wake) { const resolve = wake; wake = undefined; resolve(); }
-        }, delay);
-        if (!ref) handle.unref();
-        const cancel = () => { timers.clearInterval(handle); if (wake) { const resolve = wake; wake = undefined; resolve(); } };
-        try {
-            signal?.addEventListener('abort', cancel, { once: true });
-            while (!signal?.aborted) {
-                if (count === 0) await new Promise(resolve => { wake = resolve; });
-                // Values already delivered by the interval remain queued while
-                // the consumer is paused, including when abort races delivery.
-                while (count > 0) { count--; yield value; }
-            }
-            throw aborted(signal);
-        } finally { timers.clearInterval(handle); signal?.removeEventListener('abort', cancel); }
-    }
-    const schedulerBrand = Symbol('kScheduler');
-    class Scheduler {
-        constructor() { const error = new TypeError('Illegal constructor'); error.code = 'ERR_ILLEGAL_CONSTRUCTOR'; throw error; }
-        yield() { checkScheduler(this); return setImmediate(); }
-        wait(delay, options) { checkScheduler(this); return setTimeout(delay, undefined, options); }
-    }
-    function checkScheduler(value) {
-        if (!value[schedulerBrand]) { const error = new TypeError('Value of "this" must be of type Scheduler'); error.code = 'ERR_INVALID_THIS'; throw error; }
-    }
-    const scheduler = Object.create(Scheduler.prototype); scheduler[schedulerBrand] = true;
-    return { setTimeout, setImmediate, setInterval, scheduler };
-})();
+const _nodeQueryCodecs = _createNodeQueryCodecsPlatform({
+    Buffer, values: _nodeValues, process,
+    isInsideNodeModules: _nodeNative.isInsideNodeModules,
+});
+const querystring = _nodeQueryCodecs.require('querystring');
 
 // ============================================================
 // child_process module
@@ -3777,9 +3141,17 @@ const child_process = (() => {
         }
         if (options.cwd) actions.push({ op: 'chdir', path: String(options.cwd) });
 
-        const child = new events.EventEmitter();
-        child.stdin = null; child.stdout = null; child.stderr = null; child.pid = 0;
-        child.killed = false;
+        const child = new child_process.ChildProcess();
+        child.stdin = null; child.stdout = null; child.stderr = null;
+        child.pid = undefined; child.exitCode = null; child.signalCode = null;
+        child.spawnfile = file; child.spawnargs = argv; child.killed = false; child.connected = false;
+        let openReads = 0, exited = false, exitInfo = null, closed = false;
+        function _maybeClose() {
+            if (exited && openReads === 0 && !closed) {
+                closed = true;
+                child.emit('close', exitInfo.code, exitInfo.signal);
+            }
+        }
 
         let pid;
         try { pid = _spawnWithPath(file, argv, env, actions, options.cwd && String(options.cwd), {detached:!!options.detached}); }
@@ -3791,12 +3163,28 @@ const child_process = (() => {
             // tool then exhausts fds (EMFILE).
             for (const fd of parentClose) { try { _nn.__kandeloFdClose(fd); } catch (_) {} }
             for (const fd of legs) { if (fd != null) { try { _nn.__kandeloFdClose(fd); } catch (_) {} } }
-            // Node: spawn error is delivered asynchronously as an 'error' event.
-            queueMicrotask(() => child.emit('error', err));
-            // still provide stream objects so consumers don't crash
-            child.stdin = new stream.Writable({ write(c, e, cb) { cb(); } });
-            child.stdout = new stream.Readable({ read() {} }); child.stdout.push(null);
-            child.stderr = new stream.Readable({ read() {} }); child.stderr.push(null);
+            const status = err && typeof err.errno === 'number' ? -Math.abs(err.errno) : null;
+            if (status !== null) {
+                err = new _nodeValues.errors.ErrnoException(status, 'spawn ' + file);
+                err.path = file; err.spawnargs = argv.slice(1);
+            }
+            child.exitCode = status;
+            exited = true; exitInfo = { code: status, signal: null };
+            // These descriptor-less stream owners are already closed. Writes
+            // cannot be acknowledged as successful output to a failed process.
+            child.stdin = legs[0] == null ? null : new stream.Writable({ write(_chunk, _encoding, cb) {
+                cb(new _nodeValues.errors.codes.ERR_STREAM_DESTROYED('write'));
+            } });
+            child.stdout = legs[1] == null ? null : new stream.Readable({ read() {} });
+            child.stderr = legs[2] == null ? null : new stream.Readable({ read() {} });
+            child.stdio = [child.stdin, child.stdout, child.stderr];
+            for (const owner of child.stdio) { if (owner) owner.destroy(); }
+            child.kill = function(sig) {
+                if (sig !== 0) _nodeValues.util.convertToValidSignal(sig === undefined ? 'SIGTERM' : sig);
+                return false;
+            };
+            child.ref = child.unref = function() { return this; };
+            process.nextTick(() => { child.emit('error', err); _maybeClose(); });
             return child;
         }
         child.pid = pid;
@@ -3804,13 +3192,18 @@ const child_process = (() => {
 
         // stdin (fd 0 pipe): Writable -> fdWrite; end -> fdClose delivers EOF.
         if (legs[0] != null) {
-            const wfd = legs[0];
+            let wfd = legs[0];
+            function closeInput() {
+                if (wfd < 0) return;
+                const fd = wfd; wfd = -1; _nn.__kandeloFdClose(fd);
+            }
             child.stdin = new stream.Writable({
                 write(chunk, enc, cb) {
                     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, enc);
                     _nn.__kandeloFdWrite(wfd, buf).then(() => cb(null), cb);
                 },
-                final(cb) { try { _nn.__kandeloFdClose(wfd); } catch (_) {} cb(); },
+                final(cb) { try { closeInput(); cb(); } catch (error) { cb(error); } },
+                destroy(error, cb) { try { closeInput(); cb(error); } catch (closeError) { cb(error || closeError); } },
             });
         } else { child.stdin = null; }
 
@@ -3818,35 +3211,106 @@ const child_process = (() => {
         // 'close' fires once, after the process has exited AND every opened
         // stdout/stderr read stream has reached its terminal state. openReads is
         // incremented once per opened read stream and decremented exactly once
-        // (in that stream's EOF or error branch); _maybeClose is the single gate.
-        let openReads = 0, exited = false, exitInfo = null;
-        function _maybeClose() { if (exited && openReads === 0) child.emit('close', exitInfo.code, exitInfo.signal); }
+        // (on that stream's actual close event); _maybeClose is the single gate.
         function _pumpReadable(fd) {
-            const rs = new stream.Readable({ read() {} });
             openReads++;
-            let counted = false;
-            const finish = () => { try { _nn.__kandeloFdClose(fd); } catch (_) {} if (!counted) { counted = true; openReads--; _maybeClose(); } };
-            (function loop() {
-                _nn.__kandeloFdRead(fd, 65536).then((ab) => {
-                    if (ab.byteLength === 0) { rs.push(null); finish(); return; }
-                    rs.push(Buffer.from(ab)); loop();
-                }, (err) => { rs.destroy(err); finish(); });
-            })();
+            let pending = null, owned = true;
+            const rs = new stream.Readable({
+                read() {
+                    if (pending || !owned) return;
+                    const request = _nn.__kandeloFdRead(fd, 65536);
+                    pending = request;
+                    request.then(ab => {
+                        if (pending !== request) return;
+                        pending = null;
+                        if (rs.destroyed) return;
+                        if (ab.byteLength === 0) { rs.push(null); return; }
+                        if (rs.push(Buffer.from(ab))) rs.read(0);
+                    }, error => {
+                        if (pending !== request) return;
+                        pending = null; rs.destroy(error);
+                    });
+                },
+                destroy(error, cb) {
+                    if (pending) {
+                        try { _nn.__kandeloFdReadControl(pending, null); }
+                        catch (cancelError) { error ||= cancelError; }
+                        pending = null;
+                    }
+                    if (owned) {
+                        owned = false;
+                        try { _nn.__kandeloFdClose(fd); } catch (closeError) { error ||= closeError; }
+                    }
+                    cb(error);
+                },
+            });
+            rs.once('close', () => { openReads--; _maybeClose(); });
+            rs.read(0);
             return rs;
         }
         child.stdout = legs[1] != null ? _pumpReadable(legs[1]) : null;
         child.stderr = legs[2] != null ? _pumpReadable(legs[2]) : null;
+        child.stdio = [child.stdin, child.stdout, child.stderr];
 
-        _nn.__kandeloWaitPid(pid).then((st) => {
+        process.nextTick(() => child.emit('spawn'));
+        const waitRequest = _nn.__kandeloWaitPid(pid);
+        waitRequest.then((st) => {
             exited = true; exitInfo = st;
+            child.exitCode = st.code; child.signalCode = st.signal;
+            if (child.stdin) child.stdin.destroy();
             child.emit('exit', st.code, st.signal);
+            // Flush unread child pipes after exit, as Node's child owner does.
+            process.nextTick(() => {
+                for (const readable of [child.stdout, child.stderr]) {
+                    if (readable && !readable.readableFlowing) readable.resume();
+                }
+            });
+            _maybeClose();
+        }, reason => {
+            // A failed wait retires the observation owner, not a fabricated
+            // exit0. Status stays unknown and the actual operation is visible.
+            exited = true; exitInfo = { code: null, signal: null };
+            let error = reason;
+            if (reason && typeof reason.errno === 'number') {
+                // POSIX wait errors include ECHILD, which is not a libuv error
+                // entry. Preserve the native errno name without inventing a
+                // public util/libuv mapping for it.
+                error = reason.code
+                    ? Object.assign(new Error('waitpid ' + reason.code), {
+                        errno: -Math.abs(reason.errno), code: reason.code, syscall: 'waitpid',
+                    })
+                    : new _nodeValues.errors.ErrnoException(-Math.abs(reason.errno), 'waitpid');
+                error.pid = pid;
+            }
+            if (child.stdin) child.stdin.destroy();
+            if (child.stdout) child.stdout.destroy();
+            if (child.stderr) child.stderr.destroy();
+            child.emit('error', error);
             _maybeClose();
         });
 
         child.kill = function (sig) {
-            const signum = typeof sig === 'number' ? sig : (nodeOs.constants.signals[sig || 'SIGTERM'] | 0);
-            try { _nn.__kandeloKill(pid, signum || 15); child.killed = true; return true; } catch (_) { return false; }
+            const signum = sig === 0 ? sig :
+                _nodeValues.util.convertToValidSignal(sig === undefined ? 'SIGTERM' : sig);
+            // A zero signal probes the child. Never substitute a terminating
+            // signal, or signal a reused pid after this child has been reaped.
+            if (exited) return false;
+            try { _nn.__kandeloKill(pid, signum); }
+            catch (error) {
+                if (typeof error.errno !== 'number') throw error;
+                const errno = Math.abs(error.errno);
+                if (errno === 3) return false; // ESRCH: the child is already gone.
+                error.errno = -errno;
+                error.syscall = 'kill';
+                if (errno === 22 || errno === 38) throw error; // EINVAL/ENOSYS.
+                child.emit('error', error);
+                return false;
+            }
+            child.killed = true;
+            return true;
         };
+        child.ref = function() { if (!exited) _nn.socketRef(waitRequest, true); return this; };
+        child.unref = function() { if (!exited) _nn.socketRef(waitRequest, false); return this; };
         return child;
     }
 
@@ -3873,22 +3337,27 @@ const child_process = (() => {
         // closes stdin) AND closes the parent-side write fd (legs[0]) via the
         // stdin stream's `final` — otherwise that fd leaks one per successful
         // call, accumulating to EMFILE under heavy shell-out. `.end()` runs
-        // `_maybeFinish` exactly once (guarded by `_writableState.ended`), so
-        // the fd is closed exactly once — no double-close.
+        // the upstream Writable final hook, with descriptor ownership shared
+        // by final/destroy so it is closed once.
         if (child.stdin) child.stdin.end();
         let out = '', err = '';
         if (child.stdout) child.stdout.on('data', d => out += d);
         if (child.stderr) child.stderr.on('data', d => err += d);
-        child.on('error', e => cb && cb(e, out, err));
+        let completed = false;
+        function complete(error) {
+            if (completed || !cb) return;
+            completed = true; cb(error, out, err);
+        }
+        child.on('error', complete);
         child.on('close', (code, signal) => {
-            if (!cb) return;
+            if (completed || !cb) return;
             if (code !== 0 || signal !== null) {
                 const e = Object.assign(new Error('Command failed: ' + label), {
                     code: code, signal: signal, killed: !!child.killed,
                 });
-                cb(e, out, err);
+                complete(e);
             } else {
-                cb(null, out, err);
+                complete(null);
             }
         });
         return child;
@@ -3908,13 +3377,13 @@ const child_process = (() => {
     return { execSync, execFileSync, spawnSync, exec, execFile, spawn: _spawn };
 })();
 
-// child_process.ChildProcess — spawn() above already returns an
-// EventEmitter-shaped object; this class exists for code that does
-// `instanceof ChildProcess` or subclasses it directly.
+// spawn() creates this shared public class. Direct .spawn(), IPC and native
+// handle/subclass integration remain open; constructor identity alone does
+// not supply those contracts.
 child_process.ChildProcess = (function () {
     function ChildProcess() { events.EventEmitter.call(this); }
-    ChildProcess.prototype = Object.create(events.EventEmitter.prototype);
-    ChildProcess.prototype.constructor = ChildProcess;
+    Object.setPrototypeOf(ChildProcess.prototype, events.EventEmitter.prototype);
+    Object.setPrototypeOf(ChildProcess, events.EventEmitter);
     return ChildProcess;
 })();
 
@@ -3923,148 +3392,77 @@ child_process.ChildProcess = (function () {
 // ============================================================
 
 const crypto = (() => {
-    // Real CSPRNG source: `/dev/urandom` is a kernel virtual device whose
-    // reads delegate to host_getrandom() (see docs/posix-status.md). We fill
-    // the caller's bytes from it, failing loud if the device yields no data —
-    // never silently falling back to the non-CSPRNG Math.random(). Open +
-    // read + close per call keeps fd lifecycle trivial across fork/exec;
-    // crypto calls are not a syscall hot path.
+    // Actual packaged libcrypto uses the guest SDK/kernel entropy path.
     function _fillRandomBytes(u8, byteOffset, byteLength) {
-        if (byteLength <= 0) return u8;
-        // A Buffer view sharing the target's memory, so readSync writes in place.
-        const view = Buffer.from(u8.buffer, u8.byteOffset + byteOffset, byteLength);
-        let fd;
-        try {
-            fd = fs.openSync('/dev/urandom', 'r');
-            let got = 0;
-            while (got < byteLength) {
-                const n = fs.readSync(fd, view, got, byteLength - got, null);
-                if (n <= 0) throw new Error('crypto: /dev/urandom returned no data');
-                got += n;
-            }
-        } finally {
-            if (fd !== undefined) { try { fs.closeSync(fd); } catch (_) { /* ignore */ } }
+        const p = _nodeCryptoRandomPrimordials;
+        const view = new p.Uint8Array(p.TypedArrayPrototypeGetBuffer(u8),
+            p.TypedArrayPrototypeGetByteOffset(u8) + byteOffset, byteLength);
+        const error = _nodeNative.randomFillBytes(view);
+        if (error !== undefined) {
+            const failure = new p.Error(error.message);
+            for (const key of p.ObjectKeys(error)) failure[key] = error[key];
+            throw failure;
         }
         return u8;
     }
 
-    function randomBytes(size, cb) {
-        const buf = Buffer.alloc(size);
-        if (typeof cb === 'function') {
-            let err = null;
-            try { _fillRandomBytes(buf, 0, size); } catch (e) { err = e; }
-            queueMicrotask(() => err ? cb(err) : cb(null, buf));
-            return;
-        }
-        _fillRandomBytes(buf, 0, size);
-        return buf;
-    }
+    const _nodeCryptoRandomPrimordials = _createNodePrimordials();
+    const { randomFillSync, getRandomValues } = _createNodeCryptoRandomSync({
+        values: _nodeValues, types: util.types, dom: _nodeEventPlatform.dom,
+        webidl: _nodeEventPlatform.require('internal/webidl'),
+        kMaxLength: _nodeBufferModule.constants.MAX_LENGTH,
+        fillBytes: bytes => _fillRandomBytes(bytes, 0, _nodeCryptoRandomPrimordials.TypedArrayPrototypeGetByteLength(bytes)),
+    });
 
-    // Node's crypto.randomFillSync(buf[, offset][, size]) fills any
-    // ArrayBufferView region in place and returns it.
-    function randomFillSync(buf, offset, size) {
-        const u8 = buf instanceof Uint8Array
-            ? buf
-            : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-        const off = offset === undefined ? 0 : offset;
-        const len = size === undefined ? (u8.byteLength - off) : size;
-        _fillRandomBytes(u8, off, len);
-        return buf;
-    }
-
-    function randomUUID() {
-        const bytes = randomBytes(16);
-        bytes[6] = (bytes[6] & 0x0f) | 0x40;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        const hex = bytes.toString('hex');
-        return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
-    }
-
-    function randomInt(min, max) {
-        if (max === undefined) { max = min; min = 0; }
-        if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max)) {
-            throw new RangeError('randomInt: min and max must be safe integers');
-        }
-        const range = max - min;
-        if (range <= 0) throw new RangeError('randomInt: max must be greater than min');
-        if (range > 0x1000000000000) throw new RangeError('randomInt: range must be <= 2^48');
-        // Unbiased rejection sampling over whole bytes — no modulo bias, which
-        // is the guarantee callers rely on (session ids, jitter, etc.).
-        let bytesNeeded = 1;
-        while (Math.pow(256, bytesNeeded) < range) bytesNeeded++;
-        const maxValue = Math.pow(256, bytesNeeded);
-        const limit = maxValue - (maxValue % range);
-        for (;;) {
-            const b = randomBytes(bytesNeeded);
-            let v = 0;
-            for (let i = 0; i < bytesNeeded; i++) v = v * 256 + b[i];
-            if (v < limit) return min + (v % range);
-        }
-    }
-
-    function createHash(algorithm) {
-        const native = _nodeNative.createHash(algorithm);
-        return {
-            update(data) {
-                native.update(data);
-                return this;
-            },
-            digest(encoding) {
-                const buf = Buffer.from(native.digest());
-                return encoding ? buf.toString(encoding) : buf;
-            },
-        };
-    }
-
-    function createHmac(algorithm, key) {
-        const native = _nodeNative.createHmac(algorithm, key);
-        return {
-            update(data) {
-                native.update(data);
-                return this;
-            },
-            digest(encoding) {
-                const buf = Buffer.from(native.digest());
-                return encoding ? buf.toString(encoding) : buf;
-            },
-        };
-    }
+    const { randomBytes, randomFill, randomInt, randomUUID, randomUUIDv7 } = _createNodeCryptoRandomJobs({
+        values: _nodeValues, types: util.types, process, native: _nodeNative,
+        kMaxLength: _nodeBufferModule.constants.MAX_LENGTH,
+        sync: { randomFillSync }, allocate: _nodeBufferAllocator.createUnsafeBuffer,
+        makeError: _nodeFsTruncation.makeError,
+    });
 
     return {
-        randomBytes, randomUUID, randomInt, randomFillSync,
-        createHash, createHmac,
-        getHashes() { return ['sha1', 'sha256', 'sha512', 'md5']; },
+        randomBytes, randomFill, randomUUID, randomUUIDv7, randomInt, randomFillSync,
         // Web Crypto getRandomValues: fills an integer TypedArray in place from
         // the real CSPRNG. Node/WHATWG cap the request at 65536 bytes.
-        getRandomValues(buf) {
-            if (buf == null || typeof buf.byteLength !== 'number' || typeof buf.buffer === 'undefined') {
-                throw new TypeError('getRandomValues: argument must be an integer-typed TypedArray');
-            }
-            if (buf.byteLength > 65536) {
-                throw new Error("getRandomValues: The ArrayBufferView's byte length exceeds 65536");
-            }
-            const u8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-            _fillRandomBytes(u8, 0, buf.byteLength);
-            return buf;
-        },
+        getRandomValues,
     };
 })();
 
-crypto.timingSafeEqual = function (a, b) {
-    a = Buffer.from(a);
-    b = Buffer.from(b);
-    if (a.length !== b.length) throw new RangeError('Input buffers must have the same byte length');
-    let diff = 0;
-    for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-    return diff === 0;
-};
-// Throwing stubs: no libcrypto cipher/asymmetric-key surface wired through
-// the wasm sysroot yet. See docs/posix-status.md. (randomFillSync is now real,
-// backed by /dev/urandom — see the crypto module above.)
+let _nodeDigestHelpers;
+Object.assign(crypto, _createNodeCryptoDigest({
+    native: _nodeNative, values: _nodeValues, Buffer, types: util.types,
+    captureHelpers(helpers) { _nodeDigestHelpers = helpers; },
+}));
+const _nodeKeyURLHref = Object.getOwnPropertyDescriptor(_nodeWebPlatform.URL.prototype, 'href').get;
+const _nodeCryptoKeys = _createNodeCryptoKeys({
+    native: _nodeNative, values: _nodeValues, Buffer, types: util.types,
+    codecs: _nodeBufferCodecs, inspection: _nodeInspection, digestHelpers: _nodeDigestHelpers,
+    url: {
+        fileURLToPath: url.fileURLToPath,
+        getURLHref: value => Reflect.apply(_nodeKeyURLHref, value, []),
+        isURLInstance(value) {
+            try { Reflect.apply(_nodeKeyURLHref, value, []); return true; } catch (_) { return false; }
+        },
+    },
+});
+Object.assign(crypto, _nodeCryptoKeys.api);
+Object.assign(crypto, _createNodeCryptoKdf({
+    native: _nodeNative, values: _nodeValues, Buffer, digestHelpers: _nodeDigestHelpers,
+    makeError: _nodeFsTruncation.makeError, keys: _nodeCryptoKeys, types: util.types,
+    kMaxLength: _nodeBufferModule.constants.MAX_LENGTH,
+}));
+const _nodeIncrementalCrypto = _createNodeIncrementalCrypto({
+    native: _nodeNative, values: _nodeValues, Buffer, types: util.types,
+    codecs: _nodeBufferCodecs, streams: _nodeStreamPlatform, digestHelpers: _nodeDigestHelpers,
+    keys: _nodeCryptoKeys,
+});
+Object.assign(crypto, _nodeIncrementalCrypto.api);
+// Cipher, key generation and signature consumers still need native owners.
+// Imported keys above own real ncrypto material; their presence does not
+// establish those separate consumers or WebCrypto algorithm compatibility.
 crypto.createCipheriv = _notImpl('crypto', 'createCipheriv');
 crypto.createDecipheriv = _notImpl('crypto', 'createDecipheriv');
-crypto.createPrivateKey = _notImpl('crypto', 'createPrivateKey');
-crypto.createPublicKey = _notImpl('crypto', 'createPublicKey');
 crypto.generateKeyPairSync = _notImpl('crypto', 'generateKeyPairSync');
 crypto.sign = _notImpl('crypto', 'sign');
 crypto.verify = _notImpl('crypto', 'verify');
@@ -4083,77 +3481,30 @@ crypto.X509Certificate = (function () {
 
 // Public lookup uses the real libc resolver. The current libc transport still
 // returns one IPv4 answer for external hostnames; it is not a full DNS client.
-const _nodeDnsLookup = (() => {
-    let order = 'verbatim';
-    // musl getaddrinfo flags on the Kandelo target (not host Node constants).
-    const ADDRCONFIG = 32, ALL = 16, V4MAPPED = 8;
-    const orders = ['verbatim', 'ipv4first', 'ipv6first'];
-    function invalid(code, message) { const error = new TypeError(message); error.code = code; return error; }
-    function selectOrder(value, name) {
-        if (!orders.includes(value)) throw invalid('ERR_INVALID_ARG_VALUE', 'Invalid ' + name + ': ' + String(value));
-        return value;
-    }
-    function lookup(hostname, options, callback) {
-        if (hostname && typeof hostname !== 'string') throw invalid('ERR_INVALID_ARG_TYPE', 'The "hostname" argument must be of type string');
-        if (typeof hostname === 'string' && hostname.includes('\0')) throw invalid('ERR_INVALID_ARG_VALUE', 'hostname must not contain null bytes');
-        let family = 0, hints = 0, all = false, resultOrder = order;
-        if (typeof options === 'function') { callback = options; options = undefined; }
-        if (typeof callback !== 'function') throw invalid('ERR_INVALID_ARG_TYPE', 'The "callback" argument must be of type function');
-        if (typeof options === 'number') family = options + 0;
-        else if (options !== undefined && (typeof options !== 'object' || options === null)) {
-            if (options !== null) throw invalid('ERR_INVALID_ARG_TYPE', 'The "options" argument must be an integer or object');
-        } else if (options) {
-            if (options.family != null) family = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family;
-            if (options.hints != null) {
-                if (typeof options.hints !== 'number') throw invalid('ERR_INVALID_ARG_TYPE', 'options.hints must be a number');
-                hints = options.hints >>> 0;
-                if ((hints & ~(ADDRCONFIG | ALL | V4MAPPED)) !== 0) throw invalid('ERR_INVALID_ARG_VALUE', 'Invalid options.hints');
-            }
-            for (const name of ['all', 'verbatim']) if (options[name] != null && typeof options[name] !== 'boolean') {
-                throw invalid('ERR_INVALID_ARG_TYPE', 'options.' + name + ' must be a boolean');
-            }
-            all = options.all === true;
-            if (options.verbatim != null) resultOrder = options.verbatim ? 'verbatim' : 'ipv4first';
-            if (options.order != null) resultOrder = selectOrder(options.order, 'options.order');
-        }
-        if (family !== 0 && family !== 4 && family !== 6) throw invalid('ERR_INVALID_ARG_VALUE', 'Invalid options.family: ' + String(family));
-        if (!hostname) throw invalid('ERR_INVALID_ARG_VALUE', 'hostname must be a non-empty string');
-        const literal = net.isIP(hostname);
-        function deliver(records) {
-            const sorted = records.slice();
-            if (resultOrder !== 'verbatim') {
-                const first = resultOrder === 'ipv4first' ? 4 : 6;
-                sorted.sort((a, b) => Number(b.family === first) - Number(a.family === first));
-            }
-            if (all) callback(null, sorted);
-            else if (sorted.length) callback(null, sorted[0].address, sorted[0].family);
-            else failed({ code: 'ENOTFOUND', errno: -3008 });
-        }
-        function failed(reason) {
-            if (reason instanceof Error || _nodeNative.isNativeError?.(reason)) { callback(reason); return; }
-            const code = reason?.code || 'EAI_FAIL';
-            const error = new Error('getaddrinfo ' + code + ' ' + hostname);
-            Object.assign(error, { code, errno: reason?.errno, syscall: 'getaddrinfo', hostname });
-            callback(error);
-        }
-        if (literal) queueMicrotask(() => deliver([{ address: hostname, family: literal }]));
-        else {
-            const query = _nodeNative.socketLookup(hostname, family, hints);
-            Promise.resolve(query).then(deliver, failed);
-        }
-        return {};
-    }
-    return { lookup, ADDRCONFIG, ALL, V4MAPPED,
-        getDefaultResultOrder() { return order; },
-        setDefaultResultOrder(value) { order = selectOrder(value, 'dnsOrder'); },
-    };
-})();
+const _nodeNetworkIP = _createNodeNetworkIP();
+const _nodeAddressRules = _createNodeAddressRules({
+    native: _nodeNative, values: _nodeValues, inspection: _nodeInspection,
+    clone: _nodeClonePlatform, URLParse: _nodeWebPlatform.URL.parse.bind(_nodeWebPlatform.URL),
+});
+const _nodePerformance = _createNodePerformanceObserverPlatform({
+    native: _nodeNative, values: _nodeValues, process, util, setImmediate: timers.setImmediate,
+    event: _nodeEventPlatform, structuredClone: _nodeClonePlatform.protocol.structuredClone,
+});
+const _nodeDnsPlatform = _createNodeDnsLookupPlatform({
+    native: _nodeNative, values: _nodeValues, process, Buffer, ip: _nodeNetworkIP,
+    hostnameToASCII: _nodeWebPlatform.hostnameToASCII,
+    observation: _nodePerformance.observation, asyncProviders: _nodeAsyncPlatform.api.asyncWrapProviders,
+});
+const _nodeDnsLookup = _nodeDnsPlatform.api;
 
 // Shared TCP dialing policy. Defaults are consumed by actual connection
 // attempts, including callers such as TLS; they are not harness overrides.
 let _nodeBeginSocketConnection;
+
 const net = (() => {
     const nat = _nodeNative;
+    const clientSocketChannel = _nodeDiagnostics.registerProducer('net.client.socket');
+    const serverSocketChannel = _nodeDiagnostics.registerProducer('net.server.socket');
     let autoSelectFamilyDefault = true;
     let attemptTimeoutDefault = 500;
     const toU8 = (b) => {
@@ -4166,6 +3517,14 @@ const net = (() => {
         const error = range ? new RangeError(message) : new TypeError(message);
         error.code = code;
         return error;
+    }
+    function assignBlockList(owner, options) {
+        if (options?.blockList) {
+            if (!net.BlockList.isBlockList(options.blockList)) {
+                throw new _nodeValues.errors.codes.ERR_INVALID_ARG_TYPE('options.blockList', 'net.BlockList', options.blockList);
+            }
+            owner.blockList = options.blockList;
+        }
     }
     function received(value) {
         if (value == null) return String(value);
@@ -4191,29 +3550,7 @@ const net = (() => {
         return Math.max(value, 10);
     }
 
-    // Node 26.13.0 lib/internal/net.js IP grammar. Copyright Node.js
-    // contributors; MIT license in third_party/node-core/LICENSE.
-    const v4Seg = '(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])';
-    const v4Str = `(?:${v4Seg}\\.){3}${v4Seg}`;
-    const IPv4Reg = new RegExp(`^${v4Str}$`);
-    const v6Seg = '(?:[0-9a-fA-F]{1,4})';
-    const IPv6Reg = new RegExp('^(?:' +
-        `(?:${v6Seg}:){7}(?:${v6Seg}|:)|` +
-        `(?:${v6Seg}:){6}(?:${v4Str}|:${v6Seg}|:)|` +
-        `(?:${v6Seg}:){5}(?::${v4Str}|(?::${v6Seg}){1,2}|:)|` +
-        `(?:${v6Seg}:){4}(?:(?::${v6Seg}){0,1}:${v4Str}|(?::${v6Seg}){1,3}|:)|` +
-        `(?:${v6Seg}:){3}(?:(?::${v6Seg}){0,2}:${v4Str}|(?::${v6Seg}){1,4}|:)|` +
-        `(?:${v6Seg}:){2}(?:(?::${v6Seg}){0,3}:${v4Str}|(?::${v6Seg}){1,5}|:)|` +
-        `(?:${v6Seg}:){1}(?:(?::${v6Seg}){0,4}:${v4Str}|(?::${v6Seg}){1,6}|:)|` +
-        `(?::(?:(?::${v6Seg}){0,5}:${v4Str}|(?::${v6Seg}){1,7}|:))` +
-        ')(?:%[0-9a-zA-Z-.:]{1,})?$');
-    const testIP = Function.call.bind(RegExp.prototype.test);
-    const isIPv4 = value => testIP(IPv4Reg, value);
-    function isIPv6(value) {
-        if (typeof value === 'string' && (value.length < 2 || value.indexOf(':') === -1)) return false;
-        return testIP(IPv6Reg, value);
-    }
-    function isIP(value) { return isIPv4(value) ? 4 : isIPv6(value) ? 6 : 0; }
+    const { isIP, isIPv4, isIPv6 } = _nodeNetworkIP;
     function normalizeArgs(args) {
         const first = args[0];
         const options = typeof first === 'object' && first !== null ? { ...first }
@@ -4226,7 +3563,6 @@ const net = (() => {
         if (options.port === undefined && options.path == null) throw argumentError('ERR_MISSING_ARGS',
             'The "options" or "port" or "path" argument must be specified');
         if (options.path != null) throw new Error('net.Socket Unix paths are not implemented on spidermonkey-node');
-        if (options.blockList != null) throw new Error('net.Socket blockList enforcement is not implemented on spidermonkey-node');
         const host = options.host || 'localhost';
         if (typeof host !== 'string') throw argumentError('ERR_INVALID_ARG_TYPE',
             'The "options.host" property must be of type string. Received ' + received(host));
@@ -4275,15 +3611,19 @@ const net = (() => {
         error.name = 'AbortError'; error.code = 'ABORT_ERR'; error.cause = signal?.reason;
         return error;
     }
-    _nodeBeginSocketConnection = function beginConnection(rawOptions, emit = () => {}) {
+    _nodeBeginSocketConnection = function beginConnection(rawOptions, emit = () => {}, getBlockList) {
+        if (getBlockList === undefined) {
+            const owner = {}; assignBlockList(owner, rawOptions);
+            getBlockList = () => owner.blockList;
+        }
         const options = normalizeOptions(rawOptions);
         let done = false, active = null, timer = null, destinations = [], current = 0, referenced = true;
-        let multiple = false, lookupCalled = false;
+        let multiple = false, lookupCalled = false, started = false, abortDisposable;
         const errors = [];
         let resolveResult, rejectResult;
         const promise = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
         function stopTimer() { if (timer !== null) clearTimeout(timer); timer = null; }
-        function cleanup() { stopTimer(); options.signal?.removeEventListener('abort', onAbort); }
+        function cleanup() { stopTimer(); abortDisposable?.[_nodeDispose](); abortDisposable = undefined; }
         function cancelAttempt() {
             const pending = active;
             active = null;
@@ -4305,9 +3645,24 @@ const net = (() => {
             stopTimer();
             if (current === destinations.length) return exhausted();
             const { address, family } = destinations[current++];
-            emit('connectionAttempt', address, options.port, family);
-            if (done) return;
-            if (multiple) emit('_attemptedAddress', address + ':' + options.port);
+            if (!multiple) {
+                emit('connectionAttempt', address, options.port, family);
+                if (done) return;
+            }
+            if (getBlockList()?.check(address, `ipv${family}`)) {
+                const error = new _nodeValues.errors.codes.ERR_IP_BLOCKED(address);
+                if (!multiple) return fail(error);
+                errors.push(error);
+                emit('connectionAttemptFailed', address, options.port, family, error);
+                if (!done) attempt();
+                return;
+            }
+            if (multiple) {
+                emit('connectionAttempt', address, options.port, family);
+                if (done) return;
+                emit('_attemptedAddress', address + ':' + options.port);
+                if (done) return;
+            }
             let pending;
             try { pending = nat.socketConnect(address, options.port, family, options.localAddress, options.localPort); }
             catch (error) { return fail(error); }
@@ -4386,9 +3741,10 @@ const net = (() => {
             ref(value) { referenced = value; if (active) nat.socketRef(active, value); },
             cancel(error = connectError({ code: 'ECANCELED', errno: -125 }, options.host, options.port)) { fail(error); },
             start() {
-                if (done) return;
+                if (done || started) return;
+                started = true;
                 if (options.signal?.aborted) return onAbort();
-                options.signal?.addEventListener('abort', onAbort, { once: true });
+                if (options.signal) abortDisposable = _nodeEventPlatform.addAbortListener(options.signal, onAbort);
                 const literalFamily = isIP(options.host);
                 if (literalFamily) {
                     destinations = [{ address: options.host, family: literalFamily }];
@@ -4408,6 +3764,7 @@ const net = (() => {
     class SocketCore extends stream.Duplex {
         constructor(options) {
             super(options);
+            assignBlockList(this, options);
             this._fd = -1;
             this._handle = null;
             this[socketHandleState] = null;
@@ -4430,14 +3787,16 @@ const net = (() => {
             this._lastWriteQueueSize = 0;
             this._referenced = true;
             this.allowHalfOpen = !!options?.allowHalfOpen;
-            this.destroyed = false;
             this.on('end', () => {
                 if (!this.allowHalfOpen) queueMicrotask(() => {
-                    if (!this._socketDestroyed && !this._writableState.ending) this.end();
+                    if (!this._socketDestroyed && !this.writableEnded) this.end();
                 });
                 this._maybeCloseSocket();
             });
             this.on('finish', () => this._maybeCloseSocket());
+            this.once('close', () => {
+                this._onServerSocketClose?.(); this._onServerSocketClose = null;
+            });
         }
 
         _ownSocketFd(fd) {
@@ -4463,7 +3822,7 @@ const net = (() => {
             this.localAddress = local.address; this.localFamily = local.family; this.localPort = local.port;
         }
         _maybeCloseSocket() {
-            if (this._readableState.ended && this._writableState.ended) this.destroy();
+            if (this.readableEnded && this.writableFinished) this.destroy();
         }
         _final(cb) {
             if (this.connecting) { this.once('connect', () => this._final(cb)); return; }
@@ -4473,6 +3832,9 @@ const net = (() => {
 
         connect(...args) {
             const [options, cb] = normalizeArgs(args);
+            // Node publishes the attempted socket before callbacks and even
+            // before validation can reject the connection options.
+            if (clientSocketChannel.hasSubscribers) clientSocketChannel.publish({ socket: this });
             if (cb) this.once('connect', cb);
             if (this.connecting) throw argumentError('ERR_SOCKET_CONNECTION_IN_PROGRESS', 'Socket is already connecting');
             if (this._fd >= 0) throw argumentError('ERR_SOCKET_ALREADY_CONNECTED', 'Socket is already connected');
@@ -4483,7 +3845,7 @@ const net = (() => {
                 if (event === '_attemptsStarted') this.autoSelectFamilyAttemptedAddresses = [];
                 else if (event === '_attemptedAddress') this.autoSelectFamilyAttemptedAddresses.push(values[0]);
                 else this.emit(event, ...values);
-            });
+            }, () => this.blockList);
             this._connectOperation = operation;
             operation.ref(this._referenced);
             this.connecting = true;
@@ -4527,8 +3889,7 @@ const net = (() => {
                         this.push(null); /* EOF — peer closed */
                         return;
                     }
-                    this.push(Buffer.from(ab));
-                    this._scheduleRead();
+                    if (this.push(Buffer.from(ab))) this._scheduleRead();
                 },
                 (err) => {
                     this._reading = false;
@@ -4537,7 +3898,7 @@ const net = (() => {
             );
         }
 
-        _read() { /* push happens proactively in _scheduleRead */ }
+        _read() { this._scheduleRead(); }
 
         _write(chunk, _encoding, cb) {
             const buf = toU8(chunk);
@@ -4582,20 +3943,19 @@ const net = (() => {
             this.emit('timeout');
         }
 
-        destroy(err) {
-            if (this._socketDestroyed) return this;
+        _destroy(err, callback) {
+            if (this._socketDestroyed) { callback(err); return; }
             for (let socket = this; socket != null; socket = socket._parent) {
                 if (socket[socketTimeout]) timers.clearTimeout(socket[socketTimeout]);
             }
             this._socketDestroyed = true;
-            this.destroyed = true;
-            this.readable = false; this.writable = false;
             this.connecting = false;
             const operation = this._connectOperation;
             this._connectOperation = null;
             if (operation) operation.cancel();
             if (this._fd >= 0) {
                 try { nat.socketClose(this._fd); }
+                catch (closeError) { err ||= closeError; }
                 finally {
                     this._fd = -1;
                     if (this[socketHandleState]) this[socketHandleState].fd = -1;
@@ -4604,16 +3964,11 @@ const net = (() => {
             }
             for (const { cb } of this._writeQueue) cb(err || new Error('socket destroyed'));
             this._writeQueue = [];
-            this._onServerSocketClose?.(); this._onServerSocketClose = null;
-            queueMicrotask(() => {
-                if (err) this.emit('error', err);
-                this.emit('close', !!err);
-            });
-            return this;
+            callback(err);
         }
 
         resume() { super.resume(); this._scheduleRead(); return this; }
-        setEncoding(enc) { this._encoding = enc; return this; }
+        setEncoding(enc) { return super.setEncoding(enc); }
         setTimeout(ms, cb) {
             if (this.destroyed) return this;
             this.timeout = ms;
@@ -4648,6 +4003,7 @@ const net = (() => {
             options ??= {};
             this.allowHalfOpen = !!options.allowHalfOpen;
             this.pauseOnConnect = !!options.pauseOnConnect;
+            assignBlockList(this, options);
             this._fd = -1; this._connections = 0; this._generation = 0;
             this._referenced = true; this._closing = false;
             this.listening = false;
@@ -4656,7 +4012,7 @@ const net = (() => {
         listen(...args) {
             if (this._fd >= 0 || this._opening) throw argumentError('ERR_SERVER_ALREADY_LISTEN', 'Listen method has been called more than once without closing.');
             const [options, cb] = normalizeArgs(args);
-            for (const option of ['path', 'fd', 'blockList']) {
+            for (const option of ['path', 'fd']) {
                 if (options[option] != null) throw argumentError('ERR_NOT_IMPLEMENTED', 'net.Server ' + option + ' is not implemented');
             }
             options.port ??= 0;
@@ -4697,9 +4053,9 @@ const net = (() => {
             };
             if (signal) {
                 const abort = () => this.close();
-                this._abortCleanup = () => signal.removeEventListener('abort', abort);
                 if (signal.aborted) { queueMicrotask(abort); return this; }
-                signal.addEventListener('abort', abort, { once: true });
+                const disposable = _nodeEventPlatform.addAbortListener(signal, abort);
+                this._abortCleanup = () => disposable[_nodeDispose]();
             }
             host ||= '::';
             const family = isIP(host);
@@ -4726,6 +4082,17 @@ const net = (() => {
                     } finally { nat.socketClose(fd); }
                     return;
                 }
+                // Filter the actual accepted peer before constructing or
+                // publishing a public socket. Read the live owner each time.
+                if (this.blockList) {
+                    try {
+                        const remote = nat.socketAddress(fd, true);
+                        const family = isIP(remote.address);
+                        if (family && this.blockList.check(remote.address, `ipv${family}`)) {
+                            nat.socketClose(fd); return;
+                        }
+                    } catch (error) { nat.socketClose(fd); throw error; }
+                }
                 const socket = new Socket({ allowHalfOpen: this.allowHalfOpen });
                 try { socket._adoptFd(fd); }
                 catch (error) { socket.destroy(); this.emit('error', error); return; }
@@ -4733,6 +4100,7 @@ const net = (() => {
                 this._connections++;
                 socket._onServerSocketClose = () => { this._connections--; this._maybeClose(); };
                 this.emit('connection', socket);
+                if (serverSocketChannel.hasSubscribers) serverSocketChannel.publish({ socket });
                 if (!this.pauseOnConnect) socket._scheduleRead();
             }, reason => {
                 if (this._fd >= 0 && this._generation === generation) this.emit('error', connectError(reason, undefined, undefined, 'accept'));
@@ -4792,16 +4160,9 @@ const net = (() => {
     };
 })();
 
-// net.BlockList — no-op class stub (used with `new net.BlockList()` and
-// instanceof checks); check() always reports "not blocked".
-net.BlockList = (function () {
-    function BlockList() {}
-    BlockList.prototype.addAddress = function () {};
-    BlockList.prototype.addRange = function () {};
-    BlockList.prototype.addSubnet = function () {};
-    BlockList.prototype.check = function () { return false; };
-    return BlockList;
-})();
+// net.BlockList and SocketAddress retain the pinned getter-only exports.
+Object.defineProperties(net, _nodeAddressRules.netDescriptors);
+net.Stream = net.Socket;
 
 // ============================================================
 // tls module — TLSSocket via libssl in the wasm sysroot
@@ -4829,6 +4190,7 @@ const tls = (() => {
             this._handshakePending = true;
             this.servername = options?.servername || null;
             this.authorized = false;
+            this.authorizationError = null;
         }
 
         _attach(fd, servername, opts) {
@@ -4842,7 +4204,11 @@ const tls = (() => {
                     if (this._tlsDestroyed) { nat.tlsClose(handle); return; }
                     this._tlsHandle = handle;
                     this._handshakePending = false;
-                    this.authorized = rejectUnauthorized;
+                    try {
+                        const verifyError = nat.tlsInfo(handle, 4);
+                        this.authorized = verifyError === null;
+                        this.authorizationError = verifyError === null ? null : verifyError.code;
+                    } catch (error) { this.destroy(error); return; }
                     this.emit('secureConnect');
                     this._scheduleRead();
                     this._flushWriteQueue();
@@ -4859,8 +4225,7 @@ const tls = (() => {
                     this._reading = false;
                     if (this._tlsDestroyed) return;
                     if (ab.byteLength === 0) { this.push(null); return; }
-                    this.push(Buffer.from(ab));
-                    this._scheduleRead();
+                    if (this.push(Buffer.from(ab))) this._scheduleRead();
                 },
                 (err) => {
                     this._reading = false;
@@ -4869,7 +4234,7 @@ const tls = (() => {
             );
         }
 
-        _read() { /* push happens proactively in _scheduleRead */ }
+        _read() { this._scheduleRead(); }
 
         _write(chunk, _encoding, cb) {
             const buf = toU8(chunk);
@@ -4888,28 +4253,39 @@ const tls = (() => {
             }
         }
 
-        destroy(err) {
-            if (this._tlsDestroyed) return this;
+        _destroy(err, callback) {
+            if (this._tlsDestroyed) { callback(err); return; }
             this._tlsDestroyed = true;
             if (this._connectOperation) { this._connectOperation.cancel(); this._connectOperation = null; }
             if (this._tlsHandle >= 0) {
-                nat.tlsClose(this._tlsHandle);
+                try { nat.tlsClose(this._tlsHandle); }
+                catch (closeError) { err ||= closeError; }
                 this._tlsHandle = -1;
             }
             for (const { cb } of this._writeQueue) cb(err || new Error('tls socket destroyed'));
             this._writeQueue = [];
-            if (err) this.emit('error', err);
-            this.emit('close', !!err);
-            return this;
+            callback(err);
         }
 
-        setEncoding(enc) { this._encoding = enc; return this; }
+        setEncoding(enc) { return super.setEncoding(enc); }
         setTimeout(ms, cb) { if (cb) this.once('timeout', cb); return this; }
         setNoDelay() { return this; }
         setKeepAlive() { return this; }
         ref() { return this; }
         unref() { return this; }
-        getProtocol() { return this._tlsHandle >= 0 ? 'TLSv1.3' : null; }
+        getProtocol() { return this._tlsHandle >= 0 ? nat.tlsInfo(this._tlsHandle, 1) : null; }
+        getCipher() { return this._tlsHandle >= 0 ? nat.tlsInfo(this._tlsHandle, 2) : null; }
+        isSessionReused() { return this._tlsHandle >= 0 ? nat.tlsInfo(this._tlsHandle, 3) : null; }
+        getFinished() {
+            if (this._tlsHandle < 0) return null;
+            const bytes = nat.tlsInfo(this._tlsHandle, 5);
+            return bytes === undefined ? undefined : Buffer.from(bytes);
+        }
+        getPeerFinished() {
+            if (this._tlsHandle < 0) return null;
+            const bytes = nat.tlsInfo(this._tlsHandle, 6);
+            return bytes === undefined ? undefined : Buffer.from(bytes);
+        }
         getPeerCertificate() { return {}; }
     }
 
@@ -4948,7 +4324,10 @@ const tls = (() => {
 // No bundled CA store or pluggable SecureContext surface — tlsConnect
 // (libssl in the wasm sysroot) manages certificate verification itself.
 tls.rootCertificates = [];
-tls.checkServerIdentity = function () { return undefined; };
+tls.checkServerIdentity = _createNodeTlsIdentity({
+    values: _nodeValues, net, domainToASCII: _nodeDomainHelpers.domainToASCII,
+    canonicalizeIP: _nodeNetworkIP.canonicalizeIP,
+});
 tls.createSecureContext = _notImpl('tls', 'createSecureContext');
 
 // ============================================================
@@ -4961,272 +4340,21 @@ tls.createSecureContext = _notImpl('tls', 'createSecureContext');
 // Content-Length / Transfer-Encoding: chunked / connection-close.
 // ============================================================
 
-const STATUS_CODES = {
-    100: 'Continue', 101: 'Switching Protocols',
-    200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content',
-    301: 'Moved Permanently', 302: 'Found', 303: 'See Other',
-    304: 'Not Modified', 307: 'Temporary Redirect', 308: 'Permanent Redirect',
-    400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
-    404: 'Not Found', 405: 'Method Not Allowed', 408: 'Request Timeout',
-    409: 'Conflict', 410: 'Gone', 411: 'Length Required',
-    413: 'Payload Too Large', 414: 'URI Too Long', 415: 'Unsupported Media Type',
-    429: 'Too Many Requests',
-    500: 'Internal Server Error', 501: 'Not Implemented', 502: 'Bad Gateway',
-    503: 'Service Unavailable', 504: 'Gateway Timeout',
-};
+const _nodeHttpHeaders = _createNodeHttpHeaders({
+    values: _nodeValues, Buffer, insecureHTTPParser: _nodeNative.cliOptions?.insecureHttpParser === true,
+});
+const STATUS_CODES = _nodeHttpHeaders.STATUS_CODES;
+const _nodeHttpIncoming = _createNodeHttpIncoming({
+    stream, abort: _nodeEventPlatform.abort, process,
+});
 
 const HTTP_METHODS = [
     'GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'CONNECT', 'TRACE',
 ];
 
-/* IncomingMessage parser — single instance per ClientRequest. Bytes from
-   the socket arrive via feed() and trigger onHeaders / message.push().
-   The parser owns the IncomingMessage and is the only thing that should
-   call message.push(). */
-function makeResponseParser({ onHeaders, onError, onComplete }) {
-    let state = 'STATUS'; // STATUS | HEADERS | BODY
-    let textBuf = '';     // latin1 buffer for status/headers
-    let message = null;
-    let bodyMode = null;  // 'length' | 'chunked' | 'close' | 'none'
-    let bodyRemaining = 0;
-    let chunkPhase = 'size'; // size | data | data-trailer | trailer
-    let chunkRemaining = 0;
-    let chunkAcc = '';
-    let trailerAcc = '';
-    let completed = false;
-    let remainder = null; // bytes received after end-of-message, for the next claimer of this socket
-
-    function bytesToLatin1(u8) {
-        let s = '';
-        for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
-        return s;
-    }
-    function latin1ToBytes(s) {
-        const u8 = new Uint8Array(s.length);
-        for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i) & 0xff;
-        return u8;
-    }
-
-    function complete(leftover) {
-        if (completed) return;
-        completed = true;
-        if (leftover && leftover.length > 0) remainder = leftover;
-        if (message) message.complete = true;
-        if (message) message.push(null);
-        if (onComplete) onComplete();
-    }
-
-    function setupBodyMode() {
-        const sc = message.statusCode;
-        const cl = message.headers['content-length'];
-        const te = message.headers['transfer-encoding'];
-        // RFC 7230: 1xx, 204, 304 — no body regardless of headers.
-        if ((sc >= 100 && sc < 200) || sc === 204 || sc === 304) {
-            bodyMode = 'none';
-            return;
-        }
-        if (te && /chunked/i.test(te)) {
-            bodyMode = 'chunked'; chunkPhase = 'size'; chunkAcc = '';
-        } else if (cl !== undefined) {
-            const n = parseInt(cl, 10);
-            if (Number.isFinite(n) && n >= 0) {
-                bodyMode = 'length';
-                bodyRemaining = n;
-            } else {
-                bodyMode = 'close';
-            }
-        } else {
-            bodyMode = 'close';
-        }
-    }
-
-    function parseStatusLine(line) {
-        // "HTTP/1.1 200 OK" — message may be empty.
-        const m = /^HTTP\/(\d+)\.(\d+)[ \t]+(\d{3})(?:[ \t]+(.*))?$/.exec(line);
-        if (!m) throw new Error('http: malformed status line: ' + JSON.stringify(line));
-        message.httpVersionMajor = parseInt(m[1], 10);
-        message.httpVersionMinor = parseInt(m[2], 10);
-        message.httpVersion = `${m[1]}.${m[2]}`;
-        message.statusCode = parseInt(m[3], 10);
-        message.statusMessage = m[4] || STATUS_CODES[message.statusCode] || '';
-    }
-
-    function pushHeader(line) {
-        const colon = line.indexOf(':');
-        if (colon < 0) return; // tolerate
-        const name = line.slice(0, colon).trim();
-        const value = line.slice(colon + 1).trim();
-        const lk = name.toLowerCase();
-        message.rawHeaders.push(name, value);
-        if (lk === 'set-cookie') {
-            if (Array.isArray(message.headers[lk])) message.headers[lk].push(value);
-            else message.headers[lk] = [value];
-        } else if (message.headers[lk] !== undefined) {
-            message.headers[lk] += ', ' + value;
-        } else {
-            message.headers[lk] = value;
-        }
-    }
-
-    function parseChunked(u8) {
-        let i = 0;
-        while (i < u8.length) {
-            if (chunkPhase === 'size') {
-                while (i < u8.length) {
-                    chunkAcc += String.fromCharCode(u8[i++]);
-                    if (chunkAcc.endsWith('\r\n')) {
-                        const sizeStr = chunkAcc.slice(0, -2).split(';')[0].trim();
-                        chunkRemaining = parseInt(sizeStr, 16);
-                        if (!Number.isFinite(chunkRemaining) || chunkRemaining < 0) {
-                            throw new Error('http: bad chunk size: ' + sizeStr);
-                        }
-                        chunkAcc = '';
-                        chunkPhase = (chunkRemaining === 0) ? 'trailer' : 'data';
-                        break;
-                    }
-                }
-            } else if (chunkPhase === 'data') {
-                const n = Math.min(u8.length - i, chunkRemaining);
-                if (n > 0) {
-                    message.push(Buffer.from(u8.subarray(i, i + n)));
-                    i += n;
-                    chunkRemaining -= n;
-                }
-                if (chunkRemaining === 0) {
-                    chunkPhase = 'data-trailer';
-                    trailerAcc = '';
-                }
-            } else if (chunkPhase === 'data-trailer') {
-                while (i < u8.length) {
-                    trailerAcc += String.fromCharCode(u8[i++]);
-                    if (trailerAcc === '\r\n') {
-                        chunkPhase = 'size';
-                        chunkAcc = '';
-                        trailerAcc = '';
-                        break;
-                    }
-                    if (trailerAcc.length > 2 || (trailerAcc.length === 1 && trailerAcc !== '\r')) {
-                        throw new Error('http: bad chunk trailer');
-                    }
-                }
-            } else if (chunkPhase === 'trailer') {
-                // Either "\r\n" (no trailers) or trailer headers ending in "\r\n\r\n".
-                while (i < u8.length) {
-                    chunkAcc += String.fromCharCode(u8[i++]);
-                    if (chunkAcc === '\r\n' || chunkAcc.endsWith('\r\n\r\n')) {
-                        complete(i < u8.length ? u8.subarray(i) : null);
-                        return;
-                    }
-                    if (chunkAcc.length > 65536) {
-                        throw new Error('http: chunked trailer too large');
-                    }
-                }
-            }
-        }
-    }
-
-    function parseBody(u8) {
-        if (completed || !message) return;
-        if (bodyMode === 'none') {
-            complete();
-            return;
-        }
-        if (bodyMode === 'length') {
-            const n = Math.min(u8.length, bodyRemaining);
-            if (n > 0) {
-                message.push(Buffer.from(u8.subarray(0, n)));
-                bodyRemaining -= n;
-            }
-            if (bodyRemaining === 0) {
-                complete(u8.length > n ? u8.subarray(n) : null);
-            }
-        } else if (bodyMode === 'close') {
-            if (u8.length > 0) message.push(Buffer.from(u8));
-        } else if (bodyMode === 'chunked') {
-            parseChunked(u8);
-        }
-    }
-
-    return {
-        get message() { return message; },
-        get completed() { return completed; },
-        getRemainder() { return remainder; },
-        feed(u8) {
-            try {
-                if (state === 'STATUS' || state === 'HEADERS') {
-                    textBuf += bytesToLatin1(u8);
-                    while (true) {
-                        const idx = textBuf.indexOf('\r\n');
-                        if (idx < 0) return;
-                        const line = textBuf.slice(0, idx);
-                        textBuf = textBuf.slice(idx + 2);
-                        if (state === 'STATUS') {
-                            message = makeIncomingMessage();
-                            parseStatusLine(line);
-                            state = 'HEADERS';
-                        } else if (state === 'HEADERS') {
-                            if (line === '') {
-                                setupBodyMode();
-                                state = 'BODY';
-                                onHeaders(message);
-                                // Bodyless responses (no-body status, or
-                                // Content-Length: 0) complete immediately —
-                                // no further bytes needed. Hand any post-header
-                                // bytes to the next claimer of the socket.
-                                if (bodyMode === 'none'
-                                    || (bodyMode === 'length' && bodyRemaining === 0)) {
-                                    const left = textBuf.length > 0
-                                        ? latin1ToBytes(textBuf) : null;
-                                    textBuf = '';
-                                    complete(left);
-                                    return;
-                                }
-                                if (textBuf.length > 0) {
-                                    const rest = latin1ToBytes(textBuf);
-                                    textBuf = '';
-                                    parseBody(rest);
-                                }
-                                return;
-                            }
-                            pushHeader(line);
-                        }
-                    }
-                } else {
-                    parseBody(u8);
-                }
-            } catch (err) {
-                onError(err);
-            }
-        },
-        end() {
-            // Socket closed. For mode=close, this is the natural EOF.
-            if (state === 'BODY' && bodyMode === 'close') {
-                complete();
-            } else if (state === 'BODY' && !completed) {
-                onError(new Error('http: connection closed before body completion'));
-            } else if (state !== 'BODY') {
-                onError(new Error('http: connection closed before headers'));
-            }
-        },
-    };
-}
-
-function makeIncomingMessage() {
-    const msg = new stream.Readable();
-    msg.headers = Object.create(null);
-    msg.rawHeaders = [];
-    msg.trailers = Object.create(null);
-    msg.rawTrailers = [];
-    msg.httpVersion = '1.1';
-    msg.httpVersionMajor = 1;
-    msg.httpVersionMinor = 1;
-    msg.statusCode = 0;
-    msg.statusMessage = '';
-    msg.complete = false;
-    msg.url = '';
-    msg.method = null;
-    return msg;
-}
+const makeResponseParser = _createNodeHttpParser({
+    native: _nodeNative, incoming: _nodeHttpIncoming, Buffer,
+});
 
 function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
     const protoLower = defaultProtocol.toLowerCase();
@@ -5308,17 +4436,14 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
 
     class ClientRequest extends stream.Writable {
         constructor(opts, cb) {
-            super();
-            this.method = (opts.method || 'GET').toUpperCase();
+            super({ autoDestroy: false });
             this.path = opts.path || '/';
             this._host = opts.hostname || opts.host || 'localhost';
             // WHATWG URL gives `port = ''` when default; treat that like missing.
             this._port = (opts.port != null && opts.port !== '')
                 ? parseInt(opts.port, 10) : defaultPort;
             this._protocol = (opts.protocol || protoLower).toLowerCase();
-            // Header storage: case-insensitive lookup, original-case serialization.
-            this._headerNames = Object.create(null); // lower -> original
-            this._headerValues = Object.create(null); // lower -> value
+            _nodeHttpHeaders.initialize(this, opts);
 
             if (opts.headers) {
                 for (const k of Object.keys(opts.headers)) {
@@ -5348,9 +4473,54 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             this._socket = null;
             this._connected = false;
             this._headersSent = false;
+            this._headersFlushed = false;
+            this._headersWanted = false;
             this._destroyed = false;
             this._redirected = false;
             this._pendingBody = []; // chunks buffered until socket is connected
+            const options = opts;
+            const { validateInteger, validateBoolean, validateOneOf } = _nodeValues.validators;
+            const { ERR_INVALID_ARG_VALUE } = _nodeValues.errors.codes;
+  const maxHeaderSize = options.maxHeaderSize;
+  if (maxHeaderSize !== undefined)
+    validateInteger(maxHeaderSize, 'maxHeaderSize', 0);
+  this.maxHeaderSize = maxHeaderSize;
+
+  const insecureHTTPParser = options.insecureHTTPParser;
+  if (insecureHTTPParser !== undefined) {
+    validateBoolean(insecureHTTPParser, 'options.insecureHTTPParser');
+  }
+
+  this.insecureHTTPParser = insecureHTTPParser;
+
+  const httpValidation = options.httpValidation;
+  if (httpValidation !== undefined) {
+    validateOneOf(httpValidation, 'options.httpValidation',
+                  ['strict', 'relaxed', 'insecure']);
+    if (insecureHTTPParser !== undefined) {
+      throw new ERR_INVALID_ARG_VALUE(
+        'options.httpValidation',
+        httpValidation,
+        'cannot be used together with options.insecureHTTPParser',
+      );
+    }
+  }
+
+  this.httpValidation = httpValidation;
+
+  if (options.joinDuplicateHeaders !== undefined) {
+    validateBoolean(options.joinDuplicateHeaders, 'options.joinDuplicateHeaders');
+  }
+
+  this.joinDuplicateHeaders = options.joinDuplicateHeaders;
+            this._joinDuplicateHeaders = this.joinDuplicateHeaders;
+            this.maxHeadersCount = null;
+            this.shouldKeepAlive = true;
+            this.upgradeOrConnect = false;
+            this._responseEnded = false;
+            this.once('finish', () => {
+                if (this._responseEnded) process.nextTick(() => this._releaseSocket());
+            });
 
             if (cb) this.once('response', cb);
             this._origCb = cb;
@@ -5361,27 +4531,10 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             });
         }
 
-        setHeader(name, value) {
-            const lk = name.toLowerCase();
-            this._headerNames[lk] = name;
-            this._headerValues[lk] = String(value);
-        }
-        getHeader(name) { return this._headerValues[name.toLowerCase()]; }
-        getHeaders() {
-            const out = Object.create(null);
-            for (const lk of Object.keys(this._headerValues)) out[lk] = this._headerValues[lk];
-            return out;
-        }
-        removeHeader(name) {
-            const lk = name.toLowerCase();
-            delete this._headerNames[lk];
-            delete this._headerValues[lk];
-        }
-
-        _openSocket(retryFresh) {
+        _openSocket() {
             const key = poolKey(this._host, this._port);
             this._sockPoolKey = key;
-            let sock = retryFresh ? null : popLiveFromPool(key);
+            let sock = popLiveFromPool(key);
             const fromPool = sock != null;
             if (!sock) {
                 sock = connect({
@@ -5397,41 +4550,34 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             this._headersReceived = false;
 
             const parser = makeResponseParser({
+                socket: sock,
+                joinDuplicateHeaders: this._joinDuplicateHeaders,
+                method: this.method, maxHeaderSize: this.maxHeaderSize,
+                insecureHTTPParser: this.insecureHTTPParser ?? _nodeNative.cliOptions?.insecureHttpParser === true,
+                httpValidation: this.httpValidation,
+                maxHeaderPairs: typeof this.maxHeadersCount === 'number' ? this.maxHeadersCount << 1 : undefined,
                 onHeaders: (msg) => { this._headersReceived = true; this._onHeaders(msg); },
+                onInformation: (info) => {
+                    if (info.statusCode === 100) this.emit('continue');
+                    this.emit('information', info);
+                },
+                onUpgrade: (msg, head) => this._onUpgrade(msg, head),
                 onError: (err) => this._failed(err),
-                onComplete: () => this._releaseSocket(),
+                onBackpressure: () => sock.pause(),
             });
             this._parser = parser;
 
-            // Pooled-socket race: server can close an idle keep-alive between
-            // our claim and our send. If we observe end/close/error before
-            // any response bytes arrive, drop the stale socket and replay
-            // the request on a fresh connection.
-            const isStalePooled = () =>
-                this._fromPool && !this._headersReceived && !this._destroyed;
+            // A transport failure must not replay an already-sent request.
             const onData = (chunk) => parser.feed(chunk);
             const onEnd = () => {
-                if (isStalePooled()) { retryFreshFrom(); return; }
                 parser.end();
+                if (!parser.completed && !this._destroyed && !this._redirected) {
+                    const error = new Error('socket hang up'); error.code = 'ECONNRESET';
+                    this._failed(error);
+                }
             };
-            const onClose = () => {
-                if (isStalePooled()) { retryFreshFrom(); return; }
-                if (!parser.completed) parser.end();
-            };
-            const onError = (err) => {
-                if (isStalePooled()) { retryFreshFrom(); return; }
-                this._failed(err);
-            };
-            const retryFreshFrom = () => {
-                sock.removeListener('data', onData);
-                sock.removeListener('end', onEnd);
-                sock.removeListener('close', onClose);
-                sock.removeListener('error', onError);
-                try { sock.destroy(); } catch (_) { /* ignore */ }
-                this._connected = false;
-                this._headersSent = false;
-                this._openSocket(true);
-            };
+            const onClose = () => { if (!parser.completed) onEnd(); };
+            const onError = (err) => this._failed(err);
             sock.on('data', onData);
             sock.on('end', onEnd);
             sock.on('error', onError);
@@ -5444,17 +4590,10 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             const onReady = () => {
                 if (this._destroyed) return;
                 this._connected = true;
-                this._sendHeaders();
-                for (const buf of this._pendingBody) this._socket.write(buf);
-                this._pendingBody = [];
-                // Drain bytes the previous response left buffered on this
-                // socket — they're the start of OUR response (server
-                // pipelined, or our parser read past end-of-message).
-                const stash = sock._pendingBytes;
-                if (stash && stash.length > 0) {
-                    sock._pendingBytes = null;
-                    parser.feed(stash);
-                }
+                if (this._headersWanted) this._sendHeaders();
+                const pendingBody = this._pendingBody; this._pendingBody = [];
+                for (const { buf, callback } of pendingBody) this._socket.write(buf, callback);
+
             };
             if (fromPool) {
                 queueMicrotask(onReady);
@@ -5466,14 +4605,15 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
 
         _releaseSocket() {
             const sock = this._socket;
-            if (!sock) return;
+            if (!sock || !this._responseEnded || !this.writableFinished) return;
             this._socket = null;
+            if (this.res) this.res.socket = null;
             const lst = this._sockListeners;
             sock.removeListener('data', lst.onData);
             sock.removeListener('end', lst.onEnd);
             sock.removeListener('error', lst.onError);
             sock.removeListener('close', lst.onClose);
-            if (this._destroyed || this._redirected || this._respConnectionClose) {
+            if (this._destroyed || this._redirected || this._respConnectionClose || !this.shouldKeepAlive) {
                 try { sock.destroy(); } catch (_) { /* ignore */ }
                 return;
             }
@@ -5483,62 +4623,85 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             // With flowing=false, push buffers; the next claimer's on('data')
             // triggers a drain into the new parser.
             try { sock.pause(); } catch (_) { /* ignore */ }
-            // Stash any bytes the parser read past end-of-message — they
-            // belong to the next response on this connection.
+            // No next request has been sent: extra bytes cannot be its response.
+            // Retire the connection instead of assigning unsolicited bytes to it.
             const left = this._parser && this._parser.getRemainder();
-            if (left && left.length > 0) {
-                const prev = sock._pendingBytes;
-                if (prev && prev.length > 0) {
-                    const merged = new Uint8Array(prev.length + left.length);
-                    merged.set(prev, 0);
-                    merged.set(left, prev.length);
-                    sock._pendingBytes = merged;
-                } else {
-                    sock._pendingBytes = left;
-                }
-            }
+            if (left && left.length > 0) { sock.destroy(); return; }
             returnToPool(this._sockPoolKey, sock);
+        }
+
+        _prepareHeaders() {
+            this._headersWanted = true;
+            if (!this._header) this._header = _nodeHttpHeaders.serialize(this, `${this.method} ${this.path} HTTP/1.1\r\n`);
         }
 
         _sendHeaders() {
             if (this._headersSent) return;
+            this._prepareHeaders();
             this._headersSent = true;
-            let req = `${this.method} ${this.path} HTTP/1.1\r\n`;
-            for (const lk of Object.keys(this._headerValues)) {
-                req += `${this._headerNames[lk]}: ${this._headerValues[lk]}\r\n`;
-            }
-            req += '\r\n';
-            this._socket.write(Buffer.from(req, 'utf8'));
+            this._socket.write(Buffer.from(this._header, 'latin1'), error => {
+                this._headersFlushed = !error;
+                const callback = this._pendingFinal; this._pendingFinal = null;
+                if (callback) callback(error);
+                else if (error) this._failed(error);
+            });
         }
 
         _write(chunk, encoding, cb) {
             if (this._destroyed) return cb(new Error('http: request destroyed'));
+            this._prepareHeaders();
             const buf = (chunk instanceof Uint8Array) ? Buffer.from(chunk)
                 : (typeof chunk === 'string') ? Buffer.from(chunk, encoding || 'utf8')
                 : Buffer.from(chunk);
             if (!this._connected) {
-                this._pendingBody.push(buf);
-                return cb();
+                this._pendingBody.push({ buf, callback: cb });
+                return;
             }
             this._sendHeaders();
-            this._socket.write(buf);
-            cb();
+            this._socket.write(buf, cb);
         }
 
-        end(chunk, encoding, cb) {
-            if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
-            if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
-            if (chunk) this.write(chunk, encoding);
+        _final(callback) {
+            this._prepareHeaders();
             if (this._connected) this._sendHeaders();
-            this._writableState.ended = true;
-            this.emit('finish');
-            if (cb) cb();
-            return this;
+            if (this._headersFlushed) callback();
+            else this._pendingFinal = callback;
+        }
+
+        _onUpgrade(msg, head) {
+            const sock = this._socket;
+            if (!sock || this._destroyed) return;
+            const lst = this._sockListeners;
+            sock.removeListener('data', lst.onData);
+            sock.removeListener('end', lst.onEnd);
+            sock.removeListener('close', lst.onClose);
+            sock.removeListener('error', lst.onError);
+            this.res = msg; msg.req = this;
+            msg[_nodeHttpIncoming.kDetachAbortSignal]();
+            this._socket = null;
+            const name = this.method === 'CONNECT' ? 'connect' : 'upgrade';
+            if (this.listenerCount(name) > 0) {
+                this.upgradeOrConnect = true;
+                sock.emit('agentRemove');
+                sock.readableFlowing = null;
+                this.emit(name, msg, sock, head);
+                this.destroyed = true;
+                this._closed = true;
+                this.emit('close');
+            } else sock.destroy();
         }
 
         _onHeaders(msg) {
             if (this._destroyed) return;
+            this.res = msg;
+            msg.req = this;
+            msg.once('end', () => {
+                msg[_nodeHttpIncoming.kDetachAbortSignal]();
+                this._responseEnded = true;
+                process.nextTick(() => this._releaseSocket());
+            });
             this._respConnectionClose = /(^|,)\s*close\s*(,|$)/i.test(msg.headers.connection || '');
+            if (!this._parser.shouldKeepAlive) this.shouldKeepAlive = false;
             // Auto-redirect (opt-in).
             if (this._followRedirects
                 && msg.statusCode >= 300 && msg.statusCode < 400
@@ -5549,7 +4712,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
                 return;
             }
             // Drain the parser into the message even after we hand it off.
-            this.emit('response', msg);
+            if (!this.emit('response', msg)) msg._dump();
         }
 
         _redirectTo(location, _prev) {
@@ -5597,25 +4760,33 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
         }
 
         _failed(err) {
-            if (this._destroyed || this._redirected) return;
-            this._destroyed = true;
-            this.emit('error', err);
+            if (!this._destroyed && !this._redirected) this.destroy(err);
         }
 
         abort() { this.destroy(); }
-        destroy(err) {
-            if (this._destroyed) return this;
+        _destroy(err, callback) {
             this._destroyed = true;
-            try { if (this._socket) this._socket.destroy(); } catch (_) { /* ignore */ }
-            if (err) this.emit('error', err);
-            return this;
+            const socket = this._socket; this._socket = null;
+            if (socket) socket.destroy();
+            if (this.res && !this.res.destroyed) this.res.destroy(err);
+            const pendingBody = this._pendingBody; this._pendingBody = [];
+            const failure = err || new _nodeValues.errors.codes.ERR_STREAM_DESTROYED('write');
+            for (const pending of pendingBody) pending.callback(failure);
+            const final = this._pendingFinal; this._pendingFinal = null;
+            if (final) final(failure);
+            callback(err);
         }
 
         setTimeout(_ms, cb) { if (cb) this.once('timeout', cb); return this; }
         setNoDelay() { return this; }
         setSocketKeepAlive() { return this; }
-        flushHeaders() { /* deferred until connect */ }
+        flushHeaders() {
+            this._prepareHeaders();
+            if (this._connected) this._sendHeaders();
+        }
     }
+
+    _nodeHttpHeaders.install(ClientRequest.prototype);
 
     function request(input, maybeOpts, maybeCb) {
         const { opts, cb } = normalize(input, maybeOpts, maybeCb);
@@ -5629,6 +4800,13 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
 
     return {
         STATUS_CODES, METHODS: HTTP_METHODS,
+        ...(protoLower === 'http:' ? {
+            IncomingMessage: _nodeHttpIncoming.IncomingMessage,
+            validateHeaderName: _nodeHttpHeaders.validateHeaderName,
+            validateHeaderValue: _nodeHttpHeaders.validateHeaderValue,
+            isValidHeaderName: _nodeHttpHeaders.isValidHeaderName,
+            isValidHeaderValue: _nodeHttpHeaders.isValidHeaderValue,
+        } : {}),
         request, get,
         ClientRequest,
         Agent: class Agent {},
@@ -5720,18 +4898,36 @@ function _bufferIsUtf8(input) {
     return true;
 }
 
+let _nodeSqlite;
+let _nodeTestingPlatform;
+function _getNodeTestingPlatform() {
+    return _nodeTestingPlatform ??= _createNodeTestingPlatform({
+        process, values: _nodeValues, assert, comparisons: _nodeCore.comparisons, types: util.types,
+        inspection: _nodeInspection, events, abort: _nodeEventPlatform.abort, async: _nodeAsyncPlatform.api,
+        eventTarget: _nodeEventPlatform.eventTarget,
+        assertUtils: _nodeCore.require('internal/assert/utils'),
+        getCallerLocation: _nodeNative.getCallerLocation,
+        timers, timerPromises: timersPromises, path, fs, fsUtils: _nodeFsStats, os: nodeOs,
+        url: { ...url, isURL: value => value instanceof _nodeWebPlatform.URL,
+            URLParse: value => _nodeWebPlatform.URL.parse(value) },
+        vm: _builtinModules.vm, Module, diagnostics: _nodeDiagnostics.api, queueMicrotask,
+        stream, streamRequire: name => _nodeStreamPlatform.require(name),
+        getOptionValue: _createNodeTestOptionReader({ cliOptions: _nodeNative.cliOptions, values: _nodeValues }),
+    });
+}
+
+
+const _nodeWorkerPlatform = _createNodeWorkerPlatform({
+    native: _nodeNative, environment: _nodeNative.workerEnvironment, cliOptions: _nodeNative.cliOptions,
+    process, EventEmitter: events.EventEmitter, values: _nodeValues, ports: _nodePortsPlatform,
+    path, url, isURL: value => util.types.isURL ? util.types.isURL(value) : value instanceof _nodeWebPlatform.URL,
+});
+globalThis.__kandeloDispatchWorkers = _nodeWorkerPlatform.dispatch;
+
 const _builtinModules = {
     'path': path,
     'events': events,
-    'buffer': {
-        Buffer,
-        atob: globalThis.atob,
-        btoa: globalThis.btoa,
-        isAscii: _bufferIsAscii,
-        isUtf8: _bufferIsUtf8,
-        // Node's buffer.constants (64-bit values).
-        constants: { MAX_LENGTH: 0x7fffffff, MAX_STRING_LENGTH: 0x1fffffe8 },
-    },
+    'buffer': _nodeBufferModule,
     'fs': fs,
     'fs/promises': fs.promises,
     'os': nodeOs,
@@ -5753,402 +4949,48 @@ const _builtinModules = {
     'net': net,
     'tls': tls,
     'http': http,
+    '_http_incoming': _nodeHttpIncoming,
     'https': https,
-    'zlib': (() => {
-        const z = _nodeNative;
-        const toU8 = (b) => {
-            if (b instanceof Uint8Array) return b;
-            if (b instanceof ArrayBuffer) return new Uint8Array(b);
-            if (typeof b === 'string') return Buffer.from(b, 'utf8');
-            throw new TypeError('zlib: input must be Buffer, Uint8Array, ArrayBuffer, or string');
-        };
-        // end() override: base Transform.end() never flushes — we have to
-        // feed Z_FINISH to libz ourselves and push(null) for end-of-stream.
-        class ZlibTransform extends stream.Transform {
-            constructor(inner, opts) {
-                super(opts);
-                this._inner = inner;
-                // minizlib (vendored by minipass-fetch) treats our zlib as
-                // Node's native handle and pokes _handle/_processChunk/close.
-                this._handle = { close: () => {} };
-            }
-            close() {}
-            _processChunk(chunk, _flushFlag) {
-                const u8 = toU8(chunk);
-                const out = this._inner.write(u8, _flushFlag === 4 /* Z_FINISH */);
-                return out.byteLength ? Buffer.from(out) : Buffer.alloc(0);
-            }
-            _transform(chunk, _enc, cb) {
-                try {
-                    const out = this._inner.write(toU8(chunk), false);
-                    cb(null, out.byteLength ? Buffer.from(out) : null);
-                } catch (e) { cb(e); }
-            }
-            end(chunk, encoding, cb) {
-                if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
-                if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
-                if (chunk != null) this.write(chunk, encoding);
-                try {
-                    const out = this._inner.write(new Uint8Array(0), true);
-                    if (out.byteLength) this.push(Buffer.from(out));
-                } catch (e) { this.emit('error', e); }
-                this.push(null);
-                this._writableState.ended = true;
-                this.emit('finish');
-                if (cb) cb();
-                return this;
-            }
-        }
-        // minipass-fetch / tar instantiate via `new zlib.Gunzip()` / `new zlib.Unzip()`.
-        class Gunzip extends ZlibTransform { constructor(opts) { super(z.createGunzip(), opts); } }
-        // Node's Unzip auto-detects a zlib or gzip header. The native backend's
-        // createGunzip already sniffs both (windowBits 47 / auto), so Unzip is
-        // backed by it too.
-        class Unzip extends ZlibTransform { constructor(opts) { super(z.createGunzip(), opts); } }
-        // Brotli: there is no Brotli codec in the native backend (patch 0012
-        // wires libz only, no libbrotli). Provide an honest fail-loud stream:
-        // it constructs (so module-init that builds a Brotli stream succeeds)
-        // but errors on the first byte of data instead of silently returning
-        // wrong bytes. Real Brotli is tracked future work (docs/posix-status.md).
-        const _brotliMsg = 'zlib Brotli is not implemented on spidermonkey-node';
-        class BrotliUnsupported extends stream.Transform {
-            _transform(_chunk, _enc, cb) { cb(new Error(_brotliMsg)); }
-        }
-        // Real Node zlib/Brotli numeric constants. Only Z_SYNC_FLUSH and
-        // BROTLI_OPERATION_FLUSH are read by the app today, but expose the
-        // standard set so consumers that read other flush/level/param codes
-        // work. Values match Node's zlib.constants.
-        const constants = {
-            Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3,
-            Z_FINISH: 4, Z_BLOCK: 5, Z_TREES: 6,
-            Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1,
-            Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4,
-            Z_BUF_ERROR: -5, Z_VERSION_ERROR: -6,
-            Z_NO_COMPRESSION: 0, Z_BEST_SPEED: 1, Z_BEST_COMPRESSION: 9,
-            Z_DEFAULT_COMPRESSION: -1,
-            Z_FILTERED: 1, Z_HUFFMAN_ONLY: 2, Z_RLE: 3, Z_FIXED: 4,
-            Z_DEFAULT_STRATEGY: 0,
-            Z_BINARY: 0, Z_TEXT: 1, Z_ASCII: 1, Z_UNKNOWN: 2,
-            Z_DEFLATED: 8,
-            Z_DEFAULT_CHUNK: 16384, Z_MIN_CHUNK: 64, Z_MAX_CHUNK: Infinity,
-            Z_DEFAULT_LEVEL: -1, Z_MIN_LEVEL: -1, Z_MAX_LEVEL: 9,
-            Z_DEFAULT_MEMLEVEL: 8, Z_MIN_MEMLEVEL: 1, Z_MAX_MEMLEVEL: 9,
-            Z_MIN_WINDOWBITS: 8, Z_MAX_WINDOWBITS: 15, Z_DEFAULT_WINDOWBITS: 15,
-            BROTLI_OPERATION_PROCESS: 0, BROTLI_OPERATION_FLUSH: 1,
-            BROTLI_OPERATION_FINISH: 2, BROTLI_OPERATION_EMIT_METADATA: 3,
-            BROTLI_PARAM_MODE: 0, BROTLI_MODE_GENERIC: 0, BROTLI_MODE_TEXT: 1,
-            BROTLI_MODE_FONT: 2, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_LGWIN: 2,
-            BROTLI_PARAM_LGBLOCK: 3,
-            BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING: 4,
-            BROTLI_PARAM_SIZE_HINT: 5, BROTLI_PARAM_LARGE_WINDOW: 6,
-            BROTLI_PARAM_NPOSTFIX: 7, BROTLI_PARAM_NDIRECT: 8,
-            BROTLI_MIN_QUALITY: 0, BROTLI_MAX_QUALITY: 11, BROTLI_DEFAULT_QUALITY: 11,
-            BROTLI_MIN_WINDOW_BITS: 10, BROTLI_MAX_WINDOW_BITS: 24,
-            BROTLI_DEFAULT_WINDOW: 22, BROTLI_LARGE_MAX_WINDOW_BITS: 30,
-            BROTLI_MIN_INPUT_BLOCK_BITS: 16, BROTLI_MAX_INPUT_BLOCK_BITS: 24,
-        };
-        return {
-            createGzip:    (opts) => new ZlibTransform(z.createGzip(opts?.level), opts),
-            createGunzip:  (opts) => new Gunzip(opts),
-            createUnzip:   (opts) => new Unzip(opts),
-            createDeflate: (opts) => new ZlibTransform(z.createDeflate(opts?.level), opts),
-            createInflate: (opts) => new ZlibTransform(z.createInflate(), opts),
-            gzipSync:    (b, opts) => Buffer.from(z.gzipSync(toU8(b), opts?.level)),
-            gunzipSync:  (b)       => Buffer.from(z.gunzipSync(toU8(b))),
-            deflateSync: (b, opts) => Buffer.from(z.deflateSync(toU8(b), opts?.level)),
-            inflateSync: (b)       => Buffer.from(z.inflateSync(toU8(b))),
-            // Brotli: honest fail-loud stubs (construct OK, error on data).
-            createBrotliCompress:   (opts) => new BrotliUnsupported(opts),
-            createBrotliDecompress: (opts) => new BrotliUnsupported(opts),
-            brotliCompressSync:   _notImpl('zlib', 'brotliCompressSync'),
-            brotliDecompressSync: _notImpl('zlib', 'brotliDecompressSync'),
-            constants,
-            Gunzip, Unzip,
-        };
-    })(),
+    get zlib() { return _nodeStreamPlatform.require('zlib'); },
     'tty': {
-        isatty: os.isatty,
+        isatty: _nodeReadlinePlatform.isatty,
         ReadStream: class ReadStream extends stream.Readable {},
         WriteStream: class WriteStream extends stream.Writable {},
     },
     'module': null, // set below
     'constants': fs.constants,
-    'punycode': {
-        toASCII(s) { return s; },
-        toUnicode(s) { return s; },
-    },
-    'dns': {
-        ..._nodeDnsLookup,
-        resolve(hostname, rrtype, cb) {
-            if (typeof rrtype === 'function') { cb = rrtype; rrtype = 'A'; }
-            cb(null, ['127.0.0.1']);
-        },
-    },
-    'readline': {
-        createInterface(options) {
-            const rl = new events.EventEmitter();
-            rl.close = () => rl.emit('close');
-            rl.question = (query, cb) => { process.stdout.write(query); cb(''); };
-            rl.prompt = () => {};
-            rl.setPrompt = () => {};
-            return rl;
-        },
-        cursorTo: _cursorTo,
-        moveCursor: _moveCursor,
-        clearLine: _clearLine,
-        clearScreenDown: _clearScreenDown,
-    },
-    'perf_hooks': {
-        performance: {
-            now() { return Date.now(); },
-            mark() {},
-            measure() {},
-        },
-        PerformanceObserver: class PerformanceObserver { observe() {} disconnect() {} },
-    },
-    'worker_threads': typeof globalThis.__kandeloCreateWorkerThreads === 'function'
-        ? globalThis.__kandeloCreateWorkerThreads(events.EventEmitter)
-        : {
-            isMainThread: true,
-            parentPort: null,
-            workerData: null,
-            Worker: class Worker {},
-        },
+    get punycode() { return _nodeQueryCodecs.require('punycode'); },
+    'dns': _nodeDnsPlatform.api,
+    'readline': _nodeReadlinePlatform.api,
+    'readline/promises': _nodeReadlinePlatform.promises,
+    'perf_hooks': _nodePerformance.api,
+    'worker_threads': _nodeWorkerPlatform.api,
     'cluster': {
         isMaster: true,
         isPrimary: true,
         isWorker: false,
     },
-    // node:console — exposes the Console class so libs (e.g. undici's mock
-    // formatter) can construct a logger backed by arbitrary streams. The
-    // global `console` in some engines is not an instance of this class; that
-    // matches Node's runtime behaviour (`globalThis.console` is its own
-    // singleton, not produced from `new Console`).
-    'console': (() => {
-        const writeLine = (stream, args) => {
-            try {
-                stream.write(args.map((a) =>
-                    typeof a === 'string' ? a : util.inspect(a)
-                ).join(' ') + '\n');
-            } catch {}
-        };
-        class Console {
-            constructor(opts) {
-                opts = opts || {};
-                this._out = opts.stdout || process.stdout;
-                this._err = opts.stderr || opts.stdout || process.stderr;
-            }
-            log(...args) { writeLine(this._out, args); }
-            info(...args) { writeLine(this._out, args); }
-            debug(...args) { writeLine(this._out, args); }
-            warn(...args) { writeLine(this._err, args); }
-            error(...args) { writeLine(this._err, args); }
-            trace(...args) { writeLine(this._err, ['Trace:', ...args]); }
-            dir(obj) { writeLine(this._out, [util.inspect(obj)]); }
-            table(data) { writeLine(this._out, [data]); }
-            assert(cond, ...args) {
-                if (!cond) writeLine(this._err, ['Assertion failed:', ...args]);
-            }
-            count() {} countReset() {}
-            group() {} groupCollapsed() {} groupEnd() {}
-            time() {} timeEnd() {} timeLog() {}
-            clear() {}
-        }
-        return { Console, default: Console };
-    })(),
-    // No async-context tracking. AsyncResource exists so undici can subclass
-    // it; runInAsyncScope and bind are pass-throughs. AsyncLocalStorage
-    // works as a synchronous Map using a single mutable cell, sufficient
-    // for libraries that store request context once and read it back.
-    'async_hooks': (() => {
-        let _aid = 1;
-        class AsyncResource {
-            constructor(type, options) {
-                this._type = type;
-                this._aid = ++_aid;
-                this._triggerAid = (options && options.triggerAsyncId) || 0;
-            }
-            runInAsyncScope(fn, thisArg, ...args) { return fn.apply(thisArg, args); }
-            emitDestroy() { return this; }
-            asyncId() { return this._aid; }
-            triggerAsyncId() { return this._triggerAid; }
-            bind(fn) { return fn; }
-            static bind(fn) { return fn; }
-        }
-        class AsyncLocalStorage {
-            constructor() { this._store = undefined; }
-            run(store, fn, ...args) {
-                const prev = this._store;
-                this._store = store;
-                try { return fn(...args); } finally { this._store = prev; }
-            }
-            exit(fn, ...args) {
-                const prev = this._store;
-                this._store = undefined;
-                try { return fn(...args); } finally { this._store = prev; }
-            }
-            getStore() { return this._store; }
-            enterWith(store) { this._store = store; }
-            disable() { this._store = undefined; }
-        }
-        return {
-            AsyncResource,
-            AsyncLocalStorage,
-            executionAsyncId: () => 0,
-            triggerAsyncId: () => 0,
-            executionAsyncResource: () => ({}),
-            createHook: () => ({ enable() {}, disable() {} }),
-        };
-    })(),
-    // Undici's request/connect path imports diagnostics_channel at module
-    // init for tracing hooks. We're not exporting traces — return inert
-    // channels whose publish/subscribe/tracingChannel are no-ops.
-    'diagnostics_channel': (() => {
-        const makeChannel = (name) => ({
-            name,
-            hasSubscribers: false,
-            publish() {},
-            subscribe() {},
-            unsubscribe() {},
-            bindStore() {},
-            unbindStore() {},
-            runStores(_data, fn, thisArg, ...args) { return fn.apply(thisArg, args); },
-        });
-        const makeTracing = (name) => {
-            const ch = (sub) => makeChannel(name + ':' + sub);
-            return {
-                start: ch('start'),
-                end: ch('end'),
-                asyncStart: ch('asyncStart'),
-                asyncEnd: ch('asyncEnd'),
-                error: ch('error'),
-                hasSubscribers: false,
-                traceSync(fn, _ctx, thisArg, ...args) { return fn.apply(thisArg, args); },
-                tracePromise(fn, _ctx, thisArg, ...args) { return fn.apply(thisArg, args); },
-                traceCallback(fn, position, _ctx, thisArg, ...args) { return fn.apply(thisArg, args); },
-            };
-        };
-        return {
-            channel: makeChannel,
-            tracingChannel: makeTracing,
-            subscribe() {},
-            unsubscribe() {},
-            hasSubscribers() { return false; },
-            Channel: class Channel {},
-            TracingChannel: class TracingChannel {},
-        };
-    })(),
+    'console': _nodeConsolePlatform.api,
+    'async_hooks': _nodeAsyncPlatform.api,
+    'diagnostics_channel': _nodeDiagnostics.api,
     'v8': {
-        // arborist sizes its packument LRU as floor(heap_size_limit * 0.25),
-        // so heap_size_limit must be > 0 or lru-cache rejects the config.
-        getHeapStatistics() {
-            return { heap_size_limit: 256 * 1024 * 1024 };
-        },
-        // approximation: SpiderMonkey exposes no V8 heap spaces; empty array is
-        // honest (no spaces reported)
-        getHeapSpaceStatistics() { return []; },
+        // Only the configured engine GC budget is measured here. The other
+        // required heap-statistic fields and per-space accounting remain gaps.
+        getHeapStatistics() { return { heap_size_limit: _nodeNative.engineGcHeapLimit() }; },
+        getHeapSpaceStatistics() { throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('v8.getHeapSpaceStatistics measurements'); },
     },
-    'vm': (() => {
-        const N = _nodeNative;
-        function checkTimeout(o) {
-            // Interrupt callbacks are unavailable on spidermonkey-node, so a
-            // timeout cannot be honored. Fail loudly rather than silently
-            // ignore it (see docs/posix-status.md).
-            if (o && o.timeout != null) {
-                throw new Error('vm timeout is not supported on spidermonkey-node');
-            }
-        }
-        function normOpts(o) {
-            if (typeof o === 'string') o = { filename: o };
-            o = o || {};
-            checkTimeout(o);
-            return { filename: o.filename, lineOffset: o.lineOffset | 0,
-                     columnOffset: o.columnOffset | 0,
-                     displayErrors: o.displayErrors !== false };
-        }
-        function cgFlags(o) {
-            const cg = (o && o.codeGeneration) || {};
-            return { strings: cg.strings, wasm: cg.wasm };
-        }
-        function createContext(sandbox, options) {
-            return N.__kandeloVmMakeContext(sandbox || {}, cgFlags(options));
-        }
-        function isContext(obj) { return N.__kandeloVmIsContext(obj); }
-        function runInContext(code, ctx, options) {
-            return N.__kandeloVmRunInContext(String(code), ctx, normOpts(options));
-        }
-        function runInNewContext(code, sandbox, options) {
-            const ctx = createContext(sandbox, options);
-            return runInContext(code, ctx, options);
-        }
-        function runInThisContext(code, options) {
-            // Real top-level compile+eval in the caller realm (not bare eval),
-            // so filenames/stack frames are faithful.
-            const o = normOpts(options);
-            const h = N.__kandeloVmCompile(String(code), o);
-            return N.__kandeloVmRunInContext(h, globalThis, o);
-        }
-        class Script {
-            constructor(code, options) { this._h = N.__kandeloVmCompile(String(code), normOpts(options)); }
-            runInContext(ctx, options) { return N.__kandeloVmRunInContext(this._h, ctx, normOpts(options)); }
-            runInNewContext(sandbox, options) { return this.runInContext(createContext(sandbox, options), options); }
-            runInThisContext(options) { return N.__kandeloVmRunInContext(this._h, globalThis, normOpts(options)); }
-        }
-        function compileFunction(code, params, options) {
-            const o = options || {};
-            const body = '(function(' + ((params || []).join(',')) + '){' + String(code) + '})';
-            const ctx = o.parsingContext && isContext(o.parsingContext) ? o.parsingContext : globalThis;
-            return N.__kandeloVmRunInContext(body, ctx, normOpts(o));
-        }
-        return { createContext, isContext, runInContext, runInNewContext,
-                 runInThisContext, Script, compileFunction };
-    })(),
+    'vm': _createNodeVmPlatform({ native: _nodeNative, values: _nodeValues, process, global: globalThis,
+        getOptionValue: option => option === '--experimental-vm-modules' &&
+            _nodeNative.cliOptions?.experimentalVmModules === true }),
+    get test() { return _getNodeTestingPlatform().api; },
+    get 'test/reporters'() { return _getNodeTestingPlatform().reporters; },
+    get sqlite() { return _nodeSqlite ??= _createNodeSqlitePlatform({ native: _nodeNative, values: _nodeValues,
+        util, Buffer, TextDecoder, URL: _nodeWebPlatform.URL, fileURLToPath: url.fileURLToPath,
+        constants: _nodeNative.sqlite('constants'),
+        markUncloneable: value => _nodeClonePlatform.protocol.markTransferMode(value, false, false) }); },
     'stream/web': _nodeWebPlatform.streams,
-    'stream/promises': {
-        // Sequential pipeline: pump each .pipe() in order; promise resolves
-        // when the final destination emits 'finish' (or rejects on error).
-        pipeline(...streams) {
-            const cb = typeof streams[streams.length - 1] === 'function'
-                ? streams.pop() : undefined;
-            return new Promise((resolve, reject) => {
-                const last = streams[streams.length - 1];
-                const onErr = (e) => { cb && cb(e); reject(e); };
-                for (let i = 0; i < streams.length - 1; i++) {
-                    streams[i].on('error', onErr);
-                    streams[i].pipe(streams[i + 1]);
-                }
-                last.on('error', onErr);
-                last.on('finish', () => { cb && cb(); resolve(); });
-                last.on('end', () => { cb && cb(); resolve(); });
-            });
-        },
-        finished(stream) {
-            return new Promise((resolve, reject) => {
-                stream.on('error', reject);
-                stream.on('finish', resolve);
-                stream.on('end', resolve);
-            });
-        },
-    },
-    'stream/consumers': {
-        async buffer(stream) {
-            const chunks = [];
-            for await (const c of stream) chunks.push(Buffer.from(c));
-            return Buffer.concat(chunks);
-        },
-        async text(stream) {
-            const buf = await this.buffer(stream);
-            return buf.toString('utf8');
-        },
-        async json(stream) {
-            const txt = await this.text(stream);
-            return JSON.parse(txt);
-        },
-        async arrayBuffer(stream) {
-            const buf = await this.buffer(stream);
-            return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-        },
-    },
+    'stream/promises': _nodeStreamPlatform.require('stream/promises'),
+    get 'stream/consumers'() { return _nodeStreamPlatform.require('stream/consumers'); },
 };
 
 // ------------------------------------------------------------
@@ -6158,25 +5000,20 @@ const _builtinModules = {
 // `_builtinModules` object literal, mirroring the `stream/web` patch
 // further down (search for `_builtinModules['stream/web']`).
 // ------------------------------------------------------------
+_nodeInspectionPathToFileURL = _builtinModules.url.pathToFileURL;
+Object.defineProperty(_builtinModules.buffer, 'INSPECT_MAX_BYTES', {
+    enumerable: true, configurable: true,
+    get: _nodeInspection.getBufferInspectMaxBytes,
+    set: _nodeInspection.setBufferInspectMaxBytes,
+});
+
+// One actual performance clock/observer owner for the global and builtin.
+_nodePerformance.installGlobals(globalThis);
+
 _builtinModules['path/posix'] = path.posix;
-// `path/win32` mirrors `path/posix`: cross-platform code (e.g. Claude Code's
-// shell-detection chunk) statically imports both variants and only *calls*
-// the win32 one under `process.platform === 'win32'` guards, which are false
-// on Kandelo (platform is `linux`). The subpath must still resolve for the
-// static import. `path.win32` is a POSIX approximation with `sep: '\\'` (see
-// its definition above); real win32 path semantics are tracked future work
-// (docs/posix-status.md, node-compat approximate implementations).
 _builtinModules['path/win32'] = path.win32;
 
-const _dnsPromises = {
-    lookup(hostname, options) {
-        return new Promise((resolve, reject) => _nodeDnsLookup.lookup(hostname, options,
-            (error, address, family) => error ? reject(error) : resolve(Array.isArray(address) ? address : { address, family })));
-    },
-    getDefaultResultOrder: _nodeDnsLookup.getDefaultResultOrder,
-    setDefaultResultOrder: _nodeDnsLookup.setDefaultResultOrder,
-};
-_builtinModules['dns'].promises = _dnsPromises;
+const _dnsPromises = _nodeDnsPlatform.promises;
 _builtinModules['dns/promises'] = _dnsPromises;
 
 // `ws` — the WebSocket npm package. Bun ships a native ws-compatible module,
@@ -6214,87 +5051,16 @@ _builtinModules['ws'] = (() => {
     return WebSocket;
 })();
 
-_builtinModules['perf_hooks'].monitorEventLoopDelay = function () {
-    return {
-        enable() {}, disable() {}, reset() {},
-        percentile() { return 0; },
-        get min() { return 0; },
-        get max() { return 0; },
-        get mean() { return 0; },
-        get stddev() { return 0; },
-        get exceeds() { return 0; },
-    };
-};
 
-// zlib: async callback wrappers over the existing *Sync implementations,
-// plus a throwing stub for raw-inflate, and real zstd DECOMPRESSION backed by
-// the native __kandeloZstdDecompress seam (a decompress-only libzstd linked
-// into node.wasm). zstd compression stays an honest not-impl (see below).
-_builtinModules['zlib'].deflate = function (buf, opts, cb) {
-    if (typeof opts === 'function') { cb = opts; opts = undefined; }
-    try {
-        const out = _builtinModules['zlib'].deflateSync(buf, opts);
-        queueMicrotask(() => cb(null, out));
-    } catch (e) { queueMicrotask(() => cb(e)); }
-};
-_builtinModules['zlib'].inflate = function (buf, opts, cb) {
-    if (typeof opts === 'function') { cb = opts; opts = undefined; }
-    try {
-        const out = _builtinModules['zlib'].inflateSync(buf);
-        queueMicrotask(() => cb(null, out));
-    } catch (e) { queueMicrotask(() => cb(e)); }
-};
-// Callbackify a zlib *Sync form Node-style: (buf, [opts], cb) -> cb(err, out).
-// Errors (including the honest not-impl throws) reach the callback.
-function _zlibAsync(name, takesOpts) {
-    return function (buf, opts, cb) {
-        if (typeof opts === 'function') { cb = opts; opts = undefined; }
-        try {
-            const out = takesOpts
-                ? _builtinModules['zlib'][name + 'Sync'](buf, opts)
-                : _builtinModules['zlib'][name + 'Sync'](buf);
-            queueMicrotask(() => cb(null, out));
-        } catch (e) { queueMicrotask(() => cb(e)); }
-    };
+
+// Register lazy iterator sources independently of the public option gate.
+// Availability checks do not evaluate these modules or emit their warnings.
+for (const id of ['stream/iter', 'zlib/iter']) {
+    Object.defineProperty(_builtinModules, id, {
+        enumerable: true, configurable: true,
+        get: () => _nodeStreamPlatform.require(id),
+    });
 }
-_builtinModules['zlib'].gzip = _zlibAsync('gzip', true);
-_builtinModules['zlib'].gunzip = _zlibAsync('gunzip', false);
-// Raw (headerless) deflate: the native seam has no raw/windowBits flag
-// (inflateRawSync was already an honest stub), so the whole raw family stays
-// fail-loud; the async forms deliver the same error to their callback.
-_builtinModules['zlib'].inflateRawSync = _notImpl('zlib', 'inflateRawSync');
-_builtinModules['zlib'].deflateRawSync = _notImpl('zlib', 'deflateRawSync');
-_builtinModules['zlib'].deflateRaw = _zlibAsync('deflateRaw', true);
-_builtinModules['zlib'].inflateRaw = _zlibAsync('inflateRaw', false);
-// zstd DECOMPRESSION: real, backed by the native __kandeloZstdDecompress seam
-// (a decompress-only libzstd linked into node.wasm). Fail-loud on a corrupt
-// frame — the native seam throws "zstd decompression failed: ...".
-_builtinModules['zlib'].zstdDecompressSync = function (buf) {
-    const u8 = buf instanceof Uint8Array ? buf
-        : buf instanceof ArrayBuffer ? new Uint8Array(buf)
-        : Buffer.from(buf);
-    return Buffer.from(_nodeNative.__kandeloZstdDecompress(u8));
-};
-_builtinModules['zlib'].createZstdDecompress = function () {
-    const t = new stream.Transform();
-    const parts = [];
-    t._transform = function (chunk, _enc, cb) {
-        parts.push(chunk instanceof Uint8Array ? chunk : Buffer.from(chunk));
-        cb();
-    };
-    t._flush = function (cb) {
-        try {
-            const all = Buffer.concat(parts);
-            this.push(Buffer.from(_nodeNative.__kandeloZstdDecompress(all)));
-            cb();
-        } catch (e) { cb(e); }
-    };
-    return t;
-};
-// zstd COMPRESSION is intentionally not implemented (the linked libzstd is
-// decompress-only). Honest fail-loud stubs, never a silent no-op.
-_builtinModules['zlib'].createZstdCompress = _notImpl('zlib', 'createZstdCompress');
-_builtinModules['zlib'].zstdCompressSync = _notImpl('zlib', 'zstdCompressSync');
 
 // Node exposes `node:module` as the CJS Module class itself: a
 // constructor that doubles as the namespace for createRequire / _cache
@@ -6302,67 +5068,155 @@ _builtinModules['zlib'].zstdCompressSync = _notImpl('zlib', 'zstdCompressSync');
 // jiti's CJS loader does `new Be.Module(filename)` and
 // `Be.Module._nodeModulePaths(dir)`, so the shim must be a callable
 // function with that static surface attached.
-function Module(id, parent) {
-    this.id = id || '';
-    this.filename = id || '';
-    this.loaded = false;
-    this.exports = {};
-    this.parent = parent || null;
-    this.children = [];
-    this.paths = id ? Module._nodeModulePaths(path.dirname(id)) : [];
-    this.require = (request) => Module.prototype.require.call(this, request);
-}
-Module.Module = Module;
-Module.builtinModules = Object.keys(_builtinModules);
-Module.createRequire = function (filename) {
-    if (filename && typeof filename === 'object' && filename.href) filename = filename.href;
-    if (typeof filename === 'string' && filename.startsWith('file://')) {
-        filename = url.fileURLToPath(filename);
-    }
-    return _makeRequire(filename);
+const _nodeModuleURLHref = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(_nodeWebPlatform.URL.prototype, 'href').get);
+const _nodePackageURL = { URL: _nodeWebPlatform.URL,
+    fileURLToPath: url.fileURLToPath, pathToFileURL: url.pathToFileURL,
+    isURL(value) { try { _nodeModuleURLHref(value); return true; } catch (_) { return false; } },
 };
-Module._cache = {};
-Module._extensions = {
-    '.js': null,
-    '.json': null,
-    '.node': null,
-};
-Module._nodeModulePaths = function (from) {
-    const paths = [];
-    let dir = from;
-    while (true) {
-        if (path.basename(dir) !== 'node_modules') {
-            paths.push(path.join(dir, 'node_modules'));
+const _nodePackageReader = _createNodePackageReader({
+    native: _nodeNative, values: _nodeValues, path, url: _nodePackageURL,
+    permissionEnabled: () => false,
+    checkPermission() {
+        if (_nodeFsTruncation.vfsState.handlers !== null)
+            throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Node VFS package file owner');
+    },
+    errorMessage: errno => _nodeUv.getSystemErrorMessage(errno),
+    getResolutionRoot() {
+        if (_nodeFsTruncation.vfsState.handlers !== null)
+            throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Node VFS package resolution root');
+        return undefined;
+    },
+    getESMResolver() { return _nodePackagePolicy.resolver; },
+    stat(filename) {
+        const [stat, errno] = os.stat(filename);
+        return errno === 0 ? ((stat.mode & 0o170000) === 0o40000 ? 1 : 0) : errno;
+    },
+});
+const _nodePackageOptions = Object.freeze({
+    conditions: Object.freeze(Array.from(_nodeNative.cliOptions?.conditions || [])),
+    packageMapPath: _nodeNative.cliOptions?.packageMapPath || '',
+    preserveSymlinks: _nodeNative.cliOptions?.preserveSymlinks === true,
+    preserveSymlinksMain: _nodeNative.cliOptions?.preserveSymlinksMain === true,
+});
+const _nodeModuleSyntax = _createNodeModuleSyntax({
+    native: _nodeNative, packages: _nodePackageReader, path,
+    getFormat: () => _nodePackagePolicy.format,
+    pathToFileURL: url.pathToFileURL, normalizeSource: _stripShebang,
+    getOptionValue(name) {
+        if (name === '--strip-types') return true;
+        // Unsupported loader/preload flags reject at CLI; ordinary configured
+        // startup has no registered loader or import list.
+        if (name === '--experimental-loader') return _nodeNative.cliOptions?.experimentalLoaders || [];
+        if (name === '--import') return _nodeNative.cliOptions?.imports || [];
+        throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Module source option: ' + name);
+    },
+});
+const _nodePackagePolicy = _createNodePackagePolicy({
+    process, values: _nodeValues, path, url: _nodePackageURL, fs, fsUtils: _nodeFsStats,
+    packages: _nodePackageReader,
+    getBuiltinPolicy: () => _nodeBuiltinPolicy,
+    getRecords: () => _nodeModuleRecords,
+    getOptionValue(name) {
+        const options = _nodePackageOptions;
+        switch (name) {
+            case '--conditions': return options?.conditions || [];
+            case '--experimental-package-map': return options.packageMapPath;
+            case '--preserve-symlinks': return options?.preserveSymlinks === true;
+            case '--preserve-symlinks-main': return options?.preserveSymlinksMain === true;
+            // Ordinary configured modes. Their unsupported switches still
+            // reject at the CLI; flags do not imply completed API behavior.
+            case '--require-module': return true;
+            case '--no-addons': return false;
+            case '--experimental-detect-module': return true;
+            case '--strip-types': return true;
+            case '--experimental-addon-modules': return true;
+            case '--experimental-import-text': return false;
+            case '--input-type': return '';
+            default: throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Package option owner: ' + name);
         }
-        const parent = path.dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-    }
-    return paths;
+    },
+    stat(filename) { const [st, errno] = os.stat(filename); return errno === 0 ? ((st.mode & 0o170000) === 0o40000 ? 1 : 0) : errno; },
+    isFile: filename => _isReg(filename), realpath: filename => _moduleRealpath(filename),
+    readHeader(filename) {
+        let fd;
+        try { fd = fs.openSync(filename, 'r'); } catch { return undefined; }
+        try {
+            const bytes = Buffer.alloc(4);
+            let count;
+            try { count = fs.readSync(fd, bytes, 0, 4, 0); } catch { return undefined; }
+            return bytes.subarray(0, count);
+        } finally { fs.closeSync(fd); }
+    },
+    containsModuleSyntax: (source, filename) => _nodeModuleSyntax.contains(source, filename),
+});
+const _nodeModuleRecords = _createNodeModuleRecords({
+    path, process, values: _nodeValues, packages: _nodePackageReader, policy: _nodePackagePolicy,
+    stat(filename) { const [stat, errno] = os.stat(filename); return errno === 0 ? ((stat.mode & 0o170000) === 0o40000 ? 1 : 0) : errno; },
+    preserveSymlinks: _nodeNative.cliOptions?.preserveSymlinks === true,
+    preserveSymlinksMain: _nodeNative.cliOptions?.preserveSymlinksMain === true,
+    url: { URL: _nodeWebPlatform.URL, pathToFileURL: url.pathToFileURL, fileURLToPath: url.fileURLToPath,
+        isURL(value) {
+            try { _nodeModuleURLHref(value); return true; } catch (_) { return false; }
+        } },
+    debug: _nodeValues.require('internal/util/debuglog').debuglog('module'),
+    safeGetenv: name => _nodeNative.environment('safeget', name),
+    pendingDeprecation: _nodeNative.environment('safeget', 'NODE_PENDING_DEPRECATION') === '1',
+    noDeprecation: process.noDeprecation === true,
+    getResolutionRoot() {
+        if (_nodeFsTruncation.vfsState.handlers !== null)
+            throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Node VFS module resolution root');
+        return undefined;
+    },
+    normalizeBuiltin: id => _nodeBuiltinPolicy.normalizeRequirableId(id),
+    resolveFile: (request, basedir, paths) => _resolveFile(request, basedir, paths),
+    realpath: filename => _moduleRealpath(filename),
+    load: (request, parent, entry) => _loadCommonJsModule(request, parent, entry),
+    resolve(request, parent, options) {
+        const filename = Module._resolveFilename(request, parent, false, options);
+        const builtin = _nodeBuiltinPolicy.normalizeRequirableId(request);
+        return { filename, url: builtin === undefined ? url.pathToFileURL(filename).href : 'node:' + builtin };
+    },
+    read: filename => fs.readFileSync(filename, 'utf8'),
+    loadJavaScript: (module, filename, content) => _loadCommonJsJavaScript(module, filename, content),
+    compile: (module, content, filename, format) => _compileCommonJsModule(module, content, filename, format),
+    loadNative(module, filename) {
+        if (typeof process.dlopen !== 'function')
+            throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('process.dlopen');
+        return process.dlopen(module, filename);
+    },
+});
+const Module = _nodeModuleRecords.Module;
+Module.Module = Module;
+Module.findPackageJSON = _nodePackageReader.findPackageJSON;
+Module.SourceMap = _createNodeSourceMapPlatform({ values: _nodeValues }).SourceMap;
+_builtinModules.module = Module;
+_builtinModules.process = process;
+const _nodeBuiltinPolicy = _createNodeBuiltinPolicy({
+    ids: Object.keys(_builtinModules).sort(), values: _nodeValues,
+    load: id => _builtinModules[id],
+    getOptionValue: option => option === '--experimental-sqlite'
+        ? _nodeNative.cliOptions?.experimentalSqlite === true
+        : option === '--experimental-stream-iter' && _nodeNative.cliOptions?.experimentalStreamIter === true,
+});
+Module.builtinModules = Object.freeze(_nodeBuiltinPolicy.getAllBuiltinModuleIds());
+Module.isBuiltin = _nodeBuiltinPolicy.isBuiltin;
+process.getBuiltinModule = _nodeBuiltinPolicy.getBuiltinModule;
+
+function _nodeResolveBuiltinId(id) {
+    _nodeValues.validators.validateString(id, 'id');
+    if (id === '') throw new _nodeValues.errors.codes.ERR_INVALID_ARG_VALUE('id', id, 'must be a non-empty string');
+    const normalized = _nodeBuiltinPolicy.normalizeRequirableId(id);
+    if (normalized !== undefined) return normalized;
+    if (id.startsWith('node:')) throw new _nodeValues.errors.codes.ERR_UNKNOWN_BUILTIN_MODULE(id);
+    return undefined;
+}
+Module._load = function(request, parent, isMain) {
+    return _loadCommonJsModule(request, parent, isMain);
 };
-Module._resolveFilename = function (id, parent) {
-    let name = id;
-    if (name.startsWith('node:')) name = name.slice(5);
-    if (_builtinModules[name] !== undefined) return name;
-    const basedir = parent && parent.filename ? path.dirname(parent.filename) : process.cwd();
-    const resolvedPath = _resolveFile(id, basedir);
-    if (!resolvedPath) {
-        const err = new Error(`Cannot find module '${id}'`);
-        err.code = 'MODULE_NOT_FOUND';
-        throw err;
-    }
-    return _moduleRealpath(resolvedPath);
-};
-Module.prototype.require = function (id) {
-    const filename = this.filename || this.id || process.cwd() + '/repl';
-    return _makeRequire(filename)(id);
-};
-_builtinModules['module'] = Module;
 
 // `require('process')` and `import 'node:process'` both return the same
 // global. Node ships this as a real builtin module; npm's chalk dependency
 // (via its vendored supports-color) does `import process from 'node:process'`.
-_builtinModules['process'] = process;
 
 // Mode bits for stat(): S_IFDIR / S_IFREG match os.stat() return mode field.
 function _isDir(p) {
@@ -6375,31 +5229,35 @@ function _isReg(p) {
 }
 function _moduleRealpath(p) {
     const [resolved, err] = os.realpath(p);
-    return err === 0 ? resolved : p;
+    if (err !== 0) _throwErrno(-err, 'realpath', p);
+    return resolved;
 }
 
 // Resolve a package directory's main entry: package.json#main → index.js.
 // Returns the resolved file path, or null if neither exists.
-function _resolvePackageMain(pkgDir) {
-    const pkgJson = pkgDir + '/package.json';
-    if (_isReg(pkgJson)) {
-        try {
-            const pkg = JSON.parse(std.loadFile(pkgJson));
-            const main = pkg.main || 'index.js';
-            const mainPath = path.resolve(pkgDir, main);
-            if (_isReg(mainPath)) return mainPath;
-            if (_isReg(mainPath + '.js')) return mainPath + '.js';
-            if (_isReg(mainPath + '.json')) return mainPath + '.json';
-            if (_isReg(mainPath + '/index.js')) return mainPath + '/index.js';
-            if (_isReg(mainPath + '/index.json')) return mainPath + '/index.json';
-        } catch {}
-    }
-    if (_isReg(pkgDir + '/index.js')) return pkgDir + '/index.js';
-    if (_isReg(pkgDir + '/index.json')) return pkgDir + '/index.json';
-    return null;
+function _resolvePackageMain(pkgDir, request) {
+    return _nodeModuleRecords.packageMain(pkgDir, request);
 }
 
-function _resolveFile(id, basedir) {
+function _resolveFile(id, basedir, lookupPaths) {
+    if (lookupPaths !== undefined) {
+        const trailingSlash = id.endsWith('/') || id === '.' || id === '..' || id.endsWith('/.') || id.endsWith('/..');
+        const search = path.isAbsolute(id) ? [''] : lookupPaths;
+        for (const from of search) {
+            const candidate = path.resolve(from, id);
+            if (!trailingSlash) {
+                if (_isReg(candidate)) return candidate;
+                for (const extension of Object.keys(Module._extensions)) {
+                    if (_isReg(candidate + extension)) return candidate + extension;
+                }
+            }
+            if (_isDir(candidate)) {
+                const main = _resolvePackageMain(candidate, id);
+                if (main) return main;
+            }
+        }
+        return null;
+    }
     // Relative or absolute id: resolve against basedir without node_modules walk.
     // Bare '.' / '..' are valid (sigstore tuf does `require(".")` for sibling index.js).
     const isRelOrAbs = id.startsWith('/') || id.startsWith('./') || id.startsWith('../') ||
@@ -6416,7 +5274,7 @@ function _resolveFile(id, basedir) {
         }
         // 3. directory: package.json#main → index.js
         if (_isDir(norm)) {
-            const main = _resolvePackageMain(norm);
+            const main = _resolvePackageMain(norm, id);
             if (main) return main;
         }
         return null;
@@ -6433,7 +5291,7 @@ function _resolveFile(id, basedir) {
         if (_isReg(nmDir + '.json')) return nmDir + '.json';
         // 3. nmDir is a directory: package.json#main → index.js
         if (_isDir(nmDir)) {
-            const main = _resolvePackageMain(nmDir);
+            const main = _resolvePackageMain(nmDir, id);
             if (main) return main;
         }
         if (dir === '/' || dir === '') break;
@@ -6447,8 +5305,21 @@ function _resolveFile(id, basedir) {
 // Shared across every _makeRequire — Node's module cache is process-global,
 // keyed by absolute resolved path. Without this, circular requires loop
 // forever (each module gets its own cache and re-evaluates the cycle).
-const _moduleCache = {};
+const _moduleCache = Module._cache;
+const _moduleApply = Reflect.apply;
+const _moduleJSONParse = JSON.parse;
+const _moduleCharCodeAt = Function.prototype.call.bind(String.prototype.charCodeAt);
+const _moduleStringSlice = Function.prototype.call.bind(String.prototype.slice);
 let _mainModule;
+
+function _parseCommonJsJSON(source, filename) {
+    if (_moduleCharCodeAt(source, 0) === 0xfeff) source = _moduleStringSlice(source, 1);
+    try { return _moduleJSONParse(source); }
+    catch (error) {
+        error.message = filename + ': ' + error.message;
+        throw error;
+    }
+}
 
 function _stripShebang(source) {
     if (source && source.charCodeAt(0) === 35 && source.charCodeAt(1) === 33) {
@@ -6459,37 +5330,57 @@ function _stripShebang(source) {
     return source;
 }
 
+function _commonJsNotFound(id, parent) {
+    return _nodeModuleRecords.notFound(id, parent);
+}
+
 function _makeRequire(filename, entry = false) {
-    const basedir = path.dirname(_moduleRealpath(filename || process.cwd() + '/repl'));
+    return _nodeModuleRecords.make(filename, entry);
+}
 
-    function require(id) {
-        // Built-in modules (with or without 'node:' prefix)
-        let name = id;
-        if (name.startsWith('node:')) name = name.slice(5);
-        if (_builtinModules[name] !== undefined) {
-            return _builtinModules[name];
-        }
+function _compileCommonJsModule(mod, source, filename, format) {
+    if (format === 'module' || format === 'commonjs-typescript' || format === 'module-typescript' || format === 'typescript') {
+        throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Module._compile ' + format + ' source');
+    }
+    source = _stripShebang(source);
+    const wrappedFn = _nodeModuleSyntax.compile(source, filename);
+    const require = _nodeModuleRecords.make(filename, false, mod);
+    return _moduleApply(wrappedFn, mod.exports, [mod.exports, require, mod, filename, path.dirname(filename)]);
+}
 
-        // Resolve file path
-        const resolvedPath = _resolveFile(id, basedir);
-        if (!resolvedPath) {
-            const err = new Error(`Cannot find module '${id}'`);
-            err.code = 'MODULE_NOT_FOUND';
-            throw err;
-        }
-        const resolved = _moduleRealpath(resolvedPath);
+function _loadCommonJsJavaScript(mod, filename, source) {
+    const format = _nodeModuleSyntax.commonJsFormat(filename, source);
+    if (format === 'module') {
+        _nodeModuleRecords.setFormat(mod, format);
+        // Keep the existing lexical native ESM registry key; its URL/static
+        // async-graph/cache admission policy remains a separate owning gap.
+        mod.exports = _nodeNative.__kandeloRequireModule(_nodeModuleRecords.originalPath(mod) || filename);
+        return;
+    }
+    return mod._compile(source, filename, format);
+}
 
-        // Check cache
-        if (_moduleCache[resolved]) return _moduleCache[resolved].exports;
+function _loadCommonJsModule(id, parent, entry = false) {
+    _nodeValues.validators.validateString(id, 'id');
+    if (id === '') throw new _nodeValues.errors.codes.ERR_INVALID_ARG_VALUE('id', id, 'must be a non-empty string');
+    const name = _nodeResolveBuiltinId(id);
+    if (name !== undefined) {
+        // node: always selects the builtin; ordinary ids honor public cache overrides.
+        if (!id.startsWith('node:') && Module._cache[name] !== undefined)
+            return _nodeModuleRecords.cached(parent, Module._cache[name]);
+        return _builtinModules[name];
+    }
+    const resolvedPath = Module._resolveFilename(id, parent, entry);
+    // Filename policy already selected canonical versus preserved identity.
+    const resolved = resolvedPath;
+    if (Module._cache[resolved] !== undefined)
+        return _nodeModuleRecords.cached(parent, Module._cache[resolved]);
 
-        // Load and execute
-        let source = std.loadFile(resolved);
-        if (source === null) {
-            const err = new Error(`Cannot find module '${id}'`);
-            err.code = 'MODULE_NOT_FOUND';
-            throw err;
-        }
-
+    // Preserve the separately owned Claude/npm/Bun asset branch; ordinary Node
+    // records below have their own real Module/cache/extension transaction.
+    if (globalThis.__kandeloAssetLoaders && globalThis.__kandeloAssetLoaders[resolved]) {
+        const source = std.loadFile(resolved);
+        if (source === null) throw _commonJsNotFound(id, parent);
         // Bun loader dispatch (M2 Phase J). bun-run installs
         // globalThis.__kandeloAssetLoaders (abs cache path -> class) from the
         // extract manifest. Honor it BEFORE shebang-strip, the .json-extension
@@ -6517,127 +5408,30 @@ function _makeRequire(filename, entry = false) {
             throw new Error(`${id}: native Node addons (.node) are not ` +
                 `supported on spidermonkey-node`);
         }
-        // 'js', 'unknown', or no map -> fall through to the existing behavior.
 
-        source = _stripShebang(source);
-
-        if (resolved.endsWith('.json')) {
-            const exports = JSON.parse(source);
-            _moduleCache[resolved] = { exports };
-            return exports;
-        }
-
-        // ESM target: an ES module cannot be CJS-wrapped (its top-level
-        // import/export declarations are only valid in module goal, so the
-        // wrapper below throws "import declarations may only appear at top
-        // level of a module"). Route it through the native module loader so it
-        // is CompileModule'd and shares one instance (dedup-safe via the
-        // per-path registry) with import and dynamic import(), then return its
-        // namespace -- Node require(esm) semantics (named exports as props,
-        // default as .default). A ".cjs" file is always CommonJS regardless of
-        // the nearest package "type", so it keeps the CJS wrapper below.
-        if ((resolved.endsWith('.mjs') || _nearestPackageType(resolved) === 'module') && !resolved.endsWith('.cjs')) {
-            // Pass the pre-realpath `resolvedPath`, not the realpath'd
-            // `resolved`, to the native seam. The shell ModuleLoader keys its
-            // per-path registry by a purely *lexical* normalizePath (no symlink
-            // resolution), and `import`/dynamic `import()` reach it with the
-            // same pre-realpath specifier path. Realpath'ing here would key the
-            // registry differently from import under a symlinked module dir and
-            // double-instantiate the module, defeating the shared-instance
-            // dedup. The JS-side `_moduleCache` stays realpath-keyed (its own
-            // cache, consistent with the check above).
-            const ns = _nodeNative.__kandeloRequireModule(resolvedPath);
-            _moduleCache[resolved] = { exports: ns };
-            return ns;
-        }
-
-        // Create module object
-        const dirname = path.dirname(resolved);
-        const isMain = entry && resolved === _moduleRealpath(filename);
-        const mod = {
-            id: isMain ? '.' : resolved,
-            filename: resolved,
-            loaded: false,
-            exports: {},
-            children: [],
-            paths: Module._nodeModulePaths(dirname),
-            require: null,
-        };
-        _moduleCache[resolved] = mod;
-        if (isMain) {
-            _mainModule = mod;
-            process.mainModule = mod;
-        }
-
-        // Wrap and execute. Compile via evalScriptAsFunction (not `new Function`)
-        // so the wrapped script's [[ScriptOrModule]] carries `resolved` — that's
-        // what JS_GetScriptOrModuleName returns to the C-side module normalizer
-        // when this body calls dynamic `import()`. Without it, bare specifiers
-        // (`import('chalk')`) can't tell which node_modules tree to walk.
-        const wrappedFn = _nodeNative.evalScriptAsFunction(
-            '(function (exports, require, module, __filename, __dirname) {\n' +
-                source +
-                '\n})',
-            resolved,
-            // The wrapper occupies line zero; the first user line remains 1.
-            0,
-        );
-
-        const childRequire = _makeRequire(resolved);
-        mod.require = childRequire;
-        try {
-            wrappedFn(mod.exports, childRequire, mod, resolved, dirname);
-        } catch (e) {
-            delete _moduleCache[resolved];
-            throw e;
-        }
-        mod.loaded = true;
-        return mod.exports;
     }
-
-    require.resolve = function(id) {
-        let name = id;
-        if (name.startsWith('node:')) name = name.slice(5);
-        if (_builtinModules[name] !== undefined) return name;
-        const resolvedPath = _resolveFile(id, basedir);
-        if (!resolvedPath) {
-            const err = new Error(`Cannot find module '${id}'`);
-            err.code = 'MODULE_NOT_FOUND';
-            throw err;
-        }
-        return _moduleRealpath(resolvedPath);
-    };
-
-    require.cache = _moduleCache;
-    require.main = _mainModule;
-
-    return require;
+    const isMain = entry && (!parent || resolved === parent.filename || resolved === _moduleRealpath(parent.filename));
+    const mod = _nodeModuleRecords.create(resolved, parent, isMain, resolvedPath);
+    Module._cache[resolved] = mod;
+    if (isMain) {
+        mod.id = '.'; _mainModule = mod; process.mainModule = mod;
+    }
+    try {
+        mod.load(resolved);
+    } catch (error) {
+        delete Module._cache[resolved];
+        _nodeModuleRecords.failed(isMain ? null : parent, mod);
+        throw error;
+    }
+    return mod.exports;
 }
 
 function _nearestPackageType(filename) {
-    let dir = path.dirname(filename);
-    while (dir && dir !== '/') {
-        const pkgJson = dir + '/package.json';
-        if (_isReg(pkgJson)) {
-            try {
-                const pkg = JSON.parse(std.loadFile(pkgJson));
-                if (pkg && typeof pkg.type === 'string') return pkg.type;
-            } catch {}
-            return '';
-        }
-        const parent = path.dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-    }
-    return '';
+    return _nodePackageReader.getNearestParentPackageJSON(filename).data.type;
 }
 
 function _looksLikeEsmMain(filename, source) {
-    if (filename.endsWith('.mjs')) return true;
-    if (filename.endsWith('.cjs')) return false;
-    if (_nearestPackageType(filename) === 'module') return true;
-    const withoutShebang = _stripShebang(source);
-    return /(^|\n)\s*(import\s+(?:[^('"`]|[\r\n])+?\s+from\s*['"]|export\s+)/.test(withoutShebang);
+    return _nodeModuleSyntax.entryIsModule(filename, source);
 }
 
 // Natural shutdown retains the pre-event status if a listener clears the
@@ -6790,13 +5584,18 @@ function _makeBareEsmSource(token, obj) {
 
 globalThis.__kandeloResolveBare = function (specifier, referrerPath, resolveOnly = false) {
     if (typeof specifier !== 'string' || specifier.length === 0) return null;
+    if (resolveOnly) {
+        const parent = (typeof referrerPath === 'string' && referrerPath.length > 0) ?
+            referrerPath : process.cwd() + '/repl';
+        return _nodePackagePolicy.resolver.defaultResolve(specifier,
+            { parentURL: url.pathToFileURL(parent).href }).url;
+    }
 
-    let bareName = specifier;
-    if (bareName.startsWith('node:')) bareName = bareName.slice(5);
+    const bareName = _nodeResolveBuiltinId(specifier);
 
     let token;
     let obj;
-    if (_builtinModules[bareName] !== undefined) {
+    if (bareName !== undefined) {
         if (resolveOnly) return 'node:' + bareName;
         // Node builtin (with or without the `node:` prefix). Dedup `fs` and
         // `node:fs` onto a single synthetic module.
@@ -6810,15 +5609,12 @@ globalThis.__kandeloResolveBare = function (specifier, referrerPath, resolveOnly
         const base = (typeof referrerPath === 'string' && referrerPath.length > 0)
             ? referrerPath
             : (process.cwd() + '/repl');
-        const basedir = path.dirname(base);
-        let resolvedPath = null;
-        try {
-            resolvedPath = _resolveFile(specifier, basedir);
-        } catch (_e) {
-            resolvedPath = null;
-        }
-        if (!resolvedPath) return null;
-        if (resolveOnly) return url.pathToFileURL(_moduleRealpath(resolvedPath)).href;
+        const resolved = _nodePackagePolicy.resolver.defaultResolve(specifier,
+            { parentURL: url.pathToFileURL(base).href });
+        if (resolved.url.startsWith('node:'))
+            return globalThis.__kandeloResolveBare(resolved.url, base, resolveOnly);
+        if (resolveOnly) return resolved.url;
+        const resolvedPath = url.fileURLToPath(resolved.url);
 
         // ESM target: hand the real path back to the native loader so it
         // CompileModules the file (dedup-safe via the native per-path module
@@ -6829,11 +5625,11 @@ globalThis.__kandeloResolveBare = function (specifier, referrerPath, resolveOnly
         // Returning an absolute path here is handled natively by
         // ModuleLoader.cpp (confirmed: absolute paths bypass the bare-token
         // synthesis below and are read + compiled as a module directly).
-        if (_looksLikeEsmMain(resolvedPath, std.loadFile(resolvedPath))) {
+        if (_nodeModuleSyntax.esmFormat(resolvedPath, std.loadFile(resolvedPath)) === 'module') {
             return resolvedPath;
         }
 
-        token = '/__kandelo_bare__/pkg' + _moduleRealpath(resolvedPath);
+        token = '/__kandelo_bare__/pkg' + resolvedPath;
         // Propagate execution errors from CommonJS rather than reinterpreting
         // a failed require as an ES module or a missing file.
         obj = _makeRequire(base)(resolvedPath);
@@ -6895,16 +5691,17 @@ globalThis.URLSearchParams = url.URLSearchParams;
 // MakeTypeAssertion(ReadableStream)` in undici/lib/web/webidl/index.js).
 // Streams share the vendored implementation with fetch response bodies.
 const _streamWeb = _builtinModules['stream/web'];
-if (typeof globalThis.ReadableStream === 'undefined')
-    globalThis.ReadableStream = _streamWeb.ReadableStream;
-if (typeof globalThis.WritableStream === 'undefined')
-    globalThis.WritableStream = _streamWeb.WritableStream;
-if (typeof globalThis.TransformStream === 'undefined')
-    globalThis.TransformStream = _streamWeb.TransformStream;
-if (typeof globalThis.ByteLengthQueuingStrategy === 'undefined')
-    globalThis.ByteLengthQueuingStrategy = _streamWeb.ByteLengthQueuingStrategy;
-if (typeof globalThis.CountQueuingStrategy === 'undefined')
-    globalThis.CountQueuingStrategy = _streamWeb.CountQueuingStrategy;
+// The interface list follows the pinned exposed-wildcard bootstrap. Module,
+// globals, Blob and Fetch use the same owned Node stream constructors.
+const _nodeStreamInterfaces = [
+    'TransformStream', 'TransformStreamDefaultController', 'WritableStream',
+    'WritableStreamDefaultController', 'WritableStreamDefaultWriter', 'ReadableStream',
+    'ReadableStreamDefaultReader', 'ReadableStreamBYOBReader', 'ReadableStreamBYOBRequest',
+    'ReadableByteStreamController', 'ReadableStreamDefaultController', 'ByteLengthQueuingStrategy',
+    'CountQueuingStrategy', 'TextEncoderStream', 'TextDecoderStream',
+    'CompressionStream', 'DecompressionStream',
+];
+for (const name of _nodeStreamInterfaces) globalThis[name] = _streamWeb[name];
 // Shared byte ownership for Blob and Fetch bodies. Byte inputs are copied at
 // construction; reading a returned ArrayBuffer never exposes stored bytes.
 const _nodeBodyData = (() => {
@@ -6915,6 +5712,7 @@ const _nodeBodyData = (() => {
     const typedOffset = get(proto, 'byteOffset'), typedLength = get(proto, 'byteLength');
     const dataBuffer = get(DataView.prototype, 'buffer'), dataOffset = get(DataView.prototype, 'byteOffset');
     const dataLength = get(DataView.prototype, 'byteLength'), abLength = get(ArrayBuffer.prototype, 'byteLength');
+    const sharedLength = typeof SharedArrayBuffer === 'function' ? get(SharedArrayBuffer.prototype, 'byteLength') : null;
     const isView = ArrayBuffer.isView, slice = Function.prototype.call.bind(Bytes.prototype.slice);
     const blobs = new WeakMap();
     function blobError(message, code = 'ERR_INVALID_ARG_TYPE') {
@@ -6927,7 +5725,10 @@ const _nodeBodyData = (() => {
                 typed ? typedOffset(value) : dataOffset(value), typed ? typedLength(value) : dataLength(value)));
         }
         let buffer = false;
-        try { abLength(value); buffer = true; } catch (_) { /* Not an ArrayBuffer. */ }
+        try { abLength(value); buffer = true; }
+        catch (_) {
+            if (sharedLength) try { sharedLength(value); buffer = true; } catch (_) { /* Not an ArrayBuffer. */ }
+        }
         return buffer ? slice(new Bytes(value)) : null;
     }
     function byteChunk(value) {
@@ -6968,6 +5769,7 @@ const _nodeBodyData = (() => {
     }
     class Blob {
         constructor(parts = [], init) {
+            _nodeClonePlatform.protocol.markTransferMode(this, true, false);
             if (init != null && typeof init !== 'object' && typeof init !== 'function') blobError('Blob options must be an object');
             init = options(init);
             let endings = init.endings;
@@ -6988,6 +5790,17 @@ const _nodeBodyData = (() => {
             let offset = 0;
             for (const part of values) { bytes.set(part, offset); offset += part.byteLength; }
             blobs.set(this, { bytes, type: init.type === undefined ? '' : type(init.type) });
+        }
+        [_nodeClonePlatform.protocol.kClone]() {
+            const stored = data(this);
+            // The private hook remains reflectable like Node's hook. Return
+            // independent bytes so calling it cannot mutate Blob storage.
+            return { data: { bytes: slice(stored.bytes), type: stored.type },
+                deserializeInfo: 'internal/blob:Blob' };
+        }
+        [_nodeClonePlatform.protocol.kDeserialize]({ bytes, type }) {
+            data(this); // Validate the actual Blob receiver before replacing storage.
+            blobs.set(this, { bytes: slice(bytes), type });
         }
         get size() { return data(this).bytes.byteLength; }
         get type() { return data(this).type; }
@@ -7025,27 +5838,50 @@ const _nodeBodyData = (() => {
     for (const name of ['size', 'type', 'slice', 'stream', 'textStream', 'text', 'arrayBuffer', 'bytes']) {
         Object.defineProperty(Blob.prototype, name, { enumerable: true });
     }
-    return { Blob, copyBytes, byteChunk, stringBytes, stream, options, blob: value => blobs.get(value) };
+    // The clone protocol allocates an actual empty receiver, then supplies its
+    // owned payload through kDeserialize. File shares this Blob storage owner.
+    function TransferableBlob() {
+        Object.setPrototypeOf(this, Blob.prototype);
+        _nodeClonePlatform.protocol.markTransferMode(this, true, false);
+        blobs.set(this, { bytes: new Bytes(0), type: '' });
+    }
+    Object.setPrototypeOf(TransferableBlob.prototype, Blob.prototype);
+    Object.setPrototypeOf(TransferableBlob, Blob);
+    return { Blob, TransferableBlob, copyBytes, byteChunk, stringBytes, stream, options, blob: value => blobs.get(value) };
 })();
 if (typeof globalThis.Blob === 'undefined') globalThis.Blob = _nodeBodyData.Blob;
 _builtinModules['buffer'].Blob = globalThis.Blob;
-if (typeof globalThis.File === 'undefined') globalThis.File = class File {};
-if (typeof globalThis.FormData === 'undefined') globalThis.FormData = class FormData {};
+const _nodeFilePlatform = _createNodeFilePlatform({
+    blob: _nodeBodyData, values: _nodeValues, inspection: _nodeInspection, clone: _nodeClonePlatform,
+});
+globalThis.File = _nodeFilePlatform.File;
+_builtinModules['buffer'].File = _nodeFilePlatform.File;
 if (typeof globalThis.Headers === 'undefined') globalThis.Headers = class Headers {};
 if (typeof globalThis.Request === 'undefined') globalThis.Request = class Request {};
 if (typeof globalThis.Response === 'undefined') globalThis.Response = class Response {};
-if (typeof globalThis.MessagePort === 'undefined') globalThis.MessagePort = class MessagePort {};
-if (typeof globalThis.MessageChannel === 'undefined')
-    globalThis.MessageChannel = class MessageChannel {
-        constructor() { this.port1 = new MessagePort(); this.port2 = new MessagePort(); }
-    };
-if (typeof globalThis.BroadcastChannel === 'undefined')
-    globalThis.BroadcastChannel = class BroadcastChannel {
-        constructor(name) { this.name = name; }
-        postMessage() {} close() {}
-        addEventListener() {} removeEventListener() {}
-    };
-
+// Module, global, WebIDL and stream consumers share actual port constructors.
+globalThis.MessagePort = _nodePortsPlatform.MessagePort;
+globalThis.MessageChannel = _nodePortsPlatform.MessageChannel;
+const _nodeFormDataPlatform = _createNodeFormDataPlatform({
+    Blob: _nodeBodyData.Blob, File: _nodeFilePlatform.File,
+    ReadableStream: _nodeStreamPlatform.web.ReadableStream,
+    URL: _nodeWebPlatform.URL, URLSearchParams: _nodeWebPlatform.URLSearchParams,
+    AbortSignal: globalThis.AbortSignal, MessagePort: globalThis.MessagePort, Event: globalThis.Event,
+    values: _nodeValues, assert, util, crypto, clone: _nodeClonePlatform,
+});
+globalThis.FormData = _nodeFormDataPlatform.FormData;
+globalThis.Headers = _nodeFormDataPlatform.headers.Headers;
+globalThis.BroadcastChannel = _nodePortIO.BroadcastChannel;
+const _nodeObjectMarks = _createNodeObjectMarks({ native: _nodeNative, isArrayBuffer: util.types.isArrayBuffer });
+Object.assign(_builtinModules.worker_threads, {
+    markAsUncloneable: _nodePortIO.markAsUncloneable,
+    markAsUntransferable: _nodeObjectMarks.markAsUntransferable,
+    isMarkedAsUntransferable: _nodeObjectMarks.isMarkedAsUntransferable,
+    MessagePort: _nodePortsPlatform.MessagePort, MessageChannel: _nodePortsPlatform.MessageChannel,
+    receiveMessageOnPort: _nodePortIO.receiveMessageOnPort,
+    moveMessagePortToContext: _nodePortIO.moveMessagePortToContext,
+    BroadcastChannel: _nodePortIO.BroadcastChannel,
+});
 // Web Crypto global. Modern Node (19+) exposes `globalThis.crypto` separately
 // from `require('crypto')`. uuid/dist-node/rng.js and many other packages
 // reach for the bare `crypto.getRandomValues()` here without importing
@@ -7059,162 +5895,13 @@ if (typeof globalThis.crypto === 'undefined') {
     };
 }
 
-// Legacy JSON-only fallback. Graphs and non-JSON types remain a compatibility
-// gap here. Response cloning uses the separate engine graph-clone boundary;
-// the global API still needs Web-object and transfer-list handling.
-if (typeof globalThis.structuredClone === 'undefined') {
-    globalThis.structuredClone = function structuredClone(value) {
-        return JSON.parse(JSON.stringify(value));
-    };
-}
-
-// AbortController/AbortSignal — used pervasively (undici, anthropic-sdk,
-// timers/promises). The bootstrap timers module already references
-// AbortSignal in its options bag for setTimeout. A minimal event-emitter-
-// style implementation is enough: signal.aborted toggles, listeners fire
-// once on abort. Real Node tracks reasons and AbortSignal.timeout() —
-// we add timeout() because @anthropic-ai/sdk uses it for request timeouts.
-// DOM Event/EventTarget — modern Node exposes these as globals. undici's
-// websocket layer subclasses Event and uses EventTarget. We don't dispatch
-// events through them in real flows here; just need the symbols so class
-// extension works at module init.
-if (typeof globalThis.Event === 'undefined') {
-    globalThis.Event = class Event {
-        constructor(type, init) {
-            this.type = type;
-            this.bubbles = !!(init && init.bubbles);
-            this.cancelable = !!(init && init.cancelable);
-            this.composed = !!(init && init.composed);
-            this.defaultPrevented = false;
-            this.target = null;
-            this.currentTarget = null;
-            this.timeStamp = Date.now();
-        }
-        preventDefault() { this.defaultPrevented = true; }
-        stopPropagation() {}
-        stopImmediatePropagation() {}
-    };
-}
-if (typeof globalThis.EventTarget === 'undefined') {
-    globalThis.EventTarget = class EventTarget {
-        constructor() { this._lst = new Map(); }
-        addEventListener(type, listener) {
-            if (!this._lst.has(type)) this._lst.set(type, new Set());
-            this._lst.get(type).add(listener);
-        }
-        removeEventListener(type, listener) {
-            const s = this._lst.get(type);
-            if (s) s.delete(listener);
-        }
-        dispatchEvent(ev) {
-            const s = this._lst.get(ev.type);
-            if (s) for (const l of s) {
-                try { typeof l === 'function' ? l.call(this, ev) : l.handleEvent(ev); } catch {}
-            }
-            return !ev.defaultPrevented;
-        }
-    };
-}
-if (typeof globalThis.MessageEvent === 'undefined')
-    globalThis.MessageEvent = class MessageEvent extends globalThis.Event {
-        constructor(type, init) { super(type, init); this.data = init && init.data; }
-    };
-if (typeof globalThis.CloseEvent === 'undefined')
-    globalThis.CloseEvent = class CloseEvent extends globalThis.Event {
-        constructor(type, init) {
-            super(type, init);
-            this.code = (init && init.code) || 0;
-            this.reason = (init && init.reason) || '';
-            this.wasClean = !!(init && init.wasClean);
-        }
-    };
-if (typeof globalThis.ErrorEvent === 'undefined')
-    globalThis.ErrorEvent = class ErrorEvent extends globalThis.Event {
-        constructor(type, init) { super(type, init); this.error = init && init.error; this.message = (init && init.message) || ''; }
-    };
-if (typeof globalThis.CustomEvent === 'undefined')
-    globalThis.CustomEvent = class CustomEvent extends globalThis.Event {
-        constructor(type, init) { super(type, init); this.detail = init && init.detail; }
-    };
-if (typeof globalThis.DOMException === 'undefined') {
-    globalThis.DOMException = class DOMException extends Error {
-        constructor(message, name) {
-            super(message);
-            this.name = name || 'Error';
-            this.code = 0;
-        }
-    };
-}
-
-if (typeof globalThis.AbortSignal === 'undefined') {
-    class AbortSignal {
-        constructor() {
-            this.aborted = false;
-            this.reason = undefined;
-            this._listeners = new Set();
-        }
-        addEventListener(type, listener) {
-            if (type === 'abort') this._listeners.add(listener);
-        }
-        removeEventListener(type, listener) {
-            if (type === 'abort') this._listeners.delete(listener);
-        }
-        dispatchEvent(ev) {
-            if (ev && ev.type === 'abort')
-                for (const l of this._listeners) l.call(this, ev);
-            return true;
-        }
-        throwIfAborted() { if (this.aborted) throw this.reason; }
-        static abort(reason) {
-            const s = new AbortSignal();
-            s.aborted = true;
-            s.reason = reason;
-            return s;
-        }
-        static timeout(ms) {
-            const s = new AbortSignal();
-            timers.setTimeout(() => {
-                s.aborted = true;
-                s.reason = new Error('The operation was aborted due to timeout');
-                s.reason.name = 'TimeoutError';
-                for (const l of s._listeners) {
-                    try { l.call(s, { type: 'abort', target: s }); } catch {}
-                }
-            }, ms);
-            return s;
-        }
-        static any(signals) {
-            const s = new AbortSignal();
-            for (const sig of signals) {
-                if (sig.aborted) { s.aborted = true; s.reason = sig.reason; return s; }
-                sig.addEventListener('abort', () => {
-                    if (s.aborted) return;
-                    s.aborted = true;
-                    s.reason = sig.reason;
-                    for (const l of s._listeners) {
-                        try { l.call(s, { type: 'abort', target: s }); } catch {}
-                    }
-                });
-            }
-            return s;
-        }
-    }
-    globalThis.AbortSignal = AbortSignal;
-}
-if (typeof globalThis.AbortController === 'undefined') {
-    globalThis.AbortController = class AbortController {
-        constructor() { this.signal = new globalThis.AbortSignal(); }
-        abort(reason) {
-            const s = this.signal;
-            if (s.aborted) return;
-            s.aborted = true;
-            s.reason = reason !== undefined ? reason : new Error('aborted');
-            for (const l of s._listeners) {
-                try { l.call(s, { type: 'abort', target: s }); } catch {}
-            }
-        }
-    };
-}
+// Node owns this realm's Web event interfaces independently of the host.
+// Link the pinned listener/cancellation algorithms to the real scheduler.
+Object.assign(globalThis, {
+    MessageEvent: _nodeFormDataPlatform.messageEvents.MessageEvent,
+    CloseEvent: _nodeFormDataPlatform.messageEvents.CloseEvent,
+    ErrorEvent: _nodeFormDataPlatform.messageEvents.ErrorEvent,
+});
 
 // Some engines ship without ECMA-402 (Intl). TUIs use Intl.Segmenter for
 // grapheme-based terminal-width math; a per-code-point fallback is good
@@ -7262,50 +5949,6 @@ globalThis.__dirname = _mainScriptPath ? path.dirname(_mainScriptPath) : '';
 globalThis.module = { exports: {} };
 globalThis.exports = globalThis.module.exports;
 
-// console may already exist, but ensure it has all methods.
-// Some engine helpers ship only console.log; npm and most Node
-// code expect .error/.warn to land on stderr.
-if (!console.error) {
-    console.error = (...args) => {
-        process.stderr.write(args.map((a) => typeof a === 'string' ? a : util.inspect(a)).join(' ') + '\n');
-    };
-}
-if (!console.warn) console.warn = console.error;
-if (!console.debug) console.debug = console.log;
-if (!console.info) console.info = console.log;
-if (!console.dir) console.dir = (obj) => console.log(util.inspect(obj));
-if (!console.time) {
-    const _timers = {};
-    console.time = (label) => { _timers[label || 'default'] = Date.now(); };
-    console.timeEnd = (label) => {
-        label = label || 'default';
-        const ms = Date.now() - (_timers[label] || Date.now());
-        delete _timers[label];
-        console.log(`${label}: ${ms}ms`);
-    };
-    console.timeLog = (label) => {
-        label = label || 'default';
-        const ms = Date.now() - (_timers[label] || Date.now());
-        console.log(`${label}: ${ms}ms`);
-    };
-}
-if (!console.assert) {
-    console.assert = (cond, ...args) => { if (!cond) console.error('Assertion failed:', ...args); };
-}
-if (!console.count) {
-    const _counts = {};
-    console.count = (label) => { label = label || 'default'; _counts[label] = (_counts[label] || 0) + 1; console.log(`${label}: ${_counts[label]}`); };
-    console.countReset = (label) => { _counts[label || 'default'] = 0; };
-}
-if (!console.table) {
-    console.table = (data) => console.log(data);
-}
-if (!console.group) {
-    let _depth = 0;
-    console.group = (...args) => { if (args.length) console.log(...args); _depth++; };
-    console.groupEnd = () => { if (_depth > 0) _depth--; };
-}
-
 // ============================================================
 // WHATWG fetch + Headers/Response/Request/ReadableStream
 // ============================================================
@@ -7316,41 +5959,7 @@ if (!console.group) {
 // response bodies use the same Web Streams classes as consumer-created streams.
 //
 (() => {
-    class FetchHeaders {
-        constructor(init) {
-            this._map = new Map();
-            if (init instanceof FetchHeaders) {
-                for (const [k, v] of init._map) this._map.set(k, v);
-            } else if (init != null && typeof init[Symbol.iterator] === 'function') {
-                for (const entry of init) {
-                    if (entry == null || (typeof entry !== 'object' && typeof entry !== 'function') ||
-                        typeof entry[Symbol.iterator] !== 'function') throw new TypeError('Header pair must be a sequence');
-                    const pair = Array.from(entry);
-                    if (pair.length !== 2) throw new TypeError('Header pair must contain two items');
-                    this.append(pair[0], pair[1]);
-                }
-            } else if (init && typeof init === 'object') {
-                for (const k of Object.keys(init)) this.append(k, init[k]);
-            }
-        }
-        _k(name) { return String(name).toLowerCase(); }
-        get(name) { const v = this._map.get(this._k(name)); return v === undefined ? null : v; }
-        set(name, value) { this._map.set(this._k(name), String(value)); }
-        has(name) { return this._map.has(this._k(name)); }
-        delete(name) { return this._map.delete(this._k(name)); }
-        append(name, value) {
-            const k = this._k(name);
-            const cur = this._map.get(k);
-            this._map.set(k, cur === undefined ? String(value) : cur + ', ' + value);
-        }
-        forEach(cb, thisArg) {
-            for (const [k, v] of this._map) cb.call(thisArg, v, k, this);
-        }
-        keys() { return this._map.keys(); }
-        values() { return this._map.values(); }
-        entries() { return this._map.entries(); }
-        [Symbol.iterator]() { return this._map.entries(); }
-    }
+    const FetchHeaders = _nodeFormDataPlatform.headers.Headers;
 
     // HTTP bodies and consumer-created streams must use the same class.
     // A start-only shim strands clients that wrap a body with a pull source.
@@ -7436,6 +6045,7 @@ if (!console.group) {
     }
     class FetchResponse {
         constructor(body = null, init = {}) {
+            _nodeClonePlatform.protocol.markTransferMode(this, false, false);
             init = _nodeBodyData.options(init);
             let status = init.status;
             if (status === undefined) status = 200;
@@ -7450,6 +6060,7 @@ if (!console.group) {
             statusText = String(statusText);
             if (/[^\t\x20-\x7e\x80-\xff]/.test(statusText)) throw new TypeError('Invalid response status text');
             const headers = new FetchHeaders(init.headers);
+            _nodeFormDataPlatform.headers.setHeadersGuard(headers, 'response');
             let stream = null, contentType = null;
             if (body != null) {
                 if (streamState.isReadable(body)) {
@@ -7510,6 +6121,8 @@ if (!console.group) {
             const state = responseState(this);
             const clone = new FetchResponse(null, { status: state.status, statusText: state.statusText, headers: state.headers });
             const clonedState = responseState(clone);
+            _nodeFormDataPlatform.headers.setHeadersGuard(clonedState.headers,
+                _nodeFormDataPlatform.headers.getHeadersGuard(state.headers));
             clonedState.url = state.url; clonedState.redirected = state.redirected; clonedState.type = state.type;
             if (body !== null) {
                 const [left, right] = cloneBody(body);
@@ -7529,19 +6142,21 @@ if (!console.group) {
 
     class FetchRequest {
         constructor(input, init = {}) {
+            _nodeClonePlatform.protocol.markTransferMode(this, false, false);
             if (input instanceof FetchRequest) {
                 this.url = input.url;
                 this.method = (init.method || input.method || 'GET').toUpperCase();
-                this.headers = new FetchHeaders(init.headers || input.headers);
+                this.headers = new FetchHeaders(init.headers !== undefined ? init.headers : input.headers);
                 this.body = init.body !== undefined ? init.body : input.body;
                 this.signal = init.signal || input.signal || null;
             } else {
                 this.url = typeof input === 'string' ? input : (input && input.url);
                 this.method = (init.method || 'GET').toUpperCase();
-                this.headers = new FetchHeaders(init.headers || {});
+                this.headers = new FetchHeaders(init.headers);
                 this.body = init.body !== undefined ? init.body : null;
                 this.signal = init.signal || null;
             }
+            _nodeFormDataPlatform.headers.setHeadersGuard(this.headers, 'request');
         }
     }
 
@@ -7554,8 +6169,7 @@ if (!console.group) {
         let method;
         if (input instanceof FetchRequest) {
             urlStr = input.url;
-            mergedHeaders = new FetchHeaders(input.headers);
-            if (init.headers) for (const [k, v] of new FetchHeaders(init.headers)._map) mergedHeaders.set(k, v);
+            mergedHeaders = new FetchHeaders(init.headers !== undefined ? init.headers : input.headers);
             bodyIn = init.body !== undefined ? init.body : input.body;
             signal = init.signal || input.signal;
             method = (init.method || input.method || 'GET').toUpperCase();
@@ -7574,8 +6188,10 @@ if (!console.group) {
             : (parsed.protocol === 'https:' ? 443 : 80);
 
         // Reduce headers to plain object for http.request
-        const headerObj = {};
-        for (const [k, v] of mergedHeaders._map) headerObj[k] = v;
+        const headerObj = Object.create(null);
+        const headerList = _nodeFormDataPlatform.headers.getHeadersList(mergedHeaders);
+        for (const [k, v] of headerList) headerObj[k] = v;
+        if (headerList.cookies !== null) headerObj['set-cookie'] = headerList.cookies.slice();
 
         let bodyBuf = null;
         if (bodyIn != null) {
@@ -7593,6 +6209,13 @@ if (!console.group) {
             let settled = false;
             let resStream = null;
             let resCtrl = null;
+            let abortDisposable;
+            const cleanupAbort = () => { abortDisposable?.[_nodeDispose](); abortDisposable = undefined; };
+            const abortReason = () => {
+                const reason = signal.reason;
+                return reason === undefined ? new DOMException('This operation was aborted', 'AbortError') : reason;
+            };
+            if (signal?.aborted) { reject(abortReason()); return; }
 
             const req = client.request({
                 protocol: parsed.protocol,
@@ -7617,10 +6240,10 @@ if (!console.group) {
                                 c.enqueue(u8);
                             } catch (e) { c.error(e); }
                         });
-                        res.on('end', () => { try { c.close(); } catch {} });
-                        res.on('error', (e) => { try { c.error(e); } catch {} });
+                        res.on('end', () => { cleanupAbort(); try { c.close(); } catch {} });
+                        res.on('error', (e) => { cleanupAbort(); try { c.error(e); } catch {} });
                     },
-                    cancel() { try { res.destroy(); } catch {} },
+                    cancel() { cleanupAbort(); res.destroy(); },
                 });
 
                 const respHeaders = new FetchHeaders();
@@ -7636,11 +6259,13 @@ if (!console.group) {
                     headers: respHeaders,
                 });
                 const state = responseState(response);
+                _nodeFormDataPlatform.headers.setHeadersGuard(state.headers, 'immutable');
                 state.url = urlStr; state.type = 'basic';
                 resolve(response);
             });
 
             req.on('error', (e) => {
+                cleanupAbort();
                 if (settled) {
                     if (resCtrl) try { resCtrl.error(e); } catch {}
                     return;
@@ -7651,16 +6276,20 @@ if (!console.group) {
 
             if (signal && typeof signal.addEventListener === 'function') {
                 const onAbort = () => {
-                    try { req.destroy(new Error('Aborted')); } catch {}
+                    const reason = abortReason();
+                    cleanupAbort();
+                    // Publish the abort reason before synchronous destruction
+                    // can finish or error the body through transport listeners.
                     if (settled) {
-                        if (resCtrl) try { resCtrl.error(new DOMException('Aborted', 'AbortError')); } catch {}
+                        if (resCtrl) try { resCtrl.error(reason); } catch {}
                     } else {
                         settled = true;
-                        reject(new DOMException('Aborted', 'AbortError'));
+                        reject(reason);
                     }
+                    req.destroy();
                 };
-                if (signal.aborted) onAbort();
-                else signal.addEventListener('abort', onAbort, { once: true });
+                if (signal.aborted) { onAbort(); return; }
+                abortDisposable = _nodeEventPlatform.addAbortListener(signal, onAbort);
             }
 
             if (bodyBuf) req.write(bodyBuf);
@@ -7686,6 +6315,10 @@ globalThis.__nodeBootstrapReady = true;
 // normal job/timer/I/O loop and rejection reporting, before tearing down the
 // realm. Explicit process.exit() has already finalized. An unsettled module
 // graph with no remaining work exits 13, unless a nonzero status was assigned.
+Object.defineProperty(globalThis, '__kandeloNodeBeforeExit', {
+    value: () => process.emit('beforeExit', process.exitCode === undefined ? 0 : process.exitCode),
+});
+
 Object.defineProperty(globalThis, '__kandeloNodeFinalize', {
     value: (failureStatus, statusOnly = false) => {
         // A throwing exit listener prevents the normal return. The native
@@ -7708,11 +6341,10 @@ function _installNodeGlobalScope() {
     ];
     const interfaces = [
         'console', 'URL', 'URLSearchParams', 'TextEncoder', 'TextDecoder',
-        'ReadableStream', 'WritableStream', 'TransformStream',
-        'ByteLengthQueuingStrategy', 'CountQueuingStrategy', 'Blob', 'File',
+        ..._nodeStreamInterfaces, 'Blob', 'File',
         'FormData', 'Headers', 'Request', 'Response', 'MessagePort',
         'MessageChannel', 'BroadcastChannel', 'Event', 'EventTarget',
-        'MessageEvent', 'CloseEvent', 'ErrorEvent', 'CustomEvent', 'DOMException',
+        'MessageEvent', 'CloseEvent', 'ErrorEvent', 'CustomEvent', 'DOMException', 'QuotaExceededError',
         'AbortSignal', 'AbortController',
     ];
     const attributes = ['process', 'Buffer', 'crypto', 'performance'];
@@ -7743,7 +6375,7 @@ function _installNodeGlobalScope() {
     });
     // C++ module loading and the event loop still use these private bridges.
     for (const name of ['__kandeloRunDueTimers', '__kandeloNextTimerDelay', '__kandeloHasReferencedTimers',
-        '__kandeloCreateWorkerThreads', '__kandeloBareModules',
+        '__kandeloDispatchWorkers', '__kandeloBareModules',
         '__kandeloBareSources', '__kandeloResolveBare', '__kandeloModuleMeta',
         '__nodeBootstrapReady']) {
         if (Object.prototype.hasOwnProperty.call(globalThis, name)) {
@@ -7760,4 +6392,13 @@ function _installNodeGlobalScope() {
 }
 _installNodeGlobalScope();
 
-_runMainScriptIfPresent();
+
+if (_nodeNative.workerEnvironment) {
+    // Host deserializers depend on the actual builtin/Blob/File/stream owners,
+    // so user data is decoded only after those owners have been initialized.
+    _nodeWorkerPlatform.initializeData(_nodeNative.worker('data'));
+    _nodeNative.worker('ready');
+    if (_nodeNative.workerEnvironment.eval) {
+        _nodeNative.evalScriptAsFunction(_nodeNative.workerEnvironment.source, '[worker eval]', 1);
+    } else _runMainScriptIfPresent();
+} else _runMainScriptIfPresent();

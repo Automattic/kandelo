@@ -1,0 +1,11 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3963,6 +3963,8 @@
+       JS_FN("__kandeloVmCompileFunction", KandeloVmCompileFunction, 5, 0),
+       JS_FN("sqlite", KandeloNativeSqlite, 4, 0),
+       JS_FN("port", KandeloNativePort, 3, 0),
++      JS_FN("serializeMessage", KandeloNativeSerializeMessage, 2, 0),
++      JS_FN("deserializeMessage", KandeloNativeDeserializeMessage, 1, 0),
+       JS_FN("addressRules", (KandeloFsPromiseGuard<KandeloNativeAddressRules>), 6, 0),
+       JS_FN("randomFillBytes", (KandeloFsPromiseGuard<KandeloNativeRandomFill>), 1, 0),
+       JS_FN("secureRandomBuffer", (KandeloFsPromiseGuard<KandeloNativeSecureRandomBuffer>), 1, 0),

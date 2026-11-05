@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceArchiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+  "meaning": "Future unchanged files, not executed cases/variants or passing compatibility",
+  "files": [
+    {
+      "upstreamPath": "test/parallel/test-fs-opendir.js",
+      "sha256": "977104d0eac4b4060cbdf9526693ae7d2546e6fed291cb1a038cdfeb787508b5",
+      "executed": false,
+      "requirements": "Unchanged assertions/flags/fixtures; identified native and applicable guest host controls; VFS owners still missing where required"
+    },
+    {
+      "upstreamPath": "test/parallel/test-vfs-dir-handle.js",
+      "sha256": "4b970f20fe75e2e011c3436df19b64b4d56cbc6e5c005a45d2a927f0fdf4b285",
+      "executed": false,
+      "requirements": "Unchanged assertions/flags/fixtures; identified native and applicable guest host controls; VFS owners still missing where required"
+    },
+    {
+      "upstreamPath": "test/parallel/test-vfs-fs-opendir-callback.js",
+      "sha256": "ecf8a0d77a5800ea958cdb10ff40b8d8ff759865fa1aa680ba7d2b631583dd56",
+      "executed": false,
+      "requirements": "Unchanged assertions/flags/fixtures; identified native and applicable guest host controls; VFS owners still missing where required"
+    },
+    {
+      "upstreamPath": "test/parallel/test-vfs-fs-opendirSync.js",
+      "sha256": "060f6cf735f1718f92cea4e4ea1c6eecd5ca510ca288747f2da294b643412c88",
+      "executed": false,
+      "requirements": "Unchanged assertions/flags/fixtures; identified native and applicable guest host controls; VFS owners still missing where required"
+    }
+  ],
+  "fourHostConformance": false
+}

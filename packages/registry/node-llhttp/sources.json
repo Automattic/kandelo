@@ -1,0 +1,17 @@
+{
+  "nodeVersion": "26.13.0",
+  "nodeSourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "source": {
+    "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+    "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+  },
+  "inputFiles": {
+    "deps/llhttp/src/llhttp.c": "391e7c99912abf3b1c9dd8a9c85fdeaac2663e9fa55b6f3871154d16fef8b892",
+    "deps/llhttp/src/api.c": "0f8590206fe2f264db2825401b5fb856b979ee1363dc88b06f36dc9577afb941",
+    "deps/llhttp/src/http.c": "a1f2b23168f8e9b5bfa464c89027d3ca259fc649ae3d7e72bfff997d1aeb5d72",
+    "deps/llhttp/include/llhttp.h": "5bc82fa51b19aa8bee7d921038393fbfc74e8cc9bae0844c2d82c102fb8cfd68",
+    "deps/llhttp/llhttp.gyp": "b7ff2f4064bc761d1ad0e7fb28964ab4cc5dd4ff817288162f785f9d42f4454e",
+    "deps/llhttp/LICENSE": "628168d68bb5a8a17e0bbefb3bd74e326e1edc20583d76f52f457c82c921867d"
+  },
+  "scope": "Unchanged pinned llhttp9.4.3 parser backend; presence/compilation is not HTTP API conformance"
+}

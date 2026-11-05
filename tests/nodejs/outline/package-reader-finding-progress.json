@@ -1,0 +1,1722 @@
+{
+  "schema": 1,
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "auditMatrixSha256": "2d3fde3b30ac0d28e804cc06a50424a90ecc94abb4507697a0ddbc7c977321f9",
+  "meaning": "Observation navigation only, not unique API/test counts or closure",
+  "sourceReport": "tests/nodejs/outline/package-reader-implementation-dependencies.md",
+  "observations": [
+    {
+      "matrixRowIndex": 460,
+      "id": "module.createRequire",
+      "module": "node:module",
+      "api": "createRequire",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 461,
+      "id": "module.findPackageJSON",
+      "module": "node:module",
+      "api": "findPackageJSON",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 477,
+      "id": "module.require",
+      "module": null,
+      "api": "require",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 480,
+      "id": "module.require.resolve",
+      "module": null,
+      "api": "require.resolve",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 481,
+      "id": "module.require.resolve.paths",
+      "module": null,
+      "api": "require.resolve.paths",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 486,
+      "id": "module.package exports/imports",
+      "module": null,
+      "api": "package exports/imports",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 487,
+      "id": "module.package configuration errors",
+      "module": null,
+      "api": "package configuration errors",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7119,
+      "id": "module.[CJS require]",
+      "module": "node:module",
+      "api": "[CJS require]",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7120,
+      "id": "module.[CJS require].resolve",
+      "module": "node:module",
+      "api": "[CJS require].resolve",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7121,
+      "id": "module.[CJS require].resolve.paths",
+      "module": "node:module",
+      "api": "[CJS require].resolve.paths",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7124,
+      "id": "module.[CJS require].main",
+      "module": "node:module",
+      "api": "[CJS require].main",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7127,
+      "id": "module.[package resolver]",
+      "module": "node:module",
+      "api": "[package resolver]",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7128,
+      "id": "module.[package map]",
+      "module": "node:module",
+      "api": "[package map]",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7151,
+      "id": "module.prototype.isPreloading",
+      "module": "node:module",
+      "api": "prototype.isPreloading",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7152,
+      "id": "module.prototype.parent",
+      "module": "node:module",
+      "api": "prototype.parent",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7153,
+      "id": "module.prototype.load",
+      "module": "node:module",
+      "api": "prototype.load",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7154,
+      "id": "module.prototype.load.prototype",
+      "module": "node:module",
+      "api": "prototype.load.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7155,
+      "id": "module.prototype.require",
+      "module": "node:module",
+      "api": "prototype.require",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7156,
+      "id": "module.prototype.require.prototype",
+      "module": "node:module",
+      "api": "prototype.require.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7157,
+      "id": "module.prototype._compile",
+      "module": "node:module",
+      "api": "prototype._compile",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7158,
+      "id": "module.prototype._compile.prototype",
+      "module": "node:module",
+      "api": "prototype._compile.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7159,
+      "id": "module._stat",
+      "module": "node:module",
+      "api": "_stat",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7161,
+      "id": "module._pathCache",
+      "module": "node:module",
+      "api": "_pathCache",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7169,
+      "id": "module.globalPaths",
+      "module": "node:module",
+      "api": "globalPaths",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7170,
+      "id": "module.wrap",
+      "module": "node:module",
+      "api": "wrap",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7171,
+      "id": "module.wrapper",
+      "module": "node:module",
+      "api": "wrapper",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7172,
+      "id": "module._readPackage",
+      "module": "node:module",
+      "api": "_readPackage",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7173,
+      "id": "module._findPath",
+      "module": "node:module",
+      "api": "_findPath",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7174,
+      "id": "module._findPath.prototype",
+      "module": "node:module",
+      "api": "_findPath.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7175,
+      "id": "module._nodeModulePaths",
+      "module": "node:module",
+      "api": "_nodeModulePaths",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7176,
+      "id": "module._nodeModulePaths.prototype",
+      "module": "node:module",
+      "api": "_nodeModulePaths.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7177,
+      "id": "module._resolveLookupPaths",
+      "module": "node:module",
+      "api": "_resolveLookupPaths",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7178,
+      "id": "module._resolveLookupPaths.prototype",
+      "module": "node:module",
+      "api": "_resolveLookupPaths.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7179,
+      "id": "module._load",
+      "module": "node:module",
+      "api": "_load",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7180,
+      "id": "module._load.prototype",
+      "module": "node:module",
+      "api": "_load.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7181,
+      "id": "module._resolveFilename",
+      "module": "node:module",
+      "api": "_resolveFilename",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7182,
+      "id": "module._resolveFilename.prototype",
+      "module": "node:module",
+      "api": "_resolveFilename.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7183,
+      "id": "module.createRequire.prototype",
+      "module": "node:module",
+      "api": "createRequire.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7184,
+      "id": "module._initPaths",
+      "module": "node:module",
+      "api": "_initPaths",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7185,
+      "id": "module._initPaths.prototype",
+      "module": "node:module",
+      "api": "_initPaths.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7186,
+      "id": "module._preloadModules",
+      "module": "node:module",
+      "api": "_preloadModules",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7187,
+      "id": "module._preloadModules.prototype",
+      "module": "node:module",
+      "api": "_preloadModules.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7188,
+      "id": "module.syncBuiltinESMExports.prototype",
+      "module": "node:module",
+      "api": "syncBuiltinESMExports.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7189,
+      "id": "module.registerHooks.prototype",
+      "module": "node:module",
+      "api": "registerHooks.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7190,
+      "id": "module.runMain",
+      "module": "node:module",
+      "api": "runMain",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7191,
+      "id": "module.runMain.prototype",
+      "module": "node:module",
+      "api": "runMain.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7192,
+      "id": "module.register.prototype",
+      "module": "node:module",
+      "api": "register.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7193,
+      "id": "module.enableCompileCache.prototype",
+      "module": "node:module",
+      "api": "enableCompileCache.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7194,
+      "id": "module.findPackageJSON.prototype",
+      "module": "node:module",
+      "api": "findPackageJSON.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7195,
+      "id": "module.getCompileCacheDir.prototype",
+      "module": "node:module",
+      "api": "getCompileCacheDir.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7196,
+      "id": "module.stripTypeScriptTypes.prototype",
+      "module": "node:module",
+      "api": "stripTypeScriptTypes.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7197,
+      "id": "module.findSourceMap.prototype",
+      "module": "node:module",
+      "api": "findSourceMap.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7200,
+      "id": "module.getSourceMapsSupport.prototype",
+      "module": "node:module",
+      "api": "getSourceMapsSupport.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7201,
+      "id": "module.setSourceMapsSupport.prototype",
+      "module": "node:module",
+      "api": "setSourceMapsSupport.prototype",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7203,
+      "id": "module.[doc] module.md Modules: `node:module` API @1",
+      "module": "node:module",
+      "api": "[doc] module.md Modules: `node:module` API @1",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7204,
+      "id": "module.[doc] module.md Class: `Module` @18",
+      "module": "node:module",
+      "api": "[doc] module.md Class: `Module` @18",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7205,
+      "id": "module.[doc] module.md `module.builtinModules` @28",
+      "module": "node:module",
+      "api": "[doc] module.md `module.builtinModules` @28",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7206,
+      "id": "module.[doc] module.md `module.createRequire(filename)` @54",
+      "module": "node:module",
+      "api": "[doc] module.md `module.createRequire(filename)` @54",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7207,
+      "id": "module.[doc] module.md `module.findPackageJSON(specifier[, base])` @73",
+      "module": "node:module",
+      "api": "[doc] module.md `module.findPackageJSON(specifier[, base])` @73",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7208,
+      "id": "module.[doc] module.md `module.isBuiltin(moduleName)` @161",
+      "module": "node:module",
+      "api": "[doc] module.md `module.isBuiltin(moduleName)` @161",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7209,
+      "id": "module.[doc] module.md `module.register(specifier[, parentURL][, options])` @179",
+      "module": "node:module",
+      "api": "[doc] module.md `module.register(specifier[, parentURL][, options])` @179",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7210,
+      "id": "module.[doc] module.md `module.registerHooks(options)` @227",
+      "module": "node:module",
+      "api": "[doc] module.md `module.registerHooks(options)` @227",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7211,
+      "id": "module.[doc] module.md `module.stripTypeScriptTypes(code[, options])` @256",
+      "module": "node:module",
+      "api": "[doc] module.md `module.stripTypeScriptTypes(code[, options])` @256",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7212,
+      "id": "module.[doc] module.md `module.syncBuiltinESMExports()` @321",
+      "module": "node:module",
+      "api": "[doc] module.md `module.syncBuiltinESMExports()` @321",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7213,
+      "id": "module.[doc] module.md Module compile cache @360",
+      "module": "node:module",
+      "api": "[doc] module.md Module compile cache @360",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7214,
+      "id": "module.[doc] module.md Portability of the compile cache @402",
+      "module": "node:module",
+      "api": "[doc] module.md Portability of the compile cache @402",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7215,
+      "id": "module.[doc] module.md Read-only compile cache @434",
+      "module": "node:module",
+      "api": "[doc] module.md Read-only compile cache @434",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7216,
+      "id": "module.[doc] module.md Limitations of the compile cache @443",
+      "module": "node:module",
+      "api": "[doc] module.md Limitations of the compile cache @443",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7217,
+      "id": "module.[doc] module.md `module.constants.compileCacheStatus` @454",
+      "module": "node:module",
+      "api": "[doc] module.md `module.constants.compileCacheStatus` @454",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7218,
+      "id": "module.[doc] module.md `module.enableCompileCache([options])` @509",
+      "module": "node:module",
+      "api": "[doc] module.md `module.enableCompileCache([options])` @509",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7219,
+      "id": "module.[doc] module.md `module.flushCompileCache()` @575",
+      "module": "node:module",
+      "api": "[doc] module.md `module.flushCompileCache()` @575",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7220,
+      "id": "module.[doc] module.md `module.getCompileCacheDir()` @593",
+      "module": "node:module",
+      "api": "[doc] module.md `module.getCompileCacheDir()` @593",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7221,
+      "id": "module.[doc] module.md Customization Hooks @608",
+      "module": "node:module",
+      "api": "[doc] module.md Customization Hooks @608",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7222,
+      "id": "module.[doc] module.md Synchronous customization hooks @655",
+      "module": "node:module",
+      "api": "[doc] module.md Synchronous customization hooks @655",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7223,
+      "id": "module.[doc] module.md Registration of synchronous customization hooks @661",
+      "module": "node:module",
+      "api": "[doc] module.md Registration of synchronous customization hooks @661",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7224,
+      "id": "module.[doc] module.md Registering hooks before application code runs with flags @684",
+      "module": "node:module",
+      "api": "[doc] module.md Registering hooks before application code runs with flags @684",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7225,
+      "id": "module.[doc] module.md Registering hooks before application code runs programmatically @709",
+      "module": "node:module",
+      "api": "[doc] module.md Registering hooks before application code runs programmatically @709",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7226,
+      "id": "module.[doc] module.md Registering hooks before application code runs with a `data:` URL @746",
+      "module": "node:module",
+      "api": "[doc] module.md Registering hooks before application code runs with a `data:` URL @746",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7227,
+      "id": "module.[doc] module.md Convention of hooks and chaining @755",
+      "module": "node:module",
+      "api": "[doc] module.md Convention of hooks and chaining @755",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7228,
+      "id": "module.[doc] module.md Deregistration of synchronous customization hooks @806",
+      "module": "node:module",
+      "api": "[doc] module.md Deregistration of synchronous customization hooks @806",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7229,
+      "id": "module.[doc] module.md Hook functions accepted by `module.registerHooks()` @863",
+      "module": "node:module",
+      "api": "[doc] module.md Hook functions accepted by `module.registerHooks()` @863",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7230,
+      "id": "module.[doc] module.md Synchronous `resolve(specifier, context, nextResolve)` @892",
+      "module": "node:module",
+      "api": "[doc] module.md Synchronous `resolve(specifier, context, nextResolve)` @892",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7231,
+      "id": "module.[doc] module.md Synchronous `load(url, context, nextLoad)` @980",
+      "module": "node:module",
+      "api": "[doc] module.md Synchronous `load(url, context, nextLoad)` @980",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7232,
+      "id": "module.[doc] module.md Accepted final formats returned by `load` @1049",
+      "module": "node:module",
+      "api": "[doc] module.md Accepted final formats returned by `load` @1049",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7233,
+      "id": "module.[doc] module.md Asynchronous customization hooks @1075",
+      "module": "node:module",
+      "api": "[doc] module.md Asynchronous customization hooks @1075",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7234,
+      "id": "module.[doc] module.md Caveats of asynchronous customization hooks @1079",
+      "module": "node:module",
+      "api": "[doc] module.md Caveats of asynchronous customization hooks @1079",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7235,
+      "id": "module.[doc] module.md Registration of asynchronous customization hooks @1106",
+      "module": "node:module",
+      "api": "[doc] module.md Registration of asynchronous customization hooks @1106",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7236,
+      "id": "module.[doc] module.md Chaining of asynchronous customization hooks @1182",
+      "module": "node:module",
+      "api": "[doc] module.md Chaining of asynchronous customization hooks @1182",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7237,
+      "id": "module.[doc] module.md Communication with asynchronous module customization hooks @1224",
+      "module": "node:module",
+      "api": "[doc] module.md Communication with asynchronous module customization hooks @1224",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7238,
+      "id": "module.[doc] module.md Asynchronous hooks accepted by `module.register()` @1275",
+      "module": "node:module",
+      "api": "[doc] module.md Asynchronous hooks accepted by `module.register()` @1275",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7239,
+      "id": "module.[doc] module.md `initialize()` @1321",
+      "module": "node:module",
+      "api": "[doc] module.md `initialize()` @1321",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7240,
+      "id": "module.[doc] module.md Asynchronous `resolve(specifier, context, nextResolve)` @1401",
+      "module": "node:module",
+      "api": "[doc] module.md Asynchronous `resolve(specifier, context, nextResolve)` @1401",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7241,
+      "id": "module.[doc] module.md Asynchronous `load(url, context, nextLoad)` @1493",
+      "module": "node:module",
+      "api": "[doc] module.md Asynchronous `load(url, context, nextLoad)` @1493",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7242,
+      "id": "module.[doc] module.md Examples @1584",
+      "module": "node:module",
+      "api": "[doc] module.md Examples @1584",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7243,
+      "id": "module.[doc] module.md Import from HTTPS @1590",
+      "module": "node:module",
+      "api": "[doc] module.md Import from HTTPS @1590",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7244,
+      "id": "module.[doc] module.md Transpilation @1643",
+      "module": "node:module",
+      "api": "[doc] module.md Transpilation @1643",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7245,
+      "id": "module.[doc] module.md Asynchronous version @1651",
+      "module": "node:module",
+      "api": "[doc] module.md Asynchronous version @1651",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7246,
+      "id": "module.[doc] module.md Synchronous version @1701",
+      "module": "node:module",
+      "api": "[doc] module.md Synchronous version @1701",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7247,
+      "id": "module.[doc] module.md Running hooks @1742",
+      "module": "node:module",
+      "api": "[doc] module.md Running hooks @1742",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7248,
+      "id": "module.[doc] module.md Import maps @1781",
+      "module": "node:module",
+      "api": "[doc] module.md Import maps @1781",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7249,
+      "id": "module.[doc] module.md Asynchronous version @1788",
+      "module": "node:module",
+      "api": "[doc] module.md Asynchronous version @1788",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7250,
+      "id": "module.[doc] module.md Synchronous version @1805",
+      "module": "node:module",
+      "api": "[doc] module.md Synchronous version @1805",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7251,
+      "id": "module.[doc] module.md Using the hooks @1825",
+      "module": "node:module",
+      "api": "[doc] module.md Using the hooks @1825",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7252,
+      "id": "module.[doc] module.md Source Map Support @1852",
+      "module": "node:module",
+      "api": "[doc] module.md Source Map Support @1852",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7253,
+      "id": "module.[doc] module.md `module.getSourceMapsSupport()` @1886",
+      "module": "node:module",
+      "api": "[doc] module.md `module.getSourceMapsSupport()` @1886",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7254,
+      "id": "module.[doc] module.md `module.findSourceMap(path)` @1906",
+      "module": "node:module",
+      "api": "[doc] module.md `module.findSourceMap(path)` @1906",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7255,
+      "id": "module.[doc] module.md `module.setSourceMapsSupport(enabled[, options])` @1921",
+      "module": "node:module",
+      "api": "[doc] module.md `module.setSourceMapsSupport(enabled[, options])` @1921",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7256,
+      "id": "module.[doc] module.md Class: `module.SourceMap` @1948",
+      "module": "node:module",
+      "api": "[doc] module.md Class: `module.SourceMap` @1948",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7257,
+      "id": "module.[doc] module.md `new SourceMap(payload[, { lineLengths }])` @1956",
+      "module": "node:module",
+      "api": "[doc] module.md `new SourceMap(payload[, { lineLengths }])` @1956",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7258,
+      "id": "module.[doc] module.md `sourceMap.payload` @1983",
+      "module": "node:module",
+      "api": "[doc] module.md `sourceMap.payload` @1983",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7259,
+      "id": "module.[doc] module.md `sourceMap.findEntry(lineOffset, columnOffset)` @1989",
+      "module": "node:module",
+      "api": "[doc] module.md `sourceMap.findEntry(lineOffset, columnOffset)` @1989",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7260,
+      "id": "module.[doc] module.md `sourceMap.findOrigin(lineNumber, columnNumber)` @2025",
+      "module": "node:module",
+      "api": "[doc] module.md `sourceMap.findOrigin(lineNumber, columnNumber)` @2025",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7261,
+      "id": "module.[doc] modules.md Modules: CommonJS modules @1",
+      "module": "node:module",
+      "api": "[doc] modules.md Modules: CommonJS modules @1",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7262,
+      "id": "module.[doc] modules.md Enabling @71",
+      "module": "node:module",
+      "api": "[doc] modules.md Enabling @71",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7263,
+      "id": "module.[doc] modules.md Accessing the main module @103",
+      "module": "node:module",
+      "api": "[doc] modules.md Accessing the main module @103",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7264,
+      "id": "module.[doc] modules.md Package manager tips @117",
+      "module": "node:module",
+      "api": "[doc] modules.md Package manager tips @117",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7265,
+      "id": "module.[doc] modules.md Loading ECMAScript modules using `require()` @170",
+      "module": "node:module",
+      "api": "[doc] modules.md Loading ECMAScript modules using `require()` @170",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7266,
+      "id": "module.[doc] modules.md All together @330",
+      "module": "node:module",
+      "api": "[doc] modules.md All together @330",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7267,
+      "id": "module.[doc] modules.md Caching @481",
+      "module": "node:module",
+      "api": "[doc] modules.md Caching @481",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7268,
+      "id": "module.[doc] modules.md Module caching caveats @497",
+      "module": "node:module",
+      "api": "[doc] modules.md Module caching caveats @497",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7269,
+      "id": "module.[doc] modules.md Built-in modules @512",
+      "module": "node:module",
+      "api": "[doc] modules.md Built-in modules @512",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7270,
+      "id": "module.[doc] modules.md Built-in modules with mandatory `node:` prefix @544",
+      "module": "node:module",
+      "api": "[doc] modules.md Built-in modules with mandatory `node:` prefix @544",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7271,
+      "id": "module.[doc] modules.md Cycles @559",
+      "module": "node:module",
+      "api": "[doc] modules.md Cycles @559",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7272,
+      "id": "module.[doc] modules.md File modules @623",
+      "module": "node:module",
+      "api": "[doc] modules.md File modules @623",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7273,
+      "id": "module.[doc] modules.md Folders as modules @653",
+      "module": "node:module",
+      "api": "[doc] modules.md Folders as modules @653",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7274,
+      "id": "module.[doc] modules.md Loading from `node_modules` folders @696",
+      "module": "node:module",
+      "api": "[doc] modules.md Loading from `node_modules` folders @696",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7275,
+      "id": "module.[doc] modules.md Loading from the global folders @728",
+      "module": "node:module",
+      "api": "[doc] modules.md Loading from the global folders @728",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7276,
+      "id": "module.[doc] modules.md The module wrapper @762",
+      "module": "node:module",
+      "api": "[doc] modules.md The module wrapper @762",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7277,
+      "id": "module.[doc] modules.md The module scope @786",
+      "module": "node:module",
+      "api": "[doc] modules.md The module scope @786",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7278,
+      "id": "module.[doc] modules.md `__dirname` @788",
+      "module": "node:module",
+      "api": "[doc] modules.md `__dirname` @788",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7279,
+      "id": "module.[doc] modules.md `__filename` @808",
+      "module": "node:module",
+      "api": "[doc] modules.md `__filename` @808",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7280,
+      "id": "module.[doc] modules.md `exports` @845",
+      "module": "node:module",
+      "api": "[doc] modules.md `exports` @845",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7281,
+      "id": "module.[doc] modules.md `module` @857",
+      "module": "node:module",
+      "api": "[doc] modules.md `module` @857",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7282,
+      "id": "module.[doc] modules.md `require(id)` @869",
+      "module": "node:module",
+      "api": "[doc] modules.md `require(id)` @869",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7283,
+      "id": "module.[doc] modules.md `require.cache` @898",
+      "module": "node:module",
+      "api": "[doc] modules.md `require.cache` @898",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7284,
+      "id": "module.[doc] modules.md `require.extensions` @929",
+      "module": "node:module",
+      "api": "[doc] modules.md `require.extensions` @929",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7285,
+      "id": "module.[doc] modules.md `require.main` @956",
+      "module": "node:module",
+      "api": "[doc] modules.md `require.main` @956",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7286,
+      "id": "module.[doc] modules.md `require.resolve(request[, options])` @996",
+      "module": "node:module",
+      "api": "[doc] modules.md `require.resolve(request[, options])` @996",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7287,
+      "id": "module.[doc] modules.md `require.resolve.paths(request)` @1021",
+      "module": "node:module",
+      "api": "[doc] modules.md `require.resolve.paths(request)` @1021",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7288,
+      "id": "module.[doc] modules.md The `module` object @1034",
+      "module": "node:module",
+      "api": "[doc] modules.md The `module` object @1034",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7289,
+      "id": "module.[doc] modules.md `module.children` @1049",
+      "module": "node:module",
+      "api": "[doc] modules.md `module.children` @1049",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7290,
+      "id": "module.[doc] modules.md `module.exports` @1059",
+      "module": "node:module",
+      "api": "[doc] modules.md `module.exports` @1059",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7291,
+      "id": "module.[doc] modules.md `exports` shortcut @1114",
+      "module": "node:module",
+      "api": "[doc] modules.md `exports` shortcut @1114",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7292,
+      "id": "module.[doc] modules.md `module.filename` @1163",
+      "module": "node:module",
+      "api": "[doc] modules.md `module.filename` @1163",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7293,
+      "id": "module.[doc] modules.md `module.id` @1173",
+      "module": "node:module",
+      "api": "[doc] modules.md `module.id` @1173",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7294,
+      "id": "module.[doc] modules.md `module.isPreloading` @1184",
+      "module": "node:module",
+      "api": "[doc] modules.md `module.isPreloading` @1184",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7295,
+      "id": "module.[doc] modules.md `module.loaded` @1195",
+      "module": "node:module",
+      "api": "[doc] modules.md `module.loaded` @1195",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7296,
+      "id": "module.[doc] modules.md `module.parent` @1206",
+      "module": "node:module",
+      "api": "[doc] modules.md `module.parent` @1206",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7297,
+      "id": "module.[doc] modules.md `module.path` @1224",
+      "module": "node:module",
+      "api": "[doc] modules.md `module.path` @1224",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7298,
+      "id": "module.[doc] modules.md `module.paths` @1235",
+      "module": "node:module",
+      "api": "[doc] modules.md `module.paths` @1235",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7299,
+      "id": "module.[doc] modules.md `module.require(id)` @1245",
+      "module": "node:module",
+      "api": "[doc] modules.md `module.require(id)` @1245",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7300,
+      "id": "module.[doc] modules.md The `Module` object @1262",
+      "module": "node:module",
+      "api": "[doc] modules.md The `Module` object @1262",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7301,
+      "id": "module.[doc] modules.md Source map v3 support @1273",
+      "module": "node:module",
+      "api": "[doc] modules.md Source map v3 support @1273",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7349,
+      "id": "module.[doc] packages.md Modules: Packages @1",
+      "module": "node:module",
+      "api": "[doc] packages.md Modules: Packages @1",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7350,
+      "id": "module.[doc] packages.md Introduction @46",
+      "module": "node:module",
+      "api": "[doc] packages.md Introduction @46",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7351,
+      "id": "module.[doc] packages.md Determining module system @56",
+      "module": "node:module",
+      "api": "[doc] packages.md Determining module system @56",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7352,
+      "id": "module.[doc] packages.md Introduction @58",
+      "module": "node:module",
+      "api": "[doc] packages.md Introduction @58",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7353,
+      "id": "module.[doc] packages.md Syntax detection @108",
+      "module": "node:module",
+      "api": "[doc] packages.md Syntax detection @108",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7354,
+      "id": "module.[doc] packages.md Module resolution and loading @145",
+      "module": "node:module",
+      "api": "[doc] packages.md Module resolution and loading @145",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7355,
+      "id": "module.[doc] packages.md `package.json` and file extensions @196",
+      "module": "node:module",
+      "api": "[doc] packages.md `package.json` and file extensions @196",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7356,
+      "id": "module.[doc] packages.md `--input-type` flag @252",
+      "module": "node:module",
+      "api": "[doc] packages.md `--input-type` flag @252",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7357,
+      "id": "module.[doc] packages.md Package entry points @272",
+      "module": "node:module",
+      "api": "[doc] packages.md Package entry points @272",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7358,
+      "id": "module.[doc] packages.md Main entry point export @360",
+      "module": "node:module",
+      "api": "[doc] packages.md Main entry point export @360",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7359,
+      "id": "module.[doc] packages.md Subpath exports @393",
+      "module": "node:module",
+      "api": "[doc] packages.md Subpath exports @393",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7360,
+      "id": "module.[doc] packages.md Extensions in subpaths @426",
+      "module": "node:module",
+      "api": "[doc] packages.md Extensions in subpaths @426",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7361,
+      "id": "module.[doc] packages.md Path Rules and Validation for Export Targets @446",
+      "module": "node:module",
+      "api": "[doc] packages.md Path Rules and Validation for Export Targets @446",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7362,
+      "id": "module.[doc] packages.md Targets must be relative URLs @452",
+      "module": "node:module",
+      "api": "[doc] packages.md Targets must be relative URLs @452",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7363,
+      "id": "module.[doc] packages.md No path traversal or invalid segments @478",
+      "module": "node:module",
+      "api": "[doc] packages.md No path traversal or invalid segments @478",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7364,
+      "id": "module.[doc] packages.md Exports sugar @499",
+      "module": "node:module",
+      "api": "[doc] packages.md Exports sugar @499",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7365,
+      "id": "module.[doc] packages.md Subpath imports @524",
+      "module": "node:module",
+      "api": "[doc] packages.md Subpath imports @524",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7366,
+      "id": "module.[doc] packages.md Subpath patterns @573",
+      "module": "node:module",
+      "api": "[doc] packages.md Subpath patterns @573",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7367,
+      "id": "module.[doc] packages.md Conditional exports @658",
+      "module": "node:module",
+      "api": "[doc] packages.md Conditional exports @658",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7368,
+      "id": "module.[doc] packages.md Nested conditions @756",
+      "module": "node:module",
+      "api": "[doc] packages.md Nested conditions @756",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7369,
+      "id": "module.[doc] packages.md Resolving user conditions @780",
+      "module": "node:module",
+      "api": "[doc] packages.md Resolving user conditions @780",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7370,
+      "id": "module.[doc] packages.md Community Conditions Definitions @815",
+      "module": "node:module",
+      "api": "[doc] packages.md Community Conditions Definitions @815",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7371,
+      "id": "module.[doc] packages.md Self-referencing a package using its name @862",
+      "module": "node:module",
+      "api": "[doc] packages.md Self-referencing a package using its name @862",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7372,
+      "id": "module.[doc] packages.md Dual CommonJS/ES module packages @946",
+      "module": "node:module",
+      "api": "[doc] packages.md Dual CommonJS/ES module packages @946",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7373,
+      "id": "module.[doc] packages.md Package maps @950",
+      "module": "node:module",
+      "api": "[doc] packages.md Package maps @950",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7374,
+      "id": "module.[doc] packages.md Configuration file format @972",
+      "module": "node:module",
+      "api": "[doc] packages.md Configuration file format @972",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7375,
+      "id": "module.[doc] packages.md Resolution algorithm @1012",
+      "module": "node:module",
+      "api": "[doc] packages.md Resolution algorithm @1012",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7376,
+      "id": "module.[doc] packages.md Multiple package versions @1033",
+      "module": "node:module",
+      "api": "[doc] packages.md Multiple package versions @1033",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7377,
+      "id": "module.[doc] packages.md Multiple packages for the same URL @1067",
+      "module": "node:module",
+      "api": "[doc] packages.md Multiple packages for the same URL @1067",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7378,
+      "id": "module.[doc] packages.md Interaction with other resolution @1119",
+      "module": "node:module",
+      "api": "[doc] packages.md Interaction with other resolution @1119",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7379,
+      "id": "module.[doc] packages.md Limitations @1129",
+      "module": "node:module",
+      "api": "[doc] packages.md Limitations @1129",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7380,
+      "id": "module.[doc] packages.md Node.js `package.json` field definitions @1136",
+      "module": "node:module",
+      "api": "[doc] packages.md Node.js `package.json` field definitions @1136",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7381,
+      "id": "module.[doc] packages.md `\"name\"` @1155",
+      "module": "node:module",
+      "api": "[doc] packages.md `\"name\"` @1155",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7382,
+      "id": "module.[doc] packages.md `\"main\"` @1184",
+      "module": "node:module",
+      "api": "[doc] packages.md `\"main\"` @1184",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7383,
+      "id": "module.[doc] packages.md `\"type\"` @1212",
+      "module": "node:module",
+      "api": "[doc] packages.md `\"type\"` @1212",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7384,
+      "id": "module.[doc] packages.md `\"exports\"` @1265",
+      "module": "node:module",
+      "api": "[doc] packages.md `\"exports\"` @1265",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    },
+    {
+      "matrixRowIndex": 7385,
+      "id": "module.[doc] packages.md `\"imports\"` @1318",
+      "module": "node:module",
+      "api": "[doc] packages.md `\"imports\"` @1318",
+      "relation": "Underlying native package/cache/main/type foundation only; resolver/maps/activation/full original requirements remain open",
+      "implementationComplete": false,
+      "fourHostRuntimeConformance": false
+    }
+  ],
+  "implementationComplete": false,
+  "fourHostConformance": false
+}

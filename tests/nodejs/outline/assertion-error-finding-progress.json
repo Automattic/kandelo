@@ -1,0 +1,124 @@
+{
+  "at": "2026-11-05T12:03:47.362522+00:00",
+  "recipeRevision": 109,
+  "sourceIntroducedRevision": 108,
+  "bootstrapOrderCorrectionRevision": 109,
+  "auditFindings": [
+    "V-029 partial: actual pinned AssertionError/Myers algorithms",
+    "V-035 partial: assertions now consume shared errors/validators/colors/primordials"
+  ],
+  "sourceImplemented": [
+    "Two unchanged pinned Node source modules supply error construction, simple/full/operator/color/truncation diffs, details/descriptors/custom inspection",
+    "Removed custom AssertionError, six generic TypeError constructors and second primordial subset",
+    "Lazy module loading shares initialized values owner; failed factories are removed from cache",
+    "Explicit missing-stack-capture guards retain actual superclass stacks; source-expression recovery remains missing, no synthetic replacement stack"
+  ],
+  "frontendNative": {
+    "report": ".context/node26-assertion-frontend-r2.json",
+    "sha256": "8187f79256ef8183689d6bd40453e9f6970052244541e31a968504d15d404b3b",
+    "cases": 18,
+    "passed": 18,
+    "failed": 0,
+    "skipped": 0,
+    "newCases": 3,
+    "affectedCases": 15
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-assertion-upstream/report.json",
+    "sha256": "d97cf059dbb1db42935fdd91a40fbae6ab5e9e84d0d80394e7bc1e4ecef48bd1",
+    "files": 4,
+    "executions": 8,
+    "passed": 8
+  },
+  "sourceChecks": {
+    "report": ".context/node26-assertion-source-r4/report.json",
+    "sha256": "e0618c4d4d83fbda5cc5b463439b461801b1cc4278ce558ca14270331a1a01b8",
+    "checks": 5,
+    "pinnedNewFiles": 2,
+    "bunRemainderUnchanged": true
+  },
+  "targetedEngine": {
+    "report": ".context/node26-engine-r109-accepted/report.json",
+    "sha256": "00d12ed9ca268fbc3f9bf660c0d9beb885184529ae8ab09efbfb4cb4653c92a5",
+    "exitCode": 0,
+    "recipeRevision": 109
+  },
+  "focusedGuest": {
+    "report": ".context/node26-assertion-guest-r109-controls/report.json",
+    "sha256": "b71bf38eaf56ce55a77c962a074efdc1bfd77de1b59e6045449f1aa013d2ce69",
+    "counts": {
+      "pass": 4,
+      "fail": 1,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "scope": "Five same-source native26/Node-host guest controls: two assertion diagnostics/validation slices and three affected environment cases. Normal resolver kernel/engine admission and host.spawn; identified shell image. Controlled stack is custom inspection input,not stack-capture proof. No environment contents,overall suite,full product rebuild,or browser conformance."
+  },
+  "nonpassesRetained": [
+    {
+      "report": ".context/node26-assertion-guest-controls/report.json",
+      "sha256": "6805c58ab8a23bedf1e515320db8e8cc56f6a6397720f86a63a2474dbcf672c7",
+      "counts": {
+        "pass": 0,
+        "fail": 5,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      },
+      "kind": "Compiled108guest startup regression before test assertions;all native controls passed"
+    },
+    {
+      "report": ".context/node26-r108-artifact-policy-r1.log",
+      "sha256": "4a6852bfd05de7ddd218c36b2a2341e31cadb9f3a1d2c6bb5ac60dc21fe04b36",
+      "kind": "Incorrect artifact relative-path lookup;no guest execution"
+    },
+    {
+      "report": ".context/node26-assertion-source-r1.log",
+      "sha256": "cc4c63427596a9ce935468a4c8ae4e795c33dd624e94270abdd24698102c7041",
+      "kind": "Incorrect positional bootstrap-generator invocation, no runtime test launched"
+    },
+    {
+      "report": ".context/node26-engine-r109-accepted/cli-target-rejection.log",
+      "sha256": "7c8a1bb52340b1a5e777002f0352c36e017bbcbfbc36c8eb6f6be9348870c2eb",
+      "kind": "run.sh rejected raw registry target before compilation"
+    }
+  ],
+  "remaining": [
+    "Source110actual diagnostic case passes after shared native location policy;fresh Error own lazy stack/prototype shape remains failed in the complete new layout comparison",
+    "Native captureStackTrace/stack limits/filtering/stackStartFn and source-expression recovery are implementation gaps",
+    "Complete engine inspection/Unicode width, cross-realm/poisoned inputs/GC/lifecycle and shared error-delivery paths",
+    "All remaining V-029/V-035 obligations, all19partial families and identified four-host conformance; focused cases do not establish API closure"
+  ],
+  "guestCompiled": true,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": [],
+  "engineLocationFollowup": {
+    "recipeRevision": 110,
+    "evidence": {
+      "report": ".context/node26-error-location-controls/report.json",
+      "sha256": "7128f3990ec044b34ec270dc9c974cadac97be9d7418a60be3e0e6392039388f",
+      "counts": {
+        "pass": 7,
+        "fail": 1,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      },
+      "nativeReferenceCases": 8,
+      "nativeReferencePassed": 8
+    },
+    "source": {
+      "report": ".context/node26-error-location-source/report.json",
+      "sha256": "76063314d5e24b0eaeb315f7abaf9aba6e80fe460d034ca48133162f11581175",
+      "checks": 5,
+      "patchForwardReverseExact": true,
+      "engineFiles": 3
+    },
+    "meaning": "Prior diagnostic case now passes;new full generic Error-layout comparison remains failed at own lazy stack/prototype shape. Original108/109reports remain unchanged."
+  }
+}

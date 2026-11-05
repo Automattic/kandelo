@@ -1,0 +1,109 @@
+{
+  "at": "2026-11-05T14:47:36.936566+00:00",
+  "recipeRevision": 113,
+  "auditFindings": [
+    "NI-002 partial:scalar/aggregate/window callbacks and native/GC ownership"
+  ],
+  "sourceImplemented": [
+    "Public scalar registration overload/options/getter/arity/negative-zero/flags and BigInt argument policy over real SQLite functions",
+    "Actual SQLite aggregate/window registrations with per-invocation traced state,start/step/inverse/result/final behavior and result conversion",
+    "Database native trace hook owns JS callback/accumulator edges;statement/session parent slots retain that owner;weak native registration connections avoid cycles",
+    "C callback exception guards,primary pending guest exceptions,connection close guards and no user JS from GC finalization",
+    "Whole exec/step/reset native session pins and safe synchronous externalized result/changeset spans"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-sqlite-callback-source/report.json",
+    "sha256": "8bde661a74d4ac981e457d9033587f5d3d65463d40e2ecf1397ec660778e7124",
+    "checks": 5,
+    "pinnedReferences": 2
+  },
+  "loadPrerequisite": {
+    "report": ".context/node26-sqlite-load-r112/report.json",
+    "sha256": "54137a3e3ec065d3c2c0d17943ab48580625342deb8ed9298ecef1ca37a1701c",
+    "engineRevision": 112,
+    "counts": {
+      "pass": 1,
+      "fail": 0,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "scope": "Narrow module load/open/query/close only;historical88composite failure not causally explained or reclassified"
+  },
+  "baselineGuest": {
+    "report": ".context/node26-sqlite-callback-baseline/report.json",
+    "sha256": "b800f807063f7ad12eee9f420950447528a7c3b7d72992e7bb69489341253175",
+    "engineRevision": 112,
+    "counts": {
+      "pass": 0,
+      "fail": 9,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "nativePassed": 8,
+    "nativeFailed": 1
+  },
+  "earlierBaseline": {
+    "report": ".context/node26-sqlite-callback-baseline-r1/report.json",
+    "sha256": "965520a28885502866f1e41f9777a807aed5e491315f157afc2b4ec3186a44a1",
+    "scope": "Original callback stubs/session failures;aggregate error fixture reused different-arity overload and did not prove phase coverage"
+  },
+  "targetedEngine": {
+    "report": ".context/node26-engine-r113-accepted/report.json",
+    "sha256": "6971404cdfd690f5067099c64fc92e49b1adff5ee55a9a1eb803bf84e29dea95",
+    "recipeRevision": 113,
+    "exitCode": 0
+  },
+  "focusedGuest": {
+    "report": ".context/node26-sqlite-callback-candidate/report.json",
+    "sha256": "b09aa97826703e4a3d5ca6d1909453fababf671cba4a5f3808925dad70eff61b",
+    "counts": {
+      "pass": 3,
+      "fail": 6,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "nativePassed": 8,
+    "nativeFailed": 1,
+    "matchedCases": [
+      "returns",
+      "aggregate",
+      "window"
+    ],
+    "scope": "Nine same-source native/Node-host controls only;failed reference not passing candidate conformance"
+  },
+  "portableNativeOwner": {
+    "report": ".context/node26-sqlite-callback-portable/report.json",
+    "sha256": "0e2bace4f14718faf5b4fa18ecd9df0e241bf8fe32124b6e183c78022fd281a5",
+    "unchangedFixture": true,
+    "nativeHelperCompilations": 1,
+    "scope": "Actual current portable session/header owner plus exact native reference;not JSAPI callbacks/guest/GC/VFS/four-host conformance"
+  },
+  "nativeExceptionObservation": {
+    "report": ".context/node26-sqlite-callback-native-observation/report.json",
+    "sha256": "62dba2b62b774b30ffb50df2258e5e910b7e7b5184f40bb066b960bc1c08ed20",
+    "scope": "Pure-native phase/identity observation,not candidate coverage or outside-runtime defect claim"
+  },
+  "diagnostic": {
+    "report": ".context/node26-sqlite-error-trace/report.json",
+    "sha256": "ec95fe903e3cb240d063065ac57191f30ae934f44fbdab826ab4bb887e10c7a8",
+    "scope": "JS validation/two-connection and constructor/error variants;diagnostic counts are not additional API conformance"
+  },
+  "remaining": [
+    "Constructor/error/session program variants still fail with uncaught Wasm exceptions;phase traces do not establish a C++/GC/SQLite/kernel/engine cause",
+    "Native aggregate step with result callback loses thrown-object identity in the strong reference expectation;repeated start and error policy remain unresolved without assertion changes",
+    "Statement close/dispose/busy/authorizer guards,complete callback conversion/metadata/overload/error contracts and GC/realm/OOM/teardown/accounting evidence",
+    "Authorizer/virtual-table callbacks,tag-store cache,backup/serialization/extensions/permissions and remaining FFI/WASI/SEA/Node-API/embedding bridges",
+    "Individual audited API reconciliation and identified-artifact evidence across all four hosts"
+  ],
+  "guestCompiled": true,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

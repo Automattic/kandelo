@@ -10797,8 +10797,15 @@ pub fn sys_utimensat(
     dirfd: i32,
     path: &[u8],
     times: Option<&[WasmTimespec; 2]>,
-    _flags: u32,
+    flags: u32,
 ) -> Result<(), Errno> {
+    use wasm_posix_shared::flags::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
+
+    if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let nofollow = flags & AT_SYMLINK_NOFOLLOW != 0;
+
     // Default: set both to current time
     let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = if let Some(ts) = times {
         (ts[0].tv_sec, ts[0].tv_nsec, ts[1].tv_sec, ts[1].tv_nsec)
@@ -10943,12 +10950,22 @@ pub fn sys_utimensat(
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
         ofd.path.to_vec()
     } else {
-        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path
+        let options = if nofollow {
+            PathResolveOptions::NOFOLLOW
+        } else {
+            PathResolveOptions::FOLLOW
+        };
+        resolve_at_path(proc, host, dirfd, path, options)?.path
     };
     ensure_host_mutable_namespace_path(&resolved)?;
 
     check_search_path(proc, host, &resolved)?;
-    let st = fs_stat(host, &resolved)?;
+    // Permissions and timestamp updates must name the same final inode.
+    let st = if nofollow {
+        fs_lstat(host, &resolved)?
+    } else {
+        fs_stat(host, &resolved)?
+    };
     if !check_utimens_permissions(proc, &st, times)? {
         return Ok(());
     }
@@ -10986,7 +11003,7 @@ pub fn sys_utimensat(
             &resolved, a_sec, a_nsec, m_sec, m_nsec, now_sec, now_nsec,
         );
     }
-    crate::hostdir::utimensat(host, &resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec, 0)
+    crate::hostdir::utimensat(host, &resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec, flags)
 }
 
 /// Memory advice hint. No-op in Wasm — there's no virtual memory paging.
@@ -22358,8 +22375,18 @@ mod tests {
 
     /// The handle-only trait methods, delegating to a double's inherent
     /// path methods. One definition, shared by every path-shaped double.
+    macro_rules! mock_record_utimensat {
+        (ignore, $host:ident, $path:expr, $flags:expr) => {
+            let _ = ($path, $flags);
+        };
+        (record, $host:ident, $path:expr, $flags:expr) => {
+            $host.utimensat_calls.push((($path).to_vec(), $flags));
+        };
+    }
+
     macro_rules! mock_hostio_at_over_paths {
-        () => {
+        () => { mock_hostio_at_over_paths!(ignore); };
+        ($utime_trace:ident) => {
             fn host_openat(
                 &mut self,
                 dir: i64,
@@ -22479,9 +22506,10 @@ mod tests {
                 atime_nsec: i64,
                 mtime_sec: i64,
                 mtime_nsec: i64,
-                _flags: u32,
+                flags: u32,
             ) -> Result<(), Errno> {
                 let path = mock_at(dir, name);
+                mock_record_utimensat!($utime_trace, self, &path, flags);
                 self.host_utimensat_path(&path, atime_sec, atime_nsec, mtime_sec, mtime_nsec)
             }
         };
@@ -22568,6 +22596,7 @@ mod tests {
         chown_calls: Vec<(Vec<u8>, u32, u32)>,
         lchown_calls: Vec<(Vec<u8>, u32, u32)>,
         fchown_calls: Vec<(i64, u32, u32)>,
+        utimensat_calls: Vec<(Vec<u8>, u32)>,
         closed_handles: Vec<i64>,
         closed_dir_handles: Vec<i64>,
         fstat_error: Option<Errno>,
@@ -22716,6 +22745,7 @@ mod tests {
                 chown_calls: Vec::new(),
                 lchown_calls: Vec::new(),
                 fchown_calls: Vec::new(),
+                utimensat_calls: Vec::new(),
                 closed_handles: Vec::new(),
                 closed_dir_handles: Vec::new(),
                 fstat_error: None,
@@ -23600,7 +23630,7 @@ mod tests {
                 .push((pid, surface_id, attrs.to_vec()));
         }
     
-        mock_hostio_at_over_paths!();
+        mock_hostio_at_over_paths!(record);
 }
 
     /// Lay a caller-native `struct iovec` table plus its buffers into the
@@ -27419,6 +27449,143 @@ mod tests {
                 (b"/at-owned".to_vec(), 70, 90),
                 (b"/at-owned".to_vec(), 100, 90),
             ],
+        );
+    }
+
+    #[test]
+    fn test_sys_utimensat_selects_link_inode_and_forwards_flags() {
+        use wasm_posix_shared::flags::{AT_FDCWD, AT_SYMLINK_NOFOLLOW};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/target", 1, 2, 0o644, b"target");
+        host.set_symlink(b"/link", b"/target");
+        host.set_symlink(b"/dangling", b"/missing");
+        host.missing_paths.insert(b"/missing".to_vec());
+        let target_times = [
+            WasmTimespec {
+                tv_sec: 100,
+                tv_nsec: 125,
+            },
+            WasmTimespec {
+                tv_sec: 200,
+                tv_nsec: 250,
+            },
+        ];
+        let link_times = [
+            WasmTimespec {
+                tv_sec: 300,
+                tv_nsec: 375,
+            },
+            WasmTimespec {
+                tv_sec: 400,
+                tv_nsec: 500,
+            },
+        ];
+
+        sys_utimensat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            b"/link",
+            Some(&target_times),
+            0,
+        )
+        .unwrap();
+        sys_utimensat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            b"/link",
+            Some(&link_times),
+            AT_SYMLINK_NOFOLLOW,
+        )
+        .unwrap();
+        sys_utimensat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            b"/dangling",
+            Some(&link_times),
+            AT_SYMLINK_NOFOLLOW,
+        )
+        .unwrap();
+        assert_eq!(
+            host.file_times.get(b"/target".as_slice()),
+            Some(&(100, 125, 200, 250))
+        );
+        assert_eq!(
+            host.file_times.get(b"/link".as_slice()),
+            Some(&(300, 375, 400, 500))
+        );
+        assert_eq!(
+            host.file_times.get(b"/dangling".as_slice()),
+            Some(&(300, 375, 400, 500))
+        );
+        assert_eq!(
+            host.utimensat_calls,
+            vec![
+                (b"/target".to_vec(), 0),
+                (b"/link".to_vec(), AT_SYMLINK_NOFOLLOW),
+                (b"/dangling".to_vec(), AT_SYMLINK_NOFOLLOW),
+            ]
+        );
+        assert_eq!(
+            sys_utimensat(
+                &mut proc,
+                &mut host,
+                AT_FDCWD,
+                b"/dangling",
+                Some(&link_times),
+                0
+            ),
+            Err(Errno::ENOENT)
+        );
+        assert_eq!(
+            sys_utimensat(
+                &mut proc,
+                &mut host,
+                AT_FDCWD,
+                b"/link",
+                Some(&link_times),
+                0x4000_0000
+            ),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(host.utimensat_calls.len(), 3);
+    }
+
+    #[test]
+    fn test_sys_utimensat_checks_permissions_on_selected_symlink_inode() {
+        use wasm_posix_shared::flags::{AT_FDCWD, AT_SYMLINK_NOFOLLOW};
+
+        let mut proc = Process::new(1);
+        set_test_credentials(&mut proc, 1, 1, 1, 1, &[]);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/target", 2, 2, 0o644, b"target");
+        host.set_symlink(b"/link", b"/target");
+        host.file_owners.insert(b"/link".to_vec(), (1, 1));
+        let times = [WasmTimespec {
+            tv_sec: 100,
+            tv_nsec: 0,
+        }; 2];
+
+        sys_utimensat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            b"/link",
+            Some(&times),
+            AT_SYMLINK_NOFOLLOW,
+        )
+        .unwrap();
+        assert_eq!(
+            sys_utimensat(&mut proc, &mut host, AT_FDCWD, b"/link", Some(&times), 0),
+            Err(Errno::EPERM)
+        );
+        assert_eq!(
+            host.utimensat_calls,
+            vec![(b"/link".to_vec(), AT_SYMLINK_NOFOLLOW)]
         );
     }
 

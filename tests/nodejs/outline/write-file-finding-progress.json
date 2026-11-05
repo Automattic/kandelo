@@ -1,0 +1,122 @@
+{
+  "at": "2026-11-05T05:26:32.243672+00:00",
+  "recipeRevision": 95,
+  "nativePatch": 94,
+  "auditFindings": [
+    "FS-001 partial",
+    "FS-013 partial",
+    "FS-015 partial"
+  ],
+  "sourceImplemented": [
+    "Unchanged pinned callback writeAll/writeFile/appendFile with actual encoding/view/options/mode/abort/flush/fd ownership semantics",
+    "Real native FSREQCALLBACK WriteFileJob over owned pathname, regular-view pin/resizable copy and existing queue/completion/cancellation retirement",
+    "Actual POSIX close-on-exec open/write-all/close with write-vs-close error precedence and truthful open-only error pathname",
+    "Worker uses native metadata captured on JS thread, without GC-slot or JS access; running work retains bytes until queue join/completion"
+  ],
+  "publicApiSourceOwners": [
+    "fs.writeFile",
+    "fs.appendFile"
+  ],
+  "frontendNative": {
+    "report": ".context/node26-write-file-frontend-r2.json",
+    "sha256": "f08c8635027551dedad7af9ac8fdac4c72eefcc24bc460928bc73eddec79559b",
+    "scope": "Generated callback/job/error source with actual native26 job/backing-store/descriptor/async/ALS dependencies, not new guest C++/pin/queue or four-host conformance",
+    "passed": 5,
+    "failed": 0,
+    "skipped": 0,
+    "sourceIdentities": {
+      "third_party/node-core/fs-callback-adapter.js": "c14f00872d51a8b3ec137b527800113fad55696ed43e342de5b0a43ead0e0112",
+      "third_party/node-core/file-jobs-adapter.js": "421c39f5139be3c48861f6e881eba2520118d621d757c1cfa40351aa41168a60",
+      "third_party/node-core/node-core.js": "d3a3d6656233772155ae20e4a001d19e662fd7bcd5497791041a5e65c1497b76",
+      "third_party/node-core/native-file-jobs.cpp": "0243a2afcf02de74e6f911cf64b0c79a66f365ea6aa157bb4c2ecb2ce63b976a",
+      "third_party/node-core/native-fs.cpp": "c7d30bfdb5a1ffa2c3aab07cd35537d7b66ab5cd24f5552dc1b1aa4db7d60453",
+      "third_party/node-core/write-file-operations.h": "48c21d0194a026e8cc1dd8c00e24d625a30b83f7978e49c5d35b7d58f1bcccdb",
+      "host/test/node-write-file-platform.test.ts": "8bb69663a73018ebca5c7c4be08c1ea960dfe26f6f808f68854e06ceb608ecb8",
+      "host/test/fixtures/node-write-file-platform.cjs": "c91a1b3229d81d71dc863d61a3f3c24b4bfadd24129db9e144a225af890ef669",
+      "host/test/fixtures/node-write-file-controls.cjs": "fffedcef4c36888173be51ec5668276d14846723908f7f883a5fec3a3e2ed66c"
+    },
+    "identityCapture": "Checkpoint identities; final fixture and production/test source stable since this run"
+  },
+  "portableNative": {
+    "report": ".context/node26-write-file-native-r1/report.json",
+    "sha256": "a2a51a60391e3286673fe8f37a0f349c3351407a664d35de4a950943ebc7e275",
+    "scope": "Actual portable open/write-all/close owner and native26 callback file jobs on development-host files; not guest JSAPI/pin/work or four-host conformance.",
+    "passed": true,
+    "artifactSha256": "72b6c3e076186127b183648d556fd7f96424e2e4ac01a34f64e9e8b6dc50b9ef",
+    "nativeReferenceSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+    "limitation": "Finite actual file/error cases; no observed short-write/close-failure/cancellation or guest evidence"
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-write-file-upstream-r1/report.json",
+    "sha256": "e8716c08235837905a0fc8dc3eeee0d5a333fcf0ed7231593ddec54d828262b3",
+    "scope": "Four unchanged callback write/append files over generated public wrappers/job facade and actual native26 job/backing-store/descriptor/queue owners. Other sync/promise branches remain native; no guest bridge/lease/kernel or four-host conformance.",
+    "counts": {
+      "native": {
+        "pass": 4,
+        "fail": 0,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      },
+      "candidate": {
+        "pass": 4,
+        "fail": 0,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      }
+    },
+    "files": [
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-write-file.js",
+        "sourceSha256": "51dfec19a190c5806dc20e4556029fff2f994e4e51f17d32abae81af0a0ad8fb"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-write-file-typedarrays.js",
+        "sourceSha256": "13a74f7b01babda9148337ae45ce0d54f3e2639829ce5d7944c3bd18f4d696e2"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-append-file.js",
+        "sourceSha256": "411db8f193a829604ba265ff564c8909cfbffd0eed25327ff28071dd885fd708"
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-fs-write-file-flush.js",
+        "sourceSha256": "6e4898474cd954cd0c9607321547075b4214da08a677da0153d94396806c6561"
+      }
+    ],
+    "denominatorMeaning": "Four focused files per mode; sync/promise/descriptor/native-job branches remain native, not complete FS or API conformance"
+  },
+  "sourceChecks": {
+    "report": ".context/node26-write-file-source-r1/report.json",
+    "sha256": "e7fe711fc792f18ed46c19a2bbc3a33bc8782690185bdc2656395fd56c875883",
+    "scope": "Pinned public/archive/audit/bootstrap/patch/style/evidence checks only; no guest compilation",
+    "checks": 6
+  },
+  "nativeAlgorithmReference": {
+    "path": "third_party/node-core/upstream/path-metadata/src/node_file.cc",
+    "sha256": "33e4be5acc25b44ba4f532564220a721b645416da4e9fa26d58e14011c66a450",
+    "upstreamPath": "src/node_file.cc WriteFileJob",
+    "meaning": "Pinned native policy reference, ported to the guest queue/JSAPI; not unchanged V8/libuv C++"
+  },
+  "earlierOverlappingFrontend": {
+    "report": ".context/node26-write-file-frontend-r1.json",
+    "sha256": "d13303f1d795e02dd4edc280e4d124026514ef386006563b6057937909b42c06",
+    "pass": 5,
+    "reason": "Before final fixture supports sharing actual fs for upstream public overrides; retained, not five additional cases"
+  },
+  "remaining": [
+    "Compile actual source95/new guest JSAPI/job, guest OpenSSL3.5.9 and changed kernel; exact four-host artifact/queue/ref/GC/cancel/OOM/realm/worker/fatal/byte/fd evidence",
+    "FS-011 full shared/external-pin/detach/transfer/resizable capture/reentry leases; current regular-buffer pin restrictions remain implementation gaps",
+    "Legacy readFileSync/writeFileSync/appendFileSync exact public algorithms/native UTF8 owners; fd/encoding/error/cleanup/short-I/O remain incomplete",
+    "Path promise write/append, iterable/abort/flush/FileHandle routing and native promise-job lifetime; callback implementation does not repair them",
+    "Actual activated Permission Model, full VFS/namespace/watch/copy/link/raw-byte/backend/FS audit and all other families",
+    "Retained Performance milestone/SQLite failures, source89-94 compilation debt and current host typecheck gaps"
+  ],
+  "guestCompiled": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformExclusions": [],
+  "dependencyDocument": "tests/nodejs/outline/write-file-implementation-dependencies.md"
+}

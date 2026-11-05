@@ -11,6 +11,21 @@ The host/build toolchain remains the repository's declared Node 24.
 `--host node` means Kandelo running on the Node host. A compatibility target
 is not a claim of full Node conformance.
 
+The completed [source audit](audit/audit-report.md) is a historical snapshot.
+The subsequent [breadth-first implementation ledger](outline/breadth-first-implementation.md)
+tracks authorized source work before overall suites, with focused controls
+and explicit native/guest evidence boundaries. Full product rebuilds remain
+deferred. Historical results below do not establish current-candidate
+conformance on any of the four hosts.
+
+Inactive historical suite images were losslessly compressed and deduplicated
+to reclaim disk space. Their restoration mapping, raw/compressed SHA-256
+identities and instructions are in .context/retired-node-suite-images/.
+Original run manifests, logs, results and native/source references remain in
+place. The [breadth ledger](outline/breadth-first-implementation.md) records
+the maintenance and its limits; archived images can be restored without a
+product rebuild.
+
 The compatibility goal is public Node 26 LTS APIs across all four hosts,
 with explicit engine and platform limits. Implementation gaps remain
 failures to close; platform limits must not be counted as passing support.
@@ -51,6 +66,17 @@ full product rebuild remains deferred. Required deferred validation stays
 visible and cannot be converted into completed compatibility. Changes
 remain in focused draft PRs; completion of an individual fix is not
 completion of this goal.
+
+## Broad implementation outline
+
+[The core plan](core-plan.json) orders shared prerequisites and assigns
+all discovered modules and API documents to implementation families.
+[The discovery index](outline/README.md) retains per-host review rows,
+activation policies and upstream category obligations. It is planning
+material, not a compatibility score or a replacement for behavioral
+coverage. New tests, runtime probes and builds are deferred during the
+outline and broad implementation pass; the full product rebuild remains
+deferred afterward as well.
 
 ## Prepare and inspect without rebuilding
 
@@ -953,3 +979,15 @@ Descriptor metadata does not promise the private V8/libuv handle API.
 The broader WebKit core/PATH spawn ENOMEM observation is still unresolved.
 Full product, broad POSIX, application-switching memory and performance
 validation remain deferred. The full core compatibility goal stays open.
+
+Native environment-property source controls use a V8 interceptor helper to
+execute the candidate property policies without replacing them with a JS Proxy.
+After preparing the exact pinned Node source/reference cache, build it with
+`scripts/dev-shell.sh bash tests/nodejs/build-environment-native-control.sh`.
+`KANDELO_NODE_SOURCE_ROOT`/`KANDELO_NODE_SOURCE_ARCHIVE` select verified inputs;
+`KANDELO_ENVIRONMENT_NATIVE_HELPER` selects its output. This is a native control,
+not an admitted guest product. Missing preparation remains visible. The custom
+helper's environment snapshot assertion currently remains a recorded nonpass:
+Node's serializer has a special branch for its actual environment template.
+See [environment evidence](outline/environment-object-implementation-dependencies.md)
+for scope, current results and required later guest/four-host validation.

@@ -1,0 +1,38 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2242,7 +2242,7 @@
+ 
+ #include "kandelo-node-process-state.h"
+ 
+-static bool KandeloNativeEnvironment(JSContext* cx, unsigned argc, Value* vp) {
++static bool KandeloNativeEnvironmentImpl(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+   if (args.length() < 1) {
+     JS_ReportErrorASCII(cx, "environment operation is required"); return false;
+@@ -2272,8 +2272,10 @@
+   if (!key) return false;
+   UniqueChars name = JS_EncodeStringToUTF8(cx, key);
+   if (!name) return false;
+-  if (strcmp(op.get(), "get") == 0) {
+-    const auto found = kandelo::process_state::GetEnvironment(name.get());
++  if (strcmp(op.get(), "get") == 0 || strcmp(op.get(), "safeget") == 0) {
++    const auto found = strcmp(op.get(), "safeget") == 0 ?
++        kandelo::process_state::SafeGetEnvironment(name.get()) :
++        kandelo::process_state::GetEnvironment(name.get());
+     if (!found) { args.rval().setUndefined(); return true; }
+     RootedString result(cx, JS_NewStringCopyUTF8N(cx,
+         JS::UTF8Chars(found->data(), found->size())));
+@@ -2296,6 +2298,13 @@
+     return true;
+   }
+   JS_ReportErrorASCII(cx, "unknown environment operation"); return false;
++}
++
++static bool KandeloNativeEnvironment(JSContext* cx, unsigned argc, Value* vp) {
++  try { return KandeloNativeEnvironmentImpl(cx, argc, vp); }
++  catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
++  catch (const std::length_error&) { JS_ReportOutOfMemory(cx); return false; }
++  catch (...) { JS_ReportErrorASCII(cx, "Unexpected native environment failure"); return false; }
+ }
+ 
+ static bool KandeloNativeProcessUmask(JSContext* cx, unsigned argc, Value* vp) {

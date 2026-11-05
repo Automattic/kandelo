@@ -1,0 +1,130 @@
+{
+  "at": "2026-11-05T02:41:39.185319+00:00",
+  "recipeRevision": 88,
+  "nativePatches": [
+    89,
+    90
+  ],
+  "sourceImplemented": [
+    "Actual live SQLite statement iterators/reset generation, columns metadata, runtime/constructor limits and defensive configuration",
+    "Actual attached session/change/patch-set ownership and close/dispose/database retirement",
+    "Owned changeset input snapshot, rooted synchronous filter/conflict callbacks, primary exception and callback close guards, native session pins across reentry",
+    "Native weak-connection virtual limits object; source-verified eleven-limit map, actual descriptors/deletion and ordinary extra properties",
+    "Actual compiled SQLite option default/CLI negation/NODE_OPTIONS/worker snapshot to public builtin policy; complete private argument forwarding",
+    "Actual referenced-owner idle transition beforeExit event, ticks/jobs checkpoint and revival; no repeated event for microtasks alone",
+    "Real JS boolean primitives for six CLI fields and two private worker status fields; no tolerance for wrong numeric protocol values"
+  ],
+  "acceptedEngine": {
+    "report": ".context/node26-engine-r88-accepted/report.json",
+    "sha256": "1bba97e3fdd4181d9219074435fd2c10feb371bf6e4cc4177841277b1a85d7d3"
+  },
+  "guest": {
+    "report": ".context/node26-sqlite-testing-guest-r3/report.json",
+    "sha256": "e9d835b79cc3f1372e3dc4334a37f927b4d7ea737da657fd01314754850ef46c",
+    "counts": {
+      "pass": 3,
+      "expected-failure-observed": 1,
+      "fail": 1,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "cases": [
+      {
+        "name": "sqliteOwners",
+        "result": "fail",
+        "processExitCode": -1,
+        "expectedProcessExitCode": 0
+      },
+      {
+        "name": "testTree",
+        "result": "pass",
+        "processExitCode": 0,
+        "expectedProcessExitCode": 0
+      },
+      {
+        "name": "testFailure",
+        "result": "expected-failure-observed",
+        "processExitCode": 1,
+        "expectedProcessExitCode": 1
+      },
+      {
+        "name": "idleRevival",
+        "result": "pass",
+        "processExitCode": 0,
+        "expectedProcessExitCode": 0
+      },
+      {
+        "name": "sqliteDisabled",
+        "result": "pass",
+        "processExitCode": 0,
+        "expectedProcessExitCode": 0
+      }
+    ],
+    "scope": "Exact native source bytes on identified engine/kernel/image, Node host only. A deliberate failed test remains a failed test/exit1, not passing compatibility."
+  },
+  "frontendNativeBoundary": {
+    "report": ".context/node26-sqlite-owner-frontend-r2/report.json",
+    "sha256": "b89baf22705ec8f001f47bb838763544fb973b1f208a1178155b8fd42eef20b4",
+    "controls": 9,
+    "scope": "Eight positive/composite groups plus explicit missing-feature guard; native limits/session/SQL/byte/parameter dependencies, not full guest conformance."
+  },
+  "portableNativeOwner": {
+    "report": ".context/node26-sqlite-session-native-r3/report.json",
+    "sha256": "3a64ae2986f4c17831a23077bc2bf45cb81f68052f3c86cb91073b46c3a1aa1f",
+    "scope": "Actual exact SQLite native C++ owner/native26 differential, plus native-only session-pin assertion. Include-order-only later stage correction separately compiled by engine88."
+  },
+  "originalGuestNonpasses": {
+    "report": ".context/node26-sqlite-testing-guest-r1/report.json",
+    "sha256": "f22eab20842cf17e181076730a448ce6d453e1443212c95910a7aa269ec62711",
+    "counts": {
+      "pass": 1,
+      "expected-failure-observed": 0,
+      "fail": 2,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "scope": "Accepted86: SQLite hidden by wrong feature predicate; public failing node:test incorrectly exits0 because beforeExit owner was missing. Exact sources/artifacts retained."
+  },
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "remaining": [
+    "Diagnose actual enabled node:sqlite module-load WebAssembly exception before database construction; current guest owner case fails and is not compatibility",
+    "Statement close/dispose; serialization/deserialization; tag-store cache and backup jobs",
+    "Scalar/aggregate/window/authorizer/virtual-table callbacks; extension permissions and library lifetime",
+    "Full limits accessor/define/freeze/preventExtensions descriptor/error fidelity; GC/realm/accounting and live WeakRef identity",
+    "General shared/resizable/detached binding storage, paths/Buffer/URL/raw bytes/validation/constructor overloads and errors; numeric-prototype interference in private limit snapshots and semantic int32 versus engine representation",
+    "Process finalization/ref/fatal/rejection/monitor and full scheduler/worker lifecycle, real resource measurements",
+    "Test discovery/run/isolation/CLI/coverage/benchmark/module-mock/snapshot/source-map/structured-stack owners",
+    "Four identified hosts, ordinary stamped-consumer and unchanged upstream conformance; FFI/WASI/SEA/addon/embedding public bridges"
+  ],
+  "secondGuestNonpasses": {
+    "report": ".context/node26-sqlite-testing-guest-r2/report.json",
+    "sha256": "7b9eb3545c7c5d8ada4339a66d9c0a1a5a534953c98d4d964bca17df684409d0",
+    "counts": {
+      "pass": 3,
+      "expected-failure-observed": 1,
+      "fail": 1,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "scope": "Engine87 fixes real beforeExit and failure exit; SQLite still hidden because own JSAPI CLI bool arguments promoted to numeric properties."
+  },
+  "positiveFlagDiagnostic": {
+    "report": ".context/node26-sqlite-testing-positive-flag-diagnostic/report.json",
+    "sha256": "818c91034a5ec62c0269acf6d3dba59ffb92ce89fa2a888a80e31335594f1510",
+    "scope": "Explicit actual positive flag still failed before typed-boolean correction; default nonpass not replaced."
+  },
+  "guestIntegrationFailure": {
+    "name": "sqliteOwners",
+    "classification": "Guest process-worker uncaught WebAssembly exception; no normal process exit observed, reported host sentinel -1",
+    "rawLog": ".context/node26-sqlite-testing-guest-r3.log",
+    "rawLogSha256": "831a019f7194cd70ab6872f1ba7fed8185933bbb0d7ccabd9869daea44145a52",
+    "phaseDiagnostic": ".context/node26-sqlite-testing-owner-phase-diagnostic/report.json",
+    "phaseDiagnosticSha256": "aacad7f9bbc98a4ee616aa3c31755387941c97e56aa434aa3ded10718cfc1bf3",
+    "executedDiagnosticSourceSha256": "7c69922e9af8122fa5c043c05446c2c55af529d0cb8c229ad2eb8959f795b97a",
+    "originalInputSourceSha256": "8d551a82ea1fd120c535ce0b7b08360d39468f840c1786ac52adb1ba1e0da7e3",
+    "diagnosticIdentityCaveat": "The old diagnostic report sourceSha256 field identifies the original pre-instrumentation input; executed source is separately identified here. Diagnostic markers are not a native/public feature pass.",
+    "observedPhase": "Only marker1 before node:sqlite require; marker2 before database construction never reached",
+    "owningLayer": "Unresolved; generic worker message is not proof of a kernel or outside engine defect"
+  }
+}
