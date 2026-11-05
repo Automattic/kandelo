@@ -86,7 +86,7 @@ complete B1/B4.
 | R261 `graphics-matrix-focused-r261-1105-001942-c389`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-matrix-focused-r261/check.sh` | PASS31s |487 existing native C/UBSan controls; graphics2180 tests/88 files, including five new source-only signature/custody cases. The native double retains ordinary-path coverage; admitted C proof is exercised on real browser renderers |
 | R262 `graphics-matrix-build-r262-1105-002158-d902`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-matrix-build-r262/build.sh` | PASS3m28 | One normal producer: ABI regeneration, release xtask, sequential SDK32/64, bootstrap kernel, image writer, ABI classification against1b8e487ad1 and evidence709. Sources/products frozen and checked; no full application/image preview build |
 | R263 `graphics-matrix-browser-r263-1105-002458-5ec4`, port6065; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-matrix-browser-r263/run.sh` | PASS1m46 | Graphics2180/88, Node18/6files, two strict helpers and24 GPU cases on Chromium/Firefox/WebKit, wasm32/64, ordinary/admitted and production/fatal. Full host tsc still reports the exact39 retained diagnostics, not a type-check pass |
-| R264 `graphics-matrix-regression-r264-1105-002725-2d40`, port6066 | RUNNING at this checkpoint | Full xtask844+8 and selected Rust libraries13/2870/96 pass; ABI/evidence and six strict helpers pass. Shader harness has266/263/266 passes, with the retained Firefox1 inconclusive and2 native defect controls. The combined852-case browser regression, explicit cold setup metrics and final source/product checks are not yet complete |
+| R264 `graphics-matrix-regression-r264-1105-002725-2d40`, port6066; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-matrix-regression-r264/run.sh` | PASS19m19 /852 combined GPU cases | Full xtask844+8, selected Rust libraries13/2870/96, ABI/evidence709 and six strict helpers pass. Shader harness266/263/266 passes with retained Firefox1 inconclusive/2 native defect controls. All780 routed kernel identities match386b220c; runtime/test/config/product hashes checked before/after and after documentation. All24 cold setup comparisons are admitted3/ordinary1 requests, warmed0/20; other13 complete family records match R258 |
 
 | Per20 matrix calls after setup | R258 normal1b8 SDK | R263 candidate | Scope |
 | --- | --- | --- | --- |
@@ -95,16 +95,29 @@ complete B1/B4.
 | Other13 recorded API families | Recorded R258 counts | Every complete count record identical | Includes binds, draws, attributes and large uploads; no hidden broader improvement |
 
 The24 comparisons use the same engine versions: Chromium153.0.8010.12,
-Firefox155.0 and WebKit26.6. Each candidate GPU case additionally
-checks19 matrix scenarios, including installed root zero,
-failed/successful peer relinks, rejected reselect, deleted current
-program, no program, wrong type, array tails and ignored invalid
-pointers. Rendered pixels, native program/shader cleanup and memory-
-boundary checks pass. The table reports warm requests; cold signature
-acquisition submits the caller prefix and performs a metadata query
-before the normal observation, and its explicit setup counts are being
-validated separately. Request counts do not establish latency, FPS,
-application benefit, main performance or native feel.
+Firefox155.0 and WebKit26.6. Each candidate GPU case checks19 matrix
+scenarios, including installed root zero, failed/successful peer
+relinks, rejected reselect, deleted current program, no program, wrong
+type, array tails and ignored invalid pointers. Rendered pixels, native
+program/shader cleanup and memory-boundary checks pass. Cold matrix
+setup costs3 device requests in admitted mode versus1 in ordinary mode:
+the candidate submits its prefix, reads its signature and performs
+normal error observation. Subsequent20 calls cost0 versus20. The
+additional setup cost is included explicitly rather than attributed to
+warm calls. This is an operation-count comparison against
+intermediate1b8; it establishes no latency, FPS, application benefit,
+main performance or native-feel result.
+
+The combined852-case inventory retains600 successful native-live-zero
+journal/OOM/render/hot-path cases,96 pre-process-exit
+public/execution/binding/native-zero retirement cases,60 error-drain
+receipt controls and24 intentional fatal-latch controls. The existing72
+publication/OOM ownership samples and96 retirement samples remain before
+process exit. No cleanup claim is made for deliberate fatal worker
+termination. The original historical failures remain recorded. Full
+source/product and exact routed-identity checks pass on the committed
+implementation; documentation changes do not alter those frozen
+runtime/test inputs.
 
 Normal kernel SHA256 is
 `386b220c459b61e898a93cdecedcae4d8407d393e98a05c5b5c1d4747ce10b8a`;
