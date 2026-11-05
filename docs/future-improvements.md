@@ -1328,3 +1328,13 @@ checks the combined host/app source against unchanged normal guest sources:
 of66 desktop cases. Cage, labwc, Sway and both SFWBar compositor checks pass
 on all three engines. This does not close the other desktop/performance
 defects or establish a completed stage.
+
+
+R420 adds the host journal's bounded private buffer-copy ownership foundation,
+with focused source and three-engine real-WebGL checks. It is not connected to
+production guest transport. Complete that transport, exact static-buffer
+capture, owned VBO draws and offscreen target authority within B1; do not turn
+the foundation into a new stage boundary or substitute it for application
+measurements. Duplicate upload costs and final machine memory lifecycle remain
+unmeasured. The complete B1 preview still waits for all B1 changes and required
+checks; B2's asynchronous bindings and moved total-request gate remain separate.

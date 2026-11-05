@@ -9,6 +9,7 @@ import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { recordGlError } from "./errors.js";
 import type { GlObjectGroup } from "./object-group.js";
 import { uniformLayout } from "./uniform-layout.js";
+import {GlBufferSnapshots,BUFFER_SNAPSHOT_CAPACITY} from "./buffer-snapshots.js";
 
 type Generation = { token: number; pin: GlProgramQueryPin | null; cache: boolean; references: number };
 type Slot = { phase: "free" | "published" | "executing" | "failed"; ticket: number;
@@ -38,6 +39,7 @@ export class GlProgramJournal {
   private retiringName = 0;
   private previewActive = false;
   private previewTicket = 0;
+  private bufferSnapshots:GlBufferSnapshots|null=null;
 
   private readonly objects: GlObjectGroup;
 
@@ -172,6 +174,23 @@ export class GlProgramJournal {
   get publishedTicket(): number {return this.published;}
   get executedTicket(): number {return this.executed;}
   get flags(): number {return (this.ready&&!this.closed?1:0)|(this.closed?2:0)|(this.poisoned?4:0);}
+
+  /** Cold preparation is memoized, including partial native failure. Publish
+   * the receiver before initialization so retirement can never lose a copy.
+   * No production wire entry invokes this until the driver transport exists. */
+  prepareBufferSnapshots(capacity=BUFFER_SNAPSHOT_CAPACITY):number {
+    if(!this.ready || this.closed || this.poisoned || !this.execution)return 0;
+    if(this.bufferSnapshots && this.bufferSnapshots.capacity!==capacity)return 0;
+    if(!this.bufferSnapshots)this.bufferSnapshots=GlBufferSnapshots.reserve(this.binding,capacity);
+    return this.bufferSnapshots?.initialize(this.execution)?this.bufferSnapshots.capacity:0;
+  }
+  defineBufferSnapshot(index:number,token:number,target:number,data:number|Uint8Array<ArrayBuffer>,usage:number):boolean {
+    if(!this.ready || this.closed || this.poisoned || !this.bufferSnapshots){recordGlError(this.binding,0x502);return false;}
+    return this.bufferSnapshots.define(this.binding,index,token,target,data,usage);
+  }
+  resolveBufferSnapshot(index:number,token:number,object:WebGLBuffer,requiredBytes:number):WebGLBuffer|null {
+    return this.ready&&!this.closed&&!this.poisoned?this.bufferSnapshots?.resolve(this.binding,index,token,object,requiredBytes)??null:null;
+  }
 
   /** Cold driver proof for this journal's immutable executable, never the
    * public name's latest link. Pending/current references keep evicted tokens
@@ -310,6 +329,12 @@ export class GlProgramJournal {
   }
   private finish(): void {
     if(!this.closed || this.active || this.generations.size || this.pending || this.retiringName)return;
+    // The bank's own execution lease and native deletion receiver survive a
+    // refused close. Do not sever the journal or its context lease first.
+    if(this.bufferSnapshots){
+      if(!this.bufferSnapshots.retire())nativeGlFault("Program journal buffer snapshot retirement remains unacknowledged");
+      this.bufferSnapshots=null;
+    }
     try {if(this.execution && !this.execution.release())nativeGlFault("Program journal execution retirement failed");}
     catch(error) {rethrowNativeGlFault(error);if(isKernelExportFailure(error))throw error;
       nativeGlFault("Program journal execution retirement threw",error);}

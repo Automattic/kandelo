@@ -160,21 +160,22 @@ function updateSource(store: GlBufferStore, target: number): void {
   store.source = source.native;
 }
 
-export function replaceBufferData(b: GlBinding, target: number, data: number | Uint8Array<ArrayBuffer>, usage: number): void {
-  if (target !== ARRAY && target !== ELEMENT) { recordGlError(b,0x500); return; }
+export function replaceBufferData(b: GlBinding, target: number, data: number | Uint8Array<ArrayBuffer>, usage: number): boolean {
+  if (target !== ARRAY && target !== ELEMENT) { recordGlError(b,0x500); return false; }
   const object = boundBuffer(b,target), store = object && b.bufferStores.get(object);
-  if (!store) { recordGlError(b,0x502); return; }
+  if (!store) { recordGlError(b,0x502); return false; }
   // Buffer offsets travel as i32, so a larger store could never be addressed.
   // ES 2.0 section 2.9 reports a store the GL cannot create as OUT_OF_MEMORY.
-  if (typeof data === "number" && data > 0x7fffffff) { recordGlError(b,0x505); return; }
+  if (typeof data === "number" && data > 0x7fffffff) { recordGlError(b,0x505); return false; }
   const usageError = bufferUsageError(usage);
-  if (usageError) { recordGlError(b, usageError); return; }
+  if (usageError) { recordGlError(b, usageError); return false; }
   if (!checkedGlCall(b, () => {
     if (typeof data === "number") b.gl!.bufferData(target,data,usage);
     else b.gl!.bufferData(target,data,usage);
-  })) return;
+  })) return false;
   store.size = typeof data === "number" ? data : data.byteLength;
   store.usage = usage; updateSource(store,target);
+  return true;
 }
 
 export function updateBufferData(b: GlBinding, target: number, offset: number, data: Uint8Array<ArrayBuffer>): void {

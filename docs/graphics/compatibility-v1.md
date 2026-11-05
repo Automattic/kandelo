@@ -51,6 +51,65 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Owned buffer-copy backend, 2026-11-05 (R420)
+
+The journal now owns an optional cold-prepared bank of private native buffer
+copies. Each of at most32 cells accepts definitions up to32768 bytes and a
+strictly increasing generation token. The ordinary BufferData path validates
+and executes independently before its accepted bytes are copied. A draw-side
+borrow must match the exact logical object, token, byte span and current
+context/renderer authority. Replacing shared ordinary storage, deleting its
+public name or reusing that number cannot retarget the private copy. Cell
+reuse follows synchronous command order; borrowed handles cannot survive a
+later bank operation. This is not an asynchronous draw-job ownership protocol.
+
+Receivers and deletion custody precede native allocation. The journal retains
+partial initialization and refused retirement, rather than retrying allocation
+or abandoning a native owner. Warm copies use the original context's predicted
+batch and final native error sample. Native OOM and unexpected native flags
+retain the existing context-reset/production-diagnostic and fatal-audit policy.
+Cold preparation and recovery retain exact native bookkeeping. Unused banks
+perform no upload, draw scan or per-frame work.
+
+There is no production wire entry or guest C caller yet. This checkpoint adds
+host/backend ownership and tests, not a working guest fast path or complete B1.
+The ordinary and private uploads are duplicated; their application cost is
+unmeasured. Guest transport, static-buffer capture, owned draw integration and
+offscreen framebuffer authority remain implementation work in B1. No new
+boundary, deferral or reduced acceptance criterion is introduced. Program56,
+unpublished host3, GL17 and fork21, the ABI snapshot, SDK/kernel and preview
+products are unchanged. The maintainer still wants all B1 changes before a
+new preview announcement.
+
+Exact final command:
+`scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-buffer-snapshots-r420-runs/r3/run.sh`,
+job `graphics-buffer-snapshot-journal-r420-1105-155736-c307`, port6181.
+The combined command FAILED39s solely on the identical24 full host compiler
+diagnostics after checkout-root normalization. Graphics2212 assertions across89
+files, evidence registry710 and all six actual-WebGL cases pass. Chromium
+153.0.8010.12, Firefox155.0 and WebKit26.6 each pass production and fatal-audit
+controls through journal ownership: exact retained triangle pixels, old-object
+collection/name reuse, four buffers created/four deleted/live0, empty guest
+errors and no audit divergence. The accepted definition plus copy takes one
+native error sample. Frozen source hashes match before/after. These directly
+exercise host modules, not a guest program or full machine memory lifecycle.
+Full browser-memory, current combined CTS/application suites and Node/browser
+performance measurements remain required before acceptance. Initial fixture
+configuration and earlier direct-bank run failures remain recorded under
+`.context/graphics-buffer-snapshots-r420-runs/`; they are not erased by the final
+focused results.
+
+R421 repeats the checks from the integration tree with byte-identical seven
+runtime/test/registry files. Job
+`graphics-buffer-copy-integration-r421-r2-1105-161609-b485`, port6182, is overall
+FAILED45s on the same24 compiler diagnostics. Graphics2212/89, six GPU cases,
+evidence710 and frozen-input checks pass; each GPU record again has one native
+sample and four created/four deleted/live0. Exact script and compact judgment:
+`.context/graphics-buffer-snapshots-r420-runs/landing/`. The initial R421 wrapper
+failed before tests because its evidence path was rewritten incorrectly; the
+corrected wrapper and original are both retained. No SDK/package/full rebuild
+was necessary for this unwired host-only checkpoint.
+
 ## Guest sampler kinds and current validation, 2026-11-05
 
 Optional journal action9 reports both the immutable owned executable's native

@@ -1,5 +1,6 @@
 import {recordCompiledExternalSamplers,recordLinkedExternalSamplers} from "../src/webgl/external-texture.js";
 import {recordShaderLanguage} from "../src/webgl/essl3-translation.js";
+import {bindBufferObject} from "../src/webgl/buffer-storage.js";
 import {afterEach,expect,it,vi} from "vitest";
 import {GlContextRegistry} from "../src/webgl/registry.js";
 import {GlMuxer} from "../src/webgl/muxer.js";
@@ -37,6 +38,25 @@ function fixture(){
   execution.release();registry.unbind(1);expect(native.size).toBe(0);};
  return {b,gl,program,registry,muxer,execution,capture,selected,native,bind,query,emit,setup,dispose};
 }
+it("owns cold buffer receivers through journal closure without repeating preparation",()=>{
+ const f=fixture();f.setup();let created=0;
+ Object.assign(f.gl,{createBuffer:()=>{created++;const buffer={};f.native.add(buffer);return buffer;},deleteBuffer:(buffer:object|null)=>{if(buffer)f.native.delete(buffer);}});
+ const journal=f.b.programJournal!;
+ expect(journal.prepareBufferSnapshots(2)).toBe(2);expect(created).toBe(2);
+ expect(journal.prepareBufferSnapshots(2)).toBe(2);expect(journal.prepareBufferSnapshots(1)).toBe(0);expect(created).toBe(2);
+ expect(bindBufferObject(f.b,0x8892,3)).toBe(true);const object=f.b.buffers.get(3)!;
+ expect(journal.defineBufferSnapshot(0,1,0x8892,new Uint8Array([1,2]),0x88e4)).toBe(true);
+ const copy=journal.resolveBufferSnapshot(0,1,object,2)!;expect(copy).not.toBeNull();expect(f.native.has(copy)).toBe(true);
+ journal.retire();expect(f.native.has(copy)).toBe(false);expect(journal.resolveBufferSnapshot(0,1,object,2)).toBeNull();
+ expect(journal.prepareBufferSnapshots(2)).toBe(0);f.dispose();
+});
+it("retains a partially prepared buffer bank in its journal until retirement",()=>{
+ const f=fixture();f.setup();let created=0;
+ Object.assign(f.gl,{createBuffer:()=>{if(++created===2)return null;const buffer={};f.native.add(buffer);return buffer;},deleteBuffer:(buffer:object|null)=>{if(buffer)f.native.delete(buffer);}});
+ const journal=f.b.programJournal!;
+ expect(journal.prepareBufferSnapshots(3)).toBe(0);expect(created).toBe(2);
+ expect(journal.prepareBufferSnapshots(3)).toBe(0);expect(created).toBe(2);f.dispose();
+});
 it("reads immutable uniform signatures without selecting or changing the mutation receipt or errors",()=>{
  const f=fixture();f.setup();
  Object.assign(f.gl,{

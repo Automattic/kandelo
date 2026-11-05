@@ -7278,3 +7278,18 @@ generation semantics. Full B1 conformance, loss/final-context audit
 closure, application measurements and a coherent normal preview remain
 acceptance work. Warm device counts do not establish application latency
 or native desktop feel.
+
+
+The program journal also owns an optional, currently unwired buffer-copy bank.
+Cold preparation reserves bounded receivers and native deletion custody before
+creating buffers, and retains partial failure until exact retirement. Accepted
+small definitions copy their bytes separately from mutable ordinary storage;
+resolution checks the canonical object, generation, byte range and retained
+context/renderer authority. Later shared reallocation or public-name reuse
+cannot change an accepted copy. Reusing a cell is synchronous command order,
+not asynchronous job eviction; borrowed native handles must not outlive that
+command stack. Warm uploads use the existing predicted batch and one final
+native sample. No production wire or guest driver invokes this bank yet.
+Guest transport, static source capture, owned draws and framebuffer-generation
+authority remain required integration work. The duplicate-upload cost is
+unmeasured. See the graphics compatibility ledger's R420 evidence and limits.

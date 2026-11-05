@@ -497,6 +497,7 @@ host/test/webgl-blend-constant-pairing.test.ts	source-only
 host/test/webgl-bridge.test.ts	source-only
 host/test/webgl-buffer-bindings.test.ts	source-only
 host/test/webgl-buffer-data-size.test.ts	source-only
+host/test/webgl-buffer-snapshots.test.ts	source-only
 host/test/webgl-capabilities.test.ts	source-only
 host/test/webgl-color-buffer-half-float.test.ts	source-only
 host/test/webgl-context-creation.test.ts	source-only
