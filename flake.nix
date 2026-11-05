@@ -3,6 +3,11 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    # Node only. nixos-25.11 stops at Node 24.18, which aborts the process
+    # when a Worker is terminated while it parses a CommonJS module
+    # (`FATAL ERROR: v8::ToLocalChecked Empty MaybeLocal` in
+    # node::cjs_lexer::Parse); Node 24.21 does not.
+    nixpkgs-node.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -10,7 +15,7 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils }:
+  outputs = { self, nixpkgs, nixpkgs-node, rust-overlay, flake-utils }:
     flake-utils.lib.eachSystem [
       "aarch64-darwin"
       "x86_64-darwin"
@@ -22,6 +27,7 @@
           inherit system;
           overlays = [ (import rust-overlay) ];
         };
+        nodePkgs = import nixpkgs-node { inherit system; };
 
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
@@ -111,7 +117,7 @@
             # not enable by default. V8 12.9 (Node 24) ships with
             # memory64 on, matching the host Macs the team develops
             # on (system-installed Node 24/25).
-            pkgs.nodejs_24
+            nodePkgs.nodejs_24
             # Bun: a JavaScriptCore-based runtime. We ship it so the host's
             # teardown reclamation path can be exercised on JSC (the same engine
             # as Safari) in addition to V8 (Node): `npm run test:teardown:engines`
