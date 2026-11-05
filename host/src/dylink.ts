@@ -22,6 +22,7 @@ import {
 } from "./generated/abi";
 import {
   describeWasmForkArtifactContractFailures,
+  FORK_REBUILD_GUIDANCE,
   extractAbiVersion,
   readWasmFunctionImports,
   type WasmFunctionImportType,
@@ -1352,7 +1353,7 @@ function* instantiateSharedLibrarySteps(
     if (contractFailures.length > 0) {
       throw new Error(
         `${name}: invalid ABI 43 fork reconstruction contract: ` +
-          contractFailures.join("; "),
+          contractFailures.join("; ") + `. ${FORK_REBUILD_GUIDANCE}`,
       );
     }
   }

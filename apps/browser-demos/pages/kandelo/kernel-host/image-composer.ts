@@ -45,11 +45,6 @@ import {
 } from "../../../lib/init/wordpress-runtime-config";
 import { MYSQL_BENCHMARK_PHP } from "../../../lib/init/mysql-benchmark";
 import {
-  WORDPRESS_MARIADB_READY_FILE,
-  WORDPRESS_MARIADB_READY_PHP,
-  WORDPRESS_MARIADB_SOCKET_PATH,
-} from "../../../lib/init/wordpress-mariadb-readiness";
-import {
   KANDELO_DEMO_CONFIG_PATH,
   resolveDefaultProfileId,
   resolveDemoAssets,
@@ -99,44 +94,12 @@ const MYSQL_GID = 101;
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;
 const DEMO_HOME = "/home/maker";
-const MARIADB_SOCKET_PATH = WORDPRESS_MARIADB_SOCKET_PATH;
-const MARIADB_READY_SERVICE = "mariadb-ready";
-const MARIADB_READY_SCRIPT_PATH = "/usr/local/bin/mariadb-ready";
 
-/**
- * php-fpm's static worker pool, sized by the host.
- *
- * `pm = static` claims every child at startup, so this number is a demand for
- * that many process address spaces at once. On a host whose reservation pool
- * cannot supply them, php-fpm's master SIGTERMs the children it did start and
- * exits — taking dinit and the whole demo with it — so the count has to come
- * from the host's memory profile rather than a fixed constant.
- */
-function patchedPhpFpmConf(workers: number): string {
-  if (!Number.isSafeInteger(workers) || workers <= 0) {
-    throw new Error(`invalid php-fpm worker count: ${workers}`);
-  }
-  return `[global]
-daemonize = no
-error_log = /dev/stderr
-log_level = notice
-
-[www]
-user = nobody
-group = nobody
-listen = 127.0.0.1:9000
-pm = static
-pm.max_children = ${workers}
-clear_env = no
-slowlog = /dev/null
-request_slowlog_trace_depth = 0
-`;
-}
 
 /**
  * Everything composition needs, reduced to plain data so the whole job
- * survives `postMessage`. The page-derived values (`appPath`, `proto`,
- * `preforkServiceProcesses`) are here precisely because this code must not
+ * survives `postMessage`. The page-derived values (`appPath` and `proto`)
+ * are here precisely because this code must not
  * read them from a `window` it does not have.
  */
 export interface ComposeImageJob {
@@ -170,11 +133,6 @@ export interface ComposeImageJob {
   appPath: string;
   /** "http" or "https", from the composing page's origin. */
   proto: string;
-  /**
-   * Worker count for pre-forking services, from the host's memory profile.
-   * See {@link patchedPhpFpmConf}.
-   */
-  preforkServiceProcesses: number;
 }
 
 export interface ComposeImageResult {
@@ -333,17 +291,8 @@ export async function composeKandeloImage(
     // and protocol determine (which no baked artifact can know). Whether that
     // WordPress talks to MariaDB is likewise read off the image's own dinit
     // tree.
-    if (vfsPathExists(buildFs, "/etc/php-fpm.conf")) {
-      writeVfsFile(
-        buildFs,
-        "/etc/php-fpm.conf",
-        patchedPhpFpmConf(job.preforkServiceProcesses),
-      );
-      ensureDirRecursive(buildFs, "/var/cache/opcache");
-    }
     if (vfsPathExists(buildFs, "/var/www/html/wp-includes")) {
       if (vfsPathExists(buildFs, "/etc/dinit.d/mariadb")) {
-        patchMariaDbUnixSocketConfig(buildFs);
         patchWordPressRuntimeConfig(buildFs, vfsPathExists(buildFs, "/etc/kandelo/wordpress-backends") ? "selectable" : "mariadb", job.appPath, job.proto);
       } else {
         patchWordPressRuntimeConfig(buildFs, "sqlite", job.appPath, job.proto);
@@ -631,103 +580,6 @@ function patchWordPressRuntimeConfig(
   );
 }
 
-function patchMariaDbUnixSocketConfig(fs: KandeloImageFs): void {
-  ensureDirRecursive(fs, "/tmp");
-  fs.chmod("/tmp", 0o1777);
-  ensureDirRecursive(fs, dirname(WORDPRESS_MARIADB_READY_FILE));
-  writeVfsFile(fs, WORDPRESS_MARIADB_READY_FILE, WORDPRESS_MARIADB_READY_PHP);
-
-  const phpIniPath = "/etc/php.ini";
-  const phpIni = readOptionalVfsText(fs, phpIniPath);
-  if (phpIni !== null) {
-    let patched = phpIni;
-    if (!/^mysqli\.default_socket\s*=/m.test(patched)) {
-      patched += `${patched.endsWith("\n") ? "" : "\n"}mysqli.default_socket=${MARIADB_SOCKET_PATH}\n`;
-    }
-    if (!/^mysqli\.allow_persistent\s*=/m.test(patched)) {
-      patched += `mysqli.allow_persistent=1\n`;
-    }
-    if (!/^mysqli\.max_persistent\s*=/m.test(patched)) {
-      patched += `mysqli.max_persistent=-1\n`;
-    }
-    if (!/^pdo_mysql\.default_socket\s*=/m.test(patched)) {
-      patched += `pdo_mysql.default_socket=${MARIADB_SOCKET_PATH}\n`;
-    }
-    if (patched !== phpIni) writeVfsFile(fs, phpIniPath, patched);
-  }
-
-  const mariadbServicePath = "/etc/dinit.d/mariadb";
-  const mariadbService = readOptionalVfsText(fs, mariadbServicePath);
-  if (mariadbService !== null) {
-    const patched = mariadbService
-      .replace(/--socket=(?:\S*)?/g, `--socket=${MARIADB_SOCKET_PATH}`)
-      .replace(/\s*--thread-handling=no-threads\b/g, "");
-    if (patched !== mariadbService)
-      writeVfsFile(fs, mariadbServicePath, patched);
-  }
-
-  ensureMariaDbReadyService(fs);
-  patchPhpFpmMariaDbDependency(fs);
-}
-
-function ensureMariaDbReadyService(fs: KandeloImageFs): void {
-  ensureDirRecursive(fs, dirname(MARIADB_READY_SCRIPT_PATH));
-  writeVfsFile(
-    fs,
-    MARIADB_READY_SCRIPT_PATH,
-    `#!/bin/sh
-set -u
-
-i=0
-while [ "$i" -lt 60 ]; do
-    if [ -S "${MARIADB_SOCKET_PATH}" ] || [ -e "${MARIADB_SOCKET_PATH}" ]; then
-        exit 0
-    fi
-    sleep 1
-    i=$((i + 1))
-done
-
-echo "MariaDB readiness timed out waiting for ${MARIADB_SOCKET_PATH}" >&2
-exit 1
-`,
-    0o755,
-  );
-  writeVfsFile(
-    fs,
-    `/etc/dinit.d/${MARIADB_READY_SERVICE}`,
-    `type = scripted
-command = /bin/sh ${MARIADB_READY_SCRIPT_PATH}
-depends-on = mariadb
-restart = false
-`,
-  );
-}
-
-function patchPhpFpmMariaDbDependency(fs: KandeloImageFs): void {
-  const phpFpmServicePath = "/etc/dinit.d/php-fpm";
-  const phpFpmService = readOptionalVfsText(fs, phpFpmServicePath);
-  if (phpFpmService === null) return;
-  if (
-    new RegExp(`^depends-on\\s*=\\s*${MARIADB_READY_SERVICE}$`, "m").test(
-      phpFpmService,
-    )
-  ) {
-    return;
-  }
-  const patched = phpFpmService.replace(
-    /^depends-on\s*=\s*mariadb\s*$/m,
-    `depends-on = ${MARIADB_READY_SERVICE}`,
-  );
-  if (patched !== phpFpmService) {
-    writeVfsFile(fs, phpFpmServicePath, patched);
-  } else {
-    writeVfsFile(
-      fs,
-      phpFpmServicePath,
-      `${phpFpmService}${phpFpmService.endsWith("\n") ? "" : "\n"}depends-on = ${MARIADB_READY_SERVICE}\n`,
-    );
-  }
-}
 
 function patchWordPressPersistentMysqli(fs: KandeloImageFs): void {
   for (const path of [
@@ -787,9 +639,4 @@ function isMissingVfsPath(err: unknown): boolean {
 
 function readVfsFile(fs: KandeloImageFs, path: string): ArrayBuffer {
   return readComposerFile(fs, path);
-}
-
-function dirname(path: string): string {
-  const idx = path.lastIndexOf("/");
-  return idx <= 0 ? "/" : path.slice(0, idx);
 }

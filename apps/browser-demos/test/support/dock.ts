@@ -1,12 +1,12 @@
 import type { Page } from "@playwright/test";
 
-export async function dockTool(page: Page, name: "Internals" | "Appearance" | "Share setup…" | "About Kandelo" | "Services") {
+export async function dockTool(page: Page, name: "Internals" | "Appearance" | "Share setup…" | "About Kandelo" | "Services" | "Software updates") {
   const more = page.getByRole("dialog", { name: "More tools and help", exact: true });
   if (!await more.isVisible()) await page.getByRole("button", { name: "More", exact: true }).click();
   return more.getByRole("button", { name, exact: true });
 }
 
-export async function clickDockTool(page: Page, name: "Internals" | "Appearance" | "Share setup…" | "About Kandelo" | "Services", options?: { timeout?: number }) {
+export async function clickDockTool(page: Page, name: "Internals" | "Appearance" | "Share setup…" | "About Kandelo" | "Services" | "Software updates", options?: { timeout?: number }) {
   await (await dockTool(page, name)).click(options);
 }
 

@@ -6,11 +6,16 @@ programs the current kernel can execute. These are separate admission checks.
 Do not fix an executable mismatch by rebinding a journal to another base,
 discarding the journal, selecting an older generation, or removing ABI checks.
 
-**First-release boundary:** persistence and the computer UX ship before
-transactional software upgrades. Saved computers from this release will not
-work in the next release; export important files before updating Kandelo.
-The UI shows this warning during creation, retention and reopen. This policy
-does not permit deleting incompatible storage or claiming upgrades exist.
+**Experimental:** nothing here is a stability promise yet.
+
+**Preview boundary:** saved computers can cross a program contract change
+through a software update, keeping files, posts and media. This covers computers
+whose image carries a software inventory. Computers saved by earlier previews
+have none and are never adopted: they cannot be updated, and they stop being
+runnable when their declared contract no longer matches, with their files
+preserved. The UI says so during creation, retention and reopen, along with the
+rebuild requirement for user-built programs. This does not permit deleting
+incompatible storage.
 
 ## Independently versioned formats
 
@@ -23,9 +28,9 @@ does not permit deleting incompatible storage or claiming upgrades exist.
 | Checked image | `KDIIMG1`, version 1 | Rust `persistent_image` |
 | VFSI container | 1 or 2, with an explicit supported feature-bit mask | Rust `kandelo_image_fs` |
 | KIFS filesystem body | 1 or 2 | Rust image filesystem reader |
-| Overlay journal | `KOVL`, version 1 | Rust `persistent_overlay` |
+| Overlay journal | `KOVL`, version 1 (1 MiB frames) or 2 (16 MiB frames) | Rust `persistent_overlay` |
 | Overlay checkpoint index | 1–5 | Rust `persistent_overlay_index` |
-| Journal inode record | 1 | Rust rootfs replay |
+| Journal inode record | 1; 2 for durable providers; 3 for privileged regular/base/provider metadata | Rust rootfs replay |
 | Original-program reference | 1 | Rust `fork-instrument` |
 
 These numbers do not advance with a kernel-host ABI bump or every build.
@@ -35,6 +40,44 @@ export. Unknown manifests or checked-image formats must not be treated as
 damage that permits falling back to an older generation. Interrupted-creation
 collection must preserve newer, malformed, or unreadable metadata; only a
 known creation marker with no metadata and no installed data can be collected.
+
+### Durable deferred-provider records
+
+The upgrade branch adds a version-2 inode record, kind 7, for newly staged
+deferred files. Ordinary created inodes and immutable-base metadata retain
+their version-1 representation. A provider record keeps the normal inode
+metadata followed by one bounded SDEF-v5 section: exactly one synthetic
+inode-1 file declaration and its optional archive declaration. The synthetic
+number is local to the descriptor, not the live filesystem's inode identity.
+
+The record retains size, SHA-256 content identity, fetch address, opaque
+transport description and any archive/member relationship together. Reopen
+reconstructs the Rust-owned file and archive binding without fetching the
+content. The host still applies its own transport permissions. Package
+content identities are distinct from the configurable CRC32C/SHA-256 policy
+for immutable image blocks.
+
+Inode records are bounded to 192 KiB, sufficient for both maximum-size SDEF
+payloads and addresses. Other inode kinds retain their earlier 4 KiB bound.
+Unknown record versions and conflicting declarations for an existing archive
+ID are refused without repairing or rewriting the journal. Updating a durable
+descriptor requires staging a new binding and activating it transactionally;
+the image-builder descriptor setters cannot silently edit such a live inode.
+
+The native coordinator can stage and activate these bindings with package
+inventory and rollback references. Node/browser transports and the app
+exercise package updates and recovery, including across a program contract
+change. See [package upgrades](package-upgrades.md).
+
+Privileged regular/base/provider metadata now uses inode-record version 3.
+It preserves the same bounded metadata fields and provider descriptions;
+it does not change the program, kernel-host, inventory or transaction
+versions. Recovery refuses unknown record versions. Native writable-raw
+content changes that clear privileges couple data/length and the resulting
+inode metadata in one journal transaction; later cache writeback cannot
+publish changed bytes under the pre-write privilege bits. Deferred content
+retains its existing hash checks and write restrictions. This native path
+still needs rebuilt Node/browser privileged-upgrade acceptance.
 
 Existing journals are opened without truncating incomplete tails. Recovery
 retains a logical committed end, validates filesystem metadata, and leaves
@@ -107,6 +150,9 @@ filesystem metadata, private mappings, threads and fork/exec environment
 isolation. Browser tests also verify the installed hashes and run offline.
 These examples do not replace semantic conformance suites or prove every
 program compatible.
+Additional dynamic-linking cases run a previously built program and side
+module through `dlopen`, and a lazily fetched copy of `echo`. Their bytes are
+checked against the dynamic-linking and executable manifest entries.
 
 An incompatible change needs either a bounded Rust adapter that preserves the
 old guest representation/semantics or a deliberately new program baseline.
@@ -119,11 +165,30 @@ does not retroactively decouple programs linked against today's channel.
 
 For this iteration the fork instrumentation contract is versioned, not declared
 stable. Its linked-frame, module-state, reference, exception and capability
-descriptors have explicit format versions checked before launch. The current
-program digest also binds this surface; the ABI-55 baseline is a regression
-gate for this release, not a promise to freeze the unfinished fork protocol.
-A future incompatible fork change needs an explicit compatibility decision and
-corresponding version/baseline changes, not a silent snapshot refresh.
+descriptors have explicit format versions checked before launch, and
+`abi/fork-contract.json` gives the whole surface one version and a digest of
+its current contents.
+
+The contract is independent of the program digest. That digest covers the
+frozen copy in `abi/program-fork-surface-v1.json`, which is never updated, so
+it keeps its ABI-55 value and existing programs stay valid. Changing the live
+fork surface fails `xtask check-program-baseline` until the version in
+`abi/fork-contract.json` is bumped, and version 1 can only ever mean the frozen
+surface. Later versions are tracked by recorded digest alone, so refreshing the
+digest without bumping becomes a review matter there. Ordinary programs are then
+unaffected,
+while a forking program built for another contract is refused before execution
+with rebuild guidance and its file is left unchanged.
+
+Programs carry their contract in an optional `kandelo.wpk_fork.contract`
+section holding a little-endian `u32`. No stamp means contract 1, so nothing
+needed rebuilding when this was introduced. `wasm-fork-instrument` does not
+stamp yet; see
+[before raising the fork contract](#before-raising-the-fork-contract-to-version-2).
+Only the
+`program_artifact.fork_instrumentation` snapshot key is separated this way.
+Fork-related layouts in other program sections, such as the save-buffer sizes
+in the process memory layout, still move the program digest.
 
 User-built forking programs cannot be automatically upgraded in this stage.
 They may require rebuilding and instrumentation with the current SDK after a
@@ -146,6 +211,33 @@ the original as the authoritative source and prepare it on next use; eager
 preparation is optional. Activation and invalidation must be recoverable and
 must not overwrite user replacements. Existing explicit preparer prototypes
 do not implement this automatic lifecycle.
+
+### Before raising the fork contract to version 2
+
+> **Do this first, or contract 2 will not work.** `wasm-fork-instrument` does not
+> stamp programs today. Version 1 needs no stamp, because an unstamped program
+> means contract 1 by definition. Contract 2 is the first version that needs one.
+
+Without a stamp, every forking program built for contract 2 would read as
+contract 1 and be refused, including all packaged ones. So the order is fixed:
+
+1. Make `wasm-fork-instrument` write a `kandelo.wpk_fork.contract` section (a
+   little-endian `u32`) into every program it prepares. This changes the tool,
+   so every forking package rebuilds.
+2. Change the fork surface.
+3. Bump `version` and `surface_sha256` in `abi/fork-contract.json`. Never edit
+   `abi/program-fork-surface-v1.json`: the digest of every ABI 55 program covers
+   it.
+4. Update the guard test below, which exists to stop this list being skipped.
+
+`fork_contract_above_one_requires_the_instrumenter_to_stamp_programs` in
+`tools/xtask/src/supported_program_baseline.rs` fails as soon as the version
+rises. Passing it by changing the expected value alone is wrong unless step 1 is
+done. Later versions are protected only by that recorded digest, so review any
+change to `surface_sha256` that does not also bump the version.
+
+This leaves one honest gap for this release: "explicitly versioned" is true of
+the host and the repository, not of the programs themselves.
 
 ## Original-program retention prototype
 
@@ -650,9 +742,8 @@ operation. An unresolved reference still names expected content, size, archive
 membership and dependencies. A new location can supply the same verified
 content; replacing that content requires a package upgrade. Retaining resolved
 files while changing unresolved references must not mix incompatible package
-versions or overwrite user edits. The durable provider/inode activation needed
-for these updates is not implemented yet. Missing old providers must fail
-explicitly rather than fetching unrelated latest bytes.
+versions or overwrite user edits. Missing old providers must fail explicitly rather than fetching unrelated
+latest bytes.
 
 The upgrade policy must distinguish three operations:
 
@@ -669,8 +760,8 @@ The upgrade policy must distinguish three operations:
 
 Resolution is a cache/materialization state, not an upgrade boundary. Updating
 only unresolved references can mix library and executable versions. Durable
-provider records, rollback references and interruption tests are prerequisites
-for accepting this policy, not functionality provided by this document.
+provider records and native rollback references implement the storage
+foundation, not Node/browser upgrade acceptance.
 
 The native activation foundation can prepare and commit a canonical batch of
 existing leaf-inode replacements, namespace timestamps, and an inventory-file
@@ -682,23 +773,27 @@ An interrupted final flush is outcome-uncertain: the old live graph remains,
 the failed journal refuses further writes, and reopening determines whether the
 old or new complete transaction is present.
 
-This is an internal primitive, not an exposed package updater. It does not
-authenticate packages, detect in-place user edits, provide maintenance admission,
-or install durable lazy-provider records. Directory/special-node updates,
-set-ID regular leaves, and transactions exceeding the journal's size limit
-are refused without weakening permissions or splitting the commit. The release goal
-still requires the ownership inventory, maintenance coordinator, durable lazy
-provider activation, and Node/browser upgrade acceptance.
+This is not yet an application-facing package updater. Native coordination
+and bounded Node/browser control add content-bound inventories, user-edit
+verification, maintenance admission and durable provider staging above it.
+Distribution authentication remains a separate integration requirement. New nested
+directories and in-place directory metadata changes join the same atomic
+commit; removed directories remain available for user-created children.
+Directory/file type changes, special-node updates, unchecked privileged
+sources and transactions exceeding the journal's size limit are refused without
+weakening permissions or splitting the commit. The release goal
+still requires full-package mutation support, producer/host integration and
+Node/browser upgrade acceptance.
 
 Ordinary persistent namespace and metadata writers also refuse records that
-recovery cannot admit. Immutable regular/lazy set-ID leaves cannot be linked,
-unlinked or renamed while preserving those unsupported permission records;
-created FIFO/socket nodes cannot acquire set-ID permissions. These operations
-return `EPERM` before writing, rather than acknowledging an unreopenable
-journal or silently stripping existing permissions. Supported directory setgid
-and sticky special-file modes remain available. This is an explicit current
-persistent-permission limitation, not complete set-ID mutation support.
+recovery cannot admit. The native implementation preserves supported
+regular/lazy set-ID leaves through linking, unlinking, renaming and package
+activation. Resident raw changes use coupled permission/content transactions;
+verified deferred leaves stay read-only. Created FIFO/socket nodes still
+cannot acquire set-ID permissions: those operations return `EPERM` before
+writing. Supported directory setgid and sticky special-file modes remain
+available. Rebuilt Node/browser acceptance and the remaining filesystem
+limitations are not implied by native permission support.
 
-The first release requires explicit compatibility warnings and integrated
-persistence validation. Transactional package/lazy-reference upgrades remain
-follow-up work. Persistent images are not advertised as permanently compatible.
+Releases require explicit compatibility warnings and integrated persistence
+validation. Persistent images are not advertised as permanently compatible.

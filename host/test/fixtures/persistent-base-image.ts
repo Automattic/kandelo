@@ -23,11 +23,12 @@ export function persistentColdPayloadRange(path: string, content: Uint8Array): {
 }
 
 export async function persistentBaseFixture(directory: string, policy: "crc32c" | "sha256", contentBytes = 512 * 1024 + 17,
-  bootstrapSource?: "resident" | "deferred", capacityBytes?: number): Promise<{
+  bootstrapSource?: "resident" | "deferred", capacityBytes?: number, metadata?: unknown): Promise<{
   path: string; binding: PersistentImageReadBinding; content: Uint8Array;
 }> {
   const filesystem = KandeloImageFs.createPositioned(new Uint8Array(readFileSync(imageModule)));
   if (capacityBytes !== undefined) filesystem.setImageCapacity(capacityBytes);
+  if (metadata !== undefined) filesystem.setImageMetadata(metadata);
   filesystem.mkdir("/home", 0o755);
   filesystem.mkdirWithOwner("/home/maker", 0o755, 1000, 1000);
   filesystem.mkdir("/root", 0o700);

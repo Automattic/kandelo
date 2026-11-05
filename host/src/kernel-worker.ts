@@ -246,6 +246,14 @@ import {
 } from "./clipboard";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
 import {
+  checkedPackageMaintenanceResponse,
+  copyPackageMaintenanceRequest,
+  packageMaintenanceOpcode,
+  type PackageMaintenanceRequest,
+  type PackageMaintenanceResponse,
+} from "./package-maintenance";
+import { PACKAGE_MAINTENANCE_WIRE } from "./generated/abi";
+import {
   ABI_CONTRACT_SECTION,
   DEFAULT_KERNEL_MAX_PAGES,
   detectPtrWidth,
@@ -2417,6 +2425,7 @@ interface CentralizedKernelWorkerTestAuthority {
     readonly gate: KernelEntryGate;
     readonly mainScratch: KernelScratchRegion;
     readonly tcpScratch?: KernelScratchRegion;
+    readonly programContractDigest?: Uint8Array;
   }): void;
   configureScratchBoundaryHooksForTest(
     options: ScratchBoundaryTestHooks,
@@ -3722,6 +3731,7 @@ export class CentralizedKernelWorker {
         readonly gate: KernelEntryGate;
         readonly mainScratch: KernelScratchRegion;
         readonly tcpScratch?: KernelScratchRegion;
+        readonly programContractDigest?: Uint8Array;
       }): void => {
         if (this.#initialized || this.#kernelInstance !== null) {
           throw new Error("test kernel generation is already initialized");
@@ -3750,6 +3760,10 @@ export class CentralizedKernelWorker {
           }
         }
         validateKernelEntryGateOwnership(options.instance, options.gate);
+        if (options.programContractDigest !== undefined && options.programContractDigest.byteLength !== 32) {
+          throw new Error("test program contract digest must contain 32 bytes");
+        }
+        this.kernelAbiContractDigest = options.programContractDigest === undefined ? null : Uint8Array.from(options.programContractDigest);
         options.gate.setFatalHandler((error) => {
           this.#failKernelInstance(error);
         });
@@ -5202,12 +5216,20 @@ export class CentralizedKernelWorker {
       this.#persistentOverlayImportSlot = 0;
       this.#persistentOverlayIndexSlot = index === undefined ? null : 1;
       this.#persistentOverlayActiveStorage = storage;
+      this.assessPersistentRootfsRuntime();
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
       this.#kernel.setPersistentOverlayStorage(null);
       this.#kernel.setPersistentOverlayTargetStorage(null);
       throw error;
     }
+  }
+
+  assessPersistentRootfsRuntime(baseOnly = false): void {
+    const admission = checkedPackageMaintenanceResponse(this.packageMaintenance({
+      action: "assessBoot", index: baseOnly ? PACKAGE_MAINTENANCE_WIRE.BOOT_BASE_ONLY : 0,
+    })).status;
+    if (admission !== 0 && admission !== 1) throw new Error("Kernel returned invalid persistent runtime admission");
   }
 
   #persistentOverlayImportSlot: 0 | 1 | 2 = 0;
@@ -5923,6 +5945,48 @@ export class CentralizedKernelWorker {
    * Throws `KernelScratchError` (POSIX errno) on failure, or
    * `KernelReentrantEntryError` if a kernel entry is already active.
    */
+  packageMaintenance(request: PackageMaintenanceRequest): PackageMaintenanceResponse {
+    const command = copyPackageMaintenanceRequest(request);
+    const opcode = packageMaintenanceOpcode(command.action);
+    const index = command.index ?? 0;
+    const offset = command.offset ?? 0;
+    const offsetLo = offset >>> 0;
+    const offsetHi = Math.floor(offset / 0x1_0000_0000);
+    let input = command.data ?? new Uint8Array(0);
+    if (command.action === "enter" || command.action === "assessBoot") {
+      const digest = this.kernelAbiContractDigest;
+      if (!digest || digest.byteLength !== 32) throw new Error("Current kernel has no program-contract digest");
+      input = new Uint8Array(PACKAGE_MAINTENANCE_WIRE.ENTER_BYTES);
+      new DataView(input.buffer).setUint32(PACKAGE_MAINTENANCE_WIRE.ENTER_VERSION_OFFSET, PACKAGE_MAINTENANCE_WIRE.VERSION, true);
+      input.set(digest, PACKAGE_MAINTENANCE_WIRE.ENTER_DIGEST_OFFSET);
+    }
+    let status = -ENOSYS;
+    let errorKind = PACKAGE_MAINTENANCE_WIRE.ERROR_NONE as number;
+    let data: Uint8Array = new Uint8Array(0);
+    let invalidOutput = false;
+    const writesOutput = command.action === "progress" || command.action === "stagingFile";
+    this.#runImmediateKernelEntry("package maintenance", (entry) => {
+      const region = this.#requireMainScratchRegion();
+      const capacity = writesOutput ? Math.min(region.capacity, PACKAGE_MAINTENANCE_WIRE.MAX_BUFFER_BYTES) : input.byteLength;
+      region.withLease((lease) => {
+        if (input.byteLength > 0) lease.copyFrom(input, 0, 0, input.byteLength);
+        status = this.#invokeEntryScratchExport(entry, lease, "kernel_package_maintenance", [
+          opcode, index, offsetLo, offsetHi, lease.exportPointer(0, capacity), capacity,
+        ]);
+        if (status < 0) {
+          errorKind = this.#invokeEntryScratchExport(entry, lease, "kernel_package_maintenance", [
+            PACKAGE_MAINTENANCE_WIRE.OP_LAST_ERROR, 0, 0, 0, lease.exportPointer(0, 0), 0,
+          ]);
+        } else if (writesOutput) {
+          if (status > capacity) invalidOutput = true;
+          else data = lease.copyOut(0, status);
+        }
+      });
+    });
+    if (invalidOutput) throw new Error("Kernel returned an invalid maintenance output length");
+    return { status, errorKind, data };
+  }
+
   rootfsWriteFile(path: string, data: Uint8Array, mode: number): void {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     const encodedPath = new TextEncoder().encode(path);

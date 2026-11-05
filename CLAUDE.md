@@ -202,6 +202,12 @@ exports, ABI custom sections, process-expected globals, `wpk_fork_*` exports,
 generated TypeScript ABI constants, and VFS image metadata that binds Wasm
 programs to a kernel ABI.
 
+Fork instrumentation is the exception to `ABI_VERSION`: a change confined to
+`program_artifact.fork_instrumentation` bumps `abi/fork-contract.json` instead
+and refuses only forking programs. Contract 2 cannot ship until
+`wasm-fork-instrument` stamps programs, which it does not do yet; follow the
+steps in `docs/persistent-program-compatibility.md` before any bump.
+
 The snapshot check is necessary but not sufficient. Semantic changes to an
 existing syscall, errno, blocking behavior, fd inheritance, memory ownership,
 or pointer interpretation can require an ABI bump even if the structural

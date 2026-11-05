@@ -8,6 +8,15 @@ import { demoAssetFetchUrl } from "./configured-assets";
 import { ensurePersistentProfileAssets } from "./persistent-profile-assets";
 import { runImageActivityCommand } from "./image-activity-command";
 import { createServiceControls } from "./service-controls";
+import { PackageMaintenanceSession, type OwnedPackageSource } from "./package-maintenance-session";
+import { openSavedPackageSource, stageCurrentPackageSource } from "./package-source-cache";
+import {
+  bootCompositionMatchesInstalled, installedBootConfigurationSha256, promoteBootConfiguration,
+  readBootConfigurations, prepareBootConfiguration, selectBootComposition,
+} from "./package-boot-configuration";
+import type { StoredComposition } from "./stored-composition";
+import { checkedPackageMaintenanceResponse } from "../../../../../host/src/package-maintenance";
+import type { ComputerSoftwareSnapshot } from "../../../../../web-libs/kandelo-session/src/computer-software";
 import { imageActivity, imageActivityPresentation } from "../../../../../web-libs/kandelo-session/src/image-activities";
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
@@ -301,13 +310,13 @@ function agentIdentity(): WebMcpIdentity {
 }
 
 /**
- * The two env vars no baked artifact can know: they are computed from THIS
- * page's deployment prefix and protocol at boot time. Supplied to every
+ * Host-specific launch values: the deployment prefix, protocol and pre-fork
+ * service budget. Supplied to every
  * machine's init uniformly rather than to a list of WordPress ids, so the
  * host holds no machine identities. Unused names are inert.
  */
 function hostSuppliedInitEnv(): string[] {
-  return [`WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`];
+  return [`WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`, `KANDELO_PREFORK_SERVICE_PROCESSES=${HOST_MEMORY_PROFILE.preforkServiceProcesses}`];
 }
 
 /**
@@ -323,6 +332,14 @@ function dinitContainerArgv(target: string): string[] {
 class BootSuperseded extends Error {
   constructor() {
     super("boot superseded");
+  }
+}
+
+const INCOMPATIBLE_SOFTWARE_UNMANAGED = "This saved filesystem's software cannot run on this version of Kandelo, or an update is unfinished. Its files are preserved. Open it as a saved computer to update it.";
+
+class RetryInstalledBootConfiguration extends Error {
+  constructor(readonly composition: StoredComposition) {
+    super("retrying with the boot configuration of the installed software");
   }
 }
 
@@ -653,6 +670,17 @@ async function createLiveHostWithLease(
   let currentPersistenceLease: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>> | null = null;
   let currentProfile: LiveProfile | null = null;
   let currentRequestedDescriptor: BootDescriptor | null = null;
+  let currentMaintenance: PackageMaintenanceSession | null = null;
+  let currentBaseComposition: StoredComposition | null = null;
+  let offMaintenance: (() => void) | undefined;
+  let softwareSupported = false;
+  let softwareEntering = false;
+  const softwareListeners = new Set<() => void>();
+  const publishSoftware = () => {
+    for (const listener of softwareListeners) {
+      try { listener(); } catch (error) { console.warn("Software status observer failed", error); }
+    }
+  };
   let persistenceShutdownFailure: string | null = null;
   let bootInFlight: Promise<void> = Promise.resolve();
   let bootSeq = 0;
@@ -762,6 +790,63 @@ async function createLiveHostWithLease(
       await startBoot(h, profileForDescriptor(desc, "none", null), desc, false, false, null);
     },
   });
+
+  if (computerStore !== null) {
+    const requireMaintenance = () => {
+      if (currentMaintenance === null) throw new Error("Enter maintenance mode before changing software");
+      return currentMaintenance;
+    };
+    host.software = {
+      getSnapshot: (): ComputerSoftwareSnapshot => ({
+        ...(currentMaintenance?.getSnapshot() ?? { maintenance: false, busy: false, recovery: "none", operation: null, progress: null, error: null }),
+        available: softwareSupported || currentMaintenance !== null,
+        targetAvailable: CANONICAL_PAGES_VFS_LOADER !== undefined,
+        ...(softwareEntering ? { busy: true } : {}),
+      }),
+      subscribe: listener => { softwareListeners.add(listener); return () => { softwareListeners.delete(listener); }; },
+      enter: async () => {
+        if (currentMaintenance !== null) return;
+        if (softwareEntering || currentComputer === null || !softwareSupported) {
+          throw new Error("Package maintenance requires an initialized computer with a pristine software baseline");
+        }
+        softwareEntering = true;
+        publishSoftware();
+        try {
+          const computer = currentComputer;
+          await startBoot(host, profileForDescriptor(computer.descriptor, "none", computer.profileId), computer.descriptor, false, false, computer, null, true);
+          if (currentMaintenance === null) throw new Error("The computer could not enter maintenance; inspect its system log");
+        } finally { softwareEntering = false; publishSoftware(); }
+      },
+      install: async () => {
+        const session = requireMaintenance();
+        const computer = currentComputer;
+        const profile = currentProfile;
+        const loader = CANONICAL_PAGES_VFS_LOADER;
+        if (computer === null || profile === null || loader === undefined) throw new Error("This deployment has no verified software bundle for the computer");
+        const recovery = session.getSnapshot().recovery;
+        if (recovery !== "none" && recovery !== "active" && recovery !== "rolled-back") throw new Error("Resume or discard the existing update first");
+        await session.run("install", async signal => {
+          const product = computer.softwareProductId ?? (await bindVfsProduct(profile)).productId;
+          if (!product || galleryProductSource(product) === undefined) throw new Error("This image has no trusted release software bundle");
+          return recordingBootConfiguration(computer.id, () => stageCurrentPackageSource(computer.id, product, loader, signal));
+        });
+      },
+      resume: async () => {
+        const computer = currentComputer;
+        if (computer === null) throw new Error("No computer is selected");
+        await requireMaintenance().run("resume", signal => recordingBootConfiguration(computer.id, () => openSavedPackageSource(computer.id, signal)));
+      },
+      rollback: () => requireMaintenance().run("rollback"),
+      discard: () => requireMaintenance().discard(),
+      boot: async () => {
+        const session = requireMaintenance();
+        if (currentProfile === null || currentRequestedDescriptor === null) throw new Error("Computer boot context is missing");
+        await session.release();
+        await startBoot(host, currentProfile, currentRequestedDescriptor);
+      },
+      cancel: () => currentMaintenance?.cancel(),
+    };
+  }
 
   async function refreshLibrary(): Promise<void> {
     if (computerStore === null) return;
@@ -939,6 +1024,7 @@ async function createLiveHostWithLease(
     deferActivityLaunch = false,
     computer: StoredComputer | null = currentComputer,
     incomingLease: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>> | null = null,
+    maintenanceRequested = false,
   ): Promise<void> {
     const persistenceName = computer === null ? opts.experimentalPersistenceName ?? undefined : browserComputerStorageName(computer.id);
     const persistenceMode = computer === null ? opts.experimentalPersistenceMode ?? "fixed" : "resizable";
@@ -959,6 +1045,7 @@ async function createLiveHostWithLease(
       }
       const previousKernel = currentKernel;
       const previousLease = currentPersistenceLease;
+      const previousMaintenance = currentMaintenance;
       if (persistenceName !== undefined) {
         preparedLease ??= previousLease?.computerName === persistenceName
           ? previousLease
@@ -974,6 +1061,11 @@ async function createLiveHostWithLease(
       const outgoingTitle = h.getBootDescriptor().title;
       currentKernel = null;
       currentPersistenceLease = null;
+      offMaintenance?.();
+      offMaintenance = undefined;
+      currentMaintenance = null;
+      softwareSupported = false;
+      publishSoftware();
       // WHY: detach while this activation still owns the previous generation.
       // If we await teardown first, a newer boot can attach its kernel and this
       // superseded activation would detach that newer generation on resume.
@@ -991,13 +1083,26 @@ async function createLiveHostWithLease(
           () => seq === bootSeq,
           (progress) => h.setMachineProgress(progress),
         );
+        let maintenanceCloseError: unknown;
+        try { await previousMaintenance?.close(); }
+        catch (error) { maintenanceCloseError = error; }
         try {
           await previousKernel.destroy().catch(() => {});
         } finally {
           offDestroyProgress();
         }
+        if (previousLease !== null && maintenanceCloseError !== undefined) {
+          persistenceShutdownFailure = `Package maintenance retirement is unconfirmed: ${String(maintenanceCloseError)}. Reload before opening another computer.`;
+          currentKernel = previousKernel;
+          currentMaintenance = previousMaintenance;
+          currentPersistenceLease = previousLease;
+          if (preparedLease === previousLease) preparedLease = null;
+          if (seq === bootSeq) showBootError(h, descriptor, new Error(persistenceShutdownFailure), bootStartedAt);
+          return;
+        }
         if (previousLease !== null && previousKernel.hasUnconfirmedKernelQuiescence()) {
           currentKernel = previousKernel;
+          currentMaintenance = previousMaintenance;
           currentPersistenceLease = previousLease;
           if (preparedLease === previousLease) preparedLease = null;
           if (seq === bootSeq) {
@@ -1047,30 +1152,63 @@ async function createLiveHostWithLease(
         }
         const requireExistingFilesystem = computer !== null && await computerStore!.filesystemInitialized(computer.id);
         const managedComputerId = computer?.id;
-        const boot = (preferred?: FixedPersistenceImageHandle) => bootProfile(
+        const boot = (preferred?: FixedPersistenceImageHandle, composition?: StoredComposition) => bootProfile(
           h, profile, descriptor, bootStartedAt, () => seq === bootSeq,
           requireServiceWorker, legacyScriptIgnored,
           persistenceName, persistenceMode, persistenceLease ?? undefined, preferred, opts.experimentalPersistenceIntegrity, deferActivityLaunch,
           requireExistingFilesystem, managedComputerId === undefined ? undefined : () => computerStore!.markFilesystemInitialized(managedComputerId),
           computer === null ? undefined : filesystemProfileId(computer),
+          computer === null ? undefined : async kernel => {
+            const admission = checkedPackageMaintenanceResponse(await kernel.packageMaintenance({ action: "bootBlocked" })).status;
+            if (admission !== 0 && admission !== 1) throw new Error("Kernel returned invalid boot admission state");
+            const baseline = await kernel.statVfsPath("/var/lib/kandelo/packages/installed");
+            softwareSupported = baseline !== null && (baseline.mode & 0o170000) === 0o100000 && baseline.size > 0 && baseline.size <= 8 * 1024 * 1024;
+            publishSoftware();
+            if (!maintenanceRequested && admission === 0) return undefined;
+            if (seq !== bootSeq) throw new BootSuperseded();
+            return PackageMaintenanceSession.open(kernel, () => { if (seq !== bootSeq) throw new BootSuperseded(); }, admission === 1, softwareSupported);
+          },
+          managedComputerId,
+          composition,
         );
         let booted: Awaited<ReturnType<typeof boot>>;
-        try {
-          booted = await boot();
-        } catch (error) {
-          if (!(error instanceof RetryPreviousPersistenceGeneration) || seq !== bootSeq) throw error;
-          booted = await boot(error.previous);
+        let preferredImage: FixedPersistenceImageHandle | undefined;
+        let preferredComposition: StoredComposition | undefined;
+        for (;;) {
+          try {
+            booted = await boot(preferredImage, preferredComposition);
+            break;
+          } catch (error) {
+            if (seq !== bootSeq) throw error;
+            if (error instanceof RetryPreviousPersistenceGeneration && preferredImage === undefined) preferredImage = error.previous;
+            else if (error instanceof RetryInstalledBootConfiguration && preferredComposition === undefined) preferredComposition = error.composition;
+            else throw error;
+          }
         }
         if (seq !== bootSeq) {
+          let maintenanceCloseError: unknown;
+          try { await booted.maintenance?.close(); }
+          catch (error) { maintenanceCloseError = error; }
           await booted.kernel.destroy().catch(() => {});
-          if (persistenceName !== undefined && booted.kernel.hasUnconfirmedKernelQuiescence()) {
+          if (persistenceLease !== null && maintenanceCloseError !== undefined) {
+            persistenceShutdownFailure = `Superseded package maintenance retirement is unconfirmed: ${String(maintenanceCloseError)}. Reload before opening another computer.`;
             currentKernel = booted.kernel;
+            currentMaintenance = booted.maintenance ?? null;
+            currentPersistenceLease = persistenceLease;
+            persistenceLease = null;
+          } else if (persistenceName !== undefined && booted.kernel.hasUnconfirmedKernelQuiescence()) {
+            currentKernel = booted.kernel;
+            currentMaintenance = booted.maintenance ?? null;
             currentPersistenceLease = persistenceLease;
             persistenceLease = null;
           }
           return;
         }
         currentKernel = booted.kernel;
+        currentMaintenance = booted.maintenance ?? null;
+        currentBaseComposition = booted.baseComposition ?? null;
+        if (currentMaintenance !== null) offMaintenance = currentMaintenance.subscribe(publishSoftware);
+        publishSoftware();
         currentPersistenceLease = persistenceLease;
         currentProfile = profile;
         currentRequestedDescriptor = descriptor;
@@ -1079,6 +1217,10 @@ async function createLiveHostWithLease(
         if (openedMetadataWarning !== null) h.pushDmesg({ t: bootElapsedMs(bootStartedAt), level: "warn", facility: "kandelo", msg: openedMetadataWarning });
         if (computer !== null) {
           try {
+            if (computer.softwareProductId === undefined && booted.softwareProductId !== null) {
+              computer = await computerStore!.update(computer.id, { softwareProductId: booted.softwareProductId });
+              if (seq === bootSeq) currentComputer = computer;
+            }
             await refreshLibrary();
           } catch (error) {
             const message = `Filesystem is running, but computer library metadata could not be updated: ${String(error)}`;
@@ -1113,6 +1255,14 @@ async function createLiveHostWithLease(
       try { await preparedLease?.(); }
       finally { completeBoot(); }
     }
+  }
+
+  async function recordingBootConfiguration(computerId: string, open: () => Promise<OwnedPackageSource>): Promise<OwnedPackageSource> {
+    const kernel = currentKernel;
+    const base = currentBaseComposition;
+    if (kernel === null || base === null) throw new Error("Computer boot configuration is unavailable for this update");
+    const owned = await open();
+    return { ...owned, prepare: () => prepareBootConfiguration(computerId, kernel, base, owned.source) };
   }
 
 }
@@ -1506,7 +1656,6 @@ function persistenceIdentity(
     profileId: storageProfileId,
     appPath: APP_PATH,
     proto: PROTO,
-    preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
     mounts: descriptor.mounts,
     ...(mode === "resizable" ? { persistenceMode: "resizable" } : {}),
   });
@@ -1534,10 +1683,16 @@ async function bootProfile(
   requireExistingFilesystem = false,
   markFilesystemInitialized?: () => Promise<void>,
   storageProfileId?: string | null,
+  openMaintenance?: (kernel: BrowserKernel) => Promise<PackageMaintenanceSession | undefined>,
+  softwareComputerId?: string,
+  preferredComposition?: StoredComposition,
 ): Promise<{
   kernel: BrowserKernel;
   persistenceIdentity: string | null;
   persistenceJournalName: string | null;
+  softwareProductId: GalleryProductId | null;
+  maintenance?: PackageMaintenanceSession;
+  baseComposition?: StoredComposition;
 }> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -1661,6 +1816,11 @@ async function bootProfile(
     ? null
     : preferredPersistenceImage ?? await loadFixedPersistenceImageHandle(persistence.name, persistence.identity);
   if (requireExistingFilesystem && restoredHandle === null) throw new Error("This computer's saved filesystem is missing; refusing to reset it");
+  // The machine is configured before replay can show which software is
+  // installed, so assume the newest record and confirm it after replay.
+  const bootConfigurations = restoredHandle !== null && softwareComputerId !== undefined ? await readBootConfigurations(softwareComputerId) : [];
+  const assumedComposition = restoredHandle === null ? undefined
+    : preferredComposition ?? bootConfigurations.at(-1)?.composition ?? restoredHandle.composition;
   assertCurrent();
 
   tick("service worker active and cross-origin isolated");
@@ -1762,14 +1922,13 @@ async function bootProfile(
         descriptor: requestedDescriptor,
         appPath: APP_PATH,
         proto: PROTO,
-        preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
       },
       {
         onTick: tick,
         isCurrent,
         supersededError: () => new BootSuperseded(),
       },
-    ) : { ...restoredHandle.composition, imageBytes: new Uint8Array() };
+    ) : { ...assumedComposition!, imageBytes: new Uint8Array() };
   } catch (error) {
     if ((error as { retainSource?: unknown } | null)?.retainSource === true) loadedVfs.positionedSource?.retain();
     else await loadedVfs.positionedSource?.remove().catch(() => {});
@@ -1951,8 +2110,24 @@ async function bootProfile(
           }
           throw error;
         }
-        await assertPersistentImageBootMetadata(kernel, opfsImage.composition);
-        if (profileId !== opfsImage.composition.profileId) {
+        const maintenance = await openMaintenance?.(kernel);
+        if (maintenance !== undefined) {
+          host.setMachineProgress(null);
+          tick("computer paused for package maintenance; guest programs have not started");
+          host.setStatus("halted");
+          return { kernel, persistenceIdentity: persistence.identity, persistenceJournalName: opfsImage.journalName, softwareProductId: profile.productId, maintenance, baseComposition: opfsImage.composition };
+        }
+        if (openMaintenance === undefined && checkedPackageMaintenanceResponse(await kernel.packageMaintenance({ action: "bootBlocked" })).status !== 0) {
+          throw new Error(INCOMPATIBLE_SOFTWARE_UNMANAGED);
+        }
+        const installedComposition = await selectBootComposition(kernel, bootConfigurations, opfsImage.composition);
+        if (!bootCompositionMatchesInstalled(assumedComposition ?? opfsImage.composition, installedComposition)) {
+          const installed = await installedBootConfigurationSha256(kernel);
+          if (installed !== null) await promoteBootConfiguration(softwareComputerId!, installed);
+          throw new RetryInstalledBootConfiguration(installedComposition);
+        }
+        await assertPersistentImageBootMetadata(kernel, installedComposition);
+        if (profileId !== installedComposition.profileId) {
           requiredServices.clear();
           for (const service of await persistentImageServices(kernel, imageConfig, profileId)) requiredServices.add(service);
           await ensurePersistentProfileAssets(kernel, resolveDemoAssets(imageConfig, profileId), tick, assertCurrent, demoAssetFetchUrl);
@@ -2315,6 +2490,7 @@ async function bootProfile(
       kernel,
       persistenceIdentity: persistence?.identity ?? null,
       persistenceJournalName: opfsImage?.journalName ?? null,
+      softwareProductId: profile.productId,
     };
   } catch (err) {
     if (kernel) {

@@ -227,6 +227,7 @@ export interface StagedSourceImage {
   integrity: OpfsImageIntegrity;
   remove(): Promise<void>;
   retain(): void;
+  release(): Promise<void>;
 }
 
 export interface VfsSourceIdentity {
@@ -377,7 +378,7 @@ export async function stageRawVfsSourceImage(
       onProgress(sourceLength, sourceLength);
       if (compressed) onDecompressionProgress?.({ completed: length, total: length, status: "complete" });
       return { file, reference: await referenceOpfsFile(file), integrity: { length, chunkBytes: CHUNK_BYTES, imageSha256: staged.imageSha256 }, remove,
-        retain: () => { retained = true; sourceStagingQuarantined = true; } };
+        retain: () => { retained = true; sourceStagingQuarantined = true; }, release };
     } catch (error) {
       if (stagingDispatched && error instanceof UnprovenImageCodecCleanupError) { retained = true; sourceStagingQuarantined = true; }
       else await remove().catch(() => {});

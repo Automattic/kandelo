@@ -35,7 +35,7 @@ const composition = {} as Pick<ComposeImageResult, "imageConfig" | "profileId" |
 function job(): ComposeImageJob {
   return { imageBytes: new Uint8Array(), persistentImage: { name: "computer", identity: "identity", integrityPolicy: "crc32c" },
     maxVfsByteLength: 65536, imageLabel: "probe", requestedProfileId: null, requestedProfileSource: null,
-    hasCandidateEvidence: false, descriptor: {} as never, appPath: "/", proto: "http", preforkServiceProcesses: 1 };
+    hasCandidateEvidence: false, descriptor: {} as never, appPath: "/", proto: "http" };
 }
 afterEach(() => { workers.length = 0; save.mockReset(); manifest.mockReset(); });
 

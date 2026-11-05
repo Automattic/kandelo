@@ -957,6 +957,7 @@ export interface GalleryQuery {
 export interface KernelHost {
   captureOwnedJobs?(): KernelOwnedJobScope;
   services?: import("./computer-services").ComputerServiceController;
+  software?: import("./computer-software").ComputerSoftwareController;
   readonly computers?: import("./computer-library").ComputerLibrary;
   readonly imageActivities?: import("./image-activities").ImageActivityController;
   getDisplayOwners?(): number[];
@@ -1435,6 +1436,7 @@ const NOT_IMPLEMENTED = (m: string) =>
 export class LiveKernelHost implements KernelHost {
   services?: import("./computer-services").ComputerServiceController;
   private filesystemConfiguration: Readonly<FilesystemConfiguration> | null = null;
+  software?: import("./computer-software").ComputerSoftwareController;
   computers?: import("./computer-library").ComputerLibrary;
   imageActivities?: import("./image-activities").ImageActivityController;
 

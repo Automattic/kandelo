@@ -2062,6 +2062,16 @@ fn render_ts_module() -> String {
         ));
     }
     out.push_str(&format!(
+        "export const WPK_FORK_CONTRACT_SECTION = {:?} as const;\n",
+        "kandelo.wpk_fork.contract"
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_CONTRACT_VERSION = {} as const;\n",
+        crate::supported_program_baseline::fork_contract()
+            .expect("abi/fork-contract.json must be valid")
+            .version
+    ));
+    out.push_str(&format!(
         "export const WPK_FORK_CAPABILITIES_SECTION = {:?} as const;\n",
         shared::abi::WPK_FORK_CAPABILITIES_SECTION
     ));
@@ -2665,6 +2675,11 @@ fn render_ts_module() -> String {
         "export const SCHED_AFFINITY_MASK_SIZE = {} as const;\n\n",
         shared::SCHED_AFFINITY_MASK_SIZE
     ));
+    out.push_str("export const PACKAGE_MAINTENANCE_WIRE = {\n");
+    for (name, value) in shared::package_maintenance_wire::CONSTANTS {
+        out.push_str(&format!("  {name}: {value},\n"));
+    }
+    out.push_str("} as const;\n\n");
     out.push_str(&format!(
         "export const PROCESS_SNAPSHOT_COUNT_OFFSET = {} as const;\n",
         shared::process_snapshot_wire::COUNT_OFFSET
@@ -4355,6 +4370,7 @@ fn declared_snapshot_sections() -> Sections {
     s.add(KernelHost, "process_metadata_contract", process_metadata_contract());
     // The process table the kernel hands the host (ps, the inspector).
     s.add(KernelHost, "process_snapshot_wire", process_snapshot_wire());
+    s.add(KernelHost, "package_maintenance_wire", package_maintenance_wire());
     s.add(KernelHost, "wakeup_event_wire", wakeup_event_wire());
     s.add(KernelHost, "wait_completion_wire", wait_completion_wire());
     s.add(Program, "io_multiplexing", io_multiplexing());
@@ -4393,6 +4409,12 @@ fn declared_snapshot_sections() -> Sections {
     s.add(KernelHost, "export_deny", export_deny());
 
     s
+}
+
+pub(crate) fn source_fork_surface_digest() -> Result<[u8; 32], String> {
+    crate::local_abi_identity::fork_surface_digest(
+        &Value::Object(declared_snapshot_sections().finish().into_iter().collect()),
+    )
 }
 
 pub(crate) fn source_program_contract_digest() -> Result<[u8; 32], String> {
@@ -4464,6 +4486,10 @@ fn process_snapshot_wire() -> Value {
             ],
         ),
     })
+}
+
+fn package_maintenance_wire() -> Value {
+    json!(shared::package_maintenance_wire::CONSTANTS.iter().copied().collect::<BTreeMap<_, _>>())
 }
 
 struct WakeupEventField {

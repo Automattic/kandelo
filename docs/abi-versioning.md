@@ -244,6 +244,9 @@ kernel requires an `ABI_VERSION` bump. Specifically:
   fork-using user program. The kernel does not read these exports
   directly, but the host runtime in `host/src/worker-main.ts` does —
   a rename here silently breaks fork for every already-built binary.
+  A change confined to `program_artifact.fork_instrumentation` bumps the
+  version in `abi/fork-contract.json` rather than `ABI_VERSION`; see
+  [persistent program compatibility](persistent-program-compatibility.md).
 - Changing the linked musl/glue syscall function types or argument-slot widths,
   including the wasm32 cancellation-point `__syscall_cp` path. These are not
   currently visible in the structural snapshot, but stale objects and archives
@@ -1728,6 +1731,30 @@ added before anything shipped under the number:
   address, and a null `ifa_addr` for an interface without an address. It
   reports no `AF_PACKET` or IPv6 entries, because the kernel models neither
   on these interfaces.
+### Host adapter 5 package maintenance control
+
+Adapter 5 adds the required `kernel_package_maintenance` export, with
+signature `(operation: u32, index: u32, offset_low: u32, offset_high: u32,
+buffer: usize, buffer_length: u32) -> i32`. Its version-1 packet layout,
+opcodes and failure reasons are recorded in the `package_maintenance_wire`
+kernel-host snapshot section and generated TypeScript constants. Each
+call uses at most 64 KiB of scoped temporary kernel memory; replies copy
+only bounded independent bytes to the host. No host import is added.
+
+The Rust controller owns maintenance admission, inventories, conflict
+checks, staging, activation and rollback. The shared kernel worker supplies
+the current kernel's own program-contract digest when entering maintenance;
+main-thread callers cannot choose a different digest. Node and browser
+proxies use the same transport. Pending or unreadable durable transaction
+authority blocks ordinary guest admission on reopen, while leaving user
+files available for inspection. See [package upgrades](package-upgrades.md)
+for implementation limits and outstanding application acceptance.
+
+Program ABI 55 and its program-contract digest are unchanged. Filesystem,
+journal, inventory, transaction and fork-instrumentation versions remain
+separate decisions. Adapter 5 requires a matching current kernel/host pair,
+not archives of earlier runtimes.
+
 ### Host adapter 4 trusted initial program targets
 
 Adapter 4 adds the required `kernel_spawn_exec_target_prepare_handle` export.

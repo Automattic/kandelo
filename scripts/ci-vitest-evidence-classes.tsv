@@ -27,6 +27,8 @@ host/test/browser-input-source.test.ts	source-only
 host/test/browser-kernel.test.ts	source-only
 host/test/browser-lazy-fetcher.test.ts	source-only
 host/test/browser-mitm-ca-env.test.ts	source-only
+host/test/browser-package-image-source.test.ts	source-only
+host/test/browser-package-upgrade-client.test.ts	source-only
 host/test/browser-pcm-driver.test.ts	source-only
 host/test/browser-persistent-image-codec-worker.test.ts	source-only
 host/test/browser-persistent-image-codec.test.ts	source-only
@@ -316,7 +318,14 @@ host/test/overlay-storage.test.ts	source-only
 host/test/owned-job-lifetime.test.ts	source-only
 host/test/owned-job-reap.test.ts	source-only
 host/test/owned-jobs.test.ts	source-only
+host/test/package-boot-configuration.test.ts	source-only
+host/test/package-image-source.test.ts	prepared-product
+host/test/package-maintenance-compaction.test.ts	source-only
+host/test/package-maintenance-runtime.test.ts	prepared-product
+host/test/package-maintenance-session.test.ts	source-only
 host/test/package-runtime-file.test.ts	prepared-product
+host/test/package-source-cache.test.ts	source-only
+host/test/package-source-inventory.test.ts	prepared-product
 host/test/pango-cairo-smoke.test.ts	prepared-product
 host/test/patch-wasm-for-thread-gc.test.ts	source-only
 host/test/pathconf.test.ts	prepared-product
@@ -334,6 +343,7 @@ host/test/persistent-statfs.test.ts	prepared-product
 host/test/persistent-wordpress-workload.test.ts	prepared-product
 host/test/phase2-raw-syscall-guard.test.ts	source-only
 host/test/php-browser-kernel-owned-vfs.test.ts	source-only
+host/test/php-fpm-environment.test.ts	prepared-product
 host/test/php-phpt-harness.test.ts	prepared-product
 host/test/php-test-fixtures.test.ts	prepared-product
 host/test/php-test-lazy-assets.test.ts	prepared-product
@@ -437,6 +447,7 @@ host/test/sigpending.test.ts	prepared-product
 host/test/sjlj-noexcept-boundary.test.ts	prepared-product
 host/test/sleep-kernel-wait.test.ts	prepared-product
 host/test/socket-timeout-options.test.ts	prepared-product
+host/test/software-composition-inventory.test.ts	prepared-product
 host/test/spawn-credential-order.test.ts	source-only
 host/test/spawn-host-parity.test.ts	source-only
 host/test/spawn-pid-authority.test.ts	prepared-product
@@ -627,6 +638,7 @@ tests/package-system/rootfs-verified-source-contract.test.ts	prepared-product
 tests/package-system/scummvm-play-download.test.ts	source-only
 tests/package-system/sdl-dsp-packages.test.ts	source-only
 tests/package-system/shell-lazy-url-resolution.test.ts	prepared-product
+tests/package-system/software-inventory.test.ts	prepared-product
 tests/package-system/source-only-vite-assets.test.ts	prepared-product
 tests/package-system/source-rootfs-shell-bridge.test.ts	prepared-product
 tests/package-system/validate-wasm-artifacts.test.ts	prepared-product

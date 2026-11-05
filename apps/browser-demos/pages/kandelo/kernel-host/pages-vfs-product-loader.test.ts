@@ -59,6 +59,33 @@ function groupFixture(base: string, directory = "vfs-groups/release-1") {
   return { entry, image, imageUrl, manifest, manifestPath };
 }
 
+test("software targets require a verified manifest whose directory is its content identity", async () => {
+  const fixture = groupFixture("/a/");
+  const manifestSha256 = sha256(fixture.manifest);
+  fixture.entry.asset_group!.path = `/a/vfs-groups/${manifestSha256}/manifest.json`;
+  const calls: string[] = [];
+  const loader = createPagesVfsProductLoaderForBase([fixture.entry], async url => {
+    calls.push(url);
+    if (url === fixture.entry.asset_group!.path) return response(fixture.manifest);
+    throw new Error("software target selection must not download its image");
+  }, "/a/", { prefetchEager: false });
+  assert.deepEqual(await loader.softwareTarget("browser-node"), {
+    id: "browser-node", bytes: fixture.image.length, sha256: sha256(fixture.image),
+    imageUrl: `https://kandelo.invalid/a/vfs-groups/${manifestSha256}/images/node.vfs.zst`,
+    directory: `https://kandelo.invalid/a/vfs-groups/${manifestSha256}/`,
+  });
+  assert.deepEqual(calls, [fixture.entry.asset_group!.path]);
+});
+
+test("software targets refuse mutable directories or a substituted manifest", async () => {
+  const fixture = groupFixture("/a/");
+  for (const corrupt of [false, true]) {
+    const loader = createPagesVfsProductLoaderForBase([fixture.entry], async () => response(corrupt
+      ? encoder.encode(new TextDecoder().decode(fixture.manifest).replace("source-only-v1", "source-only-v0")) : fixture.manifest), "/a/");
+    await assert.rejects(loader.softwareTarget("browser-node"), corrupt ? /sha-256/iu : /content-addressed/iu);
+  }
+});
+
 test("activates a product from its authenticated group manifest", async () => {
   const fixture = groupFixture("/a/");
   const calls: string[] = [];

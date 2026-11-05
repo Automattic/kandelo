@@ -1,5 +1,5 @@
 use super::*;
-use crate::persistent_overlay::{transaction_encoded_length, MutationBatch};
+use crate::persistent_overlay::{MutationBatch, transaction_encoded_length};
 
 pub(super) struct LeafReplacement<'a> {
     pub parent: u64,
@@ -8,10 +8,35 @@ pub(super) struct LeafReplacement<'a> {
     pub replacement: Option<u64>,
 }
 
+pub(super) struct DirectoryMetadataReplacement {
+    pub ino: u64,
+    pub expected: (u32, u32, u32),
+    pub replacement: (u32, u32, u32),
+}
+
 pub(super) fn commit(
     state: &mut RootfsState,
     mount: &mut PersistentMount,
     edits: &[LeafReplacement<'_>],
+) -> Result<(), Errno> {
+    commit_impl(state, mount, edits, &[], false)
+}
+
+pub(super) fn commit_upgrade(
+    state: &mut RootfsState,
+    mount: &mut PersistentMount,
+    edits: &[LeafReplacement<'_>],
+    directory_metadata: &[DirectoryMetadataReplacement],
+) -> Result<(), Errno> {
+    commit_impl(state, mount, edits, directory_metadata, true)
+}
+
+fn commit_impl(
+    state: &mut RootfsState,
+    mount: &mut PersistentMount,
+    edits: &[LeafReplacement<'_>],
+    directory_metadata: &[DirectoryMetadataReplacement],
+    allow_directories: bool,
 ) -> Result<(), Errno> {
     if !mount.resizable {
         return Err(Errno::EOPNOTSUPP);
@@ -29,7 +54,7 @@ pub(super) fn commit(
     {
         return Err(Errno::EBUSY);
     }
-    if edits.is_empty() {
+    if edits.is_empty() && directory_metadata.is_empty() {
         return Ok(());
     }
     let mut scratch = ROOTFS_METADATA.reserve_temporary(0)?;
@@ -49,14 +74,12 @@ pub(super) fn commit(
             .map(|position| indices[position].1)
             .map_err(|_| Errno::ENOENT)
     };
-    let maximum_timestamps = edits.len().checked_mul(3).ok_or(Errno::ENOMEM)?;
+    let maximum_timestamps = edits
+        .len()
+        .checked_mul(3)
+        .and_then(|count| count.checked_add(directory_metadata.len()))
+        .ok_or(Errno::ENOMEM)?;
     let mut timestamps = reserve_replay_vec(maximum_timestamps, &mut scratch)?;
-    let mut transaction = MutationBatch::new(
-        edits
-            .len()
-            .checked_add(maximum_timestamps)
-            .ok_or(Errno::ENOMEM)?,
-    )?;
     let mut order = CanonicalDirentOrder::new();
     for edit in edits {
         order
@@ -80,26 +103,42 @@ pub(super) fn commit(
         for ino in [edit.expected, edit.replacement].into_iter().flatten() {
             let index = index_for(ino)?;
             let inode = state.get(index).ok_or(Errno::EIO)?;
-            if matches!(
-                inode.kind,
-                InodeKind::PersistentRegular
-                    | InodeKind::BaseRegular { .. }
-                    | InodeKind::LazyMember { .. }
-            ) && inode.mode & 0o6000 != 0
+            if !(allow_directories && inode.is_dir())
+                && !matches!(
+                    inode.kind,
+                    InodeKind::PersistentRegular
+                        | InodeKind::BaseRegular { .. }
+                        | InodeKind::LazyMember { .. }
+                        | InodeKind::Symlink(_)
+                )
             {
-                return Err(Errno::EOPNOTSUPP);
-            }
-            if !matches!(
-                inode.kind,
-                InodeKind::PersistentRegular
-                    | InodeKind::BaseRegular { .. }
-                    | InodeKind::LazyMember { .. }
-                    | InodeKind::Symlink(_)
-            ) {
                 return Err(Errno::EOPNOTSUPP);
             }
             timestamps.push((index, NamespaceTimestamp::Changed));
         }
+    }
+    let mut previous = None;
+    for change in directory_metadata {
+        if previous.is_some_and(|ino| ino >= change.ino) || change.replacement.0 & !0o7777 != 0 {
+            return Err(Errno::EINVAL);
+        }
+        previous = Some(change.ino);
+        let index = index_for(change.ino)?;
+        let inode = state.get(index).ok_or(Errno::EIO)?;
+        if !inode.is_dir() {
+            return Err(Errno::ENOTDIR);
+        }
+        if (inode.mode, inode.uid, inode.gid) != change.expected {
+            return Err(Errno::EEXIST);
+        }
+        timestamps.push((index, NamespaceTimestamp::Changed));
+    }
+    timestamps.sort_unstable_by_key(|(index, stamp)| {
+        (*index, matches!(stamp, NamespaceTimestamp::Changed))
+    });
+    timestamps.dedup_by_key(|(index, _)| *index);
+    let mut transaction = MutationBatch::new(edits.len().checked_add(timestamps.len()).ok_or(Errno::ENOMEM)?)?;
+    for edit in edits {
         transaction.push_with(edit.name.len().checked_add(8).ok_or(Errno::ENOMEM)?, || {
             let mut name = Vec::new();
             name.try_reserve_exact(edit.name.len())
@@ -120,10 +159,6 @@ pub(super) fn commit(
             }
         })?;
     }
-    timestamps.sort_unstable_by_key(|(index, stamp)| {
-        (*index, matches!(stamp, NamespaceTimestamp::Changed))
-    });
-    timestamps.dedup_by_key(|(index, _)| *index);
     let allocated = state.persistent_allocated_blocks.ok_or(Errno::EIO)?;
     let projected = persistent_namespace_blocks(state, transaction.as_slice(), &timestamps)?;
     let capacity = state.image.ok_or(Errno::EIO)?.capacity_bytes.div_ceil(4096);
@@ -153,7 +188,7 @@ pub(super) fn commit(
         let inode = state.get(index).ok_or(Errno::EIO)?;
         let target_bytes = match &inode.kind {
             InodeKind::Symlink(target) => target.len(),
-            _ => 0,
+            _ => inode.persistent_provider.len(),
         };
         let previous = scratch.bytes();
         scratch.resize(
@@ -161,7 +196,16 @@ pub(super) fn commit(
                 .checked_add(target_bytes.checked_mul(2).ok_or(Errno::ENOMEM)?)
                 .ok_or(Errno::ENOMEM)?,
         )?;
-        let mut change = PreparedPersistentMetadataChange::from_inode(index, inode)?;
+        let mut change = PreparedPersistentMetadataChange::from_inode(state, index)?;
+        if let Ok(position) =
+            directory_metadata.binary_search_by_key(&inode.ino, |change| change.ino)
+        {
+            (
+                change.metadata.mode,
+                change.metadata.uid,
+                change.metadata.gid,
+            ) = directory_metadata[position].replacement;
+        }
         scratch.resize(
             previous
                 .checked_add(

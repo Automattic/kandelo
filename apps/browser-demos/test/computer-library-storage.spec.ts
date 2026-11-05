@@ -8,6 +8,46 @@ const urls = {
   lease: "/@fs/" + resolve(import.meta.dirname, "../../../host/src/browser-persistence-computer-lease.ts"),
 };
 
+test("software product selection survives source URL changes without becoming filesystem authority", async ({ page }) => {
+  await page.goto("/trap-signal-test.html");
+  const result = await page.evaluate(async urls => {
+    const { BrowserComputerStore } = await import(urls.store);
+    const { browserComputerDirectory } = await import(urls.storage);
+    const store = new BrowserComputerStore();
+    const descriptor = { version: 1, id: "shell", title: "Shell", base: "kandelo:shell@local",
+      runtime: { arch: "wasm32", kernel: "kernel@local", features: [] }, packages: [],
+      mounts: [{ path: "/", source: "image", ref: "https://example.test/old-release/shell.vfs.zst" }],
+      boot: { argv: ["/usr/bin/login"], cwd: "/root", env: {} } };
+    const computer = await store.create(descriptor, "saved");
+    try {
+      await store.update(computer.id, { softwareProductId: "browser-main-shell" });
+      await store.update(computer.id, { title: "Renamed computer" });
+      const directory = await browserComputerDirectory(computer.id, false);
+      const metadata = await directory.getFileHandle("computer.json");
+      const changed = JSON.parse(await (await metadata.getFile()).text());
+      changed.descriptor.mounts[0].ref = "https://example.test/retired-source/shell.vfs.zst";
+      const writer = await metadata.createWritable();
+      await writer.write(JSON.stringify(changed));
+      await writer.close();
+      const stored = await store.read(computer.id);
+      const rejected: string[] = [];
+      for (const invalid of ["", "../outside", "https://example.test/program", "x".repeat(129)]) {
+        try { await store.update(computer.id, { softwareProductId: invalid }); }
+        catch { rejected.push(invalid); }
+      }
+      const unknown = await store.update(computer.id, { softwareProductId: "future-unavailable-product" });
+      const persisted = JSON.parse(await (await (await directory.getFileHandle("computer.json")).getFile()).text());
+      return { stored, rejected, unknown: unknown.softwareProductId, persisted: persisted.softwareProductId };
+    } finally { await store.remove(computer.id); }
+  }, urls);
+  expect(result.stored.softwareProductId).toBe("browser-main-shell");
+  expect(result.stored.descriptor.mounts[0].ref).toBe("https://example.test/retired-source/shell.vfs.zst");
+  expect(result.stored.title).toBe("Renamed computer");
+  expect(result.rejected).toHaveLength(4);
+  expect(result.unknown).toBe("future-unavailable-product");
+  expect(result.persisted).toBe(result.unknown);
+});
+
 test("the computer namespace starts fresh without reading, migrating or cleaning the old machine storage", async ({ page }) => {
   await page.goto("/trap-signal-test.html");
   const result = await page.evaluate(async urls => {

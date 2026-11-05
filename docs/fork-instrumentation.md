@@ -24,6 +24,11 @@ ABI version: `ABI_VERSION` in
 [`crates/program-abi/src/lib.rs`](../crates/program-abi/src/lib.rs) — see
 [abi-versioning.md](abi-versioning.md) for the policy.
 
+> **Contract version:** the fork contract has its own version in
+> `abi/fork-contract.json`. This tool does not stamp programs yet, and must
+> before that version rises past 1. See
+> [before raising the fork contract](persistent-program-compatibility.md#before-raising-the-fork-contract-to-version-2).
+
 ## Policy
 
 **Upgrade warning:** the instrumentation contract is versioned but is not yet

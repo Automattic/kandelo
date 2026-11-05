@@ -164,7 +164,7 @@ fn matches_the_existing_catalog_on_frozen_programs_and_modern_type_models() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 7);
+    assert_eq!(checked, 8);
     for source in [
         "(module)",
         "(module (memory 1))",

@@ -2,6 +2,7 @@
 
 pub mod channel_record;
 pub mod channel_scalar;
+pub mod package_maintenance_wire;
 pub mod host_abi;
 pub mod host_raw_syscalls;
 pub mod ioctl_contract;
@@ -2195,7 +2196,7 @@ pub mod abi {
     /// 1: the host accepted any kernel requiring at most its own version.
     /// 2: the check is exact, and this version (not `ABI_VERSION`) is the
     ///    epoch for kernel-host-only changes (ABI 55).
-    pub const HOST_ADAPTER_VERSION: u32 = 4;
+    pub const HOST_ADAPTER_VERSION: u32 = 5;
     pub const HOST_ADAPTER_MANIFEST_SIZE: u16 = core::mem::size_of::<HostAdapterManifest>() as u16;
 
     pub const HOST_FEATURE_SHARED_ARRAY_BUFFER: u32 = 1 << 0;
@@ -2373,6 +2374,7 @@ pub mod abi {
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_configure", 50, 51),
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_read", 50, 51),
         HostAdapterKernelExport::required("kernel_mark_process_signaled"),
+        HostAdapterKernelExport::required("kernel_package_maintenance"),
         HostAdapterKernelExport::required("kernel_pcm_claim_transport"),
         HostAdapterKernelExport::required("kernel_pcm_clock_update"),
         HostAdapterKernelExport::required("kernel_pcm_reconcile"),

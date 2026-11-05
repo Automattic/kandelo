@@ -66,7 +66,7 @@ import {
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
 const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs.zst");
-const PHP_FPM_WORKERS = 1;
+const PHP_FPM_WORKERS = "${KANDELO_PREFORK_SERVICE_PROCESSES:-1}";
 const PHP_FPM_UID = 65534;
 const PHP_FPM_GID = 65534;
 // WordPress layers service binaries and application data on the complete

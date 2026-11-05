@@ -10,6 +10,39 @@ The More menu, community links, structured image-progress rows, arbitrary
 guest website picker and terminal preview command are documented in
 [Browser support](browser-support.md#arbitrary-guest-websites).
 
+### Attribute preview failures across navigation and maintenance
+
+The real WordPress maintenance/restart workflow preserves its published post,
+but Firefox reports an unhandled `fetch_error` from the guest dashboard and
+WebKit also reports access-control failures for guest compression-test XHRs.
+Keep browser-level diagnostics separate from JavaScript window exceptions:
+they do not have a one-to-one event relationship. Tests now retain both and
+identify the frame that emitted each window exception. This is not a claim
+that every preview transport failure is harmless. Trace request cancellation
+and bridge generations across navigation and whole-computer retirement before
+changing behavior; do not suppress guest errors or let an old preview reach a
+new kernel accidentally.
+
+The same workflow has reported a process-worker `munmap` failure with `EINTR`
+during retirement. Determine whether it is an expected interruption or an
+unresolved cleanup failure from authoritative process/generation state.
+Preserve exact retirement ownership and real errors rather than translating
+all shutdown-time failures into successful cleanup.
+
+The real earlier-to-current package revision/recovery tests also report
+`onClone` refusing a new pthread worker because the kernel is being destroyed,
+and a thread-worker WebAssembly exception. Attribute these to their exact
+retiring generation and process state before deciding whether admission,
+unwinding or diagnostic classification is wrong. Passing post/media recovery
+does not by itself prove every retirement path correct.
+
+During boot, the first ready Web preview can replace a Terminal view selected
+after the kernel's running status but before the first HTTP response. Keep
+kernel startup, service readiness and the user's current view separate. Tests
+that need a fully ready website wait for its actual response rather than
+treating kernel-running as HTTP readiness; a future UI change should also
+avoid overriding an explicit user selection with late default presentation.
+
 ### Discover guest listeners without image declarations
 
 An optional listener inventory for Open website should come from authoritative

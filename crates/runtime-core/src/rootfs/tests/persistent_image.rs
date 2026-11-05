@@ -1,5 +1,6 @@
 use super::*;
 use crate::kandelo_image_write::{Content, KandeloImageConfig, KandeloImageWriter, NoContent};
+use crate::rootfs::package_maintenance::{Maintenance, guest_admission_blocked};
 use crate::persistent_image::{
     CacheConfig, DATA_BYTES, HEADER_BYTES, ImageBuilder, ImageIdentity, IntegrityPolicy,
     PositionedImageWriter,
@@ -34,6 +35,7 @@ struct Fixture {
     identity: ImageIdentity,
     content: Vec<u8>,
     corruption_offset: usize,
+    container: Vec<u8>,
 }
 
 impl Drop for Fixture {
@@ -243,6 +245,10 @@ fn fixture(policy: IntegrityPolicy) -> Fixture {
 }
 
 fn fixture_with_size(policy: IntegrityPolicy, content_bytes: usize, image_bytes: u64) -> Fixture {
+    fixture_with_metadata(policy, content_bytes, image_bytes, None)
+}
+
+fn fixture_with_metadata(policy: IntegrityPolicy, content_bytes: usize, image_bytes: u64, metadata: Option<&[u8]>) -> Fixture {
     let mut content = (0..content_bytes)
         .map(|index| (index % 251) as u8)
         .collect::<Vec<_>>();
@@ -262,7 +268,7 @@ fn fixture_with_size(policy: IntegrityPolicy, content_bytes: usize, image_bytes:
         &ContainerSections {
             lazy_json: b"[]",
             archive_json: None,
-            metadata_json: None,
+            metadata_json: metadata,
             kernel_lazy: None,
         },
     )
@@ -286,7 +292,151 @@ fn fixture_with_size(policy: IntegrityPolicy, content_bytes: usize, image_bytes:
         identity,
         content,
         corruption_offset,
+        container,
     }
+}
+
+#[test]
+fn persistent_data_mount_preserves_an_old_program_declaration_without_admitting_tasks() {
+    let _guard = TestGuard::acquire();
+    let metadata = br#"{"version":1,"kernelAbi":54}"#;
+    let fixture = fixture_with_metadata(IntegrityPolicy::Crc32c, 8 * DATA_BYTES + 17, 4 * 1024 * 1024, Some(metadata));
+    assert_eq!(load_image(fixture.container.len() as u64, image_host(&fixture.container)), Err(Errno::EPROTO));
+    assert!(load(&fixture).is_ok());
+    let mut actual = vec![0; metadata.len()];
+    assert_eq!(copy_image_metadata(Some(&mut actual)), Ok(metadata.len()));
+    assert_eq!(actual, metadata);
+    let mut table = crate::process_table::ProcessTable::new();
+    assert_eq!(table.create_process(), Err(Errno::EBUSY));
+    assert!(!table.has_allocated_user_tasks());
+    let mut bytes = [0; 17];
+    assert_eq!(read_file_at(b"/file", 0, &mut bytes, no_bytes()), Ok(bytes.len()));
+    assert_eq!(bytes, fixture.content[..bytes.len()]);
+}
+
+#[test]
+fn failed_checked_mount_and_reset_do_not_reopen_guest_admission() {
+    let _guard = TestGuard::acquire();
+    let fixture = fixture(IntegrityPolicy::Crc32c);
+    fixture.bytes.lock()[HEADER_BYTES] ^= 1;
+    assert!(load(&fixture).is_err());
+    let mut table = crate::process_table::ProcessTable::new();
+    assert_eq!(table.create_process(), Err(Errno::EBUSY));
+    reset();
+    assert_eq!(table.create_process(), Err(Errno::EBUSY));
+    assert!(!table.has_allocated_user_tasks());
+}
+
+fn old_contract_inventory(path: &[u8], bytes: &[u8]) -> Vec<u8> {
+    crate::package_inventory::encode(
+        54,
+        [6; 32],
+        &[crate::package_inventory::PackageSpec {
+            name: b"base",
+            version: b"1",
+            content_digest: None,
+            dependencies: &[],
+        }],
+        &[super::package_upgrade::file(path, bytes)],
+    )
+    .unwrap()
+    .to_vec()
+}
+
+fn assess(table: &crate::process_table::ProcessTable) -> bool {
+    crate::rootfs::package_maintenance::assess_boot_runtime(table, 55, [7; 32], false, &mut no_bytes()).unwrap()
+}
+
+fn finish(session: &mut Maintenance, table: &crate::process_table::ProcessTable) {
+    while !session.verify_next(table, 1024, &mut no_bytes()).unwrap() {}
+}
+
+fn finish_staged(session: &mut Maintenance, table: &crate::process_table::ProcessTable) {
+    while !session.verify_staged_next(table, 1024, &mut no_bytes()).unwrap() {}
+}
+
+fn apply_current_set(table: &mut crate::process_table::ProcessTable, inventory: &[u8], bytes: &[u8]) {
+    let mut session = Maintenance::enter(table, 55, [7; 32]).unwrap();
+    session.upload_inventory(table, 0, inventory).unwrap();
+    session.begin_upgrade(table, &mut no_bytes()).unwrap();
+    finish(&mut session, table);
+    session.prepare(table, &mut no_bytes()).unwrap();
+    session.stage(table, 0, 0, bytes, &mut no_bytes()).unwrap();
+    finish_staged(&mut session, table);
+    session.commit(table).unwrap();
+    session.leave(table, &mut no_bytes()).unwrap();
+}
+
+#[test]
+fn old_program_contract_computer_upgrades_on_its_unchanged_base_and_rollback_cannot_release() {
+    let _guard = TestGuard::acquire();
+    let metadata = br#"{"version":1,"kernelAbi":54}"#;
+    let fixture = fixture_with_metadata(IntegrityPolicy::Crc32c, 8 * DATA_BYTES + 17, 4 * 1024 * 1024, Some(metadata));
+    let base = fixture.bytes.lock().clone();
+    let reopen = |storage: &SharedJournalStorage| {
+        reset();
+        load(&fixture).unwrap();
+        enable_resizable_persistence(Box::new(storage.clone()), fixture.identity.digest, &mut no_bytes()).unwrap();
+    };
+    load(&fixture).unwrap();
+    let journal = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+    enable_resizable_persistence(Box::new(journal.clone()), fixture.identity.digest, &mut no_bytes()).unwrap();
+    let before = old_contract_inventory(b"/software", b"old software");
+    mkdir_parents_checked(crate::package_inventory::STATE_ROOT, 0o700, 0, 0).unwrap();
+    mkdir(crate::package_inventory::STATE_ROOT, 0o700, 0, 0).unwrap();
+    write_file_at(crate::rootfs::package_upgrade::INSTALLED, 0, &before, 0o600, true, &mut no_bytes()).unwrap();
+    write_file_at(b"/software", 0, b"old software", 0o644, true, &mut no_bytes()).unwrap();
+    write_file_at(b"/user-post", 0, b"retain posts and media", 0o644, true, &mut no_bytes()).unwrap();
+    sync_persistence().unwrap();
+
+    let mut table = crate::process_table::ProcessTable::new();
+    assert!(assess(&table));
+    assert_eq!(table.create_process(), Err(Errno::EBUSY));
+    let after = super::package_upgrade::manifest(b"2", &[super::package_upgrade::file(b"/software", b"current software")]);
+    apply_current_set(&mut table, &after, b"current software");
+    assert!(!guest_admission_blocked());
+
+    let mut table = crate::process_table::ProcessTable::new();
+    reopen(&journal);
+    assert!(!assess(&table));
+    assert!(table.create_process().is_ok());
+    assert_eq!(*fixture.bytes.lock(), base);
+    let mut declared = vec![0; metadata.len()];
+    assert_eq!(copy_image_metadata(Some(&mut declared)), Ok(metadata.len()));
+    assert_eq!(declared, metadata);
+    assert_eq!(super::package_upgrade::contents(b"/software", &mut no_bytes()), b"current software");
+
+    let mut table = crate::process_table::ProcessTable::new();
+    reopen(&journal);
+    assess(&table);
+    let mut session = Maintenance::enter(&mut table, 55, [7; 32]).unwrap();
+    session.resume_upgrade(&table, &mut no_bytes()).unwrap();
+    finish(&mut session, &table);
+    finish_staged(&mut session, &table);
+    session.commit(&table).unwrap();
+    assert_eq!(session.leave(&mut table, &mut no_bytes()), Err(Errno::ENOEXEC.into()));
+    assert!(table.is_in_maintenance());
+    assert_eq!(table.create_process(), Err(Errno::EBUSY));
+    assert_eq!(super::package_upgrade::contents(b"/software", &mut no_bytes()), b"old software");
+    assert_eq!(super::package_upgrade::contents(b"/user-post", &mut no_bytes()), b"retain posts and media");
+    drop(session);
+
+    let mut table = crate::process_table::ProcessTable::new();
+    reopen(&journal);
+    assert!(assess(&table));
+    assert_eq!(table.create_process(), Err(Errno::EBUSY));
+    assert!(!table.has_allocated_user_tasks());
+    let mut session = Maintenance::enter(&mut table, 55, [7; 32]).unwrap();
+    session.discard_transaction(&table, &mut no_bytes()).unwrap();
+    assert_eq!(session.leave(&mut table, &mut no_bytes()), Err(Errno::ENOEXEC.into()));
+    drop(session);
+
+    let mut table = crate::process_table::ProcessTable::new();
+    reopen(&journal);
+    assert!(assess(&table));
+    apply_current_set(&mut table, &after, b"current software");
+    assert_eq!(super::package_upgrade::contents(b"/user-post", &mut no_bytes()), b"retain posts and media");
+    assert_eq!(*fixture.bytes.lock(), base);
 }
 
 fn load(fixture: &Fixture) -> Result<usize, Errno> {

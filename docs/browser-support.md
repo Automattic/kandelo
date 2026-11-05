@@ -262,16 +262,14 @@ pipe pair.
   RAM-only scratch mounts. `/tmp`, `/var/tmp`, `/var/log`, `/var/run`, and
   `/dev/shm` remain volatile. Memory-only computers lose all changes on shutdown.
 - The Kandelo page creates temporary, resizable, OPFS-backed computers by default.
-  **Release compatibility warning:** saved computers from this release will not
-  work in the next release. Export important files before updating Kandelo.
-  The app shows this warning when you choose to save a computer: in the
-  confirmation for keeping one, and when creating one with saved storage. A
-  saved computer then shows a **Warning** tag beside its name in the dock and
-  in Library, and clicking it reopens the warning.
-  The dock truncates the tag with an ellipsis when space is limited.
-  Temporary computers do not show it.
-  Transactional software upgrades remain follow-up work; persistence is not a
-  cross-release compatibility promise. Incompatible storage is not deleted.
+  **Release compatibility warning:** software updates keep files, posts and
+  media, but user-built programs may need rebuilding, computers saved by
+  earlier previews cannot be updated, and browser storage is not a backup.
+  The app displays a prominent, non-dismissible warning in Library, creation
+  and boot options, keep confirmations, and the dock after automatic reopen.
+  Persistence is still experimental, not a permanent compatibility promise.
+  Incompatible storage is not deleted.
+  The dock truncates the warning tag with an ellipsis when space is limited.
   Each has a stable `?computer=<UUID>` URL that reopens the same computer on
   reload, without downloading its starting image again. **New computer** inside
   **Library** offers **Temporary** (default) and **Saved on this device**; Library
@@ -1709,6 +1707,46 @@ Playwright's emulated device scale does not change the size the pane
 reports.
 
 ### Kandelo session UI
+
+#### Software maintenance (experimental)
+
+Computers with a pristine installed-package inventory expose **More →
+Software updates**. Entering maintenance stops the current computer through
+the normal serialized teardown and reopens its saved filesystem without
+starting guest programs, devices or the HTTP bridge. Native recovery admission
+is checked before profile-specific writes. Pending or unreadable package
+authority keeps the computer paused. **Start computer** is an explicit action
+and must pass native compatibility admission; cancelling an operation does
+not implicitly restart programs.
+
+**Update from this release** requires a verified content-addressed product
+bundle. An ordinary development server without a private product map cannot
+install current-release software. A retained per-computer source can still
+resume its saved transaction. The `software/source.json` receipt and raw
+target images live under `kandelo/computers/<id>/`, separate from the live
+filesystem. The receipt only locates source bytes: Rust owns inventory,
+compatibility, conflict and content checks. Source reads and retirement are
+cancellable; unconfirmed source cleanup prevents computer-lease reuse.
+
+The verified download has a transport identity (the compressed image's
+length and SHA-256), distinct from the decoded OPFS source's length and
+SHA-256. The loader authenticates the former during streaming; the retained
+receipt records the latter for the positioned reader. They must not be
+compared as if they described the same bytes.
+
+After a trusted product boot, computer metadata retains a bounded
+`softwareProductId` selection hint. Updates select that product in the current
+verified release instead of requiring an old image URL to equal a new one.
+This hint is not package or execution authority: Rust still admits the target
+inventory and preserves conflict checks. Unknown product IDs do not invalidate
+the saved computer, but cannot select an unavailable release bundle.
+
+Rollback restores packaged files, not database contents. Database migrations
+remain separate, and user-built forking programs may require rebuilding when
+the explicitly unstable instrumentation contract changes. This surface is
+experimental, and the persistence warning says what it does and does not keep.
+Storage coverage and its limits are described in
+[the durability contract](persistence-durability.md#release-acceptance-map).
 
 #### Computer library and retention
 

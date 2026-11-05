@@ -2189,6 +2189,9 @@ pub extern "C" fn kernel_rootfs_io_limit_bytes() -> u32 {
 /// `rootfs::load_image`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32) -> i32 {
+    if let Err(error) = unsafe { &*PROCESS_TABLE.0.get() }.require_boot_configuration() {
+        return -(error as i32);
+    }
     let image_len = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
     let mut host = WasmHostIO;
     match crate::rootfs::load_image(image_len, |req, b| match req {
@@ -2225,6 +2228,9 @@ pub extern "C" fn kernel_rootfs_load_persistent_image(
     data_pages: u32,
     index_pages: u32,
 ) -> i32 {
+    if let Err(error) = unsafe { &*PROCESS_TABLE.0.get() }.require_boot_configuration() {
+        return -(error as i32);
+    }
     let mut expected = [0; 32];
     for (index, word) in [digest0, digest1, digest2, digest3, digest4, digest5, digest6, digest7].into_iter().enumerate() {
         expected[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
@@ -2427,6 +2433,9 @@ fn enable_rootfs_persistence(
     checkpoint_end: Option<u64>,
     resizable: bool,
 ) -> i32 {
+    if let Err(error) = unsafe { &*PROCESS_TABLE.0.get() }.require_boot_configuration() {
+        return -(error as i32);
+    }
     let image_len = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
     let mut host = WasmHostIO;
     let base_digest = if let Some(binding) = crate::rootfs::persistent_image_binding() {
@@ -3061,6 +3070,39 @@ pub extern "C" fn kernel_rootfs_lazy_resource_limits(
     }
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     read_inspection_chunk(&INSPECTION_URLS, offset, out)
+}
+
+static PACKAGE_MAINTENANCE: spin::Mutex<crate::rootfs::package_maintenance::control::Controller> =
+    spin::Mutex::new(crate::rootfs::package_maintenance::control::Controller::new());
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_package_maintenance(
+    opcode: u32, index: u32, offset_lo: u32, offset_hi: u32, buf_ptr: *mut u8, buf_len: u32,
+) -> i32 {
+    if buf_len > wasm_posix_shared::package_maintenance_wire::MAX_BUFFER_BYTES { return -(Errno::E2BIG as i32); }
+    #[cfg(target_arch = "wasm32")]
+    let pages = core::arch::wasm32::memory_size(0);
+    #[cfg(target_arch = "wasm64")]
+    let pages = core::arch::wasm64::memory_size(0);
+    let limit = pages.checked_mul(65536);
+    let end = (buf_ptr as usize).checked_add(buf_len as usize);
+    if buf_len != 0 && (buf_ptr.is_null() || end.zip(limit).is_none_or(|(end, limit)| end > limit)) {
+        return -(Errno::EFAULT as i32);
+    }
+    let bytes = if buf_len == 0 { &mut [] } else { unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) } };
+    let Some(mut controller) = PACKAGE_MAINTENANCE.try_lock() else { return -(Errno::EBUSY as i32); };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    let result = controller.call(table, opcode, index, (u64::from(offset_hi) << 32) | u64::from(offset_lo), bytes,
+        &mut |request, output| match request {
+            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, output, offset),
+            crate::rootfs::ByteReq::DiscardDeferred { uri } => { host.discard_deferred(&uri); Ok(0) },
+            crate::rootfs::ByteReq::Image { offset } => host.image_read(output, offset),
+        });
+    match result {
+        Ok(count) => i32::try_from(count).unwrap_or(-(Errno::EOVERFLOW as i32)),
+        Err(error) => -(crate::rootfs::package_maintenance::control::error_errno(error) as i32),
+    }
 }
 
 /// Copy up to `buf_len` bytes of the overlay tree export (RXPT metadata buffer,

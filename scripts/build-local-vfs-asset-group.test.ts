@@ -97,7 +97,7 @@ test("produces every registered image and the 80-body closure from all legacy re
         private: basename(private_path),
       })),
       PRODUCTS.map(([id, load, _sourceName, output]) => ({
-        group: "vfs-groups/release-1/manifest.json",
+        group: `vfs-groups/${sha256(readFileSync(join(fixture.outputDirectory, "manifest.json")))}/manifest.json`,
         id,
         load,
         private: output,

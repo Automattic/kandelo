@@ -47,6 +47,33 @@ function growAfterLengthRead(length: number, maximum: number): Uint8Array {
 afterEach(() => { workers.length = 0; vi.useRealTimers(); });
 
 describe("persistent image codec worker ownership", () => {
+  it("copies all 72 journal-header bytes and returns the native identity through closed workers", async () => {
+    const input = growAfterLengthRead(72, 2 * 1024 * 1024);
+    const pending = runPersistentImageControl(moduleBytes, 12, input);
+    expect(workers).toHaveLength(1);
+    const message = workers[0].sent[0];
+    if (message.type !== "control") throw new Error("missing control");
+    expect(message.operation).toBe(12);
+    expect(message.input).toHaveLength(72);
+    expect(message.input.buffer.byteLength).toBe(72);
+    expect(message.input[71]).toBe(19);
+    const identity = new Uint8Array(32).fill(23);
+    workers[0].reply({ type: "controlled", result: identity, closed: true });
+    await expect(pending).resolves.toEqual(identity);
+    expect(workers[0].terminate).toHaveBeenCalledOnce();
+  });
+
+  it("refuses journal-header geometry mismatches before or after native validation", async () => {
+    for (const length of [0, 64, 71, 73]) {
+      await expect(runPersistentImageControl(moduleBytes, 12, new Uint8Array(length))).rejects.toThrow(/invalid/);
+    }
+    expect(workers).toHaveLength(0);
+    const pending = runPersistentImageControl(moduleBytes, 12, new Uint8Array(72));
+    workers[0].reply({ type: "controlled", result: new Uint8Array(31), closed: true });
+    await expect(pending).rejects.toThrow(/geometry/);
+    expect(workers[0].terminate).toHaveBeenCalledOnce();
+  });
+
   it.each(["closed", "unproven", "early"] as const)("source staging requires EOF and physical close proof: %s", async scenario => {
     async function* chunks() { yield Uint8Array.of(11, 17, 23); }
     const pending = stageSourceImageFile(file, moduleBytes, 100, chunks());

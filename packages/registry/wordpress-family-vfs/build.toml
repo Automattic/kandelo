@@ -9,6 +9,8 @@ inputs = [
   "apps/browser-demos/lib/init/wordpress-runtime-config.ts",
   "cargo:kandelo-image-module",
   "cargo:runtime-core",
+  "cargo:xtask",
+  "abi/snapshot.json",
   "crates/kandelo-image-module/build-wasm.sh",
   "packages/registry/wordpress-family-vfs/build.sh",
 ]

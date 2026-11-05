@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build, preview, type PreviewServer } from "../apps/browser-demos/node_modules/vite/dist/node/index.js";
-import { createProgramCompatibilityImage } from "../host/test/fixtures/program-compatibility";
+import { createProgramCompatibilityImage, frozenEchoBytes } from "../host/test/fixtures/program-compatibility";
 
 const port = Number(process.argv[2]);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Expected one unprivileged test server port");
@@ -26,7 +26,9 @@ try {
   process.env.KANDELO_BROWSER_DEMO_INPUTS = "program-compatibility-test";
   process.env.VITE_BASE = "/";
   await build({ root: app, configFile: join(app, "vite.config.ts"), build: { outDir: directory, emptyOutDir: true } });
-  writeFileSync(join(directory, "program-compatibility.vfs"), await createProgramCompatibilityImage());
+  writeFileSync(join(directory, "frozen-lazy-echo.wasm"), frozenEchoBytes());
+  writeFileSync(join(directory, "program-compatibility.vfs"),
+    await createProgramCompatibilityImage(`http://127.0.0.1:${port}/frozen-lazy-echo.wasm`));
   server = await preview({
     root: app, configFile: false, build: { outDir: directory },
     preview: {

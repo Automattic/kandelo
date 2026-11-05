@@ -42,7 +42,7 @@ function runCodec(job: Job, chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Ar
   options.assertCurrent?.();
   const moduleBytes = snapshotCodecModule(job.moduleBytes);
   job = { ...job, moduleBytes, ...(job.type === "control" ? {
-    input: new Uint8Array(new Uint8Array(job.input.buffer, job.input.byteOffset, 64)),
+    input: new Uint8Array(new Uint8Array(job.input.buffer, job.input.byteOffset, job.operation === 12 ? 72 : 64)),
   } : {}) };
   const worker = new ImageCodecWorker();
   return new Promise<Result>((resolve, reject) => {
@@ -261,11 +261,12 @@ export async function writePersistentImageFile(
 
 export async function runPersistentImageControl(
   moduleBytes: Uint8Array,
-  operation: 19 | 20,
+  operation: 12 | 19 | 20,
   input: Uint8Array,
   options: ImageCodecOptions = {},
 ): Promise<Uint8Array | number> {
-  if (input.length !== 64 || (operation !== 19 && operation !== 20)) throw new Error("Persistent image control request is invalid");
+  if (!(input instanceof Uint8Array) || input.length !== (operation === 12 ? 72 : 64)
+    || (operation !== 12 && operation !== 19 && operation !== 20)) throw new Error("Persistent image control request is invalid");
   const pending = runCodec({ type: "control", moduleBytes, operation, input }, undefined, options);
   moduleBytes = EMPTY_CODEC_BYTES;
   input = EMPTY_CODEC_BYTES;
@@ -273,7 +274,7 @@ export async function runPersistentImageControl(
   if (result.type !== "controlled") throw new Error("Persistent image control returned no result");
   if (typeof result.result === "number") {
     if (!Number.isInteger(result.result) || result.result >= 0 || result.result <= -4096) throw new Error("Persistent image control returned an invalid errno");
-  } else if (!(result.result instanceof Uint8Array) || result.result.length !== (operation === 19 ? 0 : 8)) {
+  } else if (!(result.result instanceof Uint8Array) || result.result.length !== (operation === 12 ? 32 : operation === 19 ? 0 : 8)) {
     throw new Error("Persistent image control returned invalid transport geometry");
   }
   return result.result;

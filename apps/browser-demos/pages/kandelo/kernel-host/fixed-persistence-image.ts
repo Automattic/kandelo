@@ -1,6 +1,6 @@
 import type { ImageOwnedRuntimeLazyAssets } from "../../../lib/init/image-owned-runtime-urls";
 import { browserPersistenceDirectory, browserJournalBelongsToComputer } from "../../../../../host/src/browser-computer-storage";
-import type { ComposeImageResult } from "./image-composer";
+import { parseStoredComposition, type StoredComposition } from "./stored-composition";
 import { snapshotPersistentImageReadBinding, type PersistentImageReadBinding } from "../../../../../host/src/vfs/image-integrity";
 import type { PersistentImageIntegrityPolicy } from "../../../../../images/vfs/lib/kandelo-image-fs";
 import { loadPositionedImageWriterModuleBytes } from "../../../lib/kernel-owned-boot";
@@ -14,8 +14,6 @@ import { parseSealedGenerationSlot } from "../../../../../host/src/vfs/overlay-g
 export { UnprovenImageFreshnessError } from "../../../../../host/src/vfs/image-binding-state";
 import { sha256 as incrementalSha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { parseKandeloDemoConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
-import { parseExperimentalTerminalSession } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import { acquireBrowserPersistenceComputerLease, type BrowserPersistenceComputerLease } from "../../../../../host/src/browser-persistence-computer-lease";
 
 const FORMAT_V6 = "kandelo-fixed-rootfs-image-v6";
@@ -50,11 +48,6 @@ async function readManifestText(file: FileSystemFileHandle, name: string): Promi
   manifestScope(name).retain(snapshot.size);
   return snapshot.text();
 }
-
-type StoredComposition = Pick<
-  ComposeImageResult,
-  "imageConfig" | "profileId" | "terminalSession" | "requiredServices"
->;
 
 interface ImageManifest {
   format: typeof FORMAT_V6;
@@ -495,33 +488,7 @@ async function verifySavedBinding(
 }
 
 function parseComposition(value: unknown, name: string): StoredComposition {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("experimental persistence base image composition is invalid");
-  }
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).length !== 4 ||
-    typeof record.profileId !== "string" || record.profileId.length > 128 ||
-    !Array.isArray(record.requiredServices) ||
-    record.requiredServices.length > 64 ||
-    !record.requiredServices.every((service) => typeof service === "string" && service.length <= 4096)
-  ) {
-    throw new Error("experimental persistence base image composition is invalid");
-  }
-  try {
-    const imageConfig = parseKandeloDemoConfig(encodeManifestValue(name, record.imageConfig));
-    if (imageConfig === null) throw new Error("invalid demo config");
-    const terminalSession = parseExperimentalTerminalSession(encodeManifestValue(name, record.terminalSession));
-    return {
-      imageConfig,
-      profileId: record.profileId,
-      terminalSession,
-      requiredServices: record.requiredServices as string[],
-    };
-  } catch (error) {
-    if ((error as { code?: string } | null)?.code === "ENOMEM") throw error;
-    throw new Error("experimental persistence base image composition is invalid");
-  }
+  return parseStoredComposition(value, (entry) => encodeManifestValue(name, entry));
 }
 
 function parseLazyAssets(value: unknown): ImageOwnedRuntimeLazyAssets | undefined {
@@ -775,10 +742,12 @@ async function verifyJournalHeader(
     const journal = file === null ? null : await file.getFile();
     if (journal === null || journal.size < 72) return false;
     const header = new Uint8Array(await journal.slice(0, 72).arrayBuffer());
-    return header.byteLength === 72 && new TextDecoder().decode(header.subarray(0, 4)) === "KOVL"
-      && new DataView(header.buffer).getUint32(4, true) === 1
-      && bytesToHex(header.subarray(8, 40)) === imageIdentitySha256
-      && await sha256(header.subarray(0, 40)) === bytesToHex(header.subarray(40, 72));
+    const result = await runPersistentImageControl(await loadPositionedImageWriterModuleBytes(), 12, header);
+    if (typeof result === "number") {
+      if (result === -ERRNO.EIO) return false;
+      throw Object.assign(new Error("Native journal header validation failed"), { errno: -result });
+    }
+    return bytesToHex(result) === imageIdentitySha256;
   };
   if (await matches(journalName + ".journal")) return;
   const prefix = journalName + ".";

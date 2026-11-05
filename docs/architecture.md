@@ -2361,6 +2361,7 @@ directory limits removal and rename to the entry's or directory's owner. On
 the ephemeral in-kernel filesystems `fsync` succeeds without host work: they
 have no separate durable backing. An opt-in persistent root instead flushes
 its Rust-owned journal through the host storage adapter and reports failures.
+See the [persistent storage overview](persistent-storage.md).
 
 Persistent-root `statfs` computes the canonical composed-checkpoint footprint
 from live inodes, retaining allocations held by open descriptions or
@@ -2773,6 +2774,11 @@ return admitted slots without growing the reclamation vector. Memory
 reservation failures report `ENOMEM`, separately from logical inode `ENOSPC`;
 reserved capacity is not counted as allocated disk space. A failed preparation
 can retain spare capacity, which the shared Rust metadata ledger charges.
+Single-inode growth doubles small arenas, then caps speculative growth at
+1,024 slots for both inode and reclamation vectors. Explicit bulk reservations
+still prepare their full requested count. This avoids refusing a small creation
+because an unnecessary doubling of a large arena exceeds metadata admission;
+retained capacity and old/new allocation overlap remain charged.
 The ledger also admits owned directory names before journal publication,
 symlink targets, deferred descriptions, archive descriptors, and image JSON.
 `rootfsMetadataBytes` defaults to and cannot exceed the smaller of 64 MiB and
@@ -2784,6 +2790,15 @@ component arrays admit capacity before allocating; vector growth admits the
 old/new overlap. These owners are released after loading or a reset-on-error,
 separately from the retained inode and namespace charges.
 The image module exposes the same Rust budget for composition and validation.
+Package inventories have a separate bounded native workset: 64 MiB of
+admission credits for encoded manifests, decoded ownership tables and producer
+records. These are package metadata, not file-read or writeback cache bytes.
+The workset is charged to the shared filesystem admission tracker and appears
+as `packages` in `/proc/kandelo/fs_memory`; it is released with the inventory
+or maintenance owner. Bulk use occurs during explicit image authoring and
+maintenance, not ordinary boot, which reads only small recovery authority.
+Actual heap exhaustion can still refuse an operation earlier. This does not
+raise kernel/process Wasm ceilings or change the I/O and writeback allowances.
 Its resident and positioned image loaders preserve the image's own namespace.
 Only computer boot adds kernel runtime mount directories; loading an image
 for inspection, editing or composition must not create `/run` or reject an

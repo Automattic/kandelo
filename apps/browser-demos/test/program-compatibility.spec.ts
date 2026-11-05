@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, test, type BrowserContext } from "@playwright/test";
-import { frozenPreparationSource, programCompatibilityManifest } from "../../../host/test/fixtures/program-compatibility";
+import { FROZEN_LAZY_EXECUTABLE_PATH, FROZEN_SIDE_MODULE_PATH, frozenPreparationSource, programCompatibilityManifest } from "../../../host/test/fixtures/program-compatibility";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import type { ProgramCompatibilityFixture } from "../pages/program-compatibility-test/main";
 
@@ -74,7 +74,11 @@ for (const persistence of [false, true]) test(`frozen supported programs and ret
     }
     expect(await run("/bin/wasm-fork-instrument", ["wasm-fork-instrument", "--help"])).toMatchObject({ status: "completed", exitCode: 0 });
     expect(await run("/bin/wasm-opt", ["wasm-opt", "--version"])).toMatchObject({ status: "completed", exitCode: 0 });
+    expect(await run(FROZEN_LAZY_EXECUTABLE_PATH, ["echo", "LAZY_EXECUTABLE"]))
+      .toMatchObject({ status: "completed", exitCode: 0, output: expect.stringContaining("LAZY_EXECUTABLE") });
     await context.setOffline(true);
+    expect(await run("/bin/dlopen", ["dlopen", FROZEN_SIDE_MODULE_PATH]))
+      .toMatchObject({ status: "completed", exitCode: 0, output: expect.stringContaining("multiply(5, 6) = 30") });
     const incompatibleFork = await identity("/launch/incompatible-fork");
     await expect(run("/launch/incompatible-fork", ["incompatible-fork"]))
       .rejects.toThrow(/Rebuild user-built forking programs with the current Kandelo SDK/);

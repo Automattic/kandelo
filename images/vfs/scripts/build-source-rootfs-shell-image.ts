@@ -44,6 +44,7 @@ import {
   PACKAGE_ROOTFS_SHELL_COMPOSITION,
 } from "./source-rootfs-shell-overlay";
 import type { ProgramOriginalResolver } from "./program-originals";
+import { archiveMemberDigests, currentSoftwareContract, installSoftwareInventory } from "./software-inventory";
 
 const REGULAR_FILE_MODE = 0o100000;
 const DIRECTORY_MODE = 0o040000;
@@ -87,6 +88,7 @@ export interface SourceRootfsShellInputs {
   resolveArtifact: ShellLazyArchiveResolver;
   resolveOriginal?: ProgramOriginalResolver;
   sourceDateEpoch?: string;
+  softwareInventory?: boolean;
 }
 
 // Every image binds bash as /bin/sh (docs/package-management.md); check
@@ -1789,6 +1791,18 @@ export async function buildSourceRootfsShellImage(
   // first-use download must retain the same path, URL, size, and tree metadata.
   const composedLazyState = serializedLazyState(fs);
 
+  if (inputs.softwareInventory) {
+    const specs = [...SHELL_LAZY_ARCHIVE_SPECS, ...SHELL_LAZY_DATA_ARCHIVE_SPECS];
+    const deferredDigests = archiveMemberDigests(fs, uri => {
+      const spec = specs.find(spec => spec.archiveUrl === uri);
+      if (!spec) throw new Error(`Undeclared software archive: ${uri}`);
+      return spec.id in dataArchivePaths
+        ? dataArchivePaths[spec.id as keyof typeof dataArchivePaths]
+        : inputs.resolveArtifact(spec.resolverPath, spec.dependency);
+    });
+    installSoftwareInventory(fs, "base-shell", { contract: currentSoftwareContract(), deferredDigests });
+  }
+
   const image = await saveImage(fs, inputs.outFile, {
     expectedMaxByteLength: sourceCapacity.maxByteLength,
     metadata: {
@@ -1886,6 +1900,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     demoConfigPath: values.get("--demo-config")!,
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,
     outFile: values.get("--out")!,
+    softwareInventory: true,
     resolveArtifact: strictResolverFromDependencyEnvironment(
       process.env,
       new Set(
