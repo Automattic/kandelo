@@ -9,7 +9,7 @@ on ABI 55, with Go fork `c925e9c9ca8c63c549053fd07d3fe0799473d4e0`.
 - The revision-32 WordPress image runs actual embedded PHP through both
   FrankenPHP classic and Caddy. Six visible Chromium cases prove
   homepage/admin/editor behavior, post writes, and real template saves.
-  On revision 31, the classic profile's post, upload,
+  The classic profile's post, upload,
   and homepage-template edits survive a browser-process crash in both
   persistent storage modes with the original image source disabled.
 - The new Go runtime retirement fix passes plain-Go/cgo shutdown probes
@@ -21,11 +21,16 @@ on ABI 55, with Go fork `c925e9c9ca8c63c549053fd07d3fe0799473d4e0`.
   passed its consumer check in 14m14s. The revision-32 image passed both
   Node service and shutdown checks; its stronger browser-host run passed
   five of six cases (WebKit classic lost its page context).
-- Next: repeat Caddy's visible Firefox flow and current-image crash
-  durability, isolate the WebKit kernel-worker stall and context loss, then
-  establish sustained traffic/memory behavior and current paired stack
-  comparisons. General Go signal notification, child credentials,
-  host-backed path limits, and broader conformance remain separate gaps.
+- Caddy's three visible Firefox cases and both current-image Chromium
+  crash-durability modes pass. Standalone Caddy passes HTTP in Node and
+  all three browsers through the rebuilt revision-4 artifact.
+- Caddy also passes all three visible WebKit cases. The full WebKit UI
+  run is 4/6: classic post writes pass, while classic editor health and
+  template navigation remain intermittent failures.
+- Next: finish the Go signal-notification port and validate application
+  shutdown, isolate the classic WebKit failures, then establish sustained
+  traffic/memory behavior and current paired stack comparisons. Child
+  credentials, host-backed path limits, and broader conformance remain gaps.
 
 The dated entries below retain the evidence and failures behind this
 checkpoint. They must not be read as current production-readiness claims.
@@ -4939,3 +4944,43 @@ bytes, and does not change Vite's resolver-cache boundary. It now passes
 previously unverified standalone-Caddy WebKit artifact gate. No browser
 workaround, compiler/package patch, or runtime-defect registry entry is
 needed for this test-transport correction.
+
+**2026-11-05 — Verify Firefox editing and revision-32 crash durability.**
+Caddy's three visible Firefox app cases pass in 5m05s
+(`wordpress-caddy-current-firefox-1105-170607-2452`): site/admin/editor
+rendering and health, authenticated post writes, and a genuine template
+Heading inserted, saved and found after fresh editor navigation. Both
+Chromium crash-durability cases also pass on revision 32 in 3m37s
+(`wordpress-current-template-durability-1105-170607-663a`). Posts, exact PNG
+bytes and the saved homepage template survive a browser-process crash in
+experimental and saved-computer storage with the original image source
+disabled and no image checkpoint. Screenshots at the existing
+`.context/frankenphp-template-after-restart-*-chromium.png` paths now show
+this current-image run.
+
+Current-image WebKit editor diagnosis is next, with a native stack capture
+armed from the actual editor-health request rather than sampling an earlier
+healthy navigation. General Go signal notification is also still missing:
+the wasm runtime's `sigenable`, `sigdisable` and `sigignore` remain no-ops.
+The retirement fix does not implement these hooks or prove Caddy completes
+in-flight requests after SIGTERM. Any signal port must preserve the real
+kernel handler/mask state and C/Go callback boundaries, not patch Caddy.
+
+The first current-image classic WebKit editor-health run passed in 1m52s
+(`webkit-current-editor-stall-1105-171428-8a5e`). Its native sampler was
+armed from the owned Playwright process to capture a health request still
+pending after 25s; no request met that condition, so no stalled stack was
+captured. The run does not resolve the earlier intermittent failure. A full
+six-case visible WebKit flow is running without that diagnostic attachment.
+
+
+**2026-11-05 — Finish the current-image WebKit UI run.**
+The full revision-32 run finishes 4/6 in 7m47s
+(`wordpress-current-webkit-ui-1105-171701-18ab`). All three Caddy cases pass:
+editor rendering/health, post writes, and actual template save/reload.
+Classic post writes pass, but its editor-health case fails and its template
+navigation reaches the static server's 503 guard despite an existing service
+worker controller. This is intermittent; the isolated health run passed.
+Neither that routing failure nor the separate browser-host page-context
+loss has an established browser-engine cause. The primary Caddy profile's
+visible workflows now pass in Chromium, Firefox, and WebKit.
