@@ -4449,3 +4449,18 @@ reach the visible editor canvas and render blocks from the real WordPress
 template on the projected source-only image. This does not yet establish
 editing and saving a template through the browser UI or a long-term server
 memory plateau.
+
+**2026-11-05 — Verify the site editor Save workflow.** The first classic
+Chromium save probe changed the default template's heading but waited the
+full 12-minute test timeout for a Save button. Its failure screenshot and
+accessibility snapshot showed the enabled Save button behind WordPress's
+first-run welcome dialog, while the Kandelo Shortcuts dialog also remained
+open. This was a test interaction error, not evidence of a FrankenPHP save
+failure. After dismissing both dialogs and bounding the click to 30 seconds,
+Save succeeded. The final classic test passed in 2.3m: it edited the heading,
+clicked Save, waited for the Save button to disappear, navigated to a fresh
+editor URL, and found the changed heading again. The matching Caddy-profile
+persistence case passed under the declared dev shell in 2.3m with the same
+edit, Save, and reload assertions. These are browser UI and same-machine
+persistence checks; they do not establish cross-session browser storage
+durability or production uptime.

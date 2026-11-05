@@ -194,4 +194,39 @@ for (const demo of [
     });
     await expect(page.locator('.kdock-status-text[data-status="error"]')).toHaveCount(0);
   });
+
+  test(`${demo.title} saves a template from the site editor`, async ({ page }) => {
+    test.setTimeout(720_000);
+    test.skip(process.env.KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS !== "1", "Build and project WordPress, then set KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS=1");
+    await gotoMachine(page, demo.profile);
+    const frame = page.frameLocator(`iframe[title="${demo.title}"]`);
+    await expect(frame.locator("body")).toContainText("WordPress on Kandelo", { timeout: 240_000 });
+    await page.getByRole("button", { name: "Shortcuts", exact: true }).click();
+    await page.getByRole("dialog", { name: "Shortcuts", exact: true }).getByRole("button", { name: /^Log in as admin\b/ }).click();
+    await expect(frame.locator("body.wp-admin")).toBeVisible({ timeout: 120_000 });
+    await page.getByRole("button", { name: "Close shortcuts", exact: true }).click();
+    const appPrefix = await machineAppPrefix(page, demo.title);
+    await gotoInPreview(frame, appPrefix, "wp-admin/site-editor.php?postType=wp_template&postId=twentytwentyfive//index&canvas=edit");
+    const canvas = frame.frameLocator('iframe[name="editor-canvas"]');
+    await expect(canvas.locator("[data-block]").first()).toBeVisible({ timeout: 180_000 });
+    const welcome = frame.getByRole("dialog", { name: "Welcome to the site editor" });
+    if (await welcome.isVisible()) {
+      await welcome.getByRole("button", { name: "Get started", exact: true }).click();
+    }
+    const heading = canvas.locator('h1[contenteditable="true"]').first();
+    const savedHeading = "Kandelo template save probe";
+    await heading.fill(savedHeading);
+    await expect(heading).toContainText(savedHeading);
+    await frame.getByRole("button", { name: "Save", exact: true }).click({ timeout: 30_000 });
+    await expect(frame.getByRole("button", { name: "Save", exact: true }))
+      .toHaveCount(0, { timeout: 120_000 });
+    await gotoInPreview(
+      frame,
+      appPrefix,
+      `wp-admin/site-editor.php?postType=wp_template&postId=twentytwentyfive//index&canvas=edit&verify=${Date.now()}`,
+    );
+    await expect(canvas.locator('h1[contenteditable="true"]').first())
+      .toContainText(savedHeading, { timeout: 180_000 });
+    await expect(page.locator('.kdock-status-text[data-status="error"]')).toHaveCount(0);
+  });
 }
