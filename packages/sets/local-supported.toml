@@ -2,6 +2,7 @@ schema = 1
 policy = "source-only-v1"
 dependency_only = [
   "bytepath-source",
+  "genesis-plus-gx-source",
   "snkrx-source",
   "stb-source",
   "libyaml-source",
@@ -10,6 +11,9 @@ dependency_only = [
   "pcre2-source",
   "ncurses-source",
   "phpcacheadmin-source",
+  "retro-rom-240p-md",
+  "retro-rom-240p-snes",
+  "snes9x-source",
   "sqlite-amalgamation-source",
   "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
@@ -582,6 +586,10 @@ class = "user-software"
 
 [[packages]]
 name = "redis"
+class = "user-software"
+
+[[packages]]
+name = "retro-emulators"
 class = "user-software"
 
 [[packages]]

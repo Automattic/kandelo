@@ -212,6 +212,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "retro-emulators",
+      "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
       "name": "vim-browser-bundle",
       "version": "9.1.0900",
       "role": "lazy-archive"

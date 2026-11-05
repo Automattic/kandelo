@@ -678,6 +678,7 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
   than `getProcessMemory()`.
 - `host/src/framebuffer/canvas-renderer.ts::attachCanvas(canvas, registry, pid, opts)` is the consumer-side renderer.
 - Keyboard input: the demo page maps focused browser `KeyboardEvent` values to Linux input keycodes, encodes them as MEDIUMRAW bytes, and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software decodes those bytes from the tty. Ctrl+Shift+Esc is reserved as the host escape from keyboard capture.
+- The same keys also reach the machine keyboard device `/dev/input/event0` as evdev key events while the framebuffer canvas holds focus, as every key reaches both the console and evdev on Linux. That lets a program bind `/dev/fb0` without a terminal: the retro ROM exchange handler starts the emulator with stdin on `/dev/null`, and the emulator then reads `/dev/input/event0`. A program reads one source, never both, or it sees every key twice; the retro emulators read their terminal when they have one. Images that declare `evdev-input` already feed evdev from their display surface; for other images the shell attaches the evdev source scoped to the KMS canvas and the focused framebuffer canvas (`apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`).
 - Limitations: `fork` does not auto-bind the child; multi-buffering / vsync via
   `FBIOPAN_DISPLAY` is a no-op. Device/CRTC-owned surfaces, per-handle rights,
   serialized presentation, and multi-writer/compositor ownership remain
@@ -1720,6 +1721,62 @@ tile's size. Pointer input and the launcher's size on a HiDPI display are
 checked by hand (Chromium at a device scale factor of 2), because
 Playwright's emulated device scale does not change the size the pane
 reports.
+
+### Retro emulators
+
+Every shell machine carries three emulators from the `retro-emulators`
+package as lazy files, each a libretro core linked with one small frontend
+and named for the emulator it is:
+
+| Command | Shorter name | Systems |
+|---|---|---|
+| `/usr/bin/fceumm` | `retro-nes` | NES |
+| `/usr/bin/genesis-plus-gx` | `retro-genesis` | Mega Drive, Master System, Game Gear |
+| `/usr/bin/snes9x` | `retro-snes` | SNES |
+
+A 240p test suite ROM for each is under `/usr/share/retro-emulators/roms`.
+Nothing is fetched until an emulator runs. Each takes
+`ROM [--state FILE | --info]` and reads the system from the ROM's
+extension. The emulator draws on `/dev/fb0`, plays through `/dev/dsp` and
+reads the keyboard as a joypad (arrows, Enter for Start, Right Shift for
+Select; Z, X, A, S, Q and W for the face and shoulder buttons).
+
+`retro-run ROM` (eager, `/usr/bin/retro-run`) chooses the emulator from
+the ROM's own bytes, not its name: the iNES magic, the Mega Drive `SEGA`
+header, the Master System and Game Gear `TMR SEGA` header, or a SNES
+header checksum. A file that matches none of them is refused with a
+message. It passes further options to the emulator. With no argument it
+runs the NES test suite.
+
+Dropping a ROM with a `.nes`, `.sfc`, `.smc`, `.md`, `.gen`, `.smd`, `.sms`
+or `.gg` name on a machine plays it. The image's exchange rule
+`50-retro-rom.handler` runs `/usr/libexec/kandelo/retro-load-rom`, which
+copies the ROM to `~/roms`, stops the emulator if one is playing, starts
+`retro-run` on the ROM in the background and reports "playing NAME" once the
+emulator holds the display, or the emulator's own error. The machine's view
+switches to the display when the emulator binds `/dev/fb0`. A ROM named
+`.bin` is not matched (too many other files use the extension) and goes to
+`~/Downloads`; `retro-run` plays it. A display already held by another
+program is not taken: the drop fails with a message saying so.
+
+The handler's emulator has no terminal (kxchgd starts handlers with stdin
+on `/dev/null`), so it reads keys from `/dev/input/event0`, which the
+framebuffer canvas feeds while it has focus (see "Framebuffer
+(`/dev/fb0`)"). Started from a terminal, the emulator reads the terminal
+instead. Either way Esc quits it (the keyboard is read raw, so Ctrl+C is
+just a key). The emulator keeps its boot-lifetime files in the user's
+runtime directory, `$XDG_RUNTIME_DIR` or `/run/user/<uid>`: its pid in
+`retro.pid`, and the state F5 saves in `retro.state`, which
+`retro-run ROM --state FILE` restores. The drop handler logs the
+emulator's output to `retro.log` there.
+
+Gated in Node by `host/test/retro-emulators-cli-smoke.test.ts` (each
+emulator initialises its core; a European ROM's name sets PAL timing; with
+no terminal the emulator reads `/dev/input/event0` and Esc there quits it)
+and in the browser by `apps/browser-demos/test/retro-rom-drop.spec.ts` (a
+dropped ROM plays and takes keys, an `.smc` name still starts Snes9x, a
+second drop replaces the game, Esc releases the display, and a non-ROM
+fails with the launcher's message).
 
 ### Kandelo session UI
 
@@ -3087,8 +3144,10 @@ Files reach a machine through Kandelo exchange (`docs/architecture.md`,
 the terminal, framebuffer, or display surface, or choosing them with the
 dock's "Send files" button, offers them to the machine as one batch. The
 machine's agent and its handler rules decide what happens: the game
-machines' rules load a WAD, a pak or zipped game data, and the catch-all
-saves anything else to `~/Downloads`. Each batch gets a toast with its
+machines' rules load a WAD, a pak or zipped game data; on every shell
+machine a NES, SNES, Mega Drive, Master System or Game Gear ROM is kept in
+`~/roms` and played (see "Retro emulators" below); and the catch-all saves
+anything else to `~/Downloads`. Each batch gets a toast with its
 status and outcome; outputs the machine publishes appear in a tray with
 Save and Dismiss (Save streams through `showSaveFilePicker` where the
 browser has it, and otherwise buffers the output and downloads it). A
