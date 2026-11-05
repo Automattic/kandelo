@@ -190,6 +190,14 @@ Exact commands and original results are retained in
 `.context/graphics-rejected-repair-r369/` and
 `.context/graphics-rejected-repair-gpu-r370/`.
 
+The subsequent full compiler check finds four callback-narrowing diagnostics
+in addition to the prior24. Capturing the current repair in a stable local
+before its synchronous callback removes those four; the remaining complete
+24-diagnostic stream matches R363 after removing only dev-shell preambles.
+All23 focused native-fault controls pass on that typed correction, and the
+prepared normal-kernel ABI check exits0. This remains a failed full compiler
+gate, not a type-check pass or a new full342-case browser result.
+
 ## Automatic application-driver admission prototype, 2026-11-05
 
 Ordinary applications now enter the B1 program journal at their first

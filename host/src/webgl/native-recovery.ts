@@ -350,9 +350,10 @@ export function repairNativeState(gl: WebGL2RenderingContext): boolean {
           // recovery, even when its error owner is the active guest batch.
           // Predicting that recovery could release a live shared renderer
           // whose native state was never actually restored.
+          const inverseRepair = repair;
           withNativeBookkeeping(() => {
-            for (let i = repair.attempted - 1; i >= 0; i--) restored = restoreInverse(repair.restores[i]) && restored;
-            if (repair.finalizer) restored = restoreInverse(repair.finalizer) && restored;
+            for (let i = inverseRepair.attempted - 1; i >= 0; i--) restored = restoreInverse(inverseRepair.restores[i]) && restored;
+            if (inverseRepair.finalizer) restored = restoreInverse(inverseRepair.finalizer) && restored;
             return restored;
           });
         } catch (error) {
