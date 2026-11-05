@@ -592,6 +592,7 @@
         },
         setRawMode: typeof native.setRawMode === 'function' ? (fd, raw) => native.setRawMode(fd, raw) : undefined,
         keyOperation(operation, ...args) { return native.keyOperation(operation, ...args); },
+        cipherOperation(operation, ...args) { return native.cipherOperation(operation, ...args); },
         isKeyObject(value) { return native.keyOperation('isKeyObject', value).value; },
         isCryptoKey(value) { return native.keyOperation('isCryptoKey', value).value; },
         incrementalHash(operation, ...args) { return native.incrementalHash(operation, ...args); },

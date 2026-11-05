@@ -449,3 +449,10 @@ VM realms use the same context policy. Native location/report/stack reserved
 metadata remains initialized. Standalone SpiderMonkey keeps its default
 extensions. Own lazy stack descriptors and complete Node Error behavior remain
 separate implementation requirements; this patch does not establish them.
+
+`0102-kandelo-cipher-owner.patch` registers a private binding to GC-owned
+ncrypto/OpenSSL cipher contexts. The unchanged pinned Node Cipheriv and
+Decipheriv classes retain their public validation and Transform methods.
+Algorithm discovery queries the linked provider. This registration does not
+supply RSA cipher operations, signatures, key generation or WebCrypto, and
+does not establish four-host conformance.

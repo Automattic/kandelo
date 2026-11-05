@@ -322,6 +322,7 @@ host/test/node-kernel-host-diagnostic.test.ts	prepared-product
 host/test/node-kernel-init-refused-image.test.ts	prepared-product
 host/test/node-kernel-pipe-proxy.test.ts	prepared-product
 host/test/node-key-platform.test.ts	source-only
+host/test/node-cipher-platform.test.ts	source-only
 host/test/node-lazy-archive-runtime.test.ts	prepared-product
 host/test/node-lazy-asset-resolver.test.ts	prepared-product
 host/test/node-module-entrypoints.test.ts	source-only

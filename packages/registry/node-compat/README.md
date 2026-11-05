@@ -1,5 +1,16 @@
 # Node core compatibility target
 
+Source revision 117 supplies pinned Cipheriv/Decipheriv algorithms over actual
+native ncrypto/OpenSSL contexts and fixes the empty-data versus null-control
+boundary. The accepted targeted engine 116 compiles the preceding source and
+passes artifact admission. Five Node-host guest comparisons record one pass
+and four failures with escaping Wasm exceptions; these failures remain open.
+The empty-input fix has portable-owner evidence but is guest-uncompiled.
+All 19 families remain incomplete. Overall suites and a full product rebuild
+remain deferred. See [cipher ownership, evidence and gaps](../../../tests/nodejs/outline/cipher-implementation-dependencies.md).
+
+Earlier revision checkpoints below retain their historical scope.
+
 Current integration checkpoint: the normal targeted engine96 build compiles
 the source through95 with guest OpenSSL3.5.9; four focused Node-host
 differential controls pass. Current source99 includes metadata97, sync whole-file98 and queued

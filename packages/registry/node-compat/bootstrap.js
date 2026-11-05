@@ -3452,11 +3452,15 @@ const _nodeIncrementalCrypto = _createNodeIncrementalCrypto({
     keys: _nodeCryptoKeys,
 });
 Object.assign(crypto, _nodeIncrementalCrypto.api);
-// Cipher, key generation and signature consumers still need native owners.
+Object.assign(crypto, _createNodeCipherPlatform({
+    native: _nodeNative, values: _nodeValues, keys: _nodeCryptoKeys,
+    streams: _nodeStreamPlatform, types: util.types, codecs: _nodeBufferCodecs,
+    digestHelpers: _nodeDigestHelpers, stringDecoder: string_decoder,
+    kHandle: _nodeIncrementalCrypto.symbols.kHandle,
+}));
+// Key generation and signature consumers still need native owners.
 // Imported keys above own real ncrypto material; their presence does not
 // establish those separate consumers or WebCrypto algorithm compatibility.
-crypto.createCipheriv = _notImpl('crypto', 'createCipheriv');
-crypto.createDecipheriv = _notImpl('crypto', 'createDecipheriv');
 crypto.generateKeyPairSync = _notImpl('crypto', 'generateKeyPairSync');
 crypto.sign = _notImpl('crypto', 'sign');
 crypto.verify = _notImpl('crypto', 'verify');

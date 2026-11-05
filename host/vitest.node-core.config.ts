@@ -42,6 +42,7 @@ export default {
       'test/node-kdf-platform.test.ts',
       'test/node-hkdf-platform.test.ts',
       'test/node-key-platform.test.ts',
+      'test/node-cipher-platform.test.ts',
       'test/node-argon2-platform.test.ts',
       'test/node-performance-timeline.test.ts',
       'test/node-path-metadata.test.ts',

@@ -19635,7 +19635,7 @@ function normalizeCShakeParameter(value, name) {
         error.code = 'ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH'; throw error;
     }
     if (platform.captureHelpers !== undefined)
-        platform.captureHelpers({ getArrayBufferOrView, getBufferSourceBytes });
+        platform.captureHelpers({ getArrayBufferOrView, getBufferSourceBytes, filterDuplicateStrings });
     return { hash, getHashes, timingSafeEqual };
 }
 
@@ -87571,6 +87571,416 @@ module.exports = {
     return { ...keys, api: { KeyObject: keys.KeyObject, createSecretKey: keys.createSecretKey,
         createPublicKey: keys.createPublicKey, createPrivateKey: keys.createPrivateKey },
         keyOperation: call };
+}
+
+// Pinned Cipheriv/Decipheriv classes over real private native EVP state.
+function _createNodeCipherPlatform(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { ObjectPrototypeHasOwnProperty, SafeMap, Error, TypeError, RangeError } = primordials;
+    function call(operation, ...args) {
+        const result = platform.native.cipherOperation(operation, ...args);
+        if (result.error === undefined) return result.value;
+        const record = result.error, code = record.code;
+        const Ctor = code === 'ERR_CRYPTO_INVALID_KEYLEN' || code === 'ERR_CRYPTO_INVALID_MESSAGELEN' || code === 'ERR_OUT_OF_RANGE' ? RangeError :
+            code === 'ERR_CRYPTO_INVALID_IV' || code === 'ERR_CRYPTO_INVALID_AUTH_TAG' || code === 'ERR_MISSING_ARGS' ? TypeError : Error;
+        const error = new Ctor(record.message);
+        for (const key of ['code', 'library', 'reason', 'opensslErrorStack'])
+            if (ObjectPrototypeHasOwnProperty(record, key)) error[key] = record[key];
+        throw error;
+    }
+    class CipherBase {
+        constructor(encrypt, name, key, iv, tag, cts, xts) {
+            return call('new', new.target.prototype, encrypt, name, key, iv, tag, cts, xts);
+        }
+        update(data, encoding) {
+            if (typeof data === 'string') {
+                const mode = call('encoding', encoding, false);
+                data = platform.codecs.fromString(data, mode === 'buffer' ? 'utf8' : mode);
+            }
+            return platform.codecs.copyBytes(call('update', this, data));
+        }
+        final() { return platform.codecs.copyBytes(call('final', this)); }
+        getAuthTag() {
+            const value = call('getTag', this);
+            return value === undefined ? undefined : platform.codecs.copyBytes(value);
+        }
+        setAuthTag(value) { return call('setTag', this, value); }
+        setAAD(value, length) { return call('aad', this, value, length); }
+        setAutoPadding(value) { return call('padding', this, value); }
+    }
+    const unavailable = () => { throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('RSA cipher native owner'); };
+    const binding = { CipherBase, getCipherInfo: (...args) => call('info', ...args),
+        privateDecrypt: unavailable, privateEncrypt: unavailable, publicDecrypt: unavailable, publicEncrypt: unavailable };
+    const { validateString } = platform.values.validators;
+    function getStringOption(options, key) {
+  let value;
+  if (options && (value = options[key]) != null)
+    validateString(value, `options.${key}`);
+  return value;
+}
+    const dependencies = new SafeMap([
+        ['internal/errors', platform.values.errors], ['internal/validators', platform.values.validators],
+        ['internal/crypto/keys', platform.keys], ['internal/crypto/util', {
+            ...platform.digestHelpers, getStringOption, kHandle: platform.kHandle,
+        }],
+        ['internal/util/types', platform.types], ['internal/util', platform.values.util],
+        ['internal/streams/lazy_transform', platform.streams.require('internal/streams/lazy_transform')],
+        ['string_decoder', platform.stringDecoder],
+    ]);
+    const module = { exports: {} };
+    (function(module, exports, require, primordials, internalBinding) {
+        'use strict';
+
+const {
+  FunctionPrototypeCall,
+  NumberIsInteger,
+  ObjectSetPrototypeOf,
+} = primordials;
+
+const {
+  CipherBase,
+  privateDecrypt: _privateDecrypt,
+  privateEncrypt: _privateEncrypt,
+  publicDecrypt: _publicDecrypt,
+  publicEncrypt: _publicEncrypt,
+  getCipherInfo: _getCipherInfo,
+} = internalBinding('crypto');
+
+const {
+  crypto: {
+    RSA_PKCS1_OAEP_PADDING,
+    RSA_PKCS1_PADDING,
+  },
+} = internalBinding('constants');
+
+const {
+  codes: {
+    ERR_CRYPTO_INVALID_STATE,
+    ERR_INVALID_ARG_TYPE,
+    ERR_INVALID_ARG_VALUE,
+    ERR_UNKNOWN_ENCODING,
+  },
+} = require('internal/errors');
+
+const {
+  validateEncoding,
+  validateOneOf,
+  validateUint32,
+  validateObject,
+  validateString,
+} = require('internal/validators');
+
+const {
+  preparePrivateKey,
+  preparePublicOrPrivateKey,
+  prepareSecretKey,
+} = require('internal/crypto/keys');
+
+const {
+  getArrayBufferOrView,
+  getStringOption,
+  kHandle,
+} = require('internal/crypto/util');
+
+const {
+  isArrayBufferView,
+} = require('internal/util/types');
+
+const LazyTransform = require('internal/streams/lazy_transform');
+
+const { normalizeEncoding, kEmptyObject } = require('internal/util');
+
+const { StringDecoder } = require('string_decoder');
+
+const kCtsModes = ['CS1', 'CS2', 'CS3'];
+const kXtsStandards = ['GB', 'IEEE'];
+
+function rsaFunctionFor(method, defaultPadding, keyType) {
+  const keyName = keyType === 'private' ? 'privateKey' : undefined;
+  return (key, buffer) => {
+    const { format, type, data, passphrase, namedCurve } =
+      keyType === 'private' ?
+        preparePrivateKey(key, keyName) :
+        preparePublicOrPrivateKey(key, keyName);
+    const padding = key.padding || defaultPadding;
+    const { oaepHash, mgf1Hash, encoding } = key;
+    let { oaepLabel } = key;
+    if (oaepHash !== undefined)
+      validateString(oaepHash, 'key.oaepHash');
+    if (mgf1Hash !== undefined)
+      validateString(mgf1Hash, 'key.mgf1Hash');
+    if (oaepLabel !== undefined)
+      oaepLabel = getArrayBufferOrView(oaepLabel, 'key.oaepLabel', encoding);
+    buffer = getArrayBufferOrView(buffer, 'buffer', encoding);
+    return method(data, format, type, passphrase, namedCurve, buffer,
+                  padding, oaepHash, oaepLabel, mgf1Hash);
+  };
+}
+
+const publicEncrypt = rsaFunctionFor(_publicEncrypt, RSA_PKCS1_OAEP_PADDING,
+                                     'public');
+const publicDecrypt = rsaFunctionFor(_publicDecrypt, RSA_PKCS1_PADDING,
+                                     'public');
+const privateEncrypt = rsaFunctionFor(_privateEncrypt, RSA_PKCS1_PADDING,
+                                      'private');
+const privateDecrypt = rsaFunctionFor(_privateDecrypt, RSA_PKCS1_OAEP_PADDING,
+                                      'private');
+
+function getDecoder(decoder, encoding) {
+  const normalizedEncoding = normalizeEncoding(encoding);
+  decoder ||= new StringDecoder(encoding);
+  if (decoder.encoding !== normalizedEncoding) {
+    if (normalizedEncoding === undefined) {
+      throw new ERR_UNKNOWN_ENCODING(encoding);
+    }
+    throw new ERR_INVALID_ARG_VALUE(
+      'outputEncoding',
+      encoding,
+      `cannot be changed from '${decoder.encoding}'`,
+    );
+  }
+  return decoder;
+}
+
+function getUIntOption(options, key) {
+  let value;
+  if (options && (value = options[key]) != null) {
+    if (value >>> 0 !== value)
+      throw new ERR_INVALID_ARG_VALUE(`options.${key}`, value);
+    // Coerce -0 to +0.
+    return value + 0;
+  }
+  return -1;
+}
+
+function createCipherBase(cipher, credential, options, isEncrypt, iv) {
+  let authTagLength = -1;
+  let ctsMode;
+  let xtsStandard;
+  if (options != null) {
+    authTagLength = getUIntOption(options, 'authTagLength');
+    ctsMode = getStringOption(options, 'ctsMode') ?? undefined;
+    xtsStandard = getStringOption(options, 'xtsStandard') ?? undefined;
+    if (ctsMode !== undefined)
+      validateOneOf(ctsMode, 'options.ctsMode', kCtsModes);
+    if (xtsStandard !== undefined)
+      validateOneOf(xtsStandard, 'options.xtsStandard', kXtsStandards);
+  }
+
+  if (ctsMode === undefined && xtsStandard === undefined) {
+    this[kHandle] = new CipherBase(
+      isEncrypt, cipher, credential, iv, authTagLength);
+  } else {
+    this[kHandle] = new CipherBase(
+      isEncrypt,
+      cipher,
+      credential,
+      iv,
+      authTagLength,
+      ctsMode,
+      xtsStandard);
+  }
+  this._decoder = null;
+
+  FunctionPrototypeCall(LazyTransform, this, options);
+}
+
+function createCipherWithIV(cipher, key, options, isEncrypt, iv) {
+  validateString(cipher, 'cipher');
+  const encoding = getStringOption(options, 'encoding');
+  key = prepareSecretKey(key, encoding);
+  iv = iv === null ? null : getArrayBufferOrView(iv, 'iv');
+  FunctionPrototypeCall(createCipherBase, this, cipher, key, options, isEncrypt, iv);
+}
+
+// The Cipher class is part of the legacy Node.js crypto API. It exposes
+// a stream-based encryption/decryption model. For backwards compatibility
+// the Cipher class is defined using the legacy function syntax rather than
+// ES6 classes.
+
+function _transform(chunk, encoding, callback) {
+  this.push(this[kHandle].update(chunk, encoding));
+  callback();
+};
+
+function _flush(callback) {
+  try {
+    this.push(this[kHandle].final());
+  } catch (e) {
+    callback(e);
+    return;
+  }
+  callback();
+};
+
+function update(data, inputEncoding, outputEncoding) {
+  if (typeof data === 'string') {
+    validateEncoding(data, inputEncoding);
+  } else if (!isArrayBufferView(data)) {
+    throw new ERR_INVALID_ARG_TYPE(
+      'data', ['string', 'Buffer', 'TypedArray', 'DataView'], data);
+  }
+
+  const ret = this[kHandle].update(data, inputEncoding);
+
+  if (outputEncoding && outputEncoding !== 'buffer') {
+    this._decoder = getDecoder(this._decoder, outputEncoding);
+    return this._decoder.write(ret);
+  }
+
+  return ret;
+};
+
+function final(outputEncoding) {
+  const ret = this[kHandle].final();
+
+  if (outputEncoding && outputEncoding !== 'buffer') {
+    this._decoder = getDecoder(this._decoder, outputEncoding);
+    return this._decoder.end(ret);
+  }
+
+  return ret;
+};
+
+function setAutoPadding(ap) {
+  if (!this[kHandle].setAutoPadding(!!ap))
+    throw new ERR_CRYPTO_INVALID_STATE('setAutoPadding');
+  return this;
+};
+
+function getAuthTag() {
+  const ret = this[kHandle].getAuthTag();
+  if (ret === undefined)
+    throw new ERR_CRYPTO_INVALID_STATE('getAuthTag');
+  return ret;
+};
+
+function setAuthTag(tagbuf, encoding) {
+  tagbuf = getArrayBufferOrView(tagbuf, 'buffer', encoding);
+  if (!this[kHandle].setAuthTag(tagbuf))
+    throw new ERR_CRYPTO_INVALID_STATE('setAuthTag');
+  return this;
+}
+
+function setAAD(aadbuf, options) {
+  const encoding = getStringOption(options, 'encoding');
+  const plaintextLength = getUIntOption(options, 'plaintextLength');
+  aadbuf = getArrayBufferOrView(aadbuf, 'aadbuf', encoding);
+  if (!this[kHandle].setAAD(aadbuf, plaintextLength))
+    throw new ERR_CRYPTO_INVALID_STATE('setAAD');
+  return this;
+};
+
+// The Cipheriv class is part of the legacy Node.js crypto API. It exposes
+// a stream-based encryption/decryption model. For backwards compatibility
+// the Cipheriv class is defined using the legacy function syntax rather than
+// ES6 classes.
+
+function Cipheriv(cipher, key, iv, options) {
+  if (!(this instanceof Cipheriv))
+    return new Cipheriv(cipher, key, iv, options);
+
+  FunctionPrototypeCall(createCipherWithIV, this, cipher, key, options, true, iv);
+}
+
+function addCipherPrototypeFunctions(constructor) {
+  constructor.prototype._transform = _transform;
+  constructor.prototype._flush = _flush;
+  constructor.prototype.update = update;
+  constructor.prototype.final = final;
+  constructor.prototype.setAutoPadding = setAutoPadding;
+  if (constructor === Cipheriv) {
+    constructor.prototype.getAuthTag = getAuthTag;
+  } else {
+    constructor.prototype.setAuthTag = setAuthTag;
+  }
+  constructor.prototype.setAAD = setAAD;
+}
+
+ObjectSetPrototypeOf(Cipheriv.prototype, LazyTransform.prototype);
+ObjectSetPrototypeOf(Cipheriv, LazyTransform);
+addCipherPrototypeFunctions(Cipheriv);
+
+// The Decipheriv class is part of the legacy Node.js crypto API. It exposes
+// a stream-based encryption/decryption model. For backwards compatibility
+// the Decipheriv class is defined using the legacy function syntax rather than
+// ES6 classes.
+function Decipheriv(cipher, key, iv, options) {
+  if (!(this instanceof Decipheriv))
+    return new Decipheriv(cipher, key, iv, options);
+
+  FunctionPrototypeCall(createCipherWithIV, this, cipher, key, options, false, iv);
+}
+
+ObjectSetPrototypeOf(Decipheriv.prototype, LazyTransform.prototype);
+ObjectSetPrototypeOf(Decipheriv, LazyTransform);
+addCipherPrototypeFunctions(Decipheriv);
+
+const kMinNid = 1;
+const kMaxNid = 2_147_483_647;
+function getCipherInfo(nameOrNid, options = kEmptyObject) {
+  validateObject(options, 'options');
+  let { keyLength, ivLength } = options;
+  if (keyLength !== undefined) {
+    validateUint32(keyLength, 'options.keyLength');
+    // Coerce -0 to +0.
+    keyLength += 0;
+  }
+  if (ivLength !== undefined) {
+    validateUint32(ivLength, 'options.ivLength');
+    // Coerce -0 to +0.
+    ivLength += 0;
+  }
+
+  const type = typeof nameOrNid;
+
+  if (type === 'string') {
+    if (nameOrNid.length === 0) return undefined;
+    return _getCipherInfo(nameOrNid, keyLength, ivLength);
+  } else if (type === 'number') {
+    if (!NumberIsInteger(nameOrNid) || nameOrNid < kMinNid || nameOrNid > kMaxNid) {
+      return undefined;
+    }
+    return _getCipherInfo(nameOrNid, keyLength, ivLength);
+  }
+
+  throw new ERR_INVALID_ARG_TYPE(
+    'nameOrNid',
+    ['string', 'number'],
+    nameOrNid);
+}
+
+module.exports = {
+  Cipheriv,
+  Decipheriv,
+  privateDecrypt,
+  privateEncrypt,
+  publicDecrypt,
+  publicEncrypt,
+  getCipherInfo,
+};
+
+    })(module, module.exports, name => {
+        if (dependencies.has(name)) return dependencies.get(name);
+        throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Cipher dependency ' + name);
+    }, primordials, name => name === 'crypto' ? binding :
+        name === 'constants' ? { crypto: call('constants') } : undefined);
+    const { Cipheriv, Decipheriv, getCipherInfo } = module.exports;
+    function createCipheriv(cipher, key, iv, options) {
+  return new Cipheriv(cipher, key, iv, options);
+}
+
+function createDecipheriv(cipher, key, iv, options) {
+  return new Decipheriv(cipher, key, iv, options);
+}
+
+
+    // Fetch a fresh provider list and apply the unchanged target duplicate/
+    // case policy. No fabricated FIPS generation or cached capability exists.
+    function providerArray(fn) { return () => fn(); }
+    const getCiphers = providerArray(() => platform.digestHelpers.filterDuplicateStrings(call('list')));
+    return { Cipheriv, Decipheriv, createCipheriv, createDecipheriv, getCipherInfo, getCiphers };
 }
 
 // Pinned public password-KDF algorithms over native owned sync/queued work.

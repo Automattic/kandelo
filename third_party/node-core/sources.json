@@ -4837,5 +4837,54 @@
         "sha256": "d617b7080f8830ff95149193b5416bac965ac677480a19b424b29b933b5a7602"
       }
     }
+  },
+  "cipherPlatform": {
+    "sources": {
+      "lib/internal/crypto/cipher.js": {
+        "path": "upstream/cipher/lib/internal/crypto/cipher.js",
+        "upstreamPath": "lib/internal/crypto/cipher.js",
+        "sha256": "9c8b7ed1acd3adc147fe92903c36a195b32b2fd23e48cb158e25c9238e124d72"
+      },
+      "src/crypto/crypto_cipher.cc": {
+        "path": "upstream/cipher/src/crypto/crypto_cipher.cc",
+        "upstreamPath": "src/crypto/crypto_cipher.cc",
+        "sha256": "d3d9e716d8398244bb4782f030c3bebfc35e640807669034ee5a243616d55b32"
+      },
+      "src/crypto/crypto_cipher.h": {
+        "path": "upstream/cipher/src/crypto/crypto_cipher.h",
+        "upstreamPath": "src/crypto/crypto_cipher.h",
+        "sha256": "fea20b0deaba4881677f37e8fe94c228cb470946f77edddf713a40916e629f39"
+      },
+      "lib/crypto.js": {
+        "path": "upstream/cipher/lib/crypto.js",
+        "upstreamPath": "lib/crypto.js",
+        "sha256": "2624db34b212d51f1410a9ff8720abd2f28298ead04c388135d36228d9910f2d"
+      },
+      "lib/internal/crypto/util.js": {
+        "path": "upstream/cipher/lib/internal/crypto/util.js",
+        "upstreamPath": "lib/internal/crypto/util.js",
+        "sha256": "79c2825d2173435a80f914aeca952032826bb61ea5a2835c315f08ced5963337"
+      },
+      "src/node_errors.h": {
+        "path": "upstream/cipher/src/node_errors.h",
+        "upstreamPath": "src/node_errors.h",
+        "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8"
+      }
+    },
+    "selections": {
+      "creators": {
+        "source": "lib/crypto.js",
+        "start": "function createCipheriv(",
+        "length": 212,
+        "sha256": "2710c8f39e17495adf49efe5f557e25f7cd4bcbb2d307a02ffe89b778cbee05a"
+      },
+      "stringOption": {
+        "source": "lib/internal/crypto/util.js",
+        "start": "function getStringOption(",
+        "length": 165,
+        "sha256": "fe8aca84b1092ea75463733b010ef9793c570a2dc081339d4dcc813c2cdace92"
+      }
+    },
+    "scope": "Pinned public cipher classes/creators and native state reference;RSA siblings,WebCrypto and FIPS mutation/cache owners remain separate."
   }
 }

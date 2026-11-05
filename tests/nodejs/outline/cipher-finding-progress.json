@@ -1,0 +1,166 @@
+{
+  "at": "2026-11-05T17:37:11.059165+00:00",
+  "recipeRevision": 117,
+  "acceptedEngineRevision": 116,
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto-contracts.md",
+    "findingIds": [
+      "C-001",
+      "C-008",
+      "C-015"
+    ],
+    "surface": [
+      "Cipheriv",
+      "Decipheriv",
+      "createCipheriv",
+      "createDecipheriv",
+      "getCipherInfo",
+      "getCiphers"
+    ],
+    "scope": "Partial source implementation and scoped evidence;these finding IDs contain additional requirements and are not closed"
+  },
+  "sourceImplemented": [
+    "Complete unchanged pinned cipher module and selected exact factories/string-option helper over existing key,Buffer,decoder and stream owners",
+    "Real ncrypto/OpenSSL native context/state source;runtime error paths remain unresolved with escaping guest Wasm exceptions",
+    "Pinned CCM/SIV deferred auth failure and one-shot CCM-decrypt/SIV/GCM-SIV/CTS/XTS/wrap update policy",
+    "Actual linked-provider cipher enumeration and NID/name/key/IV metadata probes;no fabricated FIPS state or static capability list",
+    "GC-owned private class,associated-memory accounting,finalizer,private byte codecs and existing provider error bridge",
+    "Source117 preserves empty user data versus EVP null-control semantics;portable empty-SIV mismatch fixed,not guest-compiled"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-cipher-source-r3/report.json",
+    "sha256": "2e37df78b86c258ea167dd6d51a2316045604fb518cfb3193f0f66439af35c21",
+    "selectedIdentities": 27,
+    "upstreamCompleteFiles": 6,
+    "scope": "Archive equality,generation,syntax,declared inputs and exact patch forward/reverse only"
+  },
+  "frontend": {
+    "report": ".context/node26-cipher-frontend-r2.json",
+    "sha256": "2c868c6e5970ddbee87b234c2300acfe80966288dc6e70df1b0f4b3762c18a31",
+    "passed": 5,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Candidate pinned classes/private codecs with explicitly native keys/engine/stream boundaries;not guest C++"
+  },
+  "portableNative": {
+    "report": ".context/node26-cipher-native/report.json",
+    "sha256": "448cd646b904f983b165d948ab6adcb2fffe1bfb0da1ff9494d5efb6bea356a5",
+    "counts": {
+      "matched": 33,
+      "unmatched": 0,
+      "referenceUnsupported": 1
+    },
+    "nativeHelperCompilationAttempts": 3,
+    "scope": "33matched comparisons includes1reference-unsupported unknown-cipher error,not33successful cipher algorithms or whole API conformance"
+  },
+  "nativePublicPreflight": {
+    "report": ".context/node26-cipher-public-native-r1.json",
+    "sha256": "f624c544d8616fe5902f567b9a4db698a84c42d3654dff4cf87cc0ac4bb2f93a",
+    "passed": 5,
+    "scope": "Exact native reference runs before actual guest comparison"
+  },
+  "targetedEngine": {
+    "report": ".context/node26-engine-r116-accepted/report.json",
+    "sha256": "433595ada71403b4e46532b9917b1e84b4244c6c9bf7c3b19cf4213d10a96935",
+    "recipeRevision": 116,
+    "exitCode": 0
+  },
+  "focusedGuest": {
+    "report": ".context/node26-cipher-guest-candidate/report.json",
+    "sha256": "bb9db75873089464c01d2ad2e9b230a71bf1fe46649daa834eb8dc718ac3bde5",
+    "counts": {
+      "pass": 1,
+      "fail": 4,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "nativePassed": 5,
+    "matchedCases": [
+      "stream"
+    ],
+    "scope": "Actual selected Node-host guest behavior only;not complete cipher/crypto,whole candidate,browser or overall conformance"
+  },
+  "emptyInputPortable": {
+    "report": ".context/node26-cipher-empty-owner-fixed.json",
+    "sha256": "f8db2c0d37629ac38dd5c934df457c2392d7be8f132c19a27c0a9924c2f38259",
+    "counts": {
+      "matched": 5,
+      "unmatched": 0
+    },
+    "scope": "Portable encryption only;not guest/decryption/empty-AAD conformance"
+  },
+  "guestDiagnostics": {
+    "report": ".context/node26-cipher-diagnostic-candidate/report.json",
+    "sha256": "265f1e4dbdf8b296f4b209f3124ede3fd610b034eee30f0d9a6c88cdeb1e50b9",
+    "counts": {
+      "pass": 1,
+      "fail": 2,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "scope": "JS validation caught;native-key-error and positive/empty-mode diagnostics still escape. No outside-runtime fault attribution."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-cipher-guest-candidate/report.json",
+      "sha256": "bb9db75873089464c01d2ad2e9b230a71bf1fe46649daa834eb8dc718ac3bde5",
+      "kind": "actual guest",
+      "counts": {
+        "pass": 1,
+        "fail": 4,
+        "skip": 0,
+        "unsupported": 0,
+        "timeout": 0,
+        "harness-error": 0
+      },
+      "reason": "Four escaping Wasm exceptions;all original public assertions unchanged"
+    },
+    {
+      "report": ".context/node26-cipher-diagnostic-candidate/report.json",
+      "sha256": "265f1e4dbdf8b296f4b209f3124ede3fd610b034eee30f0d9a6c88cdeb1e50b9",
+      "kind": "diagnostic guest",
+      "failed": 2,
+      "reason": "Native error and positive/empty-mode diagnostic failures remain unresolved"
+    },
+    {
+      "report": ".context/node26-cipher-empty-owner-observation.json",
+      "sha256": "4460f70742a8455f087ebd3ad090455fcc62789e2d88be7e30a2711474c196f6",
+      "kind": "portable native",
+      "matched": 4,
+      "unmatched": 1,
+      "reason": "Empty SIV user-data null pointer had EVP control meaning;source117fix portable-verified but uncompiled in guest"
+    },
+    {
+      "report": ".context/node26-cipher-frontend-r1.json",
+      "sha256": "2c9000f601208b7214ae005e69f3eddbd2115b5794e8192d85518b4f4b1e2804",
+      "kind": "frontend",
+      "passed": 3,
+      "failed": 2,
+      "reason": "Missing captured duplicate-filter dependency fixed;new stream fixture expected private Buffer after declared native stream conversion,corrected at that explicit boundary;no upstream assertion changed"
+    },
+    {
+      "report": ".context/node26-cipher-source-r1.log",
+      "sha256": "11de6d2ed7adfff1da6413b368ea15fcd66ead3bd2bd1655b1c7f40405c05b10",
+      "kind": "source-check",
+      "reason": "Initial registration patch lacked sufficient context;corrected patch passes exact forward/reverse checks"
+    }
+  ],
+  "remaining": [
+    "Native exception/error-packet integration with4original guest failures and2diagnostic failures;root cause unestablished,not an accepted platform boundary",
+    "Guest compilation/actual execution of117empty-data fix;no new engine build performed for that source-only change",
+    "All audited overloads,aliases,inherited methods,symbols,descriptors,error metadata and cross-realm/transfer/storage contracts",
+    "Provider internal memory/GC accounting,OOM,reentry,abandoned contexts,large/chunked inputs and complete native diagnostics",
+    "FIPS/provider activation and generation-aware capabilities;fresh actual discovery is not full provider policy",
+    "RSA operations,signature/verification,key generation,remaining key/DH/ECDH/X509/provider MAC/WebCrypto audited gaps",
+    "Unchanged upstream cipher coverage and all four identified host artifacts;historic unrelated integration nonpasses remain unresolved"
+  ],
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

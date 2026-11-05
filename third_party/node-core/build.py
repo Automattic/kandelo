@@ -1310,6 +1310,33 @@ for marker, replacement in [
         raise ValueError('Review key marker: ' + marker)
     key_adapter = key_adapter.replace(marker, replacement)
 bundle += key_adapter + '\n'
+cipher_spec = manifest['cipherPlatform']
+cipher_sources = {}
+for name, item in cipher_spec['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Cipher source identity mismatch: ' + name)
+    cipher_sources[name] = raw.decode('utf-8')
+cipher_selected = {}
+for name, item in cipher_spec['selections'].items():
+    text = cipher_sources[item['source']]
+    if text.count(item['start']) != 1:
+        raise ValueError('Ambiguous cipher selection: ' + name)
+    offset = text.index(item['start'])
+    selected = text[offset:offset + item['length']]
+    if hashlib.sha256(selected.encode()).hexdigest() != item['sha256']:
+        raise ValueError('Cipher section identity mismatch: ' + name)
+    cipher_selected[name] = selected
+cipher_adapter = (root / 'cipher-platform-adapter.js').read_text()
+for marker, replacement in [
+    ('/* NODE_CIPHER_PUBLIC */', cipher_sources['lib/internal/crypto/cipher.js']),
+    ('/* NODE_CIPHER_CREATORS */', cipher_selected['creators']),
+    ('/* NODE_CIPHER_HELPERS */', cipher_selected['stringOption']),
+]:
+    if cipher_adapter.count(marker) != 1:
+        raise ValueError('Review cipher embedding marker: ' + marker)
+    cipher_adapter = cipher_adapter.replace(marker, replacement)
+bundle += cipher_adapter + '\n'
 
 kdf_spec = manifest['kdfPlatform']
 kdf_factories = []

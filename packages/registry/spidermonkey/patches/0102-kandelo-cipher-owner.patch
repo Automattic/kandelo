@@ -1,0 +1,10 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4014,6 +4014,7 @@
+       JS_FN("getOpenSSLVersion", KandeloNativeOpenSSLVersion, 0, 0),
+       JS_FN("timingSafeEqual", (KandeloCryptoGuard<KandeloNativeTimingSafeEqual>), 2, 0),
+       JS_FN("keyOperation", (KandeloCryptoGuard<KandeloNativeKeyOperation>), 2, 0),
++      JS_FN("cipherOperation", (KandeloCryptoGuard<KandeloNativeCipherOperation>), 1, 0),
+       JS_FN("incrementalHash", KandeloNativeIncrementalHash, 1, 0),
+       JS_FN("dirOperation", KandeloNativeDirOperation, 1, 0),
+       JS_FN("packageOperation", KandeloPackageOperation, 0, 0),

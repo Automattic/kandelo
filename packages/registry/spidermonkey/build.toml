@@ -74,6 +74,11 @@ inputs = [
   "third_party/node-core/native-digests.cpp",
   "third_party/node-core/native-incremental-hash.cpp",
   "third_party/node-core/native-keys.cpp",
+  "third_party/node-core/native-cipher.cpp",
+  "third_party/node-core/cipher-operations.h",
+  "third_party/node-core/cipher-platform-adapter.js",
+  "third_party/node-core/crypto-digest-adapter.js",
+  "third_party/node-core/upstream/cipher",
   "third_party/node-core/key-operations.h",
   "third_party/node-core/keys-platform-adapter.js",
   "third_party/node-core/upstream/keys",
@@ -163,4 +168,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 115
+revision = 117
