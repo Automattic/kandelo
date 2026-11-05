@@ -86,6 +86,51 @@ validation. All original B1/goal-wide conformance, fault/audit,
 benchmark, memory and ship-bar requirements remain mandatory; no
 acceptance gate is reduced.
 
+## Normal automatic-driver prototype, 2026-11-05
+
+The normal `./run.sh setup` app/image stage at frozen b45e892d35
+completed in9034s. Its313 published SourceOnly files were copied into
+an independent APFS snapshot and checked against the originals before
+admission. The original full job continues building test fixtures;
+that work and the full build's remaining validation are not waived.
+The later host declaration/audit-member cleanup below is outside this
+frozen producer. This prototype contains automatic B1 admission, with
+B1 acceptance still open; it contains no B2 or C implementation.
+
+The maintainer's local preview on port5693, and the parallel6075 link,
+now serve that admitted immutable snapshot. The previous owned preview
+was stopped only after its exact job, command, working directory and
+listener were checked. No unowned server was stopped. HTTP and the
+actual SourceOnly kernel asset route were checked; the served kernel
+SHA is `38f178236556a3cd449287f28833e96189c6e5fd806c6f11ba999c20ddea2e00`.
+The earlier386b component-run kernel identity remains historical; it
+is not the identity of this newly normal-built preview. ABI versions
+remain56/3/17/21. Availability was announced separately from validation.
+
+| Evidence / exact command | Result | Scope |
+| --- | --- | --- |
+| R267 `graphics-b1-auto-preview-build-r267-1105-010831-d2ea`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-b1-auto-preview-build-r267/run.sh` | Normal app/image stage0 in9034s; full job continues | Own producer tools and current SDKs; normal recipes/catalog/images/host. Programs/test fixtures and final full-build checks remain open |
+| R286 `graphics-b1-product-preview-r286-1105-034135-3212`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-b1-product-preview-r286/run.sh` | PASS3m50 | Original/snapshot313-file identity, own producer freshness, served-kernel ABI snapshot and explicit snapshot-route checks; Node6/3files and real Cage/ScummVM6 app cases on Chromium/Firefox/WebKit. Render/About/quit/reaping/KMS-owner assertions retained; input and product hashes pass |
+| R289 counter phase `graphics-early-inventory-r289-1105-035514-6e10`; `.context/graphics-early-inventory-r289/run.sh` | Counter12 pass23.8s; overall job fails its app frame classifier | Independent guest request counter equals host completion count exactly in every engine/width: automatic43, checked91 for the complete small GLES lifetime. The subsequent3 app inventories incorrectly looked for direct-present0x48; Wayland uses front-copy0x4a. Original failed assertions and data are retained; no app frame-budget result is claimed |
+
+R288's earlier counter attempt failed before guest execution because
+the thin observer lacked its normal Node-side image-composer helper.
+The exact normal helper was provisioned and hash-checked, without a
+source/SDK/assertion change; R289 then passed every independent counter
+case. The known-invalid queued R274 frame-classifier run was cancelled
+before execution, preserving its frozen inputs. The normal producer,
+original independent counter/desktop jobs and both previews continue.
+A corrected observer must distinguish successful front copies from
+surface retargeting and must not treat produced fronts as display times.
+
+This is ordinary-app prototype admission and counting-method evidence,
+not complete B1, native feel, a main comparison or final conformance.
+The original<=10-request/frame target, full B1 stage gates, three-engine
+GLES2/EGL/desktop validation, all other final suites and native-feel bar
+remain mandatory. The Mac currently reports a locked screen; a fresh
+visible session is requested for manual verification. That check and
+physical display measurements remain unproved.
+
 ## Host audit and browser declaration checks, 2026-11-05
 
 The host compiler now loads Vite's canonical client declarations for
