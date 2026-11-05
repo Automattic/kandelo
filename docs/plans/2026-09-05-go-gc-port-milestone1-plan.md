@@ -4167,10 +4167,17 @@ source-only image and failed to mount it. Refresh the image through the
 normal build path before rerunning that full suite. This is not a full
 runtime or browser validation of the merge.
 
-Next rebuild the ABI-55 package artifacts and WordPress image on the new
+Next rebuild the ABI-55 FrankenPHP artifacts and WordPress image on the new
 streaming instrumenter, measure the full instrumenter and live server RSS,
 then rerun the Node and Chromium/Firefox/WebKit editor, restart, and
-benchmark gates. The ZTS embed package still uses PHP 8.3.15 while main's
-PHP-FPM package moved to 8.5.12; align versions before claiming a fair
-runtime comparison. Main's package registry and SDK changes need a normal
+benchmark gates. Main's package registry and SDK changes need a normal
 resolver build, not only source compilation.
+
+**2026-11-05 — Rebuild PHP-ZTS on the same PHP source as FPM.** The
+`php-zts` manifest now uses PHP 8.5.12 and the source digest already
+declared by main's PHP-FPM package. The normal ABI-55 resolver build
+completed after 13m10s, including fresh dependencies, and published
+`libphp.a` (95 MiB) plus `opcache-zts.so` (312 KiB). This establishes
+the embed library and side module as build outputs; it does not prove
+that FrankenPHP 1.11 links against PHP 8.5 or that OPcache activates
+inside its SAPI. Both FrankenPHP recipes now require the 8.5.12 library.
