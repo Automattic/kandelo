@@ -1041,6 +1041,7 @@ for marker, section in [('SELF','self'),('RESOLVE','resolveFilename'),('FINALIZE
 for marker, replacement in [
     ('/* NODE_MODULE_RECORDS */', '\n'.join([*pending_sections.values(),
         *[record_sections[n] for n in ['updateChildren', 'constructor', 'preloading', 'parentAccessors', 'parentDescriptor']]])),
+    ('/* NODE_MODULE_WRAPPERS */', record_sections['wrappers']),
     ('/* NODE_MODULE_REQUIRE */', '\n'.join([record_sections['require'], record_sections['createRequire'],
         require_sections['requireFactory'], require_sections['requireStack']])),
     ('/* NODE_MODULE_LOOKUP */', '\n'.join(record_sections[n] for n in ['nodePaths', 'lookupPaths', 'initPaths'])),

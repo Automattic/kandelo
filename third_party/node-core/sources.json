@@ -2878,6 +2878,11 @@
         "start": "function getExtensionForFormat(format) {",
         "length": 180,
         "sha256": "669245b4134acd0e75e73e2791b9e38d9b3b04d81d67433e6d833e6cae4f9e86"
+      },
+      "wrappers": {
+        "start": "let patched = false;",
+        "length": 1037,
+        "sha256": "e8c21615c34e2c2c6510beaccb36524bf45ac983bdcef55728a1043270333214"
       }
     }
   },

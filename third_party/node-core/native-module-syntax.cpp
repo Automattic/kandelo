@@ -1,5 +1,5 @@
-/* Real parser goals, never source evaluation. Private error reports distinguish
- * syntax rejection from OOM/interruption; arbitrary thrown values propagate. */
+/* Real parser goals and explicit patched-CJS script execution. Detection never
+ * evaluates source. Syntax errors, OOM and arbitrary thrown values propagate. */
 #include <iterator>
 #include "js/CompilationAndEvaluation.h"
 #include "js/EnvironmentChain.h"
@@ -39,6 +39,18 @@ static bool KandeloNativeModuleSyntax(JSContext* cx, unsigned argc, Value* vp) {
   RootedString operation(cx, args[0].toString()), source(cx, args[1].toString()), file(cx, args[2].toString());
   JS::UniqueChars mode = JS_EncodeStringToUTF8(cx, operation), filename = JS_EncodeStringToUTF8(cx, file);
   if (!mode || !filename) return false;
+  if (strcmp(mode.get(), "wrap") == 0) {
+    // Module.wrap can supply an arbitrary script. Retain its complete UTF-16
+    // source, evaluate only this explicitly patched route, and register the
+    // referring source for nested dynamic imports before executing it.
+    AutoStableStringChars chars(cx); if (!chars.initTwoByte(cx, source)) return false;
+    JS::SourceText<char16_t> text; if (!text.initMaybeBorrowed(cx, chars)) return false;
+    JS::CompileOptions options(cx); options.setFileAndLine(filename.get(), 1).setForceFullParse();
+    RootedScript script(cx, JS::Compile(cx, options, text)); if (!script) return false;
+    RootedObject info(cx, js::CreateScriptPrivate(cx, file)); if (!info) return false;
+    JS::SetScriptPrivate(script, ObjectValue(*info));
+    return JS_ExecuteScript(cx, script, args.rval());
+  }
   const bool compile = strcmp(mode.get(), "compile") == 0;
   if (!compile && strcmp(mode.get(), "detect") != 0) {
     JS_ReportErrorASCII(cx, "Unknown module parser operation"); return false;

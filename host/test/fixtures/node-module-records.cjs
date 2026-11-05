@@ -59,6 +59,7 @@ exports.create = function create(options = {}) {
       },
       moduleSyntax(operation, code, filename) {
         if (operation === 'detect') return require('internal/test/binding').internalBinding('contextify').containsModuleSyntax(code, filename);
+        if (operation === 'wrap') return vm.runInContext(code, context, { filename });
         if (operation === 'compile') return vm.compileFunction(code,
           ['exports', 'require', 'module', '__filename', '__dirname'], {filename, parsingContext:context});
         throw Error('Unexpected parser boundary operation');

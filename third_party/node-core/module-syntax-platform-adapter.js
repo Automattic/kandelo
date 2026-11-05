@@ -21,12 +21,18 @@ function _createNodeModuleSyntax(platform) {
     function commonJsFormat(filename, source) {
         const format = initialCommonJsFormat(filename);
         if (format !== undefined) return format;
+        // The patched CJS path compiles Module.wrap's actual script. It does
+        // not use the ordinary native function compiler's ESM detection.
+        if (platform.getRecords().isWrapperPatched()) return 'commonjs';
         return contains(source, filename) ? 'module' : 'commonjs';
     }
     function esmFormat(filename, source) {
         return platform.getFormat().defaultGetFormat(platform.pathToFileURL(filename), { source });
     }
     function compile(source, filename) {
+        const records = platform.getRecords();
+        if (records.isWrapperPatched())
+            return platform.native.moduleSyntax('wrap', records.Module.wrap(source), filename);
         return platform.native.moduleSyntax('compile', platform.normalizeSource(source), filename);
     }
     return { contains, commonJsFormat, esmFormat, entryIsModule, compile };

@@ -1,5 +1,17 @@
 # Broad implementation review
 
+Source revision119 adds pinned Module.wrap/wrapper owners and actual patched
+script compilation, preserving the ordinary function compiler. The shared
+invocation now snapshots exports once for receiver/argument identity. Eight
+new and fourteen affected frontend controls pass; two unchanged upstream
+fixtures pass in candidate/native modes. Guest compilation and four-host
+conformance remain pending; accepted116 is not current for source117–119.
+Earlier guest failures and all 19 incomplete families remain open. Overall
+suites/full product rebuild remain deferred. See
+[wrapper ownership and evidence](module-wrapper-implementation-dependencies.md).
+
+Earlier revision checkpoints below retain their historical scope.
+
 Source revision 118 adds pinned hard-link sync/callback/promise APIs over
 actual libc operations, owned queued source/destination paths and shared
 destination-error completion. Twelve frontend controls and one portable-owner

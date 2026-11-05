@@ -5098,6 +5098,7 @@ const _nodePackageOptions = Object.freeze({
 });
 const _nodeModuleSyntax = _createNodeModuleSyntax({
     native: _nodeNative, packages: _nodePackageReader, path,
+    getRecords: () => _nodeModuleRecords,
     getFormat: () => _nodePackagePolicy.format,
     pathToFileURL: url.pathToFileURL, normalizeSource: _stripShebang,
     getOptionValue(name) {
@@ -5340,10 +5341,13 @@ function _compileCommonJsModule(mod, source, filename, format) {
     if (format === 'module' || format === 'commonjs-typescript' || format === 'module-typescript' || format === 'typescript') {
         throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Module._compile ' + format + ' source');
     }
-    source = _stripShebang(source);
     const wrappedFn = _nodeModuleSyntax.compile(source, filename);
+    const dirname = path.dirname(filename);
     const require = _nodeModuleRecords.make(filename, false, mod);
-    return _moduleApply(wrappedFn, mod.exports, [mod.exports, require, mod, filename, path.dirname(filename)]);
+    // Node reads exports once: a getter must not choose a different receiver
+    // from the value passed as the wrapper's first argument.
+    const exports = mod.exports;
+    return _moduleApply(wrappedFn, exports, [exports, require, mod, filename, dirname]);
 }
 
 function _loadCommonJsJavaScript(mod, filename, source) {

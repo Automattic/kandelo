@@ -6,7 +6,7 @@ function _createNodeModuleRecords(platform) {
     const { ArrayIsArray, ArrayPrototypeFilter, ArrayPrototypeIncludes, ArrayPrototypeIndexOf, ArrayPrototypeJoin,
         ArrayPrototypePush, ArrayPrototypePushApply, ArrayPrototypeMap, ArrayPrototypeSlice, ArrayPrototypeSplice, ArrayPrototypeUnshift,
         ArrayPrototypeUnshiftApply, Boolean, ObjectCreate, ObjectDefineProperty,
-        ObjectGetOwnPropertyDescriptor, ReflectApply, SafeWeakMap, SafeWeakSet,
+        ObjectGetOwnPropertyDescriptor, ReflectApply, ReflectSet, Proxy, SafeWeakMap, SafeWeakSet,
         StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeEndsWith,
         StringPrototypeIndexOf, StringPrototypeSlice, StringPrototypeSplit,
         StringPrototypeStartsWith, JSONParse, ObjectKeys, RegExpPrototypeExec, Error } = primordials;
@@ -65,6 +65,7 @@ function _createNodeModuleRecords(platform) {
     Module._pathCache = ObjectCreate(null);
     Module._extensions = ObjectCreate(null);
     Module.globalPaths = [];
+    /* NODE_MODULE_WRAPPERS */
     /* NODE_MODULE_PACKAGES */
     function loadSource(module, filename) { return { source: platform.read(filename) }; }
     /* NODE_MODULE_JSON */
@@ -130,5 +131,6 @@ function _createNodeModuleRecords(platform) {
     return { Module, make, create, cached, failed, getRequireStack, notFound,
         packageMain: (directory, request) => tryPackage(directory, ObjectKeys(Module._extensions), false, request),
         originalPath: module => sourcePaths.get(module),
-        setFormat: (module, format) => formats.set(module, format) };
+        setFormat: (module, format) => formats.set(module, format),
+        isWrapperPatched: () => patched };
 }

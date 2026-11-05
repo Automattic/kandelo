@@ -1,5 +1,17 @@
 # Current public-contract reconciliation
 
+Source revision119 adds pinned Module.wrap/wrapper owners and actual patched
+script compilation, preserving the ordinary function compiler. The shared
+invocation now snapshots exports once for receiver/argument identity. Eight
+new and fourteen affected frontend controls pass; two unchanged upstream
+fixtures pass in candidate/native modes. Guest compilation and four-host
+conformance remain pending; accepted116 is not current for source117–119.
+Earlier guest failures and all 19 incomplete families remain open. Overall
+suites/full product rebuild remain deferred. See
+[wrapper ownership and evidence](module-wrapper-implementation-dependencies.md).
+
+Earlier revision checkpoints below retain their historical scope.
+
 Source revision 118 adds pinned hard-link sync/callback/promise APIs over
 actual libc operations, owned queued source/destination paths and shared
 destination-error completion. Twelve frontend controls and one portable-owner
@@ -126,7 +138,7 @@ of the APIs, overloads, inherited members, symbols and open questions.
 | Secure network | TLS identity algorithms, actual live OpenSSL protocol/cipher/reuse/Finished/verification metadata source, shared IP/domain helpers and transports | Complete socket/context/trust/key/certificate/handshake/session ownership, metadata/error/descriptor fidelity, secure pooling/servers and DTLS/QUIC |
 | Crypto | Pinned random/UUID, queued random/KDF source and actual OpenSSL3.5.9; provider digests/comparison and Hash/Hmac owners; public PBKDF2/scrypt/Argon2; pinned key wrappers over real ncrypto secret/PEM/DER material, roles, details and HMAC handles compiled in100; lazy comparison/public HKDF/common derivation compiled through103 | Current103 guest and four-host validation; backing-store/GC/ref/transfer/provider-accounting policies; raw/JWK imports, asymmetric JWK, store/PKCS12, WebCrypto HKDF, key generation/exchange, cipher/signature/certificates/FIPS/WebCrypto and namespace gaps remain implementation obligations |
 | Web | File/FormData/Headers, private header guard/list consumers, Blob/clone and Web Stream owners | Complete body/Fetch/WebIDL/global/encoding/URL semantics, transfer and network/crypto dependencies |
-| Loading | Real native parser goals and direct CJS body compilation, pinned filename/package/entry selection and shared ESM source format in103; Module record/require/JSON, package cache/reader, exports/imports/conditions/self/maps and SourceMap algorithms | Actual guest parser/error/source/realm evidence; complete provided-source execution, CJS wrapper/hooks/cache and ESM URL/namespace/JSON/async/cycle/dynamic-import graphs; TypeScript/Wasm/addon/source-map/cache/preload/CLI/permission/lifecycle owners; four-host conformance |
+| Loading | Partial pinned Module.wrap/wrapper and patched-script source owners with single exports snapshot; Real native parser goals and direct CJS body compilation, pinned filename/package/entry selection and shared ESM source format in103; Module record/require/JSON, package cache/reader, exports/imports/conditions/self/maps and SourceMap algorithms | Actual guest parser/error/source/realm evidence; complete provided-source execution, CJS wrapper/hooks/cache and ESM URL/namespace/JSON/async/cycle/dynamic-import graphs; TypeScript/Wasm/addon/source-map/cache/preload/CLI/permission/lifecycle owners; four-host conformance |
 | Terminal | Actual shared/callback/promise Interface, key/history and existing cursor/transaction/isatty source owners | Actual TTY/stdio/raw/resize/Unicode width, persistence/permissions/REPL and guest lifecycle/symbol/stream integration remain open |
 | Workers | Actual thread/context/input/error/join owners and connected local endpoint packets/IO; shared native weak clone/transfer marks, Buffer backing policy and pinned public marking wrappers with native Proxy rejection | Broader native environment guest/GC/realm evidence beyond three Node-host cases and full prototype/shared-store policy, guest registry/GC/realm/ownership evidence, endpoint/host transfer/context movement, broadcast/thread routing/locks, full Worker options/stdio/resource/ref/failure/termination/public lifecycle and four-host conformance |
 | Compression | pinned codec/archive/iterable JS and native contexts; actual shared/growable queue leases and synchronous resizable codec/CRC/dictionary spans compiled in112 | Ordinary async resizable/transfer/pre-existing pin ownership; complete modes/options/iterators/files and native cleanup/cancellation/accounting; retained gzip OS-byte comparison mismatches and complete four-host evidence |

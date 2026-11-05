@@ -1,0 +1,108 @@
+{
+  "at": "2026-11-05T18:26:30.177789+00:00",
+  "recipeRevision": 119,
+  "lastAcceptedEngine": 116,
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/loading-contracts.md",
+    "findingIds": [
+      "L-007",
+      "L-026"
+    ],
+    "matrixObservations": [
+      "module.wrap",
+      "module.wrapper"
+    ],
+    "surface": [
+      "Module.wrap",
+      "Module.wrapper",
+      "Module.prototype._compile wrapper/receiver consumer"
+    ],
+    "scope": "Partial implementation/evidence;related cache/receiver findings,full namespace and individual APIs remain open"
+  },
+  "sourceImplemented": [
+    "Complete unchanged pinned wrapper section:live public accessors/default array/function,real proxy mutations and sticky patch policy",
+    "Actual CJS compiler dispatch consumes public overrides and original source;unpatched function-body parsing remains non-executing and rejects wrapper escapes",
+    "Private native wrapped-script operation uses real JS::Compile/JS_ExecuteScript over complete UTF16 and existing referring-source private metadata",
+    "Patched ambiguous CJS admission and shebang/source policies match target source;explicit formats keep their existing owner",
+    "One initial exports snapshot supplies both receiver and first argument,with dirname computed before getter side effects",
+    "Module-record adapter explicitly declared as a changed recipe input"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-module-wrapper-source-r3/report.json",
+    "sha256": "4e40acc63ae8e1c81a413b9c23e808f89f1c7d355b855baeb3965dad23de15ab",
+    "selectedIdentities": 13,
+    "upstreamCompleteFiles": 1,
+    "scope": "Archive/selector equality,generation,syntax,held engine API reference and declared inputs;not guest C++ compilation"
+  },
+  "frontend": {
+    "report": ".context/node26-module-wrapper-frontend-r5.json",
+    "sha256": "a8ee403f69d1fb0a9d7707157e0e87a56e5f46b7fec77ca217e749b03b225e10",
+    "newPassed": 8,
+    "affectedPassed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Actual candidate records/compiler dispatch/bootstrap over explicit native Node26 parser/VM/fs/URL dependencies;not guest C++ or four-host conformance"
+  },
+  "unchangedUpstreamFixtures": {
+    "report": ".context/node26-module-wrapper-upstream-r3/report.json",
+    "sha256": "443e34c9b22b967d41f01363ada8bea468ec029a98284728e14a1f1aa39ec611",
+    "fixtureFiles": 2,
+    "candidatePassed": 2,
+    "nativePassed": 2,
+    "failed": 0,
+    "scope": "Two unchanged fixture files and dependency,not outer child_process parallel tests;native engine/VM/fs boundaries remain"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-module-wrapper-frontend-r3.json",
+      "sha256": "0b7b38c2ddb457861fd39f1defaf8ecc1d6d96b6d8b581ee8cc7ee1aa4ad31de",
+      "kind": "frontend",
+      "passed": 7,
+      "failed": 1,
+      "reason": "New native differential confirmed two candidate exports getter reads versus one native read;shared invocation fixed with original comparison unchanged"
+    }
+  ],
+  "historicalPositiveControls": [
+    {
+      "report": ".context/node26-module-wrapper-frontend-r1.json",
+      "sha256": "ed4456adf7573b6dd70b3f4dad7e2783fdf3abc1e3c37a280affb7f15aa9dd68",
+      "passed": 21,
+      "scope": "Before additional getter/order obligations"
+    },
+    {
+      "report": ".context/node26-module-wrapper-frontend-r2.json",
+      "sha256": "45f262f97b71c490a07844a6127a09b156e1f0d352b35cfeea52c3148b2823c4",
+      "passed": 21,
+      "scope": "Wrapper metadata placement checked,before getter case"
+    },
+    {
+      "report": ".context/node26-module-wrapper-frontend-r4.json",
+      "sha256": "573f0d05d345358d4a392b9e956d7f0333dbfe1d839b57e3ac0d0445068562fe",
+      "passed": 22,
+      "scope": "Getter snapshot fixed,before stronger directory-order check"
+    },
+    {
+      "report": ".context/node26-module-wrapper-upstream-r1/report.json",
+      "sha256": "64def19798b8b00b16dee9f0687161ecccc36d09b5926d6e96bfeea11f227778",
+      "runs": 4,
+      "scope": "Earlier pre-getter-fix source"
+    },
+    {
+      "report": ".context/node26-module-wrapper-upstream-r2/report.json",
+      "sha256": "18831f0a58407e00119fb2494c40e577c720ac4dc76b3b90ed3bc25f1e995bb0",
+      "runs": 4,
+      "scope": "Earlier pre-directory-order source"
+    }
+  ],
+  "remaining": [
+    "Normal targeted guest compile of119script operation plus pending118shared destination/hardlink and117empty-input source",
+    "Actual guest source-private/dynamic-import routing,filename/line/column/errors,realm/GC/OOM/interruption and arbitrary wrapper return/fatal admission across all four hosts",
+    "Complete Module namespace order/descriptors/inherited surfaces,source-map/cache/hooks/preloads/TS/ESM graph and related loader lifecycle owners",
+    "Earlier native cipher exceptions,SQLite/Error/compression nonpasses and every incomplete family remain unresolved;no accepted boundary follows from these controls"
+  ],
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

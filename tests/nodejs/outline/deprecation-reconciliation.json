@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "313b98ec890c69020af20ef1e501378708d09f672ce358e28f2b6f556bc7cfd8",
+    "packages/registry/node-compat/bootstrap.js": "f9c01a61a62afccc39a7488032ba4bb81d58146f5f1d6597a9cc510ad7f60285",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "6c6297ca0297b8975d3a508659ed4e730181285f6a52dedddf933ec6ca1c060f",
@@ -50,8 +50,8 @@
     "third_party/node-core/inspection-adapter.js": "c090c337276d93d5dc4762c932666ed18232400904d331bb3444a3b28a9b6eb7",
     "third_party/node-core/kdf-platform-adapter.js": "74cafdd780cce9587d5fb2169f28ce0b4fa74ecffb6727e6ead640c2642716d4",
     "third_party/node-core/keys-platform-adapter.js": "2d38cd6aca89a5f23437f0aca3ff52fac7847991b192dc869def8b85c9fa9417",
-    "third_party/node-core/module-record-platform-adapter.js": "33e2f40f06df5327c60632ed1de715762ef1fdc89cb7769d4dc2549b1cfc8eed",
-    "third_party/node-core/module-syntax-platform-adapter.js": "8e904d81b8cf85aa78508cfbf1ec6b310d0af8c3da7a620be26f7169fab3f20a",
+    "third_party/node-core/module-record-platform-adapter.js": "0b81a87fca2f64de278f21dc26ff1e67416ba7dc9704875f03d4982c1398d154",
+    "third_party/node-core/module-syntax-platform-adapter.js": "814bc3e41ca6381a86c897d2fe7f12d6eec88d5c8a2a08236ecfc8681e27b62a",
     "third_party/node-core/network-ip-adapter.js": "5e34e498fc85f4485d941780175c52676e84743b6bc91f649ed215769dd6912b",
     "third_party/node-core/object-marks-platform-adapter.js": "d22d7faba25610d81b9f8db8f3e509cec6c78b0cdf14d8137d8d7f1863dc5bd6",
     "third_party/node-core/os-platform-adapter.js": "43f9b979e5e5aa3309fa24e16a7eafa76274a0aa39a9ddf10e579bbb1e5cfe64",

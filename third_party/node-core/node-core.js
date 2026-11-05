@@ -43470,7 +43470,7 @@ function _createNodeModuleRecords(platform) {
     const { ArrayIsArray, ArrayPrototypeFilter, ArrayPrototypeIncludes, ArrayPrototypeIndexOf, ArrayPrototypeJoin,
         ArrayPrototypePush, ArrayPrototypePushApply, ArrayPrototypeMap, ArrayPrototypeSlice, ArrayPrototypeSplice, ArrayPrototypeUnshift,
         ArrayPrototypeUnshiftApply, Boolean, ObjectCreate, ObjectDefineProperty,
-        ObjectGetOwnPropertyDescriptor, ReflectApply, SafeWeakMap, SafeWeakSet,
+        ObjectGetOwnPropertyDescriptor, ReflectApply, ReflectSet, Proxy, SafeWeakMap, SafeWeakSet,
         StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeEndsWith,
         StringPrototypeIndexOf, StringPrototypeSlice, StringPrototypeSplit,
         StringPrototypeStartsWith, JSONParse, ObjectKeys, RegExpPrototypeExec, Error } = primordials;
@@ -44011,6 +44011,61 @@ Module.prototype.load = function(filename) {
     Module._pathCache = ObjectCreate(null);
     Module._extensions = ObjectCreate(null);
     Module.globalPaths = [];
+    let patched = false;
+
+/**
+ * Add the CommonJS wrapper around a module's source code.
+ * @param {string} script Module source code
+ * @returns {string}
+ */
+let wrap = function(script) { // eslint-disable-line func-style
+  return Module.wrapper[0] + script + Module.wrapper[1];
+};
+
+const wrapper = [
+  '(function (exports, require, module, __filename, __dirname) { ',
+  '\n});',
+];
+
+let wrapperProxy = new Proxy(wrapper, {
+  __proto__: null,
+
+  set(target, property, value, receiver) {
+    patched = true;
+    return ReflectSet(target, property, value, receiver);
+  },
+
+  defineProperty(target, property, descriptor) {
+    patched = true;
+    return ObjectDefineProperty(target, property, descriptor);
+  },
+});
+
+ObjectDefineProperty(Module, 'wrap', {
+  __proto__: null,
+  get() {
+    return wrap;
+  },
+
+  set(value) {
+    patched = true;
+    wrap = value;
+  },
+});
+
+ObjectDefineProperty(Module, 'wrapper', {
+  __proto__: null,
+  get() {
+    return wrapperProxy;
+  },
+
+  set(value) {
+    patched = true;
+    wrapperProxy = value;
+  },
+});
+
+
     let _readPackage = (requestPath) => packageJsonReader.read(path.resolve(requestPath, 'package.json'));
 ObjectDefineProperty(Module, '_readPackage', {
   __proto__: null,
@@ -44556,7 +44611,8 @@ function createEsmNotFoundErr(request, path) {
     return { Module, make, create, cached, failed, getRequireStack, notFound,
         packageMain: (directory, request) => tryPackage(directory, ObjectKeys(Module._extensions), false, request),
         originalPath: module => sourcePaths.get(module),
-        setFormat: (module, format) => formats.set(module, format) };
+        setFormat: (module, format) => formats.set(module, format),
+        isWrapperPatched: () => patched };
 }
 
 // Public fs stream factories/legacy aliases retain their distinct pinned
@@ -85921,12 +85977,18 @@ function _createNodeModuleSyntax(platform) {
     function commonJsFormat(filename, source) {
         const format = initialCommonJsFormat(filename);
         if (format !== undefined) return format;
+        // The patched CJS path compiles Module.wrap's actual script. It does
+        // not use the ordinary native function compiler's ESM detection.
+        if (platform.getRecords().isWrapperPatched()) return 'commonjs';
         return contains(source, filename) ? 'module' : 'commonjs';
     }
     function esmFormat(filename, source) {
         return platform.getFormat().defaultGetFormat(platform.pathToFileURL(filename), { source });
     }
     function compile(source, filename) {
+        const records = platform.getRecords();
+        if (records.isWrapperPatched())
+            return platform.native.moduleSyntax('wrap', records.Module.wrap(source), filename);
         return platform.native.moduleSyntax('compile', platform.normalizeSource(source), filename);
     }
     return { contains, commonJsFormat, esmFormat, entryIsModule, compile };
