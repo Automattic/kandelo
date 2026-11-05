@@ -1,12 +1,24 @@
-import { expect, type Request } from "@playwright/test";
+import { expect, type Page, type Request } from "@playwright/test";
 import { gotoInPreviewViaDock, gotoMachine, machineAppPrefix } from "./support/kandelo-machine";
 import { clickDockTool } from "./support/dock";
 import { test } from "./support/persistent-page";
+import { saveWordPressTemplateHeading } from "./support/wordpress-editor";
 
 // WordPress uses OPFS; Playwright's ephemeral WebKit context has no
 // backing store. Use the same persistent profile fixture as OPFS tests.
 
 const soakSeconds = Number(process.env.KANDELO_FRANKENPHP_SOAK_SECONDS ?? "20");
+
+async function probeWorkerEventLoops(page: Page) {
+  return Promise.all(page.workers().map(async worker => ({
+    url: worker.url(),
+    state: await Promise.race([
+      worker.evaluate(() => ({ now: performance.now() }))
+        .catch(error => ({ error: String(error) })),
+      new Promise(resolve => setTimeout(() => resolve("event-loop probe timed out"), 1000)),
+    ]),
+  })));
+}
 
 for (const demo of [
   { profile: "wordpress-frankenphp", title: "WordPress on FrankenPHP", serviceLog: "frankenphp-classic.log" },
@@ -56,6 +68,10 @@ for (const demo of [
       throw new Error(`WordPress page failed at ${page.url()}: ${String(error)}\n${browserDiagnostics.slice(-30).join("\n")}`);
     }
     await expect(frame.locator("form#setup, form#language-chooser")).toHaveCount(0);
+    const initialWorkers = await probeWorkerEventLoops(page);
+    await test.info().attach("initial-worker-state", {
+      body: JSON.stringify(initialWorkers), contentType: "text/plain",
+    });
 
     await expect(page.getByRole("button", { name: "Shortcuts", exact: true })).toBeVisible({ timeout: 30_000 });
     await page.getByRole("button", { name: "Shortcuts", exact: true }).click();
@@ -132,14 +148,7 @@ for (const demo of [
     if (!editorLoaded || editorResult.status !== 200) {
       // A bounded read-only probe distinguishes a worker whose event loop is
       // blocked from a responsive worker waiting on a guest or bridge result.
-      const workers = await Promise.all(page.workers().map(async worker => ({
-        url: worker.url(),
-        state: await Promise.race([
-          worker.evaluate(() => ({ now: performance.now() }))
-            .catch(error => ({ error: String(error) })),
-          new Promise(resolve => setTimeout(() => resolve("event-loop probe timed out"), 1000)),
-        ]),
-      })));
+      const workers = await probeWorkerEventLoops(page);
       await test.info().attach("guest-service-log", { body: serviceLog, contentType: "text/plain" });
       await test.info().attach("browser-state", {
         body: JSON.stringify({
@@ -147,6 +156,7 @@ for (const demo of [
           body: (await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "unavailable")).slice(-64_000),
           diagnostics: browserDiagnostics.slice(-100),
           pending,
+          initialWorkers,
           workers,
         }),
         contentType: "application/json",
@@ -310,22 +320,13 @@ for (const demo of [
     const canvas = frame.frameLocator('iframe[name="editor-canvas"]');
     await expectPreviewContent(expect(canvas.locator("[data-block]").first())
       .toBeVisible({ timeout: 180_000 }), "initial editor navigation");
-    const welcome = frame.getByRole("dialog", { name: "Welcome to the site editor" });
-    if (await welcome.isVisible()) {
-      await welcome.getByRole("button", { name: "Get started", exact: true }).click();
-    }
-    const heading = canvas.locator('h1[contenteditable="true"]').first();
     const savedHeading = "Kandelo template save probe";
-    await heading.fill(savedHeading);
-    await expect(heading).toContainText(savedHeading);
-    await frame.getByRole("button", { name: "Save", exact: true }).click({ timeout: 30_000 });
-    await expect(frame.getByRole("button", { name: "Save", exact: true }))
-      .toHaveCount(0, { timeout: 120_000 });
+    await saveWordPressTemplateHeading(frame, savedHeading, "twentytwentyfive//index");
     await gotoInPreviewViaDock(page,
       `/wp-admin/site-editor.php?postType=wp_template&postId=twentytwentyfive//index&canvas=edit&verify=${Date.now()}`,
     );
-    await expectPreviewContent(expect(canvas.locator('h1[contenteditable="true"]').first())
-      .toContainText(savedHeading, { timeout: 180_000 }), "saved template verification");
+    await expectPreviewContent(expect(canvas.locator('[data-type="core/heading"]').filter({ hasText: savedHeading }).first())
+      .toBeVisible({ timeout: 180_000 }), "saved template verification");
     await expect(page.locator('.kdock-status-text[data-status="error"]')).toHaveCount(0);
   });
 }

@@ -1,5 +1,53 @@
 import { expect, type FrameLocator } from "@playwright/test";
 
+type WordPressEntityWindow = Window & {
+  wp: { data: { select(store: "core"): {
+    isSavingEntityRecord(kind: string, name: string, id: string): boolean;
+    hasEditsForEntityRecord(kind: string, name: string, id: string): boolean;
+    getEntityRecord(kind: string, name: string, id: string): { content?: { raw?: string } } | undefined;
+  } } };
+};
+
+export async function saveWordPressTemplateHeading(frame: FrameLocator, heading: string, templateId: string): Promise<void> {
+  const canvas = frame.frameLocator('iframe[name="editor-canvas"]');
+  await expect(canvas.locator("[data-block]").first()).toBeVisible({ timeout: 180_000 });
+  const page = frame.owner().page();
+  const getStarted = frame.getByRole("button", { name: "Get started", exact: true });
+  await page.addLocatorHandler(getStarted, () => getStarted.click({ timeout: 30_000 }));
+  try {
+    // A Query Loop's editable post title belongs to a post, not the template.
+    // Select the template's Blog heading first: WordPress can retain a post
+    // content insertion point from an earlier editing session.
+    await canvas.locator('[data-type="core/heading"][contenteditable="true"]').first()
+      .click({ timeout: 30_000 });
+    await frame.getByRole("button", { name: "Block Inserter", exact: true }).click({ timeout: 30_000 });
+    await frame.getByRole("searchbox").fill("Heading", { timeout: 30_000 });
+    await frame.getByRole("option", { name: "Heading", exact: true }).click({ timeout: 30_000 });
+    const editable = canvas.locator(
+      '[data-type="core/heading"][contenteditable="true"], [data-type="core/heading"] [contenteditable="true"]',
+    ).last();
+    await editable.fill(heading, { timeout: 30_000 });
+    await expect(editable).toContainText(heading);
+    await expect.poll(() => frame.locator("body").evaluate((_body, templateId) =>
+      (window as WordPressEntityWindow).wp.data.select("core")
+        .hasEditsForEntityRecord("postType", "wp_template", templateId),
+    templateId), { timeout: 30_000, message: "The inserted block must change the template entity" }).toBe(true);
+    await frame.getByRole("button", { name: "Save", exact: true }).click({ timeout: 30_000 });
+    await expect.poll(() => frame.locator("body").evaluate((_body, { heading, templateId }) => {
+      const core = (window as WordPressEntityWindow).wp?.data?.select("core");
+      if (!core) throw new Error("WordPress entity store is unavailable");
+      return {
+        saving: core.isSavingEntityRecord("postType", "wp_template", templateId),
+        dirty: core.hasEditsForEntityRecord("postType", "wp_template", templateId),
+        saved: core.getEntityRecord("postType", "wp_template", templateId)?.content?.raw?.includes(heading) ?? false,
+      };
+    }, { heading, templateId }), { timeout: 120_000, message: "WordPress must finish saving the template" })
+      .toEqual({ saving: false, dirty: false, saved: true });
+  } finally {
+    await page.removeLocatorHandler(getStarted);
+  }
+}
+
 export async function expectWordPressEditor(frame: FrameLocator): Promise<void> {
   await expect(frame.locator("body.wp-admin")).toBeVisible({ timeout: 180_000 });
   await expect(frame.locator(".block-editor-no-js")).toBeHidden({ timeout: 120_000 });

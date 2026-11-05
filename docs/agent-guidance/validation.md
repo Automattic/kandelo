@@ -13,6 +13,15 @@ Use precise language:
 
 ## Test fixtures must observe the actual contract
 
+For editors that compose several stored entities, prove which entity owns
+the changed content. WordPress's site editor can edit a post title or insert
+a block into post content inside a Query Loop without changing the template.
+Choose the intended insertion context through the UI, observe the intended
+entity becoming dirty and finishing its save, then read it back after fresh
+navigation. A disappearing Save button or retained canvas text alone does
+not prove a template save. For crash durability, also disable the original
+image source and verify the changed content after restarting the browser.
+
 Wait for the operation's completion event or promise rather than a fixed
 number of event-loop turns. For example, compiling a child Wasm module can
 finish later under full-suite load; a spawn assertion should observe the

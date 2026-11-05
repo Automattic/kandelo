@@ -5,10 +5,11 @@ import { expect, test } from "@playwright/test";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import { startPersistentImageSource, type PersistentImageSource } from "./support/persistent-image-source";
 import { loginToWordPress } from "./support/wordpress-login";
-import { expectWordPressEditor, publishWordPressPost } from "./support/wordpress-editor";
+import { expectWordPressEditor, publishWordPressPost, saveWordPressTemplateHeading } from "./support/wordpress-editor";
 import { observeImageWorkerMemory, imageWorkerMemory } from "./support/image-worker-memory";
 import {
   gotoInPreview,
+  gotoInPreviewViaDock,
   machineAppPrefix,
   machineUrl,
   previewFrame,
@@ -30,7 +31,8 @@ for (const { profile, title: machineTitle, image } of [
   { profile: "wordpress-frankenphp", title: "WordPress on FrankenPHP", image: "wordpress" },
   { profile: "wordpress-mariadb", title: "WordPress MariaDB", image: "lamp" },
 ]) {
-test(`${machineTitle} posts and uploads survive OPFS restart without checkpointing or the source image (${storageMode})`, async ({ playwright, browserName }, testInfo) => {
+const content = profile === "wordpress-frankenphp" ? "posts, uploads, and saved site templates" : "posts and uploads";
+test(`${machineTitle} ${content} survive OPFS restart without checkpointing or the source image (${storageMode})`, async ({ playwright, browserName }, testInfo) => {
   test.skip(process.env.KANDELO_TEST_MACHINE_URLS === undefined && !imageReady(`programs/wasm32/${image}.vfs.zst`), "ABI-matched browser WordPress product is required");
   test.setTimeout(540_000);
   const projectUse = testInfo.project.use as {
@@ -141,6 +143,16 @@ test(`${machineTitle} posts and uploads survive OPFS restart without checkpointi
         if (!response.ok) throw new Error(`Embedding uploaded media failed: ${response.status} ${await response.text()}`);
       }, { appPrefix, nonce, postId, sourceUrl: uploaded.sourceUrl });
 
+      const templateHeading = profile === "wordpress-frankenphp"
+        ? `Kandelo durable template ${crypto.randomUUID()}` : undefined;
+      if (templateHeading !== undefined) {
+        await gotoInPreviewViaDock(page,
+          "/wp-admin/site-editor.php?postType=wp_template&postId=twentytwentyfive//home&canvas=edit");
+        await saveWordPressTemplateHeading(frame, templateHeading, "twentytwentyfive//home");
+        await gotoInPreviewViaDock(page, "/");
+        await expect(frame.locator("body")).toContainText(templateHeading, { timeout: 30_000 });
+      }
+
       expect(source.observations()).toEqual({ imageRequests: 1, refusedImageRequests: 0 });
       source.disableImage();
       const installationMemory = await imageWorkerMemory(page, true);
@@ -168,6 +180,9 @@ test(`${machineTitle} posts and uploads survive OPFS restart without checkpointi
       }
       const recoveryFrame = previewFrame(recoveryPage, machineTitle);
       await expect(recoveryFrame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, { timeout: 240_000 });
+      if (templateHeading !== undefined) {
+        await expect(recoveryFrame.locator("body")).toContainText(templateHeading, { timeout: 30_000 });
+      }
       timings.push({ operation: browserName === "chromium"
         ? "browser-process crash, relaunch and saved-computer boot to first WordPress response"
         : "page reload and saved-computer boot to first WordPress response", elapsedMs: performance.now() - recoveryStarted });
@@ -186,6 +201,16 @@ test(`${machineTitle} posts and uploads survive OPFS restart without checkpointi
       await loginToWordPress(recoveryFrame, reopenedPrefix);
       await gotoInPreview(recoveryFrame, reopenedPrefix, "wp-admin/post-new.php");
       await expectWordPressEditor(recoveryFrame);
+      if (templateHeading !== undefined) {
+        await gotoInPreviewViaDock(recoveryPage,
+          "/wp-admin/site-editor.php?postType=wp_template&postId=twentytwentyfive//home&canvas=edit");
+        await expect(recoveryFrame.frameLocator('iframe[name="editor-canvas"]')
+          .locator('[data-type="core/heading"]').filter({ hasText: templateHeading }).first())
+          .toBeVisible({ timeout: 180_000 });
+        await recoveryPage.screenshot({
+          path: `../../.context/frankenphp-template-after-restart-${storageMode}-${browserName}.png`,
+        });
+      }
       sourceRequestsDuringRecovery = source.observations().refusedImageRequests;
       expect(source.observations()).toEqual({ imageRequests: 1, refusedImageRequests: 0 });
       if (profile === "wordpress-mariadb" && browserName === "chromium") {
@@ -193,6 +218,7 @@ test(`${machineTitle} posts and uploads survive OPFS restart without checkpointi
       }
       await testInfo.attach("persistence-application-timings", { contentType: "application/json", body: JSON.stringify({
         profile, browserName, timings, sourceRequestsDuringRecovery, imageCheckpoints: 0,
+        templateHeadingVerified: templateHeading !== undefined,
         interpretation: "Single-run wall-clock observations, not a matched performance comparison. Installation includes download and persistent-format creation; recovery includes the named page/browser lifecycle.",
       }) });
       await testInfo.attach("persistence-image-worker-memory", { contentType: "application/json", body: JSON.stringify({

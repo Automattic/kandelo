@@ -3404,18 +3404,23 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
 | Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | package-built platform rootfs plus shell demo assets; Bash and login are embedded; every other program — sudo, the ordinary command set, and the demo machines' programs — is a first-use package output, and the composer rejects any other program it would embed |
-| WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | Preinstalled WordPress and SQLite, with separate nginx/PHP-FPM and FrankenPHP classic service targets |
+| WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | Preinstalled WordPress and SQLite, with separate nginx/PHP-FPM, FrankenPHP classic, and FrankenPHP+Caddy service targets |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
 Node, WordPress, WordPress on FrankenPHP, and LAMP are optional demo profiles.
-The two WordPress profiles use the same VFS image but start different dinit
-targets; FrankenPHP executes PHP directly rather than proxying to PHP-FPM.
-The FrankenPHP profile currently embeds PHP in a small Go HTTP server, not
-the upstream Caddy `php_server` stack. It has no ZTS OPcache or page-cache
-module and is a functional classic-mode demo, not a production deployment
-recipe or an apples-to-apples PHP-FPM performance comparison. The Caddy and
-OPcache porting blockers are tracked in the Go milestone plan.
+The WordPress image offers three profiles using different dinit targets:
+`wordpress-sqlite` starts nginx/PHP-FPM, `wordpress-frankenphp` starts a
+small Go HTTP server embedding FrankenPHP, and `wordpress-frankenphp-caddy`
+starts Caddy's `php_server` integration. Both FrankenPHP profiles execute
+embedded PHP directly, without PHP-FPM, and use PHP ZTS with built-in
+OPcache configured in file-cache-only mode. They do not include a full-page
+cache. These functional classic-mode demos are not yet production deployment
+recipes or evidence of better performance than PHP-FPM. Chromium template
+Save/reload is tested through the actual WordPress UI; intermittent WebKit
+editor-health stalls, sustained stability, physical-memory bounds, and
+current performance comparisons remain open in the
+[Go milestone plan](plans/2026-09-05-go-gc-port-milestone1-plan.md).
 Their VFS asset imports
 are resolved only after that profile is requested; loading the main shell does
 not require or fetch those image bytes. If the selected profile's local or

@@ -4703,3 +4703,62 @@ cases with zero skips, expected failures, build failures, or timeouts:
 `.context/spawn-context-sortix-final.log`. This completes the C conformance
 gate for the spawn-context correction alongside the 215-case Node `os`
 sweep and nine browser launch probes. The editor stall remains separate.
+
+**2026-11-05 — Correct the site-editor Save evidence.** The stronger crash
+drill exposed a test error in the earlier Save cases: the first editable
+`h1` inside the Query Loop was a post title, not content owned by the
+`wp_template` entity. A live browser inspection showed the changed text
+among the posts while the Blog heading remained unchanged. WordPress's
+entity store reported `saving=false`, `dirty=false`, and no changed text
+in the template record. Consequently the earlier Save/reload passes show
+post-title editing through the site editor, not template modification;
+the earlier entries must not be cited as proof of a saved template.
+
+The first recovery attempt also targeted `index`, while the homepage uses
+the separate `home` template. Both files were read from the actual built
+image. The corrected drill targets `home` and requires a public homepage
+readback before crashing, then checks both the page and editor afterward.
+The shared Save helper is being changed to insert a real static Heading
+block through the UI and wait for the template entity's committed content,
+not merely for the Save button to disappear. These stronger cases are not
+yet passing evidence. No PHP, Go compiler, or runtime workaround was added
+for these test interaction failures.
+
+The corrected classic Chromium Save/reload case now passes in 1m24s
+(`frankenphp-template-entity-save-1105-155923-ebba`). It inserts a static
+Heading through the block inserter, changes it through the editable canvas,
+clicks Save, and waits for the public WordPress entity store to show the
+changed `wp_template` record with no active save or pending edits. A fresh
+editor navigation then finds that same Heading block. The store is only
+read for completion evidence; all edits use the visible UI. The homepage
+template's stronger browser-crash recovery checks are running separately.
+
+**2026-11-05 — Recover real template edits after a browser crash.** The
+initial two recovery cases rejected a second insertion-context error:
+WordPress retained the post-content insertion point from publishing a post,
+so even a newly inserted static Heading belonged to that post. Read-only
+inspection showed the Heading under `core/post-content` and unchanged
+`home` template content. The helper now selects the template's Blog heading
+before inserting and requires that the intended template becomes dirty
+before Save. This corrects the test, without changing WordPress or runtime
+behavior. The general entity-ownership lesson is in the validation guide.
+
+Both strengthened Chromium cases now pass on the current source projection
+(`frankenphp-template-owner-recovery-1105-160939-b6d8`, 3m17s total). They
+publish a post through the editor, upload and embed a PNG, insert and save a
+Heading in `twentytwentyfive//home`, and verify the public homepage. Then
+they disable the original image source, crash the Chromium browser process,
+and relaunch the same persistent profile. The homepage and site editor both
+contain the changed template; the published post and exact uploaded bytes
+also survive. The source is requested exactly once for installation and
+never during recovery, and neither test creates an image checkpoint. Both
+experimental resizable OPFS and ordinary saved-computer storage passed
+(1.9m and 1.3m respectively). This is a bounded crash-recovery gate, not
+protection against clearing browser storage or proof of long-term uptime.
+Screenshots are `.context/frankenphp-template-after-restart-experimental-chromium.png`
+and `.context/frankenphp-template-after-restart-library-chromium.png`.
+
+The browser reference now describes all three actual WordPress profiles
+and built-in ZTS file-cache-only OPcache instead of obsolete port blockers.
+WebKit editor-health stalls, broader Go/POSIX gaps, physical-memory plateau,
+Node readiness/teardown, and current performance comparisons remain open.
