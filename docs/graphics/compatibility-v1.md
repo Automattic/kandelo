@@ -946,6 +946,17 @@ and two existing engine controls, WebKit 233 Pass, no failures. This is
 source/mechanism evidence; A3 dEQP, desktop, memory and performance validation
 remain pending and this checkpoint is not a readiness claim.
 
+**A3 private-buffer-copy follow-up, 2026-11-05.** Cross-class and derived
+buffer transfers must prove native allocation and copy success before
+publishing a valid host view. They now retain exact private checks inside
+predicted guest batches. Early resets unwind nested native selectors and
+unpublished storage before a healthy shared context can proceed. A live
+renderer refusing that restoration remains fatal (D-29); native OOM still
+resets only the guilty logical context (D-50). Guest error queues remain
+independent. This closes a demonstrated storage-publication failure; complete
+A3 and B1 acceptance still require the remaining conformance, application,
+memory and performance evidence.
+
 **A3 fence-query follow-up, 2026-11-03.** Native call-site counters on
 normal r9 found that retained fence queries bypassed the batch wrapper.
 Creation, polling and same-renderer server waits now use the requesting

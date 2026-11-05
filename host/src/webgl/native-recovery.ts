@@ -1,4 +1,4 @@
-import { NativeContextReset, predictsNativeCalls, predictedNativeCalls, observeBatchNativeError } from "./native-batch.js";
+import { NativeContextReset, predictsNativeCalls, predictedNativeCalls, observeBatchNativeError, withNativeBookkeeping } from "./native-batch.js";
 import type { GlObjectGroup } from "./object-group.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
@@ -334,8 +334,15 @@ export function repairNativeState(gl: WebGL2RenderingContext): boolean {
     try {
       if (!rendererGone(gl, repair.epoch)) {
         let restored = true;
-        for (let i = repair.attempted - 1; i >= 0; i--) restored = restoreInverse(repair.restores[i]) && restored;
-        if (repair.finalizer) restored = restoreInverse(repair.finalizer) && restored;
+        try {
+          for (let i = repair.attempted - 1; i >= 0; i--) restored = restoreInverse(repair.restores[i]) && restored;
+          if (repair.finalizer) restored = restoreInverse(repair.finalizer) && restored;
+        } catch (error) {
+          // A reset discovered while restoring is not permission to leave a
+          // live shared renderer corrupted. Physical loss drops its objects.
+          if (!(error instanceof NativeContextReset)) throw error;
+          restored = false;
+        }
         if (!restored && !rendererGone(gl, repair.epoch))
           nativeGlFault("the live renderer refused to restore native state after a rejected change");
       }
@@ -362,28 +369,39 @@ export function applyNativeChanges(b: CheckedGlOwner & { shadow: object }, chang
     repairs.set(gl,repair);
     if (repair.completion) repair.completion.submitted = true;
   } catch { recordGlError(b,0x505); return false; }
-  for (const change of changes) {
-    repair.attempted++;
-    let accepted = false;
-    try { accepted = change.apply(); }
-    catch (error) {
-      if (error instanceof NativeContextReset || error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
-      recordGlError(b,0x502);
+  try {
+    for (const change of changes) {
+      repair.attempted++;
+      let accepted = false;
+      try { accepted = change.apply(); }
+      catch (error) {
+        if (error instanceof NativeContextReset || error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
+        recordGlError(b,0x502);
+      }
+      if (accepted) continue;
+      repair.pending = true;
+      repairNativeState(gl);
+      return false;
     }
-    if (accepted) continue;
-    repair.pending = true;
-    repairNativeState(gl);
-    return false;
+    if (repairs.get(gl) !== repair || (repair.finalizer && !restoreInverse(repair.finalizer))) {
+      repair.pending = true;
+      repairNativeState(gl);
+      return false;
+    }
+    if (parent) repairs.set(gl,parent); else repairs.delete(gl);
+    if (repair.completion) repair.completion.complete = true;
+    if (!parent && deferredCollections.has(gl)) { deferredCollections.delete(gl); collectNativeRetirements(gl); }
+    return true;
+  } catch (error) {
+    if (error instanceof NativeContextReset) {
+      // A logical reset leaves the shared native renderer alive. Unwind
+      // private selectors before a healthy peer acquires it; nested repairs
+      // finish first and stop at their still-running parent.
+      repair.pending = true;
+      withNativeBookkeeping(() => repairNativeState(gl));
+    }
+    throw error;
   }
-  if (repairs.get(gl) !== repair || (repair.finalizer && !restoreInverse(repair.finalizer))) {
-    repair.pending = true;
-    repairNativeState(gl);
-    return false;
-  }
-  if (parent) repairs.set(gl,parent); else repairs.delete(gl);
-  if (repair.completion) repair.completion.complete = true;
-  if (!parent && deferredCollections.has(gl)) { deferredCollections.delete(gl); collectNativeRetirements(gl); }
-  return true;
 }
 
 /** Shared repair may outlive its submitter, but cannot reattach a container

@@ -1,3 +1,5 @@
+import { withNativeBatch } from "../src/webgl/native-batch.js";
+import { bindBufferObject } from "../src/webgl/buffer-storage.js";
 import { afterEach, expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { runGlQuery } from "../src/webgl/query.js";
@@ -7,6 +9,7 @@ import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-rec
 
 const ARRAY = 0x8892, ELEMENT = 0x8893;
 class BufferGl {
+  isContextLost(){return false;}
   errors: number[] = [];
   alive = new Set<object>();
   bindings = new Map<number, object | null>();
@@ -53,7 +56,13 @@ class BufferGl {
     if (this.failTransfer) { this.failTransfer = false; this.errors.push(0x505); return; }
     this.contents.set(this.bindings.get(target)!, new Uint8Array(size));
   }
-  bufferSubData(target: number, offset: number, bytes: Uint8Array) { this.contents.get(this.bindings.get(target)!)!.set(bytes, offset); }
+  bufferSubData(target: number, offset: number, bytes: Uint8Array) {
+    const store=this.contents.get(this.bindings.get(target)!);
+    // Native validation sets a flag and leaves storage unchanged; it does not
+    // throw a JavaScript exception that would prematurely abort prediction.
+    if(!store||offset+bytes.length>store.length){this.errors.push(0x501);return;}
+    store.set(bytes,offset);
+  }
   getBufferSubData(target: number, offset: number, out: Uint8Array) { out.set(this.contents.get(this.bindings.get(target)!)!.subarray(offset, offset + out.length)); }
 }
 /** Decision D-29: a host-owned deletion or inverse restoration that a live
@@ -628,4 +637,52 @@ it("faults when the live renderer refuses a capture restore without publishing i
   gl.bindBuffer = (target,value) => {if(target===ARRAY && value===object){gl.errors.push(0x502);return;}bind(target,value);};
   expectNativeGlFault(() => submit([[O.OP_END_CLIENT_ARRAY,[]]]), REFUSED_RESTORE);
   expect(peer.shadow.arrayBuffer).toBeNull();
+});
+
+it.each([false,true])("does not publish a failed cross-class copy as valid storage (existing view %s)", existing => {
+  const {b,gl,query,registry} = setup();
+  b.contextId = 2;
+  query(ARRAY,17);
+  if (existing) query(ELEMENT,17);
+  const object = b.buffers.get(17)!, store = b.bufferStores.get(object)!;
+  store.size = 4;
+  gl.contents.set(object,new Uint8Array([1,2,3,4]));
+  if (existing) {
+    store.views.get(ELEMENT)!.valid = false;
+    query(ELEMENT,0);
+  }
+  registry.bind({pid:1,sessionId:12,cmdbufAddr:0,cmdbufLen:64});
+  const peer = registry.get(1,12)!;
+  peer.gl = b.gl; peer.contextId = 14;
+  expect(registry.shareObjects(1,12,0)).toBe(true);
+  b.errors.push(0x500); peer.errors.push(0x501);
+  gl.failTransfer = true;
+  expect(withNativeBatch(b,"cross-target allocation failure",() => bindBufferObject(b,ELEMENT,17) ? 0 : -5)).toBe(-19);
+  expect(gl.bindings.get(0x8f36) ?? null).toBeNull();
+  expect(gl.bindings.get(0x8f37) ?? null).toBeNull();
+  expect(gl.bindings.get(ELEMENT) ?? null).toBeNull();
+  expect(gl.alive.size).toBe(existing ? 2 : 1);
+  expect(b.errors).toEqual([0x500]);
+  if (existing) expect(store.views.get(ELEMENT)!.valid).toBe(false);
+  else expect(store.views.has(ELEMENT)).toBe(false);
+  expect(withNativeBatch(peer,"healthy peer after failed copy",() => bindBufferObject(peer,ELEMENT,17) ? 0 : -5)).toBe(0);
+  const view = store.views.get(ELEMENT)!;
+  expect(gl.contents.get(view.native)).toEqual(new Uint8Array([1,2,3,4]));
+  expect(peer.errors).toEqual([0x501]);
+  registry.unbind(1); expect(gl.alive.size).toBe(0);
+});
+
+it("faults if a live renderer refuses the outer selector inverse after a private copy reset", () => {
+  const {b,gl,query} = setup(); query(ARRAY,17);
+  const object = b.buffers.get(17)!, store = b.bufferStores.get(object)!;
+  store.size = 4; gl.contents.set(object,new Uint8Array([1,2,3,4]));
+  const bind = gl.bindBuffer.bind(gl);
+  gl.bindBuffer = (target,object) => {
+    if (target === ELEMENT && object === null) { gl.errors.push(0x502); return; }
+    bind(target,object);
+  };
+  gl.failTransfer = true;
+  expectNativeGlFault(() => withNativeBatch(b,"copy reset with refused restore",() => {
+    bindBufferObject(b,ELEMENT,17);
+  }),REFUSED_RESTORE);
 });

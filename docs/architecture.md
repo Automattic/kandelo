@@ -6079,7 +6079,14 @@ the previously selected guest's flags separately.
 Private allocation and retirement owners still use exact checks where native
 success is required to publish or delete a handle. If such a check discovers
 an error within a guest batch, it routes the error to that batch's reset
-policy instead of swallowing it in a private error queue.
+policy instead of swallowing it in a private error queue. Private buffer
+transfers also retain exact checks while a guest batch is active: allocation,
+selector changes, chunk reads/writes and restoration must succeed before a
+shared or derived view becomes valid. An early logical reset unwinds nested
+native changes and retires unpublished buffers before another context can
+acquire the renderer. Refused restoration on a live renderer remains fatal;
+physical renderer loss drops the obsolete native state. These checks do not
+change guest-command acceptance or consume previously recorded guest flags.
 
 An unpredicted native error resets the guilty logical binding, emits a
 `gl-context-reset` host diagnostic naming its process, session, batch and

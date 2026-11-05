@@ -1,3 +1,4 @@
+import { withNativeBookkeeping } from "./native-batch.js";
 import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 import { bufferUsageError } from "./es2-validation.js";
 import type { GlBinding } from "./registry.js";
@@ -53,15 +54,17 @@ function nativeView(b: GlBinding, object: WebGLBuffer | null, target: number): W
 /** Run a bounded transfer without changing native copy bindings. */
 export function withBufferTransfer(b: GlBinding, source: WebGLBuffer, destination: WebGLBuffer,
     operation: () => boolean): boolean {
-  const gl = b.gl!;
-  let read: WebGLBuffer | null = null, write: WebGLBuffer | null = null;
-  if (!checkedGlCall(b, () => {
-    read = gl.getParameter(COPY_READ) as WebGLBuffer | null;
-    write = gl.getParameter(COPY_WRITE) as WebGLBuffer | null;
-  })) return false;
-  return applyNativeChanges(b,[{apply: () => checkedGlCall(b, () => gl.bindBuffer(COPY_READ,source)) &&
-    checkedGlCall(b, () => gl.bindBuffer(COPY_WRITE,destination)) && operation(), restore:nativeInverse(b)}],
-    {finalizer:nativeInverse(b,[["bindBuffer",COPY_READ,read]],[["bindBuffer",COPY_WRITE,write]])});
+  return withNativeBookkeeping(() => {
+    const gl = b.gl!;
+    let read: WebGLBuffer | null = null, write: WebGLBuffer | null = null;
+    if (!checkedGlCall(b, () => {
+      read = gl.getParameter(COPY_READ) as WebGLBuffer | null;
+      write = gl.getParameter(COPY_WRITE) as WebGLBuffer | null;
+    })) return false;
+    return applyNativeChanges(b,[{apply: () => checkedGlCall(b, () => gl.bindBuffer(COPY_READ,source)) &&
+      checkedGlCall(b, () => gl.bindBuffer(COPY_WRITE,destination)) && operation(), restore:nativeInverse(b)}],
+      {finalizer:nativeInverse(b,[["bindBuffer",COPY_READ,read]],[["bindBuffer",COPY_WRITE,write]])});
+  });
 }
 
 /** WebGL forbids native copying between its two buffer classes. Only

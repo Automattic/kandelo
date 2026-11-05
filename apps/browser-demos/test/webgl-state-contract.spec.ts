@@ -2127,3 +2127,70 @@ test("restored native renderers retire old storage without deleting it as new st
   },root);
   expect(result).toEqual({reset:true,retired:[true,true,true],exported:true,oldCalls:[],freshReset:false,control:"NativeGlFault"});
 });
+
+for (const existing of [false,true]) for (const audit of [false,true]) {
+  test(`private buffer copy OOM preserves a healthy peer (${existing ? "stale" : "new"} view, ${audit ? "audit" : "production"})`, async ({page}) => {
+    await page.goto("/trap-signal-test.html");
+    const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
+    const result = await page.evaluate(async ({root,existing,audit}) => {
+      const base = `/@fs${root}host/src/webgl/`;
+      const {GlContextRegistry} = await import(base+"registry.ts");
+      const {bindBufferObject,replaceBufferData} = await import(base+"buffer-storage.ts");
+      const {withNativeBatch} = await import(base+"native-batch.ts");
+      const {rendererLost} = await import(base+"renderer-loss.ts");
+      const {configureGlAudit,resetGlAuditForTesting} = await import(base+"native-audit.ts");
+      const {NativeGlFault} = await import(base+"native-recovery.ts");
+      const {setGlDiagnosticReporter} = await import(base+"diagnostics.ts");
+      const gl = document.createElement("canvas").getContext("webgl2");
+      if (!gl) throw new Error("WebGL2 required");
+      const live = new Set<WebGLBuffer>(), diagnostics: string[] = [];
+      const create = gl.createBuffer.bind(gl), drop = gl.deleteBuffer.bind(gl);
+      gl.createBuffer = () => { const value = create(); if (value) live.add(value); return value; };
+      gl.deleteBuffer = value => { drop(value); if (value) live.delete(value); };
+      const registry = new GlContextRegistry();
+      registry.bind({pid:99,sessionId:1,cmdbufAddr:0,cmdbufLen:64});
+      const b = registry.get(99,1)!; b.gl = gl; b.contextId = 1;
+      registry.bind({pid:99,sessionId:2,cmdbufAddr:0,cmdbufLen:64});
+      const peer = registry.get(99,2)!; peer.gl = gl; peer.contextId = 2;
+      if (!registry.shareObjects(99,2,1)) throw new Error("share group refused");
+      const requireBind = (owner: typeof b,target: number,name: number) => {
+        if (!bindBufferObject(owner,target,name)) throw new Error("fixture bind refused");
+      };
+      requireBind(b,gl.ARRAY_BUFFER,17);
+      if (existing) { requireBind(b,gl.ELEMENT_ARRAY_BUFFER,17); requireBind(b,gl.ELEMENT_ARRAY_BUFFER,0); }
+      replaceBufferData(b,gl.ARRAY_BUFFER,new Uint8Array([1,2,3,4]),gl.STATIC_DRAW);
+      const store = b.bufferStores.get(b.buffers.get(17)!)!;
+      b.errors.push(gl.INVALID_ENUM); peer.errors.push(gl.INVALID_VALUE);
+      let inject = true, pending = 0, injections = 0;
+      const data = gl.bufferData.bind(gl), error = gl.getError.bind(gl);
+      gl.bufferData = ((...args: Parameters<typeof data>) => {
+        if (inject) { inject = false; pending = gl.OUT_OF_MEMORY; injections++; return; }
+        Reflect.apply(data,gl,args);
+      }) as typeof gl.bufferData;
+      gl.getError = () => { if (pending) { const value = pending; pending = 0; return value; } return error(); };
+      setGlDiagnosticReporter(value => diagnostics.push(value.message));
+      if (audit) configureGlAudit({mode:"fatal",sink:() => {},fault:(message: string) => {throw new NativeGlFault(message);}});
+      try {
+        const reset = withNativeBatch(b,"private buffer copy OOM",() => bindBufferObject(b,gl.ELEMENT_ARRAY_BUFFER,17) ? 0 : -5);
+        const restored = gl.getParameter(gl.COPY_READ_BUFFER_BINDING) === null &&
+          gl.getParameter(gl.COPY_WRITE_BUFFER_BINDING) === null && gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING) === null;
+        const invalid = existing ? store.views.get(gl.ELEMENT_ARRAY_BUFFER)!.valid === false : !store.views.has(gl.ELEMENT_ARRAY_BUFFER);
+        const beforePeer = live.size;
+        const healthy = withNativeBatch(peer,"healthy peer after copy OOM",() => bindBufferObject(peer,gl.ELEMENT_ARRAY_BUFFER,17) ? 0 : -5);
+        const bytes = new Uint8Array(4), view = store.views.get(gl.ELEMENT_ARRAY_BUFFER)!;
+        gl.bindBuffer(gl.COPY_READ_BUFFER,view.native); gl.getBufferSubData(gl.COPY_READ_BUFFER,0,bytes); gl.bindBuffer(gl.COPY_READ_BUFFER,null);
+        const nativeError = gl.getError(), lost = [rendererLost(b),rendererLost(peer)];
+        const errors = [b.errors.slice(),peer.errors.slice()];
+        registry.unbind(99);
+        return {reset,healthy,restored,invalid,beforePeer,bytes:[...bytes],nativeError,lost,errors,injections,diagnostics,remaining:live.size};
+      } finally { resetGlAuditForTesting(); setGlDiagnosticReporter(null); registry.unbind(99); }
+    },{root,existing,audit});
+    expect(result.reset).toBe(-19); expect(result.healthy).toBe(0);
+    expect(result.restored).toBe(true); expect(result.invalid).toBe(true);
+    expect(result.beforePeer).toBe(existing ? 2 : 1);
+    expect(result.bytes).toEqual([1,2,3,4]); expect(result.nativeError).toBe(0);
+    expect(result.lost).toEqual([true,false]); expect(result.errors).toEqual([[0x500],[0x501]]);
+    expect(result.injections).toBe(1); expect(result.remaining).toBe(0);
+    expect(result.diagnostics).toHaveLength(1); expect(result.diagnostics[0]).toContain("OUT_OF_MEMORY");
+  });
+}

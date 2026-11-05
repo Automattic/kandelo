@@ -11,7 +11,7 @@ import { reportGlDiagnostic } from "./diagnostics.js";
 import { markRendererReset, noteRendererLoss, rendererLost, RENDERER_LOST } from "./renderer-loss.js";
 
 type Owner = { gl: WebGL2RenderingContext | null; errors: number[]; pid: number; sessionId: number };
-type Batch = { owner: Owner; label: string; sequence: number; nativeWork: boolean };
+type Batch = { owner: Owner; label: string; sequence: number; nativeWork: boolean; bookkeeping: number };
 let active: Batch | null = null;
 let sequence = 0;
 
@@ -25,7 +25,17 @@ export function nativeBatchActive(gl: WebGL2RenderingContext): boolean {
 /** Only the selected guest's checks are predictions. Private allocation and
  * cleanup owners retain exact native success checks for their bookkeeping. */
 export function predictsNativeCalls(owner: { gl: WebGL2RenderingContext | null; errors: number[] }): boolean {
-  return !!active && active.owner.gl === owner.gl && active.owner.errors === owner.errors;
+  return !!active && active.bookkeeping === 0 && active.owner.gl === owner.gl && active.owner.errors === owner.errors;
+}
+
+/** Private copies publish host storage/derived-data validity only after native
+ * success. Their checks still attribute any native error to the active batch's
+ * reset policy. Guest flags stay in the logical owner's independent queue. */
+export function withNativeBookkeeping(work: () => boolean): boolean {
+  const batch = active;
+  if (!batch) return work();
+  batch.bookkeeping++;
+  try { return work(); } finally { batch.bookkeeping--; }
 }
 
 /** A replay or utility can issue native calls without a checked wrapper. */
@@ -85,7 +95,7 @@ export function withNativeBatch(owner: Owner, label: string, work: () => number 
       nativeGlFault("A native GL batch reentered a different logical context");
     return work() ?? 0;
   }
-  active = { owner, label, sequence: ++sequence, nativeWork: false };
+  active = { owner, label, sequence: ++sequence, nativeWork: false, bookkeeping: 0 };
   try {
     const result = work() ?? 0;
     // A host-owned glGetError answer has no native batch of its own. A replay

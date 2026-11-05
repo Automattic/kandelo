@@ -3,7 +3,7 @@ import { defaultShadow } from "../src/webgl/shadow.js";
 import { blitPresentTarget } from "../src/webgl/present-target.js";
 import type { GlBinding } from "../src/webgl/registry.js";
 import { afterEach, expect, it } from "vitest";
-import { withNativeBatch } from "../src/webgl/native-batch.js";
+import { withNativeBatch, withNativeBookkeeping } from "../src/webgl/native-batch.js";
 import { checkedGlCall, checkedGlGroup, checkedGlSequence } from "../src/webgl/program-objects.js";
 import { captureNativeGlErrors, recordGlError } from "../src/webgl/errors.js";
 import { rendererLost, RENDERER_LOST } from "../src/webgl/renderer-loss.js";
@@ -151,4 +151,21 @@ it("still samples a muxer replay, then skips an error query on the selected owne
   expect(reads()).toBe(1);
   expect(withNativeBatch(binding, "getError already selected", () => muxer.switchTo(binding), false)).toBe(0);
   expect(reads()).toBe(1);
+});
+
+it("nests private checks without changing later guest prediction or consuming logical errors", () => {
+  const {owner,reads} = setup();
+  owner.errors.push(0x500);
+  expect(withNativeBatch(owner,"private nested copy",() => {
+    expect(withNativeBookkeeping(() => {
+      expect(checkedGlCall(owner,() => {})).toBe(true);
+      expect(withNativeBookkeeping(() => checkedGlCall(owner,() => {}))).toBe(true);
+      return checkedGlCall(owner,() => {});
+    })).toBe(true);
+    expect(reads()).toBe(6);
+    expect(checkedGlCall(owner,() => {})).toBe(true);
+    expect(reads()).toBe(6);
+  })).toBe(0);
+  expect(reads()).toBe(7);
+  expect(owner.errors).toEqual([0x500]);
 });
