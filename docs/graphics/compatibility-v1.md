@@ -86,6 +86,44 @@ validation. All original B1/goal-wide conformance, fault/audit,
 benchmark, memory and ship-bar requirements remain mandatory; no
 acceptance gate is reduced.
 
+## Isolated B2/B3 drafting, 2026-11-05
+
+These are private draft foundations under the maintainer's approved
+work order. Neither patch is applied to production, linked into a normal
+SDK or available in the preview. They do not complete B2 or B3 and do
+not change the required B1 → B2 → B3 landing/measurement order.
+
+The B2 draft pins an exact canonical buffer and independent execution
+lease for future queued binding work. The retired-object collector
+respects that custody until the final pin is released. It covers public
+name reuse, independent cache/work ownership, handoff to a real binding,
+idempotent release, failed acquisition and final context retirement.
+This tests a prospective asynchronous-lifetime hazard; current B1 binds
+remain checked and synchronous.
+
+The B3 draft lazily caches immutable numeric implementation limits in
+16 context-owned cells, keyed by query kind and complete value width.
+It preserves fractional float-to-Boolean conversion, caller output on
+failed reads, older GL errors and independent context values. Dynamic
+state and unknown queries retain host validation; optional cache
+allocation failure retains the ordinary query. Neither draft introduces
+a wire entry, ABI bump or unused-feature draw/frame scan.
+
+| Evidence / exact supervised jobs | Result | Scope |
+| --- | --- | --- |
+| R270 `graphics-b2-buffer-custody-before-r270-r-1105-014720-1a13` / `graphics-b2-buffer-custody-after-r270-1105-013845-19f9`; `.context/graphics-b2-buffer-custody-r270/` | Before3 fail/4 pass; after7 pass | Source-only host controls with native doubles. The strengthened final-context test removes incidental peer custody. No C transport, actual GPU or application performance claim |
+| R271 `graphics-b3-limits-before-r271-1105-021430-9759` / `graphics-b3-limits-after-r271-1105-021657-ef69`; `.context/graphics-b3-limits-draft-r271/run-native.sh` | Before7 fail/1 pass; after8 pass | UBSan/native device-double controls for scalar/vector/type conversion, mutable-state exclusion, failed reads, allocation failure, context isolation, error preservation and bounded replacement |
+| R272 `graphics-b3-limits-regression-r272-1105-022113-d062`; same private native harness with the draft driver and default case inventory | PASS487 | Existing native controls pass. This is neither admitted-path GPU evidence nor complete B3 validation |
+
+Draft patches, input hashes, exact harnesses and original failing logs
+are retained in those evidence directories. B2 still needs the bounded
+transport, guest integration and other binding families; B3 still needs
+broader state/object-query authority. Both require normal products,
+Node/browser checks, conformance, compositor checks and matched stage
+measurements before landing. Performance and native feel are unmeasured
+for these drafts. The separate B1 application build remains the preview
+critical path; availability will be announced after ordinary app smokes.
+
 ## Matrix validation against installed generations, 2026-11-05
 
 The explicitly admitted B1 driver now validates small matrix2/3/4
