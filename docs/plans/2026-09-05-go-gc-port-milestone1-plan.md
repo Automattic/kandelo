@@ -4639,3 +4639,67 @@ platform error. The old ABI-50 fixture instructions and stale standalone
 Caddy limitation in `tests/go/README.md` were corrected. Evidence is in
 `.context/go-os-current-vfs.log`. The spawn fix and its Node/browser
 regressions are the next checkpoint.
+
+**2026-11-05 — Validate spawn targets in the child's lookup context.** The
+kernel's early spawn probe is now limited to requests without file actions
+or `RESETIDS`. Such requests preserve the parent's lookup context. Requests
+that can change the child's CWD, descriptor targets, or credentials instead
+use the existing retained-target admission after child construction and its
+single file-action pass. This removes a false parent-CWD rejection without
+adding a Go workaround or duplicating the kernel's path resolver. Invalid
+targets in these requests can consequently fail after their file actions;
+the parent-context probe is not a guarantee that such actions have no
+effects when a launch fails. The architecture and focused agent guidance
+now describe the actual boundary.
+
+| Current ABI-55 upstream Node `os` run | Before | After |
+| --- | ---: | ---: |
+| Top-level passes | 213 | 215 |
+| Top-level failures | 2 | 0 |
+| Top-level skips | 21 | 21 |
+
+Both full runs used the same rebuilt Go fixtures and image-backed `/tmp`;
+the fixed run had empty stderr and no host diagnostics. The focused
+`TestExecutable` and absolute/relative `TestStartProcess` Node run also
+passed. The corresponding existing browser probes passed 9/9 across
+Chromium, Firefox, and WebKit in 25.3s. `check-abi-version.sh` passed and
+reported an unchanged program digest: this restores the existing
+post-action launch semantics without changing the wire format, pointer
+layout, or valid program contract. No program rebuild or ABI bump is
+needed for this admission correction.
+
+The kernel source build passed in 2m28s. Its source-only projection dropped
+dependent VFS products whose build identity was no longer current, so a
+normal full local build is refreshing those products. An attempted seven
+case Sortix spawn run failed in the host harness before guest execution
+because the rootfs product was absent from that intermediate projection;
+it is not conformance evidence and must be rerun after provisioning.
+
+The pinned `b3596ee` fork also passed full standard-library builds under the
+declared dev shell for `kandelo/wasm` with `CGO_ENABLED=0` and `1`, and for
+the upstream `js/wasm` and `wasip1/wasm` targets with cgo disabled. All used
+`go build -p 2 std`; Kandelo cgo selected `CC=wasm32posix-cc`. Logs are in
+`.context/go-stdlib-matrix.log` and its four target logs. These are compile
+gates, not runtime or standard-library conformance claims.
+
+The full source projection is now refreshed: all 178 nodes and 11 products
+passed, followed by the published-consumer check. The original debug
+bootstrap completed image generation but was deliberately terminated after
+30m05s while finalizing; a native stack sample showed source-input SHA-256
+hashing, with a sampled finalizer footprint of 17.4 MiB. A freshly checked
+release `xtask` reran the same bootstrap under the declared tool PATH,
+reused every completed cache output, published the projection, and passed
+its consumer check in 3m02s (151.4s finalization, 5.1s consumer check).
+No source-build checks or package inputs were bypassed or changed. These
+are different cache states, not a paired performance benchmark, and say
+nothing about Go/PHP request performance. The successful job is
+`source-products-release-1105-152709-0665`; the ignored reproducible command
+is `.context/bootstrap-release.sh`.
+
+After publication, the normal Sortix runner passed all seven selected spawn
+cases with zero skips, expected failures, build failures, or timeouts:
+`posix_spawn`, `posix_spawnp`, and the `addchdir`, `addfchdir`, `addopen`,
+`addclose`, and `adddup2` file actions. Evidence is in
+`.context/spawn-context-sortix-final.log`. This completes the C conformance
+gate for the spawn-context correction alongside the 215-case Node `os`
+sweep and nine browser launch probes. The editor stall remains separate.

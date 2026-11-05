@@ -21398,8 +21398,9 @@ export class CentralizedKernelWorker {
 
   /**
    * Handle SYS_SPAWN (path, path_len, blob, blob_len, pid_out, 0). The kernel
-   * reads the request from the caller's memory, refuses a target a launch
-   * could not run, and builds the child with its file actions applied once;
+   * reads the request from the caller's memory and builds the child with its
+   * file actions applied once. It prechecks the target only when the parent
+   * and child have the same lookup context;
    * the host then launches the child's committed target. The child pid is
    * written to `pid_out`, so a negative result is always a kernel error.
    */

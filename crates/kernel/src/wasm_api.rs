@@ -3563,9 +3563,9 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u3
 }
 
 /// Handle SYS_SPAWN for `caller_tid` in `parent_pid`: read the target path
-/// and request blob from the caller's memory, refuse a target a launch could
-/// not run before anything changes (`exec_target::probe_spawn_target`), then
-/// build the child, applying its attributes and file actions exactly once.
+/// and request blob from the caller's memory, then build the child, applying
+/// its attributes and file actions exactly once. Probe the target before
+/// construction only when the caller has the same lookup context as the child.
 ///
 /// Returns the child pid, or a negated errno. `EAGAIN` means a lazily fetched
 /// target is still arriving; nothing has changed, so the host retries.
@@ -3597,7 +3597,17 @@ pub extern "C" fn kernel_spawn_process(
             blob_len as usize,
         )
         .and_then(|(path, parsed)| {
-            crate::exec_target::probe_spawn_target(proc, locks, &mut host, &path).map(|()| parsed)
+            // File actions can change the child's CWD or descriptor targets,
+            // and RESETIDS changes its access checks. A parent-context probe
+            // would then reject valid child-relative paths or judge the wrong
+            // object. The normal retained-target admission after construction
+            // validates those launches against the child's actual state.
+            if parsed.file_actions.is_empty()
+                && parsed.attrs.flags & crate::spawn::attr_flags::RESETIDS == 0
+            {
+                crate::exec_target::probe_spawn_target(proc, locks, &mut host, &path)?;
+            }
+            Ok(parsed)
         });
         match request {
             Ok(parsed) => parsed,

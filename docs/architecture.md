@@ -1705,13 +1705,18 @@ caller now take.
    spawn wire format, and validates argv + envp against the same 4 MiB
    `ARG_MAX` contract as `execve`, counted at the caller's pointer width, plus
    the separate 64 KiB per-entry process-metadata transport limit (an
-   implementation ceiling, not `ARG_MAX`). Before anything changes it refuses
-   a target a launch could not run (`exec_target::probe_spawn_target`): the
-   path from the caller's CWD with execute permission, a WebAssembly or `#!`
-   header, and one `#!` level whose interpreter must itself be a program.
-   That keeps a failed `posix_spawnp` PATH probe from creating a child or
-   running its file actions; it retains nothing and is never launch
-   authority. A target whose bytes are still being fetched returns `EAGAIN`
+   implementation ceiling, not `ARG_MAX`). When there are no file actions or
+   credential reset, the parent and child have the same lookup context, so
+   the kernel can first refuse a target a launch could not run
+   (`exec_target::probe_spawn_target`): the path from the caller's CWD with
+   execute permission, a WebAssembly or `#!` header, and one `#!` level whose
+   interpreter must itself be a program. This check retains nothing and is
+   never launch authority. If file actions or `RESETIDS` can change lookup,
+   the kernel builds the child and applies those operations once; normal
+   retained-target admission then validates the executable using the child's
+   actual CWD, descriptors, and credentials. A child-relative executable must
+   not be refused merely because it is absent from the parent's directory.
+   A precheck whose target bytes are still being fetched returns `EAGAIN`
    with nothing changed, and the host retries once the fetch settles. The
    explicit 8,417,320-byte whole-blob ceiling also bounds file-action data
    that `ARG_MAX` does not count. The advertised 4 MiB `ARG_MAX`,

@@ -205,9 +205,11 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   upstream Wasm targets cannot spawn. Kandelo must select the Unix `LookPath`
   implementation and check effective execute permission through the real
   `faccessat2(AT_EACCESS)` syscall. Test PATH lookup with a VFS executable
-  and both absolute and child-CWD-relative `os.StartProcess` paths. Host
-  spawn preflight must account for `chdir` file actions before resolving a
-  relative candidate; Rust's post-action resolution remains authoritative.
+  and both absolute and child-CWD-relative `os.StartProcess` paths. Spawn
+  admission belongs in Rust. A kernel precheck may use the parent context
+  only when there are no file actions or credential reset; otherwise the
+  child's post-action target admission resolves the candidate. Checking a
+  child-relative executable in the parent context rejects valid launches.
   Do not carry over the WASI-era `syscall` initializer that forces standard
   fds nonblocking: `posix_spawn` must preserve the parent's OFD status flags.
   Its presence made upstream `TestReadNonblockingFd` hang because Go attached

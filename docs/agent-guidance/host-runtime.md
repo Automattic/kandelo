@@ -223,7 +223,8 @@ The host never decodes the image into a filesystem of its own.
 
 The kernel decides what an exec or `posix_spawn` runs; the host instantiates
 it. `kernel_spawn_process` reads the spawn request from the caller's memory
-and refuses a target a launch could not run before any file action;
+and builds the child. It may precheck a target in the parent context only
+when file actions and credential reset cannot change that context;
 `kernel_exec_target_admit` says whether a retained target is a `#!` script or
 a program runnable under this ABI; `kernel_exec_commit` sets the new image's
 pointer width. Do not add host code that parses a spawn request or an exec
