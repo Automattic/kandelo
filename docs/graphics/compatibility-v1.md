@@ -42,6 +42,49 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Automatic application-driver admission prototype, 2026-11-05
+
+Ordinary applications now enter the B1 program journal at their first
+eligible nonzero program selection. Dispatch serialization proves that
+the public name is a known program before cold admission. Repeated
+selections use the existing bounded cache and queue. Unknown records and
+invalid/known-failed program names retain checked host validation
+without repeatedly trying admission I/O. Failed or uncertain admission
+does not fall through to another selection; its existing error/reset and
+ownership receivers remain authoritative. No application-specific enable
+call or package patch is needed.
+
+The presence of `KANDELO_GL_CHECKED_PROGRAM_SELECTION` selects the
+checked diagnostic path when a context is created. It is a platform
+diagnostic for comparisons and raw-wire/fault controls, not stale-
+artifact compatibility. Explicit internal admission remains available
+for those controls. Native device-double and raw receipt tests select
+that checked setup to preserve independent transport/error assertions;
+ordinary creation/sharing/default-target tests and a new automatic hot-
+path mode use the default driver. The automatic mode never calls the
+explicit enable helper. Policy is read once per context, with no
+draw/frame scan or new wire/version/snapshot entry. Node retains the
+decided explicit no-renderer boundary.
+
+| Evidence / command | Result | Scope |
+| --- | --- | --- |
+| R265 `graphics-auto-admission-build-r265-1105-005729-6ace`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-auto-admission-build-r265/build.sh` | PASS2m06 |487 native checked-path controls, sequential normal SDK32/64 ensures, ABI against74c11e6ae4; kernel/image-writer/snapshot hashes unchanged. Sources/products frozen. Not the application/image preview build |
+| R266 `graphics-auto-admission-focused-r266-1105-005854-e1bc`, port6067; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-auto-admission-focused-r266/run.sh` | PASS3m33 /108 GPU cases |18 Node controls/6files, two strict helpers and full retained host compiler39-error comparison.36 hot-path cases include12 automatic cases;36 ordinary sharing,12 creation,12 default-target and12 surfaceless cases use normal defaults across Chromium/Firefox/WebKit, both widths and production/fatal audit. Exact source/config/product hashes checked |
+
+In the same36-case fixture, checked diagnostic selection uses40 device
+requests per20 select/unselect pairs and20 requests per20 matrix
+updates; explicit and automatic journals use zero warmed requests for
+both. Every case retains19 matrix/lifetime controls, pixels and native
+program/shader live0. Automatic mode's initial matrix acquisition costs2
+requests, recorded explicitly, and its later matrix setup uses the
+existing signature; checked initial observation costs1. These are
+component request counts, not application latency, native feel or a
+completed B1 target. The normal preview build and real ScummVM/desktop
+checks are next, with availability announced separately from full
+validation. All original B1/goal-wide conformance, fault/audit,
+benchmark, memory and ship-bar requirements remain mandatory; no
+acceptance gate is reduced.
+
 ## Matrix validation against installed generations, 2026-11-05
 
 The explicitly admitted B1 driver now validates small matrix2/3/4

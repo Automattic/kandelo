@@ -389,6 +389,7 @@ struct wpk_gles_context {
     struct wpk_array_capture array_capture;
     struct wpk_program_record *current_program;
     struct wpk_program_stream *program_stream;
+    int automatic_program_journal;
     int program_captures_uncertain;
     /* Embedded owned transport storage: publication/cleanup never allocates C
      * reply metadata after a program mutation was acknowledged. */
@@ -503,6 +504,7 @@ static int program_submission_scope(struct wpk_gles_context *, struct wpk_gl_nam
 static void complete_program_submission(struct wpk_gles_context *, int);
 static int disable_program_stream(struct wpk_gles_context *);
 static int try_program_stream_use(struct wpk_gles_context *, GLuint);
+static int prepare_automatic_program_stream(struct wpk_gles_context *,GLuint);
 static struct wpk_gl_name_scope begin_dispatch_scope(struct wpk_gles_context *state) {
     struct wpk_gl_name_scope scope = {.group = state->objects};
     uint64_t owner=atomic_load_explicit(&scope.group->program_owner_epoch,memory_order_relaxed);
@@ -579,6 +581,9 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
         return NULL;
     }
     state->texture_units = state->initial_texture_units;
+    /* Presence selects the checked diagnostic path, including raw-wire
+     * protocol controls. Ordinary applications need no enable call. */
+    state->automatic_program_journal=getenv("KANDELO_GL_CHECKED_PROGRAM_SELECTION")==NULL;
     state->texture_unit_count = WPK_GL_INITIAL_TEXTURE_UNITS;
     state->framebuffer_names = state->initial_framebuffer_names;
     state->framebuffer_name_capacity = WPK_GL_INITIAL_FRAMEBUFFER_NAMES;
@@ -1213,8 +1218,9 @@ void glLinkProgram(GLuint program) {
 }
 
 void glUseProgram(GLuint program) {
-    if (!_wpk_gl_command_encoder()) return;
-    if (try_program_stream_use(_wpk_gl_current_encoder(),program)) return;
+    struct wpk_gles_context *state=_wpk_gl_command_encoder();
+    if (!state || !prepare_automatic_program_stream(state,program)) return;
+    if (try_program_stream_use(state,program)) return;
     mutate_program_record(OP_USE_PROGRAM, program, 0);
 }
 
@@ -2578,6 +2584,20 @@ int _wpk_gl_enable_program_journal(void) {
         stream->blocked|=WPK_PROGRAM_BLOCKED_EXECUTION;raise_client_error(GL_INVALID_OPERATION);return 0;
     }
     return 1;
+}
+/* Cold admission is independent of any application's identity. Validate the
+ * shared name under dispatch serialization before reserving a journal, and
+ * never fall through to a legacy mutation after uncertain admission. Unknown
+ * records retain the checked host path without repeatedly trying cold I/O. */
+static int prepare_automatic_program_stream(struct wpk_gles_context *state,GLuint name) {
+    if(!name || !state->automatic_program_journal ||
+        (state->program_stream && state->program_stream->active))return 1;
+    struct wpk_gl_name_scope guard __attribute__((cleanup(_wpk_gl_end_name_scope)))=begin_dispatch_scope(state);
+    if(!guard.group)return 0;
+    if(!atomic_load_explicit(&state->objects->program_records_known,memory_order_relaxed))return 1;
+    struct wpk_program_record *record=find_program_record(state->objects,name);
+    if(!record || record->kind!=5 || (record->link_known && !record->linked))return 1;
+    return _wpk_gl_enable_program_journal();
 }
 static uint32_t program_stream_generation(struct wpk_gles_context *state,struct wpk_program_record *record) {
     struct wpk_program_stream *stream=state->program_stream;

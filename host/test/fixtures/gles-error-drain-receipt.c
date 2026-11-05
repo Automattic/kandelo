@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -20,6 +21,8 @@ static void host_flags(void) {
     assert(!ioctl(_wpk_gl_fd(),GLIO_SUBMIT,&submit));
 }
 int main(int argc,char **argv) {
+    /* Raw receipt/fault controls own admission explicitly. */
+    assert(!setenv("KANDELO_GL_CHECKED_PROGRAM_SELECTION","1",1));
     assert(argc==2);EGLDisplay d=eglGetDisplay(EGL_DEFAULT_DISPLAY);assert(d!=EGL_NO_DISPLAY);
     if(!strcmp(argv[1],"no-renderer")){
         assert(!eglInitialize(d,NULL,NULL)&&eglGetError()==EGL_NOT_INITIALIZED);

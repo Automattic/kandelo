@@ -3365,6 +3365,9 @@ static void *hold_dispatch_across_fork(void *opaque) {
 }
 
 int main(int argc, char **argv) {
+    /* These controls measure the checked transport. Real guest/browser
+     * controls separately exercise default automatic admission. */
+    assert(!setenv("KANDELO_GL_CHECKED_PROGRAM_SELECTION","1",1));
     assert(argc == 2 || (argc == 3 && !strcmp(argv[1],"encoder-inline-export")));
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (!strncmp(argv[1], "egl-spec-", 9)) {

@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #include "../../../libc/glue/gl_abi.h"
@@ -37,13 +38,13 @@ static void *matrix_relink(void *opaque){
  for(unsigned check=0;check<4;check++){__VA_ARGS__;assert(glGetError()==(error));assert(glGetError()==GL_NO_ERROR);} \
  if(admitted)assert(_wpk_gl_device_requests()==before);matrix_checks++; \
 } while(0)
-static void matrix_proofs(EGLDisplay d,EGLConfig config,EGLContext context,GLuint restore,int admitted){
+static void matrix_proofs(EGLDisplay d,EGLConfig config,EGLContext context,GLuint restore,int admitted,int automatic){
  unsigned matrix_checks=0;
  GLuint v=shader(GL_VERTEX_SHADER,"attribute vec2 p;uniform mat2 a;uniform mat3 b[3];uniform mat4 c;void main(){vec3 q=b[0]*b[1]*b[2]*vec3(a*p,1.);gl_Position=c*vec4(q.xy,0.,1.);}"),
   f=shader(GL_FRAGMENT_SHADER,"precision mediump float;void main(){gl_FragColor=vec4(.2,.6,.8,1.);}"),program=glCreateProgram();
  glAttachShader(program,v);glAttachShader(program,f);glBindAttribLocation(program,0,"p");linked(program);glUseProgram(program);
  GLint a=glGetUniformLocation(program,"a"),b=glGetUniformLocation(program,"b[0]"),c=glGetUniformLocation(program,"c");assert(a>=0&&b>=0&&c>=0);
- if(admitted)assert(_wpk_gl_enable_program_journal()); // Own installed-root generation zero.
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal()); // Explicit installed-root generation zero.
  assert(glGetError()==GL_NO_ERROR);
  MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix2fv(a,1,GL_FALSE,identity2));
  MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix3fv(b,1,GL_FALSE,identity3));
@@ -64,7 +65,7 @@ static void matrix_proofs(EGLDisplay d,EGLConfig config,EGLContext context,GLuin
  GLuint generation=glCreateProgram(),gv=shader(GL_VERTEX_SHADER,"attribute vec2 p;uniform mat4 u;void main(){gl_Position=u*vec4(p,0.,1.);}");
  glAttachShader(generation,gv);glAttachShader(generation,f);glBindAttribLocation(generation,0,"p");linked(generation);glUseProgram(generation);
  GLint u=glGetUniformLocation(generation,"u");assert(u==0);
- if(admitted)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);
  MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix4fv(u,1,GL_FALSE,identity4));
  struct matrix_peer peer={d,config,context,generation,gv,1};pthread_t thread;
  assert(!pthread_create(&thread,NULL,matrix_relink,&peer)&&!pthread_join(thread,NULL));
@@ -97,7 +98,10 @@ static void matrix_proofs(EGLDisplay d,EGLConfig config,EGLContext context,GLuin
  printf("COUNT {\"operation\":\"%s\",\"iterations\":20,\"total\":%llu,\"min\":%llu,\"max\":%llu}\n",label,(unsigned long long)sum,(unsigned long long)min,(unsigned long long)max); \
 } while(0)
 int main(int argc,char **argv){
- assert(argc==2);EGLDisplay d=eglGetDisplay(EGL_DEFAULT_DISPLAY);assert(d!=EGL_NO_DISPLAY);
+ assert(argc==2);const int automatic=!strcmp(argv[1],"automatic");
+ if(automatic)assert(!unsetenv("KANDELO_GL_CHECKED_PROGRAM_SELECTION"));
+ else assert(!setenv("KANDELO_GL_CHECKED_PROGRAM_SELECTION","1",1));
+ EGLDisplay d=eglGetDisplay(EGL_DEFAULT_DISPLAY);assert(d!=EGL_NO_DISPLAY);
  if(!strcmp(argv[1],"no-renderer")){assert(!eglInitialize(d,NULL,NULL)&&eglGetError()==EGL_NOT_INITIALIZED);puts("PASS hotpaths refuses absent renderer");return 0;}
  assert(eglInitialize(d,NULL,NULL));EGLConfig config;EGLint count;
  const EGLint choose[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_NONE};
@@ -106,7 +110,9 @@ int main(int argc,char **argv){
  EGLContext ctx=eglCreateContext(d,config,EGL_NO_CONTEXT,attrs);EGLSurface surface=eglCreatePbufferSurface(d,config,size);assert(ctx!=EGL_NO_CONTEXT&&surface!=EGL_NO_SURFACE&&eglMakeCurrent(d,surface,surface,ctx));
  GLuint v=shader(GL_VERTEX_SHADER,"attribute vec2 p;uniform mat4 matrix;void main(){gl_Position=matrix*vec4(p,0.,1.);}"),f=shader(GL_FRAGMENT_SHADER,"precision mediump float;void main(){gl_FragColor=vec4(.2,.6,.8,1.);}");
  GLuint program=glCreateProgram();glAttachShader(program,v);glAttachShader(program,f);glBindAttribLocation(program,0,"p");glLinkProgram(program);GLint ok=0;glGetProgramiv(program,GL_LINK_STATUS,&ok);assert(ok);glUseProgram(program);
- const GLfloat matrix[]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1},triangle[]={-1,-1,1,-1,0,1};GLint location=glGetUniformLocation(program,"matrix");assert(location>=0);glUniformMatrix4fv(location,1,GL_FALSE,matrix);
+ const GLfloat matrix[]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1},triangle[]={-1,-1,1,-1,0,1};GLint location=glGetUniformLocation(program,"matrix");assert(location>=0);
+ uint64_t initial_matrix=_wpk_gl_device_requests();glUniformMatrix4fv(location,1,GL_FALSE,matrix);assert(glGetError()==GL_NO_ERROR);
+ printf("INITIAL_MATRIX %llu\n",(unsigned long long)(_wpk_gl_device_requests()-initial_matrix));
  GLuint buffers[3],texture,vao;glGenBuffers(3,buffers);glBindBuffer(GL_ARRAY_BUFFER,buffers[0]);glBufferData(GL_ARRAY_BUFFER,sizeof triangle,triangle,GL_STATIC_DRAW);glEnableVertexAttribArray(0);glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
  glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);unsigned char pixel[]={255,255,255,255};glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
  glViewport(0,0,16,16);glClearColor(0,0,0,1);glFinish();assert(glGetError()==GL_NO_ERROR);
@@ -142,7 +148,7 @@ int main(int argc,char **argv){
  glBindVertexArray(0);assert(glGetError()==GL_NO_ERROR);
  MEASURE("attribute-restored-default",glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL));
  glClear(GL_COLOR_BUFFER_BIT);glDrawArrays(GL_TRIANGLES,0,3);unsigned char result[4];glReadPixels(8,8,1,1,GL_RGBA,GL_UNSIGNED_BYTE,result);assert(result[0]==51&&result[1]==153&&result[2]==204&&result[3]==255);assert(glGetError()==GL_NO_ERROR);
- matrix_proofs(d,config,ctx,program,!strcmp(argv[1],"admitted"));
+ matrix_proofs(d,config,ctx,program,automatic||!strcmp(argv[1],"admitted"),automatic);
  glBindVertexArray(0);glDeleteVertexArrays(1,&vao);glUseProgram(0);glDeleteProgram(program);glDeleteShader(v);glDeleteShader(f);glDeleteBuffers(3,buffers);glDeleteTextures(1,&texture);assert(glGetError()==GL_NO_ERROR);
  assert(eglMakeCurrent(d,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT)&&eglDestroyContext(d,ctx)&&eglDestroySurface(d,surface)&&eglTerminate(d)&&eglReleaseThread());
  puts("PASS hotpath request attribution");return 0;

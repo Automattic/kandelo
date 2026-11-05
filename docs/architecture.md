@@ -6950,7 +6950,7 @@ Selection stays synchronous. This is intermediate B1 ownership implementation,
 not native-feel acceptance.
 
 
-The ordinary C link/use path does not acquire private executable captures.
+The checked diagnostic C link/use path does not acquire private executable captures.
 Its checked mutation receipt establishes public-name/current-reference state;
 the host retains the installed executable independently. An explicitly admitted
 journal acquires a native-generation pin only on a cold cache miss, registers
@@ -7167,9 +7167,17 @@ programs/shaders before guest exit after explicit cleanup, including
 both shared retirement orders, unavailable-proof retry, native OOM and
 healthy unadmitted peers.
 
-Automatic application admission is still off. The independent native-
-loss, failed-prefix and final-context audit still needs closure before
-activation. Lost/malformed error-drain replies now retain recoverable
-custody, with independent three-engine controls. These are unfinished B1
-work. Focused warm device request counts do not establish application
-latency or native desktop feel.
+Automatic journal admission now runs at the first eligible nonzero
+program selection under dispatch serialization. A known program can
+enter the existing cold journal without an application-specific call;
+unknown records and invalid/known-failed names keep checked host
+validation. Uncertain admission stops selection and preserves its exact
+custody. Context creation samples the presence of
+KANDELO_GL_CHECKED_PROGRAM_SELECTION to retain checked selection for
+diagnostics/raw-wire controls. This adds no per-draw/frame scan or new
+wire/version. The default path has focused Node and three-engine browser
+controls, including sharing, creation, target errors and matrix-
+generation semantics. Full B1 conformance, loss/final-context audit
+closure, application measurements and a coherent normal preview remain
+acceptance work. Warm device counts do not establish application latency
+or native desktop feel.

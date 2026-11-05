@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "../../../libc/glue/gl_abi.h"
 static const EGLint attributes[]={EGL_CONTEXT_CLIENT_VERSION,2,
@@ -43,6 +44,8 @@ static GLuint shader(GLenum type,const char *source){
     GLint ok=0;glGetShaderiv(s,GL_COMPILE_STATUS,&ok);assert(ok);return s;
 }
 int main(int argc,char **argv){
+    /* Raw receipt/fault controls own admission explicitly. */
+    assert(!setenv("KANDELO_GL_CHECKED_PROGRAM_SELECTION","1",1));
     assert(argc==2);const char *mode=argv[1];
     EGLDisplay d=eglGetDisplay(EGL_DEFAULT_DISPLAY);assert(d!=EGL_NO_DISPLAY);
     if(!strcmp(mode,"no-renderer")){

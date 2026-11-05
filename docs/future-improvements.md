@@ -274,9 +274,10 @@ retain their conservative paths; full attribute/draw authority is unfinished.
 Program selection now has shared C names, current-context references, cold
 native executable captures and checked host-journal transport. Its explicitly
 admitted C prototype connects bounded pending/result custody, generation-token
-caching and ordered shared publication; ordinary application admission remains
-off until the remaining native-loss, failed-prefix and final-context
-cases are closed. A positive link-status cache without complete ownership
+caching and ordered shared publication. Ordinary applications now enter it
+automatically at their first eligible program selection, while unknown
+records retain checked validation. Full loss/final-context audit closure and
+application acceptance remain required. A positive link-status cache without complete ownership
 fails a newly shared pthread deletion regression; that prototype
 was not landed. This ownership remains required current-iteration work.
 This is only the start of B1: the remaining exact validation families and their audit
@@ -306,13 +307,14 @@ The original one-request successful path remains; failure-only recovery must
 then observe fresh queued work before local error knowledge can resume. This
 closes the targeted error-reply custody gap, with native controls and real
 GPU checks on three engines/both widths. Full B1 conformance, loss/final-context
-audit, activation, application measurements and complete preview remain required.
+audit, application measurements and complete preview remain required.
 
 Ordinary link/use no longer pays for an unused selected/prepared executable
 capture cache. Admitted journal caches acquire cold pins only when needed,
 including authoritative unknown-link observations. Focused request-count and
-fault controls cover this increment; application latency, automatic admission
-and the remaining B1 requirements above still need validation.
+fault controls cover this increment. Automatic admission now has focused
+three-engine coverage; application latency and full B1 acceptance still
+need validation.
 
 Native desktop measurement remains current-iteration work alongside the driver.
 The owned-window observer now has bounded pixel matching with six headless
@@ -1199,3 +1201,11 @@ loss. Group ownership is checked before inherited fork mutexes are touched.
 Automatic activation, remaining attribute/draw and other required hot paths,
 full B1 correctness/conformance and ScummVM round-trip measurements remain open.
 A foreign mutable encoder is never a source of submitted commands.
+
+The automatic-admission B1 prototype now starts at the first eligible program
+selection, without an application-specific enable call. The checked diagnostic
+mode remains available through KANDELO_GL_CHECKED_PROGRAM_SELECTION, sampled
+once per context. Its focused108-case three-engine gate includes normal
+sharing/creation/target behavior and automatic hot-path controls, while the
+full normal preview build and ScummVM round-trip target remain unproven.
+Prototype availability will be reported separately from final validation.

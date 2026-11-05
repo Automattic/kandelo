@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "../../../libc/glue/gl_abi.h"
 
@@ -58,6 +59,8 @@ static GLuint shader(GLenum type,const char *source) {
     GLint compiled=0;glGetShaderiv(s,GL_COMPILE_STATUS,&compiled);assert(compiled);return s;
 }
 int main(int argc,char **argv) {
+    /* Raw receipt/fault controls own admission explicitly. */
+    assert(!setenv("KANDELO_GL_CHECKED_PROGRAM_SELECTION","1",1));
     assert(argc==2);EGLDisplay d=eglGetDisplay(EGL_DEFAULT_DISPLAY);assert(d!=EGL_NO_DISPLAY);
     if(!strcmp(argv[1],"no-renderer")) {
         assert(!eglInitialize(d,NULL,NULL)&&eglGetError()==EGL_NOT_INITIALIZED);

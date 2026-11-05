@@ -177,6 +177,8 @@ static void *publication_peer(void *opaque) {
     assert(eglDestroyContext(p->display,p->context)&&eglReleaseThread());return NULL;
 }
 int main(int argc,char **argv) {
+    /* Raw receipt/fault controls own admission explicitly. */
+    assert(!setenv("KANDELO_GL_CHECKED_PROGRAM_SELECTION","1",1));
     assert(argc==2);const int errors=!strcmp(argv[1],"errors"),preflight=!strcmp(argv[1],"preflight");
     const int uniform=!strcmp(argv[1],"uniform-interleave");
     const int lifecycle=!strcmp(argv[1],"lifecycle-unbound")||!strcmp(argv[1],"lifecycle-current-peer");

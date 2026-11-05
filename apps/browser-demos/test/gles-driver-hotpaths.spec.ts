@@ -16,7 +16,7 @@ test.beforeAll(()=>{
       ["-pthread","-lEGL","-lGLESv2"],{arch,forkInstrument:true}));
 });
 test.afterAll(()=>{for(const fixture of fixtures.values())fixture.cleanup();});
-for(const mode of ["ordinary","admitted"] as const) for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
+for(const mode of ["ordinary","admitted","automatic"] as const) for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
   test(`${mode} ${arch} checks journal transport and captured execution (${audit??"production"})`,async({page,baseURL,browser})=>{
     test.setTimeout(90_000);
     const image=KandeloImageFs.create();image.mkdir("/bin",0o755);
@@ -60,10 +60,11 @@ for(const mode of ["ordinary","admitted"] as const) for(const arch of ["wasm32",
     expect(counts.every((c:any)=>c.iterations===20)).toBe(true);
     for(const name of ["array-definition-small","attribute-default","clear-default"])
       expect((byName.get(name) as any).total).toBe(0);
-    expect((byName.get("program-pair") as any).total).toBe(mode==="admitted"?0:40);
-    expect((byName.get("matrix4") as any).total).toBe(mode==="admitted"?0:20);
+    expect((byName.get("program-pair") as any).total).toBe(mode==="ordinary"?40:0);
+    expect((byName.get("matrix4") as any).total).toBe(mode==="ordinary"?20:0);
     expect(setup).toHaveLength(14);
-    expect(setup.find((row:any)=>row.operation==="matrix4").deviceRequests).toBe(mode==="admitted"?3:1);
+    expect(setup.find((row:any)=>row.operation==="matrix4").deviceRequests).toBe(mode==="admitted"?3:mode==="automatic"?0:1);
+    expect(lines).toContain(`INITIAL_MATRIX ${mode==="automatic"?2:1}`);
     expect(lines).toContain("MATRIX_PROOFS 19");
     // Permit future improvements, while rejecting one drain for every large
     // definition. Rollover still revokes the exact prefix and needs recovery.
