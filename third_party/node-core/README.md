@@ -340,7 +340,21 @@ Regenerate or verify offline, without rebuilding packages:
 ```sh
 scripts/dev-shell.sh python3 third_party/node-core/build.py
 scripts/dev-shell.sh python3 third_party/node-core/build.py --check
+scripts/dev-shell.sh python3 third_party/node-core/check-build-inputs.py
 ```
+
+The engine recipe declares the core production owners, pinned reference and
+license files used by generation and verification. Its normal build runs the
+input guard and bundle freshness check before staging the engine source. New
+core owners and references must be declared in the recipe, even when their
+bytes are already embedded in the checked-in bundle. A stale bundle fails;
+the build does not regenerate checkout inputs.
+
+The guard covers root production files, recursive manifest paths, literal
+generator paths, unity fragments and literal engine shell paths. This is a
+conservative source guard, not a dynamic-read or complete SDK/toolchain closure
+proof. It establishes no runtime compatibility. See the
+[shared input record](../../tests/nodejs/outline/build-input-closure.md).
 
 Source differential tests require the pinned Node 26 reference rather
 than the independent host Node 24 toolchain. Guest fixtures exercise both

@@ -66,7 +66,7 @@
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "f93dfee0a149cdf66765c8c11c27f8f13a82153e09875fd1c684f898429442ab"
+        "packages/registry/spidermonkey/build.toml": "844ff3cfdd26f035ce2c733a0844be6c5b79a47b772be9055e690d7f7b1bcb3c"
       },
       "sourceRoute": "pinned URL/path/byte-path/HTTP-option helpers over shared parser and platform owners; generic native Error location policy; pinned AssertionError/Myers diff and shared validator/error/color/primordial owners; values/util/UV/dotenv/MIME/Buffer/path owners and full querystring/punycode algorithms with saved-frame load-origin source; pinned util/StringDecoder owners and callable Buffer/shared aligned pool/permanent storage/zero-fill source",
       "remainingDependencies": "Private worker marks have a source owner and focused environment evidence; remaining Buffer/backing-store/realm/CLI/error/descriptor edges, remaining util/URL/IDNA/encoding, complete errors/brands/descriptors and guest byte/origin/loader/warning conformance",
@@ -357,7 +357,7 @@
         "packages/registry/php/package.toml": "3ae9d7bc075a1e187e0262e276f16d63b02aacd9e213f1f4f440ac52bee6cbba",
         "packages/registry/php/build.toml": "ad4e35904e40a9027b646dd25f342b0335a0afcd025edaee68354d656bc05ab4",
         "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
-        "packages/registry/spidermonkey/build.toml": "f93dfee0a149cdf66765c8c11c27f8f13a82153e09875fd1c684f898429442ab",
+        "packages/registry/spidermonkey/build.toml": "844ff3cfdd26f035ce2c733a0844be6c5b79a47b772be9055e690d7f7b1bcb3c",
         "packages/registry/wget/package.toml": "252e2ea144b723a24617f78911bf44ff9ec5ff61d2f0c12a6947c7c170e97b2e",
         "packages/registry/wget/build.toml": "ad538e1d004b0ab32732563826a33c6230ff627d855b0f14de3627d2d508569e"
       },
@@ -434,7 +434,7 @@
         "packages/registry/php/package.toml": "3ae9d7bc075a1e187e0262e276f16d63b02aacd9e213f1f4f440ac52bee6cbba",
         "packages/registry/php/build.toml": "ad4e35904e40a9027b646dd25f342b0335a0afcd025edaee68354d656bc05ab4",
         "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
-        "packages/registry/spidermonkey/build.toml": "f93dfee0a149cdf66765c8c11c27f8f13a82153e09875fd1c684f898429442ab",
+        "packages/registry/spidermonkey/build.toml": "844ff3cfdd26f035ce2c733a0844be6c5b79a47b772be9055e690d7f7b1bcb3c",
         "packages/registry/wget/package.toml": "252e2ea144b723a24617f78911bf44ff9ec5ff61d2f0c12a6947c7c170e97b2e",
         "packages/registry/wget/build.toml": "ad538e1d004b0ab32732563826a33c6230ff627d855b0f14de3627d2d508569e",
         "packages/registry/node-ncrypto/package.toml": "aa361891e88e356114e223dd009c63de934a8d7a01986da92ea2f927c4d8716f",
@@ -590,7 +590,7 @@
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "f93dfee0a149cdf66765c8c11c27f8f13a82153e09875fd1c684f898429442ab"
+        "packages/registry/spidermonkey/build.toml": "844ff3cfdd26f035ce2c733a0844be6c5b79a47b772be9055e690d7f7b1bcb3c"
       },
       "sourceRoute": "Actual thread/context/input/error/join owners and connected local endpoint packets/IO; shared native weak clone/transfer marks, Buffer backing policy and pinned public marking wrappers with native Proxy rejection",
       "remainingDependencies": "Broader native environment guest/GC/realm evidence beyond three Node-host cases and full prototype/shared-store policy, guest registry/GC/realm/ownership evidence, endpoint/host transfer/context movement, broadcast/thread routing/locks, full Worker options/stdio/resource/ref/failure/termination/public lifecycle and four-host conformance",
@@ -618,7 +618,7 @@
         "third_party/node-core/native-work.cpp": "530d8d95eb485264d76f9ef56cbe4d570fdd678ab6adf9cb0cb7c17f174013fa",
         "third_party/node-core/generate-codec-contexts.py": "6f61278030201514033f6fabd0aefc63a2d0e4c23294e2f6113242f98ce760e5",
         "packages/registry/node-compat/bootstrap.js": "2bb7a9fcf686f7b4705cec64c56a1d1a78bab7c5dc35ae76165cf20cacd199b2",
-        "packages/registry/spidermonkey/build.toml": "f93dfee0a149cdf66765c8c11c27f8f13a82153e09875fd1c684f898429442ab"
+        "packages/registry/spidermonkey/build.toml": "844ff3cfdd26f035ce2c733a0844be6c5b79a47b772be9055e690d7f7b1bcb3c"
       },
       "sourceRoute": "pinned codec/archive/iterable JS and native contexts; actual shared/growable queue leases and synchronous resizable codec/CRC/dictionary spans compiled in112",
       "remainingDependencies": "Ordinary async resizable/transfer/pre-existing pin ownership; complete modes/options/iterators/files and native cleanup/cancellation/accounting; retained gzip OS-byte comparison mismatches and complete four-host evidence",
@@ -680,7 +680,7 @@
         "third_party/node-core/native-vm.cpp": "55c20f56eb704baad5e65498ce7361b2991d1382a75f37aff46312dfb5c12b62",
         "packages/registry/node-compat/bootstrap.js": "2bb7a9fcf686f7b4705cec64c56a1d1a78bab7c5dc35ae76165cf20cacd199b2",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "f93dfee0a149cdf66765c8c11c27f8f13a82153e09875fd1c684f898429442ab"
+        "packages/registry/spidermonkey/build.toml": "844ff3cfdd26f035ce2c733a0844be6c5b79a47b772be9055e690d7f7b1bcb3c"
       },
       "sourceRoute": "generic native Error location policy across registered root/worker contexts and VM realms; VM compiler, actual ordinary DONT_CONTEXTIFY globals, per-runtime chained security-callback owners and partial nominal GC budget",
       "remainingDependencies": "Complete ordinary sandbox exotic behavior, context metadata/deadlines/modules/cache/microtasks, inspector, heap measurements and worker/guest integration",

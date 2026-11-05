@@ -1,5 +1,10 @@
 # Node 26 core implementation outline
 
+The shared [build-input guard](build-input-closure.md) now covers 601 source
+and verification files, including 309 newly declared inputs. Twelve focused
+package-contract checks pass. Runtime source remains120/uncompiled; this
+source-only prerequisite changes no runtime conformance claim.
+
 Source120 adds real borrowed-stdin terminal mode leases, pinned mode/error
 policy, actual window queries and transport/context/GC cleanup. Five native-
 boundary frontend comparisons, four affected stream controls and one portable

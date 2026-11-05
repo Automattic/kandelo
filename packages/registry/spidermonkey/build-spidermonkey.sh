@@ -24,6 +24,11 @@ if [ "$ARCH" != "wasm32" ]; then
     exit 1
 fi
 
+# Validate declared core verification inputs and bundle freshness before
+# downloading/staging sources or compiling. Never regenerate checkout inputs.
+python3 "$REPO_ROOT/third_party/node-core/check-build-inputs.py" --quiet
+python3 "$REPO_ROOT/third_party/node-core/build.py" --check
+
 RESOLVER_BUILD=0
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
     RESOLVER_BUILD=1
