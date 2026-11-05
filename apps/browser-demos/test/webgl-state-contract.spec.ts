@@ -1582,7 +1582,7 @@ const runImageStorageWorker=async(page:Page,fault?:string)=>{
       const timeout=setTimeout(()=>reject(new Error("image view replay timed out")),35000);
       worker.addEventListener("error",event=>{clearTimeout(timeout);reject(new Error(event.message));});
       worker.addEventListener("message",({data})=>{if(data.type==="image_storage_failed"){clearTimeout(timeout);reject(new Error(data.error));}
-        if(data.type==="image_storage_result"||data.type==="image_storage_fault"){clearTimeout(timeout);resolve(data);}});
+        if(data.type==="image_storage_result"||data.type==="image_storage_fault"||data.type==="image_storage_forward"){clearTimeout(timeout);resolve(data);}});
       const offscreen=canvas.transferControlToOffscreen();worker.postMessage({canvas:offscreen,fault},[offscreen]);
     });}finally{worker.terminate();}
   },{root,fault});
@@ -1592,7 +1592,7 @@ test("logical image views preserve sibling parameters, pixels and retained ident
   expect(result).toEqual({type:"image_storage_result",namespace:[0,0,255,255],firstParam:0x2600,secondParam:0x2601,
     red:[[255,0,0,255],[255,0,0,255]],rboName:2,green:[[0,255,0,255],[0,255,0,255]],sampledGreen:[0,255,0,255],
     orphan:[[0,0,255,255],[0,255,0,255]],aSource:0,bSource:0,mipOrphan:[0,255,0,255],reimport:[255,0,0,255],rboSource:0,rboOrphan:[[0,0,255,255],[255,0,0,255]],
-    rejected:[0,0,255,255],retargetRejected:[0,0,255,255],reused:[255,255,0,255],retained:[0,0,255,255],retainedState:[0,2],retainedImport:[1,3],retainedImported:[255,0,0,255],reusedAfterPeerImport:[255,255,0,255],afterSourceRetirement:[255,0,0,255],mutationRollback:[[255,255,0,255],[255,0,0,255],[0,0,255,255],[0,0,255,255],[255,255,0,255],[255,0,0,255]],storageReject:[[255,255,0,255],[0,0,255,255]],ownedStorageRetry:[0,0,255,255],framebufferBindReject:[[0,0,255,255],[0,0,255,255]],framebufferBindRetry:[0,0,255,255],bufferBindReject:[[100,11,22,33,44],[100,11,22,33,44],[102,11,22,33,44],[102,11,22,33,44]],bufferBindRetry:[101,103],bufferDeleteRollback:[[0,255,0,255],[0,255,0,255],[0,255,0,255]],bufferDeleteCleared:[0,0,0,0],bufferDeleteRetry:[0,0,255,255],convertedRetryPixels:[0,255,0,255],storageCommit:[1,0,2],storageOwned:[[0,0,255,255],[0,0,255,255]],rawNamespace:[0,0,255,255],rawParams:[0x2600,0x2601],rawGreen:[0,255,0,255],rawOrphan:[[255,0,0,255],[0,255,0,255]],rawRefresh:[0,255,0,255],rawInvalid:-14,rawAdmitted:[4,1],rawRevoked:[0,0,1],rawReplacement:[0,0,255,255],rawMissing:0x8cd7,errors:[0,0],clean:true,error:0});
+    rejected:[0,0,255,255],retargetRejected:[0,0,255,255],reused:[255,255,0,255],retained:[0,0,255,255],retainedState:[0,2],retainedImport:[1,3],retainedImported:[255,0,0,255],reusedAfterPeerImport:[255,255,0,255],afterSourceRetirement:[255,0,0,255],mutationRollback:[[255,255,0,255],[255,0,0,255],[0,0,255,255],[0,0,255,255],[255,255,0,255],[255,0,0,255]],storageReject:[[255,255,0,255],[0,0,255,255]],ownedStorageRetry:[0,0,255,255],framebufferBindReject:[[0,0,255,255],[0,0,255,255]],framebufferBindRetry:[0,0,255,255],bufferBindReject:[[100,11,22,33,44],[100,11,22,33,44],[102,11,22,33,44],[102,11,22,33,44]],bufferBindRetry:[101,103],bufferDeleteRollback:[[0,255,0,255],[0,255,0,255]],bufferDeleteCleared:[0,0,0,0],bufferDeleteRetry:[0,0,255,255],convertedRetryPixels:[0,255,0,255],storageCommit:[1,0,2],storageOwned:[[0,0,255,255],[0,0,255,255]],rawNamespace:[0,0,255,255],rawParams:[0x2600,0x2601],rawGreen:[0,255,0,255],rawOrphan:[[255,0,0,255],[0,255,0,255]],rawRefresh:[0,255,0,255],rawInvalid:-14,rawAdmitted:[4,1],rawRevoked:[0,0,1],rawReplacement:[0,0,255,255],rawMissing:0x8cd7,errors:[0,0],clean:true,error:0});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 // Each refusal of a native restoration or deletion of host-owned state is a
@@ -1628,6 +1628,27 @@ for (const fault of ["pointerReset","repairReset"] as const) {
     else expect(result.rejected).toBe(true);
     expect(result.diagnostics).toHaveLength(1);
     expect(result.diagnostics[0]).toContain("gl-context-reset");
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}
+
+for (const [index,method] of ["framebufferTexture2D","bindTexture","framebufferRenderbuffer",
+  "bindRenderbuffer","deleteFramebuffer","bindFramebuffer","bindBuffer","bindBuffer",
+  "vertexAttribPointer","bindBuffer"].entries()) {
+  test(`logical image views isolate forward fault ${index+1} in ${method}`,async({page})=>{
+    const result=await runImageStorageWorker(page,`forward:${index+1}`);
+    if(method==="deleteFramebuffer") {
+      expect(result).toEqual({type:"image_storage_fault",scenario:`forward:${index+1}`,
+        fault:"NativeGlFault",message:refusedDeletion("deleteFramebuffer"),reported:true,
+        index:index+1,method,fired:true});
+    } else {
+      expect(result).toMatchObject({type:"image_storage_forward",scenario:`forward:${index+1}`,
+        index:index+1,method,fired:true,nativeRc:-19,refused:-19,clean:true,nativeError:0});
+      expect(result.healthyBefore).toEqual(index<5?[255,255,0,255]:[0,0,255,255]);
+      expect(result.healthyAfter).toEqual(result.healthyBefore);
+      expect(result.diagnostics).toHaveLength(1);
+      expect(result.diagnostics[0]).toContain("gl-context-reset");
+    }
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }

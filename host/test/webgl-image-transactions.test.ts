@@ -3,7 +3,7 @@ import { GlContextRegistry } from "../src/webgl/registry.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import * as O from "../src/webgl/ops.js";
-import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
+import { NativeGlFault, hasNativeRepair, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 afterEach(() => setNativeGlFaultReporter(null));
 /** Decision D-29: the reporter latches a refused restoration as fatal, and
  * query replies (checkedQueryReply) rethrow the NativeGlFault instead of
@@ -218,11 +218,11 @@ for (const kind of [1, 2]) {
     });
   }
 }
-it("preserves separate framebuffer defaults and retained attachments on failed delete and accepts retry", () => {
+it("preserves separate framebuffer defaults and retained attachments on a rejected selector and accepts retry", () => {
   const { b, gl, framebuffer, query } = setup(), drawDefault = {}, readDefault = {};
   b.drawSurface = { renderTargetFbo: drawDefault } as any;
   b.readSurface = { renderTargetFbo: readDefault } as any;
-  for (const failure of ["framebuffer", "delete-framebuffer"]) {
+  for (const failure of ["framebuffer"]) {
     gl.reject = failure;
     expect(query(O.QOP_IMAGE_OBJECT_DELETE, [3, 71])).toEqual([1, 0]);
     expect(b.fbos.get(71)).toBe(framebuffer);
@@ -240,6 +240,20 @@ it("preserves separate framebuffer defaults and retained attachments on failed d
   expect(b.shadow.readFbo).toBe(readDefault);
   expect(b.fbos.has(71)).toBe(false);
   expect(b.framebufferAttachments.has(framebuffer)).toBe(false);
+});
+it("reports refused framebuffer retirement once after logical deletion without losing native ownership",()=>{
+  const {b,gl,framebuffer,query}=setup(),faults:Error[]=[];
+  gl.reject="delete-framebuffer";
+  setNativeGlFaultReporter(fault=>faults.push(fault));
+  let thrown:unknown;
+  try {query(O.QOP_IMAGE_OBJECT_DELETE,[3,71]);} catch(error) {thrown=error;}
+  expect(thrown).toBeInstanceOf(NativeGlFault);
+  expect((thrown as Error).message).toMatch(/live renderer refused deleteFramebuffer/);
+  expect(faults).toEqual([thrown]);
+  expect(b.fbos.has(71)).toBe(false);
+  expect(b.framebufferAttachments.has(framebuffer)).toBe(false);
+  expect(gl.deleted).not.toContain(framebuffer);
+  expect(hasNativeRepair(b.gl!)).toBe(true);
 });
 it("restores every texture unit and separate read/draw attachment after a later unit rejects deletion", () => {
   const { b, gl, old, framebuffer, query } = setup(), read = {};
@@ -557,16 +571,18 @@ for (const kind of [1, 2]) it(`faults when the live renderer refuses failed cont
   expect((kind === 1 ? b.textures : b.rbos).get(17)).toBe(old);
 });
 
-it("faults when the live renderer refuses failed framebuffer deletion's selector restoration", () => {
+it("faults when the live renderer refuses a partially changed deletion selector's restoration", () => {
   const { b, gl, framebuffer, query } = setup();
-  const before = gl.before.bind(gl); let rejected = false;
+  const before = gl.before.bind(gl); let selectors = 0;
   gl.before = name => {
-    if (!rejected && name === "delete-framebuffer") { rejected = true; gl.errors.push(0x505); return false; }
-    if (rejected && name === "framebuffer") { gl.errors.push(0x502); return false; }
+    // Draw unbind accepts; read unbind rejects, then the actual inverse
+    // refuses. Irreversible native deletion has not started.
+    if (name === "framebuffer" && ++selectors >= 2) { gl.errors.push(0x502); return false; }
     return before(name);
   };
   expectRestoreFault(() => query(O.QOP_IMAGE_OBJECT_DELETE,[3,71]));
   expect(b.shadow.fbo).toBe(framebuffer); expect(b.shadow.readFbo).toBe(framebuffer);
+  expect(gl.calls).not.toContain("delete-framebuffer");
 });
 
 function containerReply(b: ReturnType<typeof setup>["b"], op: number, words: number[], length: number) {

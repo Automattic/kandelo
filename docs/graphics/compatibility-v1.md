@@ -260,6 +260,63 @@ this focused run does not close it or final B1 acceptance. Commands:
 `.context/graphics-inverse-policy-r379/run.sh` and
 `.context/graphics-inverse-policy-r379-final/run.sh`.
 
+## Framebuffer retirement retains exact native ownership, 2026-11-05
+
+Independent copies of the ten forward-error sites in the long image
+fixture expose a genuine deletion defect on all three engines. Native
+`deleteFramebuffer` was predicted like guest acceptance, then the logical
+name was removed. When deletion was refused, the final sample reset the
+context but native storage remained alive without its original owner.
+Healthy peer pixels survived, but native cleanup failed.
+
+Deletion now reserves an empty retirement ticket before selectors change.
+Rejected selectors retain the public name and use their inverses. After
+selector acceptance, logical deletion commits and fills the native cleanup
+ticket; the existing exact retirement path then deletes it. Refused live
+cleanup retains its pending owner and reports one fatal fault. There is
+no replay of the guest mutation, new wire field or version. Source
+controls separately prove reversible selector failure, fatal irreversible
+deletion, its retained native ticket and one fatal callback.
+
+R382's first expanded run has30 failures:27 new fixture results accidentally
+record a later healthy query's return4 instead of the original ENODEV;
+three deletion controls expose the native leak. Chromium's pointer fault
+also fails its earlier reset precondition. R383 captures the original reply
+before later queries and finishes2 passes/4 failures: the three deletion
+cases and Chromium's pointer injection. A pure WebGL probe R385, with no
+Kandelo execution, shows the invalid-type pointer call with no ARRAY buffer
+returns native error0 on Chromium and INVALID_ENUM on Firefox/WebKit;
+an invalid bind target reliably produces INVALID_ENUM on all three. The
+fixture now performs the actual valid pointer mutation, then issues that
+unambiguous native flag. This fixes the injection, not production engine
+behavior. The first standalone probe fails Firefox profile provisioning;
+the corrected probe reuses normal project launch configuration.
+
+R384's source gate passes2192/fails1: an older muxer fixture still tries to
+undo irreversible deletion instead of refusing a reversible selector.
+It now rejects the second selector and its actual inverse, retains the
+original fatal assertions and proves deletion was never attempted. The
+separate new cleanup case covers refused native deletion. R386 finishes
+PASS1m49: graphics2193/88 and51 native browser cases on three engines,
+with frozen input hashes and memory-boundary checks. It includes all30
+independent forward-fault cases,12 refused inverses,6 late-reset controls
+and3 complete healthy image lifecycles. R381 had separately passed the
+healthy lifecycle on all three engines before this retirement correction.
+
+After those independent controls pass, the normal long image test uses
+the verified healthy path. Its embedded pre-A3 expectations that a guest
+could continue after an unpredicted native error are replaced by the
+separate context-lifetime controls, not waived. Existing local allocation
+rejections, identities, native pixels, off-batch raw revocation failures
+and complete native cleanup assertions remain. The following full
+combined regression validates this final fixture arrangement separately.
+No completed A3/B1, new preview or application-performance claim follows.
+Commands and original failures:
+`.context/graphics-forward-policy-r382/run.sh`,
+`.context/graphics-forward-policy-r383/run.sh`,
+`.context/graphics-pointer-injection-r385/probe.ts` and
+`.context/graphics-framebuffer-retirement-r386/run.sh`.
+
 ## Automatic application-driver admission prototype, 2026-11-05
 
 Ordinary applications now enter the B1 program journal at their first

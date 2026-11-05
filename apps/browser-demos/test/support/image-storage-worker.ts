@@ -6,6 +6,7 @@ import * as O from "../../../../host/src/webgl/ops";
 // Real native import/query/submit paths; synthetic kernel scratch supplies
 // authority/identity plumbing. Public C and Rust marshalling are separate gates.
 self.onmessage = ({ data }) => {
+  const completedForwardCase = {};
   try {
     const canvas = data.canvas as OffscreenCanvas;
     const gl = canvas.getContext("webgl2", { antialias: false, premultipliedAlpha: false, depth: true, stencil: true, preserveDrawingBuffer: true });
@@ -48,7 +49,7 @@ self.onmessage = ({ data }) => {
     // context (D-49), so unrelated setup cannot inject one before the named
     // refusal. Each selected fatal scenario ends the run: nothing after a
     // fatal fault is defined. Forward-error checks need independent contexts.
-    const scenario: string | undefined = data.fault;
+    const scenario: string = data.fault ?? "healthy";
     const refusal = (run: () => unknown) => {
       const first = hostFaults.length;
       let thrown: unknown = undefined, returned: unknown = undefined;
@@ -76,11 +77,11 @@ self.onmessage = ({ data }) => {
       new Uint8Array(memory.buffer, 4096, bytes.length).set(bytes);
       require(api.host_gl_submit(7, 0, bytes.length, session) === 0, `submit ${op}`);
     };
-    let querySequence = 0;
+    let querySequence = 0, lastQueryRc = 0;
     const query = (op: number, words: number[], length: number, session = 11) => {
       new Uint32Array(memory.buffer, 64, words.length).set(words);
       querySequence++;
-      const rc = api.host_gl_query(7, op, 64, words.length * 4, 512, length, session);
+      const rc = lastQueryRc = api.host_gl_query(7, op, 64, words.length * 4, 512, length, session);
       require(rc === length, `query ${querySequence} op=${op}: rc=${rc}, expected=${length}, words=${words.join(",")}, diagnostics=${diagnostics.join(";")}`);
       return new Uint8Array(memory.buffer, 512, length).slice();
     };
@@ -218,7 +219,7 @@ self.onmessage = ({ data }) => {
       gl.getError = () => { if (allocationFlag) { const value = allocationFlag; allocationFlag = 0; return value; } return nativeGetError(); };
     }
     gl.framebufferTexture2D = (target, point, textarget, texture, level) => {
-      if ((!scenario || scenario === "retargetReset" || scenario === "peerRetargetReset") && !injected && target === 0x8ca9 && gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === ownedFbo) {
+      if ((scenario === "retargetReset" || scenario === "peerRetargetReset") && !injected && target === 0x8ca9 && gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === ownedFbo) {
         injected = true;
         attach(target, point, 0xdead, texture, level);
       }
@@ -230,7 +231,7 @@ self.onmessage = ({ data }) => {
       if ((scenario === "retargetReset" || scenario === "peerRetargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
         new Uint32Array(memory.buffer,64,3).set([1,17,source]);
         resetRc = api.host_gl_query(7,O.QOP_IMAGE_TARGET,64,12,512,12,11);
-      } else if (!scenario) checked(O.QOP_IMAGE_TARGET, [1, 17, source], 1);
+      }
     }
     finally {
       gl.framebufferTexture2D = attach;
@@ -252,7 +253,6 @@ self.onmessage = ({ data }) => {
         nativeError:gl.getError(),diagnostics});
       return;
     }
-    if (!scenario) require(injected && error() === 0x500, "retarget rejection");
     const retargetRejected = pixels(71);
     require(checked(O.QOP_IMAGE_SOURCE_STATE, [1, 17]) === 0, "retarget source rollback");
     // A bound peer and an inactive container retain the old identity at reuse.
@@ -282,27 +282,41 @@ self.onmessage = ({ data }) => {
     // driver rejection. The fault calls a real invalid native enum once.
     const mutationRollback: number[][] = [];
     const mutate = (op: number, words: number[], expected = 0) => checked(op, words, expected, 12);
-    const inject = (method: string, fault: (original: (...args: any[]) => any, args: any[]) => void, run: () => void) => {
-      // A fatal-refusal case needs healthy setup until its named injection.
-      // Forward-fault coverage needs separate contexts, before reset.
-      if (scenario) return;
+    let forwardIndex = 0;
+    const inject = (method: string, fault: (original: (...args: any[]) => any, args: any[]) => void,
+        run: () => void, matches: (args: any[]) => boolean = () => true) => {
+      const index = ++forwardIndex, selected = scenario === `forward:${index}`;
+      // Each injected forward fault owns an independent context lifetime.
+      if (!selected) return;
+      let healthyBefore: number[] = [];
+      if (selected) {
+        current(11); healthyBefore = pixels(75,11); current(12);
+        require(error(12)===0,`forward ${index} clean setup`);
+      }
       const renderer = gl as any, original = renderer[method].bind(gl);
       let fired = false;
       renderer[method] = (...args: any[]) => {
-        if (!fired) {
-          fired = true;
-          fault(original, args);
-        }
-        else
-          original(...args);
+        if (!fired && matches(args)) { fired = true; fault(original,args); }
+        else original(...args);
       };
-      try {
-        run();
+      let outcome: ReturnType<typeof refusal>;
+      try { outcome = refusal(run); }
+      finally { renderer[method] = original; }
+      require(fired,`forward ${index} injection reached`);
+      if (outcome!.fault === "NativeGlFault") {
+        finish(outcome!,{index,method,fired});
+        throw completedForwardCase;
       }
-      finally {
-        renderer[method] = original;
-      }
-      require(fired && error(12) === 0x500, `mutation fault ${method}`);
+      const nativeRc=lastQueryRc;
+      require(nativeRc===-19 && hostFaults.length===0,`forward ${index} resets its context: ${JSON.stringify({nativeRc,outcome,faults:hostFaults.map(f=>String(f)),diagnostics})}`);
+      const refused=api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,12);
+      current(11); const healthyAfter=pixels(75,11);
+      api.host_gl_destroy_context(7,21);api.host_gl_destroy_context(7,22);
+      api.host_gl_unbind(7,11);api.host_gl_unbind(7,12);api.host_gbm_bo_destroy(7,41);
+      const clean=made.length===deleted.length&&made.every(value=>deleted.includes(value))&&live.every(check=>!check());
+      postMessage({type:"image_storage_forward",scenario,index,method,fired,nativeRc,refused,
+        healthyBefore,healthyAfter,clean,nativeError:gl.getError(),diagnostics});
+      throw completedForwardCase;
     };
     send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 83], new Uint8Array(), 12);
     mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 17, 0]);
@@ -433,16 +447,16 @@ self.onmessage = ({ data }) => {
     deletionNames[Symbol.iterator] = () => { refusedDeletionReserve = true; throw new RangeError("buffer deletion metadata reserve"); };
     try { mutate(O.QOP_DELETE_BUFFER, [200], 1); } finally { deletionNames[Symbol.iterator] = iterateNames; }
     require(refusedDeletionReserve && error(12) === 0x505, "buffer delete allocation rejection"); bufferDeleteRollback.push(renderBuffer());
-    inject("vertexAttribPointer", (original, args) => original(args[0], args[1], 0xdead, ...args.slice(3)), () => mutate(O.QOP_DELETE_BUFFER, [200], 1));
+    inject("vertexAttribPointer", (original, args) => {
+      // Prove the mutation happened, then inject an unambiguous native flag.
+      // A pointer with no ARRAY buffer is not a reliable invalid-type probe.
+      original(...args); gl.bindBuffer(0xdead,null);
+    }, () => mutate(O.QOP_DELETE_BUFFER, [200], 1));
     bufferDeleteRollback.push(renderBuffer());
-    if (!scenario) {
-      const bindForDelete = gl.bindBuffer.bind(gl); let rejectedElement = false;
-      gl.bindBuffer = (target, buffer) => {
-        if (target === 0x8893 && buffer === null && !rejectedElement) { rejectedElement = true; bindForDelete(0xdead, null); }
-        else bindForDelete(target, buffer);
-      };
-      try { mutate(O.QOP_DELETE_BUFFER, [200], 1); } finally { gl.bindBuffer = bindForDelete; }
-      require(rejectedElement && error(12) === 0x500, "buffer delete late selector rejection"); bufferDeleteRollback.push(renderBuffer());
+    if (scenario.startsWith("forward:")) {
+      inject("bindBuffer", original => original(0xdead,null),
+        () => mutate(O.QOP_DELETE_BUFFER,[200],1),args => args[0]===0x8893&&args[1]===null);
+      bufferDeleteRollback.push(renderBuffer());
     }
     if (scenario === "deleteBuffer") {
       // The logical deletion commits; deleting its native buffers is cleanup
@@ -713,11 +727,12 @@ self.onmessage = ({ data }) => {
     api.host_gl_unbind(7, 11);
     api.host_gl_unbind(7, 12);
     api.host_gbm_bo_destroy(7, 41);
-    require(scenario === undefined, `refusal scenario ${scenario} was never reached`);
+    require(scenario === "healthy", `refusal scenario ${scenario} was never reached`);
     const clean = made.length === deleted.length && made.every(value => deleted.includes(value)) && live.every(check => !check());
     postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, framebufferBindReject, framebufferBindRetry, bufferBindReject, bufferBindRetry, bufferDeleteRollback, bufferDeleteCleared, bufferDeleteRetry, convertedRetryPixels, storageCommit, storageOwned, rawNamespace, rawParams, rawGreen, rawOrphan, rawRefresh, rawInvalid, rawAdmitted, rawRevoked, rawReplacement, rawMissing, errors, clean, error: gl.getError() });
   }
   catch (error) {
+    if (error === completedForwardCase) return;
     postMessage({ type: "image_storage_failed", error: String(error) });
   }
 };

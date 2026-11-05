@@ -232,6 +232,13 @@ Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a p
 
 ## Graphics
 
+Framebuffer deletion now reserves native cleanup ownership before reversible
+selector changes and commits retirement after logical deletion. A refused live
+native deletion reports a fatal fault and retains its cleanup receiver; it no
+longer loses the handle after a predicted deletion. Focused source/native
+coverage is recorded in the compatibility ledger. Current full conformance,
+application performance and final stage acceptance remain required.
+
 Private client-array savepoints and widened/padded index selectors now retain
 exact restoration checks inside predicted guest batches. The earlier promoted
 index regression used a zero index and never exercised promotion; its corrected

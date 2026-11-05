@@ -6073,6 +6073,16 @@ order to the implementation. A renderer whose flags never clear still fails
 loudly at the next capture, and context loss is still detected at every
 entry (`renderer-loss.ts`).
 
+Framebuffer name deletion separates reversible selector changes from
+irreversible native retirement. It reserves an empty native cleanup ticket
+before unbinding, commits the logical name/attachment removal after the
+selectors accept, then retires the native framebuffer through that ticket.
+A live renderer's refusal is fatal and leaves explicit pending ownership;
+it cannot be predicted as a successful deletion followed by a context reset
+that loses the native handle. Failed selectors retain their native inverses
+and keep the public name. This uses the existing retirement protocol on
+Node and browser, with no new wire field or version.
+
 Guest execution now uses host GLES validation as the acceptance authority
 (`webgl/native-batch.ts`). Each submitted frame, result-bearing query and
 present runs in one synchronous native batch, including muxer replay and

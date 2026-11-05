@@ -1,7 +1,7 @@
 import { attachImage, destroyTextureView, destroyRenderbufferView, textureNative, renderbufferNative, imageAttachmentCall } from "./image-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
-import { applyNativeChanges, nativeOwner, nativeInverse, rethrowNativeGlFault, type NativeChange } from "./native-recovery.js";
+import { applyNativeChanges, nativeOwner, nativeInverse, reserveNativeRetirement, retireNativeRetirement, rethrowNativeGlFault, type NativeChange } from "./native-recovery.js";
 import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFramebufferTarget } from "./framebuffer.js";
 import { framebufferInputsChanged } from "./framebuffer-revision.js";
 import { setTextureUnit } from "./depth-sampling.js";
@@ -299,16 +299,22 @@ export function deleteFramebufferName(b: GlBinding, name: number): boolean {
     changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, draw)), restore: nativeInverse(owner, [["bindFramebuffer",0x8ca9,object]]) });
   if (b.shadow.readFbo === object)
     changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, read)), restore: nativeInverse(owner, [["bindFramebuffer",0x8ca8,object]]) });
-  changes.push({apply: () => checkedGlCall(b, () => gl.deleteFramebuffer(object)), restore: nativeInverse(owner)});
-  if (!applyNativeChanges(b, changes)) return false;
-  if (b.shadow.fbo === object)
-    b.shadow.fbo = draw;
-  if (b.shadow.readFbo === object)
-    b.shadow.readFbo = read;
-  b.fbos.delete(name);
-  b.framebufferAttachments.delete(object);
-  framebufferInputsChanged();
-  return true;
+  // A public deletion first unbinds its container, then retires host-owned
+  // native storage. Deletion cannot be undone: retain its exact cleanup
+  // receiver before mutation instead of predicting it and forgetting a
+  // live framebuffer after logical name removal.
+  const retirement = reserveNativeRetirement(b,[["deleteFramebuffer",null]]);
+  if (!retirement) return false;
+  try {
+    if (!applyNativeChanges(b, changes)) return false;
+    if (b.shadow.fbo === object) b.shadow.fbo = draw;
+    if (b.shadow.readFbo === object) b.shadow.readFbo = read;
+    retirement.calls[0][1] = object;
+    b.fbos.delete(name);
+    b.framebufferAttachments.delete(object);
+    framebufferInputsChanged();
+    return true;
+  } finally { retireNativeRetirement(retirement); }
 }
 export function deleteImageObject(b: GlBinding, kind: number, name: number): boolean {
   if (kind === 1)

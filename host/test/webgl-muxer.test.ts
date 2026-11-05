@@ -365,13 +365,14 @@ it("makes a refused framebuffer-binding restoration after a rejected deletion a 
   const framebuffer = {};
   b.fbos.set(17,framebuffer); b.shadow.fbo = b.shadow.readFbo = framebuffer;
   mux.switchTo(b);
-  let rejected = false;
+  let rejected = false, selectors = 0, deletionAttempted = false;
   const bind = gl.bindFramebuffer.bind(gl);
   gl.bindFramebuffer = (target,value) => {
+    if (value !== framebuffer && ++selectors === 2) { rejected = true; gl.pendingErrors.push(0x502); return; }
     if (rejected && value === framebuffer) { gl.pendingErrors.push(0x502); return; }
     bind(target,value);
   };
-  Object.assign(gl,{deleteFramebuffer() { rejected = true; gl.pendingErrors.push(0x505); }});
+  Object.assign(gl,{deleteFramebuffer() { deletionAttempted = true; }});
   const out = new Uint8Array(12);
   // The fault is reported, then the query's reply wrapper rethrows it
   // instead of turning it into a failed reply.
@@ -382,7 +383,8 @@ it("makes a refused framebuffer-binding restoration after a rejected deletion a 
   expect((thrown as Error).message).toMatch(REFUSED_RESTORE);
   expect(reported).toEqual([thrown]);
   expect(b.fbos.get(17)).toBe(framebuffer);
-  expect(b.errors).toContain(0x505); expect(b.errors).toContain(0x502);
+  expect(b.errors).toContain(0x502);
+  expect(deletionAttempted).toBe(false);
 });
 
 it("makes a refused client-array completion restoration a fatal fault without publishing it", () => {
