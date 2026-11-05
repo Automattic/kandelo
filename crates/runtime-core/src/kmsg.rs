@@ -36,6 +36,22 @@
 //! walking from the oldest one, which is `O(live records)`: the ring holds at
 //! most `KMSG_CAPACITY_BYTES / KMSG_HEADER_BYTES` records and a typical boot
 //! log holds well under two thousand, so no per-record index is kept.
+//!
+//! # Rate limiting
+//!
+//! A kernel path that can fire on every syscall (an unimplemented-syscall
+//! report, say) must not let one spinning program evict the boot log.
+//! [`KmsgRing::push_limited`] admits up to [`KMSG_RATE_BURST`] records per
+//! callsite per [`KMSG_RATE_INTERVAL_NSEC`] window and drops the rest. When a
+//! window reopens, the next admitted record is preceded by a
+//! `N messages suppressed` record so the log states how much it lost. That
+//! count record is written with [`KmsgRing::push`], never through the limiter,
+//! so a flood degrades to a bounded sample plus an honest count and can never
+//! degrade to silence.
+//!
+//! The kernel has no timer, so the count is reported lazily, by the first
+//! record from the same callsite after the window closes. A callsite that
+//! floods and then never logs again leaves its final count unreported.
 
 use core::cell::UnsafeCell;
 use wasm_posix_shared::Errno;
@@ -67,6 +83,30 @@ const OFF_LEVEL: usize = 17;
 const OFF_FLAGS: usize = 18;
 const OFF_TEXT_LEN: usize = 19;
 
+/// Identifies one logging callsite for rate limiting. The set of callsites is
+/// static, so an id is a small dense index (a syscall number, for example)
+/// into a fixed table, not a handle that is allocated at run time.
+pub type CallsiteId = u32;
+
+/// Callsite ids `0..KMSG_CALLSITES` each get their own limiter slot. This
+/// covers every syscall number with room to spare.
+pub const KMSG_CALLSITES: usize = 256;
+
+/// Records one callsite may log per window before the rest are dropped.
+///
+/// Ten is enough to show the first distinct occurrences of a problem with
+/// their arguments, and it is the figure Linux's `printk_ratelimit` uses.
+pub const KMSG_RATE_BURST: u32 = 10;
+
+/// Length of a rate-limit window: 60 seconds of `CLOCK_MONOTONIC`.
+///
+/// A program spinning on an unimplemented syscall costs one burst plus one
+/// count record, roughly eleven records, per window. At about 70 stored bytes
+/// each that is under 1 KiB a minute per callsite, so the 128 KiB ring keeps
+/// the boot log for hours of sustained flooding of a single callsite. A
+/// shorter window such as Linux's 5 seconds would evict it in minutes.
+pub const KMSG_RATE_INTERVAL_NSEC: u64 = 60 * 1_000_000_000;
+
 /// A borrowed view of one record in the ring.
 #[derive(Debug, Clone, Copy)]
 pub struct KmsgRecordRef<'a> {
@@ -88,6 +128,91 @@ struct Entry {
     pad: bool,
 }
 
+/// Rate-limit state of one callsite: a fixed window with an admit budget.
+#[derive(Clone, Copy)]
+struct CallsiteSlot {
+    /// `ts_nsec` of the first record admitted in the current window.
+    window_start: u64,
+    /// Records admitted in the current window; zero means no window is open.
+    admitted: u32,
+    /// Records dropped since the last count record was written.
+    suppressed: u32,
+    /// Facility and level of the most recent dropped record, which the count
+    /// record borrows so a level filter treats it like what it summarizes.
+    facility: u8,
+    level: u8,
+}
+
+/// What the limiter decided for one record.
+enum Verdict {
+    /// Drop the record.
+    Suppress,
+    /// Admit the record. If `suppressed` is nonzero the previous window
+    /// dropped that many records, and a count record must precede this one.
+    Admit { suppressed: u32, facility: u8, level: u8 },
+}
+
+/// Per-callsite rate limiter over a fixed table: no allocation, ever.
+///
+/// Ids at or beyond [`KMSG_CALLSITES`] share one extra overflow slot, so an
+/// unknown callsite is still limited, just together with the other unknown
+/// ones, rather than being exempt or panicking.
+pub struct CallsiteLimiter {
+    slots: [CallsiteSlot; KMSG_CALLSITES + 1],
+}
+
+impl CallsiteLimiter {
+    pub const fn new() -> Self {
+        CallsiteLimiter {
+            slots: [CallsiteSlot { window_start: 0, admitted: 0, suppressed: 0, facility: 0, level: 0 };
+                KMSG_CALLSITES + 1],
+        }
+    }
+
+    fn check(&mut self, site: CallsiteId, facility: u8, level: u8, ts_nsec: u64) -> Verdict {
+        let index = (site as usize).min(KMSG_CALLSITES);
+        let slot = &mut self.slots[index];
+        let mut suppressed = 0;
+        if slot.admitted > 0 && ts_nsec.saturating_sub(slot.window_start) >= KMSG_RATE_INTERVAL_NSEC {
+            // The quiet interval has passed: close the window and report it.
+            suppressed = slot.suppressed;
+            slot.suppressed = 0;
+            slot.admitted = 0;
+        }
+        if slot.admitted == 0 {
+            slot.window_start = ts_nsec;
+        }
+        if slot.admitted >= KMSG_RATE_BURST {
+            slot.suppressed = slot.suppressed.saturating_add(1);
+            slot.facility = facility;
+            slot.level = level;
+            return Verdict::Suppress;
+        }
+        slot.admitted += 1;
+        // `suppressed` was read before the reset above, so the facility and
+        // level are the ones the dropped records left behind.
+        Verdict::Admit { suppressed, facility: slot.facility, level: slot.level }
+    }
+}
+
+/// Fixed-size writer for the count record's text, which never allocates.
+struct TextBuf {
+    bytes: [u8; 40],
+    len: usize,
+}
+
+impl core::fmt::Write for TextBuf {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let end = self.len + s.len();
+        if end > self.bytes.len() {
+            return Err(core::fmt::Error);
+        }
+        self.bytes[self.len..end].copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
 pub struct KmsgRing {
     buf: [u8; KMSG_CAPACITY_BYTES],
     /// Logical position of the oldest live entry (or `head_pos` when empty).
@@ -98,6 +223,7 @@ pub struct KmsgRing {
     next_seq: u64,
     /// Stored bytes (header plus text) of live records, excluding pads.
     live_bytes: usize,
+    limiter: CallsiteLimiter,
 }
 
 impl KmsgRing {
@@ -109,6 +235,7 @@ impl KmsgRing {
             oldest_seq: 0,
             next_seq: 0,
             live_bytes: 0,
+            limiter: CallsiteLimiter::new(),
         }
     }
 
@@ -159,6 +286,39 @@ impl KmsgRing {
         self.next_seq += 1;
         self.live_bytes += size;
         seq
+    }
+
+    /// Append a record unless `site` has used up its burst for this window.
+    ///
+    /// Returns the record's `seq`, or `None` when it was dropped. The first
+    /// record admitted after a window that dropped anything is preceded by a
+    /// `N messages suppressed` record. That record goes through [`push`]
+    /// directly: it is not charged to `site`'s budget and has no path back
+    /// into the limiter, so it cannot be suppressed.
+    ///
+    /// [`push`]: KmsgRing::push
+    pub fn push_limited(
+        &mut self,
+        site: CallsiteId,
+        facility: u8,
+        level: u8,
+        ts_nsec: u64,
+        text: &[u8],
+    ) -> Option<u64> {
+        match self.limiter.check(site, facility, level, ts_nsec) {
+            Verdict::Suppress => None,
+            Verdict::Admit { suppressed, facility: dropped_facility, level: dropped_level } => {
+                if suppressed > 0 {
+                    use core::fmt::Write;
+                    let mut count = TextBuf { bytes: [0; 40], len: 0 };
+                    let noun = if suppressed == 1 { "message" } else { "messages" };
+                    // "4294967295 messages suppressed" is 30 bytes, so this fits.
+                    let _ = write!(count, "{suppressed} {noun} suppressed");
+                    self.push(dropped_facility, dropped_level, ts_nsec, &count.bytes[..count.len]);
+                }
+                Some(self.push(facility, level, ts_nsec, text))
+            }
+        }
     }
 
     /// Read the record with the given `seq`.
@@ -511,5 +671,172 @@ mod tests {
             assert_eq!(ring.unread_bytes(ring.oldest_seq() + 1), stored - (KMSG_HEADER_BYTES
                 + ring.read_at(ring.oldest_seq()).unwrap().text.len()), "gap {gap}");
         }
+    }
+
+    /// Text of every live record, oldest first.
+    fn texts(ring: &KmsgRing) -> Vec<Vec<u8>> {
+        (ring.oldest_seq()..ring.head_seq())
+            .map(|seq| ring.read_at(seq).unwrap().text.to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn push_limited_admits_the_first_burst_then_suppresses() {
+        let mut ring = ring();
+        for i in 0..KMSG_RATE_BURST {
+            let seq = ring.push_limited(1, 0, 4, 1_000 + u64::from(i), b"enosys");
+            assert_eq!(seq, Some(u64::from(i)), "message {i} is inside the burst");
+        }
+        for i in 0..50 {
+            assert_eq!(ring.push_limited(1, 0, 4, 2_000 + i, b"enosys"), None);
+        }
+        assert_eq!(ring.head_seq(), u64::from(KMSG_RATE_BURST));
+    }
+
+    #[test]
+    fn suppression_emits_a_count_record_naming_how_many_were_dropped() {
+        let mut ring = ring();
+        let t0 = 5_000;
+        for _ in 0..KMSG_RATE_BURST {
+            ring.push_limited(1, 0, 4, t0, b"enosys");
+        }
+        for _ in 0..37 {
+            assert_eq!(ring.push_limited(1, 0, 4, t0 + 1, b"enosys"), None);
+        }
+        // Nothing is reported until the window reopens: the kernel has no timer.
+        assert_eq!(ring.head_seq(), u64::from(KMSG_RATE_BURST));
+
+        let reopen = t0 + KMSG_RATE_INTERVAL_NSEC;
+        let seq = ring.push_limited(1, 0, 4, reopen, b"after").unwrap();
+        let suppression = ring.read_at(seq - 1).unwrap();
+        assert_eq!(suppression.text, b"37 messages suppressed");
+        assert_eq!((suppression.facility, suppression.level), (0, 4));
+        assert_eq!(suppression.ts_nsec, reopen);
+        let admitted = ring.read_at(seq).unwrap();
+        assert_eq!(admitted.text, b"after");
+        assert_eq!(admitted.ts_nsec, reopen);
+    }
+
+    #[test]
+    fn a_single_dropped_message_is_reported_in_the_singular() {
+        let mut ring = ring();
+        for _ in 0..=KMSG_RATE_BURST {
+            ring.push_limited(1, 0, 6, 0, b"x");
+        }
+        let seq = ring.push_limited(1, 0, 6, KMSG_RATE_INTERVAL_NSEC, b"y").unwrap();
+        assert_eq!(ring.read_at(seq - 1).unwrap().text, b"1 message suppressed");
+    }
+
+    #[test]
+    fn no_suppression_record_when_nothing_was_dropped() {
+        let mut ring = ring();
+        ring.push_limited(1, 0, 6, 0, b"once");
+        let seq = ring.push_limited(1, 0, 6, KMSG_RATE_INTERVAL_NSEC * 3, b"again").unwrap();
+        assert_eq!(seq, 1);
+        assert_eq!(texts(&ring), [b"once".to_vec(), b"again".to_vec()]);
+    }
+
+    #[test]
+    fn suppression_record_is_never_itself_suppressed() {
+        // A flood must degrade to a bounded sample plus an honest count, never
+        // to silence. Exhaust the burst on every callsite, then reopen each
+        // window: every count record must land even though its callsite has
+        // used up its budget (the reopening message takes the first slot of
+        // the new window, and the count record takes none).
+        let mut ring = ring();
+        let sites = 8;
+        for site in 0..sites {
+            for _ in 0..KMSG_RATE_BURST + 5 {
+                ring.push_limited(site, 0, 4, 100, b"flood");
+            }
+        }
+        let before = ring.head_seq();
+        for site in 0..sites {
+            ring.push_limited(site, 0, 4, 100 + KMSG_RATE_INTERVAL_NSEC, b"next");
+        }
+        let counts = texts(&ring)
+            .into_iter()
+            .filter(|t| t.as_slice() == b"5 messages suppressed")
+            .count();
+        assert_eq!(counts, sites as usize);
+        assert_eq!(ring.head_seq(), before + 2 * u64::from(sites));
+
+        // The count record is not charged to its callsite: after reopening,
+        // the callsite still has its full burst minus the one reopening message.
+        let mut ring = self::ring();
+        for _ in 0..KMSG_RATE_BURST + 1 {
+            ring.push_limited(9, 0, 4, 0, b"flood");
+        }
+        let t = KMSG_RATE_INTERVAL_NSEC;
+        for i in 0..KMSG_RATE_BURST {
+            assert!(
+                ring.push_limited(9, 0, 4, t, b"again").is_some(),
+                "message {i} of the reopened window was starved by the count record",
+            );
+        }
+        assert_eq!(ring.push_limited(9, 0, 4, t, b"again"), None);
+    }
+
+    #[test]
+    fn distinct_callsites_are_limited_independently() {
+        let mut ring = ring();
+        for _ in 0..KMSG_RATE_BURST {
+            assert!(ring.push_limited(1, 0, 4, 0, b"a").is_some());
+        }
+        assert_eq!(ring.push_limited(1, 0, 4, 0, b"a"), None);
+        // Callsite 2 is untouched by callsite 1 having exhausted its burst.
+        for _ in 0..KMSG_RATE_BURST {
+            assert!(ring.push_limited(2, 0, 4, 0, b"b").is_some());
+        }
+        assert_eq!(ring.push_limited(2, 0, 4, 0, b"b"), None);
+    }
+
+    #[test]
+    fn the_window_reopens_after_the_quiet_interval() {
+        let mut ring = ring();
+        for _ in 0..KMSG_RATE_BURST {
+            ring.push_limited(1, 0, 4, 1_000, b"m");
+        }
+        // One nanosecond short of the interval: still closed.
+        assert_eq!(ring.push_limited(1, 0, 4, 1_000 + KMSG_RATE_INTERVAL_NSEC - 1, b"m"), None);
+        // Exactly the interval: open again with a fresh burst.
+        for _ in 0..KMSG_RATE_BURST {
+            assert!(ring.push_limited(1, 0, 4, 1_000 + KMSG_RATE_INTERVAL_NSEC, b"m").is_some());
+        }
+        assert_eq!(ring.push_limited(1, 0, 4, 1_000 + KMSG_RATE_INTERVAL_NSEC, b"m"), None);
+    }
+
+    #[test]
+    fn an_out_of_range_callsite_is_still_limited() {
+        let mut ring = ring();
+        for _ in 0..KMSG_RATE_BURST {
+            assert!(ring.push_limited(CallsiteId::MAX, 0, 4, 0, b"m").is_some());
+        }
+        assert_eq!(ring.push_limited(CallsiteId::MAX, 0, 4, 0, b"m"), None);
+        assert_eq!(ring.push_limited(CallsiteId::MAX - 1, 0, 4, 0, b"m"), None);
+    }
+
+    #[test]
+    fn a_flood_cannot_evict_the_boot_log() {
+        let mut ring = ring();
+        for i in 0..100u64 {
+            ring.push(0, 6, i, b"boot: a line of the boot log");
+        }
+        // A million ENOSYS hits in a few simulated seconds.
+        for i in 0..1_000_000u64 {
+            ring.push_limited(7, 0, 4, 1_000 + i * 10_000, b"enosys: syscall 999 not implemented");
+        }
+        assert_eq!(ring.oldest_seq(), 0);
+        assert!(ring.head_seq() < 100 + u64::from(KMSG_RATE_BURST) + 3);
+        assert_eq!(ring.read_at(0).unwrap().text, b"boot: a line of the boot log");
+    }
+
+    #[test]
+    fn push_limited_does_not_disturb_the_ring_layout() {
+        let mut ring = ring();
+        ring.push(0, 6, 1, b"plain");
+        let seq = ring.push_limited(3, 1, 2, 2, b"limited").unwrap();
+        let record = ring.read_at(seq).unwrap();
+        assert_eq!((record.facility, record.level, record.text), (1, 2, &b"limited"[..]));
     }
 }
