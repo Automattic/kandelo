@@ -159,9 +159,15 @@ Microseconds in the rendered line, converted from the nanoseconds stored interna
 
 ### `/dev/log`
 
-A pathname AF_UNIX `SOCK_DGRAM` socket, which is ordinary use of machinery that already exists and is mature: `crates/runtime-core/src/unix_socket.rs` holds a global path → `(pid, sock_idx)` registry with fork inheritance (`add_inherited_owner`, keyed on the stable parent owner tuple rather than the retained sockaddr), `rename_path` re-keying after VFS rename, correct abstract-versus-pathname lifetimes, and `ENOMEM` on reserve failure.
+A pathname AF_UNIX `SOCK_DGRAM` socket. The endpoint machinery already exists and is mature: `crates/runtime-core/src/unix_socket.rs` holds a global path → `(pid, sock_idx)` registry with fork inheritance (`add_inherited_owner`, keyed on the stable parent owner tuple rather than the retained sockaddr), `rename_path` re-keying after VFS rename, correct abstract-versus-pathname lifetimes, and `ENOMEM` on reserve failure.
 
-This is what makes musl's `syslog(3)` start working, with no libc change.
+**The namespace, however, is not writable, and this requires a kernel change.** `devfs::is_delegated_path` (`crates/runtime-core/src/devfs.rs:54`) delegates only `/dev/shm`, so `/dev` is wholly kernel-owned: a `bind()` of a name that does not already exist under `/dev` fails resolution with `EROFS`, and an existing name yields `EADDRINUSE` — see the comment in `sys_bind` at `crates/runtime-core/src/syscalls.rs:14238`, which records that behavior deliberately. **A daemon therefore cannot create `/dev/log` today**, and the syslog half of this facility does not work without fixing that.
+
+The path is not negotiable. musl hardcodes `/dev/log` in `src/misc/syslog.c`, so relocating the socket — to FreeBSD's `/var/run/log`, for instance — would break `syslog(3)`, which is the POSIX part of this work and the reason the facility exists.
+
+The fix is narrow: devfs recognizes `/dev/log` as a socket name that `bind()` may create, owning only the name's existence, `stat` and `unlink`, while the endpoint lives in the path-keyed registry like any other pathname socket. Every other new name under `/dev` keeps returning `EROFS`; this permits one name, not a writable `/dev`. The implementation plan carries this as its own task.
+
+With that in place, musl's `syslog(3)` starts working with no libc change.
 
 ### Daemon: sysklogd
 
