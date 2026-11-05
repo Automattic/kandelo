@@ -6,9 +6,9 @@ The work now extends beyond the original hello-world milestone below.
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
 on ABI 55, with Go fork `c925e9c9ca8c63c549053fd07d3fe0799473d4e0`.
 
-The next source pin is `70f6cbfdb602c4fddefc9145334772a3757b9248`, which
-adds cooperative Go signals and shared libc cgo syscall dispatch. The
-revision-33 WordPress rebuild and actual Caddy/PHP shutdown validation are
+The next source pin is `f4353693610e62ad9d7c4f3a4151710fdcb75034`, which
+adds cooperative Go signals, fatal Go tracebacks, and shared libc cgo
+syscall dispatch. The revision-34 WordPress rebuild and actual Caddy/PHP shutdown validation are
 pending; the revision-32 app evidence below remains tied to `c925e9c`.
 
 - The revision-32 WordPress image runs actual embedded PHP through both
@@ -5041,3 +5041,54 @@ comparison at `.context/wordpress-before-signals-rev32.vfs.zst`, SHA-256
 Next: rebuild source products, validate actual Caddy/PHP SIGTERM draining,
 then perform the required syscall/application benchmark comparisons on Node
 and browser. No performance result is claimed for this syscall-path change.
+
+
+**2026-11-05 — Restore fatal Go diagnostics and expand exec regression coverage.**
+The new signal port makes upstream `os/exec` SIGCHLD, wait, handled/ignored
+SIGINT, and WaitDelay paths work. The first pure-Go run failed only
+`TestWaitInterrupt/SIGQUIT`: kernel default termination did not produce Go's
+required goroutine dump. Fork commit
+`f4353693610e62ad9d7c4f3a4151710fdcb75034` reuses Go's generic signal policy
+table for Kandelo's matching signal numbers and uses the existing Go fatal
+traceback at the cooperative delivery checkpoint. It reports real goroutine
+stacks and exits 2; it does not fabricate a native signal context. Both Go
+modes now pass all three selected upstream top-level tests, including all
+seven WaitInterrupt subcases (`.context/go-signals-os-exec-traceback.log`).
+A further 12-case cgo `os` regression run passes stat, file I/O, links,
+ownership, truncation, seek, and Root.DirFS with clean guest diagnostics.
+The four-target standard-library compilation matrix also passes again.
+
+The prior 33-case browser signal suite passes again in 1m41s
+(`go-signals-traceback-browsers-1105-181758-2174`). The expanded 39-case run also passes in 1m44s
+(`go-signals-fatal-browser-check-1105-182043-56d8`), explicitly checking
+default SIGQUIT dumps and exit 2 in both modes in all three browsers. Actual
+Caddy/PHP drain tests are prepared for Node and browsers but not yet run:
+a PHP request waits in its worker until the service controller has issued
+SIGTERM, then must return its full body before Caddy exits normally.
+
+The source build with the earlier signal pin was intentionally canceled
+after 19m15s while compiling Binaryen, before rebuilding the large Caddy
+consumer. Its completed dependency nodes remain in the content-addressed
+cache. Advance the pins before restarting so the resulting image includes
+the fatal-diagnostic fix too: go-hello 22, classic 29, FrankenPHP+Caddy 8,
+standalone Caddy 6, and WordPress 34. No compiler change was needed.
+An isolated detached checkout at `.context/go-signals-baseline` retains the
+previous `5e25c7365` source for forthcoming incremental performance checks.
+
+
+The upstream exec rerun uses the shared VFS harness with source package
+`os/exec` and filter `^(TestWaitInterrupt|TestWaitid|TestSIGCHLD)$`. For each
+mode, build `go test -c os/exec` with `GOOS=kandelo GOARCH=wasm`, instrument
+the cgo output, and stamp freshly built outputs through the normal helper.
+The exact runner arguments are:
+
+```sh
+KANDELO_GO_IMAGE_TMP=1 KANDELO_GO_TEST_TIMEOUT_MS=180000 \
+  node --import tsx tests/go/os-stdlib/run-full-vfs.ts \
+  .context/go-signals/cgo-exec.wasm local-binaries/source-only-v1/kernel.wasm \
+  .context/go-browser/os-pwd.wasm \
+  '^(TestWaitInterrupt|TestWaitid|TestSIGCHLD)$' '' os/exec
+```
+
+The shared PHP/Caddy drain probe type-checks in strict mode; its real Node
+and browser execution still awaits the rebuilt image.

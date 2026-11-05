@@ -33,6 +33,13 @@ func main() {
 		return
 	}
 	runtime.LockOSThread()
+	if len(os.Args) > 1 && os.Args[1] == "quit" {
+		fmt.Println("GO SIGNAL QUIT READY")
+		if err := syscall.Kill(os.Getpid(), syscall.SIGQUIT); err != nil {
+			panic(err)
+		}
+		panic("default SIGQUIT did not terminate")
+	}
 	if len(os.Args) > 1 && os.Args[1] == "restart" {
 		restartRead()
 		return

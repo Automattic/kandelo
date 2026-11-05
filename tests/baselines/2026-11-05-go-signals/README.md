@@ -13,3 +13,11 @@ These are failed-run evidence, not expected-failure allowances.
 
 Commands, source-log hashes, and nonpassing case identities are retained in
 the generated JSON. The implementation log records the completed reruns.
+
+`go-exec-sigquit.log` retains the failure lines from the first pure-Go
+`os/exec` run. Before the fatal-diagnostic fix, SIGQUIT terminated by signal
+instead of producing Go tracebacks and normal exit 2. The complete source
+log SHA-256 is `7d501ebbc8f589f92fb18c7d5e7bc556ae45fa3ee8cc6b62f294e17959e26d1a`.
+The subsequent three-test selection passes in both Go modes, including all
+seven WaitInterrupt subcases. The source command is recorded in the
+implementation log.

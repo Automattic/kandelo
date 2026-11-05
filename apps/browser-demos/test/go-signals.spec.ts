@@ -59,7 +59,7 @@ for (const mode of ["pure", "cgo"]) {
       expect(result.diagnostics).toEqual([]);
     });
   }
-  for (const disposition of ["notify", "reset", "stop", "upstream"]) {
+  for (const disposition of ["notify", "reset", "stop", "upstream", "quit"]) {
     test(`Go ${mode} signal ${disposition}`, async ({ page, baseURL, serveArtifacts }) => {
       test.skip(process.env.KANDELO_GO_SIGNAL_TESTS !== "1", "Build tests/go/signal-basic and set KANDELO_GO_SIGNAL_TESTS=1");
       const urls = await serveArtifacts({
@@ -101,8 +101,8 @@ for (const mode of ["pure", "cgo"]) {
           } finally { clearTimeout(timer); }
         } finally { await kernel.destroy(); }
       }, { urls, disposition, browserKernelUrl: new URL(`/@fs${resolve("../../host/src/browser-kernel-host.ts")}`, baseURL).href });
-      expect(result.exitCode, JSON.stringify(result)).toBe(disposition === "notify" || disposition === "upstream" ? 0 : 143);
-      expect(result.stdout).toContain(disposition === "upstream" ? "PASS\n" : disposition === "notify" ? "GO SIGNAL PASS" : "GO SIGNAL NOTIFY PASS");
+      expect(result.exitCode, JSON.stringify(result)).toBe(disposition === "quit" ? 2 : disposition === "notify" || disposition === "upstream" ? 0 : 143);
+      expect(result.stdout).toContain(disposition === "quit" ? "GO SIGNAL QUIT READY" : disposition === "upstream" ? "PASS\n" : disposition === "notify" ? "GO SIGNAL PASS" : "GO SIGNAL NOTIFY PASS");
       if (disposition === "upstream") {
         expect(result.stdout).toContain("--- PASS: TestSignal");
         expect(result.stdout).toContain("--- PASS: TestStress");
@@ -112,7 +112,10 @@ for (const mode of ["pure", "cgo"]) {
         expect(result.stdout).toContain("GO SIGNAL CGO PASS");
         expect(result.stdout).toContain("GO SIGNAL C HANDLER PASS");
       }
-      expect(result.stderr).toBe("");
+      if (disposition === "quit") {
+        expect(result.stderr).toContain("SIGQUIT");
+        expect(result.stderr).toContain("goroutine");
+      } else expect(result.stderr).toBe("");
       expect(result.diagnostics).toEqual([]);
     });
   }

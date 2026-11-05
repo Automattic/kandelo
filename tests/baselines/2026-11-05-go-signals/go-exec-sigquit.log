@@ -1,0 +1,4 @@
+    exec_test.go:1479: cmd did not exit: signal: quit
+    exec_test.go:1486: cmd.Stderr does not contain a goroutine dump
+--- FAIL: TestWaitInterrupt (0.01s)
+    --- FAIL: TestWaitInterrupt/SIGQUIT (0.37s)

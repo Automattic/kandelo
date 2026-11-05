@@ -46,7 +46,8 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/retirement/run.ts .cont
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 npx playwright test test/go-retirement.spec.ts --project=chromium --project=firefox --project=webkit --workers=1'
 ```
 
-The separate signal fixtures cover `Notify`, `Ignore`, default `SIGTERM`
+The separate signal fixtures cover `Notify`, `Ignore`, a real default
+`SIGQUIT` goroutine dump with exit 2, default `SIGTERM`
 after `Reset`/`Stop`, C-pthread delivery, C handlers with signal info and
 alternate stacks, mask restoration, 64-bit seek results, and graceful Go
 HTTP shutdown. The cgo restart case waits for the actual blocked read,
@@ -153,17 +154,13 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/dependency-port/run.ts 
 The `caddy` source package pins those forks for a real Caddy v2.10.2
 build. After resolving it, run the Node static-HTTP smoke with
 `tests/go/caddy/run.ts <caddy.wasm> <kernel.wasm>`. For the browser
-smoke, copy the resolved 99 MB `caddy.wasm` into `.context/` and pass
-that path as `KANDELO_CADDY_WASM` to `test/caddy.spec.ts`; direct
-Playwright route fulfillment exceeds its 100 MB protocol message cap,
-and Vite deliberately blocks arbitrary package-cache paths. Node,
-Chromium, and Firefox have served the VFS file. Earlier WebKit builds
-exited during recursive regexp compilation; the pinned Go fork includes
-the general iterative compiler fix described in
-`docs/agent-guidance/go-runtime.md`. Rebuild and run the resolved standalone
-Caddy artifact in WebKit before claiming that executable is validated.
-The current FrankenPHP+Caddy WordPress editor-health flow has passed a
-focused WebKit run, which is a separate executable and workload.
+smoke, pass the resolved program path as `KANDELO_CADDY_WASM` to
+`test/caddy.spec.ts`. The fixture streams selected artifacts over test-owned
+HTTP: the 104 MB binary exceeds Chromium's debugging-pipe limit when
+base64-encoded by route fulfillment, and arbitrary cache paths are
+intentionally forbidden by Vite. Revision 4 serves its VFS file in Node,
+Chromium, Firefox, and WebKit. The next revision follows the new signal
+runtime and must be rebuilt and retested separately.
 
 The VFS-backed `run-full-vfs.ts` runner supplies Go source/testdata, account
 files, `/bin/pwd`, and a non-root CWD. With `-test.run=^Test`, the available

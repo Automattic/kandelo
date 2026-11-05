@@ -216,6 +216,10 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   `Reset` only promises to undo `Notify`, not to clear an explicit `Ignore`.
   Restore fatal defaults using a real kernel signal so wait status retains
   the signal identity, including the `Stop`/delivery race.
+  Reuse the generic Go signal-policy table for Kandelo's matching numbers.
+  Fatal asynchronous signals such as SIGQUIT use Go's existing fatal
+  traceback at the cooperative checkpoint and exit 2; this reports actual
+  goroutines without claiming native signal-context unwinding.
   In cgo, Go's public syscalls use the typed
   `<kandelo/syscall.h>` completion API through the ordinary cgo transition.
   libc owns C handler dispatch, `SA_SIGINFO`, alternate stacks, masks,
