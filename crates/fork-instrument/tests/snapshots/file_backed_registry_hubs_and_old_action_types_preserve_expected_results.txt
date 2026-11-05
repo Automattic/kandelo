@@ -1,0 +1,259 @@
+=== effective 32d4382d6604 ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [
+                    2,
+                ],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)
+
+=== effective 3887c4bf0d18 ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [
+                    1,
+                    2,
+                ],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)
+
+=== effective 400284f53a8d ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [
+                    1,
+                    2,
+                ],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)
+
+=== effective 8a7bb0c67f0e ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)
+
+=== effective 8d78045a4676 ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [
+                    2,
+                ],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)
+
+=== untyped 32d4382d6604 ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [
+                    2,
+                ],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)
+
+=== untyped 3887c4bf0d18 ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [
+                    1,
+                    2,
+                ],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)
+
+=== untyped 400284f53a8d ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [
+                    1,
+                    2,
+                ],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)
+
+=== untyped 8a7bb0c67f0e ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)
+
+=== untyped 8d78045a4676 ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [
+                    2,
+                ],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)

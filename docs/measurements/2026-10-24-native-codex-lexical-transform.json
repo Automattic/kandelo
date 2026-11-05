@@ -1,0 +1,72 @@
+{
+  "metadata": {
+    "original_input": ".context/native-codex-full-20261024/original-input.wasm",
+    "input_bytes": 284605220,
+    "input_sha256": "17b829246d2396cf73f60d3dee8fea1b64dbbae8b96b0825d7228ce288ef7e42",
+    "binary": ".context/native-lexical-replay-build/measured-binary",
+    "binary_sha256": "19f09572f6034995846f67b2c77739368ff37daa9d76b8211f5ae5e749c8467d",
+    "source_evidence": ".context/native-lexical-replay-build/",
+    "guard_bytes": 17179869184,
+    "timeout_s": 1800,
+    "rayon_threads": 2,
+    "post_optimize": "none",
+    "scope": "Complete native transform, common bounded file I/O, serial Wasm validation, publication and checksums. No Binaryen, Node validator, browser, or guest execution.",
+    "sink_state_sanity_values": 4294967295,
+    "sink_control_depth_sanity": 16384,
+    "sink_evaluation_work_sanity": 1000000000000,
+    "sink_aggregate_work_sanity": 16000000000000,
+    "sql_work_sanity": 1000000000000000,
+    "module_catalog_sanity_bytes": 1073741824,
+    "shared_target_cache_bytes": 4194304,
+    "sink_retained_target_membership_sanity": 1048576,
+    "sink_target_storage": "exact shared local sets and disk groups; group-vertex closure and projected dependencies",
+    "fallback_lookup": "signature and explicit in_table=1 index prefix",
+    "compiler_fact_targets": "shared full/unknown signature groups and known typed refinements",
+    "prior_successful_facts_probe": ".context/native-facts-shared-complete-probe-20261024/",
+    "progress_env": "WPK_FORK_PROGRESS=1",
+    "native_analysis_stack": "on-demand same-thread segments via stacker 0.1.25",
+    "prior_attempt": ".context/native-codex-target-groups-20261024/",
+    "lexical_replay": "Proven materialized direct callees without fork-reaching tail transfers; other callees keep catalog routing. No new Wasm feature requirement.",
+    "original_input_sha256": "17b829246d2396cf73f60d3dee8fea1b64dbbae8b96b0825d7228ce288ef7e42",
+    "user_coordination": "User approved this serial native run with the 16 GiB physical-memory guard and 30-minute deadline.",
+    "started_utc": "2026-10-24 22:17:44 UTC"
+  },
+  "measurement": {
+    "backend": "stream",
+    "phase": "instrument",
+    "input_bytes": 284605220,
+    "output_bytes": 246465071,
+    "output_sha256": "a0310b790bb90acc1661cff69bc75fbf138ce5675da780e8e29d1d9db1188e0f",
+    "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
+    "data_sha256": "23dc62254d667427322745aa51b73682787e685d370665de878f8e4a174662ca",
+    "rust_requested_peak_bytes": 451872948,
+    "physical_lifetime_peak_bytes": 508527768
+  },
+  "guard_status": {
+    "returncode": 0,
+    "stop_reason": null,
+    "elapsed_s": 1029.3371506670956,
+    "sampled_physical_peak_bytes": 508527768,
+    "command": [
+      ".context/native-lexical-replay-build/measured-binary",
+      "measure",
+      "stream",
+      "instrument",
+      ".context/native-codex-lexical-20261024/original-input.wasm",
+      ".context/native-codex-lexical-20261024/instrumented.wasm"
+    ]
+  },
+  "max_sampled_rss_bytes": 972816384,
+  "source_build": {
+    "source_base_commit": "67214f18167185831970fc53a44fd2f646482f0c",
+    "binary_sha256": "19f09572f6034995846f67b2c77739368ff37daa9d76b8211f5ae5e749c8467d",
+    "source_files": 204,
+    "note": "Proven materialized direct callees without fork-reaching tails replay lexically. Other call targets keep frozen catalog routing. No new Wasm feature or ABI requirement. Same bounded target storage. The manifest is the authoritative source snapshot."
+  },
+  "production_commit": "b4584a5ddf2b0d40e83a9e94e7f77bf227c4a3cf",
+  "compiler_facts_used": true,
+  "compiler_facts_fallback": false,
+  "published_output_hash_verified": true,
+  "evidence": ".context/native-codex-lexical-20261024/",
+  "background_context": "Other workspaces still had serial builds; this single guarded capacity run is not a throughput comparison."
+}

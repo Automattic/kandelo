@@ -6,15 +6,17 @@
 #   ./run.sh build [target...]    Build specific targets (or all)
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
-#   ./run.sh local-build [--json] Build all local SourceOnly VFS products
-#   ./run.sh local-build --plan [--json]
+#   ./run.sh local-build [--all] [--json]
+#                                 Build what the VFS products and browser app
+#                                 demand (--all: every supported package)
+#   ./run.sh local-build --plan [--all] [--json]
 #                                 Preview it: cache hits, nodes to build, and
 #                                 an estimated duration
 #   ./run.sh cache-gc [args]      Garbage-collect the shared SourceOnly build
 #                                 cache (dry run unless --apply)
 #   ./run.sh run <example> [args] Run a Node.js example
 #   ./run.sh prepare-browser      Build local SourceOnly browser assets
-#   ./run.sh build-browser [--base /p/] [--out DIR]
+#   ./run.sh build-browser [--base /p/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]
 #                                 Build the deployable static browser app
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
@@ -210,7 +212,31 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_create_process
     kernel_create_process_with_stdio
     kernel_dequeue_signal
+    kernel_drain_wait_completions
+    kernel_epoll_wait_finish
+    kernel_epoll_wait_token
+    kernel_exchange_activate
+    kernel_exchange_add_entry
+    kernel_exchange_agent_failed
+    kernel_exchange_begin
+    kernel_exchange_cancel
+    kernel_exchange_commit
+    kernel_exchange_configure
+    kernel_exchange_configure_activation
+    kernel_exchange_consumer_present
+    kernel_exchange_drain_notifications
+    kernel_exchange_init
+    kernel_exchange_output_end
+    kernel_exchange_read_output
+    kernel_exchange_release_output
+    kernel_exchange_set_listener
+    kernel_exchange_stream_end
+    kernel_exchange_stream_push
+    kernel_exchange_stream_read
+    kernel_exchange_stream_start
+    kernel_exchange_take_pending
     kernel_exec_commit
+    kernel_exec_target_admit
     kernel_exec_target_cancel
     kernel_exec_target_prepare
     kernel_exec_target_read
@@ -228,6 +254,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
     kernel_host_adapter_manifest_ptr
+    kernel_initial_exec_commit
     kernel_install_host_stdin_pipe
     kernel_ipc_shm_lookup_mapping_for_task
     kernel_ipc_shm_record_mapping_for_process
@@ -239,6 +266,8 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_ipc_shmdt_for_process
     kernel_ipc_shmdt_for_task
     kernel_is_fd_nonblock
+    kernel_kms_cursor_configure
+    kernel_kms_cursor_read
     kernel_mark_process_signaled
     kernel_pcm_claim_transport
     kernel_pcm_clock_update
@@ -249,26 +278,28 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_pick_tcp_listener_target
     kernel_pipe_has_readers
     kernel_posix_timer_fire
+    kernel_process_attach_exe_handle
+    kernel_process_attach_exe_path
     kernel_process_metadata_begin
     kernel_process_metadata_cancel
     kernel_process_metadata_commit
+    kernel_process_metadata_read
     kernel_process_metadata_stage
     kernel_process_secure_exec
+    kernel_publish_process_exit
     kernel_publish_spawn_child
     kernel_reap_exited_child
     kernel_remove_process
+    kernel_reset_tcp_connection
     kernel_set_current_tid
     kernel_set_cwd
+    kernel_set_main_channel_addr
     kernel_spawn_exec_commit
     kernel_spawn_exec_target_prepare
+    kernel_spawn_exec_target_prepare_handle
     kernel_spawn_process
-    kernel_spawn_reserved_process
-    kernel_spawn_scratch_begin
-    kernel_spawn_scratch_cancel
-    kernel_spawn_scratch_capacity
-    kernel_spawn_scratch_pointer
-    kernel_spawn_scratch_retained_capacity
     kernel_take_process_timer_cleanup
+    kernel_tcp_connection_id
     kernel_thread_exit
     kernel_thread_has_deliverable
     kernel_transfer_channel_execute
@@ -278,7 +309,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_transfer_scratch_capacity
     kernel_transfer_scratch_pointer
     kernel_validate_task
-    kernel_wait_child_poll
+    kernel_wait_next_timeout_ns
 )
 
 has_valid_kernel_file() {
@@ -500,6 +531,8 @@ has_texlive_vfs()   { pkg_has_output texlive texlive-bundle.json || [ -f "$REPO_
 has_nginx_vfs()     { has_resolvable programs/nginx-vfs.vfs.zst; }
 has_redis_vfs()     { has_resolvable programs/redis-vfs.vfs.zst; }
 has_nginx_php_vfs() { has_resolvable programs/nginx-php-vfs.vfs.zst; }
+has_web_stack_vfs() { has_resolvable programs/web-stack-vfs.vfs.zst; }
+has_wordpress_family_vfs() { has_resolvable programs/wordpress-family-vfs.vfs.zst; }
 has_ncurses()       { pkg_has_output ncurses clear.wasm && pkg_has_output ncurses tic.wasm && pkg_has_output ncurses tput.wasm; }
 has_zlib()          { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()       { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
@@ -626,6 +659,7 @@ build_rootfs() {
 }
 
 build_programs() {
+    python3 "$REPO_ROOT/scripts/build-program-baseline.py"
     if has_programs; then
         info "programs"
         return
@@ -1481,22 +1515,15 @@ build_nginx_vfs() {
 }
 
 build_redis_vfs() {
-    # NOT folded: "redis-vfs" is an `[[exclusions]]` entry in
-    # packages/sets/local-supported.toml ("dormant browser product") — a
-    # pre-existing product decision predating this stage, not an engine
-    # limitation (its images/vfs/products/browser-redis.toml manifest
-    # already exists and validates fine; see
-    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
-    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
-    build_dinit
-    build_redis
-    if ! has_redis_vfs; then
-        step "Building Redis VFS image"
-        bash "$REPO_ROOT/images/vfs/scripts/build-redis-vfs-image.sh"
-        info "Redis VFS image built"
-    else
-        info "Redis VFS image"
-    fi
+    bootstrap_target browser-redis
+}
+
+build_web_stack_vfs() {
+    bootstrap_target browser-web-stack
+}
+
+build_wordpress_family_vfs() {
+    bootstrap_target browser-wordpress-family
 }
 
 build_nginx_php_vfs() {
@@ -1915,6 +1942,8 @@ build_target() {
         lamp-vfs)   build_lamp_vfs ;;
         nginx-vfs)  build_nginx_vfs ;;
         redis-vfs)  build_redis_vfs ;;
+        web-stack-vfs) build_web_stack_vfs ;;
+        wordpress-family-vfs) build_wordpress_family_vfs ;;
         nginx-php-vfs) build_nginx_php_vfs ;;
         nginx-python-vfs) build_nginx_python_vfs ;;
         ruby-todo-vfs) build_ruby_todo_vfs ;;
@@ -1943,7 +1972,8 @@ build_target() {
         waybar)     build_waybar ;;
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
-        lua|love)   bootstrap_target "$target" ;;
+        lua|love|termchat)   bootstrap_target "$target" ;;
+        binaryen|kandelo-cc|kandelo-build-image) bootstrap_target "$target" ;;
         openssl)    build_openssl ;;
         libcurl)    build_libcurl ;;
         vim)        build_vim ;;
@@ -1966,7 +1996,7 @@ build_target() {
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node wp-vfs lamp-vfs ruby-todo-vfs dbus foot)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node wp-vfs lamp-vfs ruby-todo-vfs redis-vfs web-stack-vfs wordpress-family-vfs dbus foot)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -2236,6 +2266,10 @@ clean_target() {
             rm -f "$REPO_ROOT/apps/browser-demos/public/redis.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/redis-vfs.vfs.zst"
             warn "Cleaned Redis VFS image" ;;
+        web-stack-vfs|wordpress-family-vfs)
+            xtask_clean_target "$target"
+            pkg_remove_local_output "$target" "$target.vfs.zst" wasm32
+            warn "Cleaned $target image" ;;
         nginx-php-vfs)
             xtask_clean_target nginx-php-vfs
             rm -f "$REPO_ROOT/apps/browser-demos/public/nginx-php-vfs.vfs.zst" \
@@ -2344,7 +2378,7 @@ clean_target() {
                    "$REPO_ROOT/packages/registry/fbdoom/fbdoom-build" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom"
             rm -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" \
-                  "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom.wasm" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom/fbdoom.wasm" \
                   "$REPO_ROOT/packages/registry/fbdoom/doom1.wad" \
                   "$REPO_ROOT/packages/registry/fbdoom/COPYING.txt" \
                   "$REPO_ROOT/packages/registry/fbdoom/CREDITS.txt" \
@@ -2517,6 +2551,17 @@ cmd_local_build() {
     # subagent loses the result and forces a full re-run. It uses the release
     # xtask binary because the debug build `cargo run` produces takes 6-15 s
     # to plan, against about 1 s here; see docs/package-management.md.
+    local selection=demanded bootstrap_selection=()
+    local arg plain_args=()
+    for arg in "$@"; do
+        if [ "$arg" = "--all" ]; then
+            selection=all
+            bootstrap_selection=(--all-packages)
+        else
+            plain_args+=("$arg")
+        fi
+    done
+    set -- ${plain_args[@]+"${plain_args[@]}"}
     if [ "${1:-}" = "--plan" ]; then
         shift
         local plan_json=()
@@ -2525,7 +2570,7 @@ cmd_local_build() {
             shift
         fi
         if [ $# -ne 0 ]; then
-            err "Usage: $0 local-build --plan [--json]"
+            err "Usage: $0 local-build --plan [--all] [--json]"
             exit 2
         fi
         # One dev-shell entry for both the freshness build and the plan: the
@@ -2549,7 +2594,7 @@ cmd_local_build() {
             "$REPO_ROOT/target/$host/release/xtask" local-build plan \
             --set "$REPO_ROOT/packages/sets/local-supported.toml" --status \
             --source-cache-root "${KANDELO_SOURCE_CACHE_ROOT:-$HOME/.cache/kandelo/source-only}" \
-            --output-root "$REPO_ROOT/local-binaries/source-only-v1" --product all --jobs 16 \
+            --output-root "$REPO_ROOT/local-binaries/source-only-v1" --product "$selection" --jobs 16 \
             "${plan_json[@]+"${plan_json[@]}"}" >&2 || status=$?
         command cat -- "$plan_out"
         rm -f -- "$plan_out"
@@ -2561,7 +2606,7 @@ cmd_local_build() {
         shift
     fi
     if [ $# -ne 0 ]; then
-        err "Usage: $0 local-build [--json]"
+        err "Usage: $0 local-build [--all] [--json]"
         err "Use xtask local-build directly for custom product selections."
         exit 2
     fi
@@ -2573,7 +2618,10 @@ cmd_local_build() {
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
-    local helper="$REPO_ROOT/scripts/run-local-build.sh"
+    # `bootstrap packages` builds the same tree as setup's engine step: what
+    # the VFS products and the browser app demand, or with --all every
+    # supported package. Setup's runner pins PATH to the declared tool set.
+    local helper="$REPO_ROOT/scripts/setup.sh"
     # A marker inherited from an older or reinitialized shell does not prove
     # that PATH matches this checkout's current flake. Package builds are the
     # reproducibility boundary, so always enter the declared shell again.
@@ -2584,7 +2632,10 @@ cmd_local_build() {
     local command=(
         bash "$REPO_ROOT/scripts/dev-shell.sh"
         ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"}
-        bash -c 'exec bash "$1" >"$2"' kandelo-local-build "$helper" "$result_file"
+        bash -c 'helper="$1" result="$2"; shift 2; exec bash "$helper" "$@" >"$result"' \
+        kandelo-local-build "$helper" "$result_file" \
+        packages --jobs "${WASM_POSIX_LOCAL_BUILD_JOBS:-16}" \
+        ${bootstrap_selection[@]+"${bootstrap_selection[@]}"}
     )
 
     local command_status
@@ -2649,6 +2700,9 @@ cmd_local_build() {
         ] +
         (if $failed > 0 then ["  Failed:     \($failed)"] else [] end) +
         (if $blocked > 0 then ["  Blocked:    \($blocked)"] else [] end) +
+        (if .outcome == "failed" and $failed == 0 and $blocked == 0
+         then ["  Publish:    failed after every node succeeded (see above)"]
+         else [] end) +
         ["  Output:     local-binaries/source-only-v1"] |
         .[]
     ' "$result_file"
@@ -2669,10 +2723,16 @@ cmd_local_build() {
 # build. Delegates to xtask bootstrap (scripts/setup.sh) inside the
 # repository dev shell; see docs/agent-guidance/packages-and-builds.md.
 cmd_setup() {
+    # --all builds every supported package, as `./run.sh local-build --all`
+    # does; by default setup builds what the VFS products and browser demand.
+    local arg args=()
+    for arg in "$@"; do
+        if [ "$arg" = "--all" ]; then args+=(--all-packages); else args+=("$arg"); fi
+    done
     local_build_events_env
     exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
         ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
-        bash "$REPO_ROOT/scripts/setup.sh" "$@"
+        bash "$REPO_ROOT/scripts/setup.sh" ${args[@]+"${args[@]}"}
 }
 
 cmd_run() {
@@ -2773,6 +2833,10 @@ cmd_prepare_browser() {
 cmd_build_browser() {
     local base="/"
     local out="$REPO_ROOT/apps/browser-demos/dist"
+    local cors_proxy="${VITE_CORS_PROXY_URL-}"
+    local signalling_url="${VITE_KANDELO_SIGNALLING_URL-}"
+    local cors_proxy_set="${VITE_CORS_PROXY_URL+1}"
+    local signalling_url_set="${VITE_KANDELO_SIGNALLING_URL+1}"
     while [ $# -gt 0 ]; do
         case "$1" in
             --base) [ $# -ge 2 ] || { err "--base requires a value"; exit 2; }
@@ -2781,8 +2845,18 @@ cmd_build_browser() {
             --out)  [ $# -ge 2 ] || { err "--out requires a directory"; exit 2; }
                     out="$2"; shift 2 ;;
             --out=*) out="${1#--out=}"; shift ;;
+            --cors-proxy) [ $# -ge 2 ] && [ -n "$2" ] || { err "--cors-proxy requires a URL"; exit 2; }
+                          cors_proxy="$2"; cors_proxy_set=1; shift 2 ;;
+            --cors-proxy=*) cors_proxy="${1#--cors-proxy=}"; shift
+                           [ -n "$cors_proxy" ] || { err "--cors-proxy requires a URL"; exit 2; }
+                           cors_proxy_set=1 ;;
+            --signalling-url) [ $# -ge 2 ] && [ -n "$2" ] || { err "--signalling-url requires a URL"; exit 2; }
+                              signalling_url="$2"; signalling_url_set=1; shift 2 ;;
+            --signalling-url=*) signalling_url="${1#--signalling-url=}"; shift
+                               [ -n "$signalling_url" ] || { err "--signalling-url requires a URL"; exit 2; }
+                               signalling_url_set=1 ;;
             *)
-                err "Usage: $0 build-browser [--base /prefix/] [--out DIR]"
+                err "Usage: $0 build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]"
                 exit 2
                 ;;
         esac
@@ -2802,9 +2876,18 @@ cmd_build_browser() {
     # so it and the group it authenticates live under local-binaries/, never
     # under the output directory.
     step "Building production browser app for $base"
+    # Deployment configuration must cross the isolated shell explicitly.
+    # Leave an unset URL absent so Vite can still load it from .env files.
+    local deployment_env=(env)
+    if [ -n "$cors_proxy_set" ]; then
+        deployment_env+=("VITE_CORS_PROXY_URL=$cors_proxy")
+    fi
+    if [ -n "$signalling_url_set" ]; then
+        deployment_env+=("VITE_KANDELO_SIGNALLING_URL=$signalling_url")
+    fi
     # dev-shell.sh does not forward arbitrary caller environment, so the
     # inner script takes the repo root, base, and output as arguments.
-    bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
+    bash "$REPO_ROOT/scripts/dev-shell.sh" "${deployment_env[@]}" bash -c '
         set -euo pipefail
         cd "$1"
         export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
@@ -2820,11 +2903,14 @@ cmd_build_browser() {
             "$KANDELO_PAGES_VFS_ASSET_GROUP_DIR" "$KANDELO_PAGES_PRODUCT_MAP"
         VITE_BASE="$2" npm --prefix apps/browser-demos run build -- \
             --outDir "$3" --emptyOutDir
+        # Copy after Vite empties the output so the default endpoint ships.
+        mkdir -p "$3/signalling"
+        cp apps/signalling/piplet.php "$3/signalling/piplet.php"
     ' build-browser "$REPO_ROOT" "$base" "$out"
 
     # Fail loudly on an incomplete site rather than letting it be uploaded.
     local missing=0 required
-    for required in index.html service-worker.js vfs-groups; do
+    for required in index.html service-worker.js vfs-groups signalling/piplet.php; do
         if [ ! -e "$out/$required" ]; then
             err "build-browser: $out/$required is missing"
             missing=1
@@ -2858,8 +2944,30 @@ cmd_browser() {
 
 cmd_test() {
     local suites=("$@")
+    if [ "$#" -eq 1 ] && [ "$1" = "browser-memory" ]; then
+        # This gate prepares current products before checking runtime behavior,
+        # and owns its declared toolchain even when invoked from a plain shell.
+        exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
+            bash "$REPO_ROOT/scripts/check-browser-memory.sh"
+    fi
     if [ ${#suites[@]} -eq 0 ]; then
         suites=(cargo vitest sdk libc posix)
+    fi
+
+    # Suites load fixtures no VFS image carries (wasm64 libraries, libevent
+    # and MariaDB test programs, dash, ...), which a default build leaves
+    # out. Build every supported package first; when it is all cached this
+    # costs about a minute. The Rust suite alone needs none of them.
+    local suite needs_packages=0
+    for suite in "${suites[@]}"; do
+        [ "$suite" = "cargo" ] || needs_packages=1
+    done
+    if [ "$needs_packages" -eq 1 ]; then
+        step "Building every supported package for the test suites"
+        cmd_local_build --all || {
+            err "The full package build failed; test suites need its outputs"
+            exit 1
+        }
     fi
 
     # Pre-test freshness check (not a divergence guard: Stage 2 collapsed
@@ -2882,6 +2990,10 @@ cmd_test() {
             cargo)
                 step "Running cargo tests"
                 if ! cargo test -p kandelo --target aarch64-apple-darwin --lib; then
+                    failed=1
+                fi
+                # The SDK driver behind every sdk/bin tool.
+                if ! cargo test -p kandelo-cc --target "$verify_fresh_host_target"; then
                     failed=1
                 fi
                 ;;
@@ -2996,13 +3108,18 @@ cmd_test() {
 
 cmd_list() {
     echo "${BOLD}One-command setup:${RESET}"
-    echo "  ./run.sh setup                       Hermetic build: fork-instrument tool,"
-    echo "                                        local-build engine (all packages),"
+    echo "  ./run.sh setup [--all]               Hermetic build: fork-instrument tool,"
+    echo "                                        local-build engine (what the VFS"
+    echo "                                        products and browser app demand;"
+    echo "                                        --all: every supported package),"
     echo "                                        then the TypeScript host"
     echo ""
     echo "${BOLD}Local SourceOnly build:${RESET}"
-    echo "  ./run.sh local-build                Build all seven local VFS products"
-    echo "                                        and their package dependencies"
+    echo "  ./run.sh local-build                Build the active VFS products, their"
+    echo "                                        package dependencies, and the"
+    echo "                                        packages the browser app imports"
+    echo "  ./run.sh local-build --all          Build every supported package, test"
+    echo "                                        fixtures included"
     echo "  ./run.sh local-build --json         Emit the canonical machine result"
     echo "  ./run.sh cache-gc                   Show what cache GC would remove (dry run)"
     echo "  ./run.sh cache-gc --apply           Remove unused SourceOnly cache entries"
@@ -3066,6 +3183,8 @@ cmd_list() {
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-vfs      WordPress VFS image                   $(has_wp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  lamp-vfs    WordPress LAMP VFS image              $(has_lamp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  web-stack-vfs Web Stack image family             $(has_web_stack_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  wordpress-family-vfs WordPress image family     $(has_wordpress_family_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  perl        Perl 5.40                              $(has_perl && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  ruby        Ruby                                   $(has_ruby && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  erlang      Erlang/OTP 28 BEAM VM                   $(has_erlang && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
@@ -3098,7 +3217,7 @@ cmd_list() {
     echo "${BOLD}Browser:${RESET}"
     echo "  ./run.sh prepare-browser             Build local SourceOnly browser assets"
     echo "  ./run.sh browser                     Build locally and start the Vite dev server"
-    echo "  ./run.sh build-browser [--base /p/] [--out DIR]"
+    echo "  ./run.sh build-browser [--base /p/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]"
     echo "                                       Build the deployable app (default: / into apps/browser-demos/dist)"
     echo ""
     echo "${BOLD}Test suites:${RESET}"
@@ -3110,6 +3229,7 @@ cmd_list() {
     echo "  ./run.sh test sortix                 Sortix os-test suite"
     echo "  ./run.sh test browser                Browser E2E tests (fast only)"
     echo "  ./run.sh test browser-all            Browser E2E tests (including slow)"
+    echo "  ./run.sh test browser-memory         Prepare + ownership + Node/Bun + three-engine switching"
     echo "  ./run.sh test mariadb                MariaDB mysql-test suite (Node.js)"
     echo "  ./run.sh test browser-mariadb        MariaDB mysql-test suite (browser)"
     echo "  ./run.sh test nginx                  nginx test suite (32 upstream tests)"

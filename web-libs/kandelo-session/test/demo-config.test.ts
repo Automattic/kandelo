@@ -15,6 +15,8 @@ import {
   resolveDemoRuntime,
   resolveDemoInit,
   resolveDemoDisplay,
+  resolveDemoPresentation,
+  resolveDemoExchange,
   type KandeloDemoConfig,
 } from "../src/demo-config";
 
@@ -481,7 +483,7 @@ describe("profile-only schema", () => {
     ["web", { requiredPorts: [8080] }],
     ["display", { minWidth: 640, minHeight: 480 }],
     ["assets", []],
-    ["ingest", { accept: [".wad"], targetPath: "/u.wad", maxBytes: 1 }],
+    ["exchange", { label: "Load WAD" }],
     ["guide", { title: "G" }],
     ["presentation", {
       bootPrimary: "syslog",
@@ -524,9 +526,7 @@ describe("profile-only schema", () => {
 
 describe("tracked demo-config sources", () => {
   it("declares every tracked source", () => {
-    // 9 = seven single-source builders plus the shell image's base config
-    // and its profile overlay, which are two separate tracked files.
-    expect(TRACKED_DEMO_CONFIG_SOURCES.length).toBe(9);
+    expect(TRACKED_DEMO_CONFIG_SOURCES.length).toBe(12);
   });
 
   it.each(TRACKED_DEMO_CONFIG_SOURCES)("%s parses and validates", (relPath) => {
@@ -573,4 +573,65 @@ describe("tracked demo-config sources", () => {
       expect(Object.keys(config).sort()).toEqual(["profiles", "version"]);
     },
   );
+});
+
+
+describe("virtual display scale", () => {
+  const presentation = { bootPrimary: "syslog", runningPrimary: ["kms"],
+    terminalAccess: "drawer", internalsAccess: "drawer" };
+  it("preserves a readable bitmap scale in image-owned metadata", () => {
+    const config = withProfile({ presentation: { ...presentation, displayScale: 1.5 } });
+    validateKandeloDemoConfig(config);
+    expect(resolveDemoPresentation(config, "m")?.displayScale).toBe(1.5);
+  });
+  it.each([0, -1, 0.49, 4.01, Infinity, NaN, "1.5", null])("rejects invalid scale %s", (displayScale) => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      presentation: { ...presentation, displayScale },
+    }))).toThrow("presentation.displayScale");
+  });
+});
+
+describe("image-owned exchange hints", () => {
+  it("resolves the picker's label and accept filter", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: { doom: { exchange: { label: "Load WAD", accept: [".WAD"] } } },
+    }));
+    expect(config).not.toBeNull();
+    validateKandeloDemoConfig(config!);
+    expect(resolveDemoExchange(config!, "doom")).toEqual({ label: "Load WAD", accept: [".wad"] });
+    expect(resolveDemoExchange(config!, "other")).toBeNull();
+  });
+
+  it("refuses the retired ingest block rather than ignoring it", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: {
+        selected: {},
+        unselected: { ingest: { accept: [".rom"], targetPath: "/game.rom", maxBytes: 1024 } },
+      },
+    }));
+    expect(config).not.toBeNull();
+    expect(() => validateKandeloDemoConfig(config!)).toThrow(
+      /profiles\.unselected\.ingest is no longer supported: files reach a machine through Kandelo exchange/,
+    );
+  });
+
+  it("refuses a retired top-level ingest block with the same explanation", () => {
+    expect(() => validateKandeloDemoConfig({
+      version: 1,
+      ingest: { accept: [".wad"], targetPath: "/u.wad", maxBytes: 1 },
+      profiles: { m: {} },
+    } as unknown as KandeloDemoConfig)).toThrow(
+      /^ingest is no longer supported: files reach a machine through Kandelo exchange/,
+    );
+  });
+
+  it("rejects malformed hints", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: { x: { exchange: { accept: ["wad"] } } },
+    }));
+    expect(() => validateKandeloDemoConfig(config!)).toThrow('profiles.x.exchange.accept[0] must be an extension like ".wad"');
+  });
 });

@@ -11,6 +11,14 @@ import {
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
+test("offline program compatibility owns a production fixture instead of borrowing a development server", () => {
+  const spec = "/checkout/apps/browser-demos/test/program-compatibility.spec.ts";
+  assert.equal(playwrightTestIgnoreForEnvironment({}).some(pattern => pattern.test(spec)), true);
+  assert.equal(playwrightTestIgnoreForEnvironment({
+    KANDELO_PROGRAM_COMPATIBILITY_IMAGE_URL: "http://127.0.0.1:57413/program-compatibility.vfs",
+  }).some(pattern => pattern.test(spec)), false);
+});
+
 test("assembled-site proof runs only with its sealed site root", () => {
   const ordinaryIgnore = playwrightTestIgnoreForEnvironment({});
   assert.equal(
@@ -64,6 +72,18 @@ test("product evidence runs only with both protected handoff paths", () => {
     ).some((pattern) => pattern.test(evidenceSpec)),
     false,
   );
+});
+
+test("the separate-networks lab runs only when named, on its own server", () => {
+  const lab = /kandelo-network-lab\.spec\.ts$/;
+  const hidden = (argv: string[]) =>
+    playwrightTestIgnoreForEnvironment({}, argv).some((pattern) => pattern.source === lab.source);
+  assert.equal(hidden([]), true);
+  assert.equal(hidden(["test/kandelo-network-session.spec.ts"]), true);
+  assert.equal(hidden(["test/kandelo-network-lab.spec.ts"]), false);
+  assert.equal(hidden(["/checkout/apps/browser-demos/test/kandelo-network-lab.spec.ts:12"]), false);
+  // The lab's server carries its ICE servers; a running one does not.
+  assert.equal(shouldReuseExistingPlaywrightServer({ KANDELO_NETWORK_LAB: "1" }), false);
 });
 
 test("exact product proofs never reuse another worktree's server", () => {

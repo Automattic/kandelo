@@ -1,0 +1,29 @@
+kind = "program"
+name = "composer"
+version = "2.10.3"
+kernel_abi = 50
+arches = ["wasm32"]
+depends_on = ["php@8.5.12"]
+
+[source]
+url = "https://getcomposer.org/download/2.10.3/composer.phar"
+sha256 = "7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/composer/composer/blob/2.10.3/LICENSE"
+
+[build]
+script_path = "packages/registry/composer/build-composer.sh"
+
+[[outputs]]
+name = "composer"
+wasm = "composer.zip"
+fork_instrumentation = "disabled"
+
+[[host_tools]]
+name = "zip"
+version_constraint = ">=3.0"
+probe = { args = ["-v"], version_regex = "Zip (\\d+\\.\\d+)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

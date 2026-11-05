@@ -31,6 +31,7 @@ const KERNEL_EXPORT_NAMES = [
   "kernel_set_max_addr",
   "kernel_set_mmap_base",
   "kernel_set_process_pointer_width",
+  "kernel_set_main_channel_addr",
   "kernel_vblank",
 ] as const;
 
@@ -182,6 +183,7 @@ describe("kernel process registration entry authority", () => {
       kernel_set_max_addr: setMaxAddr,
       kernel_set_mmap_base: setMmapBase,
       kernel_set_process_pointer_width: setPointerWidth,
+      kernel_set_main_channel_addr: () => 0,
       kernel_vblank: () => 0,
     }, pointerWidth);
 
@@ -254,6 +256,7 @@ describe("kernel process registration entry authority", () => {
       kernel_set_max_addr: exportCalls.setMaxAddr,
       kernel_set_mmap_base: exportCalls.setMmapBase,
       kernel_set_process_pointer_width: exportCalls.setPointerWidth,
+      kernel_set_main_channel_addr: () => 0,
       kernel_vblank: () => {
         const attempts: Array<() => unknown> = [
           () => harness.worker.createProcess(CAPTURED_STDIO),
@@ -385,6 +388,7 @@ describe("kernel process registration entry authority", () => {
         kernel_set_max_addr: setMaxAddr,
         kernel_set_mmap_base: setMmapBase,
         kernel_set_process_pointer_width: setPointerWidth,
+        kernel_set_main_channel_addr: () => 0,
         kernel_vblank: () => 0,
       }, pointerWidth);
       const memory = processMemory();

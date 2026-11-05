@@ -1,0 +1,79 @@
+=== kandelo.wpk_fork.resume_catalog 4ca6a6a47a25 ===
+[
+    75,
+    70,
+    82,
+    67,
+    1,
+    0,
+    12,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+]
+
+=== kandelo.wpk_fork.resume_catalog 56bcb0c5b3ed ===
+[
+    75,
+    70,
+    82,
+    67,
+    1,
+    0,
+    12,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+]
+
+=== kandelo.wpk_fork.static_root_catalog 4ca6a6a47a25 ===
+[
+    75,
+    70,
+    83,
+    82,
+    1,
+    0,
+    12,
+    0,
+    7,
+    0,
+    0,
+    0,
+]
+
+=== kandelo.wpk_fork.static_root_catalog 56bcb0c5b3ed ===
+[
+    75,
+    70,
+    83,
+    82,
+    1,
+    0,
+    12,
+    0,
+    7,
+    0,
+    0,
+    0,
+]

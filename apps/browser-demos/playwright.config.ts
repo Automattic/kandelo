@@ -7,6 +7,7 @@ import {
   playwrightTestIgnoreForEnvironment,
   shouldReuseExistingPlaywrightServer,
 } from "./playwright-server-policy";
+import { browserStorageHome } from "./playwright-storage";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.KANDELO_PLAYWRIGHT_PORT ?? 5401);
@@ -82,6 +83,10 @@ function playwrightWebServerEnvironment(
     }
   }
   childEnvironment.KANDELO_BROWSER_TEST_NO_HMR = "1";
+  // WebKit has no mute flag (Chromium and Firefox are muted below), so the
+  // dev server routes page audio through a silent gain node instead; see
+  // muteBrowserTestAudio in vite.config.ts.
+  childEnvironment.KANDELO_BROWSER_TEST_MUTE_AUDIO = "1";
   return childEnvironment;
 }
 
@@ -131,15 +136,25 @@ const sharedLaunchArgs =
 // running, depending on which worker ran what first. Tests that assert the
 // no-gesture state (kandelo-audio-toast) need the policy a first-time
 // visitor gets, so turn off the engagement bypass for the test browser.
+//
+// Chromium also replaces host ICE candidates with mDNS names, which headless
+// test contexts cannot resolve, so a loopback WebRTC link between two
+// contexts never connects unless that is disabled too. Chromium honors only
+// one --disable-features switch, so both features share it. Local peer specs
+// also grant microphone permission in every context, exposing the loopback
+// interface without capturing media. This permits loopback candidates but
+// does not force ICE to select one; peers still need a viable route.
 const chromiumLaunchArgs = [
   ...sharedLaunchArgs,
   // Mute the browser's physical output; keep Web Audio processing and
   // autoplay policy intact so audio behavior still gets tested.
   "--mute-audio",
-  "--disable-features=MediaEngagementBypassAutoplayPolicies",
+  "--disable-features=MediaEngagementBypassAutoplayPolicies,WebRtcHideLocalIpsWithMdns",
+  "--allow-loopback-in-peer-connection",
 ];
 
 export default defineConfig({
+  globalSetup: join(__dirname, "playwright-storage-setup.ts"),
   testDir: join(__dirname, "test"),
   testMatch: "*.spec.ts",
   // The assembled-site and exact-product proofs read protected handoffs during
@@ -223,7 +238,15 @@ export default defineConfig({
     },
     {
       name: "webkit",
-      use: { browserName: "webkit" },
+      use: {
+        browserName: "webkit",
+        launchOptions: {
+          env: process.platform === "darwin"
+            ? { ...browserLaunchEnv, CFFIXED_USER_HOME: browserStorageHome("webkit") }
+            : browserLaunchEnv,
+          args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
+        },
+      },
     },
   ],
 });

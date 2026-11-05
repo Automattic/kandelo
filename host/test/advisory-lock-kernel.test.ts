@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   linkSync,
   renameSync,
@@ -29,6 +29,7 @@ import {
 import { CH_TOTAL_SIZE } from "../src/constants";
 import {
   ABI_SYSCALLS,
+  CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_PENDING,
   CH_ARGS,
   CH_ARG_SIZE,
@@ -53,6 +54,7 @@ const F_OFD_SETLK = 37;
 const F_RDLCK = 0;
 const F_WRLCK = 1;
 const F_UNLCK = 2;
+const LOCK_EX = 2;
 const EAGAIN = 11;
 const ENOLCK = 37;
 const MAX_LOCK_RECORDS = 4096;
@@ -249,6 +251,7 @@ function openFile(
   worker: AdvisoryLockTestWorker,
   pid: number,
   path: string,
+  flags = O_RDWR,
 ): number {
   const encoded = new TextEncoder().encode(`${path}\0`);
   const result = issuePrepared(
@@ -259,8 +262,8 @@ function openFile(
       transfer.copyFrom(encoded, CH_DATA);
       return [
         channelArgument(CH_DATA, encoded.byteLength),
-        O_RDWR,
-        0,
+        flags,
+        0o644,
       ];
     },
   );
@@ -543,6 +546,49 @@ describe("Rust advisory locks through the real kernel Wasm", () => {
       worker.unregisterProcess(ownerPid);
       worker.unregisterProcess(peerPid);
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("wakes a blocking flock waiter when the holder closes the fd", async () => {
+    const worker = await makeWorker();
+    const holderPid = register(worker);
+    const waiterPid = register(worker);
+    const path = "/tmp/kandelo-advisory-flock-close";
+
+    try {
+      const holderFd = openFile(worker, holderPid, path, O_RDWR | O_CREAT);
+      const waiterFd = openFile(worker, waiterPid, path);
+      expect(issue(worker, holderPid, ABI_SYSCALLS.Flock, [holderFd, LOCK_EX]))
+        .toEqual({ value: 0, errno: 0 });
+
+      issue(worker, waiterPid, ABI_SYSCALLS.Flock, [waiterFd, LOCK_EX]);
+      const waiter = processMemoryByWorker.get(worker)!.get(waiterPid)!;
+      const waiterStatus = () => Atomics.load(
+        new Int32Array(waiter.memory.buffer, waiter.channelOffset),
+        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+      );
+      expect(waiterStatus()).toBe(CHANNEL_STATUS_PENDING);
+
+      // The waiter's own open keeps the tmpfs inode open, so only the
+      // holder's final OFD reference can release the lock.
+      closeFile(worker, holderPid, holderFd);
+
+      await vi.waitFor(
+        () => expect(waiterStatus()).toBe(CHANNEL_STATUS_COMPLETE),
+        { timeout: 1_000 },
+      );
+      const result = new DataView(
+        waiter.memory.buffer,
+        waiter.channelOffset,
+        CH_TOTAL_SIZE,
+      );
+      expect(Number(result.getBigInt64(CH_RETURN, true))).toBe(0);
+      expect(result.getUint32(CH_ERRNO, true)).toBe(0);
+
+      closeFile(worker, waiterPid, waiterFd);
+    } finally {
+      worker.unregisterProcess(holderPid);
+      worker.unregisterProcess(waiterPid);
     }
   });
 

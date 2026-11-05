@@ -171,6 +171,10 @@ pub fn offer(text: &[u8]) -> Result<u32, Errno> {
     st.latest_seq = seq;
     st.latest = OfferOutcome::Pending;
     st.pending = Some((seq, text.to_vec()));
+    crate::epoll::notify(
+        crate::epoll::Source::Device(crate::syscalls::VirtualDevice::Clipboard.host_handle()),
+        0x41,
+    );
     Ok(seq)
 }
 

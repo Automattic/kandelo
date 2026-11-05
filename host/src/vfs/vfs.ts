@@ -746,7 +746,7 @@ export class VirtualPlatformIO implements PlatformIO {
    */
   readdir(
     handle: number,
-  ): { name: string; type: number; ino: number } | null {
+  ): { name: string; type: number; ino: number | bigint } | null {
     const info = this.getDirHandle(handle);
     if (info.iterator === null) {
       info.iterator = info.backend.opendir(info.path);

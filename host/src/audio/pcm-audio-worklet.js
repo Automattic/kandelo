@@ -18,7 +18,7 @@ function loadU32(words, index) {
 }
 
 function readU64(words, seqIndex, loIndex, hiIndex) {
-  for (;;) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     const before = loadU32(words, seqIndex);
     if (before & 1) continue;
     const lo = loadU32(words, loIndex);
@@ -28,6 +28,7 @@ function readU64(words, seqIndex, loIndex, hiIndex) {
       return (BigInt(hi) << 32n) | BigInt(lo);
     }
   }
+  return null;
 }
 
 function writeU64(words, seqIndex, loIndex, hiIndex, value) {
@@ -47,25 +48,50 @@ export class KandeloPcmProcessor extends WorkletBase {
     this.flags = config.flags;
     this.outputRate =
       config.outputSampleRate ?? globalThis.sampleRate ?? 48_000;
-    this.words = new Int32Array(
-      config.buffer,
-      config.controlOffset,
-      config.controlBytes / 4,
-    );
-    this.ring = new Uint8Array(
-      config.buffer,
-      config.dataOffset,
-      config.dataBytes,
-    );
+    this.words = null;
+    this.ring = null;
+    this.connection = null;
+    this.closed = false;
+    if (config.buffer) this.attachTransport(config);
     this.generation = -1;
     this.sourcePhase = 0;
     this.lastError = "";
+    this.port.onmessage = event => {
+      if (event.data?.type === "detach") {
+        this.closed = true;
+        this.words = null;
+        this.ring = null;
+        if (this.connection) {
+          this.connection.onmessage = null;
+          this.connection.close();
+          this.connection = null;
+        }
+        this.port.postMessage({ type: "detached" });
+      } else if (event.data?.type === "attach") {
+        if (this.closed || this.connection !== null) {
+          event.data.port.close();
+          return;
+        }
+        this.connection = event.data.port;
+        this.connection.onmessage = message => {
+          if (!this.closed) this.attachTransport(message.data);
+        };
+        this.connection.postMessage({ type: "attach" });
+      }
+    };
+  }
+
+  attachTransport(config) {
+    this.words = new Int32Array(config.buffer, config.controlOffset, config.controlBytes / 4);
+    this.ring = new Uint8Array(config.buffer, config.dataOffset, config.dataBytes);
   }
 
   process(_inputs, outputs) {
     const output = outputs[0] ?? [];
     const outputFrames = output[0]?.length ?? 0;
     for (const channel of output) channel.fill(0);
+    if (this.closed) return false;
+    if (!this.words || !this.ring) return true;
     if (outputFrames === 0) return true;
 
     const l = this.layout;
@@ -132,6 +158,7 @@ export class KandeloPcmProcessor extends WorkletBase {
       l.consumerHi,
     );
     const discard = readU64(this.words, l.discardSeq, l.discardLo, l.discardHi);
+    if (producer === null || consumer === null || discard === null) return true;
     if (discard > consumer) consumer = discard > producer ? producer : discard;
     const initialConsumer = consumer;
     this.activeCapacityBytes = activeCapacityBytes;

@@ -1,5 +1,22 @@
 # Package management (Wasm packages)
 
+## Executable build identity
+
+An executable's `kandelo.build.key` records its original producer for build
+diagnostics. Userspace packages may re-export an already-built executable;
+publication preserves that executable's stamp rather than requiring it to
+match the wrapper package's cache key. This identity is not a signature or
+a filesystem integrity check. Userspace cache admission does not enforce
+embedded build-key ownership.
+
+Publication still rejects an existing incompatible `kandelo.abi.contract`;
+it never relabels a binary to make it compatible. Package cache receipts,
+content hashes, dependency selection, and filesystem/journal checks remain
+in effect. Kernel build-key freshness checking remains enabled so tests
+cannot silently run a kernel from an older source tree.
+
+## Overview
+
 How we declare, build, cache, and publish the artifacts the project
 produces — static libraries (zlib, ncurses, openssl, libcurl,
 libxml2, libpng, sqlite, libcxx, …), ported programs (vim, git, php, …),
@@ -68,18 +85,35 @@ programs, we need:
 
 ## Local DAG build
 
-From the repository root, build all seven local VFS products and their
-transitive package dependencies with:
+Default builds select the packages consumed by both hosts. Browser imports
+and image dependency declarations are joined with the Node runner's literal
+`optionalBinary` declarations in `examples/run-example.ts`. Each alternative
+is selected because the runner resolves every declared path at startup; a
+local-file fallback declared with `snapshotOptionalBinaryWithFallback` stays
+a developer fixture rather than becoming a package demand. The supply check
+also verifies those package members are published in the authoritative
+projection. Artifact admission rules remain the same for both hosts.
+
+From the repository root, build what the supported products demand with:
 
 ```bash
-./run.sh local-build
+./run.sh local-build         # what the VFS products and the browser app need
+./run.sh local-build --all   # every package the supported set declares
 ```
 
-The wrapper uses an active direnv/Nix development shell when available and
-enters the repository dev shell only when necessary. It selects every active
-product, uses 16 concurrent jobs, stores verified sources below
-`$HOME/.cache/kandelo/source-only`, and publishes the validated projection to
-`local-binaries/source-only-v1`.
+By default the build selects the closure of every active product in
+`packages/sets/local-supported.toml`, plus the packages that own the browser
+app's own `@binaries` imports (the `demanded` selection). Packages that only
+tests use, such as wasm64 libraries and the libevent and MariaDB test
+programs, are left out. `--all` builds every declared package; `./run.sh
+test` does that itself before running suites, and a direct Vitest or
+conformance run needs `./run.sh local-build --all` (or `./run.sh setup
+--all`) first. A default build after an `--all` build keeps the extra
+packages published while they are still current.
+
+The wrapper enters the repository dev shell, uses 16 concurrent jobs, stores
+verified sources below `$HOME/.cache/kandelo/source-only`, and publishes the
+validated projection to `local-binaries/source-only-v1`.
 
 Before planning, the engine (every `local-build run` and `xtask bootstrap`,
 so `./run.sh setup` too) checks the repository's root `node_modules/`
@@ -89,6 +123,27 @@ package builds (rootfs, shell, coreutils-docs, and others) execute
 `node_modules/tsx` from the checkout but must not install it themselves, so
 the caller provisions the locked tree. A tree that already matches, such as
 one CI installed, is left untouched.
+
+`./run.sh setup` builds this same graph. `./run.sh local-build` runs `xtask
+bootstrap packages`, the SDK prerequisites and the same engine step setup's
+`xtask bootstrap` runs, and both take their selection from one function
+(`supported_tree_products`), so setup publishes every node local-build would
+for the same checkout; `--all` works the same way for both. Neither notices a
+later checkout change: after switching branches or pulling, the published
+projection still reflects the tree it was built from, so run `./run.sh
+local-build` (or `./run.sh local-build --plan` to see what is stale) again.
+
+A supported-tree build also checks the binaries its consumers name
+(`scripts/check-browser-binary-supply.ts`). Right after planning, before any
+node builds, every binary the browser app imports must be an output of a
+package the supported set builds; what images need is their products'
+dependency closure, which the planner already enforces. After publication,
+each browser import, the kernel, rootfs and image-writer artifacts the
+browser loads through virtual modules, and every lazy body each active
+product's published image references must be a regular file of the
+declared size in `local-binaries/source-only-v1`. Either failure ends the
+run, naming the path and what needs it. Narrower selections and custom
+output roots skip both checks.
 
 The default output ends with a concise node, cache, build, and product
 summary. Pass `--json` to print the canonical machine-readable result instead:
@@ -266,11 +321,25 @@ package outputs. All three privileged commands are installed as root-owned
 effect. The image-owned experimental terminal declaration starts
 `login -p -f maker` once and then uses `login -p` after logout.
 
-The shell and new login packages are pending publication while this change is
-under review. Their `commit = "UNPUBLISHED"` placeholders must be stamped with
-the truthful producer commit before release. Changes to the base image, shell
-composition, or terminal declaration rebuild the reverse-dependent image
-closure:
+The browser shell embeds Bash because the default login immediately runs it.
+Optional eSpeak voice data and desktop assets are verified lazy ZIP archives
+at `/usr/share/espeak-ng-data` and `/usr/share/kandelo`; ordinary file reads
+fetch the complete archive on first use and inflate members as needed. The
+rootfs's `/usr/share/misc/magic` is a standalone lazy file, fetched when
+`file` loads its database. The browser's ordinary and grouped deployments and
+the Node resolver map these image-owned references to the same package bytes.
+The shell also defers both CA bundle paths to the verified
+`ca-certificates.zip` data package. They remain separate guest files:
+replacing the browser session's `/etc/ssl/certs/ca-certificates.crt`
+does not change `/etc/ssl/cert.pem`. The base rootfs still embeds its
+trust roots. Terminal definitions and libinput device quirks remain
+eager.
+
+The shell, CA data, and new login packages are pending publication while
+this change is under review. Their `commit = "UNPUBLISHED"` placeholders
+must be stamped with the truthful producer commit before release.
+Changes to the base image, shell composition, or terminal declaration
+rebuild the reverse-dependent image closure:
 
 - `rootfs` revision 11;
 - `shell` revision 29;
@@ -341,11 +410,14 @@ What each producer step does to keep its bytes a function of its inputs:
   second (`dynamic_members.revalidate`), which the file-cache loader never
   reads. The PHP recipe (`packages/registry/php/build-php.sh`, "Upstream
   reproducibility defect") clears those fields and the header's padding in
-  the serialized copy, so the prewarm is reproducible in both validation
-  modes. `host/test/opcache-prewarm.test.ts` ("writes byte-identical cache
+  the serialized copy and zeroes the file-cache persistence arena (matching
+  upstream's shared-memory path), so allocator padding cannot leak into
+  cache files. It also clears the unused user-function argument-default field
+  in the serialized copy; actual defaults remain in their bytecode. The
+  prewarm is reproducible in both validation modes. `host/test/opcache-prewarm.test.ts` ("writes byte-identical cache
   files when run again later") runs the prewarm twice, more than a second
   apart, and requires identical `.bin` files; it fails against the unpatched
-  `opcache.so`. Opcache also records each source file's mtime, and a runtime
+  OPcache implementation (built into PHP since 8.5). OPcache also records each source file's mtime, and a runtime
   with `opcache.validate_timestamps=1` (`nginx-php-vfs`) unlinks any entry
   whose recorded mtime differs from the shipped file's; "writes entries a
   timestamp-validating runtime accepts" in the same file covers that.
@@ -582,6 +654,8 @@ files = ["share/runtime-data.bin"]                   # other runtime data
 
 - `archive` requires a nonzero 64-character lowercase SHA-256 and a supported
   archive suffix. Query strings and fragments do not affect suffix detection.
+  Executable PHP archives (`.phar`) are staged intact as `source.phar` so
+  PHP can verify their signatures at runtime; member exclusions are unsupported.
 - `repository` requires the all-zero SHA sentinel. Its source-only identity is
   the declared `build.toml.inputs` closure from the current repository, not a
   Git branch, `HEAD`, or `build.toml.commit`.
@@ -723,6 +797,12 @@ requires regular non-symlink runtime files after fresh builds and cache
 hits. It mirrors them at
 `{local-,}binaries/programs/<arch>/<package>/<artifact>` independently of the
 number of `[[outputs]]` entries.
+
+Optional [package session procedures](package-sessions.md) use this same
+runtime-file contract. Packages declare offer setup forms, participant join
+forms, and launch arguments; images install their manifests for runtime
+discovery even when the executables remain lazy. They are package capabilities
+and do not require adding demo profiles.
 
 Build scripts install declared artifacts through
 `scripts/install-local-binary.sh`. When
@@ -1195,8 +1275,11 @@ unsupported-platform error rather than using a weaker pathname-based digest.
 Program packages that use fork instrumentation also hash the
 fork-instrument host tool inputs (`crates/fork-instrument`, the
 target-unfiltered non-dev Cargo dependency closure selected from the
-workspace lockfile, and the wrapper/build scripts). The dependency closure is
-the union across build-host target predicates: package cache paths do not have
+workspace lockfile, and the wrapper/build scripts). The instrumenter depends
+only on `crates/program-abi` for program-visible constants and types;
+`crates/shared` re-exports those declarations for existing Rust consumers.
+Kernel-host-only edits to shared therefore do not re-key instrumented
+programs. The dependency closure is the union across build-host target predicates: package cache paths do not have
 a build-host dimension, so filtering through the current macOS or Linux host
 would give identical source trees different identities. Programs that declare
 `fork_instrumentation = "disabled"` do not hash that tooling.
@@ -1226,6 +1309,12 @@ cargo xtask build-deps path    zlib   # → ~/.cache/kandelo/libs/zlib-1.3.1-rev
 cargo xtask build-deps parse   zlib   # → normalized dump of package.toml
 cargo xtask build-deps resolve zlib   # → build-if-needed, then print the path
 ```
+
+`sha` and `path` use the active resolution policy. With
+`WASM_POSIX_RESOLUTION_POLICY=source-only-v1`, they report the source-only
+key and compiled-cache location used by `resolve`, rather than the default
+binary cache. Both are read-only: `path` can name an artifact that has not
+been built yet and does not create cache directories.
 
 ## Resolution order
 
@@ -1320,6 +1409,73 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_<KEY>_SRC_DIR`       | SourceOnlyV1 direct source dependencies only: a fresh sealed per-consumer extraction below the same resolver-owned source-input root, disjoint from recipe work and output. `<KEY>` is exactly `K_` followed by the uppercase hexadecimal encoding of the package name's UTF-8 bytes (`foo-bar` → `K_666F6F2D626172`). Default source-kind dependencies retain the legacy uppercased-name spelling. |
 | `WASM_POSIX_BUILD_GIT_<NAME>_DIR`    | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name.                                                                                                                                                                                           |
 | `WASM_POSIX_BUILD_GIT_<NAME>_COMMIT` | Exact declared commit corresponding to that checkout.                                                                                                                                                                                                                                                                                            |
+
+`local-build` passes its current executable as `WASM_POSIX_XTASK_BIN` to
+recipes. Output and runtime-file metadata queries reuse that source-built driver rather
+than compiling another xtask inside every recipe's private Cargo roots.
+Standalone callers still prepare xtask through Cargo and use its reported
+artifact path.
+
+The resolver also supplies `WASM_POSIX_INSTALL_OUTPUT_METADATA`, a JSON array
+of Rust-selected program output declarations for this exact package. Sealed
+`install_local_binary` calls use it without Cargo, verify the package name and
+refuse ambiguous output lookup or a conflicting explicit fork policy. Ordinary
+mirrored installs query the manifest instead of trusting ambient metadata.
+Recipes must not manufacture this metadata or pass another package's array.
+
+When selected direct dependencies declare originals, the resolver supplies
+`WASM_POSIX_DEP_ORIGINAL_INPUTS`: a readonly, version-1 JSON file in the private
+recipe work directory. Its kind is `kandelo-dependency-original-inputs`; it
+binds the consumer package and each original to the selected executable,
+architecture, cache key, native paths, permissions, lengths and SHA-256 hashes.
+The parent applies ordinary cache admission and verifies original content
+before issuing it, including wasm32 fallback for wasm64 consumers. It removes
+inherited values and leaves the variable absent when no dependency needs it.
+Readers limit metadata to 4 MiB and 4096 records, refuse unknown fields and
+duplicate identities, and recheck actual files with bounded stable reads.
+This build-time handoff avoids nested index generation inside sealed image
+recipes; it is not guest execution or package-upgrade authority.
+
+The optional producer-side `[[outputs]].original_wasm` declaration associates
+a raw original with an output without changing executable layout. When used,
+the resolver supplies `WASM_POSIX_BUILD_ORIGINAL_STORE` below the private work
+root so transformation can retain the exact input before recipes overwrite it.
+Inspection modes do not touch that store. The installer verifies and copies the
+original before publishing its output; canonical admission checks content and
+receipt binding. Neither environment variable is a runtime execution authority.
+SourceOnly publication and its index/aggregate receipts now carry immutable
+companion generations below the reserved
+`programs/<arch>/.originals/<package>/<cache-key>/` namespace. Originals are
+associated data, not executable/runtime members that change scalar layout.
+Companions become durable before executable activation and are never replaced
+with different content at the same generation path. The `less` recipe is the
+first SourceOnly producer to enable retention. Shell image builders resolve
+the exact associated original from the selected package, validate its binding
+in Rust and register a read-only digest-bound lazy file rather than embedding
+its body. An existing lazy executable from an explicitly selected dependency
+does not suppress original registration. Programs provided only by the base
+image remain base-owned rather than becoming undeclared direct dependencies.
+The actual package and image save/reload path are validated; full products have
+not yet been rebuilt for this change. Cache-backed Default mirrors also publish
+immutable originals before executable links, retaining scalar/package layouts
+and revalidating originals before each executable mutation. Default asset
+collection binds original paths to the same selected executable generation;
+missing executables cannot bypass that binding through literal-path fallback.
+The rootfs manifest generator also consumes these dependency bindings, either
+through the inherited variable or explicit `--original-inputs` argument
+(`ROOTFS_ORIGINAL_INPUTS` for `build-rootfs.sh`). Both eager and lazy programs
+retain readonly lazy originals; unrelated data files remain ordinary data.
+Standalone selected SourceOnly trees consult their recorded declarations even
+if a program's original reference was stripped. An opaque resolved-output map
+without local prepared bytes cannot be combined with original bindings yet.
+Generated references must round-trip through the image-owned lazy grammar;
+unsupported original names are refused before registration, including literal
+percent escapes that would otherwise name a different file after decoding.
+Manual direct-local sessions, runtime-side module originals and automatic
+execution remain unfinished. Direct-local sessions require their own complete
+original staging rather than borrowing a cache-backed generation's originals.
+See [original-program retention](persistent-program-compatibility.md#original-program-retention-prototype)
+for the current integration boundary and unfinished runtime work.
 
 Scripts that accept the optional sealed-build roots should source
 `scripts/package-build-roots.sh`. Explicit source, work, and output roots must
@@ -1501,21 +1657,20 @@ place.
 ### Toolchain on PATH
 
 The SDK CLI tools (`wasm{32,64}posix-{cc,c++,ar,ranlib,nm,strip,
-pkg-config,configure}`) live as wrapper symlinks under `sdk/bin/`,
-all pointing at `sdk/bin/_wasm-posix-dispatch`. Every build script
-sources `sdk/activate.sh` near the top, which prepends
-`<worktree>/sdk/bin/` to `PATH`. This makes the toolchain
-worktree-local: a build in worktree A always uses worktree A's SDK
-source, even if worktree B has run `npm link`.
+pkg-config,configure}`) are small wrapper scripts under `sdk/bin/`.
+Each names the tool it is and runs this worktree's SDK driver
+(`crates/kandelo-cc`, built on first use into
+`sdk/.build/bin/kandelo-cc` and rebuilt when its sources change; see
+`sdk/src/kandelo-cc.sh`). Every build script sources `sdk/activate.sh`
+near the top, which prepends `<worktree>/sdk/bin/` to `PATH`, and the
+local-build engine prepends it for every recipe. This makes the
+toolchain worktree-local: a build in worktree A always uses worktree
+A's SDK, even if worktree B has run `npm link`.
 
-Older docs reference `cd sdk && npm link` as a prerequisite. It
-still works (the wrappers and the npm-link-installed binaries
-coexist — the dispatcher exports `WASM_POSIX_INVOKED_AS` so
-`detectArch()` can read it, and falls back to `argv[1]` when the
-env var is absent). `npm link` is now optional, and intentionally
-discouraged for multi-worktree development because the global
-symlink it creates routes every shell to a single worktree's
-source.
+`cd sdk && npm link` also works (the wrappers follow the global
+symlink back to their checkout), but it is optional, and discouraged
+for multi-worktree development because the global symlink routes
+every shell to a single worktree's SDK.
 
 ### Sysroot libraries are not packages
 
@@ -1559,6 +1714,66 @@ A package that depends on those libraries should:
    `scripts/build-musl.sh`, `scripts/build-dri-stubs.sh`,
    `scripts/build-gles-stubs.sh`) to `build.toml.inputs` so cache keys move
    when the sysroot implementation changes.
+
+### Building inside Kandelo
+
+A cross-compiled build that compiles helper programs and runs them during the
+build runs them on the build machine, so what they generate describes the
+build machine rather than the wasm32 target. NetHack's `makedefs` named the
+maintainer's OS in the game's banner and wrote 8-byte `long` fields that the
+32-bit game reads as 4 bytes. A recipe can instead run its whole build, helpers
+included, inside a Kandelo machine through the guest toolchain, as
+`packages/registry/nethack` now does:
+
+```bash
+source "$REPO_ROOT/scripts/guest-build.sh"
+WS="$WASM_POSIX_DEP_WORK_DIR/ws"
+cp -R "$SRC" "$WS"
+kandelo_guest_build --workspace "$WS" \
+    --input /deps/ncurses="$WASM_POSIX_DEP_NCURSES_DIR" \
+    --env CC=cc \
+    -- /bin/sh -c 'make -j2'
+install -m 0755 "$WS/prog.wasm" "$WASM_POSIX_DEP_OUT_DIR/prog.wasm"
+```
+
+The contract:
+
+- `package.toml` lists `kernel@0.1.0` and `kandelo-build-image@0.1.0` in
+  `depends_on`. The machine boots exactly those artifacts. The build image is
+  the canonical rootfs with every tool resident, plus `kandelo-sdk.zip`
+  expanded under `/usr` (`cc`, `c++`, `wasm32posix-ar`, `wasm32posix-ranlib`
+  and the LLVM tools). It is never served to browsers.
+- `build.toml` `inputs` lists `scripts/guest-build.sh`,
+  `scripts/guest-build.ts`, `host/src/node-guest-build.ts` and the host runtime
+  it imports, and `cargo:runtime-core`, as `coreutils-docs` does: the kernel and
+  host runtime are part of the output's identity.
+- The workspace is mounted read-write at `/build` and must be a copy under
+  `WASM_POSIX_DEP_WORK_DIR`, never the checkout. `--input` mounts are
+  read-only. Neither may sit under a path the in-kernel tmpfs owns (`/tmp`,
+  `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`); the
+  runner refuses them.
+- The command runs as root with an exact environment: `PATH=/usr/bin:/bin`,
+  `HOME=/build/.home`, `TMPDIR=/build/.tmp`, `LC_ALL=C`, `TZ=UTC0`,
+  `SOURCE_DATE_EPOCH`, and any `--env` additions. `--env` cannot replace those.
+- Files the guest creates reach the host as mode `0600`; the guest's `chmod`
+  is not persisted to the host. Set output modes on the host while installing.
+  A program the build links can still be run in the same command, because the
+  guest sees its own modes for the session.
+- The machine uses the real clock. The image-build deterministic clock
+  restarts at the epoch for every process, which would let a later step write
+  an output older than its input and break `make`. Reproducibility comes from
+  `SOURCE_DATE_EPOCH`; prove it by building twice.
+- The command fails the build with its own exit status, or 124 after its
+  timeout (one hour unless `--timeout-ms` says otherwise). Output streams to
+  stderr and to `$WASM_POSIX_DEP_WORK_DIR/guest-build.log`.
+- The in-guest compiler runs the build machine's compile, link and
+  `wasm-opt` jobs, but it does not yet fork-instrument or stamp the ABI
+  digest (see [the SDK guide](sdk-guide.md#compile-inside-the-base-shell)).
+  A program built this way that calls `fork()` cannot run until it is
+  instrumented on the build machine.
+
+This is a Node host facility. The browser host has no host-directory mount
+backend, and package builds do not run in browsers.
 
 ## Migrating a consumer to the cache
 
@@ -1715,10 +1930,15 @@ extracts in-place into
 `<cache_root>/sources/pcre2-source-10.44-rev1-<sha>/`. No
 `<arch>` segment because source trees are arch-agnostic.
 
-The MariaDB manifest (`packages/registry/mariadb/package.toml`):
+The MariaDB package (`packages/registry/mariadb/package.toml`) ships `mariadbd.wasm`, the upstream interactive client
+`mariadb.wasm` (with its bundled GPLv2-compatible line editor), and the
+`mysqltest.wasm` test runner. The shell exposes the interactive client as `mariadb` and `mysql`;
+the test runner remains available in MariaDB test images. The recipe builds
+target terminfo privately from the declared `ncurses-source` dependency on both
+architectures; it does not substitute libc or a host library for curses.
 
 ```toml
-depends_on = ["pcre2-source@10.44"]
+depends_on = ["pcre2-source@10.44", "ncurses-source@6.5", "libcxx@21.1.7"]
 ```
 
 The MariaDB build script (`packages/registry/mariadb/build-mariadb.sh`,
@@ -1813,24 +2033,32 @@ Real issues encountered during D.1–D.5 and how to avoid them.
 
 ### 5. Optimization-level workarounds
 
-A few cross-compiles trip LLVM 21 wasm32 codegen bugs at higher
-`-O` levels. The migration pattern doesn't change this — these
-are pre-existing issues that surface independent of the cache —
-but consumers must keep the per-file workaround in place when
-porting their build script:
+A few cross-compiles use a lower `-O` level for specific files
+because of a suspected LLVM 21 wasm32 codegen bug at higher levels.
+None of these has a standalone reduction yet, so the compiler bug
+is unverified; the per-file rules stay until one exists or the
+fault is found elsewhere. The migration pattern doesn't change
+this — these are pre-existing issues that surface independent of
+the cache — but consumers must keep the per-file workaround in
+place when porting their build script:
 
 - **Erlang `erl_unicode.c`** — compiled at `-O1` (rest of OTP
-  builds at `-O2`). At `-O2`, LLVM miscompiles aggregate
-  initialization of structs that hold shadow-stack pointers,
+  builds at `-O2`). At `-O2`, aggregate initialization of structs
+  that hold shadow-stack pointers appears to be miscompiled,
   breaking ESTACK iodata traversal. Adding `fprintf` inside the
-  function changes code layout enough to mask the bug, hence the
-  Heisenbug character. See `packages/registry/erlang/build-erlang.sh`
-  comments.
-- **Redis `tls.c`** — at `-O1` and above, LLVM 21.1.8 crashes
-  inside `llvm::AsmPrinter::emitGlobalVariable`. Currently the
-  file is stubbed out to dodge the issue; re-enabling TLS for
-  the Redis build would require a per-target Makefile rule that
-  compiles just `tls.c` at `-O0`.
+  function changes code layout enough to mask the failure, hence
+  the Heisenbug character. Suspected, not verified: see the
+  registry entry
+  [`LLVM-WASM32-O2-ERLANG-MISCOMPILE`](../tests/runtime-workarounds/LLVM-WASM32-O2-ERLANG-MISCOMPILE/entry.md)
+  and the `packages/registry/erlang/build-erlang.sh` comments.
+- **Redis `tls.c`** — the build notes record LLVM 21.1.8 crashing
+  inside `llvm::AsmPrinter::emitGlobalVariable` at `-O1` and above.
+  That crash claim is unverified and has no registry entry: the
+  Redis build has TLS turned off, and stubbing `tls.c` out is a
+  configuration choice that follows from that, not a workaround
+  tied to a measured compiler defect. Re-enabling TLS would first
+  need the crash reproduced; if it holds, a per-target Makefile
+  rule could compile just `tls.c` at `-O0`.
 
 The general pattern: identify the offending file, give it a
 per-target rule in the consumer's Makefile (or invoke `clang`
@@ -2096,7 +2324,7 @@ Rejected at parse time (the parser surfaces a clear error):
 
 When `[build].script_path` is absent, the resolver fetches `source.url`,
 verifies `source.sha256`, and extracts in-place. Format detection
-is by URL extension: `.tar.gz` / `.tgz`, `.tar.xz` / `.txz`,
+is by URL extension: `.tar.gz` / `.tgz` / `.crate`, `.tar.xz` / `.txz`,
 `.tar.bz2` / `.tbz2` / `.tbz`, `.tar.zst` / `.tzst`, `.zip`, and
 plain `.tar`. Unrecognized extensions fail loudly rather than
 guessing.

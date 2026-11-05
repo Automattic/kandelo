@@ -18,6 +18,59 @@ import {
   validateKandeloDemoConfig,
 } from "../src/demo-config";
 import { readKandeloDemoConfigFromVfs } from "../src/demo-config-vfs";
+import { parseComputerServices, parseComputerServiceStatus, previewServiceNotice, runningServiceShortcuts } from "../src/computer-services";
+
+describe("computer services and shortcuts", () => {
+  it("annotates stopped local services without treating remote, unknown or replacement services as stopped", () => {
+    const service = { id: "site", title: "Site", port: 8080, state: "stopped" as const, enabled: false };
+    const target = { hostname: "localhost", port: 8080 };
+    expect(previewServiceNotice([service], target)).toBe("Service stopped · Last loaded page");
+    expect(previewServiceNotice([{ ...service, state: "failed" }], target)).toBe("Service failed · Last loaded page");
+    for (const hostname of ["peer-2", "10.89.0.2", "host"]) expect(previewServiceNotice([service], { ...target, hostname })).toBeNull();
+    expect(previewServiceNotice([service], { ...target, port: 3000 })).toBeNull();
+    expect(previewServiceNotice([], target)).toBeNull();
+    for (const state of ["running", "starting", "stopping", "unknown"] as const) {
+      expect(previewServiceNotice([service, { ...service, id: "other", state }], target)).toBeNull();
+    }
+    expect(previewServiceNotice([{ ...service, state: "not-loaded" }], target)).toBeNull();
+  });
+  const declaration = { version: 1, services: [{ id: "web-php", title: "PHP", port: 8080, shortcuts: {
+    title: "PHP shortcuts", groups: [{ title: "Commands", actions: [{ id: "curl", label: "Fetch page", kind: "terminal.run", payload: "curl localhost:8080" }] }],
+  } }] };
+  it("uses supervisor state, not boot enablement, to expose shortcuts", () => {
+    const services = parseComputerServices(JSON.stringify(declaration));
+    const stopped = parseComputerServiceStatus("KANDELO_SERVICES\t1\nweb-php\tstopped\tenabled\n", services);
+    expect(stopped[0]).toMatchObject({ state: "stopped", enabled: true });
+    expect(runningServiceShortcuts(stopped)).toEqual([]);
+    const running = parseComputerServiceStatus("KANDELO_SERVICES\t1\nweb-php\trunning\tdisabled\n", services);
+    expect(runningServiceShortcuts(running)).toHaveLength(1);
+    expect(running[0].enabled).toBe(false);
+  });
+  it("hides shortcuts for failed, transitional and empty services", () => {
+    const services = parseComputerServices(JSON.stringify(declaration));
+    for (const state of ["starting", "stopping", "failed", "skipped", "not-loaded", "unknown"]) {
+      expect(runningServiceShortcuts(parseComputerServiceStatus(`KANDELO_SERVICES\t1\nweb-php\t${state}\tdisabled\n`, services))).toEqual([]);
+    }
+    expect(runningServiceShortcuts([{ id: "empty", title: "Empty", port: 8080, state: "running", enabled: false, shortcuts: { title: "Empty", groups: [] } }])).toEqual([]);
+  });
+  it("refuses unsupported, duplicate, oversized or unsafe declarations", () => {
+    for (const value of [
+      { ...declaration, version: 2 }, { ...declaration, requiredFutureFeature: true },
+      { ...declaration, services: [declaration.services[0], declaration.services[0]] },
+      { ...declaration, services: [{ ...declaration.services[0], id: "../outside" }] },
+      { ...declaration, services: [{ ...declaration.services[0], port: 0 }] },
+      { ...declaration, services: [{ ...declaration.services[0], surprise: true }] },
+      { ...declaration, services: [{ ...declaration.services[0], shortcuts: { title: "Broken", groups: [{ title: "Actions", actions: [{ kind: "host.execute" }] }] } }] },
+    ]) expect(() => parseComputerServices(JSON.stringify(value))).toThrow();
+    expect(() => parseComputerServices(" ".repeat(65537))).toThrow();
+  });
+  it("refuses incomplete or unrecognized supervisor reports instead of inventing state", () => {
+    const services = parseComputerServices(JSON.stringify(declaration));
+    for (const report of ["", "KANDELO_SERVICES\t2\n", "KANDELO_SERVICES\t1\n", "KANDELO_SERVICES\t1\nweb-php\tmaybe\tenabled\n", "KANDELO_SERVICES\t1\nother\trunning\tdisabled\n", "KANDELO_SERVICES\t1\nweb-php\trunning\tmaybe\n", "KANDELO_SERVICES\t1\nweb-php\trunning\tenabled\nweb-php\tstopped\tdisabled\n"]) {
+      expect(() => parseComputerServiceStatus(report, services)).toThrow();
+    }
+  });
+});
 import {
   experimentalTerminalSessionPolicy,
   parseExperimentalTerminalSession,
@@ -28,6 +81,7 @@ import {
   SHELL_DERIVED_VFS_MIN_FREE_INODES,
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
   assertVfsImageFitsProfile,
+  assertVfsImageCapacityMetadata,
 } from "../src/vfs-capacity";
 import {
   decodeBootDescriptor,
@@ -241,6 +295,42 @@ function makeVfs(
 
 // ── LiveKernelHost ─────────────────────────────────────────────────────
 
+describe("LiveKernelHost: mounted filesystem configuration", () => {
+  it("reports the mounted OPFS base instead of presenting the download URL as its storage", async () => {
+    const host = new LiveKernelHost({ descriptor: DUMMY_DESCRIPTOR, status: "running" });
+    const configuration = { storage: "opfs" as const, directory: "kandelo/computers/actual/filesystem", baseFile: "generation-7.base", baseGeneration: 7 };
+    host.setFilesystemConfiguration(configuration);
+    configuration.directory = "mutated";
+    expect((await host.getMounts())[0]).toMatchObject({
+      source: "opfs:kandelo/computers/actual/filesystem/generation-7.base", target: "/", fs: "kandelo-vfs", opts: "ro,relatime,journaled",
+    });
+    const snapshot = host.getFilesystemConfiguration()!;
+    snapshot.directory = "mutated again";
+    expect(host.getFilesystemConfiguration()?.directory).toBe("kandelo/computers/actual/filesystem");
+    expect((await host.getMounts())[1]).toMatchObject({ target: "/tmp", fs: "tmpfs", opts: "rw,ephemeral,tmpfs" });
+  });
+
+  it("does not reuse a previous machine's storage details across reboot, replacement or errors", async () => {
+    const host = new LiveKernelHost({ descriptor: DUMMY_DESCRIPTOR, status: "running" });
+    expect(host.getFilesystemConfiguration()).toBeNull();
+    host.setFilesystemConfiguration({ storage: "opfs", directory: "old" });
+    host.setStatus("booting");
+    expect(host.getFilesystemConfiguration()).toBeNull();
+    expect((await host.getMounts())[0].source).toBe("image:rootfs@abc123");
+    host.setFilesystemConfiguration({ storage: "opfs", directory: "another" });
+    host.attachKernel({});
+    expect(host.getFilesystemConfiguration()).toBeNull();
+    host.setFilesystemConfiguration({ storage: "memory" });
+    host.setStatus("error");
+    expect(host.getFilesystemConfiguration()).toBeNull();
+  });
+
+  it("labels the configured kernel reference honestly instead of calling it an image hash", async () => {
+    const host = new LiveKernelHost({ descriptor: DUMMY_DESCRIPTOR });
+    expect(await host.getKernelState()).toEqual([{ k: "kandelo.kernel", v: DUMMY_DESCRIPTOR.runtime.kernel }]);
+  });
+});
+
 describe("LiveKernelHost: status", () => {
   it("returns the initial status from the constructor option", () => {
     const host = new LiveKernelHost({ status: "running" });
@@ -434,6 +524,73 @@ describe("LiveKernelHost: owned jobs", () => {
     ).rejects.toThrow("cannot own a command family");
     await expect(host.readOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
     await expect(host.releaseOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
+  });
+});
+
+describe("LiveKernelHost: bounded metadata reads", () => {
+  it("uses positioned reads and refuses oversized files without a whole-file allocation", async () => {
+    const readFileFromVfs = vi.fn();
+    const readFileRangeFromVfs = vi.fn(async () => new Uint8Array(65537));
+    const host = new LiveKernelHost({ kernel: { readFileFromVfs, readFileRangeFromVfs } as unknown as KernelLike });
+    await expect(host.readVfsFile("/etc/catalog", 65536)).rejects.toThrow("exceeds 65536 bytes");
+    expect(readFileRangeFromVfs).toHaveBeenCalledWith("/etc/catalog", 0, 65537);
+    expect(readFileFromVfs).not.toHaveBeenCalled();
+  });
+  it("preserves missing and empty files and rejects invalid or unavailable bounds", async () => {
+    const readFileRangeFromVfs = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(new Uint8Array(0));
+    const host = new LiveKernelHost({ kernel: { readFileRangeFromVfs } as unknown as KernelLike });
+    expect(await host.readVfsFile("/missing", 65536)).toBeNull();
+    expect(await host.readVfsFile("/empty", 0)).toEqual(new Uint8Array(0));
+    for (const limit of [-1, 0.5, Number.MAX_SAFE_INTEGER, Infinity]) await expect(host.readVfsFile("/invalid", limit)).rejects.toThrow("Invalid bounded");
+    host.attachKernel({});
+    await expect(host.readVfsFile("/catalog", 65536)).rejects.toThrow("cannot bound");
+  });
+});
+
+describe("LiveKernelHost: bound owned job scopes", () => {
+  function kernelOwner() {
+    let token = { closed: false };
+    const kernel = {
+      getOwnedJobLifetime: () => token,
+      spawnFromVfs: vi.fn(async () => ({ pid: 1, exit: Promise.resolve(0) })),
+      readOwnedJob: vi.fn(async () => ({ expired: true as const, oldest: 0, next: 0 })),
+      releaseOwnedJob: vi.fn(async () => {}),
+    };
+    return { kernel, retire: () => { token.closed = true; }, replace: () => { token = { closed: false }; } };
+  }
+  it("never redirects an old command into a replacement computer", async () => {
+    const first = kernelOwner();
+    const second = kernelOwner();
+    const host = new LiveKernelHost({ kernel: first.kernel as unknown as KernelLike });
+    const scope = host.captureOwnedJobs();
+    host.attachKernel(second.kernel as unknown as KernelLike);
+    await scope.read("old-command", 0, 1, true);
+    await scope.release("old-command");
+    expect(first.kernel.readOwnedJob).toHaveBeenCalledWith("old-command", 0, 1, true);
+    expect(first.kernel.releaseOwnedJob).toHaveBeenCalledWith("old-command");
+    expect(second.kernel.readOwnedJob).not.toHaveBeenCalled();
+    expect(second.kernel.releaseOwnedJob).not.toHaveBeenCalled();
+  });
+  it("rejects a reused host namespace without falsely declaring its old owner closed", async () => {
+    const owner = kernelOwner();
+    const host = new LiveKernelHost({ kernel: owner.kernel as unknown as KernelLike });
+    const scope = host.captureOwnedJobs();
+    owner.replace();
+    expect(scope.closed()).toBe(false);
+    await expect(scope.read("old-command", 0, 1, true)).rejects.toThrow("OWNED_JOB_OWNER_CHANGED");
+    await expect(scope.release("old-command")).rejects.toThrow("OWNED_JOB_OWNER_CHANGED");
+    expect(owner.kernel.readOwnedJob).not.toHaveBeenCalled();
+  });
+  it("observes retirement of the exact captured owner", async () => {
+    const owner = kernelOwner();
+    const host = new LiveKernelHost({ kernel: owner.kernel as unknown as KernelLike });
+    const scope = host.captureOwnedJobs();
+    owner.retire();
+    expect(scope.closed()).toBe(true);
+    await expect(scope.start("old-command", "/bin/sh", [], {})).rejects.toThrow("OWNED_JOB_OWNER_CLOSED");
+    await expect(scope.read("old-command", 0, 1)).rejects.toThrow("OWNED_JOB_OWNER_CLOSED");
+    await expect(scope.release("old-command")).rejects.toThrow("OWNED_JOB_OWNER_CLOSED");
+    expect(owner.kernel.spawnFromVfs).not.toHaveBeenCalled();
   });
 });
 
@@ -1021,6 +1178,121 @@ describe("LiveKernelHost: machine PCM lifecycle", () => {
 });
 
 describe("LiveKernelHost: shell command queue", () => {
+  it("dispatches an activity to a fresh terminal without waiting on or typing into the occupied terminal", async () => {
+    let nextPid = 100;
+    const output = new Map<number, (bytes: Uint8Array) => void>();
+    const writes: [number, string][] = [];
+    const encoder = new TextEncoder();
+    const host = new LiveKernelHost({ kernel: {
+      spawnFromVfs: async () => ({ pid: nextPid++, exit: new Promise<number>(() => {}) }),
+      onPtyOutput(pid: number, callback: (bytes: Uint8Array) => void) {
+        output.set(pid, callback); callback(encoder.encode("kandelo$ "));
+      },
+      ptyResize() {},
+      ptyWrite(pid: number, bytes: Uint8Array) { writes.push([pid, new TextDecoder().decode(bytes)]); },
+    } as any });
+    host.setDefaultShell({ programPath: "/bin/bash", argv: ["bash", "-i"], env: ["PS1=kandelo$ "] });
+    await host.dispatchShellCommand("existing-activity");
+    await host.dispatchShellCommand("new-activity", { path: "/dev/pts/1" });
+    expect(writes).toEqual([[100, "existing-activity\n"], [101, "new-activity\n"]]);
+    for (const callback of output.values()) callback(encoder.encode("kandelo$ "));
+  });
+
+  it("waits for a current prompt after replaying a busy terminal's history", async () => {
+    vi.useFakeTimers();
+    try {
+      const encoder = new TextEncoder();
+      let onOutput!: (data: Uint8Array) => void;
+      const write = vi.fn();
+      const host = new LiveKernelHost({
+        kernel: {
+          spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
+          onPtyOutput(_pid: number, callback: typeof onOutput) {
+            onOutput = callback;
+            callback(encoder.encode("kandelo$ "));
+          },
+          ptyResize() {},
+          ptyWrite: write,
+        } as any,
+      });
+      host.setDefaultShell({
+        programPath: "/bin/bash", argv: ["bash", "-i"], env: ["PS1=kandelo$ "],
+      });
+      await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+      onOutput(encoder.encode("old-display\r\nProgram running\r\n"));
+
+      const beforeWrite = vi.fn();
+      const command = host.dispatchShellCommand("replacement", { beforeWrite });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(beforeWrite).not.toHaveBeenCalled();
+      expect(write).not.toHaveBeenCalled();
+
+      onOutput(encoder.encode("kandelo$ "));
+      await command;
+      expect(beforeWrite).toHaveBeenCalledOnce();
+      expect(write).toHaveBeenCalledOnce();
+      onOutput(encoder.encode("replacement complete\r\nkandelo$ "));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("attaches replacement output after the old prompt and awaits it before writing", async () => {
+    const encoder = new TextEncoder();
+    let onOutput!: (data: Uint8Array) => void;
+    const writes: string[] = [];
+    const host = new LiveKernelHost({
+      kernel: {
+        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
+        onPtyOutput(_pid: number, callback: typeof onOutput) {
+          onOutput = callback;
+          callback(encoder.encode("kandelo$ "));
+        },
+        ptyResize() {},
+        ptyWrite(_pid: number, bytes: Uint8Array) {
+          writes.push(new TextDecoder().decode(bytes));
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash", argv: ["bash", "-i"], env: ["PS1=kandelo$ "],
+    });
+    await host.dispatchShellCommand("old-display");
+
+    const output: string[] = [];
+    let stopFollowing!: () => void;
+    let attached!: () => void;
+    const followerAttached = new Promise<void>((resolve) => { attached = resolve; });
+    let allowWrite!: () => void;
+    const writeAllowed = new Promise<void>((resolve) => { allowWrite = resolve; });
+    const beforeWrite = vi.fn(async () => {
+      stopFollowing = await followShellOutput(host, (text) => output.push(text));
+      attached();
+      await writeAllowed;
+    });
+    const replacement = host.dispatchShellCommand("replacement", { beforeWrite });
+    expect(beforeWrite).not.toHaveBeenCalled();
+    onOutput(encoder.encode("\r\nkandelo$ "));
+    await followerAttached;
+    expect(output).toEqual([]);
+    expect(writes).toEqual(["old-display\n"]);
+    allowWrite();
+    await replacement;
+    expect(writes).toEqual(["old-display\n", "replacement\n"]);
+    onOutput(encoder.encode("replacement: Preparing\r\n"));
+    expect(output).toEqual(["replacement: Preparing\r\n"]);
+    stopFollowing();
+    onOutput(encoder.encode("kandelo$ "));
+
+    await expect(host.dispatchShellCommand("must-not-run", {
+      beforeWrite: () => { throw new Error("follower failed"); },
+    })).rejects.toThrow("follower failed");
+    expect(writes).toEqual(["old-display\n", "replacement\n"]);
+    await host.dispatchShellCommand("next-command");
+    expect(writes.at(-1)).toBe("next-command\n");
+    onOutput(encoder.encode("\r\nkandelo$ "));
+  });
+
   it("uses the worker-returned pid for a transferred shell binary", async () => {
     const outputPids: number[] = [];
     const writePids: number[] = [];
@@ -2712,6 +2984,23 @@ describe("experimental terminal session image configuration", () => {
 });
 
 describe("Kandelo VFS consumer capacity contract", () => {
+  it("distinguishes container overhead from the filesystem ceiling", () => {
+    const capacity = { byteLength: 286740, maxByteLength: 286720 };
+    expect(() => assertVfsImageCapacityMetadata(capacity, 286720, "full.vfs")).not.toThrow();
+    expect(() => assertVfsImageFitsProfile(capacity, 512 * 1024, 286720, "full.vfs")).not.toThrow();
+    expect(() => assertVfsImageFitsProfile(capacity, 286720, 286720, "full.vfs"))
+      .toThrow("decoded image bytes");
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid container and filesystem sizes %s independently", (size) => {
+      expect(() => assertVfsImageCapacityMetadata({ byteLength: size, maxByteLength: 4096 }, undefined, "bad.vfs"))
+        .toThrow("invalid filesystem capacity");
+      expect(() => assertVfsImageCapacityMetadata({ byteLength: 4096, maxByteLength: size }, undefined, "bad.vfs"))
+        .toThrow("invalid filesystem capacity");
+    },
+  );
+
   it("gives shell-derived products independent runtime capacity", () => {
     expect(MAIN_SHELL_VFS_PROFILE_MAX_BYTES).toBe(512 * 1024 * 1024);
     expect(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES).toBe(768 * 1024 * 1024);
@@ -2805,6 +3094,122 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     }
   };
 
+  it("exposes framebuffer and KMS owners without a graphics boot profile and clears old machine ownership", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernel = makeKmsKernel();
+      host.attachKernel({ ...kernel, framebuffers: { list: () => [{ pid: 12 }], onChange: () => () => {} } } as any);
+      const handle = host.attachKmsDisplay(makeCanvas())!;
+      expect(kernel.kmsAttachCanvas.mock.calls[0][3].mode).toBe("webgl2-scanout");
+      Atomics.store(handle.stats, 8, 34);
+      expect(host.getDisplayOwners()).toEqual([12, 34]);
+      host.detachKernel();
+      expect(host.getDisplayOwners()).toEqual([]);
+      host.attachKernel(makeKmsKernel() as any);
+      expect(host.getDisplayOwners()).toEqual([]);
+    });
+  });
+
+  it.each([1, 2, 3])("uses the same bitmap grid at browser density %s", (density) => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      host.setPresentation({ ...host.getPresentation(), displayScale: 1.5 });
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      FakeResizeObserver.instances[0].cb([{
+        devicePixelContentBoxSize: [{ inlineSize: 1440 * density, blockSize: 810 * density }],
+        contentRect: { width: 1440, height: 810 },
+      }]);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenCalledWith(1, 960, 540, mmFor(960, 540));
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 960, height: 540 });
+    });
+  });
+
+  it("uses the actual bounded mode for virtual DPI and ignores hidden panes", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      host.setPresentation({ ...host.getPresentation(), displayScale: 1.5 });
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      const ro = FakeResizeObserver.instances[0];
+      fireResize(ro, 500, 320);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenLastCalledWith(1, 640, 480, mmFor(640, 480));
+      fireResize(ro, 0, 0);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenCalledTimes(1);
+      fireResize(ro, 1439, 809);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenLastCalledWith(1, 958, 538, mmFor(958, 538));
+    });
+  });
+
+  it.each([1, 2, 3])("remeasures an activity's bitmap grid at density %s and restores the image scale", async density => {
+    let sized: Promise<{ width: number; height: number } | undefined> | undefined;
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      const canvas = makeCanvas();
+      host.attachKmsDisplay(canvas);
+      const ro = FakeResizeObserver.instances[0];
+      const report = () => ro.cb([{ devicePixelContentBoxSize: [{ inlineSize: 1440 * density, blockSize: 810 * density }], contentRect: { width: 1440, height: 810 } }]);
+      report();
+      expect(host.getKmsDisplaySize()).toEqual({ width: 1440 * density, height: 810 * density });
+      host.setKmsDisplayScale(1.5);
+      expect(host.getKmsDisplaySize()).toBeUndefined();
+      sized = host.whenKmsDisplaySized(1, 1000);
+      report();
+      expect(host.getKmsDisplaySize()).toEqual({ width: 960, height: 540 });
+      expect(kernel.kmsSetDisplaySize).toHaveBeenLastCalledWith(1, 960, 540, mmFor(960, 540));
+      host.setPresentation({ ...host.getPresentation(), displayScale: 2 });
+      host.setKmsDisplayScale(null);
+      report();
+      expect(host.getKmsDisplaySize()).toEqual({ width: 720, height: 480 });
+    });
+    expect(await sized).toEqual({ width: 960, height: 540 });
+  });
+
+  it("does not revive a closed display or carry a launch scale into another kernel", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      host.attachKernel(makeKmsKernel() as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      const canvas = makeCanvas(), handle = host.attachKmsDisplay(canvas)!;
+      const old = FakeResizeObserver.instances[0];
+      handle.close();
+      host.setKmsDisplayScale(1.5);
+      expect(old.observing).toBe(false);
+      expect(host.attachKmsDisplay(canvas)).toBe(handle);
+      fireResize(old, 1440, 810);
+      expect(host.getKmsDisplaySize()).toEqual({ width: 960, height: 540 });
+      host.detachKernel();
+      expect(old.observing).toBe(false);
+      host.attachKernel(makeKmsKernel() as any);
+      host.attachKmsDisplay(makeCanvas());
+      fireResize(FakeResizeObserver.instances[1], 1440, 810);
+      expect(host.getKmsDisplaySize()).toEqual({ width: 1440, height: 810 });
+      for (const scale of [0, 0.49, 4.01, NaN, Infinity]) expect(() => host.setKmsDisplayScale(scale)).toThrow();
+    });
+  });
+
+  it("keeps native device resolution for a compositor without displayScale", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      FakeResizeObserver.instances[0].cb([{
+        devicePixelContentBoxSize: [{ inlineSize: 2880, blockSize: 1620 }],
+        contentRect: { width: 1440, height: 810 },
+      }]);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenCalledWith(1, 2880, 1620, mmFor(1440, 810));
+    });
+  });
+
   it("detachKernel clears the reported sizes and the stale observer stops feeding them", () => {
     withFakeResizeObserver(() => {
       const host = new LiveKernelHost();
@@ -2897,6 +3302,74 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     });
   });
 
+  it("a pointer snapshot releases old buttons before pressing new ones", () => {
+    withFakeResizeObserver(() => {
+      const injectInputEvent = vi.fn();
+      const host = new LiveKernelHost();
+      host.attachKernel({ ...makeKmsKernel(), injectInputEvent } as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      const handle = host.attachKmsDisplay(makeCanvas())!;
+      Atomics.store(handle.stats, 2, 960);
+      Atomics.store(handle.stats, 3, 540);
+      handle.sendPointerAbs(100, 100, 2);
+      injectInputEvent.mockClear();
+      handle.sendPointerAbs(120, 100, 1);
+      expect(injectInputEvent.mock.calls.filter(call => call[1] === 1))
+        .toEqual([[1, 1, 0x111, 0], [1, 1, 0x110, 1]]);
+    });
+  });
+
+  it("ignores pointer input before scanout and confines it to valid pixels afterwards", () => {
+    withFakeResizeObserver(() => {
+      const injectInputEvent = vi.fn();
+      const host = new LiveKernelHost();
+      host.attachKernel({ ...makeKmsKernel(), injectInputEvent } as any);
+      const handle = host.attachKmsDisplay(makeCanvas())!;
+      // A real browser can enter the canvas during layout, before the
+      // guest's first frame. Guessed dimensions must not reach evdev.
+      handle.sendPointerAbs(1060, 633, 1);
+      expect(injectInputEvent).not.toHaveBeenCalled();
+      Atomics.store(handle.stats, 2, 960);
+      Atomics.store(handle.stats, 3, 540);
+      handle.sendPointerAbs(1060, 633, 1);
+      expect(injectInputEvent.mock.calls).toEqual([
+        [1, 3, 0, 65535], [1, 3, 1, 65535], [1, 0, 0, 0],
+        [1, 1, 0x110, 1], [1, 0, 0, 0],
+      ]);
+      injectInputEvent.mockClear();
+      handle.sendPointerAbs(-10, -2, 0);
+      expect(injectInputEvent.mock.calls).toEqual([
+        [1, 3, 0, 0], [1, 3, 1, 0], [1, 0, 0, 0],
+        [1, 1, 0x110, 0], [1, 0, 0, 0],
+      ]);
+      injectInputEvent.mockClear();
+      handle.sendPointerAbs(NaN, Infinity, 1);
+      expect(injectInputEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  it("encodes changed scanout sizes for clients with cached absolute-device bounds", () => {
+    withFakeResizeObserver(() => {
+      const injectInputEvent = vi.fn();
+      const host = new LiveKernelHost();
+      host.attachKernel({ ...makeKmsKernel(), injectInputEvent } as any);
+      const handle = host.attachKmsDisplay(makeCanvas())!;
+      for (const [width, height] of [[960, 540], [800, 600], [1280, 720], [3840, 2160]]) {
+        Atomics.store(handle.stats, 2, width);
+        Atomics.store(handle.stats, 3, height);
+        for (const [x, y] of [[0, 0], [width - 1, height - 1], [123, 234]]) {
+          injectInputEvent.mockClear();
+          handle.sendPointerAbs(x, y, 0);
+          const axes = injectInputEvent.mock.calls.filter(call => call[1] === 3);
+          // Use the consumer's integer-division conversion, retaining the
+          // same absinfo maxima before and after every mode change.
+          expect(axes.map((call, i) => Math.floor(call[3] * ([width, height][i] - 1) / 65535)))
+            .toEqual([x, y]);
+        }
+      }
+    });
+  });
+
   it("kmsDisplayCanvas keeps one canvas per CRTC for the kernel's lifetime", () => {
     // A program's WebGL context is bound to the canvas it was created on,
     // so a remounted pane must get the SAME element back — and the same
@@ -2929,11 +3402,13 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
         const handle = host.attachKmsDisplay(canvas, 1)!;
         handle.close(); // pane unmount
 
-        // Remount: same element, same handle, one transfer.
+        const cursor = host.kmsCursorCanvas(1);
+        // Remount: each plane transfers once, with the same handle.
         expect(host.kmsDisplayCanvas(1, { width: 640, height: 480 })).toBe(canvas);
         expect(canvas.width).toBe(1920); // size applies only at creation
         expect(host.attachKmsDisplay(canvas, 1)).toBe(handle);
-        expect(transfers).toBe(1);
+        expect(transfers).toBe(2);
+        expect(host.kmsCursorCanvas(1)).toBe(cursor);
         expect(kernelA.kmsAttachCanvas).toHaveBeenCalledTimes(1);
 
         // Each CRTC has its own canvas.
@@ -2944,6 +3419,7 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
         host.detachKernel();
         host.attachKernel(makeKmsKernel() as any);
         expect(host.kmsDisplayCanvas(1, size)).not.toBe(canvas);
+        expect(host.kmsCursorCanvas(1)).not.toBe(cursor);
       });
     } finally {
       (globalThis as { document?: unknown }).document = realDocument;
@@ -2966,4 +3442,40 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
       vi.useRealTimers();
     }
   });
+});
+
+it("owns a fresh PTY through its normal configured account and does not adopt another terminal", async () => {
+  const spawnFromVfs = vi.fn(async () => ({ pid: 100, exit: new Promise<number>(() => {}) }));
+  const host = new LiveKernelHost({ kernel: {
+    spawnFromVfs, readOwnedJob() {}, releaseOwnedJob() {}, onPtyOutput() {}, ptyResize() {}, ptyWrite() {},
+  } as any });
+  host.setDefaultShell({ programPath: "/bin/bash", argv: ["bash", "-i"], env: ["HOME=/home/maker"], uid: 1000, gid: 1000 });
+  const handle = await host.attachPty("/dev/pts/4", undefined, { id: "activity-one", timeoutMs: 0 });
+  expect(spawnFromVfs).toHaveBeenCalledWith("/bin/bash", ["bash", "-i"], expect.objectContaining({
+    pty: true, ownedJob: { id: "activity-one", timeoutMs: 0 }, uid: 1000, gid: 1000, env: ["HOME=/home/maker"],
+  }));
+  handle.close();
+  await host.attachPty("/dev/pts/4");
+  expect(spawnFromVfs).toHaveBeenCalledTimes(1);
+  await expect(host.attachPty("/dev/pts/4", undefined, { id: "another", timeoutMs: 0 })).rejects.toThrow("fresh PTY");
+});
+
+it("an owned terminal's root exit cannot restart a login outside its family", async () => {
+  vi.useFakeTimers();
+  try {
+    let finish!: (code: number) => void;
+    const exit = new Promise<number>(resolve => { finish = resolve; });
+    const spawnFromVfs = vi.fn(async () => ({ pid: 100, exit }));
+    const host = new LiveKernelHost({ kernel: {
+      spawnFromVfs, readOwnedJob() {}, releaseOwnedJob() {}, onPtyOutput() {}, ptyResize() {}, ptyWrite() {},
+    } as any });
+    const login = { programPath: "/usr/bin/login", argv: ["login", "-p", "-f", "maker"], uid: 0, gid: 0 };
+    host.setTerminalSessionPolicy({ initial: login, afterExit: login, shortRunThresholdMs: 2000, initialRestartDelayMs: 250, maximumRestartDelayMs: 5000 });
+    await host.attachPty("/dev/pts/4", undefined, { id: "activity-one", timeoutMs: 0 });
+    finish(0); await exit;
+    await vi.advanceTimersByTimeAsync(5000);
+    await host.attachPty("/dev/pts/4");
+    expect(spawnFromVfs).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { vi.useRealTimers(); }
 });

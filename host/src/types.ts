@@ -19,6 +19,8 @@ export interface KernelConfig {
    * see `runtime-memory-profile.ts`.
    */
   kernelMaxPages?: number;
+  rootfsMetadataBytes?: number;
+  maxVfsFileReadBytes?: number;
   /**
    * Deterministic image-build mode, for kernels an image builder boots while
    * building a VFS image: `CLOCK_REALTIME` counts up from `epochSeconds` and
@@ -242,7 +244,7 @@ export interface PlatformIO {
    */
   readdir(
     handle: number,
-  ): { name: string; type: number; ino: number } | null;
+  ): { name: string; type: number; ino: number | bigint } | null;
 
   // File operations
   ftruncate(handle: number, length: number): void;
@@ -252,9 +254,6 @@ export interface PlatformIO {
 
   // Time
   clockGettime(clockId: number): { sec: number; nsec: number };
-
-  // Process (optional — only needed when process management is available)
-  waitpid?(pid: number, options: number): { pid: number; status: number };
 
   // Networking (optional — only needed for AF_INET support)
   network?: NetworkIO;
@@ -278,6 +277,7 @@ export interface TcpConnectionPeer {
    * here and nothing else.
    */
   readiness?(): number;
+  readinessGeneration?(direction: number): bigint;
   /** Disable one or both directions without resetting the connection. */
   shutdown(how: number): void;
   /** Orderly close: flush/FIN the write half and orphan the receive half. */
@@ -299,13 +299,28 @@ export interface UdpDatagram {
 }
 
 export interface UdpReceiveTarget {
+  /** Kernel-owned receive domain. The kernel validates bind conflicts and
+   * demultiplexes multicast to all matching sockets in this domain. A fabric
+   * delivers each group packet only once per domain, even with reused ports. */
+  readonly kernelReceiver?: string;
   receive(datagram: UdpDatagram): number;
 }
 
 export interface NetworkIO {
   /** IPv4 address owned by this guest network stack, when known. */
   readonly localAddress?: Uint8Array;
-  connect(handle: number, addr: Uint8Array, port: number): void;
+  /** True when this binding belongs to a virtual link. The runtime must not
+   * also open the same port in the physical host's TCP namespace. */
+  ownsTcpListener?(addr: Uint8Array): boolean;
+  /**
+   * Netmask of the link `localAddress` is on, in network byte order. A
+   * stack that reports an address must report its netmask: the kernel
+   * derives the interface's flags and broadcast address from the pair.
+   */
+  readonly localNetmask?: Uint8Array;
+  /** Select a real routed UDP source; positive errno when no route exists. */
+  udpSourceAddress?(destination: Uint8Array): Uint8Array | number;
+  connect(handle: number, addr: Uint8Array, port: number, source?: NetworkAddress): void;
   /** 0 = connected, positive errno = failed, -11 = still pending (EAGAIN). */
   connectStatus(handle: number): number;
   send(handle: number, data: Uint8Array, flags: number): number;
@@ -324,6 +339,12 @@ export interface NetworkIO {
    * wake-every-round with `EAGAIN` from `recv`/`send`.
    */
   readiness?(handle: number): number;
+  /** Monotonic notification counter: 0 receive, 1 send. -1 means unavailable. */
+  readinessGeneration?(handle: number, direction: number): bigint;
+  /** Actual local endpoint of a connected stream, when the host exposes it. */
+  localEndpoint?(handle: number): NetworkAddress;
+  /** Disable stream directions while preserving the connection handle. */
+  shutdown?(handle: number, how: number): void;
   close(handle: number): void;
   getaddrinfo(hostname: string): Uint8Array; // Returns 4-byte IPv4
   listenTcp?(listenerId: string, addr: Uint8Array, port: number, target: TcpListenTarget): number;

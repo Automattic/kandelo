@@ -8,7 +8,7 @@
 //!   computed expected key so a stale mirror fails loud, independent of the
 //!   ABI version.
 //! * `kandelo.abi.contract` — the ABI-contract digest
-//!   (`hash(abi/snapshot.json + ABI_VERSION)`) the artifact was built against.
+//!   (`ABI_VERSION` plus the snapshot's program surface) the artifact was built against.
 //!   The host compares a guest's stamp against the running kernel's own
 //!   `kandelo.abi.contract` stamp at exec, so a structural ABI change can't let
 //!   a stale guest run against a mismatched kernel even when the ABI version
@@ -80,6 +80,22 @@ pub(crate) fn read_build_key(wasm: &[u8]) -> Result<Option<[u8; 32]>, String> {
 
 pub(crate) fn stamp_build_key(wasm: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
     stamp_named_section(wasm, BUILD_KEY_SECTION, key)
+}
+
+pub(crate) fn stamp_program_output(
+    wasm: &[u8],
+    build_key: &[u8; 32],
+    abi_contract: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    let stamped = match read_build_key(wasm)? {
+        Some(_) => wasm.to_vec(),
+        None => stamp_build_key(wasm, build_key)?,
+    };
+    match read_named_section(&stamped, ABI_CONTRACT_SECTION)? {
+        Some(existing) if existing == *abi_contract => Ok(stamped),
+        Some(_) => Err("program output carries an incompatible kandelo.abi.contract; rebuild its producer".to_string()),
+        None => stamp_named_section(&stamped, ABI_CONTRACT_SECTION, abi_contract),
+    }
 }
 
 fn write_uleb128(out: &mut Vec<u8>, mut value: u64) {
@@ -163,5 +179,21 @@ mod tests {
         assert!(err.contains("already"), "{err}");
         // But a different name is still accepted.
         assert!(stamp_build_key(&once, &[1u8; 32]).is_ok());
+    }
+
+    #[test]
+    fn publication_preserves_reexported_program_bytes() {
+        let producer = stamp_program_output(&empty_module(), &[1; 32], &[3; 32]).unwrap();
+        let alias = stamp_program_output(&producer, &[2; 32], &[3; 32]).unwrap();
+        assert_eq!(alias, producer);
+        assert_eq!(read_build_key(&alias).unwrap(), Some([1; 32]));
+    }
+
+    #[test]
+    fn publication_refuses_incompatible_reexported_program() {
+        let producer = stamp_program_output(&empty_module(), &[1; 32], &[3; 32]).unwrap();
+        let error = stamp_program_output(&producer, &[2; 32], &[4; 32]).unwrap_err();
+        assert!(error.contains("incompatible kandelo.abi.contract"), "{error}");
+        assert_eq!(read_named_section(&producer, ABI_CONTRACT_SECTION).unwrap(), Some([3; 32]));
     }
 }

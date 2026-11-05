@@ -166,14 +166,14 @@ describe("kernel entry-context static audit", () => {
           _label: string,
           _operation: (entry: KernelWorkerEntryContext) => void,
         ): void {}
-        #invokeSharedMmapHostOperation<T>(
+        #invokeSerializedHostOperation<T>(
           _entry: KernelWorkerEntryContext | undefined,
           operation: () => T,
         ): T {
           return operation();
         }
         #read(entry: KernelWorkerEntryContext): number {
-          return this.#invokeSharedMmapHostOperation(
+          return this.#invokeSerializedHostOperation(
             entry,
             () => this.io.read(),
           );
@@ -197,7 +197,7 @@ describe("kernel entry-context static audit", () => {
           _label: string,
           _operation: (entry: KernelWorkerEntryContext) => void,
         ): void {}
-        #invokeSharedMmapHostOperation<T>(
+        #invokeSerializedHostOperation<T>(
           _entry: KernelWorkerEntryContext | undefined,
           operation: () => T,
         ): T {
@@ -209,18 +209,18 @@ describe("kernel entry-context static audit", () => {
         }
         #bad(entry: KernelWorkerEntryContext): void {
           this.io.read();
-          this.#invokeSharedMmapHostOperation(
+          this.#invokeSerializedHostOperation(
             undefined,
             async () => this.io.read(),
           );
-          this.#invokeSharedMmapHostOperation(entry, () => {
+          this.#invokeSerializedHostOperation(entry, () => {
             void entry.instance;
             return this.io.read();
           });
-          this.#invokeSharedMmapHostOperation(entry, () => {
+          this.#invokeSerializedHostOperation(entry, () => {
             this.#workerHelper();
           });
-          this.#invokeSharedMmapHostOperation(entry, this.#hostCallback);
+          this.#invokeSerializedHostOperation(entry, this.#hostCallback);
         }
         dispatch(): void {
           this.#runOrDeferKernelEntry("bad", (entry) => {
@@ -661,7 +661,7 @@ describe("kernel entry-context static audit", () => {
           _label: string,
           _operation: (entry: KernelWorkerEntryContext) => void,
         ): void {}
-        #runOrDeferPendingSpawnCompletionKernelEntry(
+        #runOrDeferPendingChildCompletionKernelEntry(
           _childPid: number,
           _label: string,
           _operation: (entry: KernelWorkerEntryContext) => void,
@@ -783,7 +783,7 @@ describe("kernel entry-context static audit", () => {
         void this.#continuePromise(
           this.callbacks.launch(),
           (_result) => {
-            this.#runOrDeferPendingSpawnCompletionKernelEntry(
+            this.#runOrDeferPendingChildCompletionKernelEntry(
               42,
               "finish detached spawn",
               (innerEntry) => this.#finish(innerEntry),
@@ -801,7 +801,7 @@ describe("kernel entry-context static audit", () => {
           this.#finish(innerEntry);
         };
         void this.#continuePromise(this.callbacks.launch(), (_result) => {
-          this.#runOrDeferPendingSpawnCompletionKernelEntry(
+          this.#runOrDeferPendingChildCompletionKernelEntry(
             42,
             "finish detached spawn",
             finish,

@@ -4,6 +4,14 @@ local screen = "menu"
 local selected = 1
 local games = {}
 local active = nil
+local sounds = {}
+local muted = false
+
+local function playSound(name)
+  -- The audio backend retains a playing clone until its samples finish.
+  local source = sounds[name]:clone()
+  source:play()
+end
 
 -- Keep the playfield stable while a desktop compositor resizes its tile.
 -- Drawing and pointer coordinates must use the same letterboxed transform.
@@ -70,6 +78,7 @@ end
 local function goMenu()
   love.window.setTitle("LÖVE Game Gallery")
   screen = "menu"
+  love.audio.stop()
   active = nil
   love.mouse.setVisible(true)
 end
@@ -79,12 +88,13 @@ local function startGame(i)
   active = games[i]
   love.window.setTitle(active.title)
   active.reset()
+  playSound("score")
   screen = "game"
   love.mouse.setVisible(false)
 end
 
 local function drawHeader(title, hint)
-  text(fonts.small, "ESC returns to the gallery", 28, 18, palette.dim)
+  text(fonts.small, "ESC returns to the gallery | M toggles sound", 28, 18, palette.dim)
   text(fonts.title, title, 28, 46, palette.ink)
   text(fonts.body, hint, 32, 100, palette.dim)
 end
@@ -107,19 +117,21 @@ function pong.update(dt)
   pong.ai = clamp(pong.ai, 128, H - 128)
   pong.bx = pong.bx + pong.bvx * dt
   pong.by = pong.by + pong.bvy * dt
-  if pong.by < 128 or pong.by > H - 34 then pong.bvy = -pong.bvy end
+  if pong.by < 128 or pong.by > H - 34 then pong.bvy = -pong.bvy; playSound("bounce") end
   if pong.bx < 76 and pong.by > pong.py and pong.by < pong.py + 104 then
+    playSound("bounce")
     pong.bx = 76
     pong.bvx = math.abs(pong.bvx) + 16
     pong.bvy = (pong.by - (pong.py + 52)) * 5
   end
   if pong.bx > W - 76 and pong.by > pong.ai and pong.by < pong.ai + 104 then
+    playSound("bounce")
     pong.bx = W - 76
     pong.bvx = -math.abs(pong.bvx) - 16
     pong.bvy = (pong.by - (pong.ai + 52)) * 5
   end
-  if pong.bx < 0 then pong.as = pong.as + 1; pong.reset(true); pong.bvx = -360 end
-  if pong.bx > W then pong.ps = pong.ps + 1; pong.reset(true) end
+  if pong.bx < 0 then playSound("score"); pong.as = pong.as + 1; pong.reset(true); pong.bvx = -360 end
+  if pong.bx > W then playSound("score"); pong.ps = pong.ps + 1; pong.reset(true) end
 end
 function pong.draw()
   drawHeader("PONG", "W/S or Up/Down move the left paddle.")
@@ -160,10 +172,11 @@ function snake.update(dt)
   local nx, ny = head[1], head[2]
   if snake.dir == "left" then nx = nx - 1 elseif snake.dir == "right" then nx = nx + 1
   elseif snake.dir == "up" then ny = ny - 1 else ny = ny + 1 end
-  if nx < 1 or nx > snake.cols or ny < 1 or ny > snake.rows then snake.dead = true; return end
-  for _, p in ipairs(snake.body) do if p[1] == nx and p[2] == ny then snake.dead = true; return end end
+  if nx < 1 or nx > snake.cols or ny < 1 or ny > snake.rows then snake.dead = true; playSound("crash"); return end
+  for _, p in ipairs(snake.body) do if p[1] == nx and p[2] == ny then snake.dead = true; playSound("crash"); return end end
   table.insert(snake.body, 1, {nx, ny})
   if nx == snake.food[1] and ny == snake.food[2] then
+    playSound("eat")
     snake.score = snake.score + 1
     snakeFood()
   else
@@ -210,20 +223,22 @@ function breakout.update(dt)
   breakout.px = clamp(breakout.px, 52, W - 192)
   breakout.bx = breakout.bx + breakout.bvx * dt
   breakout.by = breakout.by + breakout.bvy * dt
-  if breakout.bx < 42 or breakout.bx > W - 42 then breakout.bvx = -breakout.bvx end
-  if breakout.by < 126 then breakout.bvy = math.abs(breakout.bvy) end
+  if breakout.bx < 42 or breakout.bx > W - 42 then breakout.bvx = -breakout.bvx; playSound("bounce") end
+  if breakout.by < 126 then breakout.bvy = math.abs(breakout.bvy); playSound("bounce") end
   if breakout.by > H - 88 and breakout.by < H - 58 and breakout.bx > breakout.px and breakout.bx < breakout.px + 140 then
+    playSound("bounce")
     breakout.bvy = -math.abs(breakout.bvy)
     breakout.bvx = (breakout.bx - (breakout.px + 70)) * 5
   end
   for _, b in ipairs(breakout.bricks) do
     if b.alive and breakout.bx > b.x and breakout.bx < b.x + 62 and breakout.by > b.y and breakout.by < b.y + 18 then
+      playSound("brick")
       b.alive = false
       breakout.bvy = -breakout.bvy
       break
     end
   end
-  if breakout.by > H + 30 then breakout.reset() end
+  if breakout.by > H + 30 then playSound("crash"); breakout.reset() end
 end
 function breakout.draw()
   drawHeader("BREAKOUT", "Mouse or Left/Right moves the paddle.")
@@ -253,6 +268,7 @@ function ast.update(dt)
   ast.vx, ast.vy = ast.vx * 0.995, ast.vy * 0.995
   ast.cool = ast.cool - dt
   if love.keyboard.isDown("space") and ast.cool <= 0 then
+    playSound("shoot")
     ast.cool = 0.18
     table.insert(ast.bullets, {x = ast.x, y = ast.y, vx = math.cos(ast.a) * 520, vy = math.sin(ast.a) * 520, life = 1.1})
   end
@@ -266,7 +282,7 @@ function ast.update(dt)
     local r = ast.rocks[ri]
     for bi = #ast.bullets, 1, -1 do
       local b = ast.bullets[bi]
-      if dist2(r.x, r.y, b.x, b.y) < r.r * r.r then table.remove(ast.rocks, ri); table.remove(ast.bullets, bi); break end
+      if dist2(r.x, r.y, b.x, b.y) < r.r * r.r then playSound("explode"); table.remove(ast.rocks, ri); table.remove(ast.bullets, bi); break end
     end
   end
   if #ast.rocks == 0 then ast.reset() end
@@ -293,6 +309,10 @@ games = {
 }
 
 function love.load()
+  local soundRoot = love.filesystem.getSource() .. (KANDELO_EXAMPLE and "/../sounds/" or "/sounds/")
+  for _, name in ipairs({"bounce", "score", "eat", "crash", "brick", "shoot", "explode"}) do
+    sounds[name] = love.audio.newSource(soundRoot .. name .. ".wav", "static")
+  end
   W, H = 960, 540
   fonts.title = love.graphics.newFont(36)
   fonts.big = love.graphics.newFont(32)
@@ -339,6 +359,11 @@ function love.draw()
 end
 
 function love.keypressed(k)
+  if k == "m" then
+    muted = not muted
+    love.audio.setVolume(muted and 0 or 1)
+    return
+  end
   if screen == "menu" then
     if k == "down" then selected = selected % #games + 1 end
     if k == "up" then selected = (selected - 2) % #games + 1 end

@@ -9,7 +9,7 @@ import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 import { restoreVerifiedImageForBuild } from "../../lib/kernel-owned-boot";
 import kernelWasmUrl from "@kernel-wasm?url";
 import { finalizeKernelOwnedImage } from "../../lib/kernel-owned-boot";
-import { imageOwnedRuntimeUrlTable } from "../../lib/init/image-owned-runtime-urls";
+import { imageOwnedLazyAssetDirectory } from "../../lib/init/image-owned-runtime-urls";
 
 interface RunPhpScriptRequest {
   testId: string;
@@ -55,7 +55,7 @@ async function createFs(vfsImageBytes: Uint8Array): Promise<KandeloImageFs> {
   });
   // The image's lazy addresses are NOT rewritten: they stay as the image
   // recorded them, and the deployment maps them to the URLs it serves when the
-  // kernel worker fetches (`lazyUrlMap` below).
+  // kernel worker fetches (`lazyAssetDirectory` below).
   return fs;
 }
 
@@ -152,7 +152,7 @@ async function ensureKernel(uid?: number, gid?: number): Promise<BrowserKernel> 
       await nextKernel.initFromImage({
         kernelWasm: kernelBytes,
         vfsImage,
-        lazyUrlMap: imageOwnedRuntimeUrlTable(),
+        lazyAssetDirectory: imageOwnedLazyAssetDirectory(),
       });
     } catch (err) {
       await nextKernel.destroy().catch(() => {});

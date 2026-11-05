@@ -1,5 +1,31 @@
 # Kandelo Agent Guidance
 
+## Execution scope
+
+Kandelo implements a POSIX-compatible operating-system environment
+for WebAssembly, with browser and Node.js hosts.
+
+Interpret runtime terminology in the component being changed.
+Guest processes, guest credentials, guest filesystems, and virtual
+network state are implemented by Kandelo. Distinguish these from
+the embedding host's processes, credentials, filesystem, and network.
+
+For each task, identify whether the affected behavior touches one or
+more of:
+
+- guest/kernel semantics;
+- the browser or Node.js host adapter;
+- a local development or conformance-test fixture; or
+- an external service or deployed system.
+
+Use the implementation and relevant architecture documentation to
+establish that boundary. Name actual host paths and network targets
+when they are involved.
+
+When a concern arises, identify the concrete operation, resource,
+and boundary at issue. Continue independent, permitted work and
+report the specific remaining blocker.
+
 This file is the loaded guidance for agents working in this repository. Treat
 it as a contract router: it names the platform contracts that must be preserved
 and points to the focused guidance and reference docs that carry the full
@@ -84,6 +110,7 @@ changes, package artifacts, or performance claims.
 | Browser demos, VFS images, sharing, users | `docs/agent-guidance/browser-and-user.md` | `docs/browser-support.md` |
 | Performance claims and benchmarks | `docs/agent-guidance/performance.md` | `docs/profiling.md` |
 | Dev shell, docs, PR/final reports | `docs/agent-guidance/build-docs-and-prs.md` | `docs/repository-organization.md`, `README.md` |
+| Optional Spacefast deployment, publication and examples | `docs/agent-guidance/spacefast-deployment.md` | `apps/spacefast-cors-proxy/README.md`, `.agents/skills/deploying-kandelo-to-spacefast/SKILL.md` |
 
 ## Validation Contract
 
@@ -106,11 +133,17 @@ tests where possible and manually verify user-visible browser demo fixes with
 `./run.sh browser`.
 
 Runs under 10 minutes: one foreground Bash call with output to a log file.
-Longer runs: `scripts/agent-job start`, then repeat `scripts/agent-job wait
-<id>` (it blocks on the job's PID up to 9 minutes per call). To wait on
-another workspace's build, find it with `scripts/agent-job list --all` and
-wait on its id (or `wait --peer <text>`), not on its PID. Do not poll with
-`sleep` or `pgrep -f`, never end a headless session's or subagent's turn to
+Longer runs: use `scripts/agent-job start`. Interactive main sessions: run
+`scripts/agent-job wait <id> --timeout 0` once with Bash's
+`run_in_background`, then act on its single completion notification.
+Headless sessions and subagents repeat foreground `scripts/agent-job wait
+<id>` only when the wait-window notice says the job is still running
+(up to 9 minutes per call). `FAILED (exit 124)` is final, not a retry.
+To wait on another workspace's build, find it with
+`scripts/agent-job list --all` and wait on its id (or `wait --peer <text>`),
+not on its PID. After a selector wait times out, retry by its resolved id,
+never by `--peer` again. Do not poll with Monitor/status-file loops,
+`sleep` or `pgrep -f`; never end a headless session's or subagent's turn to
 wait, and do not make subagents wait on whole-tree builds. Why: each poll
 turn re-reads the whole conversation; `pgrep -f` matches the waiting shell
 and never returns; a headless session or subagent stops when its turn ends,
@@ -143,14 +176,26 @@ Process state is authoritative. `fork`, `exec`, `posix_spawn`, `clone`, `exit`,
 `waitpid`, fd tables, OFDs, locks, sockets, PTYs, memory layout, and
 zombie/reaping state must remain coherent across transitions.
 
+A workaround for a defect in an outside runtime or toolchain (a browser
+engine, Node.js, Bun, LLVM, wasm-ld, wasm-opt, Rust) needs a registry entry
+in `tests/runtime-workarounds/` and a `[RUNTIME-WORKAROUND: <ID>]` tag at
+every code site. Blaming a runtime needs a standalone reproduction that
+contains no Kandelo code and judges its own result; until one exists the
+defect is "suspected", and docs, comments and PRs must say so. Agents
+never file, comment on, or vote on upstream trackers unless the entry has
+`reports = "agents-allowed"` with a named channel. See
+`tests/runtime-workarounds/README.md`.
+
 See `docs/agent-guidance/debugging-and-posix.md` before changing syscall,
 process, VFS, memory, device, or root-cause debugging behavior.
 
 ## ABI Contract
 
-Every incompatible ABI change requires an `ABI_VERSION` bump in
-`crates/shared/src/lib.rs` and a regenerated `abi/snapshot.json` in the same
-change. Do not ship incompatible ABI changes under an existing `ABI_VERSION`.
+Every incompatible ABI change requires a version bump and a regenerated
+`abi/snapshot.json` in the same change: `ABI_VERSION` in
+`crates/program-abi/src/lib.rs` for a change programs can observe, or the
+kernel-host version (`HOST_ADAPTER_VERSION`) for a change only the kernel and
+host can see. Do not ship incompatible ABI changes under an existing version.
 
 The ABI includes syscall numbers and marshalling, channel layout, process
 memory layout, host-reserved control regions, `repr(C)` structs, kernel Wasm
@@ -201,6 +246,12 @@ The main thread must never own a VFS `SharedArrayBuffer`. Only
 main-thread VFS buffers accumulate across machine boots until Safari throws
 `Out of memory`. Compose images in a worker and hand the main thread plain,
 transferable bytes.
+
+Persistent browser/audio realms must never receive guest `WebAssembly.Memory`
+or views into its backing storage. Use bounded independent device buffers,
+explicitly retire asynchronous owners, and run `./run.sh test browser-memory`
+for memory/device/lifecycle changes. See the host-runtime and validation
+guides for the ownership contract and native Safari follow-up.
 
 Shared files are cross-host changes by default. Changes to
 `host/src/kernel-worker.ts`, `host/src/worker-main.ts`, VFS behavior,
@@ -313,7 +364,7 @@ wasm, program and test-fixture binaries (`local-binaries/`), rootfs image, or
 package artifacts, and a fresh checkout or `git worktree` inherits none of
 them. When a goal — running a suite, reproducing a failure, validating before
 a merge — needs an artifact that is missing, build it and continue. A missing
-artifact is a `./run.sh setup` / `build-musl.sh` / `build-programs.sh` step
+artifact is a `./run.sh setup --all` / `build-musl.sh` / `build-programs.sh` step
 away (under `scripts/dev-shell.sh`), not a "cannot proceed" boundary and not a
 reason to hand the task back. Distinguish this
 from a genuine platform defect: a missing artifact you can produce is
@@ -365,6 +416,12 @@ authorship before restacking, rebasing, amending, cherry-picking, or squashing;
 keep contributors as authors of derived commits and the restacker as committer.
 Use co-author trailers for materially combined work, and verify attribution
 with `git range-diff` and `git log --format=fuller` before force-pushing.
+
+Credit people, not tools. Commits and PR descriptions never credit an AI
+model, agent, or coding tool: no `Co-authored-by:` trailer for Claude,
+ChatGPT, Codex, or any other assistant, and no "Generated with" line. The
+checked-in `.claude/settings.json` turns off Claude Code's default
+attribution; agents on other clients must leave it out themselves.
 
 Documentation is part of the platform contract. Do not describe aspirational
 behavior as supported behavior, and do not use documentation to create a

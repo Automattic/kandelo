@@ -19,6 +19,7 @@ import type { KernelHost } from "./kernel-host";
 export type DockActionPhase = "stopping" | "starting" | "done";
 
 export interface RunDemoDockActionOptions {
+  terminalPath?: string;
   /**
    * Awaited before the next step, so a caller can attach to the terminal in
    * `starting` and see the command's first line of output.
@@ -26,6 +27,14 @@ export interface RunDemoDockActionOptions {
   onPhase?: (phase: DockActionPhase) => void | Promise<void>;
   /** How long the foreground program has to exit after Ctrl+C. */
   stopTimeoutMs?: number;
+  /**
+   * End the foreground program another way than Ctrl+C. A program that puts
+   * its terminal in raw mode to read the keyboard (fbDOOM does) turns off the
+   * line discipline's signal keys, so Ctrl+C reaches it as a keypress and it
+   * keeps running, as it would on any Unix terminal. A pane that knows which
+   * process owns its display passes a stop that ends that process instead.
+   */
+  stop?: () => Promise<void>;
 }
 
 export async function runDemoDockAction(
@@ -33,21 +42,27 @@ export async function runDemoDockAction(
   action: DemoDockCommandConfig,
   options: RunDemoDockActionOptions = {},
 ): Promise<void> {
-  const { onPhase = () => {}, stopTimeoutMs = 10_000 } = options;
+  const { onPhase = () => {}, stopTimeoutMs = 10_000, stop } = options;
+  if (options.terminalPath !== undefined && options.terminalPath !== "/dev/pts/0" && !stop) {
+    throw new Error("A non-primary activity terminal requires its own stop handler");
+  }
   await onPhase("stopping");
-  await host.interruptShellForeground({ timeoutMs: stopTimeoutMs });
-  await onPhase("starting");
+  if (stop) await stop();
+  else await host.interruptShellForeground({ timeoutMs: stopTimeoutMs });
   // Like the machine's own command, the restart is usually a long-lived
   // foreground program: resolve on the PTY write, not on a later prompt.
-  await host.dispatchShellCommand(action.restart);
+  await host.dispatchShellCommand(action.restart, {
+    ...(options.terminalPath === undefined ? {} : { path: options.terminalPath }),
+    beforeWrite: () => onPhase("starting"),
+  });
   await onPhase("done");
 }
 
 /**
  * What the action's program says it is doing, read from the machine's
- * terminal output. The display is dark between Ctrl+C and the replacement's
- * first frame (for a download that is most of a minute), so the UI shows the
- * program's own words rather than a spinner that knows nothing.
+ * terminal output. Preparation can take a while before the next program
+ * draws. An ownerless display returns to the terminal, where the script's
+ * own output remains visible; a selected stage can show these status lines.
  *
  * The convention is the one Unix tools already use: a program prefixes its
  * status lines with its own name (`scummvm-play: Verifying…`). Only
@@ -99,7 +114,12 @@ export function dockActionProgress(output: string, programName: string): DockAct
  */
 export function shellPromptReturned(output: string): boolean {
   const text = output.replace(ANSI_ESCAPE, "");
-  const lastLine = text.slice(text.lastIndexOf("\n") + 1);
+  const newline = text.lastIndexOf("\n");
+  // A subscriber can attach while the previous prompt is still arriving.
+  // That partial prompt does not prove the newly dispatched command exited.
+  // The command's echoed Enter (or its output) must first complete a line.
+  if (newline < 0) return false;
+  const lastLine = text.slice(newline + 1);
   return !lastLine.includes("\r")
     && /[$#] $/.test(lastLine)
     && !/^[#\s]*$/.test(lastLine);
@@ -113,8 +133,9 @@ export function shellPromptReturned(output: string): boolean {
 export async function followShellOutput(
   host: KernelHost,
   onText: (text: string) => void,
+  terminalPath = "/dev/pts/0",
 ): Promise<() => void> {
-  const pty = await host.attachPty("/dev/pts/0");
+  const pty = await host.attachPty(terminalPath);
   const decoder = new TextDecoder();
   let replayingHistory = true;
   const off = pty.onData((bytes) => {

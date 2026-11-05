@@ -1,0 +1,18 @@
+=== closed b551af43d11a ===
+(
+    {
+        0,
+        2,
+    },
+    {
+        0,
+        2,
+        4,
+    },
+    {
+        ProgramPoint {
+            function: 4,
+            offset: 112,
+        },
+    },
+)

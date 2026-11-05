@@ -282,6 +282,16 @@ test("@slow Kandelo WordPress site editor loads assets through the bridge (no bl
   await expect(frame.locator("iframe").first()).toBeVisible({ timeout: 180_000 });
   await page.waitForTimeout(20_000);
 
+  // Whether the canvas's own scripts escape depends on timing, so also check
+  // the cause directly. WordPress admin sends a CSP (`frame-ancestors`) that
+  // does not govern scripts, so the helper must run in the editor document,
+  // and no editor frame may be left as an uncontrolled `blob:` document.
+  const editor = page.frames().find((f) => f.url().includes("/wp-admin/site-editor.php"));
+  expect(editor, "the site editor document").toBeDefined();
+  expect(await editor!.evaluate(() =>
+    (window as unknown as { __kandeloBlobIframePatched?: boolean }).__kandeloBlobIframePatched === true,
+  )).toBe(true);
+  expect(page.frames().map((f) => f.url()).filter((u) => u.startsWith("blob:"))).toEqual([]);
   expect(badAssets, `escaped/404 asset requests:\n${badAssets.join("\n")}`).toEqual([]);
 });
 

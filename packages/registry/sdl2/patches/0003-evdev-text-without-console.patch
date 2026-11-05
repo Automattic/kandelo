@@ -1,0 +1,69 @@
+Provide US ASCII text input on direct evdev displays without VT keymaps.
+
+The no-console fallback currently emits key events but drops all text. Use
+SDL's existing keymap and modifier state; retain the console-backed translators
+when available. Layout switching, compose and IME remain unavailable here.
+
+--- a/src/core/linux/SDL_evdev_kbd.c
++++ b/src/core/linux/SDL_evdev_kbd.c
+@@ -971,6 +971,13 @@
+ 
+ #elif !defined(SDL_INPUT_FBSDKBIO) /* !SDL_INPUT_LINUXKD */
+ 
++/* Without VT/console keymaps, SDL's default keymap is US ASCII. Keep text
++ * input usable on direct evdev displays with no Linux or FreeBSD console.
++ * This does not provide layout switching, compose sequences or an IME. */
++#include "../../events/SDL_events_c.h"
++#include "../../events/SDL_scancode_tables_c.h"
++#include "SDL_keyboard.h"
++
+ SDL_EVDEV_keyboard_state *SDL_EVDEV_kbd_init(void)
+ {
+     return NULL;
+@@ -990,6 +997,46 @@
+ 
+ void SDL_EVDEV_kbd_keycode(SDL_EVDEV_keyboard_state *state, unsigned int keycode, int down)
+ {
++    SDL_Scancode scan;
++    SDL_Keycode key;
++    SDL_Keymod mods;
++    const char *shifted;
++    char text[2];
++
++    if (!down) {
++        return;
++    }
++    scan = SDL_GetScancodeFromTable(SDL_SCANCODE_TABLE_LINUX, keycode);
++    key = SDL_GetKeyFromScancode(scan);
++    mods = SDL_GetModState();
++    if (mods & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) {
++        return;
++    }
++    if (mods & KMOD_NUM) {
++        if (scan >= SDL_SCANCODE_KP_1 && scan <= SDL_SCANCODE_KP_9) {
++            key = '1' + scan - SDL_SCANCODE_KP_1;
++        } else if (scan == SDL_SCANCODE_KP_0) {
++            key = '0';
++        } else if (scan == SDL_SCANCODE_KP_PERIOD) {
++            key = '.';
++        }
++    }
++    if (key >= 'a' && key <= 'z') {
++        if (!!(mods & KMOD_SHIFT) != !!(mods & KMOD_CAPS)) {
++            key -= 'a' - 'A';
++        }
++    } else if (mods & KMOD_SHIFT) {
++        const char *plain = "`1234567890-=[]\\;',./";
++        shifted = (key > 0 && key < 128) ? SDL_strchr(plain, key) : NULL;
++        if (key > 0 && key < 128 && shifted) {
++            key = "~!@#$%^&*()_+{}|:\"<>?"[shifted - plain];
++        }
++    }
++    if (key >= ' ' && key <= '~') {
++        text[0] = (char)key;
++        text[1] = '\0';
++        SDL_SendKeyboardText(text);
++    }
+ }
+ 
+ void SDL_EVDEV_kbd_quit(SDL_EVDEV_keyboard_state *state)

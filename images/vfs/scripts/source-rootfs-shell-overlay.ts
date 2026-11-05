@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import type { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { populateShellRuntimeLayout } from "./shell-runtime-layout";
+import { installPackageSessionFiles } from "./package-session-files";
+import { imageFileStat, registerResolvedProgramOriginal, type ProgramOriginalImageOptions } from "./program-originals";
 import { symlink } from "../../../host/src/vfs/image-helpers";
 import {
   SHELL_LAZY_BINARY_SPECS,
@@ -11,6 +13,7 @@ import {
 } from "../lib/init/shell-binaries";
 import {
   displacePosixUtilsLiteManApplet,
+  installNethackGames,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
   registerShellProfileScripts,
@@ -27,20 +30,23 @@ export const PACKAGE_ROOTFS_SHELL_COMPOSITION = {
 export function populateSourceRootfsShellOverlay(
   fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
+  options: ProgramOriginalImageOptions = {},
 ): void {
   populateShellRuntimeLayout(fs);
+  installPackageSessionFiles(fs, resolveArtifact);
 
   // WHY: every ncurses/termcap-linked guest program resolves $TERM against
   // /usr/share/terminfo on every run, so the shared database must be present
   // from boot rather than fetched lazily like the archives below.
   populateTerminfoDatabase(fs, resolveArtifact);
 
-  // `getLazyEntry` rather than `isPathDeferred`, because a path that is not
-  // there yet is a legitimate answer HERE -- a fresh rootfs carries none of
-  // these -- and `isPathDeferred` throws so a typo cannot pass as a `no`.
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
-    if (fs.getLazyEntry(spec.vfsPath) === null) {
-      const source = resolveArtifact(spec.resolverPath, shellLazySpecDependency(spec));
+    const dependency = shellLazySpecDependency(spec);
+    const existing = imageFileStat(fs, spec.vfsPath);
+    if (existing !== null && !options.existingProgramDependencies?.has(dependency)) continue;
+    const source = resolveArtifact(spec.resolverPath, dependency);
+    const program = registerResolvedProgramOriginal(fs, spec.resolverPath, dependency, source, spec.vfsPath, options.resolveOriginal);
+    if (existing === null) {
       // Same reason as the shell builder: length alone never distinguished the
       // right bytes from same-length wrong ones, and some of these run setuid.
       fs.registerLazyFile(
@@ -48,7 +54,7 @@ export function populateSourceRootfsShellOverlay(
         shellLazyPlaceholderUrl(spec),
         statSync(source).size,
         shellLazySpecMode(spec),
-        createHash("sha256").update(readFileSync(source)).digest("hex"),
+        createHash("sha256").update(program).digest("hex"),
       );
     }
     for (const alias of spec.symlinks) {
@@ -76,8 +82,10 @@ export function populateSourceRootfsShellOverlay(
       registerDeclaredShellLazyArchive(fs, spec, resolveArtifact);
     }
   }
+  installNethackGames(fs);
 
   for (const [target, alias] of [
+    ["/usr/bin/composer", "/bin/composer"],
     ["/usr/bin/vim", "/bin/vim"],
     ["/usr/bin/vim", "/usr/bin/vi"],
     ["/usr/bin/vim", "/bin/vi"],

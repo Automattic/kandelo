@@ -13,17 +13,18 @@
  *   KERNEL_UID=1000 KERNEL_GID=1000 npx tsx examples/run-example.ts hello
  */
 
-import { closeSync, existsSync, openSync, readFileSync, statSync } from "fs";
+import { closeSync, existsSync, openSync, readFileSync } from "fs";
 import { resolve, dirname, isAbsolute } from "path";
 import { NodeKernelHost, resolveRootfsArtifact } from "../host/src/node-kernel-host";
 import { tryResolveBinaries } from "../host/src/binary-resolver";
 import { writeAllSync } from "./run-example-output";
+import { assertPersistentFixtureUnchanged, inspectPersistentFixture } from "./run-example-persistence-verification";
 import {
     resolveRunExampleBuiltinPrograms,
     type ResolvedBuiltinPrograms,
 } from "./run-example-builtins";
 import { isWithinRealDirectory } from "./run-example-paths";
-import { prepareRunExampleRootfs } from "./run-example-rootfs";
+import { prepareCheckedPersistentRunExampleRootfs, prepareRunExampleRootfs } from "./run-example-rootfs";
 import {
     buildRunExampleGuestEnvironment,
     resolveRunExampleFilesystem,
@@ -358,51 +359,6 @@ function loadBytes(path: string): ArrayBuffer {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
-function tryLoadGuestCandidate(candidate: string, kernelCwd: string): ArrayBuffer | null {
-    const resolved = resolve(candidate);
-    if (!existsSync(resolved)) return null;
-
-    // Guest exec resolution may read scripts and test binaries staged under
-    // KERNEL_CWD. Outside that guest workdir, only explicit .wasm paths are
-    // valid candidates; never treat host /usr/bin tools as guest programs.
-    try {
-        if (!resolved.endsWith(".wasm") &&
-            !isWithinRealDirectory(kernelCwd, resolved)) {
-            return null;
-        }
-        if (!statSync(resolved).isFile()) return null;
-        return loadBytes(resolved);
-    } catch {
-        return null;
-    }
-}
-
-function resolveProgram(
-    path: string,
-    builtinPrograms: Record<string, string | null>,
-    allowAmbientHostCandidates: boolean,
-): ArrayBuffer | null {
-    const mapped = builtinPrograms[path];
-    if (mapped) {
-        return loadBytes(mapped);
-    }
-    if (!allowAmbientHostCandidates) return null;
-    const kernelCwd = resolve(process.env.KERNEL_CWD || process.cwd());
-    const candidates = [
-        // Resolve relative to kernel CWD (sortix tests exec themselves by relative path)
-        isAbsolute(path) ? path : resolve(kernelCwd, path),
-        path.endsWith(".wasm")
-            ? (isAbsolute(path) ? path : resolve(kernelCwd, path))
-            : (isAbsolute(path) ? `${path}.wasm` : resolve(kernelCwd, `${path}.wasm`)),
-        resolve(repoRoot, `examples/${path}.wasm`),
-    ];
-    for (const c of candidates) {
-        const bytes = tryLoadGuestCandidate(c, kernelCwd);
-        if (bytes) return bytes;
-    }
-    return null;
-}
-
 async function main() {
     const name = process.argv[2];
     if (!name) {
@@ -420,29 +376,6 @@ async function main() {
         resolveBuiltinPrograms,
     );
     const builtinPrograms = resolvedBuiltins.programs;
-    let isolatedExecPrograms: Record<string, string> | undefined;
-    let isolatedExecProgramBytes: Record<string, ArrayBuffer> | undefined;
-    if (runnerFilesystem.isolated) {
-        const paths: Record<string, string> = {};
-        const bytes: Record<string, ArrayBuffer> = {};
-        const snapshotsByPath = new Map<string, ArrayBuffer>();
-        for (const [programName, programPath] of Object.entries(builtinPrograms)) {
-            if (programPath === null || !existsSync(programPath)) continue;
-            if (resolvedBuiltins.snapshotNames.has(programName)) {
-                let snapshot = snapshotsByPath.get(programPath);
-                if (snapshot === undefined) {
-                    snapshot = loadBytes(programPath);
-                    snapshotsByPath.set(programPath, snapshot);
-                }
-                bytes[programName] = snapshot;
-            } else {
-                paths[programName] = programPath;
-            }
-        }
-        if (Object.keys(paths).length > 0) isolatedExecPrograms = paths;
-        if (Object.keys(bytes).length > 0) isolatedExecProgramBytes = bytes;
-    }
-
     let programPath: string;
     if (name.endsWith(".wasm") || (isAbsolute(name) && existsSync(name))) {
         // WHY: cross-built programs for a target without an executable
@@ -512,39 +445,32 @@ async function main() {
             ? prepareRunExampleRootfs(new Uint8Array(
                 readFileSync(resolveRootfsArtifact().selectedPath),
             ))
-            : {};
+            : undefined;
+        const persistentImage = runnerFilesystem.persistentFixtureRoot === undefined
+            ? undefined
+            : await prepareCheckedPersistentRunExampleRootfs(
+                rootfs!.rootfsImage,
+                runnerFilesystem.persistentFixtureRoot,
+                runnerFilesystem.experimentalResizablePersistencePath! + ".base",
+                runnerFilesystem.persistentImageIntegrityPolicy!,
+            );
         host = new NodeKernelHost({
             maxWorkers: 4,
             // Exec authority stays in the image; local bytes only supply
             // its declared lazy transport.
-            rootfsImage: runnerFilesystem.rootfsImage,
+            ...(persistentImage ?? { rootfsImage: runnerFilesystem.rootfsImage }),
+            experimentalResizablePersistencePath: runnerFilesystem.experimentalResizablePersistencePath,
+            rootfsLazyUrlBase: persistentImage === undefined ? undefined : rootfs?.rootfsLazyUrlBase,
+            rootfsLazyAssets: persistentImage === undefined ? undefined : rootfs?.rootfsLazyAssets,
             ...(runnerFilesystem.rootfsMountSpec === undefined
                 ? {}
                 : { rootfsMountSpec: runnerFilesystem.rootfsMountSpec }),
             sessionSeedTrees: runnerFilesystem.sessionSeedTrees,
-            // These maps are spawn-preflight inputs only. VFS-backed exec
-            // materializes the image's own executable through lazy transport.
-            execPrograms: isolatedExecPrograms,
-            // Direct build outputs are not immutable resolver generations.
-            // Snapshot their exact bytes before worker startup so replacement
-            // cannot change a later asynchronous exec.
-            execProgramBytes: isolatedExecProgramBytes,
+            ...(runnerNetwork() === "offline-egress"
+                ? { offlineEgressLink: true }
+                : {}),
             onStdout: (_pid, data) => writeGuestOutput(process.stdout, data),
             onStderr: (_pid, data) => writeGuestOutput(process.stderr, data),
-            onResolveExec: (path) => {
-                if (
-                    initialProgramBytes !== undefined
-                    && path === programPath
-                ) {
-                    return initialProgramBytes.slice(0);
-                }
-                if (runnerFilesystem.isolated) return null;
-                return resolveProgram(
-                    path,
-                    builtinPrograms,
-                    true,
-                );
-            },
         });
 
         await host.init();
@@ -562,6 +488,9 @@ async function main() {
                     runnerFilesystem.isolated,
                     process.env.KERNEL_PATH ?? "/usr/local/bin:/usr/bin:/bin",
                     uid !== undefined && uid !== 0 ? "/home/maker" : "/root",
+                    runnerFilesystem.persistentFixtureRoot === undefined
+                        ? "/tmp"
+                        : runnerFilesystem.guestCwd,
                 ),
                 ...gitEnv,
             ],
@@ -593,6 +522,37 @@ async function main() {
         } else {
             status = outcome;
         }
+        if (runnerFilesystem.verifyPersistenceReopen && outcome !== timedOut) {
+            try {
+                if (persistentImage === undefined || runnerFilesystem.experimentalResizablePersistencePath === undefined) {
+                    throw new Error("persistent runner reboot requires a composed image and journal");
+                }
+                const fixtureBeforeReboot = await inspectPersistentFixture(host);
+                await host.destroy();
+                const shutdownFailure = host.getPersistenceShutdownFailure();
+                host = undefined;
+                if (shutdownFailure !== null) {
+                    throw new Error(`persistent runner shutdown sync failed: ${shutdownFailure}`);
+                }
+                const reopened = new NodeKernelHost({
+                    maxWorkers: 4,
+                    ...persistentImage,
+                    rootfsLazyUrlBase: rootfs?.rootfsLazyUrlBase,
+                    rootfsLazyAssets: rootfs?.rootfsLazyAssets,
+                    experimentalResizablePersistencePath: runnerFilesystem.experimentalResizablePersistencePath,
+                    requireExistingRootfsPersistence: true,
+                });
+                try {
+                    await reopened.init();
+                    assertPersistentFixtureUnchanged(fixtureBeforeReboot, await inspectPersistentFixture(reopened));
+                } finally {
+                    await reopened.destroy();
+                }
+            } catch (error) {
+                console.error("persistent runner verification failed:", error);
+                status = 125;
+            }
+        }
     } finally {
         await host?.destroy().catch(() => {});
         if (guestOutputFd !== null) closeSync(guestOutputFd);
@@ -605,3 +565,17 @@ main().catch((e) => {
     console.error(e);
     process.exit(1);
 });
+
+/**
+ * The machine's network, from `KANDELO_RUNNER_NETWORK`. Unset is a
+ * loopback-only machine. `offline-egress` is the machine the browser host
+ * boots (eth0 behind the internet egress gateway) with nothing behind the
+ * gateway, so the conformance runners observe the browser's machine without
+ * ever reaching the host's network.
+ */
+function runnerNetwork(): "loopback" | "offline-egress" {
+    const value = process.env.KANDELO_RUNNER_NETWORK;
+    if (value === undefined || value === "") return "loopback";
+    if (value === "offline-egress") return value;
+    throw new Error('KANDELO_RUNNER_NETWORK must be unset or "offline-egress"');
+}

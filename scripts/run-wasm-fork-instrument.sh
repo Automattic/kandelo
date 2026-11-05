@@ -35,7 +35,9 @@ else
             echo "       Run inside scripts/dev-shell.sh or set WASM_POSIX_FORK_INSTRUMENT." >&2
             exit 1
         fi
-        bash "$REPO_ROOT/scripts/build-fork-instrument-tool.sh"
+        # Rebuild progress goes to stderr: callers read this script's stdout
+        # as the tool's own output (inventories, reports).
+        bash "$REPO_ROOT/scripts/build-fork-instrument-tool.sh" >&2
     fi
 
     INSTALLED_INPUT_HASH=""

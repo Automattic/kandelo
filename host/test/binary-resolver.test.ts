@@ -28,8 +28,10 @@ import {
   resetBinaryResolverManifestCacheForTests,
   resolveBinary,
   resolveDirectProgramPackageArtifact,
+  resolveProgramOriginalWasmArtifact,
   resolveLazyAssetPath,
   resolveLazyAssetPaths,
+  resolveIndependentBinaries,
   setBundledProgramPackageIndexPathForTests,
   setProgramIndexContextCheckerForTests,
   sourceOnlyBinaryRoot,
@@ -309,6 +311,7 @@ interface FixtureProjectionMember {
   mirrorPath: string;
   outputName?: string;
   forkInstrumentation?: "auto" | "disabled";
+  originalWasm?: string;
   guestPath?: string;
   mode?: number;
 }
@@ -543,6 +546,69 @@ describe("program package source freshness boundary", () => {
         delete process.env[envName];
       }
     }
+  });
+
+  it.each(["source-only-v1", "default"])("resolves a direct original under %s without needing an aggregate", (policy) => {
+    const fixture = createScalarOutputFixture("disabled");
+    const originalArtifact = "originals/nested/input.wasm";
+    const manifestPath = join(fixturePackageDirectory(fixture.name), "package.toml");
+    writeFileSync(manifestPath, `${readFileSync(manifestPath, "utf8")}\noriginal_wasm = "${originalArtifact}"\n`);
+    writeFixturePackageProjection(fixture.name, [{ kind: "output", sourceArtifact: fixture.sourceArtifact,
+      mirrorPath: basename(fixture.relPath), outputName: basename(fixture.relPath, ".wasm"), forkInstrumentation: "disabled", originalWasm: originalArtifact }]);
+    const root = fixtureCanonicalRoot(fixture.name);
+    const executable = writeCanonicalMember(root, fixture.sourceArtifact, executableWasmWithAbi(ABI_VERSION));
+    const originalBytes = Buffer.from("\0asm\x01\0\0\0");
+    const original = writeCanonicalMember(root, originalArtifact, originalBytes);
+    chmodSync(original, 0o444);
+    process.env.WASM_POSIX_RESOLUTION_POLICY = policy;
+    delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+    const result = resolveProgramOriginalWasmArtifact(fixture.relPath, fixture.name, executable, root)!;
+    expect(result.path).toBe(realpathSync(original));
+    expect(result.size).toBe(originalBytes.length);
+    expect(result.sha256).toBe(createHash("sha256").update(originalBytes).digest("hex"));
+    expect(result.relPath).toBe(`programs/wasm32/.originals/${fixture.name}/${fixtureCacheKey(fixture.name)}/${originalArtifact}`);
+    expect(result.mode).toBe(0o444);
+    if (policy === "default") {
+      const mirror = join(binariesDir(), fixture.relPath);
+      mkdirSync(dirname(mirror), { recursive: true });
+      symlinkSync(executable, mirror);
+      expect(resolveProgramOriginalWasmArtifact(fixture.relPath, fixture.name, executable)).toEqual(result);
+      expect(programOutputClosureRelPaths(fixture.relPath)).toEqual([fixture.relPath, result.relPath]);
+      expect(resolveBinary(result.relPath)).toBe(realpathSync(original));
+      expect(resolveLazyAssetPath(`kandelo-lazy:${result.relPath}`)).toBe(realpathSync(original));
+      expect(tryResolveBinaries([fixture.relPath, result.relPath])).toEqual([realpathSync(executable), realpathSync(original)]);
+      expect(tryResolveBinarySet([fixture.relPath, result.relPath])).toEqual([realpathSync(executable), realpathSync(original)]);
+      expect(programOutputClosureRelPaths(result.relPath)).toEqual([fixture.relPath, result.relPath]);
+      expect(() => programWasmArtifactPolicy(result.relPath)).toThrow(/not a declared executable/);
+      expect(() => resolveBinary(result.relPath.replace(fixtureCacheKey(fixture.name), "b".repeat(64)))).toThrow(/selected package generation/);
+      const independent = resolveIndependentBinaries([
+        result.relPath.replace(fixtureCacheKey(fixture.name), "b".repeat(64)),
+        "../invalid",
+        fixture.relPath,
+        result.relPath,
+      ]);
+      expect(independent[0]).toBeInstanceOf(Error);
+      expect((independent[0] as Error).message).toMatch(/selected package generation/);
+      expect(independent[1]).toBeInstanceOf(Error);
+      expect((independent[1] as Error).message).toMatch(/normalized portable relative path/);
+      expect(independent.slice(2)).toEqual([realpathSync(executable), realpathSync(original)]);
+      expect(() => resolveBinary(`${result.relPath}/extra`)).toThrow(/selected package generation/);
+      expect(() => resolveBinary(result.relPath.replace("/nested/", "/../"))).toThrow(/normalized portable relative path/);
+      rmSync(mirror);
+      const literal = writeCandidate(binariesDir(), result.relPath, originalBytes);
+      chmodSync(literal, 0o444);
+      cleanupDirs.add(join(binariesDir(), "programs/wasm32/.originals", fixture.name));
+      const url = `binaries/${result.relPath}`;
+      expect(() => resolveLazyAssetPath(url)).toThrow(/failed to resolve/);
+      expect(resolveLazyAssetPaths([url]).get(url)).toHaveProperty("error");
+    }
+    const unrelated = writeCanonicalMember(root, "unrelated.wasm", executableWasmWithAbi(ABI_VERSION));
+    expect(() => resolveProgramOriginalWasmArtifact(fixture.relPath, fixture.name, unrelated, root)).toThrow(/does not match/);
+    const wrongRoot = fixtureCanonicalRoot(fixture.name, "wasm32", "f".repeat(64));
+    writeCanonicalMember(wrongRoot, fixture.sourceArtifact, executableWasmWithAbi(ABI_VERSION));
+    expect(() => resolveProgramOriginalWasmArtifact(fixture.relPath, fixture.name, executable, wrongRoot)).toThrow(/selected immutable package generation/);
+    chmodSync(original, 0o644);
+    expect(() => resolveProgramOriginalWasmArtifact(fixture.relPath, fixture.name, executable, root)).toThrow(/read-only/);
   });
 
   it("rejects a direct dependency whose projected package closure is incomplete", () => {
@@ -1142,6 +1208,52 @@ describe("binary resolver policy selection (characterization)", () => {
     expect(resolveBinary("kernel.wasm")).toContain("source-only-v1");
   });
 
+  it("keeps SourceOnly lazy reads independent of the mutable registry freshness checker", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-source-only-lazy-"));
+    cleanupDirs.add(root);
+    writeSourceOnlyProjectionWithKernel(root);
+    process.env.WASM_POSIX_RESOLUTION_POLICY = "source-only-v1";
+    process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT = root;
+    setProgramIndexContextCheckerForTests(() => {
+      throw new Error("SourceOnly must not regenerate the default registry");
+    });
+    // This archive is absent from the verified generation. That must stay a
+    // per-asset resolution failure, without invoking another policy's checker.
+    const result = resolveLazyAssetPaths(["kandelo-lazy:programs/wasm32/composer.zip"]);
+    expect(result.get("kandelo-lazy:programs/wasm32/composer.zip")).toHaveProperty("error");
+  });
+
+  it("isolates SourceOnly owner failures while retaining healthy and unowned outcomes", () => {
+    const root = writeSourceOnlyProjectionWithKernel(join(makeTempRepo(), "local-binaries/source-only-v1"));
+    const authorityPath = join(root, ".kandelo/source-only-program-projection-v1.json");
+    const authority = JSON.parse(readFileSync(authorityPath, "utf8")) as {
+      nodes: { node: { targetArch: string }; members: { sourceArtifact: string; mirrorPath: string }[] }[];
+    };
+    const healthy = structuredClone(authority.nodes[0]!);
+    healthy.node.targetArch = "wasm64";
+    healthy.members[0]!.sourceArtifact = "kernel-copy.bin";
+    healthy.members[0]!.mirrorPath = "kernel-copy.bin";
+    authority.nodes.push(healthy);
+    copyFileSync(join(root, "kernel.wasm"), join(root, "kernel-copy.bin"));
+    chmodSync(join(root, "kernel-copy.bin"), 0o644);
+    writeFileSync(authorityPath, JSON.stringify(authority));
+    const damaged = readFileSync(join(root, "kernel.wasm"));
+    damaged[0] = damaged[0]! ^ 1;
+    writeFileSync(join(root, "kernel.wasm"), damaged);
+    process.env.WASM_POSIX_RESOLUTION_POLICY = "source-only-v1";
+    process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT = root;
+    setProgramIndexContextCheckerForTests(() => { throw new Error("unexpected mutable-index freshness check"); });
+    const results = resolveIndependentBinaries([
+      "kernel.wasm", "kernel-copy.bin", "kernel.wasm", "programs/wasm32/unowned.zip", "../invalid",
+    ]);
+    expect(results[0]).toBeInstanceOf(Error);
+    expect((results[0] as Error).message).toMatch(/member sha256/);
+    expect(results[1]).toBe(join(root, "kernel-copy.bin"));
+    expect(results[2]).toBe(results[0]);
+    expect(results[3]).toBeNull();
+    expect(results[4]).toBeInstanceOf(Error);
+  });
+
   it("throws when source-only policy is on but WASM_POSIX_SOURCE_ONLY_BINARY_ROOT is unset", () => {
     process.env.WASM_POSIX_RESOLUTION_POLICY = "source-only-v1";
     delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
@@ -1178,6 +1290,20 @@ describe("binary resolver unified tier", () => {
 });
 
 describe("image-relative lazy asset paths", () => {
+  it("resolves shell placeholders and package archives through the shared image grammar", () => {
+    const repo = makeTempRepo();
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    for (const [url, artifact] of [
+      ["kandelo-lazy:programs/php/php.dat", "programs/wasm32/php/php.dat"],
+      ["kandelo-lazy:programs/wasm32/composer.zip", "programs/wasm32/composer.zip"],
+      ["kandelo-lazy:programs/love/share/love-examples.zip", "programs/wasm32/love/share/love-examples.zip"],
+      ["binaries/programs/wasm32/qux.zip", "programs/wasm32/qux.zip"],
+    ]) {
+      const local = writeCandidate(join(repo, "local-binaries"), artifact!, new Uint8Array([1, 2, 3]));
+      expect(resolveLazyAssetPath(url!)).toBe(local);
+    }
+  });
+
   it("serves a binaries/ lazy URL from the resolver tiers, not only the literal tree", () => {
     const repo = makeTempRepo();
     const local = writeCandidate(
@@ -2898,6 +3024,7 @@ exit 2
       "examples/gencat.wasm",
       "examples/pthread_channel_reuse_test.wasm",
       "examples/wait_lifecycle_test.wasm",
+      "examples/orphan_reparent_test.wasm",
       ...memory64ExampleOutputs,
       "benchmarks/wasm/pipe-throughput.wasm",
       "benchmarks/wasm/file-throughput.wasm",
@@ -3462,7 +3589,7 @@ wasm = "bin/${renamedOutput}.zip"
     );
   });
 
-  it("pins one generation for every independently requested package member", () => {
+  it.each([tryResolveBinaries, resolveIndependentBinaries])("pins one generation for every independently requested package member (%#)", (resolveBatch) => {
     const fixture = createMultiOutputFixture();
     const oldCanonicalRoot = fixtureLocalCanonicalRoot(fixture.name);
     for (const member of fixture.members) {
@@ -3479,7 +3606,7 @@ wasm = "bin/${renamedOutput}.zip"
       fixture.members[2]!.relPath,
       fixture.members[1]!.relPath,
     ];
-    const pinned = tryResolveBinaries(requested);
+    const pinned = resolveBatch(requested);
 
     const newCanonicalRoot = fixtureLocalCanonicalRoot(fixture.name);
     const liveDirectory = join(
@@ -3519,7 +3646,7 @@ wasm = "bin/${renamedOutput}.zip"
         );
       }),
     );
-    expect(tryResolveBinaries(requested)).toEqual(
+    expect(resolveBatch(requested)).toEqual(
       requested.map((relPath) => newTargets.get(relPath)!),
     );
   });

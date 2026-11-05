@@ -3,11 +3,18 @@
 //! `docs/plans/2026-10-02-fork-sinks.md` and `src/sink.rs`.
 
 use fork_instrument::{Options, instrument};
-use walrus::{FunctionKind, Module, ir::Instr};
+use walrus::{ExportItem, FunctionKind, Module, ir::Instr};
 
 fn instrument_wat(wat: &str, sinks: bool) -> Vec<u8> {
     let input = wat::parse_str(wat).expect("wat parse");
-    let output = instrument(&input, &Options { sinks, ..Options::default() }).expect("instrument");
+    let output = instrument(
+        &input,
+        &Options {
+            sinks,
+            ..Options::default()
+        },
+    )
+    .expect("instrument");
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
         .validate_all(&output)
         .expect("instrumented module validates");
@@ -37,18 +44,39 @@ fn boundary_ordinals(bytes: &[u8]) -> Vec<u32> {
 /// Whether `name`'s body reads the fork state global (it was instrumented).
 fn is_instrumented(bytes: &[u8], name: &str) -> bool {
     let module = Module::from_buffer(bytes).expect("parse");
-    let state = module
-        .globals
+    // Find the state through its ABI accessor: private global names are not
+    // part of the instrumenter's output contract.
+    let accessor = module
+        .exports
         .iter()
-        .find(|g| g.name.as_deref() == Some("_wpk_fork_state"))
-        .map(|g| g.id())
-        .expect("fork state global");
+        .find(|export| export.name == "wpk_fork_state")
+        .expect("fork state accessor");
+    let ExportItem::Function(accessor) = accessor.item else {
+        panic!("fork state accessor must be a function")
+    };
+    let FunctionKind::Local(accessor) = &module.funcs.get(accessor).kind else {
+        panic!("fork state accessor must be defined")
+    };
+    let state = accessor
+        .block(accessor.entry_block())
+        .instrs
+        .iter()
+        .find_map(|(instr, _)| {
+            if let Instr::GlobalGet(get) = instr {
+                Some(get.global)
+            } else {
+                None
+            }
+        })
+        .expect("fork state accessor reads its global");
     let function = module
         .funcs
         .iter()
         .find(|f| f.name.as_deref() == Some(name))
         .unwrap_or_else(|| panic!("function {name}"));
-    let FunctionKind::Local(local) = &function.kind else { return false };
+    let FunctionKind::Local(local) = &function.kind else {
+        return false;
+    };
     let mut found = false;
     let mut stack = vec![local.entry_block()];
     while let Some(seq) = stack.pop() {
@@ -71,12 +99,18 @@ fn is_instrumented(bytes: &[u8], name: &str) -> bool {
 
 fn has_boundary_import(bytes: &[u8]) -> bool {
     let module = Module::from_buffer(bytes).expect("parse");
-    module.imports.iter().any(|i| i.module == "env" && i.name == "__wpk_fork_boundary")
+    module
+        .imports
+        .iter()
+        .any(|i| i.module == "env" && i.name == "__wpk_fork_boundary")
 }
 
 fn has_sink_entry(bytes: &[u8]) -> bool {
     let module = Module::from_buffer(bytes).expect("parse");
-    module.exports.iter().any(|e| e.name == "wpk_fork_resume_sink")
+    module
+        .exports
+        .iter()
+        .any(|e| e.name == "wpk_fork_resume_sink")
 }
 
 const SINK_EXIT: &str = r#"
@@ -95,7 +129,11 @@ const SINK_EXIT: &str = r#"
 #[test]
 fn child_that_never_returns_makes_its_function_a_boundary() {
     let out = instrument_wat(SINK_EXIT, true);
-    assert_eq!(boundary_ordinals(&out).len(), 1, "spawn is the only boundary");
+    assert_eq!(
+        boundary_ordinals(&out).len(),
+        1,
+        "spawn is the only boundary"
+    );
     assert!(has_boundary_import(&out));
     assert!(has_sink_entry(&out));
     assert!(is_instrumented(&out, "spawn"));
@@ -205,8 +243,15 @@ fn o0_frame_slots_are_tracked_only_while_the_frame_does_not_escape() {
   (func $main (export "_start") (drop (call $spawn))))
 "#;
     let kept = instrument_wat(&slot.replace("MIDDLE", "(call $noise)"), true);
-    assert_eq!(boundary_ordinals(&kept).len(), 1, "slot survives an unrelated call");
-    let escaped = instrument_wat(&slot.replace("MIDDLE", "(call $clobber (local.get $fp))"), true);
+    assert_eq!(
+        boundary_ordinals(&kept).len(),
+        1,
+        "slot survives an unrelated call"
+    );
+    let escaped = instrument_wat(
+        &slot.replace("MIDDLE", "(call $clobber (local.get $fp))"),
+        true,
+    );
     assert!(
         boundary_ordinals(&escaped).is_empty(),
         "a callee holding the frame address may rewrite the slot"
@@ -246,7 +291,11 @@ fn vfork_caller_is_a_boundary_by_contract() {
 "#,
         true,
     );
-    assert_eq!(boundary_ordinals(&out).len(), 1, "spawn is a boundary by contract");
+    assert_eq!(
+        boundary_ordinals(&out).len(),
+        1,
+        "spawn is a boundary by contract"
+    );
     assert!(is_instrumented(&out, "spawn"));
     assert!(!is_instrumented(&out, "main"));
 }

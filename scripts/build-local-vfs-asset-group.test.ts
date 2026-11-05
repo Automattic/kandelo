@@ -887,7 +887,7 @@ async function createFixture(
       for (const name of ["vim.zip", "nethack.zip"] as const) {
         const body = assetBodies.get(name)!;
         fs.registerLazyArchive({
-          url: name,
+          url: `kandelo-lazy:programs/wasm32/${name}`,
           entries: [{
             fileName: `bin/${name}`,
             fileNameBytes: new TextEncoder().encode(`bin/${name}`),

@@ -1,7 +1,7 @@
 kind = "program"
 name = "lamp"
 version = "0.1.0"
-kernel_abi = 7
+kernel_abi = 52
 # build-lamp-vfs-image.ts starts from shell.vfs.zst, then bakes a service
 # image: dinit as service supervisor, nginx, php-fpm/opcache, mariadbd, the MariaDB
 # preinitialized /data directory, and a preinstalled WordPress database.
@@ -14,7 +14,7 @@ depends_on = [
     "shell@0.1.0",
     "mariadb@10.5.28",
     "nginx@1.24.0",
-    "php@8.3.15",
+    "php@8.5.12",
     "dinit@0.19.4",
     "msmtpd@1.8.32",
     "kernel@0.1.0",
@@ -35,3 +35,4 @@ script_path = "packages/registry/lamp/build-lamp.sh"
 [[outputs]]
 name = "lamp"
 wasm = "lamp.vfs.zst"
+fork_instrumentation = "disabled"

@@ -1,7 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterAll, beforeAll, describe, it, expect, vi } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import { resolveBinary } from "../src/binary-resolver";
-import { NodePlatformIO } from "../src/platform/node";
+import { compileSdkFixture } from "./support/compile-sdk-fixture";
 
 
 // This file hands each guest a 10s budget via runCentralizedProgram's
@@ -13,10 +12,14 @@ import { NodePlatformIO } from "../src/platform/node";
 vi.setConfig({ testTimeout: 30_000 });
 
 describe("MAP_SHARED mmap + msync", () => {
+  let fixture: ReturnType<typeof compileSdkFixture>;
+  beforeAll(() => {
+    fixture = compileSdkFixture(new URL("../../programs/mmap_shared_test.c", import.meta.url));
+  }, 120_000);
+  afterAll(() => fixture?.cleanup());
   it("writes through MAP_SHARED mapping and flushes with msync", async () => {
     const result = await runCentralizedProgram({
-      programPath: resolveBinary("programs/mmap_shared_test.wasm"),
-      io: new NodePlatformIO(),
+      programPath: fixture.programPath,
       timeout: 10000,
     });
     expect(result.exitCode).toBe(0);

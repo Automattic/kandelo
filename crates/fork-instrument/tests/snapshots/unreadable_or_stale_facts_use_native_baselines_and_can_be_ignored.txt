@@ -1,0 +1,77 @@
+=== sinks-true-facts-false-effective-true 146bf339bac6 ===
+(
+    [
+        "_start",
+        "forker",
+        "main",
+    ],
+    [],
+    Builtin,
+    None,
+    false,
+)
+
+=== sinks-true-facts-false-effective-true 63a56ef02546 ===
+(
+    [
+        "_start",
+        "forker",
+        "main",
+    ],
+    [],
+    Builtin,
+    None,
+    false,
+)
+
+=== sinks-true-facts-false-effective-true bd6eb242ac08 ===
+(
+    [
+        "_start",
+        "forker",
+        "main",
+    ],
+    [],
+    Builtin,
+    None,
+    false,
+)
+
+=== sinks-true-facts-true-effective-true 146bf339bac6 ===
+(
+    [
+        "_start",
+        "forker",
+        "main",
+    ],
+    [],
+    Builtin,
+    None,
+    true,
+)
+
+=== sinks-true-facts-true-effective-true 63a56ef02546 ===
+(
+    [
+        "_start",
+        "forker",
+        "main",
+    ],
+    [],
+    Builtin,
+    None,
+    true,
+)
+
+=== sinks-true-facts-true-effective-true bd6eb242ac08 ===
+(
+    [
+        "_start",
+        "forker",
+        "main",
+    ],
+    [],
+    Builtin,
+    None,
+    true,
+)

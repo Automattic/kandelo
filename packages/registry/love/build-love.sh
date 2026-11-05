@@ -3,7 +3,7 @@
 # Build the native Kandelo LÖVE runtime.
 #
 # This intentionally does not use Emscripten. The result is a POSIX/Wasm
-# program linked by wasm32posix-c++ with Wayland/EGL and standalone KMS/EGL
+# program linked by wasm32posix-c++ with SDL2 Wayland/EGL and KMSDRM/EGL
 # presentation. The runtime fails explicitly if native rendering is unavailable.
 
 set -euo pipefail
@@ -18,6 +18,7 @@ BUILD="$WORK/build"
 SRC="$WORK/love-src"
 BYTEPATH_SRC="$WORK/bytepath-src"
 SNKRX_SRC="$WORK/snkrx-src"
+STB_SRC="$WORK/stb-src"
 GAME_DEMOS_SRC="$HERE/game-demos"
 
 source "$REPO_ROOT/sdk/activate.sh"
@@ -44,6 +45,8 @@ HOST_ZIP_BIN=zip
 COMMON_NATIVE_FLAGS=(-DLOVE_LINUX=1 -DLOVE_KANDELO=1 -DENABLE_OPT=0)
 CFLAGS_NATIVE=(
     "${COMMON_NATIVE_FLAGS[@]}"
+    -I"$STB_SRC"
+    -DSTB_VORBIS_NO_PUSHDATA_API
     -I"$SRC/src"
     -I"$SRC/src/modules"
     -I"$SRC/src/libraries"
@@ -56,6 +59,8 @@ CXXFLAGS_NATIVE=(
     -fwasm-exceptions
     -Wno-c++11-narrowing
     -isystem "$WASM_POSIX_SYSROOT/include/c++/v1"
+    -I"$STB_SRC"
+    -DSTB_VORBIS_NO_PUSHDATA_API
     -I"$SRC/src"
     -I"$SRC/src/modules"
     -I"$SRC/src/libraries"
@@ -106,6 +111,7 @@ for patch in "$HERE"/patches/bytepath/*.patch; do
     echo "==> Applying BYTEPATH $(basename "$patch")..."
     (cd "$BYTEPATH_SRC" && git apply "$patch")
 done
+kandelo_package_stage_source_dependency stb-source "$STB_SRC" "$WORK"
 kandelo_package_stage_source_dependency snkrx-source "$SNKRX_SRC" "$WORK"
 for patch in "$HERE"/patches/snkrx/*.patch; do
     echo "==> Applying SNKRX $(basename "$patch")..."
@@ -115,6 +121,7 @@ done
 obj_for() {
     local rel="${1#$SRC/}"
     rel="${rel#$HERE/}"
+    rel="${rel#$STB_SRC/}"
     rel="${rel//\//_}"
     echo "$BUILD/obj/${rel}.o"
 }
@@ -140,6 +147,7 @@ compile_cxx() {
 
 LOVE_CXX_SOURCES=(
     "$HERE/src/lovefb.cpp"
+    "$HERE/src/native_audio.cpp"
     "$HERE/src/kandelo_native.cpp"
     "$SRC/src/common/deprecation.cpp"
     "$SRC/src/common/b64.cpp"
@@ -160,6 +168,11 @@ LOVE_CXX_SOURCES=(
     "$SRC/src/common/floattypes.cpp"
     "$SRC/src/common/memory.cpp"
     "$SRC/src/modules/audio/Source.cpp"
+    "$SRC/src/modules/mouse/Cursor.cpp"
+    "$SRC/src/modules/mouse/sdl/Mouse.cpp"
+    "$SRC/src/modules/mouse/sdl/Cursor.cpp"
+    "$SRC/src/modules/mouse/wrap_Mouse.cpp"
+    "$SRC/src/modules/mouse/wrap_Cursor.cpp"
     "$SRC/src/modules/video/VideoStream.cpp"
     "$SRC/src/modules/timer/Timer.cpp"
     "$SRC/src/modules/window/Window.cpp"
@@ -269,6 +282,7 @@ LOVE_CXX_SOURCES=(
 )
 
 LOVE_C_SOURCES=(
+    "$STB_SRC/stb_vorbis.c"
     "$SRC/src/libraries/lua53/lstrlib.c"
     "$SRC/src/libraries/lua53/lutf8lib.c"
     "$SRC/src/libraries/Wuff/wuff.c"
@@ -330,6 +344,8 @@ SNKRX_BUILD="$EXAMPLES_BUILD/snkrx"
 rm -rf "$EXAMPLES_BUILD"
 mkdir -p "$EXAMPLES_BUILD" "$BYTEPATH_BUILD" "$SNKRX_BUILD"
 cp -R "$GAME_DEMOS_SRC"/. "$EXAMPLES_BUILD"/
+python3 "$HERE/generate-demo-audio.py" "$EXAMPLES_BUILD/sounds"
+cp "$STB_SRC/LICENSE" "$EXAMPLES_BUILD/STB-LICENSE.txt"
 
 # BYTEPATH is packaged from its upstream game tree with real fonts, images,
 # sounds, shaders, and game code. Steamworks is an external native SDK boundary

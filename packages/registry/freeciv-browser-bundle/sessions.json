@@ -1,0 +1,71 @@
+{
+  "kind": "kandelo-package-sessions",
+  "version": 1,
+  "package": "freeciv-browser-bundle",
+  "packageVersion": "3.2.6",
+  "offers": [
+    {
+      "id": "game",
+      "title": "Freeciv game",
+      "description": "Host a Freeciv game. Choose nations, rulesets, map and game settings together in Freeciv\u2019s own lobby. Share an existing multiplayer server without restarting it.",
+      "join": "participant",
+      "attachExisting": true,
+      "fields": [
+        {
+          "id": "name",
+          "label": "Your name",
+          "type": "text",
+          "default": "host",
+          "maxLength": 32
+        }
+      ],
+      "launch": {
+        "executable": "/usr/bin/freeciv-play",
+        "cwd": "/",
+        "args": [
+          "host",
+          "--name",
+          {
+            "field": "offer.name"
+          }
+        ],
+        "requires": [],
+        "surface": "display",
+        "display": "kms",
+        "displayScale": 1.5
+      },
+      "requiresHost": true
+    }
+  ],
+  "joins": [
+    {
+      "id": "participant",
+      "title": "Play Freeciv",
+      "description": "Connect to the host on this network.",
+      "fields": [
+        {
+          "id": "name",
+          "label": "Your name",
+          "type": "text",
+          "default": "guest",
+          "maxLength": 32
+        }
+      ],
+      "launch": {
+        "executable": "/usr/bin/freeciv-play",
+        "cwd": "/",
+        "args": [
+          "join",
+          "--name",
+          {
+            "field": "join.name"
+          }
+        ],
+        "requires": [],
+        "surface": "display",
+        "display": "kms",
+        "displayScale": 1.5
+      }
+    }
+  ]
+}

@@ -1,5 +1,20 @@
 script_path = "images/vfs/scripts/build-redis-vfs-image.sh"
 inputs = [
+  "host/src/native-artifact-identity.ts",
+  "packages/registry/redis-vfs/app/router.php",
+  "packages/registry/redis-vfs/app/index.html",
+  "packages/registry/redis-vfs/app/admin-config.php",
+  "packages/registry/redis-vfs/app/THIRD-PARTY-NOTICES.txt",
+  "scripts/package-build-roots.sh",
+  "web-libs/kandelo-session/src/experimental-terminal-session.ts",
+  "web-libs/kandelo-session/src/demo-config.ts",
+  "images/vfs/scripts/tracked-demo-config.ts",
+  "packages/registry/redis-vfs/redis-demo.json",
+  "web-libs/kandelo-session/src/session-dependencies.ts",
+  "web-libs/kandelo-session/src/package-sessions.ts",
+  "web-libs/kandelo-session/src/game-levels.ts",
+  "images/vfs/scripts/image-session-files.ts",
+  "packages/registry/redis-vfs/sessions.json",
   "images/vfs/scripts/build-redis-vfs-image.sh",
   "images/vfs/scripts/build-redis-vfs-image.ts",
   "images/vfs/scripts/dinit-image-helpers.ts",
@@ -11,6 +26,7 @@ inputs = [
   # those ownership boundaries without making unrelated host changes rebuild
   # this image.
   "host/src/binary-resolver.ts",
+  "host/src/vfs/vfs-asset-group-reference.ts",
   "host/src/constants.ts",
   "host/src/file-offset.ts",
   "host/src/generated/abi.ts",
@@ -25,7 +41,8 @@ inputs = [
   "cargo:kandelo-image-module",
   "cargo:runtime-core",
   "crates/kandelo-image-module/build-wasm.sh",
+  "images/vfs/lib/positioned-image-targets.ts",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 3
+revision = 11

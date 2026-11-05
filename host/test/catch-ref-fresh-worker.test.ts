@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { stampFixtureAbiContract } from "./support/compile-sdk-fixture";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const fixtureSource = resolve(
@@ -37,6 +38,7 @@ describe("CatchRef fresh process worker replay", () => {
       rawPath,
     ]);
     execFileSync(instrumenter, [rawPath, "-o", programPath]);
+    stampFixtureAbiContract(programPath);
 
     const referencePayloadRawPath = join(
       workDir,
@@ -58,6 +60,7 @@ describe("CatchRef fresh process worker replay", () => {
       "-o",
       referencePayloadProgramPath,
     ]);
+    stampFixtureAbiContract(referencePayloadProgramPath);
   });
 
   afterAll(() => {

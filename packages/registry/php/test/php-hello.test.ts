@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from "vitest";
-import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -11,6 +11,8 @@ import { NodePlatformIO } from "../../../../host/src/platform/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../..");
+const declaredVersion = readFileSync(join(__dirname, "../package.toml"), "utf8")
+  .match(/^version = "([^"]+)"/m)![1];
 
 // Prefer the package-managed binary (always built against the current ABI).
 // Fall back to a freshly built local php-src/sapi/cli/php for development.
@@ -25,6 +27,24 @@ const zipExtArgs = ZIP_AVAILABLE
   : [];
 
 describe.skipIf(!PHP_AVAILABLE)("PHP CLI on kandelo", () => {
+    it("runs the declared release and PHP 8.5 pipe expressions", async () => {
+        const { stdout, stderr, exitCode } = await runCentralizedProgram({
+            programPath: phpBinaryPath,
+            argv: ["php", "-n", "-r", '$value = "kandelo" |> strtoupper(...); echo PHP_VERSION, ":", $value, PHP_EOL;'],
+        });
+        expect(exitCode, stderr).toBe(0);
+        expect(stdout.trim()).toBe(`${declaredVersion}:KANDELO`);
+    }, 60_000);
+
+    it("includes OPcache with caching disabled by default", async () => {
+        const { stdout, stderr, exitCode } = await runCentralizedProgram({
+            programPath: phpBinaryPath,
+            argv: ["php", "-n", "-r", 'echo extension_loaded("Zend OPcache") ? "builtin:" : "missing:"; echo ini_get("opcache.enable"), PHP_EOL;'],
+        });
+        expect(exitCode, stderr).toBe(0);
+        expect(stdout.trim()).toBe("builtin:0");
+    }, 60_000);
+
     it("runs 'echo Hello World' via php -r", async () => {
         const { stdout, exitCode } = await runCentralizedProgram({
             programPath: phpBinaryPath,

@@ -1,4 +1,5 @@
 import { corsProxyFetchUrl } from "./cors-proxy-url";
+import { fetchWithProxySession } from "./cors-proxy-session";
 
 export type HttpHeaderOccurrence =
   readonly [name: string, value: string];
@@ -240,7 +241,7 @@ export class BrowserCorsProxy {
       // with the alias, as soon as WP Cloud relays Range headers to PHP.
       init.cache = "no-store";
     }
-    const response = await fetchImpl(url, init);
+    const response = await fetchWithProxySession(url, init, fetchImpl);
     if (
       ifRange === undefined ||
       request.method !== "GET" ||
@@ -253,7 +254,7 @@ export class BrowserCorsProxy {
     headers.delete("range");
     if (alias !== undefined) headers.delete(alias);
     const { cache: _cache, ...wholeInit } = init;
-    return fetchImpl(url, { ...wholeInit, headers });
+    return fetchWithProxySession(url, { ...wholeInit, headers }, fetchImpl);
   }
 
   project(input: {

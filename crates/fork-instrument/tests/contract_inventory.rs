@@ -1,6 +1,7 @@
 use fork_instrument::contract_inventory::{
     ArtifactAbiVersion, ForkContractInventory, artifact_identity, fork_capability_section_hex,
-    fork_contract_inventory, linked_frame_descriptor_section_hex, reserved_env_imports,
+    fork_contract_inventory, legacy_asyncify_exports, linked_frame_descriptor_section_hex,
+    reserved_env_imports,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -188,6 +189,40 @@ fn artifact_identity_captures_side_module_loader_contract() {
     assert_eq!(identity.unsupported_side_import_count, 0);
     assert_eq!(identity.imports_side_fork, 1);
     assert_eq!(identity.imports_kernel_fork, 0);
+}
+
+#[test]
+fn inventories_only_exported_legacy_asyncify_functions() {
+    // The retired Asyncify transform exports asyncify_start_unwind and its
+    // siblings. Binaryen's wasm-opt, which implements that transform, carries
+    // the same names as data and must not be mistaken for its output.
+    let exporting = wat::parse_str(
+        r#"
+        (module
+          (func $unwind)
+          (func $state (result i32) i32.const 0)
+          (export "asyncify_start_unwind" (func $unwind))
+          (export "asyncify_get_state" (func $state))
+          (export "main" (func $unwind)))
+        "#,
+    )
+    .expect("compile exporting WAT");
+    assert_eq!(
+        legacy_asyncify_exports(&exporting).expect("inventory exports"),
+        vec!["asyncify_start_unwind", "asyncify_get_state"],
+    );
+
+    let text_only = wat::parse_str(
+        r#"
+        (module
+          (memory 1)
+          (data (i32.const 0) "asyncify_start_unwind asyncify_get_state")
+          (func $main)
+          (export "main" (func $main)))
+        "#,
+    )
+    .expect("compile text-only WAT");
+    assert!(legacy_asyncify_exports(&text_only).expect("inventory exports").is_empty());
 }
 
 #[test]
@@ -466,4 +501,42 @@ fn custom_section_modes_require_one_exact_section() {
     let missing = wat::parse_str(r#"(module (memory 1))"#).expect("compile missing sections WAT");
     assert!(fork_capability_section_hex(&missing).is_err());
     assert!(linked_frame_descriptor_section_hex(&missing).is_err());
+}
+
+fn temp_wasm(label: &str, bytes: &[u8]) -> PathBuf {
+    let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "kandelo-{label}-{}-{id}.wasm",
+        std::process::id()
+    ));
+    fs::write(&path, bytes).expect("write temp module");
+    path
+}
+
+#[test]
+fn cli_legacy_asyncify_inventory_prints_only_exported_names() {
+    let exporting = temp_wasm(
+        "asyncify-exports",
+        &wat::parse_str(r#"(module (func (export "asyncify_stop_rewind")) (func (export "main")))"#)
+            .expect("compile exporting WAT"),
+    );
+    let text_only = temp_wasm(
+        "asyncify-text",
+        &wat::parse_str(r#"(module (memory 1) (data (i32.const 0) "asyncify_stop_rewind"))"#)
+            .expect("compile text-only WAT"),
+    );
+    let run = |path: &PathBuf| {
+        Command::new(env!("CARGO_BIN_EXE_wasm-fork-instrument"))
+            .arg("--legacy-asyncify-exports")
+            .arg(path)
+            .output()
+            .expect("run legacy Asyncify inventory CLI")
+    };
+    let exported = run(&exporting);
+    let text = run(&text_only);
+    let _ = fs::remove_file(exporting);
+    let _ = fs::remove_file(text_only);
+    assert!(exported.status.success() && text.status.success());
+    assert_eq!(String::from_utf8_lossy(&exported.stdout), "asyncify_stop_rewind\n");
+    assert!(text.stdout.is_empty());
 }

@@ -7,6 +7,7 @@ import {
 } from "../src/demo-config";
 import {
   dockActionProgramName,
+  followShellOutput,
   dockActionProgress,
   runDemoDockAction,
   shellPromptReturned,
@@ -99,11 +100,36 @@ describe("image-owned dock actions", () => {
 });
 
 describe("runDemoDockAction", () => {
+  it("does not interrupt TTY1 for an activity without its own stop handler", async () => {
+    const interruptShellForeground = vi.fn(async () => {});
+    const host = { interruptShellForeground } as unknown as KernelHost;
+    await expect(runDemoDockAction(host, ACTION, { terminalPath: "/dev/pts/3" })).rejects.toThrow("requires its own stop handler");
+    expect(interruptShellForeground).not.toHaveBeenCalled();
+  });
+
+  it("follows the selected activity's terminal instead of TTY1", async () => {
+    const close = vi.fn();
+    const attachPty = vi.fn(async () => ({ onData: () => () => {}, close }));
+    const host = { attachPty } as unknown as KernelHost;
+    const stop = await followShellOutput(host, () => {}, "/dev/pts/3");
+    expect(attachPty).toHaveBeenCalledWith("/dev/pts/3");
+    stop();
+    expect(close).toHaveBeenCalled();
+  });
+  it("keeps a menu command in the activity's owned terminal", async () => {
+    const dispatchShellCommand = vi.fn(async () => {});
+    const host = { dispatchShellCommand } as unknown as KernelHost;
+    await runDemoDockAction(host, ACTION, { terminalPath: "/dev/pts/3", stop: async () => {} });
+    expect(dispatchShellCommand).toHaveBeenCalledWith(ACTION.restart, expect.objectContaining({ path: "/dev/pts/3" }));
+  });
   it("interrupts the foreground program before dispatching the restart", async () => {
     const calls: string[] = [];
     const host = {
       interruptShellForeground: vi.fn(async () => { calls.push("interrupt"); }),
-      dispatchShellCommand: vi.fn(async (command: string) => { calls.push(command); }),
+      dispatchShellCommand: vi.fn(async (command: string, opts) => {
+        await opts?.beforeWrite?.();
+        calls.push(command);
+      }),
     } as unknown as KernelHost;
     const phases: DockActionPhase[] = [];
 
@@ -111,6 +137,23 @@ describe("runDemoDockAction", () => {
 
     expect(calls).toEqual(["interrupt", "/usr/local/bin/play"]);
     expect(phases).toEqual(["stopping", "starting", "done"]);
+  });
+
+  it("uses the pane's stop instead of Ctrl+C when one is given", async () => {
+    // A raw-mode terminal program takes Ctrl+C as a key, so the display
+    // pane ends its device owner itself.
+    const calls: string[] = [];
+    const host = {
+      interruptShellForeground: vi.fn(async () => { calls.push("interrupt"); }),
+      dispatchShellCommand: vi.fn(async (command: string, opts) => {
+        await opts?.beforeWrite?.();
+        calls.push(command);
+      }),
+    } as unknown as KernelHost;
+
+    await runDemoDockAction(host, ACTION, { stop: async () => { calls.push("stop"); } });
+
+    expect(calls).toEqual(["stop", "/usr/local/bin/play"]);
   });
 
   it("does not dispatch when the foreground program never exits", async () => {
@@ -177,6 +220,13 @@ describe("dock action progress", () => {
   it("detects the shell prompt returning after the command exits", () => {
     expect(shellPromptReturned("fetch-game: Download failed\r\nkandelo$ ")).toBe(true);
     expect(shellPromptReturned("fetch-game: Downloading...\r\n")).toBe(false);
+  });
+
+  it("ignores the previous prompt still arriving before command input", () => {
+    expect(shellPromptReturned("ndelo$ ")).toBe(false);
+    expect(shellPromptReturned("kandelo$ ")).toBe(false);
+    expect(shellPromptReturned("\x1b[?2004hkandelo$ ")).toBe(false);
+    expect(shellPromptReturned("ndelo$ /usr/bin/play\r\nkandelo$ ")).toBe(true);
   });
 
   it("does not mistake curl's progress bar for a root prompt", () => {

@@ -16,8 +16,13 @@ import { activeLazyDownloadSummaries } from "../../../../../web-libs/kandelo-ses
 import type {
   DemoDockActionConfig,
   DemoGuideConfig,
-  DemoIngestConfig,
+  DemoExchangeConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
+import type {
+  ExchangeBatchView,
+  ExchangeConsumerStateView,
+  ExchangeOutputView,
+} from "../../../../../web-libs/kandelo-session/src/exchange-session";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
 const LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS = 2400;
@@ -199,12 +204,49 @@ export function useDemoGuide(): DemoGuideConfig | null {
   return state;
 }
 
-export function useDemoIngest(): DemoIngestConfig | null {
+/** The image's exchange presentation hints (picker label and filter). */
+export function useDemoExchange(): DemoExchangeConfig | null {
   const host = useKernelHost();
-  const [state, setState] = React.useState<DemoIngestConfig | null>(() => host.getDemoIngest());
+  const [state, setState] = React.useState<DemoExchangeConfig | null>(() => host.getDemoExchange());
   React.useEffect(() => {
-    setState(host.getDemoIngest());
-    return host.subscribeDemoIngest(setState);
+    setState(host.getDemoExchange());
+    return host.subscribeDemoExchange(setState);
+  }, [host]);
+  return state;
+}
+
+/** Kandelo exchange: whether and how the machine accepts files. */
+export function useExchangeConsumer(): ExchangeConsumerStateView | null {
+  const host = useKernelHost();
+  const [state, setState] = React.useState(() => host.getExchange().consumer);
+  React.useEffect(() => {
+    const exchange = host.getExchange();
+    setState(exchange.consumer);
+    return exchange.subscribeConsumer(setState);
+  }, [host]);
+  return state;
+}
+
+/** Kandelo exchange: offered batches, for the drop toasts. */
+export function useExchangeBatches(): readonly ExchangeBatchView[] {
+  const host = useKernelHost();
+  const [state, setState] = React.useState(() => host.getExchange().batches);
+  React.useEffect(() => {
+    const exchange = host.getExchange();
+    setState(exchange.batches);
+    return exchange.subscribeBatches(setState);
+  }, [host]);
+  return state;
+}
+
+/** Kandelo exchange: outputs waiting in the tray. */
+export function useExchangeOutputs(): readonly ExchangeOutputView[] {
+  const host = useKernelHost();
+  const [state, setState] = React.useState(() => host.getExchange().outputs);
+  React.useEffect(() => {
+    const exchange = host.getExchange();
+    setState(exchange.outputs);
+    return exchange.subscribeOutputs(setState);
   }, [host]);
   return state;
 }

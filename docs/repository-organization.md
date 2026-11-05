@@ -7,6 +7,8 @@ Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes ar
 | Path | Owns | Does not own |
 |------|------|--------------|
 | `crates/kernel/` | Rust kernel implementation: syscalls, process table, fd tables, signals, sockets, PTY, devices | Host runtime, package builds |
+| `crates/program-abi/` | Program ABI version and artifact declarations consumed by the fork instrumenter | Kernel-host-only metadata |
+| `crates/shared/` | Platform contracts and re-exports of program ABI declarations | Fork instrumentation implementation |
 | `host/src/` | TypeScript host runtime shared by Node.js and browser environments | Browser demo UI |
 | `apps/browser-demos/` | Vite app, demo pages, Kandelo web UI, app-local helpers | Core browser host runtime |
 | `web-libs/` | Browser-independent reusable UI/session contracts | App-specific page code |
@@ -41,6 +43,14 @@ Node.js and browser hosts are peers and live beside each other under `host/src/`
 
 `apps/browser-demos/` imports the browser host runtime; it does not maintain it. Demo-only clients, terminal widgets, service-worker setup helpers, and UI components stay in the app tree.
 
+Reusable browser peer connection setup lives in
+`web-libs/kandelo-session/src/peer-connection.ts`: purpose-checked signal
+codes, declared channels, ICE and connection lifecycle. Consumers declare
+their channels beside their app code. The purpose-independent rendezvous
+client is
+`apps/browser-demos/lib/peer-signalling.ts`; its PHP server and server tests
+are under `apps/signalling/`.
+
 ## Package Layout
 
 Each package is self-contained under `packages/registry/<name>/`:
@@ -64,6 +74,7 @@ Package behavior tests live with the package so future CI can map changes to rel
 | `packages/registry/<name>/test/` | Behavior of a specific ported package |
 | `tests/package-system/` | Package registry and binary-fetching automation |
 | `tests/test-artifacts/` | Shared host/kernel test artifact ownership manifests |
+| `tests/baselines/` | Failure/anomaly evidence and provenance; not test expectations |
 | `tests/libc/`, `tests/posix/`, `tests/sortix/` | External conformance suites and overlays |
 | `apps/browser-demos/test/` | Browser app and demo-page integration behavior |
 

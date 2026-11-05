@@ -28,6 +28,7 @@
 //! time-of-check/time-of-use hazard that lets a peer thread widen a buffer the
 //! kernel already sized.
 
+#[cfg(test)]
 use alloc::vec::Vec;
 
 use wasm_posix_shared::process_layout;
@@ -64,11 +65,24 @@ pub struct NativeIovec {
 }
 
 /// One decoded ancillary-data record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct NativeCmsg {
     pub level: u32,
     pub cmsg_type: u32,
-    pub data: Vec<u8>,
+    pub data: crate::IoBuffer<u8>,
+}
+
+pub struct ScmRightsOutput {
+    pub addr: u64,
+    pub capacity: u32,
+    pub pointer_width: u8,
+    pub fd_flags: u32,
+}
+
+pub struct PublishedScmRights {
+    pub control_len: u32,
+    pub truncated: bool,
+    pub descriptors: crate::IoBuffer<i32>,
 }
 
 struct MsghdrLayout {
@@ -184,7 +198,7 @@ pub fn read_msghdr(
     if addr == 0 {
         return Err(Errno::EFAULT);
     }
-    let bytes = guest_ptr::read_guest_bytes(host, pid, addr, layout.size, layout.size)?;
+    let bytes = guest_ptr::read_guest_buffer(host, pid, addr, layout.size, layout.size)?;
     let iov_count = guest_ptr::u32_field(&bytes, layout.iov_len)?;
     // Linux rejects msg_iovlen above IOV_MAX with EMSGSIZE -- net/socket.c's
     // __copy_msghdr serves both sendmsg and recvmsg -- while readv/writev keep
@@ -257,12 +271,12 @@ pub fn read_iovecs(
     addr: u64,
     count: u32,
     pointer_width: u8,
-) -> Result<Vec<NativeIovec>, Errno> {
+) -> Result<crate::IoBuffer<NativeIovec>, Errno> {
     let count = count as usize;
     if count > platform_limits::IOV_MAX {
         return Err(Errno::EINVAL);
     }
-    let mut entries = Vec::new();
+    let mut entries = crate::IoBuffer::new();
     if count == 0 {
         return Ok(entries);
     }
@@ -271,7 +285,7 @@ pub fn read_iovecs(
     // The table is a raw memory offset, not a C pointer: a wasm guest may
     // legitimately place it at address 0. See `guest_ptr`'s rule 4.
     let table =
-        guest_ptr::read_guest_bytes_at_any_address(host, pid, addr, table_bytes, table_bytes)?;
+        guest_ptr::read_guest_buffer_at_any_address(host, pid, addr, table_bytes, table_bytes)?;
     entries.try_reserve_exact(count).map_err(|_| Errno::ENOMEM)?;
     let mut total: usize = 0;
     for index in 0..count {
@@ -310,18 +324,17 @@ pub fn gather(
     host: &mut dyn HostIO,
     pid: i32,
     entries: &[NativeIovec],
-) -> Result<Vec<u8>, Errno> {
+) -> Result<crate::IoBuffer<u8>, Errno> {
     let total = iovec_total(entries)?;
-    let mut out = guest_ptr::zeroed_staging(total, platform_limits::MAX_REPORTABLE_TRANSFER_BYTES)?;
+    let mut out = guest_ptr::zeroed_io_staging(total, platform_limits::MAX_REPORTABLE_TRANSFER_BYTES)?;
     let mut cursor = 0usize;
     for entry in entries {
         if entry.len == 0 {
             continue;
         }
-        let chunk = guest_ptr::read_guest_bytes_at_any_address(
-            host, pid, entry.base, entry.len, entry.len,
+        guest_ptr::read_guest_bytes_into_at_any_address(
+            host, pid, entry.base, &mut out[cursor..cursor + entry.len],
         )?;
-        out[cursor..cursor + entry.len].copy_from_slice(&chunk);
         cursor += entry.len;
     }
     Ok(out)
@@ -366,8 +379,8 @@ pub fn read_control(
     addr: u64,
     control_len: u32,
     pointer_width: u8,
-) -> Result<Vec<NativeCmsg>, Errno> {
-    let mut records = Vec::new();
+) -> Result<crate::IoBuffer<NativeCmsg>, Errno> {
+    let mut records = crate::IoBuffer::new();
     let control_len = control_len as usize;
     if control_len == 0 || addr == 0 {
         return Ok(records);
@@ -376,7 +389,7 @@ pub fn read_control(
     // The guest never sizes a kernel allocation on its own: `msg_controllen`
     // is a caller-chosen u32, so it is bounded by the operation's own limit
     // rather than by whichever allocation happens to fail first.
-    let bytes = guest_ptr::read_guest_bytes(
+    let bytes = guest_ptr::read_guest_buffer(
         host,
         pid,
         addr,
@@ -407,11 +420,8 @@ pub fn read_control(
             // fewer than four bytes.
             return Err(Errno::EINVAL);
         }
-        let mut owned = Vec::new();
-        owned
-            .try_reserve_exact(data.len())
-            .map_err(|_| Errno::ENOMEM)?;
-        owned.extend_from_slice(data);
+        records.try_reserve(1)?;
+        let owned = crate::IoBuffer::copy_from(data)?;
         records.push(NativeCmsg {
             level,
             cmsg_type,
@@ -474,15 +484,28 @@ pub fn write_scm_rights(
         return Err(Errno::EIO);
     }
     let published = span.min(control_len);
-    let mut out = guest_ptr::zeroed_staging(published, published)?;
-    guest_ptr::write_native_long(&mut out, layout.len, pointer_width, record_len as i64)?;
-    guest_ptr::write_u32_field(&mut out, layout.level, SOL_SOCKET)?;
-    guest_ptr::write_u32_field(&mut out, layout.cmsg_type, SCM_RIGHTS)?;
-    for (index, fd) in fds.iter().enumerate() {
-        let at = layout.data + index * SCM_RIGHTS_FD_BYTES;
-        out[at..at + SCM_RIGHTS_FD_BYTES].copy_from_slice(&fd.to_le_bytes());
+    addr.checked_add(published as u64).ok_or(Errno::EFAULT)?;
+    let mut header = [0u8; process_layout::cmsghdr::WASM64_SIZE as usize];
+    guest_ptr::write_native_long(&mut header, layout.len, pointer_width, record_len as i64)?;
+    guest_ptr::write_u32_field(&mut header, layout.level, SOL_SOCKET)?;
+    guest_ptr::write_u32_field(&mut header, layout.cmsg_type, SCM_RIGHTS)?;
+    let mut buffer = [0u8; 4096];
+    let mut written = 0;
+    while written < published {
+        let take = buffer.len().min(published - written);
+        buffer[..take].fill(0);
+        if written == 0 { buffer[..layout.data].copy_from_slice(&header[..layout.data]); }
+        let mut offset = written.max(layout.data);
+        let data_end = (written + take).min(record_len);
+        while offset < data_end {
+            let index = (offset - layout.data) / SCM_RIGHTS_FD_BYTES;
+            let local = offset - written;
+            buffer[local..local + SCM_RIGHTS_FD_BYTES].copy_from_slice(&fds[index].to_le_bytes());
+            offset += SCM_RIGHTS_FD_BYTES;
+        }
+        guest_ptr::write_guest_bytes(host, pid, addr + written as u64, &buffer[..take])?;
+        written += take;
     }
-    guest_ptr::write_guest_bytes(host, pid, addr, &out)?;
     u32::try_from(published).map_err(|_| Errno::EOVERFLOW)
 }
 
@@ -522,7 +545,7 @@ mod tests {
         // a null table with no entries is a legal request for zero bytes.
         assert_eq!(
             read_iovecs(&mut guest, 1, 0, caller_iovec_count(0), 4),
-            Ok(Vec::new()),
+            Ok(crate::IoBuffer::new()),
         );
     }
 
@@ -893,6 +916,146 @@ mod tests {
                 .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             assert_eq!(decoded, fds);
+        }
+    }
+
+    #[test]
+    fn control_decode_admission_refusal_releases_partial_records_and_retries() {
+        for width in [4u8, 8] {
+            let span = control_space(width, SCM_RIGHTS_FD_BYTES).unwrap();
+            let total = span * 2;
+            let mut guest = GuestMemoryHost::new(BASE, 4096);
+            write_scm_rights(&mut guest, 1, BASE, span as u32, width, &[3]).unwrap();
+            write_scm_rights(&mut guest, 1, BASE + span as u64, span as u32, width, &[4]).unwrap();
+            let original = guest.peek(BASE, total).to_vec();
+            let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+            let snapshot = total * 2;
+            let records = 8 * core::mem::size_of::<NativeCmsg>();
+            for allowance in [0, snapshot, snapshot + records, snapshot + records + 8] {
+                let _limit = crate::io_buffer::test_budget(baseline + allowance);
+                assert!(matches!(read_control(&mut guest, 1, BASE, total as u32, width), Err(Errno::ENOMEM)));
+                assert_eq!(guest.peek(BASE, total), original.as_slice());
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+            }
+            let decoded = read_control(&mut guest, 1, BASE, total as u32, width).unwrap();
+            assert_eq!(decoded.len(), 2);
+            assert_eq!(decoded[0].data, 3i32.to_le_bytes());
+            assert_eq!(decoded[1].data, 4i32.to_le_bytes());
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline + records + 16);
+            drop(decoded);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+    }
+
+    #[test]
+    fn gather_uses_only_the_admitted_destination_and_releases_it_on_guest_fault() {
+        let mut guest = GuestMemoryHost::new(BASE, 2048);
+        guest.poke(BASE, &[1; 512]);
+        guest.poke(BASE + 512, &[2; 512]);
+        let mut entries = [NativeIovec { base: BASE, len: 512 }, NativeIovec { base: BASE + 512, len: 512 }];
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let _limit = crate::io_buffer::test_budget(baseline + 2048);
+        let data = gather(&mut guest, 1, &entries).unwrap();
+        assert_eq!(&data[..512], &[1; 512]);
+        assert_eq!(&data[512..], &[2; 512]);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline + 2048);
+        drop(data);
+        entries[1].base = BASE + 2048;
+        assert!(matches!(gather(&mut guest, 1, &entries), Err(Errno::EFAULT)));
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn streamed_control_output_crosses_chunk_boundaries_at_a_full_io_allowance() {
+        for width in [4u8, 8] {
+            let fds: Vec<i32> = (0..2051).collect();
+            let span = control_space(width, fds.len() * SCM_RIGHTS_FD_BYTES).unwrap();
+            let mut guest = GuestMemoryHost::new(BASE, span + 32);
+            guest.memory.fill(0x55);
+            {
+                let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+                let _limit = crate::io_buffer::test_budget(baseline);
+                assert_eq!(write_scm_rights(&mut guest, 1, BASE, (span + 32) as u32, width, &fds), Ok(span as u32));
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+            }
+            let decoded = read_control(&mut guest, 1, BASE, span as u32, width).unwrap();
+            assert_eq!(decoded.len(), 1);
+            for (index, encoded) in decoded[0].data.chunks_exact(4).enumerate() {
+                assert_eq!(encoded, (index as i32).to_le_bytes());
+            }
+            let record_len = cmsg_layout(width).unwrap().data + fds.len() * SCM_RIGHTS_FD_BYTES;
+            assert!(guest.peek(BASE + record_len as u64, span - record_len).iter().all(|byte| *byte == 0));
+            assert_eq!(guest.peek(BASE + span as u64, 32), &[0x55; 32]);
+        }
+    }
+
+    #[test]
+    fn received_rights_copyout_and_header_rollback_preserve_existing_process_locks() {
+        use crate::lock::{AdvisoryLockType, LockOwner, LockRange};
+        use crate::syscalls;
+        use wasm_posix_shared::fd_flags::FD_CLOEXEC;
+        for width in [4u8, 8] {
+            for failure in 0..5 {
+                let mut guest = GuestMemoryHost::new(BASE, 8192);
+                let mut proc = crate::process::Process::new(81_100 + failure);
+                let mut locks = crate::lock::AdvisoryLockManager::new();
+                let original = syscalls::sys_memfd_create(&mut proc, b"copyout-owner", 0).unwrap();
+                let original_ofd = proc.fd_table.get(original).unwrap().ofd_ref.0;
+                let description = proc.ofd_table.get(original_ofd).unwrap();
+                let ofd_id = description.ofd_id;
+                let shared_refs = description.shared_state_ref_count();
+                let mut lock = wasm_posix_shared::WasmFlock {
+                    l_type: wasm_posix_shared::lock_type::F_WRLCK as i16,
+                    l_whence: wasm_posix_shared::seek::SEEK_SET as i16, _pad1: 0,
+                    l_start: 0, l_len: 0, l_pid: 0, _pad2: 0,
+                };
+                syscalls::sys_fcntl_lock(&mut proc, &mut locks, original,
+                    wasm_posix_shared::fcntl_cmd::F_SETLK, &mut lock, &mut guest).unwrap();
+                let file_id = proc.ofd_table.get(original_ofd).unwrap().file_id.unwrap();
+                let range = LockRange::normalize(0, 0).unwrap();
+                let contender = LockOwner::Process(proc.pid + 1);
+                let conflict = locks.get_blocking_lock(file_id, contender, AdvisoryLockType::Write, range);
+                assert!(conflict.is_some());
+                let mut batch = crate::pipe::AncillaryFds::try_with_capacity(1).unwrap();
+                let mut entry = syscalls::snapshot_scm_rights_fd(&proc, original).unwrap();
+                entry.retain_reference().unwrap();
+                batch.push(entry);
+                let descriptors = proc.fd_table.iter().count();
+                let ofds = proc.ofd_table.iter().count();
+                let capacity = control_space(width, SCM_RIGHTS_FD_BYTES).unwrap() as u32;
+                let addr = match failure { 1 => BASE + 8192, 3 => 0, _ => BASE };
+                let held = crate::io_buffer::IO_MEMORY.usage().0;
+                let _limit = (failure == 4).then(|| crate::io_buffer::test_budget(held));
+                let result = syscalls::publish_scm_rights(&mut proc, &mut locks, &mut guest, batch,
+                    ScmRightsOutput { addr, capacity, pointer_width: width, fd_flags: FD_CLOEXEC });
+                if failure == 1 {
+                    assert!(matches!(result, Err(Errno::EFAULT)));
+                } else {
+                    let publication = result.unwrap();
+                    assert_eq!(publication.truncated, failure >= 3);
+                    assert_eq!(publication.descriptors.len(), if failure >= 3 { 0 } else { 1 });
+                    if failure < 3 {
+                        assert_eq!(publication.control_len, capacity);
+                        let received = publication.descriptors[0];
+                        assert_eq!(proc.fd_table.get(received).unwrap().fd_flags & FD_CLOEXEC, FD_CLOEXEC);
+                    } else {
+                        assert_eq!(publication.control_len, 0);
+                    }
+                    if failure == 2 {
+                        assert_eq!(write_msghdr_results(&mut guest, proc.pid as i32, BASE + 8192,
+                            width, None, publication.control_len, 0), Err(Errno::EFAULT));
+                    }
+                    syscalls::rollback_scm_rights_fds(&mut proc, &mut locks, &mut guest, publication.descriptors);
+                }
+                assert_eq!(proc.fd_table.iter().count(), descriptors);
+                assert_eq!(proc.ofd_table.iter().count(), ofds);
+                assert_eq!(proc.ofd_table.reserved_count(), 0);
+                assert_eq!(proc.ofd_table.get(original_ofd).unwrap().shared_state_ref_count(), shared_refs);
+                assert!(!crate::ofd::has_in_flight_ofd(ofd_id));
+                assert_eq!(locks.get_blocking_lock(file_id, contender, AdvisoryLockType::Write, range), conflict);
+                syscalls::sys_close_with_locks(&mut proc, &mut locks, &mut guest, original).unwrap();
+                assert!(locks.is_empty());
+            }
         }
     }
 

@@ -1,0 +1,96 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebKit: TextDecoder wrapper-cache crash in a new nested worker (attempted reduction)</title>
+<pre id="out"></pre>
+<script>
+// Attempted standalone reduction; nothing here comes from Kandelo. It has
+// NOT reproduced the crash, so it is evidence of what was tried, not a
+// confirmed test case. Serve this directory cross-origin isolated:
+//   Cross-Origin-Opener-Policy: same-origin
+//   Cross-Origin-Embedder-Policy: require-corp
+// and open repro.html?spawns=400&live=20&park=1&decoders=50.
+//
+// A "kernel" worker keeps creating nested "process" workers. Each child
+// receives a shared WebAssembly.Memory in its first message, constructs
+// TextDecoders in that message handler, then (park=1) blocks in
+// Atomics.wait like a process waiting for a system call. The kernel keeps
+// `live` children and terminates the oldest beyond that, waking it first
+// when park=1 and wake=1.
+//
+// Verdict: the page reports `not-reproduced` once every spawn finished
+// without a crash. A crash of the page process cannot be reported by the
+// page; the runner records it, and the registry entry counts a crash as
+// `reproduced`.
+const params = new URLSearchParams(location.search);
+const config = {
+  spawns: Number(params.get('spawns') ?? '400'),
+  live: Number(params.get('live') ?? '20'),
+  park: params.get('park') !== '0',
+  decoders: Number(params.get('decoders') ?? '50'),
+  wake: params.get('wake') !== '0',
+};
+window.__state = { spawned: 0, done: false, errors: [] };
+const out = document.getElementById('out');
+
+function childMain() {
+  onmessage = async ({ data }) => {
+    const { memory, decoders, park } = data;
+    let text = '';
+    for (let i = 0; i < decoders; i++) {
+      text = new TextDecoder().decode(new Uint8Array([0x6b, 0x61, 0x6e, 0x64, 0x65, 0x6c, 0x6f]));
+    }
+    await Promise.resolve();
+    for (let i = 0; i < decoders; i++) text = new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(4));
+    postMessage({ ready: true, text });
+    if (park) Atomics.wait(new Int32Array(memory.buffer), 0, 0);
+  };
+}
+
+function kernelMain() {
+  onmessage = async ({ data: config }) => {
+    const childUrl = URL.createObjectURL(new Blob([`(${config.childSource})();`], { type: 'application/javascript' }));
+    const children = [];
+    for (let i = 0; i < config.spawns; i++) {
+      const memory = new WebAssembly.Memory({ initial: 17, maximum: 1024, shared: true });
+      const worker = new Worker(childUrl);
+      await new Promise((resolve) => {
+        worker.onmessage = resolve;
+        worker.postMessage({ memory, decoders: config.decoders, park: config.park });
+      });
+      children.push({ worker, memory });
+      while (children.length > config.live) {
+        const old = children.shift();
+        if (config.park && config.wake) {
+          const view = new Int32Array(old.memory.buffer);
+          Atomics.store(view, 0, 1);
+          Atomics.notify(view, 0);
+        }
+        old.worker.terminate();
+      }
+      // Kernel-side decoding, as the application's kernel worker did for
+      // every program start.
+      for (let k = 0; k < 20; k++) new TextDecoder().decode(new Uint8Array(8));
+      postMessage({ spawned: i + 1 });
+    }
+    postMessage({ done: true });
+  };
+}
+
+const kernel = new Worker(URL.createObjectURL(new Blob([`(${kernelMain})();`], { type: 'application/javascript' })));
+kernel.onmessage = ({ data }) => {
+  if (data.spawned) window.__state.spawned = data.spawned;
+  if (data.done) {
+    window.__state.done = true;
+    out.textContent += 'done\n';
+    window.__reproVerdict = {
+      verdict: 'not-reproduced',
+      details: `${window.__state.spawned} nested workers each constructed ${config.decoders * 2} TextDecoders without a crash`,
+    };
+  }
+};
+kernel.onerror = (event) => {
+  window.__state.errors.push(event.message);
+  window.__reproVerdict = { verdict: 'inconclusive', details: `kernel worker error: ${event.message}` };
+};
+kernel.postMessage({ ...config, childSource: childMain.toString() });
+</script>

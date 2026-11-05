@@ -1,3 +1,4 @@
+import { notifyReadiness, readinessGeneration } from "./readiness-generation";
 /**
  * TLS-MITM Network Backend for browser environments.
  *
@@ -13,7 +14,8 @@
  * EAGAIN/retry pattern — no separate worker thread needed.
  */
 
-import type { NetworkIO } from "../types";
+import type { NetworkAddress, NetworkIO, UdpReceiveTarget } from "../types";
+import { EgressLink, SyntheticHostAddresses } from "./egress-link";
 import { NET_READINESS } from "../generated/abi";
 import { EagainError } from "./fetch-backend";
 import {
@@ -95,6 +97,7 @@ function appendHttpResponse(conn: HttpConnectionState, piece: Uint8Array): void 
     ? conn.responseBuf.subarray(conn.responseOffset)
     : new Uint8Array(0);
   conn.responseBuf = concatBuffers(unread, piece);
+  if (piece.length) notifyReadiness(conn, 0);
   conn.responseOffset = 0;
 }
 
@@ -413,7 +416,9 @@ export interface TlsNetworkBackendOptions {
 
 export class TlsNetworkBackend implements NetworkIO {
   private connections = new Map<number, ConnectionState>();
-  private hostnameMap = new Map<string, string>(); // ip string → hostname
+  // The guest sees fetch as a NAT gateway on its own link (egress-link.ts).
+  private readonly egress = new EgressLink();
+  private readonly addresses = new SyntheticHostAddresses();
   private corsProxy: BrowserCorsProxy | undefined;
   private dnsAliases: Record<string, string>;
   private createTlsConnection: () => TlsMitmConnection;
@@ -463,20 +468,29 @@ export class TlsNetworkBackend implements NetworkIO {
 
   // ---- NetworkIO implementation ----
 
+  get localAddress(): Uint8Array { return this.egress.localAddress; }
+  get localNetmask(): Uint8Array { return this.egress.localNetmask; }
+  udpSourceAddress(destination: Uint8Array): Uint8Array { return this.egress.udpSourceAddress(destination); }
+  bindUdp(id: string, addr: Uint8Array, port: number, target: UdpReceiveTarget): number { return this.egress.bindUdp(id, addr, port, target); }
+  unbindUdp(id: string): void { this.egress.unbindUdp(id); }
+  sendDatagram(): number { return this.egress.sendDatagram(); }
+
+  /** The NAT side of a stream: this machine's address and the port it holds. */
+  localEndpoint(handle: number): NetworkAddress {
+    if (!this.connections.has(handle)) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
+    return this.egress.streamEndpoint(handle);
+  }
+
   getaddrinfo(hostname: string): Uint8Array {
     const literalIp = parseNumericIpv4Hostname(hostname);
     if (literalIp) return literalIp;
     validateSyntheticDnsHostname(hostname, this.dnsAliases);
-
-    const ip = this.syntheticIp(hostname);
-    const ipStr = this.ipKey(ip);
-    this.hostnameMap.set(ipStr, hostname);
-    return ip;
+    return this.addresses.resolve(hostname);
   }
 
-  connect(handle: number, addr: Uint8Array, port: number): void {
-    const ipStr = this.ipKey(addr);
-    const hostname = this.hostnameMap.get(ipStr) || ipStr;
+  connect(handle: number, addr: Uint8Array, port: number, source?: NetworkAddress): void {
+    this.egress.openStream(handle, source);
+    const hostname = this.addresses.hostname(addr) ?? Array.from(addr).join(".");
 
     if (port === 443) {
       this.connectTls(handle, addr, port, hostname);
@@ -521,11 +535,13 @@ export class TlsNetworkBackend implements NetworkIO {
   }
 
   close(handle: number): void {
+    this.egress.closeStream(handle);
     const conn = this.connections.get(handle);
     if (!conn) return;
 
     if (conn.kind === "tls") {
       conn.closed = true;
+      notifyReadiness(conn);
       conn.tls.close().catch(() => {});
     }
     this.connections.delete(handle);
@@ -566,6 +582,7 @@ export class TlsNetworkBackend implements NetworkIO {
           if (done) break;
           if (value && value.length > 0) {
             conn.clientDownstreamBuf = concatBuffers(conn.clientDownstreamBuf, value);
+            if (value.length) notifyReadiness(conn, 0);
           }
         }
       } catch {
@@ -576,6 +593,7 @@ export class TlsNetworkBackend implements NetworkIO {
         // races the async encryption pump: recv() could observe conn.closed
         // with an empty buffer and return a premature 0-byte EOF.
         conn.closed = true;
+      notifyReadiness(conn);
       }
     })();
 
@@ -600,6 +618,7 @@ export class TlsNetworkBackend implements NetworkIO {
     this.startHandshake(handle, conn).catch((err) => {
       conn.error = err;
       conn.closed = true;
+      notifyReadiness(conn);
     });
   }
 
@@ -632,6 +651,7 @@ export class TlsNetworkBackend implements NetworkIO {
         conn.error = err;
       }
       conn.closed = true;
+      notifyReadiness(conn);
     });
   }
 
@@ -651,6 +671,7 @@ export class TlsNetworkBackend implements NetworkIO {
       // Ignore write errors on closed connections (e.g. SSL_shutdown close_notify)
       if (!conn.closed) {
         conn.closed = true;
+      notifyReadiness(conn);
       }
     });
 
@@ -881,10 +902,12 @@ export class TlsNetworkBackend implements NetworkIO {
         }
         if (conn.requestGeneration !== generation) return;
         conn.fetchDone = true;
+        notifyReadiness(conn, 0);
       } catch (e) {
         if (conn.requestGeneration !== generation) return;
         conn.fetchError = e as Error;
         conn.fetchDone = true;
+        notifyReadiness(conn, 0);
       }
     };
 
@@ -926,6 +949,11 @@ export class TlsNetworkBackend implements NetworkIO {
    * Report what each transport makes observable. No POSIX readiness decision
    * is made here — `runtime_core::net_readiness` makes it.
    */
+  readinessGeneration(handle: number, direction: number): bigint {
+    const conn = this.connections.get(handle);
+    return conn ? readinessGeneration(conn, direction) : -1n;
+  }
+
   readiness(handle: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
@@ -957,19 +985,5 @@ export class TlsNetworkBackend implements NetworkIO {
       facts |= NET_READINESS.SEND_READY;
     }
     return facts;
-  }
-
-  // ---- Utilities ----
-
-  private syntheticIp(hostname: string): Uint8Array {
-    let hash = 0;
-    for (let i = 0; i < hostname.length; i++) {
-      hash = ((hash << 5) - hash + hostname.charCodeAt(i)) | 0;
-    }
-    return new Uint8Array([10, (hash >> 16) & 0xff, (hash >> 8) & 0xff, hash & 0xff]);
-  }
-
-  private ipKey(ip: Uint8Array): string {
-    return `${ip[0]}.${ip[1]}.${ip[2]}.${ip[3]}`;
   }
 }

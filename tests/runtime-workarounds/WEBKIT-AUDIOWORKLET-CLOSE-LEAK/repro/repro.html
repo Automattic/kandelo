@@ -1,0 +1,112 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebKit: AudioContext.close() leaves an AudioWorklet thread behind (needs a thread listing)</title>
+<pre id="out"></pre>
+<script>
+// Standalone reproduction; nothing here comes from Kandelo. Serve this
+// directory cross-origin isolated (the node's options carry a
+// SharedArrayBuffer):
+//   Cross-Origin-Opener-Policy: same-origin
+//   Cross-Origin-Embedder-Policy: require-corp
+// and open repro.html. The verdict is written to window.__reproVerdict and
+// printed on the page.
+//
+// Each cycle does what an application does per session: create an
+// AudioContext, load a worklet module, create an AudioWorkletNode whose
+// processorOptions carry a SharedArrayBuffer, connect it, start the
+// context, then disconnect the node and close() the context.
+//
+// THIS PAGE DOES NOT JUDGE THE DEFECT BY ITSELF, so it always reports
+// `inconclusive`. The defect is that WebKit's page process keeps one
+// "WebCore: AudioWorklet" thread per closed context. Only a thread listing
+// shows it; on macOS, after the page prints "done":
+//   sample <WebContent pid> 1 | grep -c 'WebCore: AudioWorklet'
+// gives CYCLES threads instead of 0.
+//
+// By default (ping=0) the page closes the node's MessagePort (after removing
+// its listener) before close(), and keeps no reference to the node or the
+// context afterwards. Neither a page reference nor an entangled port with a
+// listener can then keep a worklet alive.
+//
+// With ping=1 the page instead keeps the closed nodes and, well after
+// close(), messages each closed node's port. An answer shows the worklet's
+// thread is alive, but it is not a verdict: the Web Audio specification does
+// not say when a closed context's AudioWorkletGlobalScope ends while the
+// page still holds its node, and Firefox answers too (Chromium does not).
+// It is kept as a clue for whoever reduces this further.
+const params = new URLSearchParams(location.search);
+const CYCLES = Number(params.get('cycles') ?? '3');
+const PING = params.get('ping') === '1';
+// Wait well past any deferred cleanup before looking; WebKit kept the
+// threads for at least 25 s when sampled.
+const SETTLE_MS = Number(params.get('settle') ?? '10000');
+const ANSWER_MS = 2000;
+const out = document.getElementById('out');
+const log = (line) => { out.textContent += line + '\n'; };
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function cycle(i) {
+  const context = new AudioContext({ latencyHint: 'interactive' });
+  await context.audioWorklet.addModule('processor.js');
+  const node = new AudioWorkletNode(context, 'silence', {
+    numberOfInputs: 0,
+    outputChannelCount: [2],
+    processorOptions: { control: new SharedArrayBuffer(64) },
+  });
+  node.connect(context.destination);
+  await context.resume().catch(() => {});
+  await sleep(200);
+  // Prove the port works while the context runs; otherwise silence after
+  // close() would mean nothing.
+  const live = await ping(node, `live-${i}`);
+  if (!PING) {
+    // An entangled port with a listener keeps its channel alive (HTML,
+    // "Ports and garbage collection"); close it so nothing is left over.
+    node.port.onmessage = null;
+    node.port.close();
+  }
+  node.disconnect();
+  await context.close();
+  log(`cycle ${i + 1}: answered while running: ${live}; context ${context.state}`);
+  return { node: PING ? node : null, live, state: context.state };
+}
+
+function ping(node, tag) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), ANSWER_MS);
+    node.port.onmessage = ({ data }) => {
+      if (data && data.pong === tag) { clearTimeout(timer); resolve(true); }
+    };
+    node.port.postMessage(tag);
+  });
+}
+
+async function main() {
+  const closed = [];
+  for (let i = 0; i < CYCLES; i++) closed.push(await cycle(i));
+  if (closed.some((c) => !c.live || c.state !== 'closed')) {
+    return { verdict: 'inconclusive', details: `a worklet did not answer while running, or a context did not close: ${JSON.stringify(closed.map(({ live, state }) => ({ live, state })))}` };
+  }
+  if (!PING) {
+    log('done; count WebCore: AudioWorklet threads in the page process now');
+    return {
+      verdict: 'inconclusive',
+      details: `${CYCLES} contexts closed, their ports closed and released; count WebCore: AudioWorklet threads in a stack sample to judge`,
+    };
+  }
+  await sleep(SETTLE_MS);
+  const answers = await Promise.all(closed.map((c, i) => ping(c.node, `closed-${i}`)));
+  const alive = answers.filter(Boolean).length;
+  log(`closed contexts whose worklet still answered after ${SETTLE_MS / 1000} s: ${alive}/${CYCLES}`);
+  log('done; count WebCore: AudioWorklet threads in the page process now');
+  return {
+    verdict: 'inconclusive',
+    details: `${CYCLES} contexts closed; ${alive}/${CYCLES} worklets still answered ${SETTLE_MS / 1000} s after close(); count WebCore: AudioWorklet threads in a stack sample to judge`,
+  };
+}
+
+main().then(
+  (verdict) => { window.__reproVerdict = verdict; log(`${verdict.verdict}: ${verdict.details}`); },
+  (error) => { window.__reproVerdict = { verdict: 'inconclusive', details: `repro failed: ${error}` }; log(String(error)); },
+);
+</script>

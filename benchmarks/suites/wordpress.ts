@@ -29,7 +29,6 @@ const repoRoot = resolve(__dirname, "../..");
 const phpBinaryPath =
   tryResolveBinary("programs/php/php.wasm") ??
   resolve(repoRoot, "packages/registry/php/php-src/sapi/cli/php");
-const opcachePath = tryResolveBinary("programs/php/opcache.so");
 const wpDir = resolve(repoRoot, "packages/registry/wordpress/wordpress");
 const routerScript = resolve(repoRoot, "packages/registry/wordpress/demo/router.php");
 
@@ -46,22 +45,17 @@ export function describeWordPressBenchmarkInputs(): {
   phpBinaryPath: string;
   phpResolverRequest: string;
   phpResolverSelectedPath: string | null;
-  opcachePath: string | null;
-  opcacheResolverRequest: string;
   opcacheUsed: boolean;
   wpDir: string;
   wpConfigPath: string;
   routerScript: string;
 } {
   const phpResolverRequest = "programs/php/php.wasm";
-  const opcacheResolverRequest = "programs/php/opcache.so";
   return {
     phpBinaryPath,
     phpResolverRequest,
     phpResolverSelectedPath: tryResolveBinary(phpResolverRequest),
-    opcachePath,
-    opcacheResolverRequest,
-    opcacheUsed: process.env.NO_OPCACHE !== "1" && opcachePath !== null,
+    opcacheUsed: process.env.NO_OPCACHE !== "1",
     wpDir,
     wpConfigPath: join(wpDir, "wp-config.php"),
     routerScript,
@@ -109,8 +103,8 @@ async function measureCliRequire(
 }
 
 function phpOpcacheArgs(fileCachePath: string): string[] {
-  if (process.env.NO_OPCACHE === "1" || !opcachePath) return [];
-  return buildPhpOpcacheArgs(opcachePath, fileCachePath);
+  if (process.env.NO_OPCACHE === "1") return [];
+  return buildPhpOpcacheArgs(fileCachePath);
 }
 
 async function measureHttpFirstResponse(

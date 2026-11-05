@@ -19,7 +19,7 @@ describe("virtual network interface ioctls", () => {
   ])(
     "honors interface and guest-memory contracts for $arch",
     async ({ arch, programPath, ifreqSize }) => {
-      const network = new LocalVirtualNetwork();
+      const network = new LocalVirtualNetwork({ network: [10, 23, 45, 0], prefixLength: 24 });
       const io = new NodePlatformIO();
       io.network = network.attachMachine({
         id: `ifhwaddr-${arch}`,

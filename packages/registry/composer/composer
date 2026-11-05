@@ -1,0 +1,8 @@
+#!/bin/sh
+# Load Composer's extensions for this invocation, leaving the shell's PHP
+# configuration available for other applications.
+exec /usr/bin/php \
+    -d extension=/usr/lib/composer/phar.so \
+    -d extension=/usr/lib/composer/curl.so \
+    -d extension=/usr/lib/composer/zip.so \
+    /usr/share/composer/composer.phar "$@"

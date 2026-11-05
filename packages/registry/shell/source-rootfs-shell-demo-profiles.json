@@ -1,6 +1,71 @@
 {
   "version": 1,
   "profiles": {
+    "freeciv": {
+      "identity": {
+        "title": "Freeciv",
+        "summary": "Build a civilization with the SDL2 client and a networked Freeciv server.",
+        "accent": "#51723d",
+        "glyph": "Fc",
+        "packages": [
+          "freeciv@3.2.6",
+          "bash@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/bin/freeciv-play"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "displayScale": 1.5
+      },
+      "dockActions": [
+        {
+          "id": "multiplayer",
+          "label": "Multiplayer",
+          "description": "Create or join a Network session, then host a game or connect to its host. Each player gets a separate screen name.",
+          "menu": [
+            {
+              "id": "host",
+              "label": "Host a game",
+              "restart": "/usr/bin/freeciv-play host"
+            },
+            {
+              "id": "join",
+              "label": "Join session host",
+              "restart": "/usr/bin/freeciv-play join"
+            },
+            {
+              "id": "local",
+              "label": "Single player / main menu",
+              "restart": "/usr/bin/freeciv-play"
+            }
+          ]
+        }
+      ],
+      "guide": {
+        "title": "Freeciv",
+        "summary": "Use New Game for single player. For multiplayer, create a Network session and choose Multiplayer → Host a game. Friends join the session and choose Join session host. The host starts play after everyone has joined. Automatic LAN discovery is unavailable; connections use host:5556. Save games in your home directory; download the save files to keep them beyond this running machine's lifetime.",
+        "groups": []
+      },
+      "activity": {
+        "share": "freeciv-browser-bundle/game"
+      }
+    },
     "doom": {
       "identity": {
         "title": "fbDOOM",
@@ -20,7 +85,7 @@
         ]
       },
       "init": {
-        "shellCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad"
+        "shellCommand": "/usr/local/bin/doom-launch"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -31,20 +96,32 @@
       },
       "assets": [
         {
-          "path": "/doom1.wad",
+          "path": "/usr/share/doom/doom1.wad",
           "url": "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
           "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
           "mode": 420
         }
       ],
-      "ingest": {
-        "accept": [".wad"],
-        "targetPath": "/user.wad",
-        "maxBytes": 33554432,
-        "label": "Load WAD",
-        "onLoad": {
-          "restart": "/usr/local/bin/fbdoom -iwad /user.wad"
+      "dockActions": [
+        {
+          "id": "lan",
+          "label": "LAN game",
+          "description": "Play with the other computers in this network session: host a game that starts once every player has joined (or press Space in its waiting room to start sooner), or join one hosted on the session. Everyone plays the shareware WAD.",
+          "menu": [
+            { "id": "coop-2", "label": "2 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 2" },
+            { "id": "coop-3", "label": "3 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 3" },
+            { "id": "coop-4", "label": "4 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 4" },
+            { "id": "deathmatch-2", "label": "2 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 2 -deathmatch" },
+            { "id": "deathmatch-3", "label": "3 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 3 -deathmatch" },
+            { "id": "deathmatch-4", "label": "4 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 4 -deathmatch" },
+            { "id": "join", "label": "Join a LAN game", "group": "Join", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -autojoin" },
+            { "id": "single", "label": "Back to single player", "group": "Single player", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad" }
+          ]
         }
+      ],
+      "exchange": {"label": "Load WAD", "accept": [".wad"]},
+      "activity": {
+        "share": "fbdoom/game"
       }
     },
     "quake": {
@@ -84,14 +161,9 @@
           "mode": 420
         }
       ],
-      "ingest": {
-        "accept": [".pak"],
-        "targetPath": "/usr/share/quake/id1/pak0.pak",
-        "maxBytes": 33554432,
-        "label": "Load pak0.pak",
-        "onLoad": {
-          "restart": "/usr/local/bin/quake"
-        }
+      "exchange": {"label": "Load pak0.pak", "accept": [".pak"]},
+      "activity": {
+        "share": "tyrquake/game"
       }
     },
     "ffmpeg-fbdev": {
@@ -119,6 +191,10 @@
         "runningPrimary": ["framebuffer", "terminal", "syslog"],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer"
+      },
+      "activity": {
+        "category": "demos",
+        "visible": false
       }
     },
     "ffplay": {
@@ -146,6 +222,10 @@
         "runningPrimary": ["kms", "terminal", "syslog"],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer"
+      },
+      "activity": {
+        "category": "demos",
+        "visible": false
       }
     },
     "modeset": {
@@ -173,6 +253,9 @@
         "runningPrimary": ["kms", "terminal", "syslog"],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer"
+      },
+      "activity": {
+        "category": "demos"
       }
     },
     "scummvm": {
@@ -378,17 +461,12 @@
           ]
         }
       ],
-      "ingest": {
-        "accept": [".zip"],
-        "targetPath": "/usr/share/scummvm-games/upload.zip",
-        "maxBytes": 536870912,
-        "label": "Load game data"
-      }
+      "exchange": {"label": "Load game data", "accept": [".zip"]}
     },
     "love": {
       "identity": {
         "title": "LÖVE games",
-        "summary": "Play Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX. Choose a game from the Games menu. Audio and Steam features are unavailable in this port.",
+        "summary": "Play Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX. Choose a game from the Games menu and enable audio to hear sound. Steam features are unavailable in this port.",
         "accent": "#ec75b8",
         "glyph": "L",
         "packages": [
@@ -412,14 +490,13 @@
           "syslog"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer",
-        "hostPointer": true
+        "internalsAccess": "drawer"
       },
       "dockActions": [
         {
           "id": "games",
           "label": "Games",
-          "description": "Start the selected game. Audio is unavailable in this port.",
+          "description": "Start the selected game. Enable audio to hear sound.",
           "menu": [
             {
               "id": "pong",
@@ -454,6 +531,53 @@
           ]
         }
       ]
+    },
+    "ffmpeg-video": {
+      "identity": {
+        "title": "FFmpeg video",
+        "summary": "Watch a Big Buck Bunny clip with sound. © 2008 Blender Foundation · CC BY 3.0.",
+        "accent": "#1565c0",
+        "glyph": "▶",
+        "packages": [
+          "ffmpeg@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/bin/ffplay -loop 0 /usr/share/big-buck-bunny.mp4"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "activity": {
+        "category": "demos"
+      },
+      "assets": [
+        {
+          "path": "/usr/share/big-buck-bunny.mp4",
+          "url": "https://raw.githubusercontent.com/mediaelement/mediaelement-files/4d21a042353022326071acb0251ab75cd6bae114/big_buck_bunny.mp4",
+          "sha256": "543a4ad9fef4c9e0004ec9482cb7225c2574b0f889291e8270b1c4d61dbc1ab8",
+          "mode": 420
+        }
+      ],
+      "guide": {
+        "title": "Big Buck Bunny",
+        "summary": "Sample clip from Big Buck Bunny. © 2008 Blender Foundation / www.bigbuckbunny.org. Creative Commons Attribution 3.0: https://creativecommons.org/licenses/by/3.0/. Original film: https://peach.blender.org/. Clip supplied by MediaElement.js: https://github.com/mediaelement/mediaelement-files. The clip repeats; press Escape to stop.",
+        "groups": []
+      }
     }
   }
 }

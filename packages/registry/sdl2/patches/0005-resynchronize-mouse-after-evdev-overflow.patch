@@ -1,0 +1,123 @@
+Recover ordinary mice from lost evdev input, using device state.
+
+Drain stale records after SYN_DROPPED and restore absolute axes and held
+buttons through EVIOCGABS/EVIOCGKEY. Motion or another click cannot repair
+a lost release when SDL still believes the physical button is held.
+
+--- a/src/core/linux/SDL_evdev.c
++++ b/src/core/linux/SDL_evdev.c
+@@ -104,6 +104,8 @@
+     SDL_bool high_res_wheel;
+     SDL_bool high_res_hwheel;
+     SDL_bool relative_mouse;
++    Uint32 mouse_buttons;
++    SDL_bool mouse_sync_ready;
+     int mouse_x, mouse_y;
+     int mouse_wheel, mouse_hwheel;
+     int min_x, max_x, range_x;
+@@ -373,13 +375,25 @@
+             continue;
+         }
+ 
++        /* After a drop, drain stale mouse records before querying current
++         * device state. Replaying those records after the query could put
++         * an already released button down again. Wait for a frame boundary. */
++        if (item->out_of_sync && (item->udev_class & SDL_UDEV_DEVICE_MOUSE)) {
++            if (event.type == EV_SYN && event.code == SYN_REPORT) {
++                item->mouse_sync_ready = SDL_TRUE;
++            }
++            continue;
++        }
++
+         switch (event.type) {
+         case EV_KEY:
+             if (event.code >= BTN_MOUSE && event.code < BTN_MOUSE + SDL_arraysize(EVDEV_MouseButtons)) {
+                 mouse_button = event.code - BTN_MOUSE;
+                 if (event.value == 0) {
++                    item->mouse_buttons &= ~(1u << mouse_button);
+                     SDL_SendMouseButton(mouse->focus, (SDL_MouseID)item->fd, SDL_RELEASED, EVDEV_MouseButtons[mouse_button]);
+                 } else if (event.value == 1) {
++                    item->mouse_buttons |= 1u << mouse_button;
+                     SDL_SendMouseButton(mouse->focus, (SDL_MouseID)item->fd, SDL_PRESSED, EVDEV_MouseButtons[mouse_button]);
+                 }
+                 break;
+@@ -586,15 +600,30 @@
+                 }
+                 break;
+             case SYN_DROPPED:
+-                if (item->is_touchscreen) {
++                if (item->udev_class & SDL_UDEV_DEVICE_MOUSE) {
+                     item->out_of_sync = SDL_TRUE;
+-                }
+-                SDL_EVDEV_sync_device(item);
++                    item->mouse_sync_ready = SDL_FALSE;
++                    item->mouse_x = item->mouse_y = 0;
++                    item->mouse_wheel = item->mouse_hwheel = 0;
++                } else {
++                    if (item->is_touchscreen) {
++                        item->out_of_sync = SDL_TRUE;
++                    }
++                    SDL_EVDEV_sync_device(item);
++                }
+                 break;
+             default:
+                 break;
+             }
+             break;
++        }
++    }
++    for (item = _this->first; item; item = item->next) {
++        if (item->out_of_sync && item->mouse_sync_ready &&
++            (item->udev_class & SDL_UDEV_DEVICE_MOUSE)) {
++            SDL_EVDEV_sync_device(item);
++            item->out_of_sync = SDL_FALSE;
++            item->mouse_sync_ready = SDL_FALSE;
+         }
+     }
+ }
+@@ -777,7 +806,44 @@
+     Sint32 *mt_req_values;
+     size_t mt_req_size;
+ 
+-    /* TODO: sync devices other than touchscreen */
++    if (item->udev_class & SDL_UDEV_DEVICE_MOUSE) {
++        unsigned long keys[NBITS(KEY_MAX + 1)];
++        struct input_absinfo abs;
++        SDL_Mouse *mouse = SDL_GetMouse();
++        Uint32 buttons = 0;
++        int button, pressed;
++
++        /* Relative movement cannot be recovered. Absolute positions and
++         * held buttons are device state, independent of the event ring. */
++        if (!item->relative_mouse && item->range_x > 0 && item->range_y > 0) {
++            SDL_DisplayMode mode;
++            if (ioctl(item->fd, EVIOCGABS(ABS_X), &abs) >= 0) item->mouse_x = abs.value;
++            if (ioctl(item->fd, EVIOCGABS(ABS_Y), &abs) >= 0) item->mouse_y = abs.value;
++            SDL_GetCurrentDisplayMode(0, &mode);
++            SDL_SendMouseMotion(mouse->focus, (SDL_MouseID)item->fd, SDL_FALSE,
++                                (item->mouse_x - item->min_x) * mode.w / item->range_x,
++                                (item->mouse_y - item->min_y) * mode.h / item->range_y);
++        }
++        SDL_zero(keys);
++        if (ioctl(item->fd, EVIOCGKEY(sizeof(keys)), keys) < 0) return;
++        for (button = 0; button < SDL_arraysize(EVDEV_MouseButtons); ++button) {
++            if (test_bit(BTN_MOUSE + button, keys)) buttons |= 1u << button;
++        }
++        /* Finish old gestures before beginning newly observed ones. */
++        for (pressed = 0; pressed <= 1; ++pressed) {
++            for (button = 0; button < SDL_arraysize(EVDEV_MouseButtons); ++button) {
++                Uint32 mask = 1u << button;
++                if (((buttons ^ item->mouse_buttons) & mask) && !!(buttons & mask) == pressed) {
++                    SDL_SendMouseButton(mouse->focus, (SDL_MouseID)item->fd,
++                                        pressed ? SDL_PRESSED : SDL_RELEASED, EVDEV_MouseButtons[button]);
++                }
++            }
++        }
++        item->mouse_buttons = buttons;
++        return;
++    }
++
++    /* Keyboard recovery remains separate from the mouse/touch state. */
+     if (!item->is_touchscreen) {
+         return;
+     }

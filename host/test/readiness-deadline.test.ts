@@ -9,6 +9,7 @@ import {
   CH_ERRNO,
   CH_RETURN,
   CH_SIG_BASE,
+  CH_SIG_SI_CODE,
   CH_STATUS,
   CH_SYSCALL,
   KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
@@ -18,6 +19,7 @@ import {
   WASM_EPOLL_EVENT_DATA_OFFSET,
   WASM_EPOLL_EVENT_EVENTS_OFFSET,
 } from "../src/generated/abi";
+import { EXIT_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 import {
   createKernelEntryGatedInstance,
   KernelEntryGate,
@@ -664,7 +666,7 @@ describe("host-emulated epoll signal delivery", () => {
     expect(harness.handleChannel).toHaveBeenCalledOnce();
   });
 
-  it("reaps a default signal death without waking guest epoll code", () => {
+  it("retires a default signal death without retrying guest epoll code", () => {
     const harness = createHarness();
     initializeEpoll(harness, false);
     harness.setExitSignal(11);
@@ -675,7 +677,7 @@ describe("host-emulated epoll signal delivery", () => {
     expect(harness.onExit).toHaveBeenCalledWith(PID, 128 + 11);
     expect(harness.state.hostReaped.has(PID)).toBe(true);
     expect(harness.completeChannel).not.toHaveBeenCalled();
-    expect(harness.relistenChannel).not.toHaveBeenCalled();
+    expect(harness.relistenChannel).toHaveBeenCalledExactlyOnceWith(harness.channel);
     expect(harness.state.pendingPollRetries.size).toBe(0);
     // One nonblocking pass of the kernel's epoll_pwait (it owns the
     // registrations, even an empty list), then the signal boundary -- the
@@ -683,6 +685,8 @@ describe("host-emulated epoll signal delivery", () => {
     expect(harness.handleChannel).toHaveBeenCalledOnce();
     expect(
       new DataView(harness.processMemory.buffer).getUint32(CH_STATUS, true),
-    ).toBe(CHANNEL_STATUS_PENDING);
+    ).toBe(CHANNEL_STATUS_COMPLETE);
+    expect(new DataView(harness.processMemory.buffer).getUint32(CH_SIG_SI_CODE, true))
+      .toBe(EXIT_RETIRE_SIGNAL_CODE);
   });
 });

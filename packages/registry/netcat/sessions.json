@@ -1,0 +1,60 @@
+{
+  "kind": "kandelo-package-sessions",
+  "version": 1,
+  "package": "netcat",
+  "packageVersion": "0.7.1",
+  "offers": [
+    {
+      "id": "server",
+      "title": "Netcat text connection",
+      "description": "Open a plain one-to-one TCP text connection. Type lines in the terminal; Ctrl-D closes your side.",
+      "join": "participant",
+      "attachExisting": false,
+      "fields": [
+        {
+          "id": "port",
+          "label": "Port",
+          "type": "integer",
+          "default": 7777,
+          "min": 1024,
+          "max": 65535
+        }
+      ],
+      "launch": {
+        "executable": "/usr/bin/nc",
+        "cwd": "/",
+        "args": [
+          "-l",
+          "-p",
+          {
+            "field": "offer.port"
+          }
+        ],
+        "requires": [],
+        "surface": "terminal"
+      }
+    }
+  ],
+  "joins": [
+    {
+      "id": "participant",
+      "title": "Open Netcat text connection",
+      "description": "Connect to the host on this network.",
+      "fields": [],
+      "launch": {
+        "executable": "/usr/bin/nc",
+        "cwd": "/",
+        "args": [
+          {
+            "field": "network.host"
+          },
+          {
+            "field": "offer.port"
+          }
+        ],
+        "requires": [],
+        "surface": "terminal"
+      }
+    }
+  ]
+}

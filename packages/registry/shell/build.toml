@@ -1,5 +1,16 @@
 script_path = "packages/registry/shell/build-shell.sh"
 inputs = [
+  "host/src/native-artifact-identity.ts",
+  "packages/registry/web-stack-vfs/sessions.json",
+  "packages/registry/wordpress-family-vfs/sessions.json",
+  "images/vfs/scripts/image-session-files.ts",
+  "packages/registry/nginx-vfs/sessions.json",
+  "packages/registry/nginx-php-vfs/sessions.json",
+  "packages/registry/nginx-python-vfs/sessions.json",
+  "packages/registry/wordpress/sessions.json",
+  "packages/registry/lamp/sessions.json",
+  "packages/registry/ruby-todo-vfs/sessions.json",
+  "packages/registry/redis-vfs/sessions.json",
   "packages/registry/shell/build-shell.sh",
   "packages/registry/shell/source-rootfs-shell-dependencies.json",
   "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
@@ -8,6 +19,14 @@ inputs = [
   "packages/registry/shell/scummvm-freeware-games.json",
   "images/vfs/scripts/build-source-rootfs-shell-image.ts",
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
+  "images/vfs/scripts/program-originals.ts",
+  "images/vfs/scripts/dependency-original-inputs.ts",
+  "images/vfs/scripts/package-session-files.ts",
+  "scripts/package-runtime-file.ts",
+  "web-libs/kandelo-session/src/package-sessions.ts",
+  "web-libs/kandelo-session/src/game-levels.ts",
+  "web-libs/kandelo-session/src/session-dependencies.ts",
+  "cargo:xtask",
   "images/vfs/scripts/shell-lazy-archives.ts",
   "images/vfs/scripts/shell-runtime-layout.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
@@ -16,6 +35,7 @@ inputs = [
   "package-lock.json",
   "host/src/constants.ts",
   "host/src/binary-resolver.ts",
+  "host/src/vfs/vfs-asset-group-reference.ts",
   "host/src/file-offset.ts",
   "host/src/generated/abi.ts",
   "host/src/pathconf.ts",
@@ -42,10 +62,15 @@ inputs = [
   "cargo:kandelo-image-module",
   "cargo:runtime-core",
   "crates/kandelo-image-module/build-wasm.sh",
+  "host/src/vfs/image-integrity.ts",
+  "host/src/vfs/image-manifest-memory.ts",
+  "host/src/vfs/overlay-seal-codec.ts",
+  "host/src/vfs/storage-memory-budget.ts",
+  "images/vfs/lib/positioned-image-targets.ts",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 41
+revision = 71
 # WHY: source-package composition changes the product bytes. Keep ordinary
 # resolution closed until this exact revision is rebuilt and admitted.
 publication_state = "pending"

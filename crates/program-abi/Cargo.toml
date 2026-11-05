@@ -1,0 +1,6 @@
+[package]
+name = "wasm-posix-program-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false

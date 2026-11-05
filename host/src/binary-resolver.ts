@@ -28,6 +28,7 @@ import {
   statSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+import { readStableArtifactIdentity } from "./native-artifact-identity";
 import { spawnSync } from "node:child_process";
 import {
   basename,
@@ -39,6 +40,7 @@ import {
   sep,
 } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeImageOwnedLazyReference } from "./vfs/vfs-asset-group-reference";
 import { describeWasmArtifactPolicyFailures } from "./constants";
 import {
   ABI_VERSION,
@@ -348,6 +350,7 @@ interface ProgramPackageClosureMember {
   sourceArtifact: string;
   cacheKey: string;
   forkInstrumentation: "auto" | "disabled" | null;
+  originalWasm?: string;
   projectionIdentity: string;
 }
 
@@ -372,6 +375,7 @@ export interface ResolvedDirectProgramPackageArtifact {
   sourceArtifact: string;
   cacheKey: string;
   forkInstrumentation: "auto" | "disabled" | null;
+  originalWasm?: string;
 }
 
 function manifestError(manifestPath: string, detail: string): Error {
@@ -469,6 +473,7 @@ interface ProgramPackageProjectionMember {
   mirrorPath: string;
   outputName?: string;
   forkInstrumentation?: "auto" | "disabled";
+  originalWasm?: string;
   guestPath?: string;
   mode?: number;
 }
@@ -677,9 +682,14 @@ function commandFailure(
     typeof result.stdout === "string" ? result.stdout.trim() : "",
     result.error?.message ?? "",
   ].filter(Boolean).join("\n");
-  return `${command} ${args.join(" ")} failed${
-    result.status === null ? "" : ` with status ${result.status}`
-  }${detail ? `:\n${detail}` : ""}`;
+  // A child killed by a signal has no status and usually no output; name the
+  // signal, or the failure cannot be diagnosed.
+  const how = result.status !== null
+    ? ` with status ${result.status}`
+    : result.signal
+      ? ` (terminated by ${result.signal})`
+      : "";
+  return `${command} ${args.join(" ")} failed${how}${detail ? `:\n${detail}` : ""}`;
 }
 
 function rustHostTarget(sourceRepoRoot: string): string {
@@ -850,8 +860,11 @@ function withFreshProgramIndexes<T>(
   relPaths: readonly string[],
   operation: () => T,
 ): T {
+  // SourceOnly's emitted projection owns freshness. Regenerating the default
+  // registry here cannot validate it and can outlast a deferred-read timeout.
   if (
-    programIndexFreshnessBoundaryDepth > 0
+    sourceOnlyPolicyEnabled()
+    || programIndexFreshnessBoundaryDepth > 0
     || !relPaths.some((relPath) => relPath.startsWith("programs/"))
   ) {
     return operation();
@@ -1120,6 +1133,7 @@ function parseProgramPackageProjection(
             "mirrorPath",
             "outputName",
             "forkInstrumentation",
+            ...(Object.hasOwn(member, "originalWasm") ? ["originalWasm"] : []),
           ]
           : [
             "kind",
@@ -1160,6 +1174,12 @@ function parseProgramPackageProjection(
             indexPath,
             `${packageName} outputName`,
           );
+          if (Object.hasOwn(member, "originalWasm")) {
+            if (typeof member.originalWasm !== "string") {
+              throw new Error(`Invalid program package index ${indexPath}: originalWasm must be a portable artifact path`);
+            }
+            portableArtifactPath(member.originalWasm, indexPath, `${packageName} originalWasm`);
+          }
         } else if (
           typeof member.guestPath !== "string"
           || !isWellFormedUnicode(member.guestPath)
@@ -1177,6 +1197,7 @@ function parseProgramPackageProjection(
     );
     if (
       members.length === 0
+      || members.some((member) => member.mirrorPath.split("/")[0] === ".originals")
       || new Set(members.map((member) => member.sourceArtifact)).size
         !== members.length
       || new Set(members.map((member) => member.mirrorPath)).size
@@ -1195,6 +1216,16 @@ function parseProgramPackageProjection(
       throw new Error(
         `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} members are empty, collide, or violate scalar/package-directory layout`,
       );
+    }
+    const originalArtifacts: string[] = [];
+    for (const member of members) {
+      if (member.originalWasm === undefined) continue;
+      for (const artifact of [...members.map((member) => member.sourceArtifact), ...originalArtifacts]) {
+        if (artifact === member.originalWasm || artifact.startsWith(`${member.originalWasm}/`) || member.originalWasm.startsWith(`${artifact}/`)) {
+          throw new Error(`Invalid program package index ${indexPath}: originalWasm collides with another artifact`);
+        }
+      }
+      originalArtifacts.push(member.originalWasm);
     }
     const manifestSha256 =
       (rawPackage as { manifestSha256: string }).manifestSha256;
@@ -1258,6 +1289,25 @@ interface SourceOnlyProjectionMember {
   size: number;
   sha256: string;
   forkInstrumentation: "auto" | "disabled" | null;
+  associatedOriginal: boolean;
+}
+
+function originalCompanionRelPath(packageName: string, arch: string, cacheKey: string, artifact: string): string {
+  return `programs/${arch}/.originals/${packageName}/${cacheKey}/${artifact}`;
+}
+
+export interface ProgramOriginalWasmArtifact {
+  packageName: string;
+  relPath: string;
+  sourceArtifact: string;
+  cacheKey: string;
+  mode: number;
+  size: number;
+  sha256: string;
+}
+
+export interface ResolvedProgramOriginalWasmArtifact extends ProgramOriginalWasmArtifact {
+  path: string;
 }
 
 interface SourceOnlyProjectionNode {
@@ -1763,6 +1813,7 @@ function readSourceOnlyProjectionAt(root: string): LoadedSourceOnlyProjection {
       const member: SourceOnlyProjectionMember = {
         ...memberRecord,
         forkInstrumentation: null,
+        associatedOriginal: false,
       };
       members.push(member);
     }
@@ -1787,8 +1838,8 @@ function readSourceOnlyProjectionAt(root: string): LoadedSourceOnlyProjection {
     // which `crates/kandelo-image-module/build-wasm.sh` builds out-of-band and
     // which carries no `packages/registry/<name>/build.toml`, so it never
     // appears in the v2 `projection.packages` map. Admit it as its own
-    // single root-level member node so every host resolves it through the
-    // same pinned projection as `kernel.wasm`.
+    // root-level member node so every host resolves it through the same pinned
+    // projection as `kernel.wasm`.
     //
     // This must list every module in `CORESIDENT_SIDE_MODULES`
     // (`tools/xtask/src/local_build.rs`; a cargo test checks the two agree).
@@ -1796,18 +1847,23 @@ function readSourceOnlyProjectionAt(root: string): LoadedSourceOnlyProjection {
     // manifest unreadable, because the parse throws before any binary
     // resolves.
     //
-    // An explicit allowlist rather than "any single root-level member": this
+    // An explicit allowlist rather than "any root-level member": this
     // check is what stops an arbitrary node in an untrusted projection from
     // claiming a root path, so it must enumerate what is permitted.
     const standaloneModuleArtifacts: Record<string, readonly string[]> = {
-      "kandelo-image-module": ["kandelo_image_module32.wasm"],
+      "kandelo-image-module": [
+        "kandelo_image_module32.wasm",
+        "kandelo_image_module_positioned32.wasm",
+      ],
+      "kandelo-program-policy": ["kandelo_program_policy32.wasm"],
     };
+    const allowedStandaloneArtifacts = standaloneModuleArtifacts[packageName];
     const isStandaloneModuleNode =
       !projection.packages.has(packageName)
-      && members.length === 1
-      && (standaloneModuleArtifacts[packageName]?.includes(
-        members[0]!.mirrorPath,
-      ) ?? false);
+      && allowedStandaloneArtifacts !== undefined
+      && members.length === allowedStandaloneArtifacts.length
+      && allowedStandaloneArtifacts.every((path) =>
+        members.some((member) => member.mirrorPath === path));
     if (!isExactProgramNode && !isRootMirrorNode && !isStandaloneModuleNode) {
       throw sourceOnlyProjectionError(
         projectionPath,
@@ -1829,12 +1885,24 @@ function readSourceOnlyProjectionAt(root: string): LoadedSourceOnlyProjection {
           `program projection ${JSON.stringify(packageName)} (${arch}) has no aggregate node`,
         );
       }
-      const expectedByPath = new Map(
+      const expectedByPath = new Map<string, {
+        declaration: ProgramPackageProjectionMember;
+        sourceArtifact: string;
+        associatedOriginal: boolean;
+      }>(
         packageProjection.members.map((member) => [
           `programs/${arch}/${member.mirrorPath}`,
-          member,
+          { declaration: member, sourceArtifact: member.sourceArtifact, associatedOriginal: false },
         ]),
       );
+      for (const member of packageProjection.members) {
+        if (member.originalWasm === undefined) continue;
+        expectedByPath.set(originalCompanionRelPath(packageName, arch, node.cacheKeySha256, member.originalWasm), {
+          declaration: member,
+          sourceArtifact: member.originalWasm,
+          associatedOriginal: true,
+        });
+      }
       if (
         node.members.length !== expectedByPath.size
         || node.members.some((member) => {
@@ -1842,11 +1910,15 @@ function readSourceOnlyProjectionAt(root: string): LoadedSourceOnlyProjection {
           if (!expected || expected.sourceArtifact !== member.sourceArtifact) {
             return true;
           }
-          if (expected.kind === "runtime-file" && expected.mode !== member.mode) {
+          if (expected.associatedOriginal && (member.mode & 0o7333) !== 0) {
             return true;
           }
-          member.forkInstrumentation = expected.kind === "output"
-            ? expected.forkInstrumentation ?? null
+          if (!expected.associatedOriginal && expected.declaration.kind === "runtime-file" && expected.declaration.mode !== member.mode) {
+            return true;
+          }
+          member.associatedOriginal = expected.associatedOriginal;
+          member.forkInstrumentation = !expected.associatedOriginal && expected.declaration.kind === "output"
+            ? expected.declaration.forkInstrumentation ?? null
             : null;
           return false;
         })
@@ -1886,10 +1958,10 @@ function validateSourceOnlyMember(
         `member size is ${before.size}, expected ${member.size}`,
       );
     }
-    const inspectArtifactBytes =
+    const inspectArtifactBytes = !member.associatedOriginal && (
       member.mirrorPath.endsWith(".wasm")
       || member.mirrorPath.endsWith(".vfs")
-      || member.mirrorPath.endsWith(".vfs.zst");
+      || member.mirrorPath.endsWith(".vfs.zst"));
     const retainedBytes = captureBytes || inspectArtifactBytes
       ? Buffer.alloc(member.size)
       : null;
@@ -1923,6 +1995,7 @@ function validateSourceOnlyMember(
     }
     if (
       retainedBytes !== null
+      && !member.associatedOriginal
       && hasBinaryArtifactPolicyFailuresForBytes(
         retainedBytes,
         member.mirrorPath,
@@ -2092,6 +2165,7 @@ function programPackageProjectionIdentity(
           mirrorPath: member.mirrorPath,
           outputName: member.outputName,
           forkInstrumentation: member.forkInstrumentation,
+          ...(member.originalWasm === undefined ? {} : { originalWasm: member.originalWasm }),
         }
         : {
           kind: member.kind,
@@ -2599,6 +2673,7 @@ function closureForProjection(
       forkInstrumentation: member.kind === "output"
         ? member.forkInstrumentation ?? null
         : null,
+      ...(member.originalWasm === undefined ? {} : { originalWasm: member.originalWasm }),
       projectionIdentity,
     }),
   );
@@ -2669,11 +2744,104 @@ export function programOutputClosureRelPaths(relPath: string): string[] | null {
     const owner = loaded.ownerByMirrorPath.get(applyDefaultArch(relPath));
     return owner?.members.map((member) => member.mirrorPath) ?? null;
   }
-  return withFreshProgramIndexes([relPath], () =>
-    discoverProgramPackageClosure(relPath)?.members.map(
-      (member) => member.relPath,
-    ) ?? null
+  return withFreshProgramIndexes([relPath], () => {
+    const adjusted = applyDefaultArch(relPath);
+    const closure = discoverProgramPackageClosure(isOriginalCompanionPath(adjusted)
+      ? originalCompanionRequest(adjusted).executableRel : relPath);
+    if (!closure) return null;
+    const arch = applyDefaultArch(relPath).split("/")[1]!;
+    return [...closure.members.map(member => member.relPath), ...closure.members.flatMap(member =>
+      member.originalWasm === undefined ? [] : [originalCompanionRelPath(closure.packageName, arch, member.cacheKey, member.originalWasm)])];
+  });
+}
+
+export function programOriginalWasmArtifact(relPath: string): ProgramOriginalWasmArtifact | null {
+  if (!sourceOnlyPolicyEnabled()) return null;
+  const loaded = readSourceOnlyProjection();
+  const adjusted = applyDefaultArch(relPath);
+  const owner = loaded.ownerByMirrorPath.get(adjusted);
+  if (!owner) return null;
+  const projected = loaded.projection.packages.get(owner.packageName);
+  const output = projected?.members.find((member) =>
+    member.kind === "output" && `programs/${owner.targetArch}/${member.mirrorPath}` === adjusted
   );
+  if (output?.originalWasm === undefined) return null;
+  const originalPath = originalCompanionRelPath(owner.packageName, owner.targetArch, owner.cacheKeySha256, output.originalWasm);
+  const original = owner.members.find((member) => member.mirrorPath === originalPath && member.associatedOriginal);
+  if (!original) throw sourceOnlyProjectionError(loaded.projectionPath, "declared original companion is absent from its selected package closure");
+  return {
+    packageName: owner.packageName,
+    relPath: originalPath,
+    sourceArtifact: original.sourceArtifact,
+    cacheKey: owner.cacheKeySha256,
+    mode: original.mode,
+    size: original.size,
+    sha256: original.sha256,
+  };
+}
+
+export function resolveProgramOriginalWasmArtifact(
+  relPath: string,
+  expectedPackageName: string,
+  resolvedExecutablePath: string,
+  directDependencyRoot?: string,
+): ResolvedProgramOriginalWasmArtifact | null {
+  if (directDependencyRoot !== undefined) {
+    const executable = resolveDirectProgramPackageArtifact(relPath, expectedPackageName, directDependencyRoot);
+    if (realpathSync(resolvedExecutablePath) !== executable.path) {
+      throw new Error("Original lookup executable does not match its selected direct package artifact");
+    }
+    if (executable.originalWasm === undefined) return null;
+    const root = canonicalRootForArtifact(executable.path, executable.sourceArtifact);
+    if (root === null) throw new Error("Original lookup lost its selected canonical package root");
+    const originalPath = join(root, ...executable.originalWasm.split("/"));
+    const identity = readStableArtifactIdentity(originalPath);
+    if ((identity.mode & 0o7333) !== 0) throw new Error("Original companion must be read-only and non-executable");
+    const current = resolveDirectProgramPackageArtifact(relPath, expectedPackageName, directDependencyRoot);
+    if (current.path !== executable.path || current.cacheKey !== executable.cacheKey || current.originalWasm !== executable.originalWasm) {
+      throw new Error("Original lookup package authority changed during its read");
+    }
+    const arch = applyDefaultArch(relPath).split("/")[1]!;
+    return { path: originalPath, packageName: expectedPackageName,
+      relPath: originalCompanionRelPath(expectedPackageName, arch, executable.cacheKey, executable.originalWasm),
+      sourceArtifact: executable.originalWasm, cacheKey: executable.cacheKey, ...identity };
+  }
+  if (!sourceOnlyPolicyEnabled()) {
+    return withFreshProgramIndexes([relPath], () => {
+      const closure = discoverProgramPackageClosure(relPath);
+      if (!closure) return null;
+      if (closure.packageName !== expectedPackageName) throw new Error("Original lookup package does not own the requested executable");
+      const output = closure.members.find((member) => member.relPath === applyDefaultArch(relPath));
+      if (output?.originalWasm === undefined) return null;
+      const canonical = realpathSync(resolvedExecutablePath);
+      const root = canonicalRootForArtifact(canonical, output.sourceArtifact);
+      if (root === null) throw new Error("Original lookup executable lost its canonical package root");
+      return resolveProgramOriginalWasmArtifact(relPath, expectedPackageName, canonical, root);
+    });
+  }
+  const loaded = readSourceOnlyProjection();
+  const adjusted = applyDefaultArch(relPath);
+  const owner = loaded.ownerByMirrorPath.get(adjusted);
+  if (!owner) return null;
+  if (owner.packageName !== expectedPackageName) throw new Error("Original lookup package does not own the requested executable");
+  const projected = loaded.projection.packages.get(owner.packageName);
+  const output = projected?.members.find((member) => member.kind === "output" && `programs/${owner.targetArch}/${member.mirrorPath}` === adjusted);
+  if (output?.originalWasm === undefined) return null;
+  const declaredExecutable = owner.members.find((member) => member.mirrorPath === adjusted && !member.associatedOriginal);
+  const executable = readStableArtifactIdentity(resolvedExecutablePath);
+  if (!declaredExecutable || executable.size !== declaredExecutable.size || executable.sha256 !== declaredExecutable.sha256) {
+    throw new Error("Original lookup executable differs from its selected package receipt");
+  }
+  const originalRelPath = originalCompanionRelPath(owner.packageName, owner.targetArch, owner.cacheKeySha256, output.originalWasm);
+  const declaredOriginal = owner.members.find((member) => member.mirrorPath === originalRelPath && member.associatedOriginal);
+  if (!declaredOriginal) throw new Error("Original lookup receipt omits its declared companion");
+  const originalPath = join(loaded.root, ...originalRelPath.split("/"));
+  const identity = readStableArtifactIdentity(originalPath);
+  if ((identity.mode & 0o7333) !== 0 || identity.mode !== declaredOriginal.mode || identity.size !== declaredOriginal.size || identity.sha256 !== declaredOriginal.sha256) {
+    throw new Error("Original companion differs from its selected package receipt");
+  }
+  return { path: originalPath, packageName: owner.packageName, relPath: originalRelPath,
+    sourceArtifact: output.originalWasm, cacheKey: owner.cacheKeySha256, ...identity };
 }
 
 /**
@@ -2687,6 +2855,7 @@ export function programOutputClosureRelPaths(relPath: string): string[] | null {
 export function programWasmArtifactPolicy(
   relPath: string,
 ): ProgramWasmArtifactPolicy | null {
+  if (isOriginalCompanionPath(applyDefaultArch(relPath))) throw new Error("Original companion is not a declared executable program output");
   if (sourceOnlyPolicyEnabled()) {
     const loaded = readSourceOnlyProjection();
     const adjusted = applyDefaultArch(relPath);
@@ -2869,6 +3038,7 @@ export function resolveDirectProgramPackageArtifact(
       sourceArtifact: member.sourceArtifact,
       cacheKey: member.cacheKey,
       forkInstrumentation: member.forkInstrumentation,
+      ...(member.originalWasm === undefined ? {} : { originalWasm: member.originalWasm }),
     };
   });
 }
@@ -3448,6 +3618,7 @@ export function resolveBinary(relPath: string): string {
 
 function resolveBinaryInFreshProgramContext(relPath: string): string {
   const adjusted = applyDefaultArch(relPath);
+  if (isOriginalCompanionPath(adjusted)) return resolveOriginalCompanionAsset(adjusted);
   const packageClosure = discoverProgramPackageClosure(adjusted);
   if (packageClosure) {
     const selected = tryResolveBinarySetFromTiers(
@@ -3490,6 +3661,36 @@ function resolveBinaryInFreshProgramContext(relPath: string): string {
   );
 }
 
+function isOriginalCompanionPath(relPath: string): boolean {
+  const components = relPath.split("/");
+  return components[0] === "programs" && ARCH_SEGMENTS.has(components[1]!) && components[2] === ".originals";
+}
+
+function originalCompanionRequest(adjusted: string): { packageName: string; executableRel: string } {
+  const components = adjusted.split("/");
+  const arch = components[1]!;
+  const packageName = components[3];
+  const projection = packageName === undefined ? null : selectedProgramPackage(packageName);
+  const cacheKey = projection?.cacheKeys[arch];
+  if (!projection || cacheKey === undefined) throw new Error(`Original companion is not owned by the selected package generation: ${adjusted}`);
+  const output = projection.members.find(member => member.kind === "output" &&
+    member.originalWasm !== undefined && originalCompanionRelPath(projection.packageName, arch, cacheKey, member.originalWasm) === adjusted);
+  if (!output) throw new Error(`Original companion is not owned by the selected package generation: ${adjusted}`);
+  return { packageName: projection.packageName, executableRel: `programs/${arch}/${output.mirrorPath}` };
+}
+
+function originalCompanionForExecutable(adjusted: string, executable: string): string {
+  const request = originalCompanionRequest(adjusted);
+  const original = resolveProgramOriginalWasmArtifact(request.executableRel, request.packageName, executable);
+  if (!original || original.relPath !== adjusted) throw new Error(`Original companion association changed during resolution: ${adjusted}`);
+  return original.path;
+}
+
+function resolveOriginalCompanionAsset(adjusted: string): string {
+  const request = originalCompanionRequest(adjusted);
+  return originalCompanionForExecutable(adjusted, resolveBinaryInFreshProgramContext(request.executableRel));
+}
+
 /**
  * Like `resolveBinary` but returns `null` instead of throwing when the
  * binary is absent. Callers choose how to handle the miss.
@@ -3520,11 +3721,15 @@ export const LAZY_BINARIES_URL_PREFIX = "binaries/";
  */
 function decodedLazyAssetRelPath(url: string): string | null {
   const relative = url.replace(/^\/+/, "");
-  if (!relative.startsWith(LAZY_BINARIES_URL_PREFIX)) return null;
   let decoded: string;
   try {
-    decoded = relative
-      .slice(LAZY_BINARIES_URL_PREFIX.length)
+    // Shell files and archives use the same image-owned reference grammar
+    // as browser deployments. Resolve that identity without rewriting the
+    // image or falling back to an unrelated literal checkout file.
+    const encoded = relative.startsWith(LAZY_BINARIES_URL_PREFIX)
+      ? relative.slice(LAZY_BINARIES_URL_PREFIX.length)
+      : normalizeImageOwnedLazyReference(relative).slice("assets/".length);
+    decoded = encoded
       .split("/")
       .map(decodeURIComponent)
       .join("/");
@@ -3584,7 +3789,7 @@ export function resolveLazyAssetPath(url: string): string {
   try {
     return resolveBinary(relPath);
   } catch (error) {
-    if (error instanceof BinaryNotFoundError) return literalLazyAssetPath(url);
+    if (error instanceof BinaryNotFoundError && !isOriginalCompanionPath(applyDefaultArch(relPath))) return literalLazyAssetPath(url);
     throw new Error(
       `Lazy asset ${JSON.stringify(url)} failed to resolve: ${
         error instanceof Error ? error.message : String(error)
@@ -3644,17 +3849,44 @@ export function resolveLazyAssetPaths(
 export function tryResolveBinaries(
   relPaths: readonly string[],
 ): Array<string | null> {
+  return resolveIndependentBinaries(relPaths).map((result) => {
+    if (result instanceof Error) throw result;
+    return result;
+  });
+}
+
+export function resolveIndependentBinaries(
+  relPaths: readonly string[],
+): Array<string | null | Error> {
+  const normalized = relPaths.map((path) => {
+    try {
+      return applyDefaultArch(path);
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+  });
+  if (normalized.some((path) => path instanceof Error)) {
+    const selected = resolveIndependentBinaries(normalized.filter((path): path is string => typeof path === "string"));
+    let position = 0;
+    return normalized.map((path) => path instanceof Error ? path : selected[position++]!);
+  }
   if (sourceOnlyPolicyEnabled()) {
     const loaded = readSourceOnlyProjection();
-    const resolvedByPath = new Map<string, string>();
+    const resolvedByPath = new Map<string, string | Error>();
     const requestedOwners = new Set<SourceOnlyProjectionNode>();
     for (const relPath of relPaths) {
       const owner = loaded.ownerByMirrorPath.get(applyDefaultArch(relPath));
       if (owner) requestedOwners.add(owner);
     }
     for (const owner of requestedOwners) {
-      for (const [relPath, path] of validateSourceOnlyNode(loaded, owner)) {
-        resolvedByPath.set(relPath, path);
+      try {
+        for (const [relPath, path] of validateSourceOnlyNode(loaded, owner)) {
+          resolvedByPath.set(relPath, path);
+        }
+      } catch (error) {
+        for (const member of owner.members) {
+          resolvedByPath.set(member.mirrorPath, error instanceof Error ? error : new Error(String(error)));
+        }
       }
     }
     return relPaths.map((relPath) =>
@@ -3662,7 +3894,33 @@ export function tryResolveBinaries(
     );
   }
   return withFreshProgramIndexes(relPaths, () => {
-    const results = new Array<string | null>(relPaths.length).fill(null);
+    if (relPaths.some(path => isOriginalCompanionPath(applyDefaultArch(path)))) {
+      const results = new Array<string | null | Error>(relPaths.length).fill(null);
+      const ordinary: string[] = [];
+      const indices: number[] = [];
+      relPaths.forEach((path, index) => {
+        try {
+          const adjusted = applyDefaultArch(path);
+          ordinary.push(isOriginalCompanionPath(adjusted) ? originalCompanionRequest(adjusted).executableRel : path);
+          indices.push(index);
+        } catch (error) {
+          results[index] = error instanceof Error ? error : new Error(String(error));
+        }
+      });
+      const selected = resolveIndependentBinaries(ordinary);
+      selected.forEach((path, position) => {
+        const index = indices[position]!;
+        try {
+          const adjusted = applyDefaultArch(relPaths[index]!);
+          results[index] = typeof path === "string" && isOriginalCompanionPath(adjusted)
+            ? originalCompanionForExecutable(adjusted, path) : path;
+        } catch (error) {
+          results[index] = error instanceof Error ? error : new Error(String(error));
+        }
+      });
+      return results;
+    }
+    const results = new Array<string | null | Error>(relPaths.length).fill(null);
     const independentRequests: Array<{
       index: number;
       relPath: string;
@@ -3677,7 +3935,13 @@ export function tryResolveBinaries(
 
     for (const [index, relPath] of relPaths.entries()) {
       const adjustedRelPath = applyDefaultArch(relPath);
-      const closure = discoverProgramPackageClosure(adjustedRelPath);
+      let closure: ProgramPackageClosure | null;
+      try {
+        closure = discoverProgramPackageClosure(adjustedRelPath);
+      } catch (error) {
+        results[index] = error instanceof Error ? error : new Error(String(error));
+        continue;
+      }
       if (!closure) {
         independentRequests.push({ index, relPath });
         continue;
@@ -3696,10 +3960,18 @@ export function tryResolveBinaries(
       // Resolve the declared closure once, then map every requested member
       // from those pinned paths. Re-resolving member-by-member would reopen a
       // race with the publisher's atomic live-directory replacement.
-      const selected = tryResolveBinarySetFromTiers(
-        closure.members.map((member) => member.relPath),
-        closure.members,
-      );
+      let selected: string[] | null;
+      try {
+        selected = tryResolveBinarySetFromTiers(
+          closure.members.map((member) => member.relPath),
+          closure.members,
+        );
+      } catch (error) {
+        for (const request of requests) {
+          results[request.index] = error instanceof Error ? error : new Error(String(error));
+        }
+        continue;
+      }
       if (selected === null) continue;
       const selectedByRelPath = new Map(
         closure.members.map((member, index) => [
@@ -3723,7 +3995,7 @@ export function tryResolveBinaries(
         results[index] = resolveBinaryInFreshProgramContext(relPath);
       } catch (error) {
         if (error instanceof BinaryNotFoundError) continue;
-        throw error;
+        results[index] = error instanceof Error ? error : new Error(String(error));
       }
     }
     return results;
@@ -3773,6 +4045,21 @@ export function tryResolveBinarySet(relPaths: readonly string[]): string[] | nul
     );
   }
   return withFreshProgramIndexes(relPaths, () => {
+    if (relPaths.some(path => isOriginalCompanionPath(applyDefaultArch(path)))) {
+      const ordinary = relPaths.map(path => {
+        const adjusted = applyDefaultArch(path);
+        return isOriginalCompanionPath(adjusted) ? originalCompanionRequest(adjusted).executableRel : path;
+      });
+      const unique = [...new Set(ordinary.map(applyDefaultArch))];
+      const selected = tryResolveBinarySet(unique);
+      if (selected === null) return null;
+      const pinned = new Map(unique.map((path, index) => [path, selected[index]!]));
+      return relPaths.map((request, index) => {
+        const path = pinned.get(applyDefaultArch(ordinary[index]!))!;
+        const adjusted = applyDefaultArch(request);
+        return isOriginalCompanionPath(adjusted) ? originalCompanionForExecutable(adjusted, path) : path;
+      });
+    }
     const closureMembers = closureMembersForRequestedSet(relPaths);
     return tryResolveBinarySetFromTiers(relPaths, closureMembers);
   });

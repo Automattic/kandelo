@@ -94,12 +94,9 @@ export function removeWordPressOpcacheRunDirectory(runDirectory: string): void {
 }
 
 export function buildPhpOpcacheArgs(
-  opcacheExtensionPath: string,
   fileCachePath: string,
 ): string[] {
   return [
-    "-d", `extension_dir=${dirname(opcacheExtensionPath)}`,
-    "-d", "zend_extension=opcache",
     "-d", "opcache.enable=1",
     "-d", "opcache.enable_cli=1",
     "-d", `opcache.file_cache=${fileCachePath}`,

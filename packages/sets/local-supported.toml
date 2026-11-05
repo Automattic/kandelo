@@ -3,15 +3,40 @@ policy = "source-only-v1"
 dependency_only = [
   "bytepath-source",
   "snkrx-source",
+  "stb-source",
   "libyaml-source",
   "netsurf-buildsystem-source",
   "pcaudiolib-source",
   "pcre2-source",
+  "ncurses-source",
+  "phpcacheadmin-source",
   "sqlite-amalgamation-source",
   "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
 ]
 registry_non_roots = []
+
+[[packages]]
+name = "service-activity-tools"
+class = "platform"
+
+[[packages]]
+name = "web-stack-vfs"
+class = "browser-product"
+
+[[packages]]
+name = "wordpress-family-vfs"
+class = "browser-product"
+
+[[products]]
+id = "browser-web-stack"
+package = "web-stack-vfs"
+manifest = "images/vfs/products/browser-web-stack.toml"
+
+[[products]]
+id = "browser-wordpress-family"
+package = "wordpress-family-vfs"
+manifest = "images/vfs/products/browser-wordpress-family.toml"
 
 [[dormant_products]]
 name = "browser-erlang"
@@ -19,7 +44,7 @@ reason = "deferred product"
 
 [[dormant_products]]
 name = "browser-mariadb-wasm32"
-reason = "dormant product"
+reason = "retired standalone browser product; use WordPress with MariaDB"
 
 [[dormant_products]]
 name = "browser-mariadb-wasm64"
@@ -33,16 +58,16 @@ reason = "retired standalone browser product"
 name = "browser-python"
 reason = "retired standalone browser product"
 
-[[dormant_products]]
-name = "browser-redis"
-reason = "dormant product"
-
 [[packages]]
 name = "atk"
 class = "platform"
 
 [[packages]]
 name = "atkmm"
+class = "platform"
+
+[[packages]]
+name = "attr"
 class = "platform"
 
 [[packages]]
@@ -58,12 +83,28 @@ name = "bc"
 class = "user-software"
 
 [[packages]]
+name = "byacc"
+class = "user-software"
+
+[[packages]]
+name = "flex"
+class = "user-software"
+
+[[packages]]
+name = "binaryen"
+class = "platform"
+
+[[packages]]
+name = "wasm-fork-instrument"
+class = "platform"
+
+[[packages]]
 name = "bzip2"
 class = "user-software"
 
 [[packages]]
-name = "caddy"
-class = "user-software"
+name = "ca-certificates"
+class = "platform"
 
 [[packages]]
 name = "cairo"
@@ -86,12 +127,20 @@ name = "coreutils"
 class = "user-software"
 
 [[packages]]
+name = "composer"
+class = "user-software"
+
+[[packages]]
 name = "coreutils-docs"
 class = "browser-product"
 
 [[packages]]
 name = "cpython"
 class = "user-software"
+
+[[packages]]
+name = "kandelo-cc"
+class = "platform"
 
 [[packages]]
 name = "python-browser-bundle"
@@ -242,6 +291,14 @@ name = "jsoncpp"
 class = "platform"
 
 [[packages]]
+name = "kandelo-build-image"
+class = "platform"
+
+[[packages]]
+name = "kandelo-exchange"
+class = "platform"
+
+[[packages]]
 name = "kandelo-sdk"
 class = "test-support"
 
@@ -292,6 +349,14 @@ class = "platform"
 [[packages]]
 name = "libepoxy"
 class = "platform"
+
+[[packages]]
+name = "libevent"
+class = "platform"
+
+[[packages]]
+name = "libevent-tests"
+class = "test-support"
 
 [[packages]]
 name = "libevdev"
@@ -560,6 +625,22 @@ name = "scummvm"
 class = "user-software"
 
 [[packages]]
+name = "freeciv"
+class = "user-software"
+
+[[packages]]
+name = "freeciv-browser-bundle"
+class = "browser-product"
+
+[[packages]]
+name = "sdl2-image"
+class = "platform"
+
+[[packages]]
+name = "sdl2-ttf"
+class = "platform"
+
+[[packages]]
 name = "sdl-dsp-test"
 class = "test-support"
 
@@ -574,6 +655,10 @@ class = "user-software"
 [[packages]]
 name = "wayland-demo"
 class = "user-software"
+
+[[packages]]
+name = "sdl2-mixer"
+class = "platform"
 
 [[packages]]
 name = "sdl2-mixer-playwave"
@@ -621,6 +706,14 @@ class = "platform"
 
 [[packages]]
 name = "tar"
+class = "user-software"
+
+[[packages]]
+name = "tmux"
+class = "user-software"
+
+[[packages]]
+name = "termchat"
 class = "user-software"
 
 [[packages]]
@@ -753,10 +846,17 @@ reason = "retired standalone browser product"
 name = "perl-vfs"
 reason = "retired standalone browser product"
 
-[[exclusions]]
-name = "mariadb-vfs"
-reason = "dormant browser product"
+
+
+[[packages]]
+name = "redis-vfs"
+class = "user-software"
 
 [[exclusions]]
-name = "redis-vfs"
-reason = "dormant browser product"
+name = "mariadb-vfs"
+reason = "retired standalone browser product; use WordPress with MariaDB"
+
+[[products]]
+id = "browser-redis"
+package = "redis-vfs"
+manifest = "images/vfs/products/browser-redis.toml"

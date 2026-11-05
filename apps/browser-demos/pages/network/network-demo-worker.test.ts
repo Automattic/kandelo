@@ -113,8 +113,8 @@ test("canonical network rootfs hands over the activated image unchanged", async 
 
     // The canonical path hands over the ACTIVATED bytes as the manifest
     // described them. The image keeps the lazy address it was built with: a
-    // deployment's hashed asset path is transport policy, applied when the
-    // kernel worker fetches (`imageOwnedRuntimeUrlTable`), never written into
+    // deployment's asset path is transport policy, applied when the
+    // kernel worker fetches (`imageOwnedLazyAssetDirectory`), never written into
     // the image.
     const reader = KandeloImageFs.create();
     reader.loadImage(artifacts.rootfs);

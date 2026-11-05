@@ -23,11 +23,12 @@
  *
  * Judged by evals/build-waiting/README.md (tool 11).
  */
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   BinaryNotFoundError,
   findRepoRoot,
+  programOutputClosureRelPaths,
   tryResolveBinaries,
   withProgramIndexFreshness,
 } from "../host/src/binary-resolver";
@@ -36,18 +37,18 @@ type Member = { kind: string; mirrorPath: string };
 type PackageEntry = { arches: string[]; members: Member[]; cacheKeys: Record<string, string>; manifestSha256: string };
 
 // Closures that verified clean are remembered by (policy, package cache key
-// from the freshly checked index, and size/mtime/inode of every resolved
-// file). An unchanged closure is not re-hashed on the next run: hashing the
-// large VFS images is most of the cost (about 10 s for the whole tree), and
-// nothing a later resolve could reject has changed. Anything else, including
-// every failure, is resolved again from scratch.
-const MEMO_VERSION = 1;
-type Memo = { version: number; entries: Record<string, { key: string; files: string[] }> };
-// Size, mtime and inode together: a rebuilt or re-linked artifact changes at
-// least one of them, even when its path stays the same.
+// from the freshly checked index, and metadata/identity of every resolved
+// file). Unchanged captured files are not re-hashed on the next run. This
+// advisory memo does not replace fresh runtime artifact resolution. Anything
+// else, including every failure, is resolved again from scratch.
+const MEMO_VERSION = 2;
+type Memo = { version: number; entries: Record<string, { key: string; files: Array<{ path: string; stamp: string }> }> };
+// Content, permission and identity changes invalidate the cached result,
+// including changes whose mtime was restored or final path became a symlink.
 function fileStamp(path: string): string {
-  const st = statSync(path, { bigint: true });
-  return `${path}:${st.size}:${st.mtimeNs}:${st.ino}`;
+  const st = lstatSync(path, { bigint: true });
+  if (!st.isFile()) throw new Error(`artifact is not a regular file: ${path}`);
+  return `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}:${st.mode}:${st.uid}:${st.gid}`;
 }
 
 const started = Date.now();
@@ -85,26 +86,28 @@ withProgramIndexFreshness(() => {
 for (const [name, entry] of Object.entries(index.packages)) {
   for (const arch of entry.arches) {
     const pkg = `${name}/${arch}`;
-    const paths = entry.members.map((m) => `programs/${arch}/${m.mirrorPath}`);
+    const requested = entry.members.map((member) => `programs/${arch}/${member.mirrorPath}`);
     const key = `${policy}:${entry.manifestSha256}:${entry.cacheKeys?.[arch] ?? ""}`;
-    const remembered = memo.entries[pkg];
-    if (remembered && remembered.key === key) {
-      try {
-        if (remembered.files.every((stamp) => fileStamp(stamp.slice(0, stamp.indexOf(":"))) === stamp)) {
-          ok.push(pkg);
-          nextMemo.entries[pkg] = remembered;
-          reused++;
-          continue;
-        }
-      } catch {
-        // a remembered file is gone: resolve again
-      }
-    }
     try {
+      const paths = programOutputClosureRelPaths(requested[0]!) ?? requested;
+      const remembered = memo.entries[pkg];
+      if (remembered && remembered.key === key
+        && Array.isArray(remembered.files) && remembered.files.length === paths.length) {
+        try {
+          if (remembered.files.every((file) => fileStamp(file.path) === file.stamp)) {
+            ok.push(pkg);
+            nextMemo.entries[pkg] = remembered;
+            reused++;
+            continue;
+          }
+        } catch {
+          // a remembered file is gone: resolve again
+        }
+      }
       const resolved = tryResolveBinaries(paths);
       if (resolved.every((p) => p !== null)) {
         ok.push(pkg);
-        nextMemo.entries[pkg] = { key, files: (resolved as string[]).map(fileStamp) };
+        nextMemo.entries[pkg] = { key, files: (resolved as string[]).map((path) => ({ path, stamp: fileStamp(path) })) };
       }
       // Absent from every tier is not a closure defect: the package simply
       // is not built here, and a suite that needs it fails loudly on its own.

@@ -16,8 +16,11 @@
  *     through `fbWrite(pid, offset, bytes)`. Renderers read directly
  *     from `hostBuffer` — no process-Memory access.
  *
- * Pure metadata + lazy view caches; the registry doesn't know what a
- * canvas is.
+ * Browser presentation can supply a fixed-size shared pixel mirror for an
+ * mmap binding. The guest mapping stays in its process; this display storage
+ * carries no reference to the guest's WebAssembly.Memory.
+ *
+ * Pure metadata + lazy view caches; the registry doesn't know what a canvas is.
  */
 export type FbFormat = "BGRA32";
 
@@ -35,6 +38,8 @@ export type FbBindingInput = {
   /** Bytes per row. */
   stride: number;
   fmt: FbFormat;
+  /** Browser display mirror; owns pixels independently of guest Wasm memory. */
+  pixels?: SharedArrayBuffer;
 };
 
 export type FbBinding = FbBindingInput & {
@@ -48,8 +53,8 @@ export type FbBinding = FbBindingInput & {
   /** Cached `ImageData` matching `view`; invalidated together. */
   imageData: ImageData | null;
   /**
-   * Host-allocated pixel buffer for write-based bindings. `null` for
-   * mmap-based bindings.
+   * Host-allocated pixel storage for write-based bindings or a browser
+   * display mirror. Null when a host reads the guest mapping directly.
    */
   hostBuffer: Uint8ClampedArray | null;
 };
@@ -69,9 +74,11 @@ export class FramebufferRegistry {
 
   bind(b: FbBindingInput): void {
     const isWriteBased = b.addr === 0 && b.len === 0;
-    const hostBuffer = isWriteBased
-      ? new Uint8ClampedArray(new ArrayBuffer(b.h * b.stride))
-      : null;
+    const hostBuffer = b.pixels !== undefined
+      ? new Uint8ClampedArray(b.pixels)
+      : isWriteBased
+        ? new Uint8ClampedArray(new ArrayBuffer(b.h * b.stride))
+        : null;
     this.bindings.set(b.pid, {
       ...b,
       view: null,

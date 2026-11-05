@@ -1,0 +1,123 @@
+Keep nation identities separate from filtered list positions.
+
+The initial visible page and random selection must use the actual filtered
+nation set. Include taken entries in scroll geometry, disable them when
+creating the list, and tolerate absent widgets when availability changes.
+
+--- a/client/gui-sdl2/dialogs.c
++++ b/client/gui-sdl2/dialogs.c
+@@ -3108,6 +3108,28 @@
+ }
+ 
+ /**********************************************************************//**
++  Select from the filtered nations, not from the same-sized prefix of IDs.
++**************************************************************************/
++static struct nation_type *random_available_nation(void)
++{
++  int count = get_playable_nation_count();
++  int choice;
++
++  if (count == 0) {
++    return NULL;
++  }
++  choice = fc_rand(count);
++  nations_iterate(pnation) {
++    if (is_nation_playable(pnation) && is_nation_pickable(pnation)
++        && !pnation->player && choice-- == 0) {
++      return pnation;
++    }
++  } nations_iterate_end;
++
++  return NULL;
++}
++
++/**********************************************************************//**
+   Popup the nation selection dialog.
+ **************************************************************************/
+ void popup_races_dialog(struct player *pplayer)
+@@ -3128,11 +3150,17 @@
+   struct nation_type *pnat;
+   struct widget *nationsets = NULL;
+   int natinfo_y, natinfo_h;
++  int listed_nations = 0;
+ 
+ #define TARGETS_ROW 5
+ #define TARGETS_COL 1
+ 
+   if (nation_dlg) {
++    return;
++  }
++
++  pnat = random_available_nation();
++  if (pnat == NULL) {
+     return;
+   }
+ 
+@@ -3201,7 +3229,7 @@
+     pwidget = create_icon2(tmp_surf, pwindow->dst,
+                            (WF_RESTORE_BACKGROUND|WF_FREE_THEME));
+ 
+-    set_wstate(pwidget, FC_WS_NORMAL);
++    set_wstate(pwidget, pnation->player ? FC_WS_DISABLED : FC_WS_NORMAL);
+ 
+     pwidget->action = nation_button_callback;
+ 
+@@ -3210,7 +3238,8 @@
+ 
+     add_to_gui_list(MAX_ID - nation_index(pnation), pwidget);
+ 
+-    if (nation_index(pnation) > (TARGETS_ROW * TARGETS_COL - 1)) {
++    /* Global IDs need not be contiguous in the selected nation set. */
++    if (listed_nations++ >= TARGETS_ROW * TARGETS_COL) {
+       set_wflag(pwidget, WF_HIDDEN);
+     }
+ 
+@@ -3222,7 +3251,7 @@
+   nation_dlg->begin_widget_list = pwidget;
+   nation_dlg->begin_active_widget_list = nation_dlg->begin_widget_list;
+ 
+-  if (get_playable_nation_count() > TARGETS_ROW * TARGETS_COL) {
++  if (listed_nations > TARGETS_ROW * TARGETS_COL) {
+     nation_dlg->active_widget_list = nation_dlg->end_active_widget_list;
+     create_vertical_scrollbar(nation_dlg,
+                               TARGETS_COL, TARGETS_ROW, TRUE, TRUE);
+@@ -3279,8 +3308,7 @@
+   }
+ 
+   /* Nation name */
+-  setup->nation = fc_rand(get_playable_nation_count());
+-  pnat = nation_by_number(setup->nation);
++  setup->nation = nation_index(pnat);
+   setup->nation_style = style_number(style_of_nation(pnat));
+ 
+   copy_chars_to_utf8_str(pstr, nation_plural_translation(pnat));
+@@ -3593,7 +3621,9 @@
+                 nation_rule_name(nation));
+ 
+       nat = get_widget_pointer_from_main_list(MAX_ID - nation_index(nation));
+-      set_wstate(nat, FC_WS_DISABLED);
++      if (nat != NULL) {
++        set_wstate(nat, FC_WS_DISABLED);
++      }
+ 
+       if (nation_index(nation) == setup->nation) {
+         change = TRUE;
+@@ -3602,10 +3632,14 @@
+   } nations_iterate_end;
+ 
+   if (change) {
+-    do {
+-      setup->nation = fc_rand(get_playable_nation_count());
+-      nat = get_widget_pointer_from_main_list(MAX_ID - setup->nation);
+-    } while (get_wstate(nat) == FC_WS_DISABLED);
++    struct nation_type *pnation = random_available_nation();
++
++    if (pnation == NULL) {
++      popdown_races_dialog();
++      flush_dirty();
++      return;
++    }
++    setup->nation = nation_index(pnation);
+ 
+     if (get_wstate(setup->name_edit) == FC_WS_PRESSED) {
+       force_exit_from_event_loop();

@@ -19,201 +19,121 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::fs;
-use std::process::Command;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+#[path = "cli/io.rs"]
+mod io;
+#[path = "cli/options.rs"]
+mod options;
+#[path = "cli/transform.rs"]
+mod transform;
+use options::Cli;
 
 use fork_instrument::{
-    Options, analyze, sink_report,
+    Options, analyze,
     contract_inventory::{
         artifact_identity, fork_capability_section_hex, fork_contract_inventory,
-        linked_frame_descriptor_section_hex, reserved_env_imports,
+        legacy_asyncify_exports, linked_frame_descriptor_section_hex, reserved_env_imports,
     },
-    instrument,
-    target_features::used_features,
+    sink_report,
 };
-
-#[derive(Debug, Parser)]
-#[command(
-    name = "wasm-fork-instrument",
-    about = "Instrument a wasm module with save/restore machinery for POSIX fork()",
-    long_about = None,
-)]
-struct Cli {
-    /// Input wasm file to instrument.
-    input: PathBuf,
-
-    /// Output path for the instrumented wasm file. Required unless an
-    /// analysis or contract-inspection mode is set.
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-
-    /// The fully-qualified name of the import that triggers unwind.
-    /// Format: `module.field`. Defaults to `kernel.kernel_fork`.
-    /// `env.fork` selects complete dynamically linked side-module boundary
-    /// coverage, including downstream fork in another side module.
-    #[arg(long, default_value = "kernel.kernel_fork")]
-    entry: String,
-
-    /// Instrument the full fork closure instead of stopping the unwind at
-    /// fork boundaries (sinks). For comparison and diagnosis.
-    #[arg(long)]
-    no_sinks: bool,
-
-    /// Ignore the compiler facts (`kandelo.calltypes` section) and use the
-    /// sink analysis without them. For diagnosis. The section is removed
-    /// from the output either way.
-    #[arg(long)]
-    no_facts: bool,
-
-    /// With compiler facts: do not apply C's effective-type rule anywhere.
-    /// By default it applies in each unit compiled with strict aliasing (the
-    /// C default) and nowhere else.
-    #[arg(long)]
-    no_effective_types: bool,
-
-    /// For a program that can dlopen: `traced-entries` (default) instruments
-    /// the main program as if no side module returns through a fork child
-    /// into its frames and records that contract so the host refuses side
-    /// modules that could; `assume-all-entries-fork-returning` instruments for
-    /// every side-module entry and loads any library.
-    #[arg(long, default_value = "traced-entries", value_parser = ["traced-entries", "assume-all-entries-fork-returning"])]
-    side_modules: String,
-
-    /// Diagnosis: print which analysis decided the instrumented set
-    /// (`source\t<closure|builtin|facts>`), then the set and its
-    /// boundaries as `A\t<name>` and `B\t<name>` rows. Emits no output
-    /// file.
-    #[arg(long, hide = true, conflicts_with = "output")]
-    sink_report: bool,
-
-    /// wasm-opt level to run over an instrumented output, or `none`.
-    ///
-    /// Runs only when instrumentation changed the module; a module outside
-    /// any fork transaction is written back byte-for-byte. The name section
-    /// is dropped unless `--keep-names` is given. `none` exists for
-    /// inspecting the instrumenter's raw output, not for shipping.
-    #[arg(long, default_value = "Os", value_parser = ["O1", "O2", "O3", "Os", "Oz", "none"])]
-    post_optimize: String,
-
-    /// Debugging: keep the name section through the post-optimize pass
-    /// (`wasm-opt -g`), so traps and profiles show function names.
-    #[arg(long)]
-    keep_names: bool,
-
-    /// Analyze the module and print the discovered fork-path function
-    /// set as JSON to stdout. Skips instrumentation and output emission.
-    /// Useful for validating call-graph discovery against
-    /// hand-maintained onlylists.
-    #[arg(long)]
-    discover_only: bool,
-
-    /// Print the fork-artifact structural inventory as one TSV row.
-    /// This mode performs no instrumentation and emits no output file.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "discover_only",
-            "artifact_identity",
-            "reserved_env_imports",
-            "output"
-        ]
-    )]
-    contract_inventory: bool,
-
-    /// Print relocatable, memory, and strict ABI-export identity as one TSV row.
-    /// This mode performs no instrumentation and emits no output file.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "discover_only",
-            "contract_inventory",
-            "fork_capability_hex",
-            "linked_frame_descriptor_hex",
-            "reserved_env_imports",
-            "output"
-        ]
-    )]
-    artifact_identity: bool,
-
-    /// Print the unique fork-capability custom section as lowercase hex.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "discover_only",
-            "contract_inventory",
-            "artifact_identity",
-            "linked_frame_descriptor_hex",
-            "reserved_env_imports",
-            "output"
-        ]
-    )]
-    fork_capability_hex: bool,
-
-    /// Print the unique linked-frame descriptor custom section as lowercase hex.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "discover_only",
-            "contract_inventory",
-            "artifact_identity",
-            "fork_capability_hex",
-            "reserved_env_imports",
-            "output"
-        ]
-    )]
-    linked_frame_descriptor_hex: bool,
-
-    /// Print reserved env imports as `<kind>\t<module>.<name>` rows.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "discover_only",
-            "contract_inventory",
-            "artifact_identity",
-            "fork_capability_hex",
-            "linked_frame_descriptor_hex",
-            "output"
-        ]
-    )]
-    reserved_env_imports: bool,
-}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let input =
-        fs::read(&cli.input).with_context(|| format!("reading input: {}", cli.input.display()))?;
+    let io::Inputs { artifact: mut snapshot, permissions, name: input_name } = io::Inputs::open(&cli)?;
+    if cli.original_reference {
+        match fork_instrument::original_artifact::original_reference(snapshot.bytes())? {
+            Some(reference) => {
+                let digest: String = reference.sha256.iter().map(|byte| format!("{byte:02x}")).collect();
+                println!("{}\t{digest}", reference.length);
+            }
+            None => println!("none"),
+        }
+        return Ok(());
+    }
+    if let Some(original_path) = &cli.verify_original {
+        let reference = fork_instrument::original_artifact::original_reference(snapshot.bytes())?
+            .ok_or_else(|| anyhow::anyhow!("input has no retained original-program reference"))?;
+        anyhow::ensure!(reference.length <= cli.max_input_bytes,
+            "original program exceeds artifact byte budget");
+        fork_instrument::original_artifact::load_original_file(
+            original_path, &reference, cli.max_input_bytes)?;
+        return Ok(());
+    }
+    if cli.reprepare_from_original {
+        let reference = fork_instrument::original_artifact::original_reference(snapshot.bytes())?
+            .ok_or_else(|| anyhow::anyhow!("input has no retained original-program reference"))?;
+        snapshot = fork_instrument::original_artifact::load_original(
+            cli.original_store.as_ref().expect("clap requires an original store"), &reference, cli.max_input_bytes)?;
+    }
+    let input = snapshot.bytes();
+
+    if cli.streaming_scan {
+        let scan = fork_instrument::streaming::scan(&input)
+            .with_context(|| format!("scanning original module: {input_name}"))?;
+        println!("input-bytes\t{}", input.len());
+        println!("functions\t{}", scan.functions.len());
+        println!("operators\t{}", scan.operators);
+        println!(
+            "max-body-bytes\t{}",
+            scan.functions
+                .iter()
+                .filter_map(|f| f.body.as_ref())
+                .map(|b| b.range.len())
+                .max()
+                .unwrap_or(0)
+        );
+        if !cli.no_facts
+            && scan
+                .custom_data(fork_instrument::facts::SECTION)
+                .next()
+                .is_some()
+        {
+            match scan.bind_fact_definitions() {
+                Ok(bindings) => println!(
+                    "facts-definitions-bound\t{}",
+                    bindings.iter().filter(|(_, b)| !b.is_empty()).count()
+                ),
+                Err(error) => println!("facts-definitions-error\t{error:#}"),
+            }
+        }
+        return Ok(());
+    }
 
     if cli.contract_inventory {
         let inventory = fork_contract_inventory(&input)
-            .with_context(|| format!("inventorying {}", cli.input.display()))?;
+            .with_context(|| format!("inventorying {input_name}"))?;
         println!("{inventory}");
         return Ok(());
     }
     if cli.artifact_identity {
         let identity = artifact_identity(&input)
-            .with_context(|| format!("inspecting artifact identity: {}", cli.input.display()))?;
+            .with_context(|| format!("inspecting artifact identity: {input_name}"))?;
         println!("{identity}");
         return Ok(());
     }
     if cli.fork_capability_hex {
         let hex = fork_capability_section_hex(&input)
-            .with_context(|| format!("reading fork capability: {}", cli.input.display()))?;
+            .with_context(|| format!("reading fork capability: {input_name}"))?;
         println!("{hex}");
         return Ok(());
     }
     if cli.linked_frame_descriptor_hex {
         let hex = linked_frame_descriptor_section_hex(&input)
-            .with_context(|| format!("reading linked-frame descriptor: {}", cli.input.display()))?;
+            .with_context(|| format!("reading linked-frame descriptor: {input_name}"))?;
         println!("{hex}");
+        return Ok(());
+    }
+    if cli.legacy_asyncify_exports {
+        let names = legacy_asyncify_exports(&input)
+            .with_context(|| format!("inventorying exports: {input_name}"))?;
+        for name in names {
+            println!("{name}");
+        }
         return Ok(());
     }
     if cli.reserved_env_imports {
         let imports = reserved_env_imports(&input)
-            .with_context(|| format!("inventorying reserved imports: {}", cli.input.display()))?;
+            .with_context(|| format!("inventorying reserved imports: {input_name}"))?;
         for import in imports {
             println!("{}\t{}", import.kind, import.identity);
         }
@@ -233,8 +153,8 @@ fn main() -> Result<()> {
     };
 
     if cli.sink_report {
-        let report = sink_report(&input, &opts)
-            .with_context(|| format!("analyzing {}", cli.input.display()))?;
+        let report = sink_report(input, &opts)
+            .with_context(|| format!("analyzing {input_name}"))?;
         println!("source\t{}", report.source.as_str());
         if let Some(f) = &report.facts {
             println!(
@@ -256,120 +176,51 @@ fn main() -> Result<()> {
 
     if cli.discover_only {
         let analysis =
-            analyze(&input, &opts).with_context(|| format!("analyzing {}", cli.input.display()))?;
+            analyze(input, &opts).with_context(|| format!("analyzing {input_name}"))?;
         print_analysis_json(&analysis);
         return Ok(());
     }
 
-    let output_path = cli.output.as_ref().ok_or_else(|| {
+    let output = cli.output.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
             "--output is required unless an analysis or contract-inspection mode is set"
         )
     })?;
-    // Capture this before writing: `--output` is allowed to name the input
-    // file, and output creation/truncation must not become the source of truth
-    // for the executable mode we are preserving.
-    let input_mode = input_mode(&cli.input)?;
-
-    let output = instrument(&input, &opts)
-        .with_context(|| format!("instrumenting {}", cli.input.display()))?;
-
-    fs::write(output_path, &output)
-        .with_context(|| format!("writing output: {}", output_path.display()))?;
-    // A module outside any fork transaction comes back as the input without
-    // its compiler facts; it was not transformed, so it is not optimized.
-    let untransformed = output == input
-        || fork_instrument::facts::strip_section(&input)?.is_some_and(|stripped| stripped == output);
-    if cli.post_optimize != "none" && !untransformed {
-        post_optimize(output_path, &cli.post_optimize, cli.keep_names)?;
+    let original_store = if cli.bind_original { None } else {
+        cli.original_store.or_else(||
+            std::env::var_os("WASM_POSIX_BUILD_ORIGINAL_STORE").map(std::path::PathBuf::from))
+    };
+    let original = if cli.bind_original {
+        Some(fork_instrument::original_artifact::reference_for_original(snapshot.bytes())?)
+    } else {
+        original_store.as_ref().map(|store|
+            fork_instrument::original_artifact::retain_original(&snapshot, store, permissions.clone())).transpose()?
+    };
+    if let (Some(store), Some(original)) = (&original_store, &original) {
+        let output_path = output;
+        let original_directory = std::fs::canonicalize(original.path(store).parent().unwrap())?;
+        let output_directory = output_path.parent().filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        anyhow::ensure!(!std::fs::canonicalize(output_directory)?.starts_with(&original_directory),
+            "output must be outside the immutable original-program store");
     }
-    preserve_input_mode(input_mode, output_path)?;
-
-    Ok(())
-}
-
-/// Optimize the instrumented module in place.
-///
-/// WHY here and not in each build script: this is the one step every fork
-/// artifact passes through, and only it knows whether instrumentation changed
-/// the module. The instrumenter's metadata is position-independent (ABI 46),
-/// so wasm-opt may remove unused imports and renumber functions, globals and
-/// tables. A missing wasm-opt is an error, not a skipped step: the artifact
-/// would differ from what every other build of the same sources produces.
-///
-/// WHY `-g` only on request: the instrumenter does not carry DWARF through,
-/// so `-g` could only keep the name section. wasm-ld writes one into every
-/// link, the facts need it to bind (`facts/bind.rs`), and the runtime does
-/// not read it. Keeping it cost Quickshell 10 MB.
-fn post_optimize(path: &Path, level: &str, keep_names: bool) -> Result<()> {
-    let wasm_opt = std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into());
-    let mut command = Command::new(&wasm_opt);
-    command.arg(path).arg(format!("-{level}"));
-    for feature in used_features(&fs::read(path)?)? {
-        let flag = match feature {
-            "atomics" => "--enable-threads",
-            "bulk-memory" => "--enable-bulk-memory",
-            "exception-handling" => "--enable-exception-handling",
-            "gc" => "--enable-gc",
-            "memory64" => "--enable-memory64",
-            "multimemory" => "--enable-multimemory",
-            "multivalue" => "--enable-multivalue",
-            "mutable-globals" => "--enable-mutable-globals",
-            "nontrapping-fptoint" => "--enable-nontrapping-float-to-int",
-            "reference-types" => "--enable-reference-types",
-            "relaxed-simd" => "--enable-relaxed-simd",
-            "sign-ext" => "--enable-sign-ext",
-            "simd128" => "--enable-simd",
-            "tail-call" => "--enable-tail-call",
-            _ => continue,
-        };
-        command.arg(flag);
+    if cli.retain_uninstrumented {
+        let retained = fork_instrument::original_artifact::attach_original_reference(
+            &snapshot, original.as_ref().expect("clap requires an original store"), cli.max_output_bytes)?;
+        return retained.publish(output, permissions);
     }
-    if keep_names {
-        command.arg("-g");
-    }
-    command.arg("-o").arg(path);
-    let status = command.status().with_context(|| {
-        format!(
-            "running {} after fork instrumentation (Binaryen is required; \
-             run inside scripts/dev-shell.sh or set WASM_OPT)",
-            Path::new(&wasm_opt).display()
-        )
-    })?;
-    anyhow::ensure!(
-        status.success(),
-        "{} -{level} failed on instrumented output {} ({status})",
-        Path::new(&wasm_opt).display(),
-        path.display()
-    );
-    Ok(())
-}
-
-#[cfg(unix)]
-fn input_mode(input_path: &Path) -> Result<u32> {
-    let mode = fs::metadata(input_path)
-        .with_context(|| format!("stat input for permissions: {}", input_path.display()))?
-        .permissions()
-        .mode();
-    Ok(mode)
-}
-
-#[cfg(not(unix))]
-fn input_mode(_input_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn preserve_input_mode(input_mode: u32, output_path: &Path) -> Result<()> {
-    let permissions = fs::Permissions::from_mode(input_mode);
-    fs::set_permissions(output_path, permissions)
-        .with_context(|| format!("setting output permissions: {}", output_path.display()))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn preserve_input_mode(_input_mode: (), _output_path: &Path) -> Result<()> {
-    Ok(())
+    let artifact = transform::run(
+        input,
+        &opts,
+        transform::Settings {
+            optimize: &cli.post_optimize,
+            keep_names: cli.keep_names,
+            output_bytes: cli.max_output_bytes,
+            original: original.as_ref(),
+        },
+    )
+    .with_context(|| format!("instrumenting {input_name}"))?;
+    artifact.publish(output, permissions)
 }
 
 fn print_analysis_json(analysis: &fork_instrument::Analysis) {

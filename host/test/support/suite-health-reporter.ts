@@ -16,6 +16,10 @@
  * Judged by evals/build-waiting/README.md (tool 4): kept only if at least
  * 80% of its warnings turn out to be real.
  */
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { cpus, homedir, loadavg } from "node:os";
+import { join } from "node:path";
 import type { Reporter, SerializedError, TestModule, TestRunEndReason } from "vitest/node";
 
 // A load error "dominates" when it explains at least half of the failing
@@ -30,6 +34,64 @@ const MAX_CAUSES = 5;
 // Files where every test skipped are named, but only a few: enough to notice
 // an unexpected one without restating the whole skip list on every run.
 const MAX_SKIPPED_FILES = 5;
+// Failed tests listed with their durations on the load line.
+const MAX_TIMED_FAILURES = 5;
+
+/**
+ * CPU share (percent of one CPU) per process group, from `ps`, or null when
+ * no `ps` can run. The pure Nix dev shell does not put `ps` on PATH, so the
+ * system's own is tried too: this reads process statistics for a
+ * diagnostic line, it does not build or verify anything.
+ */
+function cpuByProcessGroup(): Map<number, number> | null {
+  for (const ps of ["ps", "/bin/ps", "/usr/bin/ps"]) {
+    try {
+      const groups = new Map<number, number>();
+      for (const line of execFileSync(ps, ["-A", "-o", "pgid=,pcpu="], { encoding: "utf8" }).split("\n")) {
+        const [pgid, pcpu] = line.trim().split(/\s+/).map(Number);
+        if (Number.isFinite(pgid) && Number.isFinite(pcpu)) groups.set(pgid, (groups.get(pgid) ?? 0) + pcpu);
+      }
+      return groups;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+/**
+ * Other jobs started through scripts/agent-job that are using CPU at the end
+ * of the run, read from its registry (KANDELO_AGENT_JOBS_DIR, default
+ * ~/.cache/kandelo/agent-jobs). A job is running while it has no result.json
+ * and its supervisor lives. scripts/agent-job starts the supervisor and the
+ * job's command each in a session of its own, so the job's CPU share is the
+ * sum over those two process groups. Idle jobs, such as a dev server left
+ * running for days, are not load and are left out, as is the job this run
+ * belongs to.
+ */
+function concurrentAgentJobs(): { jobs: string[]; cpuKnown: boolean } {
+  const cpu = cpuByProcessGroup();
+  const root = process.env.KANDELO_AGENT_JOBS_DIR ?? join(homedir(), ".cache/kandelo/agent-jobs");
+  const jobs = join(root, "jobs");
+  if (!existsSync(jobs)) return { jobs: [], cpuKnown: cpu !== null };
+  const running: string[] = [];
+  for (const id of readdirSync(jobs)) {
+    if (id === process.env.KANDELO_AGENT_JOB || existsSync(join(jobs, id, "result.json"))) continue;
+    try {
+      const meta = JSON.parse(readFileSync(join(jobs, id, "meta.json"), "utf8")) as { supervisor_pid?: number; child_pid?: number; worktree?: string };
+      if (!meta.supervisor_pid) continue;
+      process.kill(meta.supervisor_pid, 0);
+      const groups = [meta.supervisor_pid, meta.child_pid].filter((pid): pid is number => pid !== undefined);
+      const share = cpu ? groups.reduce((sum, pid) => sum + (cpu.get(pid) ?? 0), 0) : undefined;
+      if (share !== undefined && share < 5) continue;
+      const shown = share === undefined ? "" : `, ${Math.round(share)}% CPU`;
+      running.push(`${id} (${(meta.worktree ?? "?").split("/").pop()}${shown})`);
+    } catch {
+      // No metadata, or the supervisor is gone: not a running job.
+    }
+  }
+  return { jobs: running, cpuKnown: cpu !== null };
+}
 
 /**
  * One line describing why a file failed to load, normalized so that files
@@ -53,11 +115,13 @@ function causeOf(error: SerializedError, root: string): string {
 
 export default class SuiteHealthReporter implements Reporter {
   private root = process.cwd();
+  private startLoad = loadavg()[0];
 
   onInit(vitest: { config: { root: string } }): void {
     // Strip the repo root (one level above host/) from error text, because
     // absolute paths differ between worktrees and would split one cause in two.
     this.root = vitest.config.root.replace(/\/host\/?$/, "/");
+    this.startLoad = loadavg()[0];
   }
 
   onTestRunEnd(
@@ -70,6 +134,7 @@ export default class SuiteHealthReporter implements Reporter {
     let skipped = 0;
     const loadFailures = new Map<string, string[]>();
     const wholeFileSkips: string[] = [];
+    const timedFailures: { name: string; ms: number }[] = [];
 
     for (const module of testModules) {
       let moduleTests = 0;
@@ -78,7 +143,10 @@ export default class SuiteHealthReporter implements Reporter {
         moduleTests++;
         const state = test.result().state;
         if (state === "passed") passed++;
-        else if (state === "failed") failed++;
+        else if (state === "failed") {
+          failed++;
+          timedFailures.push({ name: `${module.relativeModuleId} > ${test.name}`, ms: test.diagnostic()?.duration ?? 0 });
+        }
         else if (state === "skipped") {
           skipped++;
           moduleSkipped++;
@@ -148,6 +216,28 @@ export default class SuiteHealthReporter implements Reporter {
       const shown = wholeFileSkips.slice(0, MAX_SKIPPED_FILES).join(", ");
       const more = wholeFileSkips.length > MAX_SKIPPED_FILES ? `, +${wholeFileSkips.length - MAX_SKIPPED_FILES} more` : "";
       lines.push(`[suite-health] info: every test skipped in ${shown}${more}`);
+    }
+    // When something failed, record how busy the machine was: load at start
+    // and end, other agent jobs still running, and each failure's duration.
+    // These are facts for the reader, not a verdict. A test cannot tell "slow
+    // because the machine was busy" from "slow because of a regression" (a
+    // regression can make the machine busy too), so a failure here stays a
+    // failure; the line only says whether a quiet rerun is worth trying.
+    if (failed > 0 || loadFailed > 0) {
+      const { jobs, cpuKnown } = concurrentAgentJobs();
+      lines.push(
+        `[suite-health] info: machine load ${this.startLoad.toFixed(1)} at start, ` +
+          `${loadavg()[0].toFixed(1)} at end (1-minute average, ${cpus().length} CPUs); ` +
+          (cpuKnown
+            ? `other agent jobs using CPU at end: ${jobs.length ? jobs.join(", ") : "none"}`
+            : `other agent jobs running at end (CPU share unavailable): ${jobs.length ? jobs.join(", ") : "none"}`),
+      );
+      for (const { name, ms } of timedFailures.slice(0, MAX_TIMED_FAILURES)) {
+        lines.push(`[suite-health] info: failed after ${(ms / 1000).toFixed(1)} s: ${name}`);
+      }
+      if (timedFailures.length > MAX_TIMED_FAILURES) {
+        lines.push(`[suite-health] info: ... ${timedFailures.length - MAX_TIMED_FAILURES} more failed tests`);
+      }
     }
     // Write to process.stdout, not console: vitest intercepts `console`, so a
     // console.error diagnostic in this repo never reached the log (2026-09-20,

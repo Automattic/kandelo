@@ -606,6 +606,25 @@ describe("WasmPosixKernel public API scratch ownership", () => {
 });
 
 describe("Rust-owned host import ranges", () => {
+  it("reports stable readonly nosuid storage for an anonymous program image", () => {
+    const delegated = vi.fn();
+    const { kernel, memory } = fullKernelHarness({ fstatfs: delegated });
+    const handle = kernel.registerProgramImage(Uint8Array.of(0, 97, 115, 109));
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
+      env: Record<string, (...args: any[]) => any>;
+    };
+    expect(imports.env.host_fstatfs(handle, 4096)).toBe(0);
+    const view = new DataView(memory.buffer, 4096);
+    expect(view.getUint32(0, true)).toBe(0x4b505247);
+    expect(view.getBigUint64(8, true)).toBe(1n);
+    expect(view.getBigUint64(32, true)).toBe(1n);
+    expect(view.getUint32(64, true)).toBe(3);
+    expect(imports.env.host_fstatfs(handle, memory.buffer.byteLength - 1)).toBe(-14);
+    expect(delegated).not.toHaveBeenCalled();
+    expect(imports.env.host_close(handle)).toBe(0);
+    expect(kernel.heldProgramImageCount).toBe(0);
+  });
+
   it("rejects a truncated kernel source instead of invoking the backend", () => {
     // `host_openat` takes a directory handle plus ONE path component; the
     // component's bytes are the kernel-owned source that must be range-checked
@@ -938,22 +957,6 @@ describe("Rust-owned host import ranges", () => {
     expect(read).not.toHaveBeenCalled();
   });
 
-  it("rejects an invalid wait status destination before reaping", () => {
-    const waitpid = vi.fn(() => ({ pid: 42, status: 0 }));
-    const { kernel, memory } = kernelHarness({});
-    Object.assign(kernel, { io: { waitpid } });
-    const imports = kernel.testAuthority.buildImportObject(memory) as {
-      env: Record<string, (...args: any[]) => any>;
-    };
-
-    expect(imports.env.host_waitpid(
-      42,
-      0,
-      memory.buffer.byteLength - 2,
-    )).toBe(-14);
-    expect(waitpid).not.toHaveBeenCalled();
-  });
-
   it("rejects network output larger than the Rust-provided capacity", () => {
     const { kernel, memory } = kernelHarness({});
     Object.assign(kernel, {
@@ -1213,31 +1216,6 @@ describe("Rust-owned host import ranges", () => {
     expect(imports.env.host_proc_write_bytes(7, 128n, 4096, 4)).toBe(0);
     expect(new Uint8Array(processMemory.buffer, 128, 4))
       .toEqual(new Uint8Array([1, 2, 3, 4]));
-  });
-
-  it("does not wrap a wasm64 futex address onto a low kernel word", () => {
-    const { kernel, memory } = kernelHarness({}, 8);
-    const imports = kernel.testAuthority.buildImportObject(memory) as {
-      env: Record<string, (...args: any[]) => any>;
-    };
-    const notify = vi.spyOn(Atomics, "notify");
-
-    expect(imports.env.host_futex_wake(0x1_0000_1000n, 1)).toBe(-14);
-    expect(notify).not.toHaveBeenCalled();
-    notify.mockRestore();
-  });
-
-  it("rejects unaligned and end-crossing futex words", () => {
-    const { kernel, memory } = kernelHarness({});
-    const imports = kernel.testAuthority.buildImportObject(memory) as {
-      env: Record<string, (...args: any[]) => any>;
-    };
-
-    expect(imports.env.host_futex_wake(4097, 1)).toBe(-22);
-    expect(imports.env.host_futex_wake(
-      memory.buffer.byteLength - 2,
-      1,
-    )).toBe(-14);
   });
 
   it("rejects lossy device metadata conversions before registration", () => {

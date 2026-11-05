@@ -1,0 +1,219 @@
+{
+  "metadata": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12",
+    "rounds": 3,
+    "guard_bytes": 1073741824,
+    "timeout_s": 120.0,
+    "binary_sha256": "aed01d7765b0e8ad10214096214631b0eea98102833702b2cb4f87fc0e2c5c40",
+    "input_sha256": {
+      "arithmetic-wide.wasm": "72ce07fead2ec34c242f4280e6121822c55676be824b50872425937c34335305",
+      "caught-child.wasm": "df3c969a606b48dfae962da9631056901818696c1d7e043faa10b7da9ab2ee97",
+      "child-exit.wasm": "e68138693658b2fa465b2ddc367bc3cbfb8ece33800dbcae4d9fd62725db0ecb",
+      "data-heavy.wasm": "b39032445436c943250264c61feb6afcc24354b8263e5c0b8552b03c5314165b",
+      "facts-heavy.wasm": "ab86c26e63f92f1ff9642b6211a1d5744388856b664bf845c8edd349d99bf011",
+      "many-tiny.wasm": "0639fa7e069ec53b42090e045b60c128324820c32bcb84021aaabd644ff59562",
+      "one-large.wasm": "b72abd42c362cba5d4022005a51120e7142ed87a24eb21cff0b0ff35699726a9"
+    },
+    "rayon_threads": 2,
+    "generator": "generate-sinks",
+    "phases": [
+      "instrument"
+    ],
+    "scope": "frontend: front-end/closure/binding; roundtrip: also serialization; sinks: facts/sink planning; instrument: complete transform, file snapshots, feature declaration, validation, atomic publish, checksums; excludes Binaryen and separate Node validation",
+    "source_base_commit": "572cc2cc525f4ee37d41fea4b363438f249d7af2",
+    "tool_versions": {
+      "rust": "1.97.0-nightly (ca9a134e0)",
+      "node": "24.15.0",
+      "binaryen": "126"
+    },
+    "validation_processes": 42,
+    "transformation_processes": 42,
+    "sampled_rss_note": "Median of per-process sampled maxima; 5 ms polling can miss short peaks. Physical footprint uses the self-reported OS lifetime high-water mark."
+  },
+  "summary": [
+    {
+      "case": "arithmetic-wide",
+      "input_bytes": 1580889,
+      "eager": {
+        "physical_median_mib": 173.01624298095703,
+        "physical_range_mib": [
+          173.01624298095703,
+          173.06311798095703
+        ],
+        "rust_requested_median_mib": 211.84250259399414,
+        "sampled_rss_median_mib": 182.953125,
+        "output_bytes": 1621704,
+        "output_sha256": "a8f8e48254570a283409a86698756850276d9c31d41d366c08f9ce82ff81208a"
+      },
+      "stream": {
+        "physical_median_mib": 5.000457763671875,
+        "physical_range_mib": [
+          4.859832763671875,
+          5.562980651855469
+        ],
+        "rust_requested_median_mib": 1.1106090545654297,
+        "sampled_rss_median_mib": 15.515625,
+        "output_bytes": 1641740,
+        "output_sha256": "fb866912708ee653ea568357706fa20326947e040e6ca2531605645dec034214"
+      }
+    },
+    {
+      "case": "caught-child",
+      "input_bytes": 172,
+      "eager": {
+        "physical_median_mib": 3.1879348754882812,
+        "physical_range_mib": [
+          3.1723098754882812,
+          3.1879348754882812
+        ],
+        "rust_requested_median_mib": 0.19988441467285156,
+        "sampled_rss_median_mib": 10.21875,
+        "output_bytes": 6937,
+        "output_sha256": "3b11cd946750e5c76b75c939b4c883da1e0ab38e19ffb09fff517f15eedfd931"
+      },
+      "stream": {
+        "physical_median_mib": 3.6254348754882812,
+        "physical_range_mib": [
+          3.6254348754882812,
+          3.6723098754882812
+        ],
+        "rust_requested_median_mib": 0.04637432098388672,
+        "sampled_rss_median_mib": 11.125,
+        "output_bytes": 5729,
+        "output_sha256": "afdab8d59505e44c8413ebaf419ed17648543757769e8018313ae1a85fd4c1f3"
+      }
+    },
+    {
+      "case": "child-exit",
+      "input_bytes": 169,
+      "eager": {
+        "physical_median_mib": 3.062957763671875,
+        "physical_range_mib": [
+          3.0316848754882812,
+          3.125457763671875
+        ],
+        "rust_requested_median_mib": 0.18428421020507812,
+        "sampled_rss_median_mib": 10.0625,
+        "output_bytes": 6778,
+        "output_sha256": "4ed1ee253528a418d25acdf131bff7a5a6dcce0b1860a13f0182496bac15e1e0"
+      },
+      "stream": {
+        "physical_median_mib": 3.4691848754882812,
+        "physical_range_mib": [
+          3.4535598754882812,
+          3.4691848754882812
+        ],
+        "rust_requested_median_mib": 0.04406547546386719,
+        "sampled_rss_median_mib": 10.96875,
+        "output_bytes": 5478,
+        "output_sha256": "c5366d6d14c38576e89bfcd62dd8ddca10e91790fba00c64fae6fb7ee5b42929"
+      }
+    },
+    {
+      "case": "data-heavy",
+      "input_bytes": 8398444,
+      "eager": {
+        "physical_median_mib": 48.04737854003906,
+        "physical_range_mib": [
+          48.00050354003906,
+          48.06300354003906
+        ],
+        "rust_requested_median_mib": 33.89280986785889,
+        "sampled_rss_median_mib": 71.078125,
+        "output_bytes": 8421930,
+        "output_sha256": "fb21f6e8981a9be9c81dcd1b54374b9c8084a6f1c9051c4d0b53b553a8ab193a"
+      },
+      "stream": {
+        "physical_median_mib": 4.094230651855469,
+        "physical_range_mib": [
+          4.078605651855469,
+          4.125480651855469
+        ],
+        "rust_requested_median_mib": 0.3274669647216797,
+        "sampled_rss_median_mib": 27.59375,
+        "output_bytes": 8431211,
+        "output_sha256": "0789b73021178309c50c182726c84c77af0b7f91b12437e22503321bf596f9a0"
+      }
+    },
+    {
+      "case": "facts-heavy",
+      "input_bytes": 1242622,
+      "eager": {
+        "physical_median_mib": 42.51612854003906,
+        "physical_range_mib": [
+          42.50048065185547,
+          42.563026428222656
+        ],
+        "rust_requested_median_mib": 26.046112060546875,
+        "sampled_rss_median_mib": 50.828125,
+        "output_bytes": 33222,
+        "output_sha256": "26590fdb47b08404ff851274eb65545000835c5fcde4a950f2599575466b751e"
+      },
+      "stream": {
+        "physical_median_mib": 16.85985565185547,
+        "physical_range_mib": [
+          16.812957763671875,
+          17.078582763671875
+        ],
+        "rust_requested_median_mib": 2.339235305786133,
+        "sampled_rss_median_mib": 25.59375,
+        "output_bytes": 42508,
+        "output_sha256": "3aa99d7ccac59648f70efa3bbd8600930537df4112bb0a67a3a91d4eae313945"
+      }
+    },
+    {
+      "case": "many-tiny",
+      "input_bytes": 126836,
+      "eager": {
+        "physical_median_mib": 82.76612854003906,
+        "physical_range_mib": [
+          82.37550354003906,
+          82.76612854003906
+        ],
+        "rust_requested_median_mib": 49.07975959777832,
+        "sampled_rss_median_mib": 89.3125,
+        "output_bytes": 588832,
+        "output_sha256": "9174fad834562485c7b49b501f56752aa7126209d10b9e51e262e39074effe7b"
+      },
+      "stream": {
+        "physical_median_mib": 12.969207763671875,
+        "physical_range_mib": [
+          12.812957763671875,
+          13.109832763671875
+        ],
+        "rust_requested_median_mib": 5.810741424560547,
+        "sampled_rss_median_mib": 21.484375,
+        "output_bytes": 1011369,
+        "output_sha256": "e28093cd4de68be163b35ef8ed02e02f3c5e824109e27a0cefdb64e4a0317f2b"
+      }
+    },
+    {
+      "case": "one-large",
+      "input_bytes": 192076,
+      "eager": {
+        "physical_median_mib": 74.78177642822266,
+        "physical_range_mib": [
+          74.78177642822266,
+          74.82865142822266
+        ],
+        "rust_requested_median_mib": 52.303168296813965,
+        "sampled_rss_median_mib": 99.515625,
+        "output_bytes": 198157,
+        "output_sha256": "10bfc6e4a9358d3da259da49e617578c0bba591a5fd0e9983ce975744a4bb509"
+      },
+      "stream": {
+        "physical_median_mib": 33.266082763671875,
+        "physical_range_mib": [
+          33.219207763671875,
+          33.297332763671875
+        ],
+        "rust_requested_median_mib": 31.410640716552734,
+        "sampled_rss_median_mib": 41.078125,
+        "output_bytes": 196839,
+        "output_sha256": "d5ce67c9e0d4d2b1248755f53008afe227bff14dda06c1091ddb3e68b6768648"
+      }
+    }
+  ]
+}

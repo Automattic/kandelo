@@ -16,9 +16,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { WASM_PAGE_SIZE } from "../src/constants";
 import type { HttpResponse } from "../src/networking";
-import { createPcmTransport } from "./pcm-test-helpers";
+import { PERSISTENT_KERNEL_REALM_DESTROY_TIMEOUT_MS } from "../src/kernel-realm-destroy";
 
 const defaultArtifactModuleState = vi.hoisted(() => ({ loads: 0 }));
+vi.mock("../src/vfs/opfs-file-reference", () => ({ referenceOpfsFile: async () => ({ path: ["probe.vfs"] }) }));
 vi.mock("../src/browser-kernel-default-artifacts", () => {
   defaultArtifactModuleState.loads += 1;
   return {
@@ -92,6 +93,24 @@ class MockWorker {
   private _extra: Array<(e: any) => void> = [];
 }
 
+function stubPersistenceWebLocks(): Set<string> {
+  const held = new Set<string>();
+  vi.stubGlobal("navigator", {
+    locks: {
+      request: async (name: string, _options: unknown, operation: (lock: object | null) => Promise<unknown>) => {
+        if (held.has(name)) return operation(null);
+        held.add(name);
+        try {
+          return await operation({ name });
+        } finally {
+          held.delete(name);
+        }
+      },
+    },
+  });
+  return held;
+}
+
 // SharedArrayBuffer + WebAssembly.Memory aren't available in some Node
 // configurations. We use the real ones (Node supports them) but stub the
 // kernelOwnedFs path so the constructor doesn't try to format a SAB.
@@ -127,6 +146,9 @@ function browserAudioGlobals() {
   };
   const port = {
     onmessage: null as ((event: MessageEvent) => void) | null,
+    postMessage: vi.fn((message: { type: string }) => {
+      if (message.type === "detach") queueMicrotask(() => port.onmessage?.({ data: { type: "detached" } } as MessageEvent));
+    }),
     close: vi.fn(),
   };
   const node = {
@@ -162,10 +184,11 @@ function browserAudioGlobals() {
 
 describe("BrowserKernel", () => {
   beforeEach(() => {
-    // [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] browser-pcm-driver.ts holds one
-    // page-wide AudioContext in module scope and deliberately never closes it,
-    // so without this reset a later test's driver reuses an earlier test's
-    // mock context and its own suspend/close spies are never called.
+    // [RUNTIME-WORKAROUND: WEBKIT-AUDIOWORKLET-CLOSE-LEAK]
+    // browser-pcm-driver.ts holds one page-wide AudioContext in module scope
+    // and deliberately never closes it, so without this reset a later test's
+    // driver reuses an earlier test's mock context and its own suspend/close
+    // spies are never called.
     vi.resetModules();
     MockWorker.instances = [];
     MockWorker.detachTransfers = false;
@@ -210,6 +233,38 @@ describe("BrowserKernel", () => {
 
     worker.simulateMessage({ type: "ready" });
     await initPromise;
+  });
+
+  it("routes scalar snapshot progress only to its live export request", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const init = kernel.initFromImage({ kernelWasm: new ArrayBuffer(1), vfsImage: Uint8Array.of(1) });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await init;
+    const progress = vi.fn();
+    const exporting = kernel.exportRootfsImageToFile({} as FileSystemFileHandle, progress);
+    await vi.waitFor(() => expect(worker.lastMessage("export_rootfs_image_to_file")).toBeDefined());
+    const request = worker.lastMessage("export_rootfs_image_to_file");
+    expect(request.file).toEqual({ path: ["probe.vfs"] });
+    expect(request.reportProgress).toBe(true);
+    const event = { phase: "verifying", completed: 4, total: 8 };
+    worker.simulateMessage({ type: "rootfs_image_export_progress", requestId: request.requestId + 1, progress: event });
+    expect(progress).not.toHaveBeenCalled();
+    worker.simulateMessage({ type: "rootfs_image_export_progress", requestId: request.requestId, progress: event });
+    expect(progress).toHaveBeenCalledExactlyOnceWith(event);
+    worker.simulateMessage({ type: "response", requestId: request.requestId, result: { length: 8, chunkBytes: 1024 * 1024, chunkSha256: ["a".repeat(64)] } });
+    await exporting;
+    worker.simulateMessage({ type: "rootfs_image_export_progress", requestId: request.requestId, progress: event });
+    expect(progress).toHaveBeenCalledTimes(1);
+    const rejected = kernel.exportRootfsImageToFile({} as FileSystemFileHandle, progress);
+    await vi.waitFor(() => expect(worker.lastMessage("export_rootfs_image_to_file").requestId).not.toBe(request.requestId));
+    const failedRequest = worker.lastMessage("export_rootfs_image_to_file");
+    worker.simulateMessage({ type: "response", requestId: failedRequest.requestId, error: "storage full" });
+    await expect(rejected).rejects.toThrow("storage full");
+    worker.simulateMessage({ type: "rootfs_image_export_progress", requestId: failedRequest.requestId, progress: event });
+    expect(progress).toHaveBeenCalledTimes(1);
   });
 
   it("fetches the bundled kernel only when kernel bytes are omitted", async () => {
@@ -335,6 +390,7 @@ describe("BrowserKernel", () => {
     const initPromise = kernel.initFromOwnedImage({
       kernelWasm: new ArrayBuffer(8),
       vfsImage: owned,
+      lazyAssetDirectory: "https://example.test/deployment/vfs-group/",
     });
 
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -342,6 +398,7 @@ describe("BrowserKernel", () => {
     const captured = worker.sent.find(({ data }) => data?.type === "init")!;
     expect(owned.byteLength).toBe(0);
     expect(captured.data.vfsImage).toEqual(new Uint8Array([4, 3, 2, 1]));
+    expect(captured.data.lazyAssetDirectory).toBe("https://example.test/deployment/vfs-group/");
 
     worker.simulateMessage({ type: "ready" });
     await initPromise;
@@ -672,8 +729,11 @@ describe("BrowserKernel", () => {
       "Kernel worker error: worker crashed",
     );
 
+    const owner = kernel.getOwnedJobLifetime();
+    expect(owner.closed).toBe(false);
     worker.onerror?.({ message: "worker crashed" });
     await exitRejection;
+    expect(owner.closed).toBe(true);
 
     expect(onHostDiagnostic).toHaveBeenCalledOnce();
     expect(onHostDiagnostic).toHaveBeenCalledWith({
@@ -719,10 +779,13 @@ describe("BrowserKernel", () => {
     );
     const messagesBeforeFatal = worker.sent.length;
 
+    const owner = kernel.getOwnedJobLifetime();
+    expect(owner.closed).toBe(false);
     worker.simulateMessage({ type: "kernel_fatal", error: fatalMessage });
 
     await Promise.all([pendingRejection, exitRejection]);
     expect(worker.terminated).toBe(true);
+    expect(owner.closed).toBe(true);
 
     await expect(kernel.getKernelMemoryPages()).rejects.toThrow(
       `Kernel worker failed: ${fatalMessage}`,
@@ -1086,42 +1149,6 @@ describe("BrowserKernel", () => {
     await expect(invalidPromise).rejects.toThrow("invalid memory-page count");
   });
 
-  it("reads and validates retained spawn scratch telemetry", async () => {
-    const BrowserKernel = await loadBrowserKernel();
-    const kernel = new BrowserKernel({ kernelOwnedFs: true });
-    const initPromise = kernel.initFromImage({
-      kernelWasm: new ArrayBuffer(8),
-      vfsImage: new Uint8Array(0),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const worker = MockWorker.instances[0]!;
-    worker.simulateMessage({ type: "ready" });
-    await initPromise;
-
-    const capacityPromise = kernel.getSpawnScratchCapacity();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const request = worker.lastMessage("get_spawn_scratch_capacity");
-    expect(request).toBeDefined();
-    worker.simulateMessage({
-      type: "response",
-      requestId: request.requestId,
-      result: 84_386,
-    });
-    await expect(capacityPromise).resolves.toBe(84_386);
-
-    const invalidPromise = kernel.getSpawnScratchCapacity();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const invalidRequest = worker.lastMessage("get_spawn_scratch_capacity");
-    worker.simulateMessage({
-      type: "response",
-      requestId: invalidRequest.requestId,
-      result: -1,
-    });
-    await expect(invalidPromise).rejects.toThrow(
-      "invalid spawn scratch capacity",
-    );
-  });
-
   describe("fetchInKernel", () => {
     async function bootedKernel() {
       const BrowserKernel = await loadBrowserKernel();
@@ -1257,6 +1284,52 @@ describe("BrowserKernel", () => {
     });
   });
 
+  it("rejects outstanding browser filesystem and HTTP requests after realm shutdown", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initialized = kernel.initFromImage({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0) });
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initialized;
+    const settled = vi.fn();
+    const requests = [
+      kernel.readFileFromVfs("/pending"),
+      kernel.fetchInKernel(80, { method: "GET", url: "/pending", headers: {}, body: new Uint8Array() }),
+    ];
+    for (const request of requests) {
+      void request.then(() => settled("unexpected success"), error => settled(error));
+    }
+
+    const destroyed = kernel.destroy();
+    await vi.waitFor(() => expect(worker.lastMessage("destroy")).toBeDefined());
+    const sentWhileClosing = worker.sent.length;
+    const duringShutdown = Promise.allSettled([
+      kernel.readFileFromVfs("/during-destroy"),
+      kernel.fetchInKernel(80, { method: "GET", url: "/during-destroy", headers: {}, body: null }),
+    ]);
+    expect(worker.sent).toHaveLength(sentWhileClosing);
+    worker.simulateMessage({ type: "response", requestId: worker.lastMessage("destroy").requestId,
+      result: { gracefulDetachComplete: true } });
+    await destroyed;
+    for (const result of await duringShutdown) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") expect(result.reason.message).toBe("kernel host is not accepting requests");
+    }
+
+    await vi.waitFor(() => expect(settled).toHaveBeenCalledTimes(2), { timeout: 500 });
+    for (const [error] of settled.mock.calls) {
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toBe("kernel host destroyed");
+    }
+    expect(worker.terminated).toBe(true);
+    const sent = worker.sent.length;
+    await expect(kernel.readFileFromVfs("/after-destroy")).rejects.toThrow("kernel host is not accepting requests");
+    await expect(kernel.fetchInKernel(80, { method: "GET", url: "/after-destroy", headers: {}, body: null }))
+      .rejects.toThrow("kernel host is not accepting requests");
+    expect(worker.sent).toHaveLength(sent);
+  });
+
   it("destroy() terminates the worker after graceful generation detach", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
@@ -1273,6 +1346,8 @@ describe("BrowserKernel", () => {
     w.simulateMessage({ type: "response", requestId: spawn.requestId, result: 100 });
     await bootPromise;
 
+    const owner = kernel.getOwnedJobLifetime();
+    expect(owner.closed).toBe(false);
     const destroyPromise = kernel.destroy();
     await new Promise((r) => setTimeout(r, 0));
     const destroyMsg = w.lastMessage("destroy");
@@ -1284,9 +1359,11 @@ describe("BrowserKernel", () => {
     });
     await destroyPromise;
     expect(w.terminated).toBe(true);
+    expect(owner.closed).toBe(true);
+    expect(kernel.getPersistenceShutdownFailure()).toBeNull();
   });
 
-  it("uses worker-realm termination as the final release fallback", async () => {
+  it("uses worker-realm termination after incomplete graceful detach", async () => {
     const diagnostics: string[] = [];
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({
@@ -1302,11 +1379,7 @@ describe("BrowserKernel", () => {
     worker.simulateMessage({ type: "ready" });
     await initPromise;
 
-    const memory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
-      shared: true,
-    });
+    const memory = new SharedArrayBuffer(WASM_PAGE_SIZE);
     (
       kernel as unknown as {
         handleWorkerMessage(message: unknown): void;
@@ -1321,7 +1394,7 @@ describe("BrowserKernel", () => {
       h: 128,
       stride: 512,
       fmt: "BGRA32",
-      memory,
+      pixels: memory,
     });
     (
       kernel as unknown as {
@@ -1340,7 +1413,7 @@ describe("BrowserKernel", () => {
     await destroyPromise;
 
     expect(worker.terminated).toBe(true);
-    expect(kernel.getProcessMemory(41)).toBeUndefined();
+    expect(kernel.framebuffers.get(41)?.hostBuffer?.buffer).toBeUndefined();
     expect(kernel.framebuffers.get(41)).toBeUndefined();
     expect(
       (
@@ -1393,6 +1466,41 @@ describe("BrowserKernel", () => {
     expect(testable.pendingPtyOutputChunks).toBe(0);
   });
 
+  it("allows worker cleanup to finish beyond the old two-second deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const diagnostics: string[] = [];
+      const BrowserKernel = await loadBrowserKernel();
+      const kernel = new BrowserKernel({
+        kernelOwnedFs: true,
+        onHostDiagnostic: diagnostic => diagnostics.push(diagnostic.message),
+      });
+      const testable = kernel as unknown as {
+        workerStarted: boolean;
+        initialized: boolean;
+        kernelWorkerHandle: MockWorker;
+        request(): Promise<{ gracefulDetachComplete: true }>;
+      };
+      const worker = new MockWorker("mock://kernel");
+      testable.workerStarted = true;
+      testable.initialized = true;
+      testable.kernelWorkerHandle = worker;
+      testable.request = vi.fn(() => new Promise(resolve => {
+        setTimeout(() => resolve({ gracefulDetachComplete: true }), 3_500);
+      }));
+
+      const destroyed = kernel.destroy();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(worker.terminated).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_500);
+      await destroyed;
+      expect(worker.terminated).toBe(true);
+      expect(diagnostics).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("bounds graceful destroy wait before terminating the worker realm", async () => {
     vi.useFakeTimers();
     try {
@@ -1413,17 +1521,17 @@ describe("BrowserKernel", () => {
       testable.workerStarted = true;
       testable.initialized = true;
       testable.kernelWorkerHandle = worker;
-      testable.pendingRequests.set(99, {});
+      testable.pendingRequests.set(99, { resolve: vi.fn(), reject: vi.fn() });
       testable.request = vi.fn(() => new Promise<never>(() => {}));
 
       const destroyPromise = kernel.destroy();
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(15_000);
       await destroyPromise;
 
       expect(worker.terminated).toBe(true);
       expect(testable.pendingRequests.size).toBe(0);
       expect(diagnostics).toEqual([
-        expect.stringContaining("timed out after 2000ms"),
+        expect.stringContaining("timed out after 15000ms"),
       ]);
     } finally {
       vi.useRealTimers();
@@ -1451,7 +1559,7 @@ describe("BrowserKernel", () => {
     testable.workerStarted = true;
     testable.initialized = true;
     testable.kernelWorkerHandle = worker;
-    testable.pendingRequests.set(99, {});
+    testable.pendingRequests.set(99, { resolve: vi.fn(), reject: vi.fn() });
     testable.request = vi.fn(async () => ({
       gracefulDetachComplete: true,
     }));
@@ -1466,7 +1574,361 @@ describe("BrowserKernel", () => {
     ]);
   });
 
-  it("drops framebuffer Memory aliases on clean and trap exits", async () => {
+  it("requires a computer identity for browser rootfs persistence", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    await expect(kernel.initFromOpfsImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImageFile: {} as FileSystemFileHandle,
+      experimentalFixedPersistenceName: "unnamed-computer-journal",
+    })).rejects.toThrow("requires a computer name or lease");
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it("holds a persistent journal lease until its worker realm terminates", async () => {
+    const held = stubPersistenceWebLocks();
+    const BrowserKernel = await loadBrowserKernel();
+    const options = {
+      kernelWasm: new ArrayBuffer(8),
+      vfsImageFile: {} as FileSystemFileHandle,
+      experimentalFixedPersistenceName: "journal-lease-probe",
+      persistentComputerName: "journal-lease-probe",
+    };
+    const first = new BrowserKernel({ kernelOwnedFs: true });
+    const initialBoot = first.initFromOpfsImage(options);
+    await expect(first.initFromOpfsImage({
+      ...options,
+      experimentalFixedPersistenceName: "other-journal-lease-probe",
+    })).rejects.toThrow("already running");
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const firstWorker = MockWorker.instances[0]!;
+    firstWorker.simulateMessage({ type: "ready" });
+    await initialBoot;
+    await expect(first.initFromOpfsImage(options)).rejects.toThrow("already running");
+
+    const competing = new BrowserKernel({ kernelOwnedFs: true });
+    const competingOptions = { ...options, persistentComputerName: "other-journal-lease-computer" };
+    await expect(competing.initFromOpfsImage(competingOptions)).rejects.toThrow("journal is already open");
+    expect(MockWorker.instances).toHaveLength(1);
+
+    const testable = first as unknown as {
+      initialized: boolean;
+      workerStarted: boolean;
+      request(): Promise<{ gracefulDetachComplete: true }>;
+    };
+    testable.request = vi.fn(async () => ({ gracefulDetachComplete: true }));
+    firstWorker.terminate = () => { throw new Error("injected terminate failure"); };
+    await first.destroy();
+    expect(testable.workerStarted).toBe(true);
+    expect(first.hasUnconfirmedKernelQuiescence()).toBe(true);
+    await expect(competing.initFromOpfsImage(competingOptions)).rejects.toThrow("journal is already open");
+
+    firstWorker.terminate = () => { firstWorker.terminated = true; };
+    await first.destroy();
+    expect(testable.workerStarted).toBe(false);
+    expect(first.hasUnconfirmedKernelQuiescence()).toBe(false);
+    expect(held.size).toBe(0);
+
+    const retry = competing.initFromOpfsImage(competingOptions);
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
+    MockWorker.instances[1]!.simulateMessage({ type: "ready" });
+    await retry;
+    (competing as unknown as { request(): Promise<{ gracefulDetachComplete: true }> }).request =
+      vi.fn(async () => ({ gracefulDetachComplete: true }));
+    await competing.destroy();
+    expect(held.size).toBe(0);
+
+    const failed = new BrowserKernel({ kernelOwnedFs: true });
+    const failedBoot = failed.initFromOpfsImage(options);
+    const failedBootRejection = expect(failedBoot).rejects.toThrow("injected initialization failure");
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(3));
+    const failedWorker = MockWorker.instances[2]!;
+    const rejectedCleanup = vi.fn(async () => { throw new Error("injected storage close failure"); });
+    (failed as unknown as { request(): Promise<unknown> }).request = rejectedCleanup;
+    failedWorker.simulateMessage({ type: "init_error", error: "injected initialization failure" });
+    await failedBootRejection;
+    expect(rejectedCleanup).toHaveBeenCalledOnce();
+    expect(failed.hasUnconfirmedKernelQuiescence()).toBe(true);
+    expect(held.size).toBe(2);
+  });
+
+  it.each(["fixed", "resizable"] as const)("retains %s initialization ownership without assuming partial storage is closed", async (mode) => {
+    for (const outcome of ["ordinary", "fatal"] as const) {
+      const held = stubPersistenceWebLocks();
+      const BrowserKernel = await loadBrowserKernel();
+      const name = `failed-init-${mode}-${outcome}`;
+      const kernel = new BrowserKernel({ kernelOwnedFs: true });
+      const initialization = kernel.initFromOpfsImage({
+        kernelWasm: new ArrayBuffer(8), vfsImageFile: {} as FileSystemFileHandle,
+        persistentComputerName: name,
+        ...(mode === "fixed" ? { experimentalFixedPersistenceName: name } : { experimentalResizablePersistenceName: name }),
+      });
+      const rejection = expect(initialization).rejects.toThrow(outcome === "fatal" ? "injected fatal init" : "injected partial init");
+      await vi.waitFor(() => expect(MockWorker.instances.some(worker => worker.lastMessage("init")?.persistentComputerName === name
+        || worker.lastMessage("init")?.experimentalFixedPersistenceName === name
+        || worker.lastMessage("init")?.experimentalResizablePersistenceName === name)).toBe(true));
+      const worker = MockWorker.instances[MockWorker.instances.length - 1]!;
+      expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(true);
+      expect(held.size).toBe(2);
+      const rejectedCleanup = vi.fn(async () => { throw new Error("injected storage close failure"); });
+      (kernel as unknown as { request(): Promise<unknown> }).request = rejectedCleanup;
+      worker.simulateMessage(outcome === "fatal" ? { type: "kernel_fatal", error: "injected fatal init" }
+        : { type: "init_error", error: "injected partial init" });
+      await rejection;
+      expect(rejectedCleanup).toHaveBeenCalledTimes(outcome === "ordinary" ? 1 : 0);
+      expect(worker.terminated).toBe(true);
+      expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(true);
+      expect(held.size).toBe(2);
+      await expect(kernel.initFromOpfsImage({
+        kernelWasm: new ArrayBuffer(8), vfsImageFile: {} as FileSystemFileHandle,
+        persistentComputerName: name, experimentalFixedPersistenceName: name,
+      })).rejects.toThrow("already running");
+      const competing = new BrowserKernel({ kernelOwnedFs: true });
+      await expect(competing.initFromOpfsImage({
+        kernelWasm: new ArrayBuffer(8), vfsImageFile: {} as FileSystemFileHandle,
+        persistentComputerName: `${name}-other`, experimentalFixedPersistenceName: name,
+      })).rejects.toThrow("journal is already open");
+    }
+  });
+
+  it.each(["fixed", "resizable"] as const)("releases %s failed-init ownership only after acknowledged storage closure", async (mode) => {
+    const held = stubPersistenceWebLocks();
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const name = `acknowledged-init-${mode}`;
+    const options = {
+      kernelWasm: new ArrayBuffer(8), vfsImageFile: {} as FileSystemFileHandle,
+      persistentComputerName: name,
+      ...(mode === "fixed" ? { experimentalFixedPersistenceName: name } : { experimentalResizablePersistenceName: name }),
+    };
+    const initialization = kernel.initFromOpfsImage(options);
+    const rejected = expect(initialization).rejects.toThrow("injected initialization refusal");
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "init_error", error: "injected initialization refusal" });
+    await vi.waitFor(() => expect(worker.lastMessage("destroy")).toBeDefined());
+    expect(held.size).toBe(2);
+    expect(worker.terminated).toBe(false);
+    worker.simulateMessage({ type: "response", requestId: worker.lastMessage("destroy").requestId,
+      result: { gracefulDetachComplete: true } });
+    await rejected;
+    expect(worker.terminated).toBe(true);
+    expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(false);
+    expect(held.size).toBe(0);
+
+    const retry = kernel.initFromOpfsImage(options);
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
+    const successor = MockWorker.instances[1]!;
+    successor.simulateMessage({ type: "ready" });
+    await retry;
+    worker.simulateMessage({ type: "init_error", error: "late old initialization error" });
+    worker.simulateMessage({ type: "kernel_fatal", error: "late old fatal error" });
+    expect(held.size).toBe(2);
+    expect(successor.terminated).toBe(false);
+    (kernel as unknown as { request(): Promise<unknown> }).request =
+      vi.fn(async () => ({ gracefulDetachComplete: true }));
+    await kernel.destroy();
+    expect(held.size).toBe(0);
+  });
+
+  it.each(["fixed", "resizable"] as const)("retains %s failed-init ownership after a malformed close acknowledgement", async (mode) => {
+    const held = stubPersistenceWebLocks();
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const name = `malformed-init-${mode}`;
+    const initialization = kernel.initFromOpfsImage({
+      kernelWasm: new ArrayBuffer(8), vfsImageFile: {} as FileSystemFileHandle,
+      persistentComputerName: name,
+      ...(mode === "fixed" ? { experimentalFixedPersistenceName: name } : { experimentalResizablePersistenceName: name }),
+    });
+    const rejected = expect(initialization).rejects.toThrow("injected initialization refusal");
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "init_error", error: "injected initialization refusal" });
+    await vi.waitFor(() => expect(worker.lastMessage("destroy")).toBeDefined());
+    worker.simulateMessage({ type: "response", requestId: worker.lastMessage("destroy").requestId, result: {} });
+    await rejected;
+    expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(true);
+    expect(held.size).toBe(2);
+  });
+
+  it.each(["fixed", "resizable"] as const)("retains %s failed-init ownership after timeout and a late close acknowledgement", async (mode) => {
+    vi.useFakeTimers();
+    try {
+      const held = stubPersistenceWebLocks();
+      const BrowserKernel = await loadBrowserKernel();
+      const kernel = new BrowserKernel({ kernelOwnedFs: true });
+      const name = `timed-out-init-${mode}`;
+      const initialization = kernel.initFromOpfsImage({
+        kernelWasm: new ArrayBuffer(8), vfsImageFile: {} as FileSystemFileHandle,
+        persistentComputerName: name,
+        ...(mode === "fixed" ? { experimentalFixedPersistenceName: name } : { experimentalResizablePersistenceName: name }),
+      });
+      const rejected = expect(initialization).rejects.toThrow("injected initialization refusal");
+      await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+      const worker = MockWorker.instances[0]!;
+      worker.simulateMessage({ type: "init_error", error: "injected initialization refusal" });
+      await vi.waitFor(() => expect(worker.lastMessage("destroy")).toBeDefined());
+      const requestId = worker.lastMessage("destroy").requestId;
+      await vi.advanceTimersByTimeAsync(PERSISTENT_KERNEL_REALM_DESTROY_TIMEOUT_MS);
+      await rejected;
+      worker.simulateMessage({ type: "response", requestId, result: { gracefulDetachComplete: true } });
+      expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(true);
+      expect(held.size).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retains a journal lease when browser destroy times out without storage acknowledgement", async () => {
+    const held = stubPersistenceWebLocks();
+    const BrowserKernel = await loadBrowserKernel();
+    const options = {
+      kernelWasm: new ArrayBuffer(8),
+      vfsImageFile: {} as FileSystemFileHandle,
+      experimentalFixedPersistenceName: "timed-out-journal",
+      persistentComputerName: "timed-out-journal",
+    };
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initialization = kernel.initFromOpfsImage(options);
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initialization;
+
+    vi.useFakeTimers();
+    try {
+      let lateResponse!: (value: unknown) => void;
+      const testable = kernel as unknown as { request(): Promise<unknown> };
+      testable.request = vi.fn(() => new Promise((resolve) => { lateResponse = resolve; }));
+      const destruction = kernel.destroy();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(worker.terminated).toBe(false);
+      await vi.advanceTimersByTimeAsync(PERSISTENT_KERNEL_REALM_DESTROY_TIMEOUT_MS - 2_000);
+      await destruction;
+      expect(worker.terminated).toBe(true);
+      expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(true);
+      expect(held.has("kandelo-rootfs-journal:timed-out-journal")).toBe(true);
+
+      lateResponse({ gracefulDetachComplete: true });
+      await Promise.resolve();
+      expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(true);
+      await expect(kernel.initFromOpfsImage(options)).rejects.toThrow("already running");
+      const competing = new BrowserKernel({ kernelOwnedFs: true });
+      await expect(competing.initFromOpfsImage({ ...options, persistentComputerName: "other-timed-out-computer" })).rejects.toThrow("journal is already open");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps persistent browser ownership until delayed storage shutdown is acknowledged", async () => {
+    const held = stubPersistenceWebLocks();
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initialization = kernel.initFromOpfsImage({
+      kernelWasm: new ArrayBuffer(8), vfsImageFile: {} as FileSystemFileHandle,
+      experimentalResizablePersistenceName: "delayed-storage", persistentComputerName: "delayed-storage",
+    });
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initialization;
+    vi.useFakeTimers();
+    try {
+      const testable = kernel as unknown as { request(): Promise<unknown> };
+      testable.request = () => new Promise((resolve) => setTimeout(() => resolve({ gracefulDetachComplete: true }), 2_500));
+      const destruction = kernel.destroy();
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(worker.terminated).toBe(false);
+      expect(held.has("kandelo-rootfs-journal:delayed-storage")).toBe(true);
+      await vi.advanceTimersByTimeAsync(499);
+      await destruction;
+      expect(worker.terminated).toBe(true);
+      expect(held.size).toBe(0);
+      expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(false);
+      expect(kernel.getPersistenceShutdownFailure()).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("shares a page computer lease with its kernel and blocks another journal namespace", async () => {
+    const held = stubPersistenceWebLocks();
+    const { acquireBrowserPersistenceComputerLease } = await import("../src/browser-persistence-computer-lease");
+    const BrowserKernel = await loadBrowserKernel();
+    const lease = await acquireBrowserPersistenceComputerLease("shared-computer");
+    const options = {
+      kernelWasm: new ArrayBuffer(8),
+      vfsImageFile: {} as FileSystemFileHandle,
+      experimentalFixedPersistenceName: "first-computer-journal",
+      persistentComputerName: "shared-computer",
+      persistenceComputerLease: lease,
+    };
+    const first = new BrowserKernel({ kernelOwnedFs: true });
+    const initialization = first.initFromOpfsImage(options);
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    MockWorker.instances[0]!.simulateMessage({ type: "ready" });
+    await initialization;
+    await expect(lease()).rejects.toThrow("still owned by a kernel");
+
+    const competing = new BrowserKernel({ kernelOwnedFs: true });
+    const otherJournal = { ...options, experimentalFixedPersistenceName: "second-computer-journal", persistenceComputerLease: undefined };
+    await expect(competing.initFromOpfsImage(otherJournal)).rejects.toThrow("computer is already running");
+    expect(MockWorker.instances).toHaveLength(1);
+    (first as unknown as { request(): Promise<{ gracefulDetachComplete: true }> }).request =
+      vi.fn(async () => ({ gracefulDetachComplete: true }));
+    await first.destroy();
+    await expect(competing.initFromOpfsImage(otherJournal)).rejects.toThrow("computer is already running");
+    await lease();
+
+    const retry = competing.initFromOpfsImage(otherJournal);
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
+    MockWorker.instances[1]!.simulateMessage({ type: "ready" });
+    await retry;
+    (competing as unknown as { request(): Promise<{ gracefulDetachComplete: true }> }).request =
+      vi.fn(async () => ({ gracefulDetachComplete: true }));
+    await competing.destroy();
+    expect(held.size).toBe(0);
+  });
+
+  it("does not let an old kernel claim release a newer computer lease claim", async () => {
+    const held = stubPersistenceWebLocks();
+    const { acquireBrowserPersistenceComputerLease, claimBrowserPersistenceComputerLease } =
+      await import("../src/browser-persistence-computer-lease");
+    const lease = await acquireBrowserPersistenceComputerLease("claim-generation");
+    const releaseOldClaim = claimBrowserPersistenceComputerLease(lease);
+    releaseOldClaim();
+    const releaseNewClaim = claimBrowserPersistenceComputerLease(lease);
+    releaseOldClaim();
+    await expect(lease()).rejects.toThrow("still owned by a kernel");
+    releaseNewClaim();
+    await lease();
+    expect(held.size).toBe(0);
+  });
+
+  it("releases a journal lease after an acknowledged storage close with other teardown errors", async () => {
+    const held = stubPersistenceWebLocks();
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initialization = kernel.initFromOpfsImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImageFile: {} as FileSystemFileHandle,
+      experimentalFixedPersistenceName: "acknowledged-journal",
+      persistentComputerName: "acknowledged-journal",
+    });
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    MockWorker.instances[0]!.simulateMessage({ type: "ready" });
+    await initialization;
+    const testable = kernel as unknown as { request(): Promise<unknown> };
+    testable.request = vi.fn(async () => ({
+      gracefulDetachComplete: false,
+      persistenceSyncFailure: "injected sync failure",
+    }));
+    await kernel.destroy();
+    expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(false);
+    expect(kernel.getPersistenceShutdownFailure()).toBe("injected sync failure");
+    expect(held.size).toBe(0);
+  });
+
+  it("drops framebuffer pixel mirrors on clean and trap exits", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
     const dispatch = (
@@ -1476,11 +1938,7 @@ describe("BrowserKernel", () => {
     ).handleWorkerMessage.bind(kernel);
 
     for (const [pid, status] of [[41, 0], [42, -1]] as const) {
-      const memory = new WebAssembly.Memory({
-        initial: 1,
-        maximum: 1,
-        shared: true,
-      });
+      const memory = new SharedArrayBuffer(WASM_PAGE_SIZE);
       dispatch({
         type: "fb_bind",
         pid,
@@ -1491,13 +1949,13 @@ describe("BrowserKernel", () => {
         h: 128,
         stride: 512,
         fmt: "BGRA32",
-        memory,
+        pixels: memory,
       });
-      expect(kernel.getProcessMemory(pid)).toBe(memory);
+      expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBe(memory);
       expect(kernel.framebuffers.get(pid)).toBeDefined();
 
       dispatch({ type: "exit", pid, generation: pid, status });
-      expect(kernel.getProcessMemory(pid)).toBeUndefined();
+      expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBeUndefined();
       expect(kernel.framebuffers.get(pid)).toBeUndefined();
     }
   });
@@ -1515,20 +1973,12 @@ describe("BrowserKernel", () => {
       }
     ).handleWorkerMessage.bind(kernel);
     const pid = 41;
-    const oldMemory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
-      shared: true,
-    });
-    const successorMemory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
-      shared: true,
-    });
+    const oldMemory = new SharedArrayBuffer(WASM_PAGE_SIZE);
+    const successorMemory = new SharedArrayBuffer(WASM_PAGE_SIZE);
 
     const bind = (
       generation: number,
-      memory: WebAssembly.Memory,
+      memory: SharedArrayBuffer,
     ) => dispatch({
       type: "fb_bind",
       pid,
@@ -1539,19 +1989,14 @@ describe("BrowserKernel", () => {
       h: 16,
       stride: 64,
       fmt: "BGRA32",
-      memory,
+      pixels: memory,
     });
     bind(1, oldMemory);
     bind(2, successorMemory);
 
     // WHY: exec preserves the PID. Queued teardown from generation 1 must
     // never clear or reinstall its alias after generation 2 is visible.
-    dispatch({
-      type: "fb_rebind_memory",
-      pid,
-      generation: 1,
-      memory: oldMemory,
-    });
+    bind(1, oldMemory);
     dispatch({ type: "fb_unbind", pid, generation: 1 });
     dispatch({ type: "exit", pid, generation: 1, status: 0 });
     dispatch({
@@ -1561,7 +2006,7 @@ describe("BrowserKernel", () => {
       generation: 1,
     });
 
-    expect(kernel.getProcessMemory(pid)).toBe(successorMemory);
+    expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBe(successorMemory);
     expect(kernel.framebuffers.get(pid)).toBeDefined();
     expect(worker.lastMessage("fb_release_generation_ack")).toEqual({
       type: "fb_release_generation_ack",
@@ -1574,7 +2019,7 @@ describe("BrowserKernel", () => {
       pid,
       generation: 2,
     });
-    expect(kernel.getProcessMemory(pid)).toBeUndefined();
+    expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBeUndefined();
     expect(kernel.framebuffers.get(pid)).toBeUndefined();
     expect(worker.lastMessage("fb_release_generation_ack")).toEqual({
       type: "fb_release_generation_ack",
@@ -1584,7 +2029,7 @@ describe("BrowserKernel", () => {
     // A bind from the just-released generation can be queued around teardown.
     // Keep a short terminal tombstone until the worker observes the ACK.
     bind(2, successorMemory);
-    expect(kernel.getProcessMemory(pid)).toBeUndefined();
+    expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBeUndefined();
     expect(kernel.framebuffers.get(pid)).toBeUndefined();
     expect(
       (
@@ -1616,11 +2061,7 @@ describe("BrowserKernel", () => {
       }
     ).handleWorkerMessage.bind(kernel);
     const pid = 51;
-    const memory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
-      shared: true,
-    });
+    const memory = new SharedArrayBuffer(WASM_PAGE_SIZE);
     const bind = () => dispatch({
       type: "fb_bind",
       pid,
@@ -1631,17 +2072,72 @@ describe("BrowserKernel", () => {
       h: 16,
       stride: 64,
       fmt: "BGRA32",
-      memory,
+      pixels: memory,
     });
 
     bind();
     dispatch({ type: "fb_unbind", pid, generation: 3 });
-    expect(kernel.getProcessMemory(pid)).toBeUndefined();
+    expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBeUndefined();
     bind();
-    expect(kernel.getProcessMemory(pid)).toBe(memory);
+    expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBe(memory);
   });
 
-  it("prepares the browser PCM sink from the worker ready transport", async () => {
+  it("does not attach unused PCM memory when user activation primes the audio clock", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initialized = kernel.initFromImage({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0) });
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready", pcmPort: { close: vi.fn() } });
+    await initialized;
+    expect(kernel.getAudioState()).toBe("unprepared");
+    expect(audio.AudioContextCtor).not.toHaveBeenCalled();
+    const resumed = kernel.resumeAudio();
+    expect(audio.context.resume).toHaveBeenCalledOnce();
+    await resumed;
+    expect(kernel.getAudioState()).toBe("running");
+    expect(audio.addModule).not.toHaveBeenCalled();
+    expect(audio.AudioWorkletNodeCtor).not.toHaveBeenCalled();
+    const destroyed = kernel.destroy();
+    await vi.waitFor(() => expect(worker.lastMessage("destroy")).toBeDefined());
+    worker.simulateMessage({ type: "response", requestId: worker.lastMessage("destroy").requestId,
+      result: { gracefulDetachComplete: true } });
+    await destroyed;
+    expect(audio.context.suspend).toHaveBeenCalledOnce();
+    expect(audio.node.port.postMessage).not.toHaveBeenCalled();
+    expect(audio.AudioWorkletNodeCtor).not.toHaveBeenCalled();
+    expect(worker.terminated).toBe(true);
+  });
+
+  it("automatically binds later guest demand even without UI activity subscribers", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initialized = kernel.initFromImage({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0) });
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready", pcmPort: { close: vi.fn() } });
+    await initialized;
+    const unsubscribe = kernel.onAudioActivityChange(() => {});
+    unsubscribe();
+    await kernel.resumeAudio();
+    expect(audio.AudioWorkletNodeCtor).not.toHaveBeenCalled();
+    worker.simulateMessage({ type: "audio_activity" });
+    await vi.waitFor(() => expect(audio.AudioWorkletNodeCtor).toHaveBeenCalledOnce());
+    expect(audio.AudioContextCtor).toHaveBeenCalledOnce();
+    expect(audio.context.resume).toHaveBeenCalledOnce();
+    expect(kernel.getAudioActivity()).toBe(true);
+    expect(kernel.getAudioState()).toBe("running");
+    const destroyed = kernel.destroy();
+    await vi.waitFor(() => expect(worker.lastMessage("destroy")).toBeDefined());
+    worker.simulateMessage({ type: "response", requestId: worker.lastMessage("destroy").requestId,
+      result: { gracefulDetachComplete: true } });
+    await destroyed;
+    expect(audio.node.port.postMessage.mock.calls.filter(([message]) => message.type === "detach")).toHaveLength(1);
+  });
+
+  it("forwards the PCM connection without receiving kernel memory", async () => {
     const audio = browserAudioGlobals();
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({
@@ -1654,9 +2150,11 @@ describe("BrowserKernel", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     const worker = MockWorker.instances[0]!;
-    const transport = createPcmTransport();
+    const pcmPort = { close: vi.fn() };
 
-    worker.simulateMessage({ type: "ready", pcmTransport: transport });
+    worker.simulateMessage({ type: "ready", pcmPort });
+    expect(kernel.getAudioActivity()).toBe(false);
+    worker.simulateMessage({ type: "audio_activity" });
     await initPromise;
     await vi.waitFor(() => {
       expect(kernel.getAudioState()).toBe("suspended");
@@ -1671,7 +2169,11 @@ describe("BrowserKernel", () => {
       "kandelo-pcm-output",
       expect.any(Object),
     );
-    expect(audio.nodeOptions?.processorOptions).toMatchObject(transport);
+    expect(audio.nodeOptions?.processorOptions.buffer).toBeUndefined();
+    expect(audio.node.port.postMessage).toHaveBeenCalledWith(
+      { type: "attach", port: pcmPort }, [pcmPort],
+    );
+    expect(kernel.getAudioActivity()).toBe(true);
     expect(audio.node.connect).toHaveBeenCalledWith(audio.context.destination);
   });
 
@@ -1687,8 +2189,9 @@ describe("BrowserKernel", () => {
     const worker = MockWorker.instances[0]!;
     worker.simulateMessage({
       type: "ready",
-      pcmTransport: createPcmTransport(),
+      pcmPort: { close: vi.fn() },
     });
+    worker.simulateMessage({ type: "audio_activity" });
     await initPromise;
     await vi.waitFor(() => {
       expect(kernel.getAudioState()).toBe("suspended");
@@ -1738,9 +2241,10 @@ describe("BrowserKernel", () => {
     finishPcmSettlement();
     await destroyPromise;
 
-    // [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] The AudioContext is page-wide (PR
-    // #1410): closing one per machine leaves a WebCore AudioWorklet rendering
-    // thread parked forever on WebKit. Teardown suspends the pipeline and
+    // [RUNTIME-WORKAROUND: WEBKIT-AUDIOWORKLET-CLOSE-LEAK]
+    // The AudioContext is page-wide (PR #1410): closing one per machine
+    // leaves a WebCore AudioWorklet rendering thread parked forever on WebKit
+    // (a suspected WebKit defect). Teardown suspends the pipeline and
     // unhooks this machine's worklet node, then leaves the context open and
     // suspended for the next machine to reuse.
     expect(teardownOrder).toEqual([
@@ -1752,5 +2256,150 @@ describe("BrowserKernel", () => {
     expect(audio.node.disconnect).toHaveBeenCalledOnce();
     expect(audio.node.port.close).toHaveBeenCalledOnce();
     expect(kernel.getAudioState()).toBe("unavailable");
+  });
+
+  it("invokes native resume in the caller's stack even before worklet module loading completes", async () => {
+    const audio = browserAudioGlobals();
+    let loaded!: () => void;
+    audio.addModule.mockImplementationOnce(() => new Promise<void>(resolve => { loaded = resolve; }));
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initialized = kernel.initFromImage({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0) });
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready", pcmPort: { close: vi.fn() } });
+    worker.simulateMessage({ type: "audio_activity" });
+    await initialized;
+    const resumed = kernel.resumeAudio();
+    expect(audio.context.resume).toHaveBeenCalledOnce();
+    expect(audio.AudioWorkletNodeCtor).not.toHaveBeenCalled();
+    loaded();
+    await resumed;
+    expect(audio.AudioWorkletNodeCtor).toHaveBeenCalledOnce();
+    expect(kernel.getAudioState()).toBe("running");
+  });
+
+  it("permits kernel replacement after confirmed audio memory detach while quarantining context reuse", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const diagnostics: string[] = [];
+    const kernel = new BrowserKernel({ kernelOwnedFs: true,
+      onHostDiagnostic: event => diagnostics.push(event.message) });
+    const initialized = kernel.initFromImage({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0) });
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready", pcmPort: { close: vi.fn() } });
+    worker.simulateMessage({ type: "audio_activity" });
+    await initialized;
+    await vi.waitFor(() => expect(kernel.getAudioState()).toBe("suspended"));
+    let completeResume!: () => void;
+    audio.context.resume.mockImplementationOnce(() => new Promise<void>(resolve => {
+      completeResume = () => { audio.context.state = "running"; resolve(); };
+    }));
+    const resume = kernel.resumeAudio().catch(error => error);
+    await vi.waitFor(() => expect(audio.context.resume).toHaveBeenCalledOnce());
+    const destroyed = kernel.destroy();
+    await vi.waitFor(() => expect(worker.lastMessage("destroy")).toBeDefined());
+    worker.simulateMessage({ type: "response", requestId: worker.lastMessage("destroy").requestId,
+      result: { gracefulDetachComplete: true } });
+    await destroyed;
+    expect(worker.terminated).toBe(true);
+    expect(audio.node.port.postMessage.mock.calls.filter(([message]) => message.type === "detach")).toHaveLength(1);
+    expect(diagnostics.some(message => message.includes("PCM audio context is quarantined"))).toBe(true);
+    const successor = new BrowserKernel({ kernelOwnedFs: true,
+      onHostDiagnostic: event => diagnostics.push(event.message) });
+    const replacement = successor.initFromImage({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0) });
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
+    const replacementWorker = MockWorker.instances[1]!;
+    replacementWorker.simulateMessage({ type: "ready", pcmPort: { close: vi.fn() } });
+    replacementWorker.simulateMessage({ type: "audio_activity" });
+    await replacement;
+    await vi.waitFor(() => expect(successor.getAudioState()).toBe("unavailable"));
+    await expect(successor.resumeAudio()).rejects.toThrow("context is quarantined");
+    expect(audio.AudioWorkletNodeCtor).toHaveBeenCalledOnce();
+    completeResume();
+    expect((await resume).message).toBe("PCM output is closed");
+    await expect(successor.resumeAudio()).rejects.toThrow("context is quarantined");
+    const replacementDestroyed = successor.destroy();
+    await vi.waitFor(() => expect(replacementWorker.lastMessage("destroy")).toBeDefined());
+    replacementWorker.simulateMessage({ type: "response", requestId: replacementWorker.lastMessage("destroy").requestId,
+      result: { gracefulDetachComplete: true } });
+    await replacementDestroyed;
+  });
+
+  it("keeps kernel and storage handoff independent of unconfirmed audio mirror retirement", async () => {
+    const audio = browserAudioGlobals();
+    audio.node.port.postMessage.mockImplementation(() => {});
+    const BrowserKernel = await loadBrowserKernel();
+    const diagnostics: string[] = [];
+    const kernel = new BrowserKernel({ kernelOwnedFs: true,
+      onHostDiagnostic: diagnostic => diagnostics.push(diagnostic.message) });
+    const initializing = kernel.initFromImage({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0) });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready", pcmPort: { close: vi.fn() } });
+    worker.simulateMessage({ type: "audio_activity" });
+    await initializing;
+    await vi.waitFor(() => expect(kernel.getAudioState()).toBe("suspended"));
+    const held = stubPersistenceWebLocks();
+    const request = navigator.locks.request as unknown as (
+      name: string, options: unknown, operation: (lock: object | null) => Promise<unknown>,
+    ) => Promise<unknown>;
+    let releaseAcquisition!: () => void;
+    let enteredAcquisition!: () => void;
+    const acquisitionPaused = new Promise<void>(resolve => { enteredAcquisition = resolve; });
+    const acquisitionResumed = new Promise<void>(resolve => { releaseAcquisition = resolve; });
+    vi.stubGlobal("navigator", { locks: {
+      request: (name: string, options: unknown, operation: (lock: object | null) => Promise<unknown>) =>
+        request(name, options, async lock => {
+          if (name.startsWith("kandelo-rootfs-journal:")) {
+            enteredAcquisition();
+            await acquisitionResumed;
+          }
+          return operation(lock);
+        }),
+    } });
+    const waitingSuccessor = new BrowserKernel({ kernelOwnedFs: true });
+    const pendingBoot = waitingSuccessor.initFromOpfsImage({ kernelWasm: new ArrayBuffer(8),
+      vfsImageFile: {} as FileSystemFileHandle, persistentComputerName: "audio-retirement-race",
+      experimentalResizablePersistenceName: "audio-retirement-race" });
+    await acquisitionPaused;
+    let releaseModule!: () => void;
+    const moduleReady = new Promise<void>(resolve => { releaseModule = resolve; });
+    audio.addModule.mockImplementationOnce(() => moduleReady);
+    const { BrowserPcmDriver } = await import("../src/audio/browser-pcm-driver");
+    const waitingDriver = new BrowserPcmDriver({ workletUrl: "/pending-worklet.js" });
+    const pendingPrepare = expect(waitingDriver.prepareRemote({ close: vi.fn() } as unknown as MessagePort))
+      .rejects.toThrow("transport retirement is unconfirmed");
+    const destruction = kernel.destroy();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    worker.simulateMessage({ type: "response", requestId: worker.lastMessage("destroy").requestId,
+      result: { gracefulDetachComplete: true } });
+    await destruction;
+    expect(worker.terminated).toBe(true);
+    expect(kernel.getPersistenceShutdownFailure()).toBeNull();
+    expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(false);
+    expect(diagnostics.some(message => message.includes("PCM output shutdown failed"))).toBe(true);
+    releaseAcquisition();
+    releaseModule();
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
+    MockWorker.instances[1]!.simulateMessage({ type: "ready" });
+    await pendingBoot;
+    await pendingPrepare;
+    expect(audio.AudioWorkletNodeCtor).toHaveBeenCalledOnce();
+    audio.node.port.onmessage?.({ data: { type: "detached" } } as MessageEvent);
+    const successor = new BrowserKernel({ kernelOwnedFs: true });
+    const successorBoot = successor.initFromImage({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0) });
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(3));
+    MockWorker.instances[2]!.simulateMessage({ type: "ready" });
+    await successorBoot;
+    for (const [machine, realm] of [[waitingSuccessor, MockWorker.instances[1]!], [successor, MockWorker.instances[2]!]] as const) {
+      const closed = machine.destroy();
+      await vi.waitFor(() => expect(realm.lastMessage("destroy")).toBeDefined());
+      realm.simulateMessage({ type: "response", requestId: realm.lastMessage("destroy").requestId,
+        result: { gracefulDetachComplete: true } });
+      await closed;
+    }
+    expect(held.size).toBe(0);
   });
 });

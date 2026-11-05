@@ -134,11 +134,10 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  * `kernel_handle_channel_record` (the same implementation on the record
  * transport) scope their raw mailbox view to decoding/publishing and clear the
  * active task binding;
- * `kernel_spawn_process` parses the complete blob into owned Rust values
- * before it enters process-table or host work; and
  * `kernel_process_metadata_stage` copies one complete entry into a token-owned
  * Rust vector before returning; both executable-target prepare exports copy
- * the path before returning. The transfer execute export names no raw pointer,
+ * the path before returning. `kernel_exec_target_admit` and
+ * `kernel_process_metadata_read` only write their record into the lease. The transfer execute export names no raw pointer,
  * but its token authorizes Rust to borrow the allocation represented by this
  * exact lease. Adding a name requires the same lifetime review and a pointer-
  * position update below.
@@ -149,9 +148,22 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_clipboard_stage",
   "kernel_dequeue_signal",
   "kernel_drain_audio",
+  "kernel_drain_wait_completions",
   "kernel_drain_wakeup_events",
   "kernel_enum_procs",
   "kernel_epoll_wake_indices",
+  "kernel_exchange_add_entry",
+  "kernel_exchange_begin",
+  "kernel_exchange_cancel",
+  "kernel_exchange_commit",
+  "kernel_exchange_drain_notifications",
+  "kernel_exchange_output_end",
+  "kernel_exchange_read_output",
+  "kernel_exchange_release_output",
+  "kernel_exchange_stream_push",
+  "kernel_exchange_stream_read",
+  "kernel_exchange_stream_start",
+  "kernel_exec_target_admit",
   "kernel_exec_target_prepare",
   "kernel_exec_target_read",
   "kernel_get_cwd",
@@ -163,14 +175,19 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_handle_channel_record",
   "kernel_inject_datagram",
   "kernel_ioctl",
+  "kernel_kms_cursor_read",
   "kernel_ipc_shm_read_chunk",
   "kernel_ipc_shm_write_chunk",
   "kernel_mq_drain_notification",
+  "kernel_overlay_activation_codec",
   "kernel_pipe2",
   "kernel_pipe_read",
   "kernel_pipe_write",
   "kernel_pick_tcp_listener_target",
   "kernel_poll",
+  "kernel_process_attach_exe_handle",
+  "kernel_process_attach_exe_path",
+  "kernel_process_metadata_read",
   "kernel_process_metadata_stage",
   "kernel_pty_master_read",
   "kernel_pty_master_write",
@@ -192,11 +209,10 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_select",
   "kernel_send",
   "kernel_set_cwd",
-  "kernel_set_executable_path",
   "kernel_setsockopt",
   "kernel_socketpair",
   "kernel_spawn_exec_target_prepare",
-  "kernel_spawn_process",
+  "kernel_spawn_exec_target_prepare_handle",
   "kernel_take_process_timer_cleanup",
   "kernel_tcgetattr",
   "kernel_tcsetattr",
@@ -204,7 +220,6 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_transfer_io_execute",
   "kernel_truncate",
   "kernel_uname",
-  "kernel_wait_child_poll",
 ] as const);
 
 export type KernelScratchExportName =
@@ -245,6 +260,7 @@ type KernelScratchExportSnapshot = Readonly<
 
 const REQUIRED_POINTER_0 = intrinsicObjectFreeze([0] as const);
 const REQUIRED_POINTER_1 = intrinsicObjectFreeze([1] as const);
+const REQUIRED_POINTER_1_3 = intrinsicObjectFreeze([1, 3] as const);
 const REQUIRED_POINTER_2 = intrinsicObjectFreeze([2] as const);
 const REQUIRED_POINTER_3 = intrinsicObjectFreeze([3] as const);
 const REQUIRED_POINTER_3_5 = intrinsicObjectFreeze([3, 5] as const);
@@ -252,7 +268,6 @@ const REQUIRED_POINTER_0_2 = intrinsicObjectFreeze([0, 2] as const);
 const REQUIRED_POINTER_0_3 = intrinsicObjectFreeze([0, 3] as const);
 const REQUIRED_POINTER_0_4 = intrinsicObjectFreeze([0, 4] as const);
 const REQUIRED_POINTER_4 = intrinsicObjectFreeze([4] as const);
-const REQUIRED_POINTER_5 = intrinsicObjectFreeze([5] as const);
 const REQUIRED_POINTER_11 = intrinsicObjectFreeze([11] as const);
 const NULLABLE_POINTER_1_3_5 = intrinsicObjectFreeze([1, 3, 5] as const);
 
@@ -261,9 +276,12 @@ export function kernelScratchRequiredPointerArguments(
   name: KernelScratchExportName,
 ): readonly number[] {
   switch (name) {
+    case "kernel_overlay_activation_codec":
+      return REQUIRED_POINTER_1_3;
     case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
     case "kernel_drain_audio":
+    case "kernel_drain_wait_completions":
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
     case "kernel_handle_channel":
@@ -274,11 +292,29 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_rootfs_set_foreign_mount_roots":
     case "kernel_watch_fs_changes":
     case "kernel_drain_fs_changes":
+    case "kernel_kms_cursor_read":
     case "kernel_rootfs_stat_mode":
     case "kernel_rootfs_unlink_file":
     case "kernel_truncate":
     case "kernel_uname":
+    case "kernel_exchange_cancel":
+    case "kernel_exchange_commit":
+    case "kernel_exchange_drain_notifications":
+    case "kernel_exchange_release_output":
+    case "kernel_exchange_stream_push":
+    case "kernel_exchange_stream_start":
       return REQUIRED_POINTER_0;
+    case "kernel_exchange_output_end":
+    case "kernel_exchange_stream_read":
+      // the ID at arg 0, the buffer out at arg 2.
+      return REQUIRED_POINTER_0_2;
+    case "kernel_exchange_add_entry":
+    case "kernel_exchange_begin":
+      // input bytes at arg 0, the 16-byte ID out at arg 2.
+      return REQUIRED_POINTER_0_2;
+    case "kernel_exchange_read_output":
+      // the ID at arg 0, the data buffer at arg 4.
+      return REQUIRED_POINTER_0_4;
     case "kernel_rootfs_inspect_stat":
       return REQUIRED_POINTER_0_2;
     case "kernel_rootfs_inspect_directory":
@@ -288,13 +324,13 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_get_cwd":
     case "kernel_getrusage":
     case "kernel_pipe2":
+    case "kernel_process_attach_exe_path":
     case "kernel_pty_master_read":
     case "kernel_pty_master_write":
     case "kernel_read_proc_maps":
     case "kernel_recv":
     case "kernel_send":
     case "kernel_set_cwd":
-    case "kernel_set_executable_path":
     case "kernel_take_process_timer_cleanup":
     case "kernel_tcgetattr":
       return REQUIRED_POINTER_1;
@@ -307,14 +343,17 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_pipe_read":
     case "kernel_pipe_write":
     case "kernel_pick_tcp_listener_target":
+    case "kernel_process_attach_exe_handle":
     case "kernel_rootfs_export_container_read":
     case "kernel_spawn_exec_target_prepare":
-    case "kernel_spawn_process":
     case "kernel_tcsetattr":
       return REQUIRED_POINTER_2;
     case "kernel_epoll_wake_indices":
     case "kernel_process_metadata_stage":
     case "kernel_exec_target_prepare":
+    case "kernel_spawn_exec_target_prepare_handle":
+    case "kernel_exec_target_admit":
+    case "kernel_process_metadata_read":
     case "kernel_setsockopt":
     case "kernel_socketpair":
       return REQUIRED_POINTER_3;
@@ -327,8 +366,6 @@ export function kernelScratchRequiredPointerArguments(
       return REQUIRED_POINTER_0_4;
     case "kernel_getsockopt":
       return REQUIRED_POINTER_3_5;
-    case "kernel_wait_child_poll":
-      return REQUIRED_POINTER_5;
     case "kernel_inject_datagram":
       return REQUIRED_POINTER_11;
     case "kernel_transfer_channel_execute":
@@ -365,13 +402,27 @@ function isKernelScratchExportName(
   value: string,
 ): value is KernelScratchExportName {
   switch (value) {
+    case "kernel_overlay_activation_codec":
     case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
     case "kernel_dequeue_signal":
     case "kernel_drain_audio":
+    case "kernel_drain_wait_completions":
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
     case "kernel_epoll_wake_indices":
+    case "kernel_exchange_add_entry":
+    case "kernel_exchange_begin":
+    case "kernel_exchange_cancel":
+    case "kernel_exchange_commit":
+    case "kernel_exchange_drain_notifications":
+    case "kernel_exchange_output_end":
+    case "kernel_exchange_read_output":
+    case "kernel_exchange_release_output":
+    case "kernel_exchange_stream_push":
+    case "kernel_exchange_stream_read":
+    case "kernel_exchange_stream_start":
+    case "kernel_exec_target_admit":
     case "kernel_exec_target_prepare":
     case "kernel_exec_target_read":
     case "kernel_get_cwd":
@@ -391,6 +442,9 @@ function isKernelScratchExportName(
     case "kernel_pipe_write":
     case "kernel_pick_tcp_listener_target":
     case "kernel_poll":
+    case "kernel_process_attach_exe_handle":
+    case "kernel_process_attach_exe_path":
+    case "kernel_process_metadata_read":
     case "kernel_process_metadata_stage":
     case "kernel_pty_master_read":
     case "kernel_pty_master_write":
@@ -402,6 +456,7 @@ function isKernelScratchExportName(
     case "kernel_rootfs_set_foreign_mount_roots":
     case "kernel_watch_fs_changes":
     case "kernel_drain_fs_changes":
+    case "kernel_kms_cursor_read":
     case "kernel_rootfs_stat_mode":
     case "kernel_rootfs_inspect_stat":
     case "kernel_rootfs_inspect_read_file":
@@ -412,19 +467,17 @@ function isKernelScratchExportName(
     case "kernel_select":
     case "kernel_send":
     case "kernel_set_cwd":
-    case "kernel_set_executable_path":
     case "kernel_setsockopt":
     case "kernel_socketpair":
     case "kernel_spawn_exec_target_prepare":
-    case "kernel_spawn_process":
     case "kernel_take_process_timer_cleanup":
+    case "kernel_spawn_exec_target_prepare_handle":
     case "kernel_tcgetattr":
     case "kernel_tcsetattr":
     case "kernel_transfer_channel_execute":
     case "kernel_transfer_io_execute":
     case "kernel_truncate":
     case "kernel_uname":
-    case "kernel_wait_child_poll":
       return true;
     default:
       return false;
@@ -1199,6 +1252,45 @@ export type KernelScratchReserver = (
   minimumCapacity: number,
 ) => KernelScratchReservation;
 
+declare const ownedHostByteDestinationBrand: unique symbol;
+
+export interface OwnedHostByteDestination {
+  readonly [ownedHostByteDestinationBrand]: never;
+}
+
+interface OwnedHostByteDestinationRecord {
+  readonly bytes: Uint8Array;
+  readonly capacity: number;
+}
+
+const ownedHostByteDestinations = new WeakMap<object, OwnedHostByteDestinationRecord>();
+
+export function allocateOwnedHostByteDestination(capacity: number): OwnedHostByteDestination {
+  const checkedCapacity = exactNonNegativeInteger(capacity, "host byte destination capacity");
+  if (checkedCapacity === 0) throw new KernelScratchError("host byte destination is empty");
+  const destination = intrinsicObjectFreeze({}) as OwnedHostByteDestination;
+  intrinsicApply(intrinsicWeakMapSet, ownedHostByteDestinations, [destination, {
+    bytes: new IntrinsicUint8Array(checkedCapacity), capacity: checkedCapacity,
+  }]);
+  return destination;
+}
+
+function ownedHostByteDestinationRecord(destination: OwnedHostByteDestination): OwnedHostByteDestinationRecord {
+  const record = intrinsicApply(intrinsicWeakMapGet, ownedHostByteDestinations, [destination]) as OwnedHostByteDestinationRecord | undefined;
+  if (record === undefined) throw new KernelScratchError("host byte destination was not allocated by its factory");
+  const span = intrinsicUint8ArraySpan(record.bytes, "host byte destination");
+  if (span.byteLength !== record.capacity) throw new KernelScratchError("host byte destination is detached");
+  return record;
+}
+
+export function ownedHostByteDestinationPrefix(destination: OwnedHostByteDestination, length: number): Uint8Array {
+  const record = ownedHostByteDestinationRecord(destination);
+  const checkedLength = exactNonNegativeInteger(length, "host byte destination prefix");
+  checkedRange(0, checkedLength, record.capacity, "host byte destination prefix");
+  const span = intrinsicUint8ArraySpan(record.bytes, "host byte destination");
+  return new IntrinsicUint8Array(span.buffer, span.byteOffset, checkedLength);
+}
+
 export interface KernelScratchLease {
   /**
    * Prove that one range belongs to this allocation without exposing its
@@ -1236,6 +1328,7 @@ export interface KernelScratchLease {
       | bigint
       | KernelScratchExportPointer
     )[],
+    beforeInvoke?: () => void,
   ): number;
   /**
    * Encode the checked address of one source range into another owned range.
@@ -1267,6 +1360,7 @@ export interface KernelScratchLease {
     length?: number,
   ): void;
   copyOut(sourceOffset: number, length: number): Uint8Array;
+  copyToOwnedHostDestination(destination: OwnedHostByteDestination, sourceOffset: number, length: number): void;
   fill(value: number, offset: number, length: number): void;
 }
 
@@ -1598,8 +1692,9 @@ class ActiveKernelScratchLease implements KernelScratchLease {
       | bigint
       | KernelScratchExportPointer
     )[],
+    beforeInvoke?: () => void,
   ): number {
-    return this.#invokeKernelExport(scope, name, args);
+    return this.#invokeKernelExport(scope, name, args, beforeInvoke);
   }
 
   #invokeKernelExport(
@@ -1610,6 +1705,7 @@ class ActiveKernelScratchLease implements KernelScratchLease {
       | bigint
       | KernelScratchExportPointer
     )[],
+    beforeInvoke?: () => void,
   ): number {
     this.#assertValid();
     if (typeof name !== "string" || !isKernelScratchExportName(name)) {
@@ -1833,6 +1929,7 @@ class ActiveKernelScratchLease implements KernelScratchLease {
           scope,
           kernelExport.instance,
           invoke,
+          beforeInvoke,
         );
       if (typeof result !== "number") {
         throw new KernelScratchError(
@@ -2051,6 +2148,15 @@ class ActiveKernelScratchLease implements KernelScratchLease {
       [kernelSource],
     );
     return detached;
+  }
+
+  copyToOwnedHostDestination(destination: OwnedHostByteDestination, sourceOffset: number, length: number): void {
+    const record = ownedHostByteDestinationRecord(destination);
+    const checkedLength = exactNonNegativeInteger(length, `${this.#label} host copy length`);
+    checkedRange(0, checkedLength, record.capacity, `${this.#label} host copy destination`);
+    const source = this.#readableRange(sourceOffset, checkedLength);
+    const kernelSource = new IntrinsicUint8Array(this.#currentMemoryBuffer(), source.pointer, source.length);
+    intrinsicApply(intrinsicUint8ArraySet, record.bytes, [kernelSource]);
   }
 
   fill(value: number, offset: number, length: number): void {

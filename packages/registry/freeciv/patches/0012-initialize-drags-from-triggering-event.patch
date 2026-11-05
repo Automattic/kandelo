@@ -1,0 +1,75 @@
+Initialize widget gestures from the event that started them.
+
+Polling current mouse state while handling an older queued press mixes two
+points in time. Use the event coordinate space consistently for window,
+scrollbar, and slider drags; cursor presentation still samples current state.
+
+--- a/client/gui-sdl2/gui_main.c
++++ b/client/gui-sdl2/gui_main.c
+@@ -582,6 +582,33 @@
+   event.user.data2 = NULL;
+ 
+   SDL_PushEvent(&event);
++}
++
++/**********************************************************************//**
++  Position belonging to the input event that began a widget interaction.
++  SDL can pump a whole queue before dispatching the first press. Its current
++  mouse state may already be at the drag's end; it is not the press origin.
++**************************************************************************/
++void get_pointer_event_position(int *x, int *y)
++{
++  switch (main_data.event.type) {
++  case SDL_MOUSEBUTTONDOWN:
++  case SDL_MOUSEBUTTONUP:
++    *x = main_data.event.button.x;
++    *y = main_data.event.button.y;
++    break;
++  case SDL_MOUSEMOTION:
++    *x = main_data.event.motion.x;
++    *y = main_data.event.motion.y;
++    break;
++  case SDL_FINGERDOWN:
++    *x = main_data.event.tfinger.x * main_window_width();
++    *y = main_data.event.tfinger.y * main_window_height();
++    break;
++  default:
++    SDL_GetMouseState(x, y);
++    break;
++  }
+ }
+ 
+ /**********************************************************************//**
+--- a/client/gui-sdl2/gui_main.h
++++ b/client/gui-sdl2/gui_main.h
+@@ -113,6 +113,8 @@
+ 
+ 
+ 
++void get_pointer_event_position(int *x, int *y);
++
+ widget_id gui_event_loop(void *data, void (*loop_action)(void *data),
+                          widget_id (*key_down_handler)(SDL_Keysym key, void *data),
+                          widget_id (*key_up_handler)(SDL_Keysym key, void *data),
+--- a/client/gui-sdl2/widget_window.c
++++ b/client/gui-sdl2/widget_window.c
+@@ -365,7 +365,7 @@
+ 
+   pmove.pwindow = pwindow;
+   pmove.moved = FALSE;
+-  SDL_GetMouseState(&pmove.prev_x, &pmove.prev_y);
++  get_pointer_event_position(&pmove.prev_x, &pmove.prev_y);
+   ret = (gui_event_loop((void *)&pmove, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                         move_window_button_up, move_window_motion) == ID_MOVED_WINDOW);
+ 
+--- a/client/gui-sdl2/widget_scrollbar.c
++++ b/client/gui-sdl2/widget_scrollbar.c
+@@ -1115,7 +1115,7 @@
+   motion.end_widget_list = end_widget_list;
+   motion.vscroll = vscroll;
+   motion.old_y = vscroll->pscroll_bar->size.y;
+-  SDL_GetMouseState(&motion.prev_x, &motion.prev_y);
++  get_pointer_event_position(&motion.prev_x, &motion.prev_y);
+   motion.offset = motion.prev_y - vscroll->pscroll_bar->dst->dest_rect.y - vscroll->pscroll_bar->size.y;
+ 
+   gui_event_loop((void *)&motion, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,

@@ -454,6 +454,29 @@ describe("development CORS proxy", () => {
     }
   });
 
+  it("names why the upstream fetch failed instead of a bare Bad Gateway", async () => {
+    // A port nothing listens on: bind one, then release it.
+    const vacated = createServer();
+    const vacatedRoot = await listen(vacated);
+    await close(vacated);
+    const relay = relayServer();
+    const relayRoot = await listen(relay);
+    try {
+      const result = await sendRequest({
+        url: proxyUrl(relayRoot, `${vacatedRoot}/private/path?token=secret`),
+        method: "GET",
+      });
+      expect(result.status).toBe(502);
+      const body = result.body.toString("utf8");
+      expect(body).toMatch(/^Bad Gateway: .*ECONNREFUSED/);
+      expect(body).toContain(`(${vacatedRoot})`);
+      // Only the origin is named; the path and query stay out of the body.
+      expect(body).not.toContain("secret");
+    } finally {
+      await close(relay);
+    }
+  });
+
   it("relays a real ranged read as the exact requested bytes", async () => {
     // Byte N of the entity is N mod 251, so a slice from the wrong offset
     // cannot match the expected bytes.

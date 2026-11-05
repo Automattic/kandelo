@@ -39,7 +39,9 @@
 extern crate alloc;
 
 pub mod facts;
+pub mod original_program;
 pub mod policy;
+pub mod policy_surface;
 
 pub use facts::{
     detect_pointer_width, is_wasm_module, read_artifact_facts, read_custom_section, read_heap_base,
@@ -49,8 +51,10 @@ pub use policy::{describe_artifact_policy_failures, ArtifactPolicy};
 
 /// The custom section carrying the 32-byte ABI-contract digest.
 ///
-/// The digest binds `hash(abi/snapshot.json + ABI_VERSION)`, so a guest built
-/// against a different snapshot is caught even when the ABI *number* matches.
+/// The digest binds `ABI_VERSION` plus the program surface of
+/// `abi/snapshot.json`, so a guest built against a different program surface
+/// is caught even when the ABI *number* matches, and a kernel-host-only change
+/// does not invalidate it.
 pub const ABI_CONTRACT_SECTION: &str = "kandelo.abi.contract";
 
 /// The custom section carrying the 32-byte content-addressed build key a
@@ -82,6 +86,6 @@ pub fn read_abi_version(bytes: &[u8]) -> Option<i32> {
 pub fn read_thread_slot_declaration(bytes: &[u8]) -> Option<i32> {
     facts::read_i32_const_export(
         bytes,
-        wasm_posix_shared::process_memory::THREAD_SLOT_DECL_EXPORT,
+        wasm_posix_program_abi::abi::THREAD_SLOT_DECL_EXPORT,
     )
 }

@@ -1,3 +1,4 @@
+import { installImageSessions } from "./image-session-files";
 import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build a fully-bootable VFS image for the WordPress browser demo. The image
@@ -185,7 +186,6 @@ ${extraLocations}
 
 function populatePhpFpmConfig(
   fs: VfsImageFilesystem,
-  opcache: Uint8Array,
 ): void {
   ensureDirRecursive(fs, "/etc/php-fpm.d");
   ensureDirRecursive(fs, "/var/log");
@@ -219,19 +219,13 @@ request_slowlog_trace_depth = 0
   // validate_timestamps=0 is safe because VFS files don't change at
   // runtime.
   ensureDirRecursive(fs, "/usr/lib/php/extensions");
-  writeVfsBinary(
-    fs,
-    "/usr/lib/php/extensions/opcache.so",
-    opcache,
-  );
-  const phpIni = `zend_extension=/usr/lib/php/extensions/opcache.so
-
-curl.cainfo=/etc/ssl/certs/ca-certificates.crt
+  const phpIni = `curl.cainfo=/etc/ssl/certs/ca-certificates.crt
 openssl.cafile=/etc/ssl/certs/ca-certificates.crt
 
 [opcache]
 opcache.enable=1
-opcache.enable_cli=1
+; Terminal commands run as maker; FPM owns the server cache.
+opcache.enable_cli=0
 opcache.file_cache=/var/cache/opcache
 opcache.file_cache_only=1
 opcache.validate_timestamps=0
@@ -371,10 +365,6 @@ export interface WordPressVfsImageBuildInputs {
   sqliteDirectory: string;
   nginx: Uint8Array;
   phpFpm: Uint8Array;
-  frankenphpClassic: Uint8Array;
-  frankenphpCaddy: Uint8Array;
-  opcache: Uint8Array;
-  opcacheZts: Uint8Array;
   msmtpd: Uint8Array;
   dinit?: DinitBinaryInputs;
   buildPrograms?: {
@@ -397,7 +387,7 @@ export async function buildWordPressVfsImage(
 
   console.log("Populating WordPress service configs...");
   populateNginxConfig(fs);
-  populatePhpFpmConfig(fs, inputs.opcache);
+  populatePhpFpmConfig(fs);
   populateSmtpCaptureConfig(fs);
   populateWordPressFirstBootSecrets(fs);
 
@@ -481,6 +471,7 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
   );
   console.log(`  SQLite plugin: ${sqliteCount} files`);
   wpCount += sqliteCount;
+  ensureWritableByPhpFpm(fs, "/var/www/html/wp-content/uploads");
 
   // Drop-in db.php → routes WP_DB_HOST to the SQLite plugin instead of
   // MySQL. setup.sh copies sqlite-database-integration/db.copy into
@@ -503,6 +494,7 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
   await prewarmOpcache(fs, {
     sourceRoots: ["/var/www"],
     label: "wp",
+    cacheOwner: { uid: PHP_FPM_UID, gid: PHP_FPM_GID },
     programs: inputs.buildPrograms,
     excludePaths: [
       "/var/www/html/wp-config.php",
@@ -512,6 +504,7 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
   writeTrackedDemoConfig(fs, "packages/registry/wordpress/wordpress-demo.json");
 
   // Save image
+  installImageSessions(fs, "wordpress");
   await saveShellDerivedVfsImage(fs, inputs.outputPath);
   console.log(`${wpCount} WordPress files total`);
 }
@@ -541,16 +534,6 @@ async function main(): Promise<void> {
     phpFpm: new Uint8Array(readFileSync(phpRoot === undefined
       ? resolveBinary("programs/php/php-fpm.wasm")
       : join(phpRoot, "php-fpm.wasm"))),
-    frankenphpClassic: new Uint8Array(readFileSync(frankenphpRoot === undefined
-      ? resolveBinary("programs/frankenphp-classic.wasm")
-      : join(frankenphpRoot, "frankenphp-classic.wasm"))),
-    frankenphpCaddy: new Uint8Array(readFileSync(frankenphpCaddyRoot === undefined
-      ? resolveBinary("programs/frankenphp-caddy.wasm")
-      : join(frankenphpCaddyRoot, "frankenphp-caddy.wasm"))),
-    opcache: new Uint8Array(readFileSync(phpRoot === undefined
-      ? resolveBinary("programs/php/opcache.so")
-      : join(phpRoot, "opcache.so"))),
-    opcacheZts: new Uint8Array(readFileSync(join(phpZtsRoot, "lib/opcache-zts.so"))),
     msmtpd: new Uint8Array(readFileSync(msmtpdRoot === undefined
       ? resolveBinary("programs/msmtpd.wasm")
       : join(msmtpdRoot, "msmtpd.wasm"))),

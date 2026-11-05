@@ -2,7 +2,7 @@ type WasmValueType = "i32" | "i64";
 
 interface WasmFunctionSignature {
   readonly parameters: readonly WasmValueType[];
-  readonly result: WasmValueType;
+  readonly result?: WasmValueType;
 }
 
 function unsignedLeb128(value: number): number[] {
@@ -60,6 +60,10 @@ function signatures(
       parameters: [pointer, i32, i32],
       result: i32,
     },
+    kernel_drain_wait_completions: {
+      parameters: [pointer, i32, i32],
+      result: i32,
+    },
     kernel_take_pty_readiness_changed: {
       parameters: [],
       result: i32,
@@ -70,6 +74,10 @@ function signatures(
     },
     kernel_exec_commit: {
       parameters: [i32, i32, i32],
+      result: i32,
+    },
+    kernel_exec_target_admit: {
+      parameters: [i32, i32, i32, pointer, pointer],
       result: i32,
     },
     kernel_exec_target_cancel: {
@@ -92,8 +100,16 @@ function signatures(
       parameters: [i32, i32, i32],
       result: i32,
     },
+    kernel_initial_exec_commit: {
+      parameters: [i32, i32],
+      result: i32,
+    },
     kernel_spawn_exec_target_prepare: {
       parameters: [i32, i32, pointer, pointer],
+      result: i32,
+    },
+    kernel_spawn_exec_target_prepare_handle: {
+      parameters: [i32, i32, i64, pointer, i32],
       result: i32,
     },
     kernel_publish_spawn_child: {
@@ -102,6 +118,18 @@ function signatures(
     },
     kernel_fd_is_open: {
       parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_epoll_wait_token: {
+      parameters: [i32, i32],
+      result: i64,
+    },
+    kernel_epoll_wait_finish: {
+      parameters: [i32, i32, i64],
+      result: i32,
+    },
+    kernel_swap_poll_sigmask: {
+      parameters: [i32, i32, i64],
       result: i32,
     },
     kernel_fd_supports_mmap_writeback: {
@@ -131,6 +159,21 @@ function signatures(
     kernel_get_fork_count: {
       parameters: [i32],
       result: i64,
+    },
+    kernel_rootfs_inspect_directory: {
+      parameters: [pointer, i32, i32, pointer, i32],
+      result: i32,
+    },
+    kernel_rootfs_lazy_resource_limits: {
+      parameters: [i32, pointer, i32],
+      result: i32,
+    },
+    kernel_rootfs_export_container_read: {
+      parameters: [i32, i32, pointer, i32],
+      result: i32,
+    },
+    kernel_rootfs_export_container_cancel: {
+      parameters: [],
     },
     kernel_get_memory_pages: {
       parameters: [],
@@ -176,10 +219,6 @@ function signatures(
       parameters: [i32],
       result: i32,
     },
-    kernel_has_sa_nocldwait: {
-      parameters: [i32],
-      result: i32,
-    },
     kernel_getrusage: {
       parameters: [i32, pointer, i32],
       result: i32,
@@ -221,6 +260,14 @@ function signatures(
     },
     kernel_input_event: {
       parameters: [i32, i32, i32, i32],
+      result: i32,
+    },
+    kernel_kms_cursor_configure: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_kms_cursor_read: {
+      parameters: [pointer, i32],
       result: i32,
     },
     kernel_ioctl: {
@@ -406,6 +453,10 @@ function signatures(
       parameters: [i32, i32],
       result: i32,
     },
+    kernel_process_metadata_read: {
+      parameters: [i32, i32, i32, pointer, i32],
+      result: i32,
+    },
     kernel_process_metadata_stage: {
       parameters: [i32, i32, i32, pointer, i32],
       result: i32,
@@ -500,6 +551,10 @@ function signatures(
       parameters: [i32, pointer],
       result: i32,
     },
+    kernel_set_main_channel_addr: {
+      parameters: [i32, i64],
+      result: i32,
+    },
     kernel_set_process_pointer_width: {
       parameters: [i32, i32],
       result: i32,
@@ -509,32 +564,8 @@ function signatures(
       result: i32,
     },
     kernel_spawn_process: {
-      parameters: [i32, i32, pointer, pointer],
+      parameters: [i32, i32, i64, i32, i64, i32],
       result: i32,
-    },
-    kernel_spawn_reserved_process: {
-      parameters: [i32, i32, i64, pointer],
-      result: i32,
-    },
-    kernel_spawn_scratch_begin: {
-      parameters: [pointer],
-      result: i64,
-    },
-    kernel_spawn_scratch_pointer: {
-      parameters: [i64],
-      result: pointer,
-    },
-    kernel_spawn_scratch_capacity: {
-      parameters: [i64],
-      result: pointer,
-    },
-    kernel_spawn_scratch_cancel: {
-      parameters: [i64],
-      result: i32,
-    },
-    kernel_spawn_scratch_retained_capacity: {
-      parameters: [],
-      result: pointer,
     },
     kernel_tcgetattr: {
       parameters: [i32, pointer, i32],
@@ -545,11 +576,27 @@ function signatures(
       result: i32,
     },
     kernel_thread_exit: {
-      parameters: [i32, i32],
+      parameters: [i32, i32, i32],
+      result: i64,
+    },
+    kernel_wait_next_timeout_ns: {
+      parameters: [],
       result: i64,
     },
     kernel_thread_has_deliverable: {
       parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_inject_connection: {
+      parameters: [i32, i32, i32, i32, i32, i32, i32, i32],
+      result: i32,
+    },
+    kernel_tcp_connection_id: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_reset_tcp_connection: {
+      parameters: [i32, i32, i32],
       result: i32,
     },
     kernel_pick_tcp_listener_target: {
@@ -601,10 +648,6 @@ function signatures(
       // The production export is void. Returning an ignored i32 keeps this
       // compact fixture's one-result encoder simple while exercising a
       // genuine gated Wasm call.
-      result: i32,
-    },
-    kernel_wait_child_poll: {
-      parameters: [i32, i32, i32, i32, i32, pointer, i32],
       result: i32,
     },
     kernel_set_wait_queue_enabled: {
@@ -763,7 +806,7 @@ export function createKernelScratchTestInstance(
     2,
     0,
   ];
-  const imports: Record<string, (...args: Array<number | bigint>) => number | bigint>
+  const imports: Record<string, (...args: Array<number | bigint>) => number | bigint | void>
     = {};
   const waitDeadlineDefaults = createWaitDeadlineTestDouble() as
     Record<string, unknown>;
@@ -773,8 +816,7 @@ export function createKernelScratchTestInstance(
       0x60,
       ...unsignedLeb128(signature.parameters.length),
       ...signature.parameters.map(valueType),
-      1,
-      valueType(signature.result),
+      ...(signature.result === undefined ? [0] : [1, valueType(signature.result)]),
     );
     importPayload.push(
       ...wasmString("scratch"),
@@ -808,6 +850,7 @@ export function createKernelScratchTestInstance(
         throw new Error(`missing test implementation for ${name}`);
       }
       const result = Reflect.apply(implementation, undefined, args);
+      if (signature.result === undefined) return;
       return signature.result === "i64"
         ? BigInt(result as bigint | number)
         : Number(result);

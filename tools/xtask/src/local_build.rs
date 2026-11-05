@@ -35,6 +35,15 @@ use std::time::SystemTime;
 
 const LOCAL_SUPPORTED_SCHEMA: u32 = 1;
 const LOCAL_SUPPORTED_POLICY: &str = "source-only-v1";
+/// The supported set and output root that define the supported tree.
+/// `./run.sh setup` (`bootstrap`) and `./run.sh local-build` (`bootstrap
+/// packages`) both reach the engine step, which builds this with the
+/// selection `supported_tree_products` makes, so setup publishes every node
+/// local-build would for the same checkout. `./run.sh local-build --plan`
+/// cannot import these; `run_sh_setup_and_local_build_build_the_same_tree`
+/// checks that it previews the same values.
+const SUPPORTED_SET_REL: &str = "packages/sets/local-supported.toml";
+const SOURCE_ONLY_OUTPUT_REL: &str = "local-binaries/source-only-v1";
 const MAX_SET_BYTES: usize = 1024 * 1024;
 const MAX_GRAPH_MANIFEST_BYTES: usize = 1024 * 1024;
 const GRAPH_AUTHORITY_DOMAIN: &[u8] = b"kandelo-local-build-graph-authority-v1\0";
@@ -434,9 +443,10 @@ pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
     ]
 }
 
-/// Default `--source-cache-root` for `bootstrap`, matching
-/// `scripts/run-local-build.sh` so the engine step here and the
-/// `./run.sh local-build` front door share one persistent cache location.
+/// Default `--source-cache-root` for `bootstrap`, which `./run.sh setup` and
+/// `./run.sh local-build` both use, matching the default
+/// `./run.sh local-build --plan` passes, so all of them share one persistent
+/// cache location.
 ///
 /// The SourceOnly build cache is shared across every worktree on the
 /// machine by default (it is content-addressed, so identical inputs are
@@ -502,7 +512,7 @@ fn run_repo_script_with_env(
     let script = repo.join(rel);
     let mut command = Command::new("bash");
     command.arg(&script).args(args).current_dir(repo);
-    if rel == "scripts/build-musl.sh" {
+    if rel == "scripts/build-musl.sh" || rel == "scripts/build-kandelo-cc.sh" {
         // Build-deps paths and local-build results are machine-readable stdout.
         // SDK prerequisite diagnostics must not contaminate that channel.
         command.stdout(std::process::Stdio::from(std::io::stderr()));
@@ -530,6 +540,9 @@ fn run_repo_script_with_env(
 pub(crate) enum Selection {
     /// The whole-tree build closure: `bootstrap_step_plan()` in order.
     All,
+    /// The SDK prerequisites and the engine's supported tree, without the
+    /// host steps: `./run.sh local-build`.
+    Packages,
     /// A single registry package or declared VFS product, built through the
     /// local-build engine's `--products`-style selection (which already
     /// resolves the transitive dependency closure and content-addressed
@@ -560,6 +573,7 @@ pub(crate) fn bootstrap_target_to_selection(target: &str) -> Selection {
         "sysroot" => Selection::HostStep("sysroot"),
         "sysroot64" => Selection::HostStep("sysroot64"),
         "sdk" => Selection::HostStep("sdk"),
+        "packages" => Selection::Packages,
         other => Selection::Package(other.to_string()),
     }
 }
@@ -616,7 +630,7 @@ fn declared_product_ids(set: &LocalSupportedSetV1) -> BTreeSet<String> {
 }
 
 /// Absolute path to the worktree-local SDK's compiler wrapper. Its presence
-/// (as a working symlink to a real file) is the same signal
+/// (as an executable file) is the same signal
 /// `has_sdk`/`command -v wasm32posix-cc` checked in `run.sh`, checked
 /// directly instead of through PATH so this does not depend on the caller
 /// having sourced `sdk/activate.sh`.
@@ -742,6 +756,44 @@ fn verify_sysroot_abi_headers(repo: &Path, sysroot_path: &Path, arch: &str) -> R
     ))
 }
 
+/// The steps of `bootstrap packages` (`./run.sh local-build`), in order. The
+/// full SDK sysroots, graphics included, come first: every package build reads
+/// them, but the engine's graph does not model them, and the wasm64 sysroot
+/// builds against the wasm32 SDK. A failed step stops the run before the
+/// engine derives any cache key.
+fn bootstrap_packages_step_plan() -> [&'static str; 3] {
+    ["sdk", "sysroot64", "engine"]
+}
+
+/// The engine's product selection for a supported-tree build: what consumers
+/// demand by default, or every declared package with `--all-packages`.
+/// `./run.sh setup` and `./run.sh local-build` both reach the engine through
+/// this, so they always build the same tree.
+fn supported_tree_products(all_packages: bool) -> Vec<String> {
+    vec![if all_packages { "all" } else { DEMANDED_SELECTION }.to_string()]
+}
+
+/// The `local-build run` arguments bootstrap's `engine` step uses: the
+/// supported set, the SourceOnly output root, and the caller's products.
+fn supported_tree_run_args(
+    repo: &Path,
+    source_cache_root: PathBuf,
+    products: Vec<String>,
+    jobs: usize,
+    rebuild: bool,
+    verify_cache: bool,
+) -> LocalBuildRunArgsV1 {
+    LocalBuildRunArgsV1 {
+        set: repo.join(SUPPORTED_SET_REL),
+        source_cache_root,
+        output_root: repo.join(SOURCE_ONLY_OUTPUT_REL),
+        products,
+        jobs,
+        rebuild,
+        verify_cache,
+    }
+}
+
 /// Run one named bootstrap step. Shared by the whole-tree `Selection::All`
 /// loop and single-target selection, so a target built alone (e.g.
 /// `bootstrap kernel`) and the same step run as part of `bootstrap all` do
@@ -765,15 +817,14 @@ fn run_bootstrap_step(
             ] {
                 ensure_package_sysroot(repo, arch)?;
             }
-            run_aggregate(LocalBuildRunArgsV1 {
-                set: repo.join("packages/sets/local-supported.toml"),
-                source_cache_root: default_source_cache_root()?,
-                output_root: repo.join("local-binaries/source-only-v1"),
+            run_aggregate(supported_tree_run_args(
+                repo,
+                default_source_cache_root()?,
                 products,
                 jobs,
                 rebuild,
                 verify_cache,
-            })
+            ))
         }
         // `--rebuild` (`bootstrap --rebuild` / `./run.sh rebuild`) must force
         // these two scripts' own input-hash skip check, so a forced rebuild
@@ -800,30 +851,43 @@ fn run_bootstrap_step(
         "sysroot64" => bootstrap_sysroot_step(repo, "sysroot64", "wasm64posix"),
         "sdk" => {
             bootstrap_sysroot_step(repo, "sysroot", "wasm32posix")?;
-            if is_executable_file(&sdk_cc_path(repo)) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "bootstrap sdk: SDK tools not found. Expected {} to be a working symlink.",
+            if !is_executable_file(&sdk_cc_path(repo)) {
+                return Err(format!(
+                    "bootstrap sdk: SDK tools not found. Expected {} to be an executable wrapper.",
                     sdk_cc_path(repo).display()
-                ))
+                ));
             }
+            // The wrappers run the native SDK driver (crates/kandelo-cc).
+            // They build it on first use; build it here so the first
+            // compiles of a parallel package build do not all start cargo.
+            run_repo_script_with_env(repo, "scripts/build-kandelo-cc.sh", &[], &[])
         }
         other => Err(format!("bootstrap: unknown step {other:?}")),
     }
 }
 
-/// `xtask bootstrap [<target>] [--jobs <n>] [--rebuild] [--verify-cache]` —
-/// the single engine-plus-host build closure behind `./run.sh setup` and
-/// `./run.sh build <target>`. An omitted target (or the explicit literal
-/// `all`) builds the whole tree via `bootstrap_step_plan()`; any other
-/// target selects one package/product (routed through the engine's own
-/// dependency-closure and cache-key selection) or one non-graph host step
-/// (see `bootstrap_target_to_selection`).
+/// `xtask bootstrap [<target>] [--all-packages] [--jobs <n>] [--rebuild] [--verify-cache]` —
+/// the single engine-plus-host build closure behind `./run.sh setup`,
+/// `./run.sh local-build` and `./run.sh build <target>`. An omitted target
+/// (or the explicit literal `all`) builds the whole tree via
+/// `bootstrap_step_plan()`; `packages` runs only the SDK prerequisites and
+/// the engine; any other target selects one package/product (routed through
+/// the engine's own dependency-closure and cache-key selection) or one
+/// non-graph host step (see `bootstrap_target_to_selection`).
+///
+/// The engine builds what consumers demand (`supported_tree_products`):
+/// every active product and the packages behind the browser app's imports.
+/// `--all-packages` builds every package the supported set declares, which
+/// test suites need for fixtures no image carries.
 pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
     let (selection, rest) = bootstrap_selection_from_args(&args)?;
     let repo = crate::repo_root();
-    let mut flags = parse_named_flags(&rest, &["--jobs"], &[], &["--rebuild", "--verify-cache"])?;
+    let mut flags = parse_named_flags(
+        &rest,
+        &["--jobs"],
+        &[],
+        &["--rebuild", "--verify-cache", "--all-packages"],
+    )?;
     let jobs = select_job_count(
         flags.values.remove("--jobs").as_deref(),
         std::env::var("WASM_POSIX_LOCAL_BUILD_JOBS").ok().as_deref(),
@@ -831,15 +895,30 @@ pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
     )?;
     let rebuild = flags.switches.contains("--rebuild");
     let verify_cache = flags.switches.contains("--verify-cache");
+    let all_packages = flags.switches.contains("--all-packages");
+    if all_packages && !matches!(selection, Selection::All | Selection::Packages) {
+        return Err("--all-packages applies only to `bootstrap [all]` and `bootstrap packages`".to_string());
+    }
     match selection {
         Selection::All => {
             for step in bootstrap_step_plan() {
                 let products = if step.name == "engine" {
-                    vec!["all".to_string()]
+                    supported_tree_products(all_packages)
                 } else {
                     Vec::new()
                 };
                 run_bootstrap_step(&repo, step.name, jobs, rebuild, verify_cache, products)?;
+            }
+            Ok(())
+        }
+        Selection::Packages => {
+            for step in bootstrap_packages_step_plan() {
+                let products = if step == "engine" {
+                    supported_tree_products(all_packages)
+                } else {
+                    Vec::new()
+                };
+                run_bootstrap_step(&repo, step, jobs, rebuild, verify_cache, products)?;
             }
             Ok(())
         }
@@ -1313,7 +1392,7 @@ fn run_check_abi_version_check(repo: &Path, script_rel: &str) -> Result<(), Stri
 /// Cheap gate for `snapshot_drift_check`: has any ABI-defining source
 /// changed more recently than the committed snapshot? Compares
 /// `abi/snapshot.json`'s mtime against the newest mtime found under
-/// `crates/shared` and `crates/kernel`. This is a gate, not the safety
+/// `crates/program-abi`, `crates/shared` and `crates/kernel`. This is a gate, not the safety
 /// check itself -- a false "changed" only costs one extra
 /// `check-abi-version.sh` run -- so ambiguity resolves to `true`: a
 /// missing snapshot, or an error walking a source directory that does
@@ -1325,7 +1404,7 @@ fn abi_sources_changed_since_snapshot(repo: &Path) -> Result<bool, String> {
         Ok(mtime) => mtime,
         Err(_) => return Ok(true),
     };
-    for dir in ["crates/shared", "crates/kernel"] {
+    for dir in ["crates/program-abi", "crates/shared", "crates/kernel"] {
         match newest_mtime_under(&repo.join(dir)) {
             Ok(mtime) if mtime > snapshot_mtime => return Ok(true),
             Ok(_) => {}
@@ -1631,7 +1710,7 @@ pub(crate) fn run_clean(args: Vec<String>) -> Result<(), String> {
     };
 
     let repo = crate::repo_root();
-    let set = repo.join("packages/sets/local-supported.toml");
+    let set = repo.join(SUPPORTED_SET_REL);
     let registry = fixed_registry(&repo);
     let graph = load_and_plan(&repo, &set, &registry)?;
     let node = resolve_clean_target(&graph, &target)?;
@@ -1643,7 +1722,7 @@ pub(crate) fn run_clean(args: Vec<String>) -> Result<(), String> {
     let _cache_use =
         crate::cache_gc::CacheUseLock::acquire_shared_if_present(&planned_cache.base, "clean")?;
     let compiled_cache_root = planned_cache.compiled;
-    let output_root = repo.join("local-binaries/source-only-v1");
+    let output_root = repo.join(SOURCE_ONLY_OUTPUT_REL);
 
     let mut removed_paths = Vec::new();
     for cleaned in &removal {
@@ -1884,7 +1963,21 @@ fn run_plan_status(args: LocalBuildPlanStatusArgsV1) -> Result<(), String> {
         .map_err(|error| format!("canonicalize supported set {}: {error}", set.display()))?;
     let registry = fixed_registry(&repo);
     let graph = load_and_plan(&repo, &set, &registry)?;
-    let selected = select_graph_dependencies(&graph, &args.products)?;
+    // A dry run writes nothing: the demanded selection reads the program
+    // index and root node_modules a build already provisioned.
+    let demanded = if args.products.iter().any(|product| product == DEMANDED_SELECTION) {
+        Some(check_browser_binary_supply(&repo).map_err(|error| {
+            format!(
+                "{error}\npreviewing the default selection needs the root node_modules and the \
+                 program index a build provisions: run `./run.sh local-build` once, or preview \
+                 every package with `./run.sh local-build --plan --all`"
+            )
+        })?)
+    } else {
+        None
+    };
+    let product_filters = expand_product_filters(&graph, &args.products, demanded.as_deref())?;
+    let selected = select_graph_dependencies(&graph, &product_filters)?;
     let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
     // Not materialized: materializing would create cache directories, which a
     // dry run must not do. A missing cache simply makes every node "will run".
@@ -2541,6 +2634,132 @@ fn compute_skip_receipts(
     BTreeMap::new()
 }
 
+/// The product selection of a default build: every active product, plus the
+/// packages that own the browser app's own binary imports. What the images
+/// need is their product closures; what else the browser needs is its
+/// imports. `all` selects every node the supported set declares instead.
+const DEMANDED_SELECTION: &str = "demanded";
+
+/// Whether a run builds a supported tree (`all` or `demanded`) into this
+/// checkout's own SourceOnly root, as `./run.sh setup` and `./run.sh
+/// local-build` do. `set` and `output_root` are the run's canonical paths.
+fn is_supported_tree_run(repo: &Path, set: &Path, output_root: &Path, products: &[String]) -> bool {
+    let tree = products.is_empty()
+        || products
+            .iter()
+            .any(|product| product == "all" || product == DEMANDED_SELECTION);
+    tree
+        && fs::canonicalize(repo.join(SUPPORTED_SET_REL)).ok().as_deref() == Some(set)
+        && fs::canonicalize(repo.join(SOURCE_ONLY_OUTPUT_REL)).ok().as_deref() == Some(output_root)
+}
+
+/// Replace `demanded` with explicit filters: each active product id, and the
+/// package (`name`, or `name64` for a wasm64 node) owning each browser
+/// import. Explicit filters make the run a narrow selection, so the engine
+/// carries forward packages a wider `all` build published and are still
+/// current. Any other selection is returned unchanged.
+fn expand_product_filters(
+    graph: &PlannedGraphV1,
+    products: &[String],
+    demanded_packages: Option<&[String]>,
+) -> Result<Vec<String>, String> {
+    if !products.iter().any(|product| product == DEMANDED_SELECTION) {
+        return Ok(products.to_vec());
+    }
+    if products.len() != 1 {
+        return Err("product filter 'demanded' may not be mixed with other filters".to_string());
+    }
+    let mut filters = graph
+        .dependencies
+        .keys()
+        .filter_map(|node| match node {
+            PlanNodeV1::Product { id } => Some(id.clone()),
+            PlanNodeV1::Package { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let demanded_packages = demanded_packages.ok_or_else(|| {
+        "the demanded selection needs the browser binary check's package list".to_string()
+    })?;
+    for line in demanded_packages {
+        let (name, arch) = line
+            .split_once('/')
+            .ok_or_else(|| format!("invalid demanded package {line:?}"))?;
+        if !graph.dependencies.contains_key(&PlanNodeV1::package(name, arch)) {
+            return Err(format!(
+                "the browser app imports an output of {line}, which the supported set does not build"
+            ));
+        }
+        let filter = match arch {
+            "wasm32" => name.to_string(),
+            "wasm64" => {
+                let filter = format!("{name}64");
+                if graph
+                    .dependencies
+                    .contains_key(&PlanNodeV1::package(&filter, "wasm32"))
+                {
+                    return Err(format!(
+                        "cannot select {line}: package {filter} also names a wasm32 node"
+                    ));
+                }
+                filter
+            }
+            other => return Err(format!("demanded package {name} has unknown arch {other:?}")),
+        };
+        filters.insert(filter);
+    }
+    Ok(filters.into_iter().collect())
+}
+
+/// Run `scripts/check-browser-binary-supply.ts` against the package graph:
+/// every binary the browser app imports must be an output of a package the
+/// supported set builds. Returns `name/arch` of the package owning each
+/// import, which a default build selects beside the products. What images
+/// need is their products' dependency closure, which the planner enforces.
+/// The script's report goes to stderr.
+fn check_browser_binary_supply(repo: &Path) -> Result<Vec<String>, String> {
+    let output = Command::new("node")
+        .arg(repo.join("node_modules/tsx/dist/cli.mjs"))
+        .arg(repo.join("scripts/check-browser-binary-supply.ts"))
+        .current_dir(repo)
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|error| format!("spawn check-browser-binary-supply.ts: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "the browser binary check failed ({}); a binary the browser app imports \
+             has no supported producer, or the check could not run (see above)",
+            output.status
+        ));
+    }
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|_| "check-browser-binary-supply.ts printed non-UTF-8".to_string())?;
+    Ok(stdout.lines().map(str::to_string).filter(|line| !line.is_empty()).collect())
+}
+
+/// Run `scripts/check-browser-binary-supply.ts --published <output_root>`:
+/// each browser import, the artifacts behind the browser's virtual modules,
+/// and every lazy body each active product's published image references
+/// must be a regular file of the declared size there. Its report goes to
+/// stderr; stdout carries the run's machine-readable result.
+fn check_published_binary_supply(repo: &Path, output_root: &Path) -> Result<(), String> {
+    let status = Command::new("node")
+        .arg(repo.join("node_modules/tsx/dist/cli.mjs"))
+        .arg(repo.join("scripts/check-browser-binary-supply.ts"))
+        .arg("--published")
+        .arg(output_root)
+        .current_dir(repo)
+        .stdout(Stdio::from(std::io::stderr()))
+        .status()
+        .map_err(|error| format!("spawn check-browser-binary-supply.ts: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("the build did not publish every binary its consumers need; \
+             the missing paths are listed above"
+            .to_string())
+    }
+}
+
 fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // Started before dependency install and index generation, so the run's
     // recorded `actual_seconds` includes the fixed overhead a waiting agent
@@ -2561,11 +2780,6 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let graph = report_phase("Planning the build graph", || {
         load_and_plan(&repo, &set, &registry)
     })?;
-    let selected = select_graph_dependencies(&graph, &args.products)?;
-    // The first event carries the node total, so a reader such as
-    // `scripts/agent-job status` can report "N of M done" from the file alone.
-    let mut events = EventLog::from_env();
-    events.plan(selected.len());
 
     let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
     let output_intended = canonicalize_with_missing_tail(&args.output_root)?;
@@ -2585,6 +2799,25 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     })?;
     let output_root = exact_canonical_directory(&output_intended, "local-build output root")?;
     validate_run_roots(&repo, &set, &cache_roots.base, &output_root)?;
+    let supported_tree = is_supported_tree_run(&repo, &set, &output_root, &args.products);
+    // Needs only checked-in metadata and the program index generated above, so
+    // a consumer nothing in the supported set produces fails before any node
+    // builds rather than at the end of a long build.
+    let wants_demanded = args.products.iter().any(|product| product == DEMANDED_SELECTION);
+    let demanded = if supported_tree || wants_demanded {
+        Some(report_phase(
+            "Checking that the supported packages produce every needed binary",
+            || check_browser_binary_supply(&repo),
+        )?)
+    } else {
+        None
+    };
+    let product_filters = expand_product_filters(&graph, &args.products, demanded.as_deref())?;
+    let selected = select_graph_dependencies(&graph, &product_filters)?;
+    // The first event carries the node total, so a reader such as
+    // `scripts/agent-job status` can report "N of M done" from the file alone.
+    let mut events = EventLog::from_env();
+    events.plan(selected.len());
 
     // Build/refresh the co-resident side modules before any package node runs:
     // image-building recipes load the VFS image writer from `local-binaries/`
@@ -2838,7 +3071,7 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         carry_forward_published_nodes(
             &registry,
             &graph,
-            &args.products,
+            &product_filters,
             &selected,
             &expected_receipt_nodes,
             &retained_receipts,
@@ -2926,7 +3159,7 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
                     &repo,
                     &set,
                     &registry,
-                    &args.products,
+                    &product_filters,
                     &publication.carried,
                     &publication.selected,
                     &graph.authority_sha256,
@@ -2967,10 +3200,28 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         );
     }
 
+    let all_nodes_succeeded = results
+        .iter()
+        .all(|result| matches!(result, NodeRunResultV1::Succeeded { .. }));
+    // A whole supported-tree build (setup, `./run.sh local-build`) must leave
+    // every binary its consumers name in the published projection. Checked
+    // after publication, so a projection left by an older checkout, or a
+    // consumer no supported package feeds, fails here instead of as a
+    // skipped spec or a runtime 404.
+    let supply_error = if projection_finalization_error.is_none()
+        && all_nodes_succeeded
+        && supported_tree
+    {
+        report_phase("Checking published binaries against their consumers", || {
+            check_published_binary_supply(&repo, &output_root)
+        })
+        .err()
+    } else {
+        None
+    };
     let outcome = if projection_finalization_error.is_none()
-        && results
-            .iter()
-            .all(|result| matches!(result, NodeRunResultV1::Succeeded { .. }))
+        && supply_error.is_none()
+        && all_nodes_succeeded
     {
         AggregateOutcomeV1::Succeeded
     } else {
@@ -3042,7 +3293,9 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let bytes = canonical_machine_json(&result)?;
     std::io::Write::write_all(&mut std::io::stdout().lock(), &bytes)
         .map_err(|error| format!("write local-build run result: {error}"))?;
-    if outcome == AggregateOutcomeV1::Failed {
+    if let Some(error) = supply_error {
+        Err(format!("every node succeeded, but {error}"))
+    } else if outcome == AggregateOutcomeV1::Failed {
         Err("aggregate build failed after independent work drained".to_string())
     } else {
         Ok(())
@@ -3316,10 +3569,9 @@ const KANDELO_IMAGE_MODULE_NODE_NAME: &str = "kandelo-image-module";
 /// The machinery is written over this table, rather than for that one module,
 /// so the build, freshness and projection rules live in one place.
 ///
-/// "Co-resident" names the pipeline, not the module's memory model: the image
-/// writer imports nothing, not even `env.memory`, and owns its own linear
-/// memory. Do not infer build flags or memory placement from membership in
-/// this table; each module's `build-wasm.sh` owns those.
+/// "Co-resident" names the pipeline, not the module's memory model. The
+/// standalone writer imports nothing; its positioned variant imports one
+/// byte reader. Each module's `build-wasm.sh` owns those build contracts.
 pub(crate) struct CoresidentSideModule {
     /// Projection node name; also the identity the consumer's root-level
     /// member rule admits.
@@ -3346,9 +3598,18 @@ pub(crate) const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[Coresident
     // The image writer is not compiled per pointer width. It BUILDS an image
     // rather than sharing a guest's address space, so one wasm32 module writes
     // images consumed by wasm32 and wasm64 guests alike.
-    artifacts: &[("kandelo_image_module32.wasm", "wasm32", true)],
+    artifacts: &[
+        ("kandelo_image_module32.wasm", "wasm32", true),
+        ("kandelo_image_module_positioned32.wasm", "wasm32", true),
+    ],
     closure_description: "crates/kandelo-image-module, crates/runtime-core and their \
                           workspace dependencies",
+}, CoresidentSideModule {
+    node_name: "kandelo-program-policy",
+    script: "crates/program-policy/build-wasm.sh",
+    closure_crates: &["kandelo-program-policy"],
+    artifacts: &[("kandelo_program_policy32.wasm", "wasm32", true)],
+    closure_description: "crates/program-policy and its workspace dependencies",
 }];
 
 /// Whether a projection node name belongs to a co-resident side module rather
@@ -3457,27 +3718,25 @@ fn coresident_side_module_projection(
     })
 }
 
-/// One source-only projection node per co-resident artifact. Each is a single
-/// root-level member so the consumer admits it under its root-level member
-/// rule (`binary-resolver.ts`).
+/// One source-only projection node per co-resident module and architecture.
+/// Every member stays root-level and explicitly allowlisted by the consumer.
 fn coresident_side_module_nodes(
     module: &CoresidentSideModule,
     projection: &CoresidentSideModuleProjection,
 ) -> Vec<SourceOnlyProgramNodeV1> {
-    projection
-        .members
-        .iter()
-        .map(|member| {
-            let target_arch = module
-                .artifacts
-                .iter()
-                .find(|(name, _, _)| *name == member.mirror_path)
-                .map(|(_, arch, _)| *arch)
-                .unwrap_or("wasm32");
-            // The node's manifest identity is a stable declaration tag bound to
-            // the module's name (the members ARE the artifacts, not a package
-            // manifest); its cache key is the build key that gates freshness;
-            // its receipt digest binds the projected member content.
+    let mut by_arch: BTreeMap<&str, Vec<MaterializedProgramMemberV1>> = BTreeMap::new();
+    for member in &projection.members {
+        let target_arch = module
+            .artifacts
+            .iter()
+            .find(|(name, _, _)| *name == member.mirror_path)
+            .map(|(_, arch, _)| *arch)
+            .unwrap_or("wasm32");
+        by_arch.entry(target_arch).or_default().push(member.clone());
+    }
+    by_arch
+        .into_iter()
+        .map(|(target_arch, members)| {
             let manifest_sha256 = sha256_bytes(
                 format!("kandelo-coresident-side-module-node-v1\0{}", module.node_name).as_bytes(),
             );
@@ -3485,11 +3744,13 @@ fn coresident_side_module_nodes(
             receipt.update(b"kandelo-coresident-side-module-receipt-v1\0");
             receipt.update((module.node_name.len() as u64).to_le_bytes());
             receipt.update(module.node_name.as_bytes());
-            receipt.update((member.mirror_path.len() as u64).to_le_bytes());
-            receipt.update(member.mirror_path.as_bytes());
-            receipt.update(member.sha256.as_bytes());
-            receipt.update(member.size.to_le_bytes());
-            receipt.update((member.mode as u64).to_le_bytes());
+            for member in &members {
+                receipt.update((member.mirror_path.len() as u64).to_le_bytes());
+                receipt.update(member.mirror_path.as_bytes());
+                receipt.update(member.sha256.as_bytes());
+                receipt.update(member.size.to_le_bytes());
+                receipt.update((member.mode as u64).to_le_bytes());
+            }
             let cache_receipt_sha256 = crate::util::hex(&receipt.finalize());
             SourceOnlyProgramNodeV1 {
                 node: SourceOnlyProgramNodeIdentityV1 {
@@ -3500,7 +3761,7 @@ fn coresident_side_module_nodes(
                 manifest_sha256,
                 cache_key_sha256: projection.closure_sha.clone(),
                 cache_receipt_sha256,
-                members: vec![member.clone()],
+                members,
             }
         })
         .collect()
@@ -4153,7 +4414,12 @@ fn run_child_process(
 ) -> Result<ValidatedChildResultV1, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("resolve current xtask executable: {error}"))?;
-    let mut command = Command::new(executable);
+    let mut command = Command::new(&executable);
+    // WHY: this exact xtask is already the source-built local-build driver.
+    // Recipes have private Cargo roots; rebuilding metadata tooling there
+    // would compile xtask and download its dependencies for every recipe.
+    // Override any inherited path so a stale outer binary cannot win.
+    command.env("WASM_POSIX_XTASK_BIN", &executable);
     command
         .arg("local-build")
         .arg("run-node")
@@ -5992,7 +6258,8 @@ fn source_only_program_projection_candidate(
                     "source-only program {name:?}/{target_arch} member receipt is not canonically sorted"
                 ));
             }
-            if sorted_members.len() != package.members.len() {
+            let original_count = package.members.iter().filter(|member| member.original_wasm.is_some()).count();
+            if sorted_members.len() != package.members.len() + original_count {
                 return Err(format!(
                     "source-only program {name:?}/{target_arch} member receipt count does not match v2 projection"
                 ));
@@ -6029,6 +6296,16 @@ fn source_only_program_projection_candidate(
                         "source-only program {name:?}/{target_arch} materialized mode for {:?} does not match v2 declaration",
                         member.source_artifact
                     ));
+                }
+                if let Some(original) = &member.original_wasm {
+                    let generation = crate::build_deps::original_companion_generation_relative(name, cache_key_sha256)?;
+                    let original_mirror = format!("programs/{target_arch}/{}", generation.join(original).display());
+                    let actual = receipt_members.get(&(&original_mirror, original)).ok_or_else(|| {
+                        format!("source-only program {name:?}/{target_arch} receipt omitted declared original {original:?}")
+                    })?;
+                    if actual.mode & 0o7333 != 0 {
+                        return Err(format!("source-only program {name:?}/{target_arch} original companion has writable, executable or special mode bits"));
+                    }
                 }
             }
 
@@ -6235,7 +6512,7 @@ fn parse_local_build_args_with_jobs(
             };
             let output_root = match flags.values.remove("--output-root") {
                 Some(value) => absolute_authored_path(value, "--output-root")?,
-                None => crate::repo_root().join("local-binaries/source-only-v1"),
+                None => crate::repo_root().join(SOURCE_ONLY_OUTPUT_REL),
             };
             let products = flags.repeated.remove("--product").unwrap_or_default();
             for product in &products {
@@ -7491,7 +7768,7 @@ mod tests {
             ("build_erlang_vfs", Expectation::DormantOrExcluded("erlang-vfs")),
             ("build_python_vfs", Expectation::DormantOrExcluded("python-vfs")),
             ("build_perl_vfs", Expectation::DormantOrExcluded("perl-vfs")),
-            ("build_redis_vfs", Expectation::DormantOrExcluded("redis-vfs")),
+            ("build_redis_vfs", Expectation::FoldedProduct("browser-redis")),
             // texlive-vfs has no `[[products]]`/`[[packages]]` entry AND no
             // manifest under images/vfs/products at all (unlike the other
             // dormant composites, which at least have a written manifest);
@@ -7534,14 +7811,15 @@ mod tests {
             }
         }
 
-        // images/vfs/products/*.toml manifests exist for every dormant
-        // composite except texlive (confirming Stage 4 left it bash for a
+        // images/vfs/products/*.toml manifests exist for these composites,
+        // including promoted Redis and the retired standalone MariaDB recipes.
+        // There is no manifest for texlive (confirming Stage 4 left it bash for a
         // different, more fundamental reason: no manifest, no product/package
         // declaration, and its bash builder has a host-tool-availability
         // skip that isn't itself expressible as a manifest dependency).
         for id in ["browser-mariadb-wasm32", "browser-mariadb-wasm64", "browser-erlang", "browser-python", "browser-perl", "browser-redis"] {
             let manifest = repo.join("images/vfs/products").join(format!("{id}.toml"));
-            assert!(manifest.is_file(), "expected dormant product manifest at {}", manifest.display());
+            assert!(manifest.is_file(), "expected product manifest at {}", manifest.display());
         }
         assert!(
             !repo.join("images/vfs/products/texlive-vfs.toml").exists()
@@ -8151,6 +8429,120 @@ materialization = "lazy"
         );
     }
 
+    /// `./run.sh setup` must publish every node `./run.sh local-build` would
+    /// for the same checkout. Both reach bootstrap's engine step, whose
+    /// selection comes from `supported_tree_products`; this pins run.sh's
+    /// side: local-build runs `bootstrap packages` through setup's runner,
+    /// both map `--all` to `--all-packages`, and `--plan` previews the same
+    /// set, output root, selections, and cache root.
+    #[test]
+    fn run_sh_setup_and_local_build_build_the_same_tree() {
+        assert_eq!(supported_tree_products(false), vec![DEMANDED_SELECTION.to_string()]);
+        assert_eq!(supported_tree_products(true), vec!["all".to_string()]);
+        assert_eq!(bootstrap_target_to_selection("packages"), Selection::Packages);
+
+        let run_sh = fs::read_to_string(crate::repo_root().join("run.sh")).unwrap();
+        for expected in [
+            r#"local helper="$REPO_ROOT/scripts/setup.sh""#.to_string(),
+            "packages --jobs".to_string(),
+            "bootstrap_selection=(--all-packages)".to_string(),
+            r#"if [ "$arg" = "--all" ]; then args+=(--all-packages)"#.to_string(),
+            "local selection=demanded".to_string(),
+            "selection=all".to_string(),
+            format!(r#"--set "$REPO_ROOT/{SUPPORTED_SET_REL}" --status"#),
+            format!(r#"--output-root "$REPO_ROOT/{SOURCE_ONLY_OUTPUT_REL}" --product "$selection""#),
+            r#"--source-cache-root "${KANDELO_SOURCE_CACHE_ROOT:-$HOME/.cache/kandelo/source-only}""#
+                .to_string(),
+        ] {
+            assert!(run_sh.contains(&expected), "run.sh no longer contains {expected}");
+        }
+        // The plan's cache-root default must be the one
+        // `default_source_cache_root` resolves.
+        assert_eq!(
+            resolve_source_cache_root(None, Some("/home/u".into())).unwrap(),
+            PathBuf::from("/home/u/.cache/kandelo/source-only"),
+        );
+    }
+
+    #[test]
+    fn bootstrap_packages_provisions_both_sdks_before_the_engine() {
+        assert_eq!(bootstrap_packages_step_plan(), ["sdk", "sysroot64", "engine"]);
+        // The same steps `bootstrap all` runs before its engine, in the same order.
+        let all = bootstrap_step_plan().iter().map(|step| step.name).collect::<Vec<_>>();
+        let position = |name: &str| all.iter().position(|step| *step == name).unwrap();
+        assert!(position("sdk") < position("engine"));
+        assert!(position("sysroot64") < position("engine"));
+    }
+
+    #[test]
+    fn demanded_selection_is_exclusive_and_others_pass_through() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "base-a", &[], &[]);
+        let first = product(root, "first", &[]);
+        let set = authority(
+            root,
+            &[("base-a", "platform")],
+            &[("first", "base-a", first.as_path())],
+            &[],
+            &[],
+        );
+        let graph = load_and_plan(root, &set, &registry(root)).unwrap();
+        for products in [vec!["first".to_string()], vec!["all".to_string()], Vec::new()] {
+            assert_eq!(expand_product_filters(&graph, &products, None).unwrap(), products);
+        }
+        assert!(
+            expand_product_filters(
+                &graph,
+                &[DEMANDED_SELECTION.to_string(), "first".to_string()],
+                None,
+            )
+            .unwrap_err()
+            .contains("may not be mixed"),
+        );
+        // The products plus each demanded package, as explicit filters.
+        assert_eq!(
+            expand_product_filters(
+                &graph,
+                &[DEMANDED_SELECTION.to_string()],
+                Some(&["base-a/wasm32".to_string()]),
+            )
+            .unwrap(),
+            vec!["base-a".to_string(), "first".to_string()],
+        );
+        assert!(
+            expand_product_filters(
+                &graph,
+                &[DEMANDED_SELECTION.to_string()],
+                Some(&["missing/wasm32".to_string()]),
+            )
+            .unwrap_err()
+            .contains("does not build"),
+        );
+    }
+
+    /// The published-binary check runs only for the whole supported tree
+    /// published into this checkout's own root, which is what setup and
+    /// `./run.sh local-build` build. Narrow or relocated runs skip it.
+    #[test]
+    fn supply_check_runs_only_for_the_whole_supported_tree() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = fs::canonicalize(root.path()).unwrap();
+        fs::create_dir_all(repo.join("packages/sets")).unwrap();
+        fs::write(repo.join(SUPPORTED_SET_REL), "").unwrap();
+        fs::create_dir_all(repo.join(SOURCE_ONLY_OUTPUT_REL)).unwrap();
+        fs::create_dir_all(repo.join("elsewhere")).unwrap();
+        let set = repo.join(SUPPORTED_SET_REL);
+        let output = repo.join(SOURCE_ONLY_OUTPUT_REL);
+        let all = vec!["all".to_string()];
+        assert!(is_supported_tree_run(&repo, &set, &output, &all));
+        assert!(is_supported_tree_run(&repo, &set, &output, &[]));
+        assert!(is_supported_tree_run(&repo, &set, &output, &[DEMANDED_SELECTION.to_string()]));
+        assert!(!is_supported_tree_run(&repo, &set, &output, &["kernel".to_string()]));
+        assert!(!is_supported_tree_run(&repo, &set, &repo.join("elsewhere"), &all));
+        assert!(!is_supported_tree_run(&repo, &repo.join("other.toml"), &output, &all));
+    }
+
     #[test]
     fn bootstrap_selection_from_args_accepts_omitted_all_and_single_targets() {
         let (selection, rest) = bootstrap_selection_from_args(&[]).unwrap();
@@ -8399,6 +8791,7 @@ materialization = "lazy"
     // and known keys, so no Cargo workspace / `cargo metadata` run is needed.
 
     const IMAGE_MODULE_ARTIFACT: &str = "kandelo_image_module32.wasm";
+    const POSITIONED_IMAGE_MODULE_ARTIFACT: &str = "kandelo_image_module_positioned32.wasm";
 
     fn image_module() -> &'static CoresidentSideModule {
         CORESIDENT_SIDE_MODULES
@@ -8422,7 +8815,8 @@ materialization = "lazy"
                     "cacheKeySha256": cache_key,
                     "cacheReceiptSha256": "00",
                     "members": [
-                        { "sourceArtifact": IMAGE_MODULE_ARTIFACT, "mirrorPath": IMAGE_MODULE_ARTIFACT, "mode": 420, "size": size, "sha256": sha256 }
+                        { "sourceArtifact": IMAGE_MODULE_ARTIFACT, "mirrorPath": IMAGE_MODULE_ARTIFACT, "mode": 420, "size": size, "sha256": sha256 },
+                        { "sourceArtifact": POSITIONED_IMAGE_MODULE_ARTIFACT, "mirrorPath": POSITIONED_IMAGE_MODULE_ARTIFACT, "mode": 420, "size": size, "sha256": sha256 }
                     ]
                 }
             ]
@@ -8430,12 +8824,19 @@ materialization = "lazy"
     }
 
     #[test]
-    fn coresident_table_is_exactly_the_image_writer() {
-        assert_eq!(CORESIDENT_SIDE_MODULES.len(), 1);
+    fn coresident_table_has_the_image_writer_and_isolated_program_policy() {
+        assert_eq!(CORESIDENT_SIDE_MODULES.len(), 2);
+        let policy = CORESIDENT_SIDE_MODULES.iter().find(|module| module.node_name == "kandelo-program-policy").unwrap();
+        assert_eq!(policy.script, "crates/program-policy/build-wasm.sh");
+        assert_eq!(policy.closure_crates, &["kandelo-program-policy"]);
+        assert_eq!(policy.artifacts, &[("kandelo_program_policy32.wasm", "wasm32", true)]);
         let module = image_module();
         assert_eq!(module.script, "crates/kandelo-image-module/build-wasm.sh");
         assert_eq!(module.closure_crates, &["kandelo-image-module", "runtime-core"]);
-        assert_eq!(module.artifacts, &[(IMAGE_MODULE_ARTIFACT, "wasm32", true)]);
+        assert_eq!(module.artifacts, &[
+            (IMAGE_MODULE_ARTIFACT, "wasm32", true),
+            (POSITIONED_IMAGE_MODULE_ARTIFACT, "wasm32", true),
+        ]);
     }
 
     #[test]
@@ -8445,6 +8846,7 @@ materialization = "lazy"
         fs::create_dir_all(&output_root).unwrap();
         let bytes = b"image-module-bytes-fresh";
         fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), bytes).unwrap();
+        fs::write(output_root.join(POSITIONED_IMAGE_MODULE_ARTIFACT), bytes).unwrap();
         let manifest =
             image_module_manifest("deadbeef", bytes.len() as u64, &sha256_bytes(bytes));
         check_projected_side_module_freshness(
@@ -8465,6 +8867,7 @@ materialization = "lazy"
         fs::create_dir_all(&output_root).unwrap();
         let bytes = b"image-module-bytes";
         fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), bytes).unwrap();
+        fs::write(output_root.join(POSITIONED_IMAGE_MODULE_ARTIFACT), bytes).unwrap();
         let manifest =
             image_module_manifest("oldclosurekey", bytes.len() as u64, &sha256_bytes(bytes));
         let err = check_projected_side_module_freshness(
@@ -8490,6 +8893,7 @@ materialization = "lazy"
         fs::create_dir_all(&output_root).unwrap();
         let staged = b"the-actually-staged-newer-bytes";
         fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), staged).unwrap();
+        fs::write(output_root.join(POSITIONED_IMAGE_MODULE_ARTIFACT), staged).unwrap();
         let manifest =
             image_module_manifest("matchingkey", 999, &sha256_bytes(b"older-manifest-bytes"));
         let err = check_projected_side_module_freshness(
@@ -8574,12 +8978,20 @@ materialization = "lazy"
         let recorded = |module: &CoresidentSideModule| Ok(format!("{}-recorded", module.node_name));
 
         let bytes = b"image-module-bytes".to_vec();
-        fs::write(repo.join("local-binaries").join(IMAGE_MODULE_ARTIFACT), &bytes).unwrap();
+        for module in CORESIDENT_SIDE_MODULES {
+            for (name, _, _) in module.artifacts {
+                fs::write(repo.join("local-binaries").join(name), &bytes).unwrap();
+            }
+        }
         assert!(
             !coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
             "a module missing from the tier is not current",
         );
-        fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), &bytes).unwrap();
+        for module in CORESIDENT_SIDE_MODULES {
+            for (name, _, _) in module.artifacts {
+                fs::write(output_root.join(name), &bytes).unwrap();
+            }
+        }
         assert!(
             !coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
             "equal bytes without a manifest are not current",
@@ -8595,20 +9007,30 @@ materialization = "lazy"
             "a manifest that does not record the module is not current",
         );
 
-        fs::write(
-            &manifest_path,
-            serde_json::to_vec(&image_module_manifest(
-                &format!("{KANDELO_IMAGE_MODULE_NODE_NAME}-recorded"),
-                bytes.len() as u64,
-                &sha256_bytes(&bytes),
-            ))
-            .unwrap(),
-        )
-        .unwrap();
+        let nodes: Vec<_> = CORESIDENT_SIDE_MODULES.iter().map(|module| {
+            let members: Vec<_> = module.artifacts.iter().map(|(name, _, _)| serde_json::json!({
+                "sourceArtifact": name, "mirrorPath": name, "mode": 420,
+                "size": bytes.len(), "sha256": sha256_bytes(&bytes),
+            })).collect();
+            serde_json::json!({
+                "node": { "kind": "package", "name": module.node_name, "targetArch": "wasm32" },
+                "manifestSha256": "00", "cacheKeySha256": format!("{}-recorded", module.node_name),
+                "cacheReceiptSha256": "00", "members": members,
+            })
+        }).collect();
+        fs::write(&manifest_path, serde_json::to_vec(&serde_json::json!({ "nodes": nodes })).unwrap()).unwrap();
         assert!(
             coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
             "bytes and manifest both current",
         );
+        let policy = CORESIDENT_SIDE_MODULES.iter().find(|module| module.node_name == "kandelo-program-policy").unwrap();
+        let policy_path = output_root.join(policy.artifacts[0].0);
+        fs::remove_file(&policy_path).unwrap();
+        assert!(
+            !coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
+            "the required inspection module cannot be omitted",
+        );
+        fs::write(policy_path, &bytes).unwrap();
         let rebuilt = |_module: &CoresidentSideModule| Ok(String::from("rebuilt"));
         assert!(
             !coresident_side_module_projection_is_current_with(&output_root, repo, rebuilt),
@@ -8642,6 +9064,28 @@ materialization = "lazy"
             node.cache_receipt_sha256, second[0].cache_receipt_sha256,
             "the receipt must bind the projected member content",
         );
+    }
+
+    #[test]
+    fn coresident_node_groups_both_image_writers_under_one_architecture() {
+        let members = [IMAGE_MODULE_ARTIFACT, POSITIONED_IMAGE_MODULE_ARTIFACT]
+            .into_iter()
+            .map(|name| MaterializedProgramMemberV1 {
+                source_artifact: name.to_string(),
+                mirror_path: name.to_string(),
+                mode: 0o644,
+                size: 3,
+                sha256: "1".repeat(64),
+            })
+            .collect();
+        let projection = CoresidentSideModuleProjection {
+            closure_sha: "k".repeat(64),
+            members,
+        };
+        let nodes = coresident_side_module_nodes(image_module(), &projection);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node.target_arch, "wasm32");
+        assert_eq!(nodes[0].members, projection.members);
     }
 
     /// A package whose build LOADS a co-resident module must key on that
@@ -8801,6 +9245,27 @@ materialization = "lazy"
             abi_sources_changed_since_snapshot(repo.path()).unwrap(),
             "a source newer than the snapshot must open the gate"
         );
+    }
+
+    #[test]
+    fn abi_sources_changed_since_snapshot_watches_the_program_abi_crate() {
+        // ABI_VERSION and the program artifact declarations live in
+        // crates/program-abi; an edit there alone must still open the gate.
+        let repo = tempfile::TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+        let hour_ago = now - std::time::Duration::from_secs(3600);
+
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "{}").unwrap();
+        set_mtime(&snapshot, hour_ago);
+
+        let program_abi_src = repo.path().join("crates/program-abi/src/lib.rs");
+        fs::create_dir_all(program_abi_src.parent().unwrap()).unwrap();
+        fs::write(&program_abi_src, "// program ABI, edited after the snapshot").unwrap();
+        set_mtime(&program_abi_src, now);
+
+        assert!(abi_sources_changed_since_snapshot(repo.path()).unwrap());
     }
 
     /// A directory-walk error inside an EXISTING source directory (as
@@ -9176,6 +9641,7 @@ materialization = "lazy"
                         mirror_path: "app.wasm".to_string(),
                         output_name: Some("app".to_string()),
                         fork_instrumentation: Some("auto".to_string()),
+                        original_wasm: None,
                         guest_path: None,
                         mode: None,
                     }],
@@ -9307,6 +9773,42 @@ materialization = "lazy"
         );
         assert_eq!(bytes.last(), Some(&b'\n'));
         assert!(bytes.starts_with(b"{\n  \"format\""));
+
+        let mut original_projection = authority.projection.clone();
+        original_projection.packages.get_mut("app").unwrap().members[0].original_wasm = Some("originals/app.wasm".into());
+        let mut original_receipt = receipt.clone();
+        let original = MaterializedProgramMemberV1 {
+            source_artifact: "originals/app.wasm".into(),
+            mirror_path: format!("programs/wasm32/.originals/app/{}/originals/app.wasm", original_receipt.cache_key_sha256),
+            mode: 0o444,
+            size: 8,
+            sha256: "ef".repeat(32),
+        };
+        original_receipt.materialized_members.push(original);
+        original_receipt.materialized_members.sort_by(|left, right| (&left.mirror_path, &left.source_artifact).cmp(&(&right.mirror_path, &right.source_artifact)));
+        let app_node = PlanNodeV1::package("app", "wasm32");
+        let mut original_receipts = receipts.clone();
+        original_receipts.insert(app_node.clone(), original_receipt.clone());
+        let with_original = source_only_program_projection_candidate(original_projection.clone(), &"66".repeat(32),
+            &original_receipts, &BTreeSet::from([kernel_node.clone()])).unwrap();
+        let original_json: serde_json::Value = serde_json::from_slice(&source_only_program_projection_bytes(&with_original).unwrap()).unwrap();
+        assert_eq!(original_json["projection"]["packages"]["app"]["members"][0]["originalWasm"], "originals/app.wasm");
+        for mutation in ["mode", "path", "artifact", "extra"] {
+            let mut changed = original_receipt.clone();
+            let companion = changed.materialized_members.iter_mut().find(|member| member.source_artifact == "originals/app.wasm").unwrap();
+            match mutation {
+                "mode" => companion.mode = 0o555,
+                "path" => companion.mirror_path = companion.mirror_path.replace("22".repeat(32).as_str(), &"ff".repeat(32)),
+                "artifact" => companion.source_artifact = "other.wasm".into(),
+                "extra" => { let extra = companion.clone(); changed.materialized_members.push(extra); }
+                _ => unreachable!(),
+            }
+            changed.materialized_members.sort_by(|left, right| (&left.mirror_path, &left.source_artifact).cmp(&(&right.mirror_path, &right.source_artifact)));
+            let mut changed_receipts = original_receipts.clone();
+            changed_receipts.insert(app_node.clone(), changed);
+            assert!(source_only_program_projection_candidate(original_projection.clone(), &"66".repeat(32),
+                &changed_receipts, &BTreeSet::from([kernel_node.clone()])).is_err(), "{mutation}");
+        }
 
         let rogue_node = PlanNodeV1::package("rogue", "wasm32");
         let error = source_only_program_projection_candidate(

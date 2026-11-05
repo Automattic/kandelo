@@ -33,6 +33,13 @@
 /usr/bin         d  0755  0  0
 /usr/share       d  0755  0  0
 /usr/share/misc  d  0755  0  0
+/usr/libexec     d  0755  0  0
+/usr/libexec/kandelo  d  0755  0  0
+/usr/share/kandelo    d  0755  0  0
+# Kandelo exchange vendor rules (root only) and the image's rules, owned by
+# the handler account named in /etc/kandelo/exchange.conf (maker:exchange).
+/usr/share/kandelo/exchange-handlers.d  d  0755  0  0
+/etc/kandelo/exchange-handlers.d        d  0755  1000  120
 /etc/ssl         d  0755  0  0
 /etc/ssl/certs   d  0755  0  0
 # xkbcommon's default include root. xkb_context_new(NO_FLAGS) fails hard
@@ -63,6 +70,8 @@
 /etc/motd.autologin f 0644  0  0
 /etc/sudoers       f  0440  0  0
 /etc/kandelo/experimental-terminal-session.json f 0644 0 0
+/etc/kandelo/exchange.conf f 0644 0 0
+/usr/share/kandelo/exchange-handlers.d/99-save.handler f 0644 0 0
 # The rootfs file is the authoritative services database. Rootfs-derived
 # images inherit it rather than rebuilding or synthesizing a second table.
 /etc/services      f  0644  0  0

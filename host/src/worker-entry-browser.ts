@@ -1,6 +1,8 @@
 import { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-main";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage } from "./worker-protocol";
 import { runWithProcessWorkerQuiescence } from "./worker-quiescence";
+import { isJavaScriptCoreUserAgent } from "./runtime-memory-profile";
+import { retainWasmInstancesUntilWorkerEnds } from "./wasm-instance-retention";
 
 // Web Worker global scope
 const sw = globalThis as unknown as {
@@ -8,6 +10,15 @@ const sw = globalThis as unknown as {
   postMessage(msg: unknown, transfer?: Transferable[]): void;
   close(): void;
 };
+
+// [RUNTIME-WORKAROUND: JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN]
+// JavaScriptCore crashes when a sibling grows process memory while an
+// instance importing it is destroyed. There, instances live until their
+// Worker ends, and an exited thread's Worker stays open (idle) until the
+// kernel terminates it with its process. The kernel worker makes the same
+// decision from the same user agent.
+const instancesOutliveThreads = isJavaScriptCoreUserAgent(navigator.userAgent);
+if (instancesOutliveThreads) retainWasmInstancesUntilWorkerEnds();
 
 // Process exit is cooperative through the existing syscall channel: the kernel
 // completes the exit syscall, worker-main returns, and this entry publishes an
@@ -41,7 +52,7 @@ sw.onmessage = (e: MessageEvent) => {
   } else if (data.type === "centralized_thread_init") {
     const init = e.data as CentralizedThreadInitMessage;
     void runWithProcessWorkerQuiescence(
-      port,
+      instancesOutliveThreads ? { ...port, close: () => {} } : port,
       { pid: init.pid, tid: init.tid },
       () => centralizedThreadWorkerMain(port, init),
       (error) =>

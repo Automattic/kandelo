@@ -1,0 +1,23 @@
+Freeciv's Meson build probes rl_completion_suppress_append as a function.
+GNU readline declares it as an int. Native linkers tolerate that probe,
+but WebAssembly's typed symbols reject a function reference to data.
+Use the real declaration and a link probe that reads the variable.
+This is an upstream build portability fix, not an unsupported API override.
+
+--- a/meson.build
++++ b/meson.build
+@@ -564,8 +564,12 @@
+   readline_dep = c_compiler.find_library('readline', dirs: cross_lib_path,
+                                          required:false)
+ 
+-  if readline_dep.found() and c_compiler.has_function('rl_completion_suppress_append',
+-                                                      dependencies: readline_dep,
++  if readline_dep.found() and c_compiler.links('''
++#include <stdio.h>
++#include <readline/readline.h>
++int main(void) { return rl_completion_suppress_append; }
++''', name: 'readline completion variable',
++                                                      dependencies: readline_dep,
+                                                       args: ['-O'])
+     pub_conf_data.set('FREECIV_HAVE_LIBREADLINE', 1)
+   elif rl_req == 'true'

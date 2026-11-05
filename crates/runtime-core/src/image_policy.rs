@@ -468,10 +468,14 @@ mod tests {
     use super::*;
     use crate::kandelo_image_fs::unwrap_vfsi;
 
-    const TINY_VFS: &[u8] = include_bytes!("testdata/tiny.vfs");
+    /// A small `/` image built at test time by the Rust image writer; see
+    /// `crate::test_fixtures::tiny_vfs` for its tree.
+    fn tiny_vfs() -> &'static [u8] {
+        crate::test_fixtures::tiny_vfs()
+    }
 
     fn mount() -> KandeloImageFs<Vec<u8>> {
-        KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).expect("unwrap").to_vec()).expect("mount")
+        KandeloImageFs::mount(unwrap_vfsi(tiny_vfs()).expect("unwrap").to_vec()).expect("mount")
     }
 
     #[test]

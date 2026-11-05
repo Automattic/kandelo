@@ -1,12 +1,22 @@
+import type {
+  ExchangeNotificationsMessage,
+  ExchangeRangeMessage,
+  ExchangeRangeRequestMessage,
+  ExchangeRequestMessage,
+} from "./exchange-host";
+import type { RemoteSegmentInit } from "./networking/remote-segment-port";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
+import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
+import type { OpfsFileReference } from "./vfs/opfs-file-reference";
+import type { StagedRootfsImageProgress } from "./vfs/staged-rootfs-image";
 export type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
-  GetSpawnScratchCapacityRequestMessage,
   EnumProcsRequestMessage,
   ReadProcMapsRequestMessage,
   SetSyscallTraceMessage,
@@ -38,14 +48,20 @@ export type {
   WakeBlockedWritersMessage,
   HttpRequestMessage,
   WriteVfsFileMessage,
+  ReadVfsFileRangeMessage,
   ProcEventMessage,
+  AttachRemotePeerMessage,
+  RemoteNetworkSnapshotMessage,
+  RemoteNetworkHostMessage,
+  RemoteNetworkJoinMessage,
+  RemoteNetworkLeaveMessage,
 } from "./kernel-protocol-shared";
 import type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
-  GetSpawnScratchCapacityRequestMessage,
   EnumProcsRequestMessage,
   ReadProcMapsRequestMessage,
   SetSyscallTraceMessage,
@@ -77,7 +93,13 @@ import type {
   WakeBlockedWritersMessage,
   HttpRequestMessage,
   WriteVfsFileMessage,
+  ReadVfsFileRangeMessage,
   ProcEventMessage,
+  AttachRemotePeerMessage,
+  RemoteNetworkSnapshotMessage,
+  RemoteNetworkHostMessage,
+  RemoteNetworkJoinMessage,
+  RemoteNetworkLeaveMessage,
 } from "./kernel-protocol-shared";
 
 /**
@@ -90,7 +112,6 @@ import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
-import type { PcmTransportDescriptor } from "./audio/pcm-transport";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { InputEvent } from "./input/input-source";
 import {
@@ -142,6 +163,8 @@ export function initializeBrowserCorsProxyForWorker<TLazyFetcher, TTlsBackend>(
 
 export interface InitMessage {
   type: "init";
+  /** Native port ownership passes to this kernel worker during init. */
+  remoteNetwork?: RemoteSegmentInit;
   kernelWasmBytes: ArrayBuffer;
   /**
    * Decoded VFS image bytes (a `KandeloImageFs.saveImage()` result, or a
@@ -152,6 +175,13 @@ export interface InitMessage {
    * them into the image.
    */
   vfsImage: Uint8Array;
+  /** Positioned OPFS source in place of `vfsImage`; opened by the kernel worker. */
+  opfsImage?: OpfsFileReference;
+  opfsImageIntegrity?: OpfsImageIntegrity;
+  rootfsPersistentImageBinding?: import("./vfs/image-integrity").PersistentImageReadBinding;
+  experimentalFixedPersistenceName?: string;
+  experimentalResizablePersistenceName?: string;
+  requireExistingRootfsPersistence?: boolean;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
@@ -166,9 +196,19 @@ export interface InitMessage {
    * transport policy, so it travels as data. A table rather than a resolver,
    * because the deployment knows every asset it serves without asking the
    * image what it contains. An address the table does not carry is resolved
-   * against `lazyUrlBase`, or fetched as written.
+   * through `lazyAssetDirectory`, then against `lazyUrlBase`, or fetched as
+   * written.
    */
   lazyUrlMap?: Readonly<Record<string, string>>;
+  /**
+   * Where this deployment serves package members (an absolute URL ending in
+   * `/`): an asset group's directory, or the dev server's lazy-asset route.
+   * Every address in the image-owned grammar (`binaries/programs/...` or
+   * `kandelo-lazy:programs/...`, each naming its package-mirror path)
+   * resolves to its member path under it, so the deployment needs no table listing what the
+   * image carries. The image itself records each body's size and SHA-256.
+   */
+  lazyAssetDirectory?: string;
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
   closedLazyAssets?: ClosedLazyAsset[];
   workerEntryUrl: string;
@@ -178,6 +218,8 @@ export interface InitMessage {
     maxMemoryPages: number;
     /** Ceiling for the kernel's own wasm address space, in 64 KiB pages. */
     kernelMaxPages: number;
+    rootfsMetadataBytes?: number;
+    maxVfsFileReadBytes?: number;
     /** Identifier of the runtime memory profile these budgets came from. */
     memoryProfileId: string;
     /**
@@ -187,6 +229,9 @@ export interface InitMessage {
     maxProcessMemoryBytes: number;
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;
+    /** Bytes Kandelo exchange's `work/` and `outbox/` may hold. */
+    exchangeByteLimit?: number;
+    exchangeActivation?: "on-demand" | "off";
     env: string[];
     /** Forwarded to KernelConfig.enableSyscallLog — log every syscall. */
     enableSyscallLog?: boolean;
@@ -347,9 +392,9 @@ export interface AudioDrainMessage {
 }
 
 /**
- * Confirms that BrowserKernel dropped its own structured-clone Memory wrapper
+ * Confirms that BrowserKernel dropped its own generation-specific pixel buffer
  * and framebuffer-registry views for one exact execution generation. Callers
- * can retain a wrapper returned by getProcessMemory(), so this is not a
+ * can retain a display buffer, so this is not a
  * JavaScript-realm-wide garbage-collection claim.
  */
 export interface FbReleaseGenerationAckMessage {
@@ -394,17 +439,39 @@ export interface ClipboardGuestWaitMessage {
   timeoutMs?: number;
 }
 
+export interface ExportRootfsImageToFileMessage {
+  type: "export_rootfs_image_to_file";
+  requestId: number;
+  file: OpfsFileReference;
+  reportProgress?: boolean;
+}
+
+export interface RootfsImageExportProgressMessage {
+  type: "rootfs_image_export_progress";
+  requestId: number;
+  progress: StagedRootfsImageProgress;
+}
+
 export type MainToKernelMessage =
   | InitMessage
+  | ExchangeRequestMessage
+  | ExchangeRangeMessage
+  | AttachRemotePeerMessage
+  | RemoteNetworkSnapshotMessage
+  | RemoteNetworkHostMessage
+  | RemoteNetworkJoinMessage
+  | RemoteNetworkLeaveMessage
   | OwnedJobMessage
   | SpawnMessage
   | TerminateProcessMessage
   | ReadVfsFileMessage
+  | ReadVfsFileRangeMessage
   | ReadVfsDirMessage
   | StatVfsPathMessage
   | WriteVfsFileMessage
   | UnlinkVfsFileMessage
   | ExportRootfsImageMessage
+  | ExportRootfsImageToFileMessage
   | ClipboardOfferMessage
   | ClipboardGuestWaitMessage
   | AppendStdinDataMessage
@@ -426,13 +493,15 @@ export type MainToKernelMessage =
   | RegisterPtyOutputMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetStorageMetadataMemoryUsageRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
-  | GetSpawnScratchCapacityRequestMessage
   | MouseInjectMessage
   | InputEventInjectMessage
   | InputEventBatchInjectMessage
   | SetInputCanvasDimsMessage
   | AudioDrainMessage
+  | { type: "pcm_output_failed" }
+  | { type: "audio_snapshot"; requestId: number }
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
@@ -448,8 +517,8 @@ export type MainToKernelMessage =
 
 export interface ReadyMessage {
   type: "ready";
-  /** Versioned PCM-only shared transport claimed by the kernel worker. */
-  pcmTransport?: PcmTransportDescriptor;
+  /** Forward directly to the AudioWorklet; never decode kernel memory here. */
+  pcmPort?: MessagePort;
 }
 
 export interface ExitMessage {
@@ -467,15 +536,7 @@ export interface ListenTcpMessage {
   port: number;
 }
 
-/**
- * Forwarded /dev/fb0 binding. Fired when a process mmaps the
- * framebuffer; the main thread builds a typed-array view over
- * `memory.buffer` at `[addr, addr+len)` and presents it on a canvas.
- *
- * `memory` is the process's WebAssembly.Memory — a SharedArrayBuffer
- * shared with the kernel worker. Sending the Memory across postMessage
- * is fine; both threads see the same SAB.
- */
+/** Display pixels only; guest address spaces stay in disposable Workers. */
 export interface FbBindMessage {
   type: "fb_bind";
   pid: number;
@@ -487,7 +548,7 @@ export interface FbBindMessage {
   h: number;
   stride: number;
   fmt: "BGRA32";
-  memory: WebAssembly.Memory;
+  pixels?: SharedArrayBuffer;
 }
 
 export interface FbUnbindMessage {
@@ -495,19 +556,6 @@ export interface FbUnbindMessage {
   pid: number;
   /** The exact execution generation whose binding was removed. */
   generation: number;
-}
-
-/**
- * Fired when a process's WebAssembly.Memory is replaced (memory.grow,
- * exec). The main-thread renderer must invalidate any cached view; the
- * `memory` reference is the new (post-grow) Memory.
- */
-export interface FbRebindMemoryMessage {
-  type: "fb_rebind_memory";
-  pid: number;
-  /** The exact execution generation whose Memory grew. */
-  generation: number;
-  memory: WebAssembly.Memory;
 }
 
 /**
@@ -528,7 +576,7 @@ export interface FbWriteMessage {
 
 /**
  * A process-generation teardown fence. The main thread first drops its
- * structured-clone Memory wrapper and cached framebuffer views, then replies
+ * generation-specific pixel buffer and cached display views, then replies
  * with FbReleaseGenerationAckMessage. The kernel worker does not classify a
  * framebuffer-exposed generation as exactly retired before this round trip.
  */
@@ -590,6 +638,9 @@ export interface VfsChangeMessage {
 
 export type KernelToMainMessage =
   | ReadyMessage
+  | ExchangeRangeRequestMessage
+  | ExchangeNotificationsMessage
+  | { type: "audio_activity" }
   | InitErrorMessage
   | KernelFatalMessage
   | ResponseMessage
@@ -601,7 +652,6 @@ export type KernelToMainMessage =
   | ListenTcpMessage
   | FbBindMessage
   | FbUnbindMessage
-  | FbRebindMemoryMessage
   | FbWriteMessage
   | FbReleaseGenerationMessage
   | FbForgetGenerationMessage
@@ -609,6 +659,7 @@ export type KernelToMainMessage =
   | HttpBridgePendingMessage
   | LazyDownloadMessage
   | DestroyProgressMessage
+  | RootfsImageExportProgressMessage
   | VfsChangeMessage;
 
 export interface WatchVfsChangesMessage {

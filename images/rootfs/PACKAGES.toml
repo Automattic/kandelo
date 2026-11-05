@@ -267,8 +267,10 @@ aliases = ["/bin/file"]
 [[packages.outputs]]
 binary = "programs/wasm32/file/file-magic.lite"
 source_artifact = "magic.lite"
-path = "/usr/share/misc/magic.mgc"
-install = "eager"
+# Text databases use libmagic's base path; .mgc is reserved for compiled data.
+path = "/usr/share/misc/magic"
+# The file executable and its database both fetch on first use.
+install = "lazy"
 mode = "0644"
 
 [[packages]]
@@ -278,6 +280,23 @@ name = "m4"
 binary = "programs/wasm32/m4.wasm"
 path = "/usr/bin/m4"
 aliases = ["/bin/m4"]
+
+[[packages]]
+name = "byacc"
+
+[[packages.outputs]]
+binary = "programs/wasm32/yacc.wasm"
+path = "/usr/bin/yacc"
+aliases = ["/bin/yacc"]
+
+# flex is the POSIX lex. It runs /usr/bin/m4 (above) to write each scanner.
+[[packages]]
+name = "flex"
+
+[[packages.outputs]]
+binary = "programs/wasm32/flex.wasm"
+path = "/usr/bin/flex"
+aliases = ["/bin/flex", "/usr/bin/lex", "/bin/lex"]
 
 [[packages]]
 name = "make"
@@ -407,11 +426,6 @@ path = "/usr/bin/ipcs"
 aliases = ["/bin/ipcs"]
 
 [[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/lex.wasm"
-path = "/usr/bin/lex"
-aliases = ["/bin/lex"]
-
-[[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/locale.wasm"
 path = "/usr/bin/locale"
 aliases = ["/bin/locale"]
@@ -506,7 +520,36 @@ binary = "programs/wasm32/posix-utils-lite/xgettext.wasm"
 path = "/usr/bin/xgettext"
 aliases = ["/bin/xgettext"]
 
+# Kandelo exchange: the agent the kernel starts on demand, its helpers, and
+# the catch-all `99-save` handler (see docs/architecture.md).
+[[packages]]
+name = "kandelo-exchange"
+
 [[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/yacc.wasm"
-path = "/usr/bin/yacc"
-aliases = ["/bin/yacc"]
+binary = "programs/wasm32/kandelo-exchange/kxchgd.wasm"
+path = "/usr/libexec/kandelo/exchange-agent"
+
+[[packages.outputs]]
+binary = "programs/wasm32/kandelo-exchange/kandelo-exchange.wasm"
+path = "/usr/bin/kandelo-exchange"
+
+[[packages.outputs]]
+binary = "programs/wasm32/kandelo-exchange/kandelo-publish.wasm"
+path = "/usr/bin/kandelo-publish"
+
+[[packages.outputs]]
+binary = "programs/wasm32/kandelo-exchange/exchange-save.wasm"
+path = "/usr/libexec/kandelo/exchange-save"
+
+# getfattr and setfattr, for shell handlers that read or set exchange
+# attributes (MIME types, provenance, batch status).
+[[packages]]
+name = "attr"
+
+[[packages.outputs]]
+binary = "programs/wasm32/attr/getfattr.wasm"
+path = "/usr/bin/getfattr"
+
+[[packages.outputs]]
+binary = "programs/wasm32/attr/setfattr.wasm"
+path = "/usr/bin/setfattr"

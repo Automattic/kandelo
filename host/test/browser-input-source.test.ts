@@ -136,6 +136,8 @@ describe("BrowserInputSource", () => {
   });
 
   it("repeat keydown emits value=2 (Linux autorepeat convention)", () => {
+    target.fire("keydown", { code: "Space", repeat: false, preventDefault() {} });
+    recorded = [];
     target.fire("keydown", {
       code: "Space",
       repeat: true,
@@ -330,11 +332,45 @@ describe("BrowserInputSource", () => {
   });
 
   it("pointerup emits BTN_LEFT release", () => {
+    target.fire("pointerdown", { button: 0 });
+    recorded.length = 0;
     target.fire("pointerup", { button: 0 });
     expect(recorded).toEqual([
       { device: 1, ev_type: 0x01, code: 0x110, value: 0 },
       { device: 1, ev_type: 0x00, code: 0, value: 0 },
     ]);
+  });
+
+  it("preserves overlapping button changes reported as pointermove", () => {
+    target.fire("pointerdown", { button: 0, buttons: 1 });
+    target.fire("pointermove", { button: 2, buttons: 3, clientX: 10, clientY: 10 });
+    target.fire("pointermove", { button: 0, buttons: 2, clientX: 10, clientY: 10 });
+    target.fire("pointerup", { button: 2, buttons: 0 });
+    expect(recorded.filter(e => e.ev_type === 1).map(e => [e.code, e.value]))
+      .toEqual([[0x110, 1], [0x111, 1], [0x110, 0], [0x111, 0]]);
+  });
+
+  it("uses motion snapshots to recover a missed release", () => {
+    target.fire("pointerdown", { button: 0, buttons: 1 });
+    target.fire("pointermove", { button: -1, buttons: 0, clientX: 10, clientY: 10 });
+    target.fire("pointerdown", { button: 0, buttons: 1 });
+    target.fire("pointerup", { button: 0, buttons: 0 });
+    expect(recorded.filter(e => e.ev_type === 1).map(e => [e.code, e.value]))
+      .toEqual([[0x110, 1], [0x110, 0], [0x110, 1], [0x110, 0]]);
+  });
+
+  it("keeps supported clicks working while an unsupported side button is held", () => {
+    target.fire("pointerdown", { button: 3, buttons: 8 });
+    target.fire("pointermove", { button: 0, buttons: 9, clientX: 10, clientY: 10 });
+    target.fire("pointermove", { button: 0, buttons: 8, clientX: 10, clientY: 10 });
+    target.fire("pointerup", { button: 3, buttons: 0 });
+    expect(recorded.filter(e => e.ev_type === 1).map(e => [e.code, e.value]))
+      .toEqual([[0x110, 1], [0x110, 0]]);
+  });
+
+  it("does not invent presses when a held button moves into the surface", () => {
+    target.fire("pointermove", { button: -1, buttons: 1, clientX: 10, clientY: 10 });
+    expect(recorded.filter(e => e.ev_type === 1)).toEqual([]);
   });
 
   it("pointerdown for unknown button (e.g. side button) drops the event", () => {
@@ -410,6 +446,91 @@ describe("BrowserInputSource", () => {
     doc.fire("pointerlockchange", {});
     expect(recorded).toEqual([
       { device: 1, ev_type: 0x00, code: 0, value: 0 },
+    ]);
+  });
+
+  it("releases held keys and modifiers when the capture surface loses focus", () => {
+    target.fire("keydown", { code: "ShiftLeft", key: "Shift", preventDefault() {} });
+    target.fire("keydown", { code: "ArrowUp", key: "ArrowUp", shiftKey: true, preventDefault() {} });
+    recorded = [];
+    target.fire("blur", {});
+    expect(recorded).toEqual([
+      { device: 0, ev_type: 1, code: 103, value: 0 },
+      { device: 0, ev_type: 1, code: 42, value: 0 },
+      { device: 0, ev_type: 0, code: 0, value: 0 },
+    ]);
+    recorded = [];
+    target.fire("blur", {});
+    expect(recorded).toEqual([]);
+  });
+
+  it("treats a repeat after blur as a new guest press", () => {
+    target.fire("keydown", { code: "ArrowUp", preventDefault() {} });
+    target.fire("blur", {});
+    recorded = [];
+    target.fire("keydown", { code: "ArrowUp", repeat: true, preventDefault() {} });
+    expect(recorded).toEqual([
+      { device: 0, ev_type: 1, code: 103, value: 1 },
+      { device: 0, ev_type: 0, code: 0, value: 0 },
+    ]);
+  });
+
+  it("delivers a held key's release even after focus leaves the capture gate", () => {
+    src.stop();
+    let capture = true;
+    src = new BrowserInputSource(target, { shouldCapture: () => capture });
+    src.start(ev => recorded.push(ev));
+    target.fire("keydown", { code: "KeyZ", key: "w", preventDefault() {} });
+    capture = false;
+    recorded = [];
+    target.fire("keyup", { code: "KeyZ", key: "z", preventDefault() { throw new Error("outside capture"); } });
+    expect(recorded).toEqual([
+      { device: 0, ev_type: 1, code: 17, value: 0 },
+      { device: 0, ev_type: 0, code: 0, value: 0 },
+    ]);
+  });
+
+  it("preserves keypad identity with Num Lock on and off", () => {
+    for (const key of ["8", "ArrowUp"]) {
+      target.fire("keydown", { code: "Numpad8", key, preventDefault() {} });
+      target.fire("keyup", { code: "Numpad8", key, preventDefault() {} });
+    }
+    expect(recorded.filter(ev => ev.ev_type === 1)).toEqual([
+      { device: 0, ev_type: 1, code: 72, value: 1 },
+      { device: 0, ev_type: 1, code: 72, value: 0 },
+      { device: 0, ev_type: 1, code: 72, value: 1 },
+      { device: 0, ev_type: 1, code: 72, value: 0 },
+    ]);
+  });
+
+  it("reconciles modifiers before a display-owned pointer press", () => {
+    src.stop();
+    src = new BrowserInputSource(target, { pointer: false });
+    src.start(ev => recorded.push(ev));
+    target.fire("pointerdown", { button: 0, shiftKey: true, ctrlKey: false, altKey: false, metaKey: false });
+    expect(recorded).toEqual([
+      { device: 0, ev_type: 1, code: 42, value: 1 },
+      { device: 0, ev_type: 0, code: 0, value: 0 },
+    ]);
+  });
+
+  it("releases pointer buttons on cancellation without releasing held keyboard keys", () => {
+    target.fire("keydown", { code: "KeyA", preventDefault() {} });
+    target.fire("pointerdown", { button: 0 });
+    recorded = [];
+    target.fire("pointercancel", {});
+    expect(recorded).toEqual([
+      { device: 1, ev_type: 1, code: 272, value: 0 },
+      { device: 1, ev_type: 0, code: 0, value: 0 },
+    ]);
+    target.fire("pointerdown", { button: 2 });
+    recorded = [];
+    src.stop();
+    expect(recorded).toEqual([
+      { device: 0, ev_type: 1, code: 30, value: 0 },
+      { device: 0, ev_type: 0, code: 0, value: 0 },
+      { device: 1, ev_type: 1, code: 273, value: 0 },
+      { device: 1, ev_type: 0, code: 0, value: 0 },
     ]);
   });
 
@@ -563,6 +684,19 @@ describe("BrowserInputSource — paste gesture", () => {
   afterEach(() => {
     src.stop();
     vi.unstubAllGlobals();
+  });
+
+  it("drops queued paste keys on blur and releases only delivered presses", async () => {
+    key("keydown", { code: "ArrowUp", key: "ArrowUp" });
+    cmdV();
+    paste("pending text");
+    key("keydown", { code: "Enter", key: "Enter", metaKey: true });
+    target.fire("blur", {});
+    expect(keys()).toEqual([[103, 1], [KEY_LEFTMETA, 1], [103, 0], [KEY_LEFTMETA, 0]]);
+    const afterBlur = [...recorded];
+    answer({ ok: true, seq: 1 });
+    await nextTask();
+    expect(recorded).toEqual(afterBlur);
   });
 
   it("leaves a chord the browser does not paste to the guest as keys", async () => {

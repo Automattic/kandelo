@@ -3,7 +3,9 @@ daemon:x:1:
 nogroup:x:65534:
 nobody:x:65534:
 www-data:x:33:
+games:x:60:
 redis:x:100:
 mysql:x:101:
 wheel:x:10:maker
+exchange:x:120:maker
 maker:x:1000:

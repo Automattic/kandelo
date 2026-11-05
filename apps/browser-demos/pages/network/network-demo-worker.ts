@@ -15,7 +15,7 @@ import type { WorkerHandle } from "@host/worker-adapter";
 import kernelWasmUrl from "@kernel-wasm?url";
 import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "@host/worker-entry-browser.ts?worker&url";
-import ncWasmUrl from "@binaries/programs/wasm32/nc.wasm?url";
+import ncWasmUrl from "@binaries/programs/wasm32/netcat/nc.wasm?url";
 import curlWasmUrl from "@binaries/programs/wasm32/curl.wasm?url";
 import {
   createPagesVfsProductLoader,
@@ -246,7 +246,7 @@ async function runProgram(
   const rootfsImage = maybeDecompressImage(artifacts.rootfs);
   configureRootfsOverlayFromImage(kernelWorker, {
     imageRead: imageReadFromContainer(rootfsImage),
-    imageBytes: rootfsImage,
+    imageLength: rootfsImage.byteLength,
     foreignPrefixes: [],
     nosuid: false,
     lazyFetcher: (url) => fetch(url),
@@ -460,7 +460,7 @@ async function runAll(): Promise<void> {
   try {
     const artifacts = await loadArtifacts();
     post({ type: "status", status: "running" });
-    const network = new LocalVirtualNetwork();
+    const network = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     log("runner", "system", "Virtual addresses: alpha=10.88.0.2 beta=10.88.0.3 gamma=10.88.0.4\n");
     const outcomes = [
       await runUdp(network, artifacts),

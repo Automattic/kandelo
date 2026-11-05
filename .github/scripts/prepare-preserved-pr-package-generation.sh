@@ -85,7 +85,7 @@ if [[ "$SOURCE_TAG" =~ ^binaries-abi-v ]] &&
   exit 1
 fi
 grep -Fxq "pub const ABI_VERSION: u32 = $EXPECTED_ABI;" \
-  "$PACKAGE_SOURCE_ROOT/crates/shared/src/lib.rs" || {
+  "$PACKAGE_SOURCE_ROOT/crates/program-abi/src/lib.rs" || {
   echo "prepare-preserved-pr-package-generation: package-source checkout does not declare the selected ABI" \
     >&2
   exit 1

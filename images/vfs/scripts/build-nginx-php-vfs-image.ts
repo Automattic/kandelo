@@ -1,3 +1,4 @@
+import { installImageSessions } from "./image-session-files";
 /**
  * Build a fully-bootable VFS image for the nginx + PHP-FPM demo. The image
  * starts from shell.vfs.zst, then dinit, the first user process, brings up php-fpm on :9000
@@ -129,11 +130,10 @@ request_slowlog_trace_depth = 0
 // prewarmOpcache (see end of main()). See build-wp-vfs-image.ts for
 // the rationale. Timestamp revalidation stays enabled so files edited from
 // the demo terminal are reflected after a browser reload.
-const PHP_INI = `zend_extension=/usr/lib/php/extensions/opcache.so
-
-[opcache]
+const PHP_INI = `[opcache]
 opcache.enable=1
-opcache.enable_cli=1
+; Terminal commands run as maker; FPM owns the server cache.
+opcache.enable_cli=0
 opcache.file_cache=/var/cache/opcache
 opcache.file_cache_only=1
 opcache.validate_timestamps=1
@@ -351,7 +351,6 @@ export interface NginxPhpVfsImageBuildInputs {
   shellImage?: Uint8Array;
   nginx: Uint8Array;
   phpFpm: Uint8Array;
-  opcache: Uint8Array;
   /** Adminer's single-file PHP release, served as the demo landing page. */
   adminer: Uint8Array;
   dinit?: DinitBinaryInputs;
@@ -385,10 +384,6 @@ export async function buildNginxPhpVfsImage(
   writeVfsBinary(fs, "/usr/sbin/nginx", inputs.nginx);
   writeVfsBinary(fs, "/usr/sbin/php-fpm", inputs.phpFpm);
   ensureDirRecursive(fs, "/usr/lib/php/extensions");
-  writeVfsBinary(
-    fs, "/usr/lib/php/extensions/opcache.so",
-    inputs.opcache,
-  );
 
   // Config + content
   writeVfsFile(fs, "/etc/nginx/nginx.conf", NGINX_CONF);
@@ -428,6 +423,7 @@ export async function buildNginxPhpVfsImage(
   await prewarmOpcache(fs, {
     sourceRoots: ["/var/www"],
     label: "nginx-php",
+    cacheOwner: { uid: 65534, gid: 65534 }, // FPM's nobody account.
     programs: inputs.buildPrograms,
   });
 
@@ -452,6 +448,7 @@ export async function buildNginxPhpVfsImage(
   ], { binaries: inputs.dinit });
   writeTrackedDemoConfig(fs, "packages/registry/nginx/nginx-php-demo.json");
 
+  installImageSessions(fs, "nginx-php-vfs");
   await saveShellDerivedVfsImage(fs, inputs.outputPath);
 }
 
@@ -499,9 +496,6 @@ async function main(): Promise<void> {
     phpFpm: new Uint8Array(readFileSync(phpRoot === undefined
       ? resolveBinary("programs/php/php-fpm.wasm")
       : join(phpRoot, "php-fpm.wasm"))),
-    opcache: new Uint8Array(readFileSync(phpRoot === undefined
-      ? resolveBinary("programs/php/opcache.so")
-      : join(phpRoot, "opcache.so"))),
     dinit: dinitRoot === undefined
       ? undefined
       : {

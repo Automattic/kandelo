@@ -19,6 +19,8 @@ export type ForkMemoryOwnership = "copied" | "borrowed";
  * silent timeout and lose the exact ownership fence for that old generation.
  */
 export const EXEC_RETIRE_SIGNAL_CODE = 0x4b455852; // "KEXR"
+/** Host-only unwind after Rust already committed exit; never issue SYS_EXIT. */
+export const EXIT_RETIRE_SIGNAL_CODE = 0x4b455854; // "KEXT"
 
 export type HostToWorkerMessage =
   | CentralizedWorkerInitMessage
@@ -183,7 +185,6 @@ export type WorkerToHostMessage =
   | WorkerErrorMessage
   | ExecRequestMessage
   | ExecCompleteMessage
-  | AlarmSetMessage
   | VmInterruptTimerMessage
   | ForkHostImportWakeMessage;
 
@@ -241,12 +242,6 @@ export interface ExecRequestMessage {
 export interface ExecCompleteMessage {
   type: "exec_complete";
   pid: number;
-}
-
-export interface AlarmSetMessage {
-  type: "alarm_set";
-  pid: number;
-  seconds: number;
 }
 
 export interface VmInterruptTimerMessage {

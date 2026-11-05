@@ -2,7 +2,7 @@ kind = "program"
 name = "mariadb"
 version = "10.5.28"
 kernel_abi = 7
-depends_on = ["pcre2-source@10.44", "libcxx@21.1.7"]
+depends_on = ["pcre2-source@10.44", "ncurses-source@6.5", "libcxx@21.1.7"]
 # Opt into wasm64 — see memory/wasm64-build-policy.md.
 arches = ["wasm32", "wasm64"]
 
@@ -21,6 +21,10 @@ script_path = "packages/registry/mariadb/build-mariadb.sh"
 [[outputs]]
 name = "mariadbd"
 wasm = "mariadbd.wasm"
+
+[[outputs]]
+name = "mariadb"
+wasm = "mariadb.wasm"
 
 [[outputs]]
 name = "mysqltest"

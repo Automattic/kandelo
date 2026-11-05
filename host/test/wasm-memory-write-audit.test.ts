@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { nativeForkFixtureMemoryAllowances } from "./fixtures/native-fork-memory-authorities";
 import {
   auditWasmMemoryWrites,
   formatAuditFailures,
@@ -41,6 +42,92 @@ function auditVirtual(
 }
 
 describe("WebAssembly memory write audit", () => {
+  it("keeps native compiler-fixture authority classifications exact and single-site", () => {
+    const sourcePath = "scripts/check-fork-memory-artifact.ts";
+    const allowance = nativeForkFixtureMemoryAllowances.find((entry) =>
+      entry.key.startsWith(`${sourcePath}::<module>::wasm-memory-authority::`),
+    );
+    expect(allowance).toBeDefined();
+    const expression = allowance!.key.split("::wasm-memory-authority::")[1]!;
+    const source = `const memory = ${expression};`;
+    const options = (text: string) => ({
+      ...virtualAuditOptions({ [sourcePath]: text }, [], [allowance!]),
+      auditWasmAuthorityOrigins: true,
+    });
+    expect(formatAuditFailures(auditWasmMemoryWrites(options(source)))).toEqual([]);
+    for (const extra of [
+      source,
+      "const extra = new WebAssembly.Memory({ initial: 1 });",
+    ]) {
+      const result = auditWasmMemoryWrites(options(`${source}\n${extra}`));
+      expect(
+        result.violations.filter((finding) => finding.kind === "wasm-memory-authority"),
+      ).toHaveLength(1);
+      expect(result.unusedAllowances).toEqual([]);
+    }
+    const changed = auditWasmMemoryWrites(
+      options(source.replace("initial: 256", "initial: 257")),
+    );
+    expect(
+      changed.violations.some((finding) => finding.kind === "wasm-memory-authority"),
+    ).toBe(true);
+    expect(changed.unusedAllowances).toEqual([allowance]);
+  });
+
+  it("tracks classified object-property authorities without admitting unbound expressions", () => {
+    const sources = {
+      "authority.ts": `
+        declare const module: WebAssembly.Module;
+        declare const projectedModule: WebAssembly.Module;
+        const owners = {
+          memory: new WebAssembly.Memory({ initial: 1 }),
+          instance: new WebAssembly.Instance(module),
+          projectedMemory: new WebAssembly.Instance(projectedModule).exports.memory,
+        };
+        new Uint8Array(owners.memory.buffer).set(new Uint8Array(1));
+        new Uint8Array(owners.instance.exports.memory.buffer).set(new Uint8Array(1));
+        new Uint8Array(owners.projectedMemory.buffer).set(new Uint8Array(1));
+      `,
+    };
+    const options = {
+      ...virtualAuditOptions(sources, []),
+      auditWasmAuthorityOrigins: true,
+    };
+    const origins = auditWasmMemoryWrites(options).findings.filter((finding) =>
+      finding.kind === "wasm-memory-authority" || finding.kind === "wasm-instance-authority",
+    );
+    expect(origins).toHaveLength(3);
+    const allowances: AuditAllowance[] = origins.map((finding) => ({
+      key: finding.key,
+      disposition: "kernel-control",
+      authorityOwner: "kernel",
+      why: "Each exact object property owns a kernel authority whose writes must remain visible.",
+    }));
+    const result = auditWasmMemoryWrites({ ...options, allowances });
+    expect(result.contractErrors).toEqual([]);
+    expect(result.unusedAllowances).toEqual([]);
+    expect(
+      result.violations.filter((finding) => finding.kind === "kernel-write"),
+    ).toHaveLength(3);
+    const unboundOptions = {
+      ...virtualAuditOptions({
+        "unbound.ts": "consume(new WebAssembly.Memory({ initial: 1 }));",
+      }, []),
+      auditWasmAuthorityOrigins: true,
+    };
+    const unboundOrigin = auditWasmMemoryWrites(unboundOptions).findings.find((finding) =>
+      finding.kind === "wasm-memory-authority",
+    );
+    expect(unboundOrigin).toBeDefined();
+    const unboundResult = auditWasmMemoryWrites({
+      ...unboundOptions,
+      allowances: [{ ...allowances[0]!, key: unboundOrigin!.key }],
+    });
+    expect(unboundResult.contractErrors).toContain(
+      `authority origin has no stable binding: ${unboundOrigin!.key}`,
+    );
+  });
+
   it("requires exact owner classifications and seeds the classified origin", () => {
     const sources = {
       "kernel.ts": `
@@ -1841,11 +1928,11 @@ describe("WebAssembly memory write audit", () => {
             const alias = allocator;
             alias(64);
             const begin =
-              exports["kernel_spawn_scratch_begin"] as (n: bigint) => bigint;
+              exports["kernel_transfer_scratch_begin"] as (n: bigint) => bigint;
             const beginAlias = begin;
             beginAlias(128n);
             const pointer =
-              exports.kernel_spawn_scratch_pointer as () => bigint;
+              exports.kernel_transfer_scratch_pointer as () => bigint;
             pointer();
             const transferBegin =
               exports.kernel_transfer_scratch_begin as
@@ -3757,207 +3844,6 @@ describe("WebAssembly memory write audit", () => {
     ).toBe(true);
   });
 
-  it("proves reserved spawn keeps one token paired with one staged region", () => {
-    const scratchModule = `
-      const KERNEL_SCRATCH_EXPORT_NAMES = Object.freeze([
-        "kernel_spawn_process",
-      ] as const);
-      export interface KernelScratchLease {
-        copyFrom(
-          source: Uint8Array,
-          destinationOffset: number,
-          sourceOffset: number,
-          length: number,
-        ): void;
-      }
-      export interface KernelScratchRegion {
-        withLease<T>(operation: (lease: KernelScratchLease) => T): T;
-        revoke(): void;
-      }
-    `;
-    const worker = ({
-      token = "reservation.token",
-      beforeLease = "",
-      spawnBeforeCopy = false,
-      conditionalCopy = false,
-      conditionalCleanup = false,
-    }: {
-      token?: string;
-      beforeLease?: string;
-      spawnBeforeCopy?: boolean;
-      conditionalCopy?: boolean;
-      conditionalCleanup?: boolean;
-    } = {}) => `
-      import type {
-        KernelScratchLease,
-        KernelScratchRegion,
-      } from "./kernel-scratch";
-      declare function opaque(...values: unknown[]): void;
-      interface KernelWorkerEntryContext {}
-      interface ReservedSpawnScratch {
-        readonly region: KernelScratchRegion | null;
-        readonly token: bigint;
-      }
-      class CentralizedKernelWorker {
-        instance!: WebAssembly.Instance;
-        otherReservation!: ReservedSpawnScratch;
-        #beginLargeSpawnScratch(
-          _blobLen: number,
-          _entry: KernelWorkerEntryContext,
-        ): {
-          reservation: ReservedSpawnScratch | null;
-          errno: number;
-        } {
-          throw new Error("fixture");
-        }
-        #cancelLargeSpawnScratch(
-          _token: bigint,
-          _entry: KernelWorkerEntryContext,
-        ): void {}
-        #handleSpawnAfterResolve(
-          parentPid: number,
-          callerTid: number,
-          blobBytes: Uint8Array,
-          blobLen: number,
-          entry: KernelWorkerEntryContext,
-        ): number {
-          const reservedSpawn = this.instance.exports
-            .kernel_spawn_reserved_process as (
-              parentPid: number,
-              callerTid: number,
-              token: bigint,
-              length: number,
-            ) => number;
-          let reservation: ReservedSpawnScratch | null = null;
-          let result = -1;
-          try {
-            const begun = this.#beginLargeSpawnScratch(blobLen, entry);
-            reservation = begun.reservation;
-            if (reservation?.region) {
-              const activeRegion = reservation.region;
-              const activeToken = ${token};
-              ${beforeLease}
-              result = activeRegion.withLease((scratch) => {
-                ${
-                  spawnBeforeCopy
-                    ? `
-                  const spawnResult = reservedSpawn(
-                    parentPid,
-                    callerTid,
-                    activeToken,
-                    blobLen,
-                  );
-                  scratch.copyFrom(blobBytes, 0, 0, blobLen);
-                `
-                    : `
-                  ${conditionalCopy ? "if (blobLen > 1) {" : ""}
-                  scratch.copyFrom(blobBytes, 0, 0, blobLen);
-                  ${conditionalCopy ? "}" : ""}
-                  const spawnResult = reservedSpawn(
-                    parentPid,
-                    callerTid,
-                    activeToken,
-                    blobLen,
-                  );
-                `
-                }
-                return spawnResult;
-              });
-            }
-          } finally {
-            if (reservation) {
-              ${conditionalCleanup ? "if (blobLen > 1) {" : ""}
-              reservation.region?.revoke();
-              this.#cancelLargeSpawnScratch(reservation.token, entry);
-              ${conditionalCleanup ? "}" : ""}
-            }
-          }
-          return result;
-        }
-      }
-    `;
-    const audit = (workerSource: string) =>
-      auditWasmMemoryWrites({
-        ...virtualAuditOptions(
-          {
-            "host/src/kernel-scratch.ts": scratchModule,
-            "host/src/kernel-worker.ts": workerSource,
-          },
-          [
-            {
-              declaration:
-                "host/src/kernel-worker.ts::CentralizedKernelWorker.instance",
-              target: "value",
-              owner: "kernel",
-              form: "instance",
-              why: "This fixture field is the exact instantiated kernel module.",
-            },
-          ],
-        ),
-        kernelExportNames: [
-          "kernel_spawn_process",
-          "kernel_spawn_reserved_process",
-        ],
-      });
-    const hasReservedSpawnBypass = (workerSource: string): boolean =>
-      audit(workerSource).findings.some(
-        (finding) =>
-          finding.kind === "kernel-export-direct-use" &&
-          finding.text.includes("reservedSpawn("),
-      );
-
-    expect(hasReservedSpawnBypass(worker())).toBe(false);
-    expect(
-      hasReservedSpawnBypass(
-        worker({
-          token: "this.otherReservation.token",
-        }),
-      ),
-    ).toBe(true);
-    expect(
-      hasReservedSpawnBypass(
-        worker({
-          spawnBeforeCopy: true,
-        }),
-      ),
-    ).toBe(true);
-    expect(
-      hasReservedSpawnBypass(
-        worker({
-          beforeLease: "opaque(activeRegion, activeToken);",
-        }),
-      ),
-    ).toBe(true);
-    expect(
-      hasReservedSpawnBypass(
-        worker({
-          conditionalCopy: true,
-        }),
-      ),
-    ).toBe(true);
-    expect(
-      hasReservedSpawnBypass(
-        worker({
-          conditionalCleanup: true,
-        }),
-      ),
-    ).toBe(true);
-    expect(
-      hasReservedSpawnBypass(
-        worker({
-          beforeLease: "reservation = this.otherReservation;",
-        }),
-      ),
-    ).toBe(true);
-    expect(
-      hasReservedSpawnBypass(
-        worker({
-          beforeLease: "opaque(reservation);",
-        }),
-      ),
-    ).toBe(true);
-  });
-
   it("proves the two private flattened-copy helpers retain no lease", () => {
     const scratchModule = `
       const KERNEL_SCRATCH_EXPORT_NAMES = Object.freeze([
@@ -5392,6 +5278,14 @@ describe("WebAssembly memory write audit", () => {
         path.join(root, "nested-checkout", "ignored.ts"),
         "export {};\n",
       );
+
+      for (const relative of [
+        "crates/fork-instrument/tests/fixtures/private-module.mjs",
+        "scripts/check-fork-memory-artifact.ts",
+      ]) {
+        mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+        writeFileSync(path.join(root, relative), "export {};\n");
+      }
 
       expect(
         repositoryRuntimeSourceFiles(root).map((file) =>

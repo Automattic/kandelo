@@ -114,6 +114,25 @@ resolver understands only `>=` constraints, so a recipe needing an exact match
 must check it itself and fail loudly. See
 `packages/registry/qtbase/build-qtbase.sh`.
 
+Perl's bundled host `miniperl` is configured separately from the Wasm target.
+The pinned perl-cross defaults assume glibc's named `LC_ALL` components;
+Darwin returns slash-separated components in category order. The Perl recipe
+supplies the native format through `--host-set-*` options on Darwin only.
+These options must not change the target interpreter's locale configuration
+or disable its locale support. Set `WASM_POSIX_BUILD_JOBS` to bound the recipe's
+make parallelism independently of the outer package scheduler.
+
+**Generators whose output must describe the target**: Some projects build a
+helper from their own sources and run it to write headers or data files the
+program reads, so the helper's answers have to be the target's: type sizes,
+struct layouts, the OS name. Built for the build machine, it answers for the
+build machine instead. Do not patch the layouts to agree; build the whole
+project inside a Kandelo machine, where the helper is a wasm32 program like the
+one it serves (see [Building inside Kandelo](package-management.md#building-inside-kandelo)).
+NetHack's `makedefs`, `dgn_comp`, `lev_comp` and `dlb` run this way: see
+`packages/registry/nethack/`, whose build machine script only prepares the
+source and whose guest script runs `make`.
+
 **A generator the pinned host package does not ship**: A host package built for
 the build machine carries only the generators that machine's platform enables,
 which is not always the set a cross-build needs. nixpkgs' darwin `qtbase` has no
@@ -222,6 +241,12 @@ backend is paced primarily by blocking `write()`; SDL3 additionally waits on
 truthful `SNDCTL_DSP_GETOSPACE` results. Capture/duplex opens fail with
 `ENOTSUP`, so do not advertise recording support in application UI.
 
+The reusable `sdl2-mixer` library package enables upstream's bundled WAVE,
+Vorbis, FLAC, and MP3 decoders. Its configure step uses a relative source
+path so upstream filename filters cannot match a workspace or temporary
+build directory. Freeciv and the unmodified `playwave` sample share this
+library rather than rebuilding private copies.
+
 The host audio integration suite also builds SDL_mixer 2.8.2's upstream
 `playwave` example unchanged and runs it with `SDL_AUDIODRIVER=dsp`. It checks
 44.1 kHz signed-16 stereo and 22.05 kHz unsigned-8 mono WAVs byte-for-byte at
@@ -251,10 +276,15 @@ Any time a ported program needs more than a handful of runtime files that togeth
 
 At image-build time, `KandeloImageFs.registerLazyArchive({ url, entries, mountPrefix })` (`images/vfs/lib/kandelo-image-fs.ts`) validates every member path of a zip's central directory, then creates deferred inodes for each file under `mountPrefix` and records the archive URL in the image. At runtime the kernel owns those inodes: on first read of any member it asks the host for the archive through `host_fetch_deferred`, keeps the archive and the members it extracts in kernel memory, and serves later reads from there. `stat` alone never downloads content. The fetch happens once per booted machine; nothing is evicted while the machine runs, which is why large archives count against the kernel's memory budget (see `docs/agent-guidance/host-runtime.md`).
 
-At runtime the URL stored in the image is usually bare — a plain filename
-like `vim.zip`. The host resolves it when the kernel asks for it: a URL in
-`lazyUrlMap` uses the mapped address, and any other relative URL resolves
-against `lazyUrlBase` (the deployment's base URL by default). The image itself
+The URL a shell archive records is its package-mirror path in the
+`kandelo-lazy:` grammar, such as `kandelo-lazy:programs/wasm32/vim.zip`,
+derived from the spec's `resolverPath` (`shellLazyArchiveAddress`). The host
+resolves it when the kernel asks for it: an address in the image-owned
+grammar resolves to its package member under the
+deployment's lazy-asset directory (`resolveImageOwnedLazyAsset` in
+`host/src/vfs/vfs-asset-group-reference.ts`), a URL in `lazyUrlMap` uses the
+mapped address, and any other relative URL resolves against `lazyUrlBase`
+(the deployment's base URL by default). The image itself
 is never rewritten. When the image records a digest for the fetched bytes, the
 kernel checks it before the bytes become file contents, and a failed fetch surfaces as an I/O error on the read that needed
 it rather than as a zero-byte file.
@@ -298,7 +328,11 @@ The call resolves `vim-browser-bundle`'s declared `vim.zip`, reads those bytes
 once for central-directory indexing and hashing, and creates `/usr/bin/vim`
 and `/usr/share/vim/vim91/...` as stubs inside the shell VFS. The Kandelo UI
 does **not** need a matching `registerLazyFiles` entry for the binary - the
-stub from the archive is enough.
+stub from the archive is enough, and the browser app needs no entry either:
+deployments serve whatever the built image references. The archive's address
+is derived from its `resolverPath`, so a new archive needs no entry anywhere
+else; `tests/package-system/shell-lazy-url-resolution.test.ts` checks that
+every declared address resolves to its package member.
 
 ### When you also want `/bin/<program>` symlinks
 

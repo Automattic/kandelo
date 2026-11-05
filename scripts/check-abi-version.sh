@@ -54,7 +54,7 @@ if [ "$MODE" = "update" ]; then
     echo
     echo "abi/snapshot.json regenerated."
     echo "If the ABI contract actually changed, bump ABI_VERSION in"
-    echo "crates/shared/src/lib.rs in the same commit."
+    echo "crates/program-abi/src/lib.rs in the same commit."
     exit 0
 fi
 
@@ -81,6 +81,8 @@ if [ "$drift" -eq 1 ]; then
     exit 1
 fi
 
+run_xtask check-program-baseline
+
 # Detect whether ABI_VERSION or the committed ABI snapshot changed in this
 # branch. A no-bump snapshot diff is acceptable only if it is narrowly
 # additive: new syscalls, new host-intercepted syscalls, new kernel exports,
@@ -90,14 +92,12 @@ base_ref="${ABI_CHECK_BASE_REF:-origin/main}"
 version_bumped=0
 snapshot_changed=0
 if git rev-parse --verify --quiet "$base_ref" >/dev/null ; then
-    if ! git diff --quiet "$base_ref" -- crates/shared/src/lib.rs 2>/dev/null ; then
-        # WHY: do not use grep -q here. Under pipefail, an early successful
-        # grep closes the pipe, git diff receives SIGPIPE, and a real bump is
-        # misclassified as absent.
-        if git diff "$base_ref" -- crates/shared/src/lib.rs \
-            | grep -E '^\+pub const ABI_VERSION: u32 = ' >/dev/null ; then
-            version_bumped=1
-        fi
+    # Compare values, not added source lines: moving the declaration between
+    # crates must not grant an incompatible snapshot change a false bump.
+    old_version="$(git show "$base_ref:abi/snapshot.json" | sed -nE 's/^  "abi_version": ([0-9]+),$/\1/p')"
+    new_version="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/program-abi/src/lib.rs)"
+    if [ -n "$old_version" ] && [ -n "$new_version" ] && [ "$old_version" != "$new_version" ]; then
+        version_bumped=1
     fi
     if ! git diff --quiet "$base_ref" -- abi/snapshot.json 2>/dev/null ; then
         snapshot_changed=1
@@ -116,8 +116,9 @@ if [ "$snapshot_changed" -eq 1 ] && [ "$version_bumped" -eq 0 ]; then
 
     if ! run_xtask dump-abi --classify-compat "$old_snapshot" abi/snapshot.json ; then
         echo
-        echo "ERROR: ABI snapshot changed in a backward-incompatible way but ABI_VERSION was not bumped." >&2
-        echo "       Either bump ABI_VERSION, or keep the ABI change purely additive." >&2
+        echo "ERROR: ABI snapshot changed in a backward-incompatible way without the version bump it needs." >&2
+        echo "       Program-surface changes bump ABI_VERSION; kernel-host-only changes bump" >&2
+        echo "       HOST_ADAPTER_VERSION (the kernel-host version). Or keep the change additive." >&2
         echo "       (See docs/abi-versioning.md for policy.)" >&2
         exit 1
     fi
@@ -126,11 +127,29 @@ fi
 if [ "$snapshot_changed" -eq 1 ] && [ "$version_bumped" -eq 1 ]; then
     echo "abi: snapshot changed and ABI_VERSION was bumped."
 elif [ "$snapshot_changed" -eq 1 ]; then
-    echo "abi: snapshot changed only by backward-compatible additions; ABI_VERSION may stay unchanged."
+    echo "abi: snapshot changed without an ABI_VERSION bump: additions, or kernel-host changes under a HOST_ADAPTER_VERSION bump."
 elif [ "$version_bumped" -eq 1 ]; then
     echo
     echo "abi: ABI_VERSION changed but abi/snapshot.json did not change." >&2
     echo "     Verify this was intentional; the snapshot/header are still in sync." >&2
+fi
+
+# Say whether this change forces every program to be rebuilt: programs carry
+# a digest of the program surface only (see docs/abi-versioning.md), so a
+# kernel-host-only change leaves them valid.
+if [ "$snapshot_changed" -eq 1 ]; then
+    base_snapshot="$(mktemp "${TMPDIR:-/tmp}/wasm-posix-abi-base.XXXXXX.json")"
+    git show "$base_ref:abi/snapshot.json" > "$base_snapshot"
+    if base_digest="$(run_xtask abi-program-digest "$base_snapshot" 2>/dev/null)"; then
+        if [ "$base_digest" = "$(run_xtask abi-program-digest)" ]; then
+            echo "abi: program digest unchanged; existing programs stay valid."
+        else
+            echo "abi: program digest changed; every program must be rebuilt."
+        fi
+    else
+        echo "abi: $base_ref's snapshot has no program digest; every program must be rebuilt."
+    fi
+    rm -f "$base_snapshot"
 fi
 
 echo "abi: ABI_VERSION and snapshot are consistent."

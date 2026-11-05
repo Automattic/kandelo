@@ -27,9 +27,6 @@ const PHASE_LABELS: Record<DockActionPhase, string> = {
   done: "starting…",
 };
 
-/** Frames the display must present before the replacement counts as up. */
-const FRAMES_UNTIL_RUNNING = 5;
-
 /** Keep only the tail: progress lives at the end of the output. */
 const OUTPUT_TAIL_CHARS = 8192;
 
@@ -43,11 +40,20 @@ interface Following {
  * when the machine is not running or its image declares no actions.
  *
  * `frameCount` is the display's presented-frame counter. With one, the
- * command's own status lines are shown on the stage until the display is
- * presenting again, because the stage is dark in between. Without one
+ * command's output is followed until the display is presenting again. An
+ * ownerless KMS display returns to the terminal, where that output is visible;
+ * the stage's toasts are only visible when the stage is selected. Without one
  * (null) there is no signal for "running again", so no progress is shown.
+ * `readFrameCount` samples the live counter at restart: rendered UI state
+ * can lag behind presentations made while the old process was stopping.
  */
-export function useDockActions(testIdPrefix: string, frameCount: number | null = null): {
+export function useDockActions(
+  testIdPrefix: string,
+  frameCount: number | null = null,
+  stop?: () => Promise<void>,
+  readFrameCount?: () => number,
+  terminalPath?: string,
+): {
   controls: React.ReactNode;
   toasts: React.ReactNode;
 } {
@@ -61,20 +67,26 @@ export function useDockActions(testIdPrefix: string, frameCount: number | null =
   frameCountRef.current = frameCount;
   const baselineRef = React.useRef<number | null>(null);
   const stopFollowingRef = React.useRef<(() => void) | null>(null);
+  const followingGenerationRef = React.useRef(0);
 
   const stopFollowing = React.useCallback(() => {
+    followingGenerationRef.current++;
     stopFollowingRef.current?.();
     stopFollowingRef.current = null;
     baselineRef.current = null;
     setFollowing(null);
   }, []);
   React.useEffect(() => stopFollowing, [stopFollowing]);
+  React.useEffect(() => {
+    if (status !== "running") stopFollowing();
+  }, [status, stopFollowing]);
 
-  // The replacement is up once the display has presented a few new frames.
+  // A new presentation is sufficient: static menus may draw once and
+  // then wait for input, so requiring animation leaves them "starting".
   React.useEffect(() => {
     const baseline = baselineRef.current;
     if (baseline === null || frameCount === null) return;
-    if (frameCount - baseline >= FRAMES_UNTIL_RUNNING) stopFollowing();
+    if (frameCount > baseline) stopFollowing();
   }, [frameCount, stopFollowing]);
 
   // `buttonId` is the dock button that shows the phase: the action's own,
@@ -82,19 +94,37 @@ export function useDockActions(testIdPrefix: string, frameCount: number | null =
   const run = React.useCallback(async (action: DemoDockCommandConfig, buttonId: string) => {
     if (running !== null) return;
     stopFollowing();
+    const generation = followingGenerationRef.current;
+    // A queued restart belongs to the machine it was asked of: not to one
+    // that stopped, nor to one booted in its place. Watch the host itself,
+    // since this pane may unmount before the command is written.
+    let machineLeftRunning = host.getStatus() !== "running";
+    const unsubscribeStatus = host.subscribeStatus((value) => {
+      if (value !== "running") machineLeftRunning = true;
+    });
     setError(null);
     setRunning({ id: buttonId, phase: "stopping" });
     const programName = dockActionProgramName(action.restart);
     let output = "";
     try {
       await runDemoDockAction(host, action, {
+        stop,
+        terminalPath,
         onPhase: async (phase) => {
+          // Dispatch may still be waiting on the old prompt during teardown.
+          if (machineLeftRunning) throw new Error("Dock action cancelled");
+          // The pane can unmount mid-action. On /dev/fb0 it does exactly
+          // that when this action ends the display's owner, so unmounting
+          // ends progress following, not the restart the user asked for.
+          if (followingGenerationRef.current !== generation) return;
           setRunning({ id: buttonId, phase });
           if (phase !== "starting" || frameCountRef.current === null) return;
-          // From here on the stage is dark until the replacement draws.
-          baselineRef.current = frameCountRef.current;
+          // Follow this command until its display starts presenting.
+          baselineRef.current = readFrameCount?.() ?? frameCountRef.current;
           setFollowing({ label: action.label, progress: { status: null, percent: null } });
-          stopFollowingRef.current = await followShellOutput(host, (text) => {
+          const unsubscribe = await followShellOutput(host, (text) => {
+            // A queued notification must not revive completed progress.
+            if (followingGenerationRef.current !== generation) return;
             output = (output + text).slice(-OUTPUT_TAIL_CHARS);
             const progress = dockActionProgress(output, programName);
             if (shellPromptReturned(output)) {
@@ -105,16 +135,25 @@ export function useDockActions(testIdPrefix: string, frameCount: number | null =
               return;
             }
             setFollowing({ label: action.label, progress });
-          });
+          }, terminalPath);
+          // Following can end while attachPty is still in flight (a frame
+          // arrived, or the pane unmounted); the command is still written.
+          if (followingGenerationRef.current !== generation) {
+            unsubscribe();
+            return;
+          }
+          stopFollowingRef.current = unsubscribe;
         },
       });
     } catch (err) {
+      if (followingGenerationRef.current !== generation) return;
       stopFollowing();
       setError(`${action.label}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      unsubscribeStatus();
       setRunning(null);
     }
-  }, [host, running, stopFollowing]);
+  }, [host, running, stopFollowing, stop, readFrameCount, terminalPath]);
 
   const controls = React.useMemo(() => {
     if (status !== "running" || actions.length === 0) return null;

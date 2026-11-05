@@ -42,7 +42,7 @@ export type {
   HostToWorkerMessage, WorkerToHostMessage,
   WorkerReadyMessage, WorkerExitMessage, WorkerErrorMessage,
   ExecRequestMessage, ExecReplyMessage,
-  ExecCompleteMessage, AlarmSetMessage,
+  ExecCompleteMessage,
   CentralizedWorkerInitMessage,
 } from "./worker-protocol";
 export { VirtualPlatformIO } from "./vfs/vfs";

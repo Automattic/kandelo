@@ -59,6 +59,8 @@ export function shellLazyPlaceholderUrl(spec: VfsBinarySpec): string {
  * EAGER_SHELL_PROGRAMS in build-source-rootfs-shell-image.ts).
  */
 export const SHELL_LAZY_BINARY_SPECS = [
+  { id: "redis-cli", dependency: "redis", resolverPath: "programs/redis/redis-cli.wasm", vfsPath: "/usr/local/bin/redis-cli", symlinks: ["/usr/bin/redis-cli"] },
+  { id: "mariadb", dependency: "mariadb", resolverPath: "programs/mariadb/mariadb.wasm", vfsPath: "/usr/bin/mariadb", symlinks: ["/usr/bin/mysql"] },
   {
     id: "coreutils",
     resolverPath: "programs/coreutils.wasm",
@@ -86,13 +88,15 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "curl", resolverPath: "programs/curl.wasm", vfsPath: "/usr/bin/curl", symlinks: ["/bin/curl"] },
   {
     id: "netcat",
-    resolverPath: "programs/nc.wasm",
+    resolverPath: "programs/netcat/nc.wasm",
     vfsPath: "/usr/bin/nc",
     symlinks: ["/bin/nc", "/usr/bin/netcat", "/bin/netcat"],
   },
   { id: "wget", resolverPath: "programs/wget.wasm", vfsPath: "/usr/bin/wget", symlinks: ["/bin/wget"] },
   { id: "git", resolverPath: "programs/git/git.wasm", vfsPath: "/usr/bin/git", symlinks: ["/bin/git"] },
   { id: "jq", resolverPath: "programs/jq.wasm", vfsPath: "/usr/bin/jq", symlinks: ["/bin/jq"] },
+  { id: "wasm-fork-instrument", resolverPath: "programs/wasm-fork-instrument.wasm", vfsPath: "/usr/bin/wasm-fork-instrument", symlinks: ["/bin/wasm-fork-instrument"] },
+  { id: "php", resolverPath: "programs/php/php.wasm", vfsPath: "/usr/bin/php", symlinks: ["/bin/php"] },
   { id: "ffmpeg", resolverPath: "programs/ffmpeg/ffmpeg.wasm", vfsPath: "/usr/bin/ffmpeg", symlinks: ["/bin/ffmpeg"] },
   { id: "ffprobe", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffprobe.wasm", vfsPath: "/usr/bin/ffprobe", symlinks: ["/bin/ffprobe"] },
   { id: "ffplay", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffplay.wasm", vfsPath: "/usr/bin/ffplay", symlinks: ["/bin/ffplay"] },
@@ -138,6 +142,8 @@ export const SHELL_LAZY_BINARY_SPECS = [
   },
   { id: "lsof", resolverPath: "programs/lsof.wasm", vfsPath: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
   { id: "nano", resolverPath: "programs/nano.wasm", vfsPath: "/usr/bin/nano", symlinks: ["/bin/nano"] },
+  { id: "tmux", resolverPath: "programs/tmux.wasm", vfsPath: "/usr/bin/tmux", symlinks: ["/bin/tmux"] },
+  { id: "termchat", resolverPath: "programs/termchat/termchat.wasm", vfsPath: "/usr/bin/termchat", symlinks: ["/bin/termchat"] },
   // The Omarchy desktop's terminal. Large, so it stays lazy: no other
   // machine sharing this image pays to fetch it.
   { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/local/bin/foot", symlinks: [] },
@@ -272,7 +278,8 @@ export const SHELL_LAZY_BINARY_SPECS = [
     vfsPath: "/usr/local/bin/sdl2",
     symlinks: [],
   },
-  { id: "fbdoom", resolverPath: "programs/fbdoom.wasm", vfsPath: "/usr/local/bin/fbdoom", symlinks: [] },
+  // /usr/local/bin/fbdoom is the image's launch wrapper (build-source-rootfs-shell-image.ts).
+  { id: "fbdoom", resolverPath: "programs/fbdoom/fbdoom.wasm", vfsPath: "/usr/bin/fbdoom", symlinks: [] },
   { id: "modeset", resolverPath: "programs/modeset.wasm", vfsPath: "/usr/local/bin/modeset", symlinks: [] },
   {
     id: "espeak-ng",
@@ -282,6 +289,6 @@ export const SHELL_LAZY_BINARY_SPECS = [
   },
   { id: "sqlite-cli", resolverPath: "programs/sqlite3.wasm", vfsPath: "/usr/bin/sqlite3", symlinks: ["/bin/sqlite3"] },
   { id: "lhasa", resolverPath: "programs/lha.wasm", vfsPath: "/usr/bin/lha", symlinks: ["/bin/lha"] },
-  { id: "tyrquake", resolverPath: "programs/quake.wasm", vfsPath: "/usr/bin/quake", symlinks: ["/bin/quake"] },
+  { id: "tyrquake", resolverPath: "programs/tyrquake/quake.wasm", vfsPath: "/usr/bin/quake", symlinks: ["/bin/quake"] },
   { id: "elinks", resolverPath: "programs/elinks.wasm", vfsPath: "/usr/bin/elinks", symlinks: ["/bin/elinks"] },
 ] as const satisfies readonly VfsBinarySpec[];

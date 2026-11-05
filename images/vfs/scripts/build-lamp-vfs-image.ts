@@ -1,3 +1,4 @@
+import { installImageSessions } from "./image-session-files";
 import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build a fully-bootable VFS image for the WordPress + MariaDB (LAMP)
@@ -194,7 +195,6 @@ http {
 
 function populatePhpFpmConfig(
   fs: VfsImageFilesystem,
-  opcache: Uint8Array,
 ): void {
   ensureDirRecursive(fs, "/etc/php-fpm.d");
   ensureDirRecursive(fs, "/var/log");
@@ -220,21 +220,15 @@ request_slowlog_trace_depth = 0
   // prewarmOpcache (see end of main()). See build-wp-vfs-image.ts for
   // the rationale — same WordPress codebase, same win.
   ensureDirRecursive(fs, "/usr/lib/php/extensions");
-  writeVfsBinary(
-    fs,
-    "/usr/lib/php/extensions/opcache.so",
-    opcache,
-  );
-  const phpIni = `zend_extension=/usr/lib/php/extensions/opcache.so
-
-curl.cainfo=/etc/ssl/certs/ca-certificates.crt
+  const phpIni = `curl.cainfo=/etc/ssl/certs/ca-certificates.crt
 openssl.cafile=/etc/ssl/certs/ca-certificates.crt
 mysqli.default_socket=${MARIADB_SOCKET_PATH}
 pdo_mysql.default_socket=${MARIADB_SOCKET_PATH}
 
 [opcache]
 opcache.enable=1
-opcache.enable_cli=1
+; Terminal commands run as maker; FPM owns the server cache.
+opcache.enable_cli=0
 opcache.file_cache=/var/cache/opcache
 opcache.file_cache_only=1
 opcache.validate_timestamps=0
@@ -354,7 +348,7 @@ function buildServices(fs: VfsImageFilesystem): DinitService[] {
         `--innodb-log-buffer-size=${MARIADB_INNODB_LOG_BUFFER_SIZE} ` +
         `--innodb-buffer-pool-size=${MARIADB_INNODB_BUFFER_POOL_SIZE} ` +
         "--skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 " +
-        "--sort-buffer-size=262144 --skip-networking " +
+        "--sort-buffer-size=262144 --bind-address=0.0.0.0 --port=3306 " +
         `--socket=${MARIADB_SOCKET_PATH} --max-connections=10 ` +
         "--log-error=/data/error.log",
       logfile: "/var/log/mariadb.log",
@@ -429,7 +423,6 @@ export interface LampVfsImageBuildInputs {
   mariadbd: Uint8Array;
   nginx: Uint8Array;
   phpFpm: Uint8Array;
-  opcache: Uint8Array;
   msmtpd: Uint8Array;
   dinit?: DinitBinaryInputs;
   buildPrograms?: {
@@ -462,7 +455,7 @@ export async function buildLampVfsImage(
   populateMariadb(fs, inputs.mariadbd, inputs.mariadbSystemTablesDirectory);
 
   populateNginxConfig(fs);
-  populatePhpFpmConfig(fs, inputs.opcache);
+  populatePhpFpmConfig(fs);
   populateSmtpCaptureConfig(fs);
   populateWordPressFirstBootSecrets(fs);
 
@@ -490,6 +483,9 @@ export async function buildLampVfsImage(
 
   console.log("Writing WordPress core files...");
   const wpCount = copyWordPressCoreSource(fs, inputs.wordpressDirectory);
+  ensureDirRecursive(fs, "/var/www/html/wp-content/uploads");
+  fs.chown("/var/www/html/wp-content/uploads", 65534, 65534);
+  fs.chmod("/var/www/html/wp-content/uploads", 0o775);
   patchWordPressPersistentMysqli(fs);
   console.log(`  WordPress core: ${wpCount} files`);
 
@@ -502,6 +498,7 @@ export async function buildLampVfsImage(
   await prewarmOpcache(fs, {
     sourceRoots: ["/var/www"],
     label: "lamp",
+    cacheOwner: { uid: 65534, gid: 65534 }, // FPM's nobody account.
     programs: inputs.buildPrograms,
     excludePaths: [
       "/var/www/html/wp-config.php",
@@ -510,6 +507,7 @@ export async function buildLampVfsImage(
   });
   writeTrackedDemoConfig(fs, "packages/registry/wordpress/lamp-demo.json");
 
+  installImageSessions(fs, "lamp");
   await saveShellDerivedVfsImage(fs, inputs.outputPath);
   console.log(`${wpCount} WordPress files total`);
 }
@@ -560,9 +558,6 @@ async function main(): Promise<void> {
     phpFpm: new Uint8Array(readFileSync(phpRoot === undefined
       ? resolveBinary("programs/php/php-fpm.wasm")
       : join(phpRoot, "php-fpm.wasm"))),
-    opcache: new Uint8Array(readFileSync(phpRoot === undefined
-      ? resolveBinary("programs/php/opcache.so")
-      : join(phpRoot, "opcache.so"))),
     msmtpd: new Uint8Array(readFileSync(msmtpdRoot === undefined
       ? resolveBinary("programs/msmtpd.wasm")
       : join(msmtpdRoot, "msmtpd.wasm"))),

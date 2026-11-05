@@ -2,6 +2,11 @@
 
 ## Build And Dev Shell
 
+For optional Spacefast packaging or publishing, also read
+[spacefast-deployment.md](spacefast-deployment.md). Use its reusable script
+and explicit target selection; do not place an operator's personal deployment
+URLs or account identifiers in tracked examples, fixtures or agent skills.
+
 The build environment is part of the platform contract. Build and verification
 commands should run from repo-declared tools, not undeclared host state.
 
@@ -113,7 +118,8 @@ When already inside `scripts/dev-shell.sh bash`, run the build commands
 directly:
 
 ```bash
-./run.sh setup                # Provision sysroot(s)/SDK, then build fork-instrument tool, kernel wasm, every package, rootfs, and TypeScript host
+./run.sh setup                # Provision sysroot(s)/SDK, then build fork-instrument tool, kernel wasm, the packages the VFS products and browser app demand, rootfs, and TypeScript host
+./run.sh setup --all          # The same, building every supported package (test-suite fixtures included)
 bash scripts/build-musl.sh --ensure  # Check wasm32 musl inputs and installed core outputs
 scripts/build-programs.sh    # Rebuild test/example C programs
 ```
@@ -238,6 +244,12 @@ rewriting another contributor's branch, inspect the original commits with
   committer. Set `--author` explicitly when reconstructing a commit.
 - For materially combined work, retain the primary author and add accurate
   `Co-authored-by:` trailers; do not demote the primary author to a trailer.
+- Attribution credits people. Never add a `Co-authored-by:` trailer, a
+  "Generated with" line, or similar credit for an AI model, agent, or coding
+  tool (Claude, ChatGPT, Codex, Copilot, and so on), in commits or PR
+  descriptions. The checked-in `.claude/settings.json` sets Claude Code's
+  `attribution` to empty so it adds none; other clients must omit it
+  themselves.
 - Before force-pushing, verify patch and author preservation with
   `git range-diff` and `git log --format=fuller`. If provenance is ambiguous,
   reconstruct it from the original commits and PR timeline instead of guessing.

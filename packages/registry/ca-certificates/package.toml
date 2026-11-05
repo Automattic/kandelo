@@ -1,0 +1,23 @@
+kind = "program"
+name = "ca-certificates"
+version = "0.1.0"
+kernel_abi = 50
+depends_on = []
+
+# Package the same complete Mozilla bundle the base rootfs embeds.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "MPL-2.0"
+url = "https://curl.se/docs/caextract.html"
+
+[build]
+script_path = "packages/registry/ca-certificates/build-ca-certificates.sh"
+
+[[outputs]]
+name = "ca-certificates"
+wasm = "ca-certificates.zip"
+fork_instrumentation = "disabled"

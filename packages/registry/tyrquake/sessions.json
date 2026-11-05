@@ -1,0 +1,217 @@
+{
+  "kind": "kandelo-package-sessions",
+  "version": 1,
+  "package": "tyrquake",
+  "packageVersion": "0.71.0",
+  "offers": [
+    {
+      "id": "game",
+      "title": "Quake game",
+      "description": "Host a Quake multiplayer game.",
+      "join": "participant",
+      "attachExisting": true,
+      "fields": [
+        {
+          "id": "name",
+          "label": "Your name",
+          "type": "text",
+          "default": "host",
+          "maxLength": 32
+        },
+        {
+          "id": "mode",
+          "label": "Game type",
+          "type": "choice",
+          "default": "deathmatch",
+          "options": [
+            {
+              "value": "deathmatch",
+              "label": "Deathmatch",
+              "args": [
+                "+coop",
+                "0",
+                "+deathmatch",
+                "1"
+              ]
+            },
+            {
+              "value": "cooperative",
+              "label": "Cooperative",
+              "args": [
+                "+deathmatch",
+                "0",
+                "+coop",
+                "1"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "players",
+          "label": "Maximum players",
+          "type": "integer",
+          "default": 4,
+          "min": 2,
+          "max": 16
+        },
+        {
+          "id": "level",
+          "label": "Starting level",
+          "type": "level",
+          "default": "start",
+          "dependency": "data",
+          "format": "quake-pak",
+          "sources": {
+            "shareware": [
+              "e1m1",
+              "e1m2",
+              "e1m3",
+              "e1m4",
+              "e1m5",
+              "e1m6",
+              "e1m7",
+              "e1m8",
+              "start"
+            ],
+            "librequake": [
+              "dev",
+              "lq_e0m1",
+              "lq_e0m2",
+              "lq_e0m3",
+              "lq_e0m4",
+              "lq_e0m5",
+              "lq_e0m6",
+              "lq_e0m7",
+              "lq_e0m8",
+              "start"
+            ],
+            "openquartz": [
+              "am1",
+              "box",
+              "bunkers",
+              "house",
+              "nsa",
+              "office",
+              "start",
+              "void1",
+              "void2",
+              "void3",
+              "void4",
+              "void5",
+              "void6",
+              "vtest"
+            ]
+          }
+        }
+      ],
+      "launch": {
+        "executable": "/usr/local/bin/quake-activity",
+        "cwd": "/",
+        "args": [
+          {
+            "field": "dependency.data.source"
+          },
+          "+name",
+          {
+            "field": "offer.name"
+          },
+          "+maxplayers",
+          {
+            "field": "offer.players"
+          },
+          {
+            "options": "offer.mode"
+          },
+          "+map",
+          {
+            "field": "offer.level"
+          }
+        ],
+        "requires": [
+          "/tmp/kandelo-quake-data.bin"
+        ],
+        "surface": "display"
+      },
+      "existingWarning": "Choose the data and level your server is already running."
+    }
+  ],
+  "joins": [
+    {
+      "id": "participant",
+      "title": "Play Quake",
+      "description": "Connect to the host on this network.",
+      "fields": [
+        {
+          "id": "name",
+          "label": "Your name",
+          "type": "text",
+          "default": "guest",
+          "maxLength": 32
+        }
+      ],
+      "launch": {
+        "executable": "/usr/local/bin/quake-activity",
+        "cwd": "/",
+        "args": [
+          {
+            "field": "dependency.data.source"
+          },
+          "+name",
+          {
+            "field": "join.name"
+          },
+          "+connect",
+          {
+            "field": "network.host"
+          }
+        ],
+        "requires": [
+          "/tmp/kandelo-quake-data.bin"
+        ],
+        "surface": "display"
+      }
+    }
+  ],
+  "dependencies": [
+    {
+      "id": "data",
+      "title": "Quake game data",
+      "path": "/tmp/kandelo-quake-data.bin",
+      "allowFile": true,
+      "hint": "Choose your pak0.pak.",
+      "sources": [
+        {
+          "id": "shareware",
+          "title": "Quake shareware (Episode 1)",
+          "url": "https://cdn.jsdelivr.net/gh/Jason2Brownlee/QuakeOfficialArchive@30c29bd5907fd999b0bb8e52c941ef770b4d3ba8/bin/quake106.zip",
+          "size": 9094045,
+          "sha256": "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239",
+          "installedPath": "/usr/share/quake/quake106.zip"
+        },
+        {
+          "id": "librequake",
+          "title": "LibreQuake 0.09 beta (lite)",
+          "url": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/lite.zip",
+          "size": 55987573,
+          "sha256": "428e736b2f01d953e09a08c60bee975bdc4a0ac2219e97fa095c8af41754da83",
+          "informationUrl": "https://github.com/lavenderdotpet/LibreQuake/releases/tag/v0.09-beta",
+          "offerDefaults": {
+            "mode": "cooperative"
+          }
+        },
+        {
+          "id": "openquartz",
+          "title": "OpenQuartz 2004.08.01",
+          "url": "https://downloads.sourceforge.net/project/openquartz/Open%20Quartz%20game%20content/Open%20Quartz%202004.08.01/oq-pak-bin-2004.08.01.zip",
+          "size": 8453739,
+          "sha256": "3ae08afd01565816ec86be5aa111ee80c0e3027992a50dbd9999da7af3fa2638",
+          "informationUrl": "https://sourceforge.net/projects/openquartz/files/Open%20Quartz%20game%20content/Open%20Quartz%202004.08.01/",
+          "offerDefaults": {
+            "mode": "deathmatch"
+          },
+          "warning": "Deathmatch maps only."
+        }
+      ]
+    }
+  ]
+}

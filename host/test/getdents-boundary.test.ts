@@ -20,4 +20,17 @@ describe.skipIf(!existsSync(program))("getdents64 directory cursor", () => {
     expect(result.stdout).toContain("GETDENTS_BOUNDARY_PASS");
     expect(result.stderr).toBe("");
   });
+
+  it("pages an image-backed rootfs directory through the same guest calls", async () => {
+    const result = await runCentralizedProgram({
+      programPath: program,
+      argv: ["getdents-boundary-test", "rootfs"],
+      useDefaultRootfs: true,
+      timeout: 30_000,
+    });
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain("GETDENTS_BOUNDARY_PASS");
+    expect(result.stderr).toBe("");
+  });
 });

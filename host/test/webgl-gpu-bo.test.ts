@@ -179,6 +179,23 @@ describe("GlContextRegistry — GPU-tier bo (WPK_CREATE_GPU_BO)", () => {
     expect(calls.deletedTextures).toEqual([]);
   });
 
+  it("context destruction leaves an imported GPU texture owned by its BO", () => {
+    const { gl, calls } = makeFakeGl();
+    const reg = new GlContextRegistry();
+    reg.createGpuBo(3, gl, 8, 8);
+    const bo = reg.gpuBo(3)!;
+    reg.bind({ pid: 7, cmdbufAddr: 0, cmdbufLen: 4 });
+    const b = reg.get(7)!;
+    b.gl = gl;
+    b.textures.set(bo.texId, bo.tex);
+    b.foreignTextures.set(3, { tex: bo.tex, texId: bo.texId, w: 8, h: 8, scratch: null });
+    reg.destroyContext(7);
+    expect(reg.gpuBo(3)).toBe(bo);
+    expect(calls.deletedTextures).toEqual([]);
+    reg.destroyGpuBo(3);
+    expect(calls.deletedTextures).toEqual([bo.tex]);
+  });
+
   it("createGpuBo returns null when the context cannot allocate", () => {
     const { gl } = makeFakeGl();
     // A context that fails to create a framebuffer must roll back the

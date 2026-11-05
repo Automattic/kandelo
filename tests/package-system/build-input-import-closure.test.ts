@@ -41,7 +41,9 @@ describe("package build input import closure", () => {
         "nginx-php-vfs",
         "nginx-python-vfs",
         "ruby-todo-vfs",
+        "web-stack-vfs",
         "wordpress",
+        "wordpress-family-vfs",
       ]);
     }
 

@@ -1,3 +1,4 @@
+import { clickDockTool } from "./support/dock";
 // The inspector's file browser reads the machine's filesystem through the
 // kernel worker: the main thread holds no filesystem handle of its own, so a
 // listing or a file preview only appears if the worker answered the request.
@@ -9,9 +10,7 @@ import { gotoMachineOrSkip } from "./support/kandelo-machine";
 test("the inspector lists directories and previews files from the kernel-owned VFS", async ({ page }) => {
   test.setTimeout(240_000);
   await gotoMachineOrSkip(page, "shell");
-  const internals = page.getByRole("button", { name: "Internals" });
-  await expect(internals).toBeEnabled({ timeout: 120_000 });
-  await internals.click();
+  await clickDockTool(page, "Internals", { timeout: 120_000 });
   await page.getByRole("tab", { name: "VFS", exact: true }).click();
 
   // The root listing: directories are named with a trailing slash.

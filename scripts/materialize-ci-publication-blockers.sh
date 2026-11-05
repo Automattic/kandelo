@@ -5,7 +5,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 report="${1:-$REPO_ROOT/.ci-test-publication-blockers.json}"
-abi="$(grep -oE 'ABI_VERSION: u32 = [0-9]+' crates/shared/src/lib.rs | awk '{print $4}')"
+abi="$(grep -oE 'ABI_VERSION: u32 = [0-9]+' crates/program-abi/src/lib.rs | awk '{print $4}')"
 [ -n "$abi" ] || {
     echo "materialize-ci-publication-blockers: could not read the current ABI" >&2
     exit 1

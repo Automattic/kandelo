@@ -182,3 +182,27 @@ matched 32 MiB controls, and the later 4 MiB calibration remained bounded on
 both engines at much lower retained logical cost. WebKit remains engine-timed,
 so whole-worker containment and non-reuse—not RSS timing—remain the
 correctness boundary.
+
+## 2026-10-13 addendum: the canonical test uses the calibrated window
+
+The canonical Node test (`host/test/process-memory-reclamation-rss.test.ts`)
+had run 6 waves, so its late window covered only children 16 through 48. On a
+shared machine it failed intermittently with nothing retained: in two runs,
+RSS rose about 90 MiB after the first wave and fell back a wave later, and the
+late window read 1.85 and 2.33 MiB per child of slope and 71 to 75 MiB of late
+growth. Over four waves, one wave that is not collected yet, or the climb
+before a collection cycle, is enough to cross the 2 MiB-per-child and 64 MiB
+bounds. The test now runs the 12-wave window used for the calibration above
+(children 32 through 96), with the same bounds.
+
+| Node/V8 run, 12 waves | Late slope MiB/child | Late growth MiB |
+|---|---:|---:|
+| 4 MiB pressure, run A | -0.23 | +1.4 |
+| 4 MiB pressure, run B | -0.72 | -41.2 |
+| No pressure (`KANDELO_RECLAIM_PRESSURE_BYTES=0`) | -3.20 | -190.5 |
+
+The zero-pressure run no longer stays retained on this V8: RSS climbed about
+8.8 MiB per child (443 to 794 MiB over children 0 through 40), the shape of
+full retention, and then V8 collected it anyway (441 MiB at 48). It is now a
+delayed-collection control, not a permanent one. A real leak would hold that
+8 MiB per child across the whole late window, about four times the slope bound.

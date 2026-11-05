@@ -1,0 +1,8 @@
+{
+  "$schema": "https://spacefast.com/schemas/sf.json",
+  "runtime": {
+    "kind": "functions",
+    "entry": "handler.ts",
+    "compatibilityDate": "2026-07-01"
+  }
+}

@@ -1,5 +1,6 @@
 script_path = "packages/registry/mariadb-test/build-mariadb-test.sh"
 inputs = [
+  "host/src/native-artifact-identity.ts",
   "packages/registry/mariadb-test/build-mariadb-test.sh",
   "packages/registry/mariadb/package.toml",
   "images/vfs/scripts/build-mariadb-test-vfs-image.ts",
@@ -12,6 +13,7 @@ inputs = [
   "package.json",
   "package-lock.json",
   "host/src/binary-resolver.ts",
+  "host/src/vfs/vfs-asset-group-reference.ts",
   "host/src/constants.ts",
   "host/src/file-offset.ts",
   "host/src/generated/abi.ts",
@@ -34,6 +36,11 @@ inputs = [
   "cargo:kandelo-image-module",
   "cargo:runtime-core",
   "crates/kandelo-image-module/build-wasm.sh",
+  "host/src/vfs/image-integrity.ts",
+  "host/src/vfs/image-manifest-memory.ts",
+  "host/src/vfs/overlay-seal-codec.ts",
+  "host/src/vfs/storage-memory-budget.ts",
+  "images/vfs/lib/positioned-image-targets.ts",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"

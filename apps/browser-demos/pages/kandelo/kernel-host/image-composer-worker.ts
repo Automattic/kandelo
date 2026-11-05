@@ -20,12 +20,33 @@ function post(message: ComposerToMainMessage, transfer?: Transferable[]): void {
   (self as unknown as Worker).postMessage(message, transfer ?? []);
 }
 
+let continuePersistent: (() => void) | undefined;
+
 self.onmessage = (event: MessageEvent<MainToComposerMessage>) => {
+  if ("type" in event.data) {
+    const resume = continuePersistent;
+    continuePersistent = undefined;
+    resume?.();
+    return;
+  }
   const job = event.data.job as ComposeImageJob;
-  void composeKandeloImage(job, (message) => post({ type: "tick", message }))
+  const awaitMain = () => new Promise<void>((resolve) => { continuePersistent = resolve; });
+  void composeKandeloImage(
+    job,
+    (message) => post({ type: "tick", message }),
+    async (chunks, composition, payloadLength) => {
+      post({ type: "persistent-start", composition, payloadLength });
+      for (const bytes of chunks) {
+        post({ type: "persistent-chunk", bytes }, [bytes.buffer as ArrayBuffer]);
+        await awaitMain();
+      }
+      post({ type: "persistent-end" });
+      await awaitMain();
+    },
+  )
     .then((result) => {
       post(
-        { type: "done", ...result },
+        { type: "done", sourceClosed: true, ...result },
         // Hand the bytes over rather than copying them: the main thread is
         // only a courier between this realm and the kernel worker.
         [result.imageBytes.buffer as ArrayBuffer],
@@ -39,6 +60,8 @@ self.onmessage = (event: MessageEvent<MainToComposerMessage>) => {
         type: "error",
         message: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack : undefined,
+        sourceClosed: (err as { retainSource?: unknown } | null)?.retainSource !== true,
+        errno: (err as { errno?: number } | null)?.errno,
       });
     });
 };

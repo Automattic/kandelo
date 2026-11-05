@@ -62,7 +62,10 @@ pub const KDSKBMODE: u32 = 0x4b45;
 // claim to verify, not a constraint to design around.
 pub const SIOCGIFNAME: u32 = 0x8910;
 pub const SIOCGIFCONF: u32 = 0x8912;
+pub const SIOCGIFFLAGS: u32 = 0x8913;
 pub const SIOCGIFADDR: u32 = 0x8915;
+pub const SIOCGIFBRDADDR: u32 = 0x8919;
+pub const SIOCGIFNETMASK: u32 = 0x891b;
 pub const SIOCGIFHWADDR: u32 = 0x8927;
 pub const SIOCGIFINDEX: u32 = 0x8933;
 
@@ -353,7 +356,10 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // kernel reaches it directly via `HostIO::proc_write_bytes` rather than
     // through this table.
     pointer!(SIOCGIFCONF, InOut, 8, 16),
+    pointer!(SIOCGIFFLAGS, InOut, 32, 40),
     pointer!(SIOCGIFADDR, InOut, 32, 40),
+    pointer!(SIOCGIFBRDADDR, InOut, 32, 40),
+    pointer!(SIOCGIFNETMASK, InOut, 32, 40),
     pointer!(SIOCGIFHWADDR, InOut, 32, 40),
     pointer!(SIOCGIFINDEX, InOut, 32, 40),
     scalar_i32!(crate::input::EVIOCGRAB),
@@ -409,9 +415,11 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETENCODER, InOut, 20),
     pointer!(crate::dri::DRM_IOCTL_MODE_PAGE_FLIP, In, 24),
+    pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR, In, 28),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_DUMB, InOut, 32),
     // Linux encodes pointer-sized fields into DRM_IOCTL_VERSION itself.
     pointer!(crate::dri::DRM_IOCTL_VERSION, InOut, wasm32 36),
+    pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR2, In, 36),
     pointer!(crate::dri::DRM_IOCTL_VERSION_WASM64, InOut, wasm64 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETRESOURCES, InOut, 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETCONNECTOR, InOut, 80),

@@ -211,6 +211,47 @@ static void test_transition_action(struct pty_pair pair, int action, int use_mas
     expect_read(pair.master, "display", 7, "raw transition preserves output");
 }
 
+static void test_noncanonical_input_mappings(struct pty_pair pair)
+{
+    const struct {
+        tcflag_t flags;
+        const char *expected;
+    } cases[] = {
+        { 0, "0\r\nx" },
+        { ICRNL, "0\n\nx" },
+        { INLCR, "0\r\rx" },
+        { ICRNL | INLCR, "0\n\rx" },
+        { IGNCR, "0\nx" },
+        { IGNCR | ICRNL, "0\nx" },
+        { IGNCR | INLCR, "0\rx" },
+        { IGNCR | ICRNL | INLCR, "0\rx" },
+    };
+    struct termios original = attributes(pair.slave);
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct termios value = original;
+        size_t length = strlen(cases[i].expected);
+        value.c_iflag = cases[i].flags;
+        value.c_lflag &= ~(ICANON | ECHO | ECHONL);
+        value.c_cc[VMIN] = 1;
+        value.c_cc[VTIME] = 0;
+        if (tcsetattr(pair.slave, TCSAFLUSH, &value) < 0)
+            fail("set noncanonical input mappings");
+        write_all(pair.master, "0\r\nx", 4, "write noncanonical CR and NL");
+        check(bytes_available(pair.slave) == (int)length,
+              "mapped noncanonical FIONREAD");
+        check((read_events(pair.slave) & POLLIN) != 0,
+              "mapped noncanonical poll");
+        expect_read(pair.slave, cases[i].expected, length,
+                    "mapped noncanonical bytes");
+        expect_eagain(pair.slave, "mapped noncanonical queue drained");
+        expect_eagain(pair.master, "noncanonical echo stays disabled");
+    }
+    if (tcsetattr(pair.slave, TCSAFLUSH, &original) < 0)
+        fail("restore input mappings");
+}
+
 static void test_delimited_and_edited_order(struct pty_pair pair)
 {
     unsigned char sequence[64];
@@ -496,6 +537,7 @@ int main(void)
     size_t endpoint_index;
 
     test_standard_termios_roundtrip(pair);
+    test_noncanonical_input_mappings(pair);
     for (action_index = 0;
          action_index < sizeof(actions) / sizeof(actions[0]); action_index++) {
         for (endpoint_index = 0; endpoint_index < 2; endpoint_index++)

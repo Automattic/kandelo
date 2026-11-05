@@ -14,6 +14,7 @@ guide for the contract your change touches.
 | `browser-and-user.md` | Browser demos, `KernelHost`, sharing, VFS image metadata |
 | `performance.md` | Benchmark claims, performance evidence, hot-path restrictions |
 | `build-docs-and-prs.md` | Dev shell, build commands, documentation, PR/final report scope |
+| `spacefast-deployment.md` | Optional Spacefast builds, explicit targets, publication and reusable deployment examples |
 
 Keep `CLAUDE.md` concise. Put detailed, contract-specific operating rules here
 unless an invariant must be visible to every agent on every turn.

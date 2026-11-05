@@ -1975,7 +1975,7 @@ fi
 # current authority revalidates archive manifests.
 mkdir -p \
   "$TMP_ROOT/consumer/packages/registry" \
-  "$TMP_ROOT/consumer/crates/shared/src" \
+  "$TMP_ROOT/consumer/crates/program-abi/src" \
   "$TMP_ROOT/consumer/scripts"
 jq -nS --arg a "$hex_a" --arg manifest "$root_manifest_sha" '{
   format:"kandelo-program-packages-v2",
@@ -1997,7 +1997,7 @@ cp "$TMP_ROOT/rootfs-package.toml" \
 cp "$TMP_ROOT/expected.json" \
   "$TMP_ROOT/consumer/packages/registry/.test-expected.json"
 printf 'pub const ABI_VERSION: u32 = 42;\n' \
-  >"$TMP_ROOT/consumer/crates/shared/src/lib.rs"
+  >"$TMP_ROOT/consumer/crates/program-abi/src/lib.rs"
 printf '// exact consumer browser-root authority fixture\n' \
   >"$TMP_ROOT/consumer/scripts/browser-binary-package-roots.mjs"
 git -C "$TMP_ROOT/consumer" init -q

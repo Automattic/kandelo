@@ -21,6 +21,7 @@
  */
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
+import type { RemoteSegmentPeer } from "./networking/remote-segment-port";
 
 export type { HttpRequest, HttpResponse };
 
@@ -49,15 +50,14 @@ export interface GetKernelMemoryPagesRequestMessage {
   requestId: number;
 }
 
-/** Read the kernel worker's compiled-module cache counters. */
-export interface GetWasmModuleCacheStatsRequestMessage {
-  type: "get_wasm_module_cache_stats";
+export interface GetStorageMetadataMemoryUsageRequestMessage {
+  type: "get_storage_metadata_memory_usage";
   requestId: number;
 }
 
-/** Read the retained capacity of the kernel-owned large-spawn region. */
-export interface GetSpawnScratchCapacityRequestMessage {
-  type: "get_spawn_scratch_capacity";
+/** Read the kernel worker's compiled-module cache counters. */
+export interface GetWasmModuleCacheStatsRequestMessage {
+  type: "get_wasm_module_cache_stats";
   requestId: number;
 }
 
@@ -96,13 +96,14 @@ export interface DrainSyscallTraceMessage {
  *  into this canvas at 60 Hz. The canvas MUST be transferred (the
  *  `transfer` array contains it) — the browser would otherwise refuse
  *  to hand off control. Optional `stats` SAB receives blit/page-flip
- *  telemetry. */
+ *  telemetry. An optional transferred `opts.cursorCanvas` presents the
+ *  virtual hardware cursor independently; omit it on headless hosts. */
 export interface KmsAttachCanvasMessage {
   type: "kms_attach_canvas";
   crtcId: number;
   canvas: OffscreenCanvas;
   stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" };
+  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas };
 }
 
 /** Register a stats SAB for a CRTC without binding a scanout canvas. The
@@ -118,6 +119,7 @@ export interface KmsAttachStatsMessage {
 export interface InitErrorMessage {
   type: "init_error";
   error: string;
+  recovery?: "no-valid-overlay-generation";
 }
 
 /** The dedicated kernel instance is poisoned and has stopped permanently. */
@@ -269,7 +271,9 @@ export interface WakeBlockedWritersMessage {
 export interface HttpRequestMessage {
   type: "http_request";
   requestId: number;
-  /** Port the in-kernel server is listening on. */
+  /** Omit hostname for a local injected listener; otherwise use the Kandelo session network. */
+  hostname?: string;
+  /** Port the server is listening on. */
   port: number;
   request: HttpRequest;
   /** Optional timeout in ms (default 60_000). */
@@ -288,6 +292,15 @@ export interface WriteVfsFileMessage {
   mode: number;
 }
 
+/** Read a bounded positioned range from a regular file in the live VFS. */
+export interface ReadVfsFileRangeMessage {
+  type: "read_vfs_file_range";
+  requestId: number;
+  path: string;
+  offset: number;
+  length: number;
+}
+
 /**
  * Posted whenever the kernel forks, execs, or spawns. The main thread
  * uses this to refresh Inspector-style views without polling. `kind ===
@@ -298,3 +311,38 @@ export interface WriteVfsFileMessage {
 export type ProcEventMessage =
   | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
   | { type: "proc_event"; kind: "exec"; pid: number };
+
+/** Transfer a connected peer's byte bridge to the forwarding kernel worker.
+ *  Responds with the peer's assigned segment address. */
+export interface AttachRemotePeerMessage {
+  type: "remote_network_attach";
+  requestId: number;
+  peer: RemoteSegmentPeer;
+}
+
+/** Inspect the worker-owned remote segment's membership and UDP bindings. */
+export interface RemoteNetworkSnapshotMessage {
+  type: "remote_network_snapshot";
+  requestId: number;
+}
+
+/** Start a network session with this machine as the forwarding host.
+ *  Responds with the machine's session address. */
+export interface RemoteNetworkHostMessage {
+  type: "remote_network_host";
+  requestId: number;
+}
+
+/** Join a session over a connected peer's byte bridge to its host. Responds
+ *  with the address the host assigned. */
+export interface RemoteNetworkJoinMessage {
+  type: "remote_network_join";
+  requestId: number;
+  peer: RemoteSegmentPeer;
+}
+
+/** Leave the session; a host leaving ends it for every member. */
+export interface RemoteNetworkLeaveMessage {
+  type: "remote_network_leave";
+  requestId: number;
+}

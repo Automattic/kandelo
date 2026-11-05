@@ -31,3 +31,15 @@ export interface InputSource {
   /** Stop capturing; remove DOM listeners or clear timers. */
   stop(): void;
 }
+
+/** A virtual absolute device has a fixed range, independent of monitor modes.
+ * SDL and libinput cache absinfo at open, just as they do for physical tablets. */
+export const ABSOLUTE_POINTER_EXTENT = 0x10000;
+
+/** Encode an inclusive scanout pixel in that stable device coordinate space. */
+export function absolutePointerValue(pixel: number, extent: number): number {
+  if (extent <= 1) return 0;
+  const bounded = Math.max(0, Math.min(extent - 1, Math.round(pixel)));
+  // Ceil preserves the pixel when consumers use integer division to decode.
+  return Math.ceil(bounded * (ABSOLUTE_POINTER_EXTENT - 1) / (extent - 1));
+}

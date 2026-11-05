@@ -1,0 +1,20 @@
+id = "LLVM-WASM32-O2-ERLANG-MISCOMPILE"
+kind = "bug"
+status = "suspected"
+runtimes = ["clang"]
+summary = "Suspected: LLVM's wasm32 backend miscompiles Erlang/OTP code at -O2 (shadow-stack aggregate initialization and three BEAM translation units)"
+reports = "human-only"
+
+# No [[repro]]: no standalone reduction exists yet (see entry.md).
+
+[[sites_without_tags]]
+path = "packages/registry/erlang/build-erlang.sh"
+note = "Build script; a comment here would change the package's cache key (the script is a declared input) and force an unneeded rebuild, so it is listed here until the file is next edited for another reason. Two sites: the global.h patch step and the -O1 Makefile rules for erl_unicode.c, erl_db_util.c and erl_db_hash.c."
+
+[[sites_without_tags]]
+path = "packages/registry/erlang/patches/patch-global-h.py"
+note = "Rewrites ESTACK/WSTACK initialization in global.h field by field; its docstring names the suspected LLVM miscompile. Not edited so the package cache key stays unchanged."
+
+[[sites_without_tags]]
+path = "docs/package-management.md"
+note = "Prose ('Optimization-level workarounds') describing the Erlang erl_unicode.c -O1 rule; prose is not a code site."

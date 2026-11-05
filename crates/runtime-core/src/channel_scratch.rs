@@ -465,20 +465,10 @@ fn validate_special_layout(
     pointer_width: u8,
 ) -> Result<ValidatedChannelScratchArgs, Errno> {
     match syscall_number {
-        number if number == Syscall::Fcntl as u32 => {
-            let mut validated = ValidatedChannelScratchArgs::new();
-            if matches!(args[1] as u32, 5 | 6 | 7 | 12 | 13 | 14 | 36 | 37 | 38) {
-                checked_exact_range(
-                    &mut validated,
-                    args,
-                    2,
-                    region.start,
-                    kernel_scratch_wire::FCNTL_FLOCK_BYTES as usize,
-                    region,
-                )?;
-            }
-            Ok(validated)
-        }
+        // No fcntl arm: an advisory-lock command's `struct flock` is the
+        // caller's own address, which the kernel reads and writes through the
+        // cross-memory primitive (`channel_fcntl_lock`), because a blocking
+        // request parks with it and is re-executed after any staging is gone.
         number if number == Syscall::Ioctl as u32 => {
             validate_ioctl_layout(args, region, pointer_width)
         }
@@ -571,10 +561,11 @@ pub unsafe fn validate_channel_scratch_arguments(
     region: ChannelScratchRegion,
     pointer_width: u8,
 ) -> Result<ValidatedChannelScratchArgs, Errno> {
-    if matches!(
-        syscall_number,
-        number if number == Syscall::Getgroups as u32 || number == Syscall::Setgroups as u32
-    ) && checked_size_scalar(args[0])? > crate::credentials::NGROUPS_MAX
+    // setgroups refuses a list longer than NGROUPS_MAX. getgroups does not:
+    // a larger buffer is valid, and the host lends at most NGROUPS_MAX
+    // entries of it (no list is longer).
+    if syscall_number == Syscall::Setgroups as u32
+        && checked_size_scalar(args[0])? > crate::credentials::NGROUPS_MAX
     {
         return Err(Errno::EINVAL);
     }
@@ -633,13 +624,52 @@ pub struct ChannelRecordCopyBack {
     pub len: usize,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChannelRecordCopyBackPlan {
+    spans: crate::IoBuffer<ChannelRecordCopyBack>,
+    bytes: crate::IoBuffer<u8>,
+}
+
+impl ChannelRecordCopyBackPlan {
+    fn prepare(spans: crate::IoBuffer<ChannelRecordCopyBack>) -> Result<Self, Errno> {
+        let length = spans.iter().try_fold(0usize, |length, span| length.checked_add(span.len).ok_or(Errno::ENOMEM))?;
+        let mut bytes = crate::IoBuffer::try_with_capacity(length)?;
+        bytes.resize(length, 0);
+        Ok(Self { spans, bytes })
+    }
+
+    pub unsafe fn apply(mut self) {
+        let mut offset = 0;
+        for span in &self.spans {
+            if span.len != 0 {
+                let source = unsafe { core::slice::from_raw_parts(span.scratch_src as *const u8, span.len) };
+                self.bytes[offset..offset + span.len].copy_from_slice(source);
+            }
+            offset += span.len;
+        }
+        let mut offset = 0;
+        for span in &self.spans {
+            if span.len != 0 {
+                let destination = unsafe { core::slice::from_raw_parts_mut(span.channel_dest as *mut u8, span.len) };
+                destination.copy_from_slice(&self.bytes[offset..offset + span.len]);
+            }
+            offset += span.len;
+        }
+    }
+}
+
+impl core::ops::Deref for ChannelRecordCopyBackPlan {
+    type Target = [ChannelRecordCopyBack];
+    fn deref(&self) -> &[ChannelRecordCopyBack] { &self.spans }
+}
+
 /// Inputs for the legacy channel dispatch, reconstructed kernel-side from an
 /// opaque self-marshalled record.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PreparedChannelRecord {
     pub syscall_nr: u32,
     pub args: [i64; 6],
-    pub copy_back: alloc::vec::Vec<ChannelRecordCopyBack>,
+    pub copy_back: ChannelRecordCopyBackPlan,
     /// The scratch this request may touch: the record itself, plus the zeroed
     /// fixed select/pselect6 slots that can extend past a short record.
     /// Dispatch validates rewritten arguments against this, never the whole
@@ -683,7 +713,7 @@ unsafe fn prepare_select_record(
     }
     let region = dispatch_region;
     let mut args = decoded.scalars;
-    let mut copy_back: alloc::vec::Vec<ChannelRecordCopyBack> = alloc::vec::Vec::new();
+    let mut copy_back = crate::IoBuffer::try_with_capacity(decoded.spans.len())?;
 
     for span in &decoded.spans {
         // Neither select nor pselect6 carries a nested iovec/msghdr span.
@@ -729,7 +759,7 @@ unsafe fn prepare_select_record(
     Ok(PreparedChannelRecord {
         syscall_nr: decoded.syscall as u32,
         args,
-        copy_back,
+        copy_back: ChannelRecordCopyBackPlan::prepare(copy_back)?,
         dispatch_region,
     })
 }
@@ -812,12 +842,17 @@ pub unsafe fn prepare_channel_record(
 
     // Read-once: copy the record out before touching it, so the decoder and
     // the layout below observe an immutable snapshot.
-    let data: alloc::vec::Vec<u8> =
-        unsafe { core::slice::from_raw_parts(region_start as *const u8, record_len) }.to_vec();
+    let data = match crate::IoBuffer::copy_from(
+        unsafe { core::slice::from_raw_parts(region_start as *const u8, record_len) },
+    ) {
+        Ok(data) => data,
+        Err(error) => return Some(Err(error)),
+    };
 
     let decoded = match decode(&data, record_len) {
         Ok(decoded) => decoded,
         // A malformed record is a truthful failure, never a silent success.
+        Err(crate::channel_record_decode::DecodeError::Memory) => return Some(Err(Errno::ENOMEM)),
         Err(_) => return Some(Err(Errno::EINVAL)),
     };
 
@@ -845,7 +880,10 @@ pub unsafe fn prepare_channel_record(
     // with the absolute scratch addresses their spans are laid at, exactly as
     // the host rewrites `CH_ARGS + argIndex*ARG_SIZE`.
     let mut args = decoded.scalars;
-    let mut copy_back: alloc::vec::Vec<ChannelRecordCopyBack> = alloc::vec::Vec::new();
+    let mut copy_back = match crate::IoBuffer::try_with_capacity(decoded.spans.len()) {
+        Ok(copy_back) => copy_back,
+        Err(error) => return Some(Err(error)),
+    };
     let mut cursor = region_start;
     let record_region = match ChannelScratchRegion::new(region_start, record_len) {
         Ok(record_region) => record_region,
@@ -946,6 +984,10 @@ pub unsafe fn prepare_channel_record(
         Ok(dispatch_region) => dispatch_region,
         Err(errno) => return Some(Err(errno)),
     };
+    let copy_back = match ChannelRecordCopyBackPlan::prepare(copy_back) {
+        Ok(copy_back) => copy_back,
+        Err(error) => return Some(Err(error)),
+    };
     Some(Ok(PreparedChannelRecord {
         syscall_nr: decoded.syscall as u32,
         args,
@@ -958,9 +1000,9 @@ pub unsafe fn prepare_channel_record(
 /// `REQUEST_FLAG_OPAQUE_RECORD`, so the region must hold a record for
 /// `header_syscall`.
 ///
-/// Every refusal is `EINVAL` for the one calling syscall and dispatches
-/// nothing: the request is untrusted guest input, and a malformed one must not
-/// reach dispatch or disturb any other process.
+/// Malformed requests return `EINVAL`; memory admission returns `ENOMEM`.
+/// Neither dispatches: an untrusted request must not reach dispatch or disturb
+/// another process unless complete preparation succeeds.
 ///
 /// # Safety
 ///
@@ -998,6 +1040,34 @@ mod tests {
 
     fn pointer_arg(pointer: usize) -> i64 {
         i64::try_from(pointer).expect("native test pointer fits widened channel slot")
+    }
+
+    #[test]
+    fn copy_back_plan_admits_before_effects_and_snapshots_overlapping_outputs() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut storage = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let original = storage;
+        let start = storage.as_mut_ptr() as usize;
+        let spans = [
+            ChannelRecordCopyBack { scratch_src: start, channel_dest: start + 6, len: 6 },
+            ChannelRecordCopyBack { scratch_src: start + 6, channel_dest: start, len: 6 },
+            ChannelRecordCopyBack { scratch_src: 0, channel_dest: 0, len: 0 },
+        ];
+        let owned = crate::IoBuffer::copy_from(&spans).unwrap();
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert!(matches!(ChannelRecordCopyBackPlan::prepare(owned), Err(Errno::ENOMEM)));
+        }
+        assert_eq!(storage, original);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        let plan = ChannelRecordCopyBackPlan::prepare(crate::IoBuffer::copy_from(&spans).unwrap()).unwrap();
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            unsafe { plan.apply(); }
+        }
+        assert_eq!(&storage[..6], &original[6..]);
+        assert_eq!(&storage[6..], &original[..6]);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
     }
 
     #[test]
@@ -1058,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn group_descriptors_prove_complete_vectors_and_reject_oversized_counts() {
+    fn group_descriptors_prove_complete_vectors_and_reject_oversized_setgroups() {
         let bytes = vec![0u8; crate::credentials::NGROUPS_MAX * size_of::<u32>()];
         let start = bytes.as_ptr() as usize;
         let region = ChannelScratchRegion::new(start, bytes.len()).unwrap();
@@ -1072,9 +1142,10 @@ mod tests {
         .unwrap();
         assert_eq!(validated.pointer(1), Ok(start));
 
+        // More entries than the lent region: a descriptor fault, never the
+        // EINVAL that only setgroups owes for an oversized count.
         getgroups[0] = (crate::credentials::NGROUPS_MAX + 1) as i64;
-        getgroups[2] = size_of::<u32>() as i64;
-        assert_eq!(
+        assert_ne!(
             unsafe {
                 validate_channel_scratch_arguments(Syscall::Getgroups as u32, &getgroups, region, 4)
             },
@@ -1089,6 +1160,14 @@ mod tests {
         }
         .unwrap();
         assert_eq!(validated.pointer(1), Ok(start));
+
+        setgroups[0] = (crate::credentials::NGROUPS_MAX + 1) as i64;
+        assert_eq!(
+            unsafe {
+                validate_channel_scratch_arguments(Syscall::Setgroups as u32, &setgroups, region, 4)
+            },
+            Err(Errno::EINVAL),
+        );
     }
 
     #[test]
@@ -2096,7 +2175,7 @@ mod tests {
     // emits for one representative syscall per family and assert that
     // `prepare_channel_record` lays a scratch layout the UNCHANGED legacy
     // `validate_channel_scratch_arguments` / dispatch accept, including
-    // copy-back for value-result buffers. fcntl-lock, prctl, epoll_ctl,
+    // copy-back for value-result buffers. prctl, epoll_ctl,
     // epoll_pwait/epoll_wait reuse the generic flat-span placement
     // (single/ordered spans at the allocation base);
     // select/pselect6 use the dedicated fixed-offset `prepare_select_record`.
@@ -2132,30 +2211,6 @@ mod tests {
             Some(Err(errno)) => Some(Err(errno)),
             None => None,
         }
-    }
-
-    #[test]
-    fn record_fcntl_getlk_flock_matches_legacy_validator() {
-        // fcntl(fd=3, F_GETLK=5, flock): one INOUT flock span at arg 2. F_GETLK
-        // returns the conflicting lock in place, so the guest marshals INOUT and
-        // the kernel plans a copy-back (F_SETLK would be a plain IN span).
-        const FLOCK: usize = kernel_scratch_wire::FCNTL_FLOCK_BYTES as usize;
-        let mut flock = alloc::vec![0u8; FLOCK];
-        flock[0] = 1; // F_WRLCK marker (content is opaque to the layout)
-        let (start, prep, _data) = prep_record(
-            Syscall::Fcntl as u32,
-            [3, 5, 0, 0, 0, 0],
-            &[RecSpan { kind: SPAN_KIND_IN_OUT_PTR, arg_index: 2, payload: flock }],
-        );
-        assert_eq!(prep.syscall_nr, Syscall::Fcntl as u32);
-        assert_eq!(prep.args[2] as usize, start);
-        // F_GETLK writes the conflicting lock back -> one copy-back.
-        assert_eq!(prep.copy_back.len(), 1);
-        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-        let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
-                .expect("legacy validator accepts the reconstructed fcntl layout");
-        assert_eq!(validated.pointer(2), Ok(start));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import { EXIT_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -13,12 +14,14 @@ import {
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_PENDING,
+  CHANNEL_STATUS_COMPLETE,
   CH_ARGS,
   CH_ARGS_COUNT,
   CH_ARG_SIZE,
   CH_ERRNO,
   CH_RETURN,
   CH_SIG_HANDLER,
+  CH_SIG_SI_CODE,
   CH_SIG_SIGNUM,
   CH_STATUS,
   CH_SYSCALL,
@@ -90,6 +93,7 @@ function makeHarness(): EntryHarness {
     kernel_get_process_exit_signal: () => 0,
     kernel_get_process_exit_status: () => -1,
     kernel_handle_channel: handleChannel,
+    kernel_drain_wakeup_events: () => 0,
     kernel_inject_mouse_event: () => 0,
     kernel_set_current_tid: () => 0,
   };
@@ -196,6 +200,73 @@ function mutableState(harness: EntryHarness) {
 }
 
 describe("teardown and pipe notifications at the kernel entry gate", () => {
+  it("includes an already-exited parked worker in terminal retirement without dispatching Rust", async () => {
+    const harness = makeHarness();
+    const state = harness.worker as unknown as { hostReaped: Set<number> };
+    state.hostReaped.add(PID);
+    const completeRaw = vi.fn(() => {
+      harness.channelView.setUint32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true);
+    });
+    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({ completeChannelRaw: completeRaw });
+    expect(await harness.worker.beginKernelTeardown()).toEqual(new Set([PID]));
+    expect(harness.handleChannel).not.toHaveBeenCalled();
+    expect(completeRaw).toHaveBeenCalledExactlyOnceWith(harness.channel, -1, 4);
+    expect(harness.channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    expect(harness.channelView.getUint32(CH_SIG_SI_CODE, true)).toBe(EXIT_RETIRE_SIGNAL_CODE);
+  });
+
+  it("drops a stopped channel's obsolete parked completion before its terminal wake", async () => {
+    const harness = makeHarness();
+    const state = harness.worker as unknown as {
+      parkedChannelCompletions: Map<TestChannel, unknown>;
+      deferredStoppedChannels: Map<TestChannel, boolean>;
+      stoppedPids: Set<number>;
+    };
+    state.parkedChannelCompletions = new Map([[harness.channel, {}]]);
+    state.deferredStoppedChannels = new Map([[harness.channel, true]]);
+    state.stoppedPids = new Set([PID]);
+    await harness.worker.beginKernelTeardown();
+    expect(state.parkedChannelCompletions.size).toBe(0);
+    expect(state.deferredStoppedChannels.size).toBe(0);
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
+  });
+
+  it.each([ABI_SYSCALLS.Exit, ABI_SYSCALLS.ExitGroup])("does not overwrite an already-pending exit syscall %s", async syscall => {
+    const harness = makeHarness();
+    harness.channelView.setUint32(CH_SYSCALL, syscall, true);
+    const relisten = vi.fn();
+    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({
+      completeChannel: harness.completeChannel, relistenChannel: relisten,
+    });
+    expect(await harness.worker.beginKernelTeardown()).toEqual(new Set([PID]));
+    expect(harness.completeChannel).not.toHaveBeenCalled();
+    expect(harness.channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(0);
+    expect(relisten).toHaveBeenCalledExactlyOnceWith(harness.channel);
+  });
+
+  it("keeps a running process in the retirement set and cooperatively exits its later syscall", async () => {
+    const harness = makeHarness();
+    harness.channelView.setUint32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true);
+    expect(await harness.worker.beginKernelTeardown()).toEqual(new Set([PID]));
+    expect(harness.completeChannel).not.toHaveBeenCalled();
+    harness.channelView.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+    harness.channelView.setUint32(CH_SYSCALL, ABI_SYSCALLS.Read, true);
+    harness.worker.testAuthority.dispatchScratchBoundarySyscallForTest(harness.channel);
+    expect(harness.handleChannel).not.toHaveBeenCalled();
+    expect(harness.channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
+    expect(harness.completeChannel).toHaveBeenCalledWith(harness.channel,
+      ABI_SYSCALLS.Read, [0, 0, 0, 0, 0, 0], expect.anything(), -1, 4);
+  });
+
+  it("does not republish a terminal wake for a completed stale dispatch", async () => {
+    const harness = makeHarness();
+    harness.channelView.setUint32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true);
+    await harness.worker.beginKernelTeardown();
+    harness.worker.testAuthority.dispatchScratchBoundarySyscallForTest(harness.channel);
+    expect(harness.handleChannel).not.toHaveBeenCalled();
+    expect(harness.completeChannel).not.toHaveBeenCalled();
+  });
   it("defers teardown behind an active export and resolves after its wake publication", async () => {
     const harness = makeHarness();
     const getExitStatus = vi.fn(() => -1);
@@ -230,6 +301,36 @@ describe("teardown and pipe notifications at the kernel entry gate", () => {
       -1,
       4,
     );
+  });
+
+  it.each(["all", "pid"])("%s teardown wakes an exited process without changing its recorded status", async mode => {
+    const harness = makeHarness();
+    const state = harness.worker as unknown as {
+      hostReaped: Set<number>;
+      processes: Map<number, unknown>;
+      activeChannels: TestChannel[];
+    };
+    state.hostReaped.add(PID);
+    const exitStatus = vi.fn(() => 0);
+    harness.implementations.kernel_get_process_exit_status = exitStatus;
+    const woken = await (mode === "all"
+      ? harness.worker.killAllBlockedForTeardown()
+      : harness.worker.killBlockedProcessForTeardown(PID));
+
+    expect(woken).toEqual(new Set([PID]));
+    expect(harness.channelView.getInt32(CH_STATUS, true)).toBe(CHANNEL_STATUS_COMPLETE);
+    expect(harness.channelView.getBigInt64(CH_RETURN, true)).toBe(-1n);
+    expect(harness.channelView.getInt32(CH_ERRNO, true)).toBe(4);
+    expect(harness.channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    expect(harness.channelView.getUint32(CH_SIG_SI_CODE, true)).toBe(EXIT_RETIRE_SIGNAL_CODE);
+    expect(harness.completeChannel).not.toHaveBeenCalled();
+    expect(harness.handleChannel).not.toHaveBeenCalled();
+    expect(exitStatus()).toBe(0);
+
+    // Release the retired waitAsync listener after its registration disappears.
+    state.processes.clear();
+    state.activeChannels = [];
+    Atomics.notify(harness.channel.i32View, CH_STATUS / 4);
   });
 
   it("serializes interleaved readable and sequential writable retries", async () => {

@@ -1,0 +1,33 @@
+TyrQuake v0.71 moved command registration into per-subsystem
+*_AddCommands functions, but Commands_Init never calls NET_AddCommands,
+and net.h no longer declares it. The listen, maxplayers, port and slist
+console commands therefore do not exist. The Multiplayer menu's New Game
+starts a server by queueing "listen 0", "maxplayers N" and "map ...";
+only the map command runs, so it starts a one-player game that never
+listens, and no other computer's search can find it. Only -listen on the
+command line made a joinable server. Register the network commands with
+the others. This is an upstream defect, independent of Kandelo.
+
+Reference: pinned TyrQuake NQ/host.c Commands_Init, NQ/net_main.c
+NET_AddCommands.
+
+--- a/NQ/host.c
++++ b/NQ/host.c
+@@ -807,6 +807,7 @@
+     }
+ 
+     SV_AddCommands();
++    NET_AddCommands();
+ 
+     Cmd_AddCommand("game", Host_Gamedir_f);
+     Cmd_SetCompletion("game", Host_Gamedir_Arg_f);
+--- a/NQ/net.h
++++ b/NQ/net.h
+@@ -259,6 +259,7 @@
+ 
+ const char *NET_AdrToString(const netadr_t *a);
+ 
++void NET_AddCommands();
+ void NET_RegisterVariables();
+ void NET_Init();
+ void NET_Shutdown();

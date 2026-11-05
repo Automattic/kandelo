@@ -1,0 +1,276 @@
+Draw the LAN waiting room and let the host start the game early.
+
+chocolate-doom's net_gui.c shows a waiting room while a network game
+gathers players: it lists who has joined, the host (the controller)
+starts the game with Space whenever it chooses, and Esc quits. fbDOOM
+does not link chocolate-doom's textscreen library, so 0007's
+NET_WaitForLaunch replaced that room with a headless loop that could
+only start a -nodes N game once all N players had joined, on a display
+that stayed dark because the game opens /dev/fb0 after this wait.
+
+Open the display early, draw the same room with Doom's own font, and
+read Space and Esc from the raw-mode keyboard. Each change to the room
+is also printed, as "N of M players have joined". -nodes N still starts
+the game by itself, as upstream does. I_InitGraphics now ignores a
+second call, since /dev/fb0 has a single owner.
+
+Reference: chocolate-doom src/net_gui.c (OpenWaitDialog, StartGame,
+EscapePressed) at the pinned commit.
+
+diff --git a/fbdoom/i_video_fbdev.c b/fbdoom/i_video_fbdev.c
+index a27b8ce..faa42f3 100644
+--- a/fbdoom/i_video_fbdev.c
++++ b/fbdoom/i_video_fbdev.c
+@@ -160,8 +160,16 @@ void cmap_to_fb(uint8_t * out, uint8_t * in, int in_pixels)
+ 
+ void I_InitGraphics (void)
+ {
++    static boolean initialized = false;
+     int i;
+ 
++    // NET_WaitForLaunch opens the display early to draw the LAN waiting
++    // room; /dev/fb0 has a single owner, so the game loop's later call
++    // must not open it again.
++    if (initialized)
++        return;
++    initialized = true;
++
+     /* Open fbdev file descriptor */
+     fd_fb = open("/dev/fb0", O_RDWR);
+     if (fd_fb < 0)
+diff --git a/fbdoom/net_posix.c b/fbdoom/net_posix.c
+index 5b5d4f0..8cc9200 100644
+--- a/fbdoom/net_posix.c
++++ b/fbdoom/net_posix.c
+@@ -23,6 +23,7 @@
+ //     NET_WaitForLaunch supplies the upstream protocol's launch wait
+ //     without the textscreen frontend omitted by fbDOOM's NOSDL build.
+ 
++#include <ctype.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <stdio.h>
+@@ -46,6 +47,12 @@
+ #include "net_client.h"
+ #include "net_server.h"
+ #include "z_zone.h"
++#include "deh_str.h"
++#include "hu_stuff.h"
++#include "i_swap.h"
++#include "i_video.h"
++#include "v_video.h"
++#include "w_wad.h"
+ 
+ // Default UDP port. Matches the normal chocolate-doom UDP default; the
+ // upstream UDP transport (2342).
+@@ -381,45 +388,171 @@ net_module_t net_posix_module =
+ };
+ 
+ // ---------------------------------------------------------------------
+-// NET_WaitForLaunch — textscreen-free stub.
++// NET_WaitForLaunch — the LAN waiting room.
+ // ---------------------------------------------------------------------
+ //
+-// chocolate-doom's net_gui.c provides this with a TXT_* desktop drawn
+-// onto the screen while the server waits for clients. fbDOOM doesn't
+-// link textscreen, so we substitute a headless poll loop that keeps
+-// the client and server state machines running until the server
+-// flips net_waiting_for_launch off.
++// chocolate-doom's net_gui.c draws this room with its textscreen library:
++// it lists the players who have joined, the host (the "controller") starts
++// the game with Space whenever it chooses, and Esc quits. fbDOOM doesn't
++// link textscreen, so this draws the same room with Doom's own font onto
++// /dev/fb0 and reads the same keys from the raw-mode keyboard.
+ //
+-// User-visible behaviour: fbDOOM's pre-game framebuffer freezes for a
+-// few netcode round-trips while the handshake completes, then the
+-// level loads normally. Guest stdout records the actual protocol wait.
+-// Page presentation can show those messages while the game negotiates.
+-// The transport and game state remain authoritative.
++// The game would otherwise open the display only after this wait, so the
++// room opens it early; I_InitGraphics ignores the game loop's second call.
++// The IWAD and the font lumps are already loaded at this point.
++//
++// -nodes N still starts the game by itself once N players have joined, as
++// upstream does. Space starts it sooner with whoever is present.
+ //
+ // I_Sleep(1) yields once per spin: this is a cooperatively-scheduled
+-// wait, not a busy loop. The wasm-posix-kernel's syscall pressure
+-// would already throttle a tight spin, but the explicit sleep keeps
+-// the worker thread polite.
++// wait, not a busy loop.
+ 
+ extern boolean net_waiting_for_launch;
++int kbd_read(int *released, unsigned char *key);
++void kbd_shutdown(void);
++
++#define WAIT_KEY_ESCAPE 0x01
++#define WAIT_KEY_SPACE  0x39
++
++static patch_t *wait_font[HU_FONTSIZE];
++
++static int WaitTextWidth(const char *text)
++{
++    int width = 0;
++
++    for (; *text != '\0'; ++text)
++    {
++        int c = toupper((unsigned char) *text) - HU_FONTSTART;
++
++        width += c < 0 || c >= HU_FONTSIZE ? 4 : SHORT(wait_font[c]->width);
++    }
++    return width;
++}
++
++static void WaitText(int y, const char *text)
++{
++    int x = (SCREENWIDTH - WaitTextWidth(text)) / 2;
++
++    for (; *text != '\0'; ++text)
++    {
++        int c = toupper((unsigned char) *text) - HU_FONTSTART;
++
++        if (c < 0 || c >= HU_FONTSIZE)
++        {
++            x += 4;
++            continue;
++        }
++        if (x >= 0 && x + SHORT(wait_font[c]->width) <= SCREENWIDTH)
++            V_DrawPatch(x, y, wait_font[c]);
++        x += SHORT(wait_font[c]->width);
++    }
++}
++
++static void OpenWaitingRoom(void)
++{
++    char name[9];
++    int i;
++
++    for (i = 0; i < HU_FONTSIZE; ++i)
++    {
++        M_snprintf(name, sizeof(name), "STCFN%.3d", HU_FONTSTART + i);
++        wait_font[i] = W_CacheLumpName(DEH_String(name), PU_STATIC);
++    }
++    I_InitGraphics();
++    V_RestoreBuffer();
++    I_SetPalette(W_CacheLumpName(DEH_String("PLAYPAL"), PU_CACHE));
++}
++
++static void DrawWaitingRoom(int expected_nodes)
++{
++    char line[64];
++    int target, i, y;
++
++    if (W_CheckNumForName(DEH_String("INTERPIC")) >= 0)
++        V_DrawPatch(0, 0, W_CacheLumpName(DEH_String("INTERPIC"), PU_CACHE));
++    else
++        memset(I_VideoBuffer, 0, SCREENWIDTH * SCREENHEIGHT);
++
++    y = 24;
++    WaitText(y, "LAN GAME");
++    y += 20;
++    if (!net_client_received_wait_data)
++    {
++        WaitText(y, "CONNECTING TO THE SERVER...");
++    }
++    else
++    {
++        target = expected_nodes > 0 ? expected_nodes
++                                    : net_client_wait_data.max_players;
++        M_snprintf(line, sizeof(line), "%d OF %d PLAYERS HAVE JOINED",
++                   net_client_wait_data.num_players, target);
++        WaitText(y, line);
++        y += 16;
++        for (i = 0; i < net_client_wait_data.num_players && i < NET_MAXPLAYERS; ++i)
++        {
++            M_snprintf(line, sizeof(line), "%d. %s%s", i + 1,
++                       net_client_wait_data.player_names[i],
++                       i == net_client_wait_data.consoleplayer ? " (YOU)" : "");
++            WaitText(y, line);
++            y += 10;
++        }
++        y = SCREENHEIGHT - 44;
++        if (net_client_wait_data.is_controller)
++        {
++            if (expected_nodes > 0)
++                WaitText(y, "THE GAME STARTS WHEN EVERYONE HAS JOINED");
++            WaitText(y + 12, "PRESS SPACE TO START NOW");
++        }
++        else
++        {
++            WaitText(y + 12, "WAITING FOR THE HOST TO START");
++        }
++    }
++    WaitText(SCREENHEIGHT - 16, "PRESS ESC TO QUIT");
++    I_FinishUpdate();
++}
+ 
+ void NET_WaitForLaunch(void)
+ {
+     boolean launch_sent = false;
+     int parm = M_CheckParmWithArgs("-nodes", 1);
+     int expected_nodes = parm > 0 ? atoi(myargv[parm + 1]) : 0;
++    int shown = -1;
+ 
+     printf("NET_WaitForLaunch: waiting for server to start the game...\n");
++    OpenWaitingRoom();
+ 
+     while (net_waiting_for_launch)
+     {
++        int released, state;
++        unsigned char key;
++
+         NET_CL_Run();
+         NET_SV_Run();
+ 
+-        // chocolate-doom-setup normally calls NET_CL_LaunchGame from its
+-        // "start" button. fbDOOM doesn't link setup, so the server never
+-        // sees a LAUNCH packet and net_waiting_for_launch never clears.
+-        // Fire it from the controller (host) once the peer has joined.
++        while (kbd_read(&released, &key))
++        {
++            if (released)
++                continue;
++            if (key == WAIT_KEY_ESCAPE)
++            {
++                printf("NET_WaitForLaunch: cancelled.\n");
++                kbd_shutdown();
++                I_Quit();
++            }
++            if (key == WAIT_KEY_SPACE && !launch_sent
++             && net_client_received_wait_data
++             && net_client_wait_data.is_controller)
++            {
++                printf("NET_WaitForLaunch: the host started the game with %d player(s).\n",
++                       net_client_wait_data.num_players);
++                NET_CL_LaunchGame();
++                launch_sent = true;
++            }
++        }
++
++        // chocolate-doom starts a -nodes game by itself once that many
++        // players have joined; only the controller (host) can send LAUNCH.
+         if (!launch_sent
+          && net_client_received_wait_data
+          && net_client_wait_data.is_controller
+@@ -430,6 +563,20 @@ void NET_WaitForLaunch(void)
+             launch_sent = true;
+         }
+ 
++        state = net_client_received_wait_data
++              ? 1 + net_client_wait_data.num_players * 2 + net_client_wait_data.is_controller
++              : 0;
++        if (state != shown)
++        {
++            if (net_client_received_wait_data)
++                printf("NET_WaitForLaunch: %d of %d players have joined.\n",
++                       net_client_wait_data.num_players,
++                       expected_nodes > 0 ? expected_nodes
++                                          : net_client_wait_data.max_players);
++            DrawWaitingRoom(expected_nodes);
++            shown = state;
++        }
++
+         I_Sleep(1);
+     }
+ 

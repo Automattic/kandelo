@@ -206,6 +206,19 @@ function hasContentCoding(upstream: Response): boolean {
   return encoding !== null && encoding.trim().toLowerCase() !== "identity";
 }
 
+/**
+ * Why the upstream fetch threw. Node's fetch throws a bare "fetch failed" and
+ * keeps the system error (ENOTFOUND, ECONNREFUSED, ETIMEDOUT, ...) as its
+ * cause. Only the target's origin is named: its path and query may carry
+ * credentials the guest did not mean to show.
+ */
+function upstreamFailure(error: unknown, target: URL): string {
+  const cause = error instanceof Error && error.cause !== undefined ? error.cause : error;
+  const code = typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : undefined;
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return `${code !== undefined && !message.includes(code) ? `${code} ` : ""}${message} (${target.origin})`;
+}
+
 function fail(response: ServerResponse, status: number, message: string): void {
   response.statusCode = status;
   response.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -462,7 +475,12 @@ export async function relayDevCorsProxyRequest(
       fail(response, 413, "Response Entity Too Large");
       return;
     }
-    fail(response, 502, "Bad Gateway");
+    // WHY: a bare "Bad Gateway" leaves the guest, and anyone reading a test
+    // failure, unable to tell a name lookup from a refused connection or a
+    // timeout. Name the failure in the body and on the dev server's console.
+    const reason = upstreamFailure(error, targetUrl);
+    console.warn(`[kandelo cors proxy] ${method} failed: ${reason}`);
+    fail(response, 502, `Bad Gateway: ${reason}`);
   } finally {
     response.off("close", abortUpstream);
   }

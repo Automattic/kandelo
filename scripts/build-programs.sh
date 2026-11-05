@@ -11,7 +11,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # WHY: the SDK resolves the sysroot and glue dir by walking up from the
 # current directory -- findSysroot and findGlueDir, both through
-# projectRootOrSdk/findProjectRoot in sdk/src/lib/toolchain.ts -- not from
+# projectRootOrSdk/find_project_root in crates/kandelo-cc/src/toolchain.rs -- not from
 # this script's location. Invoked with a cwd inside a different Kandelo
 # checkout, it would silently compile against THAT checkout's sysroot while
 # the prerequisite check below validated this one. Pin the cwd so both agree.
@@ -20,6 +20,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # returns that value before its arch-aware lookup, which would hand the
 # wasm64 build the wasm32 sysroot.
 cd "$REPO_ROOT"
+python3 "$REPO_ROOT/scripts/build-program-baseline.py"
 SYSROOT="$REPO_ROOT/sysroot"
 BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
 BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
@@ -154,7 +155,7 @@ find_llvm_bin() {
 LLVM_BIN="$(find_llvm_bin)"
 
 # The SDK owns the link contract. This script used to carry its own copy in
-# LINK_PRE_LIBS/LINK_POST_LIBS, which drifted from sdk/src/lib/flags.ts: it
+# LINK_PRE_LIBS/LINK_POST_LIBS, which drifted from crates/kandelo-cc/src/flags.rs: it
 # lacked --export=__heap_base and --global-base, so every program it built
 # was laid out differently from SDK-built software, and the host had to
 # guess each program's heap base. CLAUDE.md requires build scripts to use
@@ -181,11 +182,11 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
 fi
 
 # Everything the SDK already supplies is deliberately absent here. Its
-# compileFlags() (sdk/src/lib/flags.ts) owns --target, -matomics,
+# compile_flags() (crates/kandelo-cc/src/flags.rs) owns --target, -matomics,
 # -mbulk-memory, -mexception-handling, -fno-trapping-math and the -mllvm SjLj
 # / modern-EH pair; cc.ts adds --sysroot from the resolved toolchain; its
 # executable link injects the syscall glue (channel_syscall.c, compiler_rt.c,
-# cxxrt.c), crt1.o, the sysroot libc.a and linkFlags(). Per-program archives
+# cxxrt.c), crt1.o, the sysroot libc.a and link_flags(). Per-program archives
 # passed after the sources still land BEFORE libc.a: the SDK forwards caller
 # inputs verbatim, in order, and appends libc.a after them, so the stubs'
 # internal references (mmap, ioctl, calloc, ...) resolve in a single linker
@@ -696,9 +697,8 @@ for src in "$REPO_ROOT/programs/"*.c; do
     # (sysroot/lib/libdrm.a, libgbm.a). EGL/GLES2 stubs are picked up
     # by build_program's header-based auto-detection.
     case "$(basename "$src")" in
-        login.c|sudo-lite.c)
-            # Package recipes own the image artifacts. Keep ordinary local
-            # copies only as runtime test fixtures.
+        login.c|sudo-lite.c|persistence-overwrite.c|persistence-boot-counter.c|persistence-mapping-memory.c|persistence-aggregate-pressure.c|http-retirement-server.c|exec-memory-refusal.c|exec-memory-refusal-small.c|exec-memory-refusal-large.c)
+            # Keep runtime-only test programs outside the ordinary resolver mirror.
             build_program "$src" "$TEST_FIXTURE_DIR/wasm32"
             ;;
         modeset.c|dri-modeset.c|dumb_roundtrip.c|gbm_surface_smoke.c)

@@ -6,11 +6,10 @@ inputs = [
   "scripts/install-local-binary.sh",
   "scripts/package-build-roots.sh",
   "sdk/activate.sh",
-  "sdk/kandelo/bin",
   "sdk/config.site",
   "libc/glue",
   "libc/musl-overlay",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 3
+revision    = 4

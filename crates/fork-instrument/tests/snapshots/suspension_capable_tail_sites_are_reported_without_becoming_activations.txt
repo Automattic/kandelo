@@ -1,0 +1,57 @@
+=== closed b2c4bb76395c ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+        4,
+    },
+    tail_sites: {
+        ProgramPoint {
+            function: 2,
+            offset: 119,
+        },
+        ProgramPoint {
+            function: 3,
+            offset: 126,
+        },
+        ProgramPoint {
+            function: 4,
+            offset: 134,
+        },
+    },
+}
+
+=== external b2c4bb76395c ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+        4,
+    },
+    tail_sites: {
+        ProgramPoint {
+            function: 2,
+            offset: 119,
+        },
+        ProgramPoint {
+            function: 3,
+            offset: 126,
+        },
+        ProgramPoint {
+            function: 4,
+            offset: 134,
+        },
+    },
+}

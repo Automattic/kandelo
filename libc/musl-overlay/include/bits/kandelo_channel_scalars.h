@@ -37,6 +37,11 @@ _Static_assert(__NR_getcwd == 23u,
 #endif
 _Static_assert(__NR_readdir == 26u,
 "musl __NR_readdir drifted from the Kandelo channel scalar contract");
+#ifndef __NR_nanosleep
+#error "musl is missing __NR_nanosleep required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_nanosleep == 41u,
+"musl __NR_nanosleep drifted from the Kandelo channel scalar contract");
 #ifndef __NR_getenv
 #error "musl is missing __NR_getenv required by the Kandelo channel scalar contract"
 #endif
@@ -167,6 +172,11 @@ _Static_assert(__NR_getrandom == 120u,
 #endif
 _Static_assert(__NR_getdents64 == 122u,
 "musl __NR_getdents64 drifted from the Kandelo channel scalar contract");
+#ifndef __NR_clock_nanosleep
+#error "musl is missing __NR_clock_nanosleep required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_clock_nanosleep == 124u,
+"musl __NR_clock_nanosleep drifted from the Kandelo channel scalar contract");
 #ifndef __NR_mremap
 #error "musl is missing __NR_mremap required by the Kandelo channel scalar contract"
 #endif
@@ -197,6 +207,11 @@ _Static_assert(__NR_sendmsg == 137u,
 #endif
 _Static_assert(__NR_recvmsg == 138u,
 "musl __NR_recvmsg drifted from the Kandelo channel scalar contract");
+#ifndef __NR_wait4
+#error "musl is missing __NR_wait4 required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_wait4 == 139u,
+"musl __NR_wait4 drifted from the Kandelo channel scalar contract");
 #ifndef __NR_futex
 #error "musl is missing __NR_futex required by the Kandelo channel scalar contract"
 #endif
@@ -207,6 +222,11 @@ _Static_assert(__NR_futex == 200u,
 #endif
 _Static_assert(__NR_set_tid_address == 203u,
 "musl __NR_set_tid_address drifted from the Kandelo channel scalar contract");
+#ifndef __NR_rt_sigtimedwait
+#error "musl is missing __NR_rt_sigtimedwait required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_rt_sigtimedwait == 207u,
+"musl __NR_rt_sigtimedwait drifted from the Kandelo channel scalar contract");
 #ifndef __NR_sched_setaffinity
 #error "musl is missing __NR_sched_setaffinity required by the Kandelo channel scalar contract"
 #endif
@@ -262,6 +282,11 @@ _Static_assert(__NR_mlock2 == 280u,
 #endif
 _Static_assert(__NR_munlock == 281u,
 "musl __NR_munlock drifted from the Kandelo channel scalar contract");
+#ifndef __NR_waitid
+#error "musl is missing __NR_waitid required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_waitid == 288u,
+"musl __NR_waitid drifted from the Kandelo channel scalar contract");
 #ifndef __NR_copy_file_range
 #error "musl is missing __NR_copy_file_range required by the Kandelo channel scalar contract"
 #endif
@@ -352,6 +377,51 @@ _Static_assert(__NR_shmget == 344u,
 #endif
 _Static_assert(__NR_shmctl == 347u,
 "musl __NR_shmctl drifted from the Kandelo channel scalar contract");
+#ifndef __NR_fgetxattr
+#error "musl is missing __NR_fgetxattr required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_fgetxattr == 350u,
+"musl __NR_fgetxattr drifted from the Kandelo channel scalar contract");
+#ifndef __NR_flistxattr
+#error "musl is missing __NR_flistxattr required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_flistxattr == 351u,
+"musl __NR_flistxattr drifted from the Kandelo channel scalar contract");
+#ifndef __NR_fsetxattr
+#error "musl is missing __NR_fsetxattr required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_fsetxattr == 353u,
+"musl __NR_fsetxattr drifted from the Kandelo channel scalar contract");
+#ifndef __NR_getxattr
+#error "musl is missing __NR_getxattr required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_getxattr == 354u,
+"musl __NR_getxattr drifted from the Kandelo channel scalar contract");
+#ifndef __NR_listxattr
+#error "musl is missing __NR_listxattr required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_listxattr == 355u,
+"musl __NR_listxattr drifted from the Kandelo channel scalar contract");
+#ifndef __NR_lgetxattr
+#error "musl is missing __NR_lgetxattr required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_lgetxattr == 356u,
+"musl __NR_lgetxattr drifted from the Kandelo channel scalar contract");
+#ifndef __NR_llistxattr
+#error "musl is missing __NR_llistxattr required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_llistxattr == 357u,
+"musl __NR_llistxattr drifted from the Kandelo channel scalar contract");
+#ifndef __NR_lsetxattr
+#error "musl is missing __NR_lsetxattr required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_lsetxattr == 359u,
+"musl __NR_lsetxattr drifted from the Kandelo channel scalar contract");
+#ifndef __NR_setxattr
+#error "musl is missing __NR_setxattr required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_setxattr == 361u,
+"musl __NR_setxattr drifted from the Kandelo channel scalar contract");
 #ifndef __NR_signalfd
 #error "musl is missing __NR_signalfd required by the Kandelo channel scalar contract"
 #endif

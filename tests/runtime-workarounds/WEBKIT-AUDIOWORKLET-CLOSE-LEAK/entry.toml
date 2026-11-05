@@ -1,0 +1,26 @@
+id = "WEBKIT-AUDIOWORKLET-CLOSE-LEAK"
+kind = "bug"
+status = "suspected"
+runtimes = ["webkit"]
+summary = "Suspected: closing a WebKit AudioContext that loaded an AudioWorklet module leaves its WebCore: AudioWorklet thread in the page process"
+reports = "human-only"
+
+# Evidence page only: the leaked thread shows in a thread listing, not on
+# the page.
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["webkit"]
+self_judging = false
+timeout_seconds = 60
+
+# Stack sample of the WebKit page process after repro.html (see entry.md):
+# one WebCore: AudioWorklet thread per closed context, 25 s later.
+[[observed]]
+runtime = "webkit"
+version = "26.6"
+os = "macos"
+reproduced = true
+date = 2026-10-22
+source = "manual"
+released = false

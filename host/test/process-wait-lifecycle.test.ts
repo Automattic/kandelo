@@ -9,6 +9,7 @@ import {
   CH_RETURN,
   CH_SIG_FLAGS,
   CH_SIG_SIGNUM,
+  CH_SIG_SI_CODE,
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
@@ -17,11 +18,6 @@ import {
   CHANNEL_REQUEST_FLAG_CANCELLATION_POINT,
   CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
   CHANNEL_REQUEST_FLAGS_KNOWN_MASK,
-  KERNEL_WAIT_RESULT_CHILD_UID_OFFSET,
-  KERNEL_WAIT_RESULT_RUSAGE_OFFSET,
-  KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
-  KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
-  KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
   PROCESS_SIGINFO_CODE_OFFSET,
   PROCESS_SIGINFO_SIGNO_OFFSET,
   PROCESS_SIGINFO_WASM32_PID_OFFSET,
@@ -35,7 +31,6 @@ import {
   PROCESS_STATE_EXITED,
   PROCESS_STATE_RUNNING,
   PROCESS_STATE_STOPPED,
-  STRUCT_SIZE_KERNEL_WAIT_RESULT,
   STRUCT_SIZE_WASM_RUSAGE_WIRE,
   WAIT_CLD_EXITED,
   WAIT_CLD_STOPPED,
@@ -47,6 +42,11 @@ import {
   WAIT_WSTOPPED,
   WAKE_PROCESS_CONTINUED,
   WAKE_PROCESS_STOPPED,
+  WAKEUP_EVENT_FIELDS,
+  WAKEUP_EVENT_RECORD_BYTES,
+  WAKEUP_EVENT_TYPES,
+  WAIT_COMPLETION_FIELDS,
+  WAIT_COMPLETION_RECORD_BYTES,
 } from "../src/generated/abi";
 import {
   createCentralizedKernelWorkerTestDouble,
@@ -57,6 +57,7 @@ import {
 } from "../src/kernel-entry-gate";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
+import { EXIT_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 
 const SIGCHLD = 17;
 const SIGCONT = 18;
@@ -65,216 +66,9 @@ const SIGUSR1 = 10;
 const SA_RESTART = 0x10000000;
 
 describe("Rust-owned process wait lifecycle", () => {
-  it("wait4 atomically consumes a Rust-selected event and copies status+rusage", () => {
-    const kernelMemory = createSharedMemory();
-    const processMemory = createSharedMemory();
-    const statusPtr = 256;
-    const waitStatus = 5 << 8;
-    const rusage = Uint8Array.from(
-      { length: STRUCT_SIZE_WASM_RUSAGE_WIRE },
-      (_, index) => index & 0xff,
-    );
-    const waitChildPoll = vi.fn((
-      _parentPid: number,
-      _callerTid: number,
-      _targetPid: number,
-      _eventMask: number,
-      _flags: number,
-      resultPtr: number | bigint,
-    ) => {
-      writeKernelWaitResult(kernelMemory, Number(resultPtr), {
-        waitStatus,
-        siCode: 1,
-        siStatus: 5,
-        childUid: 123,
-        rusage,
-      });
-      return 42;
-    });
-    const reapExitedChild = vi.fn(() => 0);
-    const worker = createWorkerHarness({
-      kernel_wait_child_poll: waitChildPoll,
-      kernel_reap_exited_child: reapExitedChild,
-    }, 4, kernelMemory);
-    const completeChannel = observeMarshalledCompletions(worker);
 
-    const rusagePtr = 512;
-    const channel = registerMainChannel(worker, createChannel(7, processMemory));
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Wait4,
-      syscallArgs(-1, statusPtr, 0, rusagePtr),
-    );
 
-    expect(waitChildPoll).toHaveBeenCalledWith(
-      7,
-      7,
-      -1,
-      WAIT_EVENT_EXITED,
-      0,
-      128,
-      STRUCT_SIZE_KERNEL_WAIT_RESULT,
-    );
-    expect(reapExitedChild).not.toHaveBeenCalled();
-    expect(new DataView(processMemory.buffer).getInt32(statusPtr, true)).toBe(waitStatus);
-    expect(new Uint8Array(
-      processMemory.buffer,
-      rusagePtr,
-      STRUCT_SIZE_WASM_RUSAGE_WIRE,
-    )).toEqual(rusage);
-    expect(completeChannel).toHaveBeenCalledWith(
-      channel,
-      ABI_SYSCALLS.Wait4,
-      syscallArgs(-1, statusPtr, 0, rusagePtr),
-      undefined,
-      42,
-      0,
-    );
-  });
 
-  it("wait4 leaves blocking waits in the host queue when Rust reports a running child", () => {
-    const waitChildPoll = vi.fn(() => 0);
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
-    worker.waitingForChild = [];
-    const completeChannel = observeMarshalledCompletions(worker);
-
-    const channel = createChannel(7, createSharedMemory());
-    registerMainChannel(worker, channel);
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Wait4,
-      [-1, 0, 0, 0],
-    );
-
-    expect(completeChannel).not.toHaveBeenCalled();
-    expect(worker.waitingForChild).toEqual([
-      {
-        cancellationPoint: false,
-        cancellationWakeAllowed: false,
-        parentPid: 7,
-        channel,
-        origArgs: syscallArgs(-1, 0, 0, 0),
-        pid: -1,
-        options: 0,
-        syscallNr: ABI_SYSCALLS.Wait4,
-      },
-    ]);
-  });
-
-  it("honors cancellation that lands before a wait can enqueue", () => {
-    const waitChildPoll = vi.fn(() => 0);
-    const kernelMemory = createSharedMemory();
-    const cancellationCleanupRequests: Array<readonly [number, bigint]> = [];
-    const handleChannel = successfulKernelHandle(kernelMemory, (view) => {
-      cancellationCleanupRequests.push([
-        view.getUint32(CH_SYSCALL, true),
-        view.getBigInt64(CH_ARGS, true),
-      ]);
-    });
-    const processMemory = createSharedMemory();
-    const channel = createChannel(7, processMemory);
-    const worker = createWorkerHarness({
-      kernel_handle_channel: handleChannel,
-      kernel_wait_child_poll: waitChildPoll,
-    }, 4, kernelMemory);
-    worker.processes = new Map([[7, {
-      channels: [channel],
-      memory: processMemory,
-    }]]);
-    worker.pendingCancels = new Set([channel]);
-    worker.waitingForChild = [];
-    const relistenChannel = observeRelisten(worker);
-
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Wait4,
-      [-1, 0, 0, 0],
-      true,
-    );
-
-    // Cancellation is consumed at the final boundary immediately before the
-    // host would register the waiter, after Rust proves the child is still
-    // running.
-    expect(waitChildPoll).toHaveBeenCalledOnce();
-    // WHY: the host may publish EINTR only after Rust confirms exact-task
-    // cleanup. This is a real synthetic kernel request, not a test-only
-    // shortcut around the production cancellation protocol.
-    expect(cancellationCleanupRequests).toEqual([
-      [ABI_SYSCALLS.ThreadCancel, 7n],
-    ]);
-    expect(worker.waitingForChild).toEqual([]);
-    expect(readCompletion(channel)).toEqual({
-      retVal: -4,
-      errVal: 4,
-      status: CHANNEL_STATUS_COMPLETE,
-    });
-    expect(relistenChannel).toHaveBeenCalledWith(channel);
-  });
-
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "%s preserves cancellation-point identity until wait registration",
-    (_name, pointerWidth) => {
-      const waitChildPoll = vi.fn(() => 0);
-      const kernelMemory = createSharedMemory();
-      const cancellationCleanupRequests: Array<readonly [number, bigint]> = [];
-      const handleChannel = successfulKernelHandle(kernelMemory, (view) => {
-        cancellationCleanupRequests.push([
-          view.getUint32(CH_SYSCALL, true),
-          view.getBigInt64(CH_ARGS, true),
-        ]);
-      });
-      const processMemory = createSharedMemory();
-      const channel = createChannel(7, processMemory);
-      const worker = createWorkerHarness(
-        {
-          kernel_handle_channel: handleChannel,
-          kernel_wait_child_poll: waitChildPoll,
-        },
-        pointerWidth,
-        kernelMemory,
-      );
-      worker.processes = new Map([[7, {
-        channels: [channel],
-        memory: processMemory,
-      }]]);
-      worker.pendingCancels = new Set([channel]);
-      worker.waitingForChild = [];
-      const relistenChannel = observeRelisten(worker);
-
-      dispatchLifecycleSyscall(
-        worker,
-        channel,
-        ABI_SYSCALLS.Wait4,
-        [-1, 0, 0, 0],
-        true,
-      );
-
-      expect(
-        new DataView(
-          processMemory.buffer,
-          channel.channelOffset,
-        ).getUint32(CH_REQUEST_FLAGS, true),
-      ).toBe(0);
-      expect(waitChildPoll).toHaveBeenCalledOnce();
-      expect(cancellationCleanupRequests).toEqual([
-        [ABI_SYSCALLS.ThreadCancel, 7n],
-      ]);
-      expect(worker.waitingForChild).toEqual([]);
-      expect(worker.pendingCancels.has(channel)).toBe(false);
-      expect(readCompletion(channel)).toEqual({
-        retVal: -4,
-        errVal: 4,
-        status: CHANNEL_STATUS_COMPLETE,
-      });
-      expect(relistenChannel).toHaveBeenCalledWith(channel);
-    },
-  );
 
   it.each([
     ["the bounded Rust handoff returns ERANGE", -34],
@@ -287,7 +81,6 @@ describe("Rust-owned process wait lifecycle", () => {
     const worker = createWorkerHarness({
       kernel_take_process_timer_cleanup: takeTimerCleanup,
     });
-    worker.waitingForChild = [];
     worker.activeChannels = [channel];
     worker.processes = new Map([[pid, { channels: [channel], memory }]]);
     worker.execHandoffPids = new Set();
@@ -383,47 +176,6 @@ describe("Rust-owned process wait lifecycle", () => {
     },
   );
 
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "%s does not consume a pending cancel for plain wait4",
-    (_name, pointerWidth) => {
-      const waitChildPoll = vi.fn(() => 0);
-      const processMemory = createSharedMemory();
-      const channel = createChannel(7, processMemory);
-      const worker = createWorkerHarness(
-        { kernel_wait_child_poll: waitChildPoll },
-        pointerWidth,
-      );
-      worker.processes = new Map([[7, {
-        channels: [channel],
-        memory: processMemory,
-      }]]);
-      worker.pendingCancels = new Set([channel]);
-      worker.waitingForChild = [];
-      markPending(channel);
-
-      dispatchLifecycleSyscall(
-        worker,
-        channel,
-        ABI_SYSCALLS.Wait4,
-        [-1, 0, 0, 0],
-        false,
-      );
-
-      expect(waitChildPoll).toHaveBeenCalledOnce();
-      expect(worker.pendingCancels.has(channel)).toBe(true);
-      expect(worker.waitingForChild).toEqual([
-        expect.objectContaining({
-          channel,
-          syscallNr: ABI_SYSCALLS.Wait4,
-          cancellationPoint: false,
-        }),
-      ]);
-      expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
-    },
-  );
 
   it("consumes a pre-enqueue cancel only for the exact FIFO open retry", () => {
     const memory = createSharedMemory();
@@ -490,375 +242,13 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(relistenChannel).toHaveBeenCalledWith(channel);
   });
 
-  it("wait4 WNOHANG completes without queuing when Rust reports no event", () => {
-    const worker = createWorkerHarness({ kernel_wait_child_poll: vi.fn(() => 0) });
-    worker.waitingForChild = [];
-    const completeChannel = observeMarshalledCompletions(worker);
 
-    const channel = registerMainChannel(worker, createChannel(7, createSharedMemory()));
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Wait4,
-      syscallArgs(-1, 0, WAIT_WNOHANG, 0),
-    );
 
-    expect(worker.waitingForChild).toEqual([]);
-    expect(completeChannel).toHaveBeenCalledWith(
-      channel,
-      ABI_SYSCALLS.Wait4,
-      syscallArgs(-1, 0, WAIT_WNOHANG, 0),
-      undefined,
-      0,
-      0,
-    );
-  });
 
-  it("wait4 passes a bigint status pointer for wasm64 kernels", () => {
-    const waitChildPoll = vi.fn(() => 0);
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll }, 8);
-    worker.waitingForChild = [];
-    const completeChannel = observeMarshalledCompletions(worker);
 
-    const channel = registerMainChannel(worker, createChannel(7, createSharedMemory()));
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Wait4,
-      syscallArgs(-1, 0, WAIT_WNOHANG, 0),
-    );
 
-    expect(waitChildPoll).toHaveBeenCalledWith(
-      7,
-      7,
-      -1,
-      WAIT_EVENT_EXITED,
-      0,
-      BigInt(128),
-      STRUCT_SIZE_KERNEL_WAIT_RESULT,
-    );
-    expect(worker.waitingForChild).toEqual([]);
-    expect(completeChannel).toHaveBeenCalledWith(
-      channel,
-      ABI_SYSCALLS.Wait4,
-      syscallArgs(-1, 0, WAIT_WNOHANG, 0),
-      undefined,
-      0,
-      0,
-    );
-  });
 
-  it("returns EFAULT before polling or consuming an event for invalid wait4 outputs", () => {
-    const waitChildPoll = vi.fn(() => 42);
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
-    const completeChannel = observeMarshalledCompletions(worker);
-    const processMemory = createSharedMemory();
-    const invalidStatusPtr = processMemory.buffer.byteLength - 2;
-    const args = [-1, invalidStatusPtr, 0, 0];
-    const channel = registerMainChannel(
-      worker,
-      createChannel(7, processMemory),
-    );
 
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Wait4,
-      syscallArgs(...args),
-    );
-
-    expect(waitChildPoll).not.toHaveBeenCalled();
-    expect(completeChannel).toHaveBeenCalledWith(
-      channel,
-      ABI_SYSCALLS.Wait4,
-      syscallArgs(...args),
-      undefined,
-      -1,
-      14,
-    );
-  });
-
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "%s rejects Linux __WALL's numeric option before polling or queuing wait4",
-    (_name, pointerWidth) => {
-      const linuxWall = 0x40000000;
-      const waitChildPoll = vi.fn(() => 0);
-      const worker = createWorkerHarness(
-        { kernel_wait_child_poll: waitChildPoll },
-        pointerWidth,
-      );
-      const completeChannel = observeMarshalledCompletions(worker);
-      worker.waitingForChild = [];
-      const args = syscallArgs(-1, 0, linuxWall, 0);
-      const channel = registerMainChannel(
-        worker,
-        createChannel(7, createSharedMemory()),
-      );
-
-      dispatchLifecycleSyscall(worker, channel, ABI_SYSCALLS.Wait4, args);
-
-      expect(waitChildPoll).not.toHaveBeenCalled();
-      expect(worker.waitingForChild).toEqual([]);
-      expect(completeChannel).toHaveBeenCalledWith(
-        channel,
-        ABI_SYSCALLS.Wait4,
-        args,
-        undefined,
-        -1,
-        22,
-      );
-    },
-  );
-
-  it("waitid passes STOPPED+WNOWAIT and writes exact CLD, uid, status, and rusage", () => {
-    const kernelMemory = createSharedMemory();
-    const processMemory = createSharedMemory();
-    const siginfoPtr = 512;
-    const rusagePtr = 1024;
-    const rusage = new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE).fill(0x5a);
-    const waitChildPoll = vi.fn((
-      _parentPid: number,
-      _callerTid: number,
-      _targetPid: number,
-      _eventMask: number,
-      _flags: number,
-      resultPtr: number | bigint,
-    ) => {
-      writeKernelWaitResult(kernelMemory, Number(resultPtr), {
-        waitStatus: (19 << 8) | 0x7f,
-        siCode: WAIT_CLD_STOPPED,
-        siStatus: 19,
-        childUid: 4242,
-        rusage,
-      });
-      return 44;
-    });
-    const worker = createWorkerHarness(
-      { kernel_wait_child_poll: waitChildPoll },
-      4,
-      kernelMemory,
-    );
-    const completeChannel = observeMarshalledCompletions(worker);
-    const args = syscallArgs(
-      1,
-      44,
-      siginfoPtr,
-      WAIT_WSTOPPED | WAIT_WNOWAIT,
-      rusagePtr,
-    );
-
-    const channel = registerMainChannel(worker, createChannel(7, processMemory));
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Waitid,
-      syscallArgs(...args),
-    );
-
-    expect(waitChildPoll).toHaveBeenCalledWith(
-      7,
-      7,
-      44,
-      WAIT_EVENT_STOPPED,
-      WAIT_WNOWAIT,
-      128,
-      STRUCT_SIZE_KERNEL_WAIT_RESULT,
-    );
-    const siginfo = new DataView(processMemory.buffer);
-    expect(siginfo.getInt32(
-      siginfoPtr + PROCESS_SIGINFO_SIGNO_OFFSET,
-      true,
-    )).toBe(SIGCHLD);
-    expect(siginfo.getInt32(
-      siginfoPtr + PROCESS_SIGINFO_CODE_OFFSET,
-      true,
-    )).toBe(WAIT_CLD_STOPPED);
-    expect(siginfo.getInt32(
-      siginfoPtr + PROCESS_SIGINFO_WASM32_PID_OFFSET,
-      true,
-    )).toBe(44);
-    expect(siginfo.getUint32(
-      siginfoPtr + PROCESS_SIGINFO_WASM32_UID_OFFSET,
-      true,
-    )).toBe(4242);
-    expect(siginfo.getInt32(
-      siginfoPtr + PROCESS_SIGINFO_WASM32_VALUE_OFFSET,
-      true,
-    )).toBe(19);
-    expect(new Uint8Array(
-      processMemory.buffer,
-      rusagePtr,
-      STRUCT_SIZE_WASM_RUSAGE_WIRE,
-    )).toEqual(rusage);
-    expect(completeChannel).toHaveBeenCalledWith(
-      channel,
-      ABI_SYSCALLS.Waitid,
-      args,
-      undefined,
-      0,
-      0,
-    );
-  });
-
-  it("waitid writes musl's aligned wasm64 siginfo fields", () => {
-    const kernelMemory = createSharedMemory();
-    const processMemory = createSharedMemory();
-    const channel = createChannel(7, processMemory);
-    const siginfoPtr = 512;
-    const waitChildPoll = vi.fn((
-      _parentPid: number,
-      _callerTid: number,
-      _targetPid: number,
-      _eventMask: number,
-      _flags: number,
-      resultPtr: number | bigint,
-    ) => {
-      writeKernelWaitResult(kernelMemory, Number(resultPtr), {
-        waitStatus: 9 << 8,
-        siCode: WAIT_CLD_EXITED,
-        siStatus: 9,
-        childUid: 5150,
-        rusage: new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE),
-      });
-      return 44;
-    });
-    const worker = createWorkerHarness(
-      { kernel_wait_child_poll: waitChildPoll },
-      8,
-      kernelMemory,
-    );
-    worker.processes = new Map([[7, {
-      channels: [channel],
-      memory: processMemory,
-      ptrWidth: 8,
-    }]]);
-    observeMarshalledCompletions(worker);
-    const args = [1, 44, siginfoPtr, WAIT_WEXITED, 0];
-    new Uint8Array(
-      processMemory.buffer,
-      siginfoPtr,
-      PROCESS_SIGINFO_WASM64_SIZE,
-    ).fill(0xa5);
-
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Waitid,
-      args,
-    );
-
-    const siginfo = new DataView(processMemory.buffer);
-    expect(siginfo.getInt32(
-      siginfoPtr + PROCESS_SIGINFO_SIGNO_OFFSET,
-      true,
-    )).toBe(SIGCHLD);
-    expect(siginfo.getInt32(
-      siginfoPtr + PROCESS_SIGINFO_CODE_OFFSET,
-      true,
-    )).toBe(WAIT_CLD_EXITED);
-    expect(siginfo.getUint32(
-      siginfoPtr + PROCESS_SIGINFO_CODE_OFFSET + Int32Array.BYTES_PER_ELEMENT,
-      true,
-    )).toBe(0);
-    expect(siginfo.getInt32(
-      siginfoPtr + PROCESS_SIGINFO_WASM64_PID_OFFSET,
-      true,
-    )).toBe(44);
-    expect(siginfo.getUint32(
-      siginfoPtr + PROCESS_SIGINFO_WASM64_UID_OFFSET,
-      true,
-    )).toBe(5150);
-    expect(siginfo.getInt32(
-      siginfoPtr + PROCESS_SIGINFO_WASM64_VALUE_OFFSET,
-      true,
-    )).toBe(9);
-    expect(siginfo.getUint8(
-      siginfoPtr + PROCESS_SIGINFO_WASM64_SIZE - 1,
-    )).toBe(0);
-  });
-
-  it("waitid WNOHANG zeros all siginfo bytes and leaves rusage untouched", () => {
-    const processMemory = createSharedMemory();
-    const siginfoPtr = 512;
-    const rusagePtr = 1024;
-    new Uint8Array(
-      processMemory.buffer,
-      siginfoPtr,
-      PROCESS_SIGINFO_WASM32_SIZE,
-    ).fill(0xa5);
-    new Uint8Array(
-      processMemory.buffer,
-      rusagePtr,
-      STRUCT_SIZE_WASM_RUSAGE_WIRE,
-    ).fill(0x6b);
-    const waitChildPoll = vi.fn(() => 0);
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
-    const completeChannel = observeMarshalledCompletions(worker);
-    const args = syscallArgs(
-      0,
-      0,
-      siginfoPtr,
-      WAIT_WEXITED | WAIT_WNOHANG,
-      rusagePtr,
-    );
-
-    const channel = registerMainChannel(worker, createChannel(7, processMemory));
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Waitid,
-      args,
-    );
-
-    expect(new Uint8Array(
-      processMemory.buffer,
-      siginfoPtr,
-      PROCESS_SIGINFO_WASM32_SIZE,
-    )).toEqual(new Uint8Array(PROCESS_SIGINFO_WASM32_SIZE));
-    expect(new Uint8Array(
-      processMemory.buffer,
-      rusagePtr,
-      STRUCT_SIZE_WASM_RUSAGE_WIRE,
-    )).toEqual(new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE).fill(0x6b));
-    expect(completeChannel).toHaveBeenCalledWith(
-      channel,
-      ABI_SYSCALLS.Waitid,
-      args,
-      undefined,
-      0,
-      0,
-    );
-  });
-
-  it("rejects invalid waitid idtypes and required null siginfo before polling", () => {
-    const waitChildPoll = vi.fn(() => 0);
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
-    const completeChannel = observeMarshalledCompletions(worker);
-    const channel = registerMainChannel(
-      worker,
-      createChannel(7, createSharedMemory()),
-    );
-
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Waitid,
-      [99, 0, 512, WAIT_WEXITED, 0],
-    );
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Waitid,
-      [0, 0, 0, WAIT_WEXITED, 0],
-    );
-
-    expect(waitChildPoll).not.toHaveBeenCalled();
-    expect(completeChannel.mock.calls.map((call: unknown[]) => call[5]))
-      .toEqual([22, 14]);
-  });
 
   it("owns a drained wake batch before nested SIGCHLD work reuses scratch", () => {
     const kernelMemory = createSharedMemory();
@@ -1127,7 +517,6 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.parkedChannelCompletions = new Map();
     worker.deferredStoppedChannels = new Map();
     worker.deferredProcessWorkerStarts = new Map();
-    worker.pendingSleeps = new Map();
     worker.callbacks = { onExit };
 
     worker.drainAndProcessWakeupEvents();
@@ -1137,695 +526,18 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.pendingResumePids.has(42)).toBe(false);
   });
 
-  it("wakes a matching parent waiter while SA_NOCLDSTOP suppresses only SIGCHLD", () => {
-    const waitChildPoll = vi.fn(() => 0);
-    const kernelMemory = createSharedMemory();
-    let drained = false;
-    const drain = vi.fn((outPtr: number) => {
-      if (drained) return 0;
-      drained = true;
-      writeWakeEvent(
-        kernelMemory,
-        outPtr,
-        0,
-        42,
-        WAKE_PROCESS_STOPPED,
-      );
-      return 1;
-    });
-    const worker = createWorkerHarness({
-      kernel_drain_wakeup_events: drain,
-      kernel_get_parent_pid: vi.fn(() => 7),
-      kernel_has_sa_nocldstop: vi.fn(() => 1),
-      kernel_wait_child_poll: waitChildPoll,
-    }, 4, kernelMemory);
-    const parentChannel = registerMainChannel(
-      worker,
-      createChannel(7, createSharedMemory()),
-    );
-    worker.waitingForChild = [{
-      cancellationPoint: false,
-      cancellationWakeAllowed: false,
-      parentPid: 7,
-      channel: parentChannel,
-      origArgs: [-1, 0, 0, 0],
-      pid: -1,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
-    const sendSignalToProcess = vi.fn();
-    configureBoundaryHooks(worker, { sendSignalToProcess });
 
-    worker.drainAndProcessWakeupEvents();
 
-    expect(sendSignalToProcess).not.toHaveBeenCalled();
-    expect(waitChildPoll).toHaveBeenCalledWith(
-      7,
-      7,
-      -1,
-      WAIT_EVENT_EXITED,
-      0,
-      128,
-      STRUCT_SIZE_KERNEL_WAIT_RESULT,
-    );
-    expect(worker.waitingForChild).toHaveLength(1);
-  });
 
-  it("uses WNOWAIT for process-group waiter rechecks", () => {
-    const waitChildPoll = vi.fn(() => 0);
-    const kernelMemory = createSharedMemory();
-    const processMemory = createSharedMemory();
-    const channel = createChannel(7, processMemory);
-    const worker = createWorkerHarness({
-      kernel_handle_channel: successfulKernelHandle(kernelMemory),
-      kernel_wait_child_poll: waitChildPoll,
-    }, 4, kernelMemory);
-    worker.processes = new Map([[7, { channels: [channel], memory: processMemory }]]);
-    worker.waitingForChild = [{
-      parentPid: 7,
-      channel,
-      origArgs: [0, 0, 0, 0],
-      pid: 0,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
-    observeMarshalledCompletions(worker);
 
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Setpgid,
-      [0, 0],
-    );
 
-    expect(waitChildPoll).toHaveBeenCalledWith(
-      7,
-      7,
-      0,
-      WAIT_EVENT_EXITED,
-      WAIT_WNOWAIT,
-      128,
-      STRUCT_SIZE_KERNEL_WAIT_RESULT,
-    );
-  });
 
-  it("services status that becomes eligible after a process-group change", () => {
-    const kernelMemory = createSharedMemory();
-    const channel = createChannel(7, createSharedMemory());
-    let pollCount = 0;
-    const waitChildPoll = vi.fn((
-      _parentPid: number,
-      _callerTid: number,
-      _targetPid: number,
-      _eventMask: number,
-      _flags: number,
-      resultPtr: number,
-    ) => {
-      pollCount++;
-      writeKernelWaitResult(kernelMemory, resultPtr, {
-        waitStatus: 0,
-        siCode: WAIT_CLD_EXITED,
-        siStatus: 0,
-        childUid: 0,
-        rusage: new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE),
-      });
-      return 42;
-    });
-    const worker = createWorkerHarness({
-      kernel_handle_channel: successfulKernelHandle(kernelMemory),
-      kernel_wait_child_poll: waitChildPoll,
-    }, 4, kernelMemory);
-    worker.processes = new Map([[7, {
-      channels: [channel],
-      memory: channel.memory,
-    }]]);
-    worker.waitingForChild = [{
-      parentPid: 7,
-      channel,
-      origArgs: [0, 0, 0, 0],
-      pid: 0,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
-    const completeChannel = observeMarshalledCompletions(worker);
 
-    dispatchLifecycleSyscall(
-      worker,
-      channel,
-      ABI_SYSCALLS.Setpgid,
-      [0, 0],
-    );
 
-    expect(pollCount).toBe(2);
-    expect(waitChildPoll.mock.calls.map((call: unknown[]) => call[4]))
-      .toEqual([WAIT_WNOWAIT, 0]);
-    expect(worker.waitingForChild).toEqual([]);
-    expect(completeChannel).toHaveBeenCalledWith(
-      channel,
-      ABI_SYSCALLS.Wait4,
-      [0, 0, 0, 0],
-      undefined,
-      42,
-      0,
-    );
-  });
 
-  it("completes a consuming waiter and a following ECHILD waiter in one wake", () => {
-    const kernelMemory = createSharedMemory();
-    const processMemory = createSharedMemory();
-    const first = createChannel(7, processMemory, 0);
-    const second = createChannel(7, processMemory, 256);
-    let drained = false;
-    const drain = vi.fn((outPtr: number) => {
-      if (drained) return 0;
-      drained = true;
-      writeWakeEvent(kernelMemory, outPtr, 0, 42, WAKE_PROCESS_STOPPED);
-      return 1;
-    });
-    let pollCount = 0;
-    const waitChildPoll = vi.fn((
-      _parentPid: number,
-      _callerTid: number,
-      _targetPid: number,
-      _eventMask: number,
-      _flags: number,
-      resultPtr: number,
-    ) => {
-      if (pollCount++ > 0) return -10; // ECHILD after the first wait reaps.
-      writeKernelWaitResult(kernelMemory, resultPtr, {
-        waitStatus: 3 << 8,
-        siCode: WAIT_CLD_EXITED,
-        siStatus: 3,
-        childUid: 12,
-        rusage: new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE),
-      });
-      return 42;
-    });
-    const worker = createWorkerHarness(
-      {
-        kernel_drain_wakeup_events: drain,
-        kernel_get_parent_pid: vi.fn(() => 7),
-        kernel_has_sa_nocldstop: vi.fn(() => 1),
-        kernel_wait_child_poll: waitChildPoll,
-      },
-      4,
-      kernelMemory,
-    );
-    worker.processes = new Map([[7, {
-      channels: [first, second],
-      memory: processMemory,
-    }]]);
-    worker.channelTids = new Map([["7:256", 8]]);
-    const completeChannel = observeMarshalledCompletions(worker);
-    worker.waitingForChild = [
-      {
-        parentPid: 7,
-        channel: first,
-        origArgs: [42, 1024, 0, 0],
-        pid: 42,
-        options: 0,
-        syscallNr: ABI_SYSCALLS.Wait4,
-      },
-      {
-        parentPid: 7,
-        channel: second,
-        origArgs: [42, 1280, 0, 0],
-        pid: 42,
-        options: 0,
-        syscallNr: ABI_SYSCALLS.Wait4,
-      },
-    ];
-
-    worker.drainAndProcessWakeupEvents();
-
-    expect(worker.waitingForChild).toEqual([]);
-    expect(completeChannel.mock.calls.map((call: unknown[]) => call.slice(4)))
-      .toEqual([[42, 0], [-1, 10]]);
-    expect(new DataView(processMemory.buffer).getInt32(1024, true)).toBe(3 << 8);
-  });
-
-  it("retires an exited parent's parked wait before signal wakeup", () => {
-    const processMemory = createSharedMemory();
-    const channel = createChannel(7, processMemory);
-    const dequeueSignal = vi.fn(() => -3);
-    const waitChildPoll = vi.fn(() => -10);
-    const worker = createWorkerHarness({
-      kernel_dequeue_signal: dequeueSignal,
-      kernel_wait_child_poll: waitChildPoll,
-    });
-    worker.processes = new Map([[7, { channels: [channel], memory: processMemory }]]);
-    worker.hostReaped = new Set([7]);
-    worker.waitingForChild = [{
-      parentPid: 7,
-      channel,
-      origArgs: [42, 0, 0, 0],
-      pid: 42,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
-    const completeChannel = observeMarshalledCompletions(worker);
-
-    worker.wakeWaitingParent(7);
-
-    expect(worker.waitingForChild).toEqual([]);
-    expect(waitChildPoll).not.toHaveBeenCalled();
-    expect(dequeueSignal).not.toHaveBeenCalled();
-    expect(completeChannel).not.toHaveBeenCalled();
-  });
-
-  it("completes every matching WNOWAIT waiter while leaving a running waiter blocked", () => {
-    const kernelMemory = createSharedMemory();
-    const processMemory = createSharedMemory();
-    const first = createChannel(7, processMemory, 0);
-    const second = createChannel(7, processMemory, 256);
-    const running = createChannel(7, processMemory, 512);
-    let drained = false;
-    const drain = vi.fn((outPtr: number) => {
-      if (drained) return 0;
-      drained = true;
-      writeWakeEvent(kernelMemory, outPtr, 0, 42, WAKE_PROCESS_STOPPED);
-      return 1;
-    });
-    const waitChildPoll = vi.fn((
-      _parentPid: number,
-      _callerTid: number,
-      targetPid: number,
-      _eventMask: number,
-      _flags: number,
-      resultPtr: number,
-    ) => {
-      if (targetPid === 43) return 0;
-      writeKernelWaitResult(kernelMemory, resultPtr, {
-        waitStatus: 0,
-        siCode: WAIT_CLD_EXITED,
-        siStatus: 0,
-        childUid: 99,
-        rusage: new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE),
-      });
-      return 42;
-    });
-    const worker = createWorkerHarness(
-      {
-        kernel_drain_wakeup_events: drain,
-        kernel_get_parent_pid: vi.fn(() => 7),
-        kernel_has_sa_nocldstop: vi.fn(() => 1),
-        kernel_wait_child_poll: waitChildPoll,
-      },
-      4,
-      kernelMemory,
-    );
-    worker.processes = new Map([[7, {
-      channels: [first, second, running],
-      memory: processMemory,
-    }]]);
-    worker.channelTids = new Map([
-      ["7:256", 8],
-      ["7:512", 9],
-    ]);
-    const completeChannel = observeMarshalledCompletions(worker);
-    const options = WAIT_WEXITED | WAIT_WNOWAIT;
-    const makeWaiter = (channel: any, pid: number, siginfoPtr: number) => ({
-      parentPid: 7,
-      channel,
-      origArgs: [1, pid, siginfoPtr, options, 0],
-      pid,
-      options,
-      syscallNr: ABI_SYSCALLS.Waitid,
-    });
-    const runningWaiter = makeWaiter(running, 43, 1536);
-    worker.waitingForChild = [
-      makeWaiter(first, 42, 1024),
-      runningWaiter,
-      makeWaiter(second, 42, 1280),
-    ];
-
-    worker.drainAndProcessWakeupEvents();
-
-    expect(worker.waitingForChild).toEqual([runningWaiter]);
-    expect(completeChannel).toHaveBeenCalledTimes(2);
-    expect(waitChildPoll.mock.calls.filter((call: unknown[]) => call[2] === 42))
-      .toEqual([
-        [
-          7,
-          7,
-          42,
-          WAIT_EVENT_EXITED,
-          WAIT_WNOWAIT,
-          128,
-          STRUCT_SIZE_KERNEL_WAIT_RESULT,
-        ],
-        [
-          7,
-          8,
-          42,
-          WAIT_EVENT_EXITED,
-          WAIT_WNOWAIT,
-          128,
-          STRUCT_SIZE_KERNEL_WAIT_RESULT,
-        ],
-      ]);
-    expect(new DataView(processMemory.buffer).getInt32(
-      1024 + PROCESS_SIGINFO_WASM32_PID_OFFSET,
-      true,
-    )).toBe(42);
-    expect(new DataView(processMemory.buffer).getInt32(
-      1280 + PROCESS_SIGINFO_WASM32_PID_OFFSET,
-      true,
-    )).toBe(42);
-  });
-
-  it("interrupts the exact host-deferred wait thread with its caught signal", () => {
-    const kernelMemory = new WebAssembly.Memory({
-      initial: 2,
-      maximum: 2,
-      shared: true,
-    });
-    const processMemory = new WebAssembly.Memory({
-      initial: 2,
-      maximum: 2,
-      shared: true,
-    });
-    const channel = createChannel(7, processMemory);
-    const dequeue = vi.fn((_pid: number, _tid: number, outPtr: number) => {
-      const view = new DataView(kernelMemory.buffer);
-      view.setUint32(outPtr, SIGUSR1, true);
-      view.setUint32(outPtr + 8, SA_RESTART, true);
-      return SIGUSR1;
-    });
-    const worker = createWorkerHarness({
-      kernel_pick_signal_target_tid: vi.fn(() => 7),
-      kernel_dequeue_signal: dequeue,
-      kernel_wait_child_poll: vi.fn(() => 0),
-    }, 4, kernelMemory);
-    worker.processes = new Map([[7, {
-      channels: [channel],
-      memory: processMemory,
-    }]]);
-    worker.waitingForChild = [{
-      parentPid: 7,
-      channel,
-      origArgs: [-1, 0, 0, 0],
-      pid: -1,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
-    const completeChannel = observeMarshalledCompletions(worker);
-
-    worker.testAuthority.sendSignalForTest(7, SIGUSR1, false);
-
-    expect(worker.waitingForChild).toEqual([]);
-    expect(completeChannel).toHaveBeenCalledWith(
-      channel,
-      ABI_SYSCALLS.Wait4,
-      [-1, 0, 0, 0],
-      undefined,
-      -1,
-      4,
-    );
-    const signalView = new DataView(processMemory.buffer);
-    expect(signalView.getUint32(CH_SIG_SIGNUM, true)).toBe(SIGUSR1);
-    expect(signalView.getUint32(CH_SIG_FLAGS, true)).toBe(SA_RESTART);
-  });
-
-  it("removes and wakes an exact wait cancellation point", () => {
-    const kernelMemory = createSharedMemory();
-    const memory = createSharedMemory();
-    const caller = createChannel(7, memory, 0);
-    const target = createChannel(7, memory, 256);
-    const worker = createWorkerHarness({
-      kernel_handle_channel: successfulKernelHandle(kernelMemory),
-    }, 4, kernelMemory);
-    worker.processes = new Map([[7, {
-      channels: [caller, target],
-      memory,
-    }]]);
-    worker.channelTids = new Map([["7:256", 99]]);
-    worker.pendingCancels = new Set();
-    worker.pendingFutexWaits = new Map();
-    worker.pendingPollRetries = new Map();
-    worker.pendingSelectRetries = new Map();
-    worker.pendingPipeReaders = new Map();
-    worker.pendingPipeWriters = new Map();
-    worker.waitingForChild = [{
-      cancellationPoint: true,
-      cancellationWakeAllowed: true,
-      parentPid: 7,
-      channel: target,
-      origArgs: [-1, 0, 0, 0],
-      pid: -1,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
-    const relistenChannel = observeRelisten(worker);
-    markPending(caller);
-    markPending(target);
-
-    dispatchLifecycleSyscall(
-      worker,
-      caller,
-      ABI_SYSCALLS.ThreadCancel,
-      [99],
-    );
-
-    expect(worker.waitingForChild).toEqual([]);
-    // Completing the exact blocked target consumes the host-side token; the
-    // guest pthread cancellation bit remains the authoritative notification.
-    expect(worker.pendingCancels.has(target)).toBe(false);
-    expect(readCompletion(caller)).toEqual({
-      retVal: 0,
-      errVal: 0,
-      status: CHANNEL_STATUS_COMPLETE,
-    });
-    expect(readCompletion(target)).toEqual({
-      retVal: -4,
-      errVal: 4,
-      status: CHANNEL_STATUS_COMPLETE,
-    });
-    expect(relistenChannel).toHaveBeenCalledWith(target);
-  });
-
-  it("does not wake a plain wait4 parked beside cancellation-point waiters", () => {
-    const kernelMemory = createSharedMemory();
-    const memory = createSharedMemory();
-    const caller = createChannel(7, memory, 0);
-    const target = createChannel(7, memory, 256);
-    const waitChildPoll = vi.fn(() => 0);
-    const worker = createWorkerHarness({
-      kernel_handle_channel: successfulKernelHandle(kernelMemory),
-      kernel_wait_child_poll: waitChildPoll,
-    }, 4, kernelMemory);
-    worker.processes = new Map([[7, {
-      channels: [caller, target],
-      memory,
-    }]]);
-    worker.channelTids = new Map([["7:256", 99]]);
-    worker.pendingCancels = new Set();
-    worker.waitingForChild = [];
-    const relistenChannel = observeRelisten(worker);
-    markPending(target);
-
-    dispatchLifecycleSyscall(
-      worker,
-      target,
-      ABI_SYSCALLS.Wait4,
-      [-1, 0, 0, 0],
-      false,
-    );
-    expect(waitChildPoll).toHaveBeenCalledOnce();
-    expect(worker.waitingForChild).toEqual([
-      expect.objectContaining({
-        channel: target,
-        syscallNr: ABI_SYSCALLS.Wait4,
-        cancellationPoint: false,
-      }),
-    ]);
-
-    markPending(caller);
-    dispatchLifecycleSyscall(
-      worker,
-      caller,
-      ABI_SYSCALLS.ThreadCancel,
-      [99],
-    );
-
-    expect(worker.waitingForChild).toEqual([
-      expect.objectContaining({
-        channel: target,
-        syscallNr: ABI_SYSCALLS.Wait4,
-        cancellationPoint: false,
-      }),
-    ]);
-    expect(worker.pendingCancels.has(target)).toBe(true);
-    expect(readStatus(target)).toBe(CHANNEL_STATUS_PENDING);
-    expect(readCompletion(caller)).toEqual({
-      retVal: 0,
-      errVal: 0,
-      status: CHANNEL_STATUS_COMPLETE,
-    });
-    expect(relistenChannel).not.toHaveBeenCalledWith(target);
-  });
-
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "%s leaves a cancellation-disabled wait blocked and preserves its pending cancel",
-    (_name, pointerWidth) => {
-      const kernelMemory = createSharedMemory();
-      const memory = createSharedMemory();
-      const caller = createChannel(7, memory, 0);
-      const target = createChannel(7, memory, 256);
-      let childReady = false;
-      let drained = false;
-      const waitChildPoll = vi.fn((
-        _parentPid: number,
-        _callerTid: number,
-        _targetPid: number,
-        _eventMask: number,
-        _flags: number,
-        resultPtr: number | bigint,
-      ) => {
-        if (!childReady) return 0;
-        writeKernelWaitResult(kernelMemory, Number(resultPtr), {
-          waitStatus: 12 << 8,
-          siCode: WAIT_CLD_EXITED,
-          siStatus: 12,
-          childUid: 0,
-          rusage: new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE),
-        });
-        return 42;
-      });
-      const worker = createWorkerHarness({
-        kernel_drain_wakeup_events: vi.fn((outPtr: number | bigint) => {
-          if (!childReady || drained) return 0;
-          drained = true;
-          writeWakeEvent(
-            kernelMemory,
-            Number(outPtr),
-            0,
-            42,
-            WAKE_PROCESS_STOPPED,
-          );
-          return 1;
-        }),
-        kernel_get_parent_pid: vi.fn(() => 7),
-        kernel_handle_channel: successfulKernelHandle(kernelMemory),
-        kernel_has_sa_nocldstop: vi.fn(() => 1),
-        kernel_wait_child_poll: waitChildPoll,
-      }, pointerWidth, kernelMemory);
-      worker.processes = new Map([[7, {
-        channels: [caller, target],
-        memory,
-      }]]);
-      worker.channelTids = new Map([["7:256", 99]]);
-      worker.pendingCancels = new Set();
-      worker.waitingForChild = [];
-      const relistenChannel = observeRelisten(worker);
-      markPending(target);
-
-      // A cancellation point without cancellation-wake authority represents
-      // PTHREAD_CANCEL_DISABLE. The request stays parked even after the host
-      // records pthread_cancel for its exact thread.
-      dispatchLifecycleSyscall(
-        worker,
-        target,
-        ABI_SYSCALLS.Wait4,
-        [-1, 0, 0, 0],
-        true,
-        false,
-      );
-      expect(worker.waitingForChild).toHaveLength(1);
-
-      markPending(caller);
-      dispatchLifecycleSyscall(
-        worker,
-        caller,
-        ABI_SYSCALLS.ThreadCancel,
-        [99],
-      );
-
-      expect(worker.waitingForChild).toHaveLength(1);
-      expect(worker.pendingCancels.has(target)).toBe(true);
-      expect(readStatus(target)).toBe(CHANNEL_STATUS_PENDING);
-      expect(relistenChannel).not.toHaveBeenCalledWith(target);
-
-      childReady = true;
-      worker.drainAndProcessWakeupEvents();
-
-      expect(worker.waitingForChild).toEqual([]);
-      expect(readCompletion(target)).toEqual({
-        retVal: 42,
-        errVal: 0,
-        status: CHANNEL_STATUS_COMPLETE,
-      });
-      expect(worker.pendingCancels.has(target)).toBe(true);
-    },
-  );
-
-  it("retires an interrupted engine futex waiter before a later wake quota", async () => {
-    const memory = createSharedMemory();
-    const first = createChannel(7, memory, 0);
-    const second = createChannel(7, memory, 256);
-    const waker = createChannel(7, memory, 512);
-    const futexPtr = 4096;
-    new Int32Array(memory.buffer)[futexPtr >>> 2] = 0;
-    const worker = createWorkerHarness({});
-    worker.processes = new Map([[7, {
-      channels: [first, second, waker],
-      memory,
-    }]]);
-    worker.pendingFutexWaits = new Map();
-    observeRelisten(worker);
-    markPending(first);
-    markPending(second);
-
-    dispatchLifecycleSyscall(
-      worker,
-      first,
-      ABI_SYSCALLS.Futex,
-      [futexPtr, 0, 0, 0, 0, 0],
-    );
-    dispatchLifecycleSyscall(
-      worker,
-      second,
-      ABI_SYSCALLS.Futex,
-      [futexPtr, 0, 0, 0, 0, 0],
-    );
-    expect(worker.pendingFutexWaits.size).toBe(2);
-
-    worker.pendingFutexWaits.get(first).interrupt(-4, 4);
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-
-    expect(worker.pendingFutexWaits.size).toBe(0);
-    expect(readCompletion(first)).toMatchObject({ retVal: -4, errVal: 4 });
-    expect(readCompletion(second)).toMatchObject({ retVal: 0, errVal: 0 });
-
-    markPending(second);
-    dispatchLifecycleSyscall(
-      worker,
-      second,
-      ABI_SYSCALLS.Futex,
-      [futexPtr, 0, 0, 0, 0, 0],
-    );
-    expect(worker.pendingFutexWaits.size).toBe(1);
-    markPending(waker);
-    dispatchLifecycleSyscall(
-      worker,
-      waker,
-      ABI_SYSCALLS.Futex,
-      [futexPtr, 1, 1, 0, 0, 0],
-    );
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-
-    expect(readCompletion(waker)).toMatchObject({ retVal: 1, errVal: 0 });
-    expect(readCompletion(second)).toMatchObject({ retVal: 0, errVal: 0 });
-    expect(worker.pendingFutexWaits.size).toBe(0);
-  });
-
-  it("retires futex and cancel state with an exact thread channel", () => {
+  it("retires cancel state with an exact thread channel", () => {
     const memory = createSharedMemory();
     const channel = createChannel(7, memory, 256);
-    const retire = vi.fn();
     const worker = createWorkerHarness({});
     worker.processes = new Map([[7, { channels: [channel], memory }]]);
     worker.activeChannels = [channel];
@@ -1834,12 +546,6 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.deferredStoppedChannels = new Map();
     worker.resumePreparedSignals = new WeakSet();
     worker.pendingCancels = new Set([channel]);
-    worker.waitingForChild = [];
-    worker.pendingSleeps = new Map();
-    worker.pendingFutexWaits = new Map([[channel, {
-      futexIndex: 1024,
-      retire,
-    }]]);
     worker.pendingPollRetries = new Map();
     worker.pendingSelectRetries = new Map();
     worker.pendingPipeReaders = new Map();
@@ -1850,14 +556,103 @@ describe("Rust-owned process wait lifecycle", () => {
 
     worker.removeChannel(7, 256);
 
-    expect(retire).toHaveBeenCalledOnce();
-    expect(worker.pendingFutexWaits.size).toBe(0);
     expect(worker.pendingCancels.size).toBe(0);
     expect(worker.processes.get(7).channels).toEqual([]);
     expect(worker.activeChannels).toEqual([]);
     expect(worker.channelTids.has("7:256")).toBe(false);
     expect(worker.threadForkContexts.has("7:256")).toBe(false);
   });
+
+  it.each(["channel", "process"] as const)(
+    "rejects stale native wait completion after %s retirement and mailbox reuse",
+    async retirement => {
+      const kernelMemory = createSharedMemory();
+      const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+      const oldChannel = createChannel(7, memory);
+      const thread = createChannel(7, memory, CH_TOTAL_SIZE + 64);
+      const other = createChannel(8, createSharedMemory());
+      oldChannel.kernelWaitGeneration = 11;
+      thread.kernelWaitGeneration = 22;
+      other.kernelWaitGeneration = 33;
+      let wakeArmed = false;
+      let decisions: Array<{ generation: number; pid: number; tid: number; value: number }> = [];
+      const worker = createWorkerHarness({
+        kernel_drain_wakeup_events: (outPtr: number | bigint) => {
+          if (!wakeArmed) return 0;
+          wakeArmed = false;
+          const view = new DataView(kernelMemory.buffer, Number(outPtr), WAKEUP_EVENT_RECORD_BYTES);
+          new Uint8Array(view.buffer, view.byteOffset, view.byteLength).fill(0);
+          view.setUint32(WAKEUP_EVENT_FIELDS.idx.offset, 0, true);
+          view.setUint8(WAKEUP_EVENT_FIELDS.wakeType.offset, WAKEUP_EVENT_TYPES.waitComplete);
+          return 1;
+        },
+        kernel_drain_wait_completions: (outPtr: number | bigint, outLen: number, maxRecords: number) => {
+          const batch = decisions.splice(0, Math.min(maxRecords, Math.floor(outLen / WAIT_COMPLETION_RECORD_BYTES)));
+          for (const [index, decision] of batch.entries()) {
+            const view = new DataView(kernelMemory.buffer, Number(outPtr) + index * WAIT_COMPLETION_RECORD_BYTES, WAIT_COMPLETION_RECORD_BYTES);
+            view.setBigUint64(WAIT_COMPLETION_FIELDS.generation.offset, BigInt(decision.generation), true);
+            view.setUint32(WAIT_COMPLETION_FIELDS.pid.offset, decision.pid, true);
+            view.setUint32(WAIT_COMPLETION_FIELDS.tid.offset, decision.tid, true);
+            view.setInt32(WAIT_COMPLETION_FIELDS.value.offset, decision.value, true);
+            view.setUint32(WAIT_COMPLETION_FIELDS.flags.offset, 0, true);
+          }
+          return batch.length;
+        },
+        kernel_wait_next_timeout_ns: () => -1n,
+      }, 4, kernelMemory);
+      worker.processes = new Map([
+        [7, { pid: 7, memory, channels: [oldChannel, thread] }],
+        [8, { pid: 8, memory: other.memory, channels: [other] }],
+      ]);
+      worker.activeChannels = [oldChannel, thread, other];
+      worker.channelTids.set(`7:${thread.channelOffset}`, 99);
+      if (retirement === "channel") worker.removeChannel(7, 0);
+      else expect(worker.deactivateProcess(7, memory)).toBe(true);
+      const sibling = retirement === "channel" ? thread : other;
+      expect(worker.activeChannels).toContain(sibling);
+      expect(worker.activeChannels).not.toContain(oldChannel);
+      expect(sibling.kernelWaitGeneration).toBe(retirement === "channel" ? 22 : 33);
+      const successor = createChannel(7, memory);
+      successor.kernelWaitGeneration = 44;
+      worker.processes.set(7, {
+        pid: 7, memory, channels: retirement === "channel" ? [successor, thread] : [successor],
+      });
+      worker.activeChannels.push(successor);
+      markPending(successor);
+      markPending(sibling);
+      const view = new DataView(memory.buffer, successor.channelOffset);
+      view.setBigInt64(CH_RETURN, 12345n, true);
+      let releaseSibling!: () => void;
+      let releaseSuccessor!: () => void;
+      const siblingComplete = new Promise<void>(resolve => { releaseSibling = resolve; });
+      const successorComplete = new Promise<void>(resolve => { releaseSuccessor = resolve; });
+      const relisten = vi.fn(channel => {
+        if (channel === sibling) releaseSibling();
+        if (channel === successor) releaseSuccessor();
+      });
+      configureBoundaryHooks(worker, { relistenChannel: relisten });
+      decisions = [
+        { generation: 11, pid: 7, tid: 7, value: 777 },
+        { generation: sibling.kernelWaitGeneration, pid: sibling.pid, tid: retirement === "channel" ? 99 : 8, value: 21 },
+      ];
+      wakeArmed = true;
+      worker.testAuthority.drainWakeupEventsForTest();
+      await siblingComplete;
+      expect(readCompletion(successor)).toMatchObject({ retVal: 12345, status: CHANNEL_STATUS_PENDING });
+      expect(successor.kernelWaitGeneration).toBe(44);
+      expect(readCompletion(sibling)).toEqual({ retVal: 21, errVal: 0, status: CHANNEL_STATUS_COMPLETE });
+      expect(sibling.kernelWaitGeneration).toBeUndefined();
+      expect(relisten).not.toHaveBeenCalledWith(oldChannel);
+      expect(relisten).not.toHaveBeenCalledWith(successor);
+      decisions = [{ generation: 44, pid: 7, tid: 7, value: 31 }];
+      wakeArmed = true;
+      worker.testAuthority.drainWakeupEventsForTest();
+      await successorComplete;
+      expect(readCompletion(successor)).toEqual({ retVal: 31, errVal: 0, status: CHANNEL_STATUS_COMPLETE });
+      expect(successor.kernelWaitGeneration).toBeUndefined();
+      expect(decisions).toEqual([]);
+    },
+  );
 
   it("parks exact mailbox notifications while materializing completed output", async () => {
     const kernelMemory = createSharedMemory();
@@ -2028,8 +823,6 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.parkedChannelCompletions = new Map();
     worker.deferredStoppedChannels = new Map();
     worker.deferredProcessWorkerStarts = new Map();
-    worker.pendingSleeps = new Map();
-    worker.pendingFutexWaits = new Map();
     worker.pendingPollRetries = new Map();
     worker.pendingSelectRetries = new Map();
     worker.pendingPipeReaders = new Map();
@@ -2077,73 +870,6 @@ describe("Rust-owned process wait lifecycle", () => {
       .toBe(SIGCONT);
   });
 
-  it("interrupts a stopped exact wait thread with its retained caught signal", async () => {
-    const kernelMemory = createSharedMemory();
-    const processMemory = createSharedMemory();
-    const channel = createChannel(7, processMemory);
-    markPending(channel);
-    let state = PROCESS_STATE_STOPPED;
-    const dequeue = vi.fn((_pid: number, _tid: number, outPtr: number) => {
-      new DataView(kernelMemory.buffer).setUint32(outPtr, SIGUSR1, true);
-      return SIGUSR1;
-    });
-    const worker = createWorkerHarness({
-      kernel_get_process_state: vi.fn(() => state),
-      kernel_dequeue_signal: dequeue,
-      kernel_get_process_exit_signal: vi.fn(() => -1),
-    }, 4, kernelMemory);
-    worker.processes = new Map([[7, {
-      channels: [channel],
-      memory: processMemory,
-    }]]);
-    worker.waitingForChild = [{
-      parentPid: 7,
-      channel,
-      origArgs: [-1, 0, 0, 0],
-      pid: -1,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
-    worker.stoppedPids = new Set([7]);
-    worker.parkedChannelCompletions = new Map();
-    worker.deferredStoppedChannels = new Map();
-    worker.deferredProcessWorkerStarts = new Map();
-    worker.pendingSleeps = new Map();
-    worker.pendingFutexWaits = new Map();
-    worker.pendingPollRetries = new Map();
-    worker.pendingSelectRetries = new Map();
-    worker.pendingPipeReaders = new Map();
-    worker.pendingPipeWriters = new Map();
-    worker.socketTimeoutTimers = new Map();
-    const sequence: string[] = [];
-    const synchronizeSharedMemoryForBoundary = vi.fn(() => {
-      sequence.push("sync");
-    });
-    configureBoundaryHooks(worker, { synchronizeSharedMemoryForBoundary });
-    const start = vi.fn(() => sequence.push("start"));
-    const cancel = vi.fn();
-
-    expect(worker.startProcessWorkerWhenRunnable(
-      7,
-      processMemory,
-      start,
-      cancel,
-    )).toBe("deferred");
-    state = PROCESS_STATE_RUNNING;
-    expect(worker.testAuthority.resumeStoppedProcessForTest(7)).toBe(true);
-    await drainLifecycleGate();
-
-    expect(worker.waitingForChild).toEqual([]);
-    expect(dequeue).toHaveBeenCalledOnce();
-    expect(sequence).toEqual(["sync", "start"]);
-    expect(readCompletion(channel)).toEqual({
-      retVal: -1,
-      errVal: 4,
-      status: CHANNEL_STATUS_COMPLETE,
-    });
-    expect(new DataView(processMemory.buffer).getUint32(CH_SIG_SIGNUM, true))
-      .toBe(SIGUSR1);
-  });
 
   it("materializes detached descriptor output before wake scratch is reused", async () => {
     const kernelMemory = createSharedMemory();
@@ -2264,7 +990,7 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(relistenChannel).toHaveBeenCalledWith(channel);
   });
 
-  it("discards every parked and deferred channel without publication on signal death", () => {
+  it("replaces parked and deferred completions with terminal retirement on signal death", () => {
     const memory = createSharedMemory();
     const first = createChannel(42, memory, 0);
     const second = createChannel(42, memory, 256);
@@ -2297,8 +1023,10 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.stoppedPids.has(42)).toBe(false);
     expect(worker.parkedChannelCompletions.size).toBe(0);
     expect(worker.deferredStoppedChannels.size).toBe(0);
-    expect(readStatus(first)).toBe(CHANNEL_STATUS_PENDING);
-    expect(readStatus(second)).toBe(CHANNEL_STATUS_PENDING);
+    for (const retired of [first, second]) {
+      expect(readCompletion(retired)).toEqual({ retVal: -1, errVal: 4, status: CHANNEL_STATUS_COMPLETE });
+      expect(new DataView(retired.memory.buffer, retired.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    }
     expect(onExit).toHaveBeenCalledWith(42, 137);
   });
 
@@ -2337,9 +1065,15 @@ describe("Rust-owned process wait lifecycle", () => {
         true,
       ),
     ).toBe(9);
-    // The guest's kernel_exit import and terminal memory_quiescent message,
-    // rather than forced Worker termination, now own final host teardown.
-    expect(onExit).not.toHaveBeenCalled();
+    expect(
+      new DataView(memory.buffer, channel.channelOffset).getUint32(
+        CH_SIG_SI_CODE,
+        true,
+      ),
+    ).toBe(EXIT_RETIRE_SIGNAL_CODE);
+    // The terminal marker suppresses another guest exit notification. The
+    // host must start teardown with Rust's original signal-derived status.
+    expect(onExit).toHaveBeenCalledExactlyOnceWith(42, 137);
   });
 
   it("settles only the exit handshake after Rust has reaped a process", () => {
@@ -2382,7 +1116,7 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(handleChannel).not.toHaveBeenCalled();
   });
 
-  it("parks non-exit syscalls from a process Rust has already reaped", () => {
+  it("retires non-exit syscalls without re-entering a process Rust has reaped", () => {
     const memory = createSharedMemory();
     const channel = createChannel(42, memory);
     markPending(channel);
@@ -2403,9 +1137,18 @@ describe("Rust-owned process wait lifecycle", () => {
 
     worker.handleSyscall(channel);
 
-    expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
-    expect(channel.handling).toBe(true);
-    expect(relistenChannel).not.toHaveBeenCalled();
+    expect(readCompletion(channel)).toEqual({
+      retVal: -1,
+      errVal: 4,
+      status: CHANNEL_STATUS_COMPLETE,
+    });
+    const processView = new DataView(memory.buffer, channel.channelOffset);
+    expect(processView.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    expect(processView.getUint32(CH_SIG_SI_CODE, true))
+      .toBe(EXIT_RETIRE_SIGNAL_CODE);
+    // An exited worker may make a final deferred-signal request before
+    // observing the marker; keep only its retired transport listening.
+    expect(relistenChannel).toHaveBeenCalledExactlyOnceWith(channel);
     expect(setCurrentTid).not.toHaveBeenCalled();
     expect(handleChannel).not.toHaveBeenCalled();
   });
@@ -2442,8 +1185,8 @@ describe("Rust-owned process wait lifecycle", () => {
       expect(setCurrentTid).toHaveBeenCalledWith(pid, tid);
       expect(markSignaled).toHaveBeenCalledWith(pid, 11);
       expect(onExit).toHaveBeenCalledWith(pid, 139);
-      expect(channel.handling).toBe(true);
-      expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
+      expect(readCompletion(channel)).toEqual({ retVal: -1, errVal: 4, status: CHANNEL_STATUS_COMPLETE });
+      expect(new DataView(memory.buffer, channel.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
       expect(error).toHaveBeenCalledWith(
         "[handleSyscall] FATAL task binding error: " +
           `Kernel rejected tid ${tid} for process ${pid}: errno 3`,
@@ -2486,8 +1229,8 @@ describe("Rust-owned process wait lifecycle", () => {
 
       expect(markSignaled).toHaveBeenCalledWith(pid, 11);
       expect(onExit).toHaveBeenCalledWith(pid, 139);
-      expect(threadChannel.handling).toBe(true);
-      expect(readStatus(threadChannel)).toBe(CHANNEL_STATUS_PENDING);
+      expect(readCompletion(threadChannel)).toEqual({ retVal: -1, errVal: 4, status: CHANNEL_STATUS_COMPLETE });
+      expect(new DataView(memory.buffer, threadChannel.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
       expect(error).toHaveBeenCalledWith(
         `[handleSyscall] FATAL task binding error: ${expected}`,
       );
@@ -2551,7 +1294,6 @@ describe("Rust-owned process wait lifecycle", () => {
     const channel = createChannel(pid, memory);
     const otherChannel = createChannel(otherPid, otherMemory);
     const worker = createWorkerHarness({});
-    worker.waitingForChild = [];
     worker.activeChannels = [channel, otherChannel];
     worker.channelTids = new Map([
       [`${pid}:0`, 1001],
@@ -2599,7 +1341,8 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.notifyHostProcessCrashed(42, 11);
 
     expect(markProcessSignaled).toHaveBeenCalledWith(42, 11);
-    expect(sendSignalToProcess).toHaveBeenCalledWith(7, SIGCHLD, true);
+    // Route only: the kernel generated SIGCHLD when it recorded the death.
+    expect(sendSignalToProcess).toHaveBeenCalledWith(7, SIGCHLD, false);
     expect(calls).toEqual(["mark", "signal"]);
     expect(worker.sharedMappings.has(42)).toBe(false);
   });
@@ -2677,7 +1420,7 @@ describe("Rust-owned process wait lifecycle", () => {
 
     worker.notifyHostProcessCrashed(42, 11);
 
-    expect(sendSignalToProcess).toHaveBeenCalledWith(7, SIGCHLD, true);
+    expect(sendSignalToProcess).toHaveBeenCalledWith(7, SIGCHLD, false);
   });
 
   it("does not commit clean exit when the post-release check reports signal death", () => {
@@ -2704,7 +1447,7 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.hostReaped.has(42)).toBe(true);
     expect(onExit).toHaveBeenCalledWith(42, 128 + SIGTERM);
     expect(commitProcessExit).not.toHaveBeenCalled();
-    expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
+    expect(readCompletion(channel)).toEqual({ retVal: 0, errVal: 0, status: CHANNEL_STATUS_COMPLETE });
   });
 
   it("fails closed when Rust returns a different committed exit status", () => {
@@ -2748,12 +1491,10 @@ describe("Rust-owned process wait lifecycle", () => {
     const kernelMemory = createSharedMemory();
     const exitSignals = new Map([[42, 0], [43, 15]]);
     const handleChannel = successfulKernelHandle(kernelMemory);
-    const pickSignalTarget = vi.fn(() => 0);
     const onExit = vi.fn();
     const worker = createWorkerHarness({
       kernel_handle_channel: handleChannel,
       kernel_get_process_exit_signal: vi.fn((pid: number) => exitSignals.get(pid) ?? -1),
-      kernel_pick_signal_target_tid: pickSignalTarget,
     }, 4, kernelMemory);
     const normalMemory = createSharedMemory();
     const signaledMemory = createSharedMemory();
@@ -2763,7 +1504,6 @@ describe("Rust-owned process wait lifecycle", () => {
       [42, { channels: [normalChannel], memory: normalMemory }],
       [43, { channels: [signaledChannel], memory: signaledMemory }],
     ]);
-    worker.pendingSleeps = new Map();
     worker.hostReaped = new Set();
     worker.callbacks = { onExit };
     markPending(normalChannel);
@@ -2777,56 +1517,37 @@ describe("Rust-owned process wait lifecycle", () => {
 
     expect(worker.hostReaped.has(42)).toBe(false);
     expect(worker.hostReaped.has(43)).toBe(true);
-    expect(pickSignalTarget).toHaveBeenCalledWith(43, SIGTERM);
     expect(onExit).toHaveBeenCalledOnce();
     expect(onExit).toHaveBeenCalledWith(43, 128 + SIGTERM);
   });
 
-  it("SA_NOCLDWAIT auto-reaps through Rust without SIGCHLD", () => {
-    const reapExitedChild = vi.fn(() => 0);
+  // The kernel announces a child's exit itself (SIGCHLD, or the SA_NOCLDWAIT
+  // auto-reap) when it records it; the host only drains (which runs that
+  // announcement) and then routes the already-pending signal to the parent's
+  // host-owned waits, generating nothing.
+  it("host exit notification drains and routes without generating SIGCHLD", () => {
+    const calls: string[] = [];
+    const drainWakeups = vi.fn(() => {
+      calls.push("drain");
+      return 0;
+    });
     const worker = createWorkerHarness({
       kernel_mark_process_signaled: vi.fn(() => 0),
       kernel_get_parent_pid: vi.fn(() => 7),
-      kernel_has_sa_nocldwait: vi.fn(() => 1),
-      kernel_reap_exited_child: reapExitedChild,
-      kernel_wait_child_poll: vi.fn(() => -10),
+      kernel_drain_wakeup_events: drainWakeups,
     });
     worker.hostReaped = new Set();
     worker.sharedMappings = new Map();
-    const parentMemory = createSharedMemory();
-    const parentChannel = createChannel(7, parentMemory);
-    worker.processes = new Map([[7, {
-      channels: [parentChannel],
-      memory: parentMemory,
-    }]]);
-    worker.waitingForChild = [{
-      parentPid: 7,
-      channel: parentChannel,
-      origArgs: [42, 0, 0, 0],
-      pid: 42,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
-    const sendSignalToProcess = vi.fn();
-    const completeChannel = observeMarshalledCompletions(worker);
+    const sendSignalToProcess = vi.fn(() => calls.push("route"));
     configureBoundaryHooks(worker, { sendSignalToProcess });
 
     worker.notifyHostProcessCrashed(42, 11);
 
-    expect(reapExitedChild).toHaveBeenCalledWith(7, 42);
-    expect(sendSignalToProcess).not.toHaveBeenCalled();
-    expect(worker.waitingForChild).toEqual([]);
-    expect(completeChannel).toHaveBeenCalledWith(
-      parentChannel,
-      ABI_SYSCALLS.Wait4,
-      [42, 0, 0, 0],
-      undefined,
-      -1,
-      10,
-    );
+    expect(sendSignalToProcess).toHaveBeenCalledWith(7, SIGCHLD, false);
+    expect(calls.lastIndexOf("drain")).toBeLessThan(calls.indexOf("route"));
   });
 
-  it("thread exit uses Rust-owned ctid metadata for clear-tid wakeup", () => {
+  it("thread exit asks the kernel to perform the clear-tid wakeup", () => {
     const memory = createSharedMemory();
     const ctidPtr = 2048;
     new DataView(memory.buffer).setInt32(ctidPtr, 123, true);
@@ -2850,8 +1571,11 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.threadForkContexts = new Map([["10:1024", { fnPtr: 1, argPtr: 2 }]]);
     worker.finalizeThreadExit(10, 77, threadChannel.channelOffset);
 
-    expect(kernelThreadExit).toHaveBeenCalledWith(10, 77);
-    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
+    // `1`: this thread really ran, so the kernel stores 0 at the clear-TID
+    // word and wakes a joiner parked in its futex queue. The host writes
+    // nothing itself; this mocked kernel does not store either.
+    expect(kernelThreadExit).toHaveBeenCalledWith(10, 77, 1);
+    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(123);
     expect(worker.processes.get(10).channels).toEqual([mainChannel]);
     expect(worker.activeChannels).toEqual([mainChannel]);
     expect(worker.channelTids.has("10:1024")).toBe(false);
@@ -3163,25 +1887,6 @@ function successfulKernelHandle(
   });
 }
 
-function writeKernelWaitResult(
-  memory: WebAssembly.Memory,
-  ptr: number,
-  result: {
-    waitStatus: number;
-    siCode: number;
-    siStatus: number;
-    childUid: number;
-    rusage: Uint8Array;
-  },
-): void {
-  const view = new DataView(memory.buffer);
-  view.setInt32(ptr + KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET, result.waitStatus, true);
-  view.setInt32(ptr + KERNEL_WAIT_RESULT_SI_CODE_OFFSET, result.siCode, true);
-  view.setInt32(ptr + KERNEL_WAIT_RESULT_SI_STATUS_OFFSET, result.siStatus, true);
-  view.setUint32(ptr + KERNEL_WAIT_RESULT_CHILD_UID_OFFSET, result.childUid, true);
-  new Uint8Array(memory.buffer, ptr + KERNEL_WAIT_RESULT_RUSAGE_OFFSET, result.rusage.length)
-    .set(result.rusage);
-}
 
 function writeWakeEvent(
   memory: WebAssembly.Memory,
@@ -3190,10 +1895,10 @@ function writeWakeEvent(
   wakeIdx: number,
   wakeType: number,
 ): void {
-  const offset = ptr + index * 5;
+  const offset = ptr + index * WAKEUP_EVENT_RECORD_BYTES;
   const view = new DataView(memory.buffer);
-  view.setUint32(offset, wakeIdx, true);
-  view.setUint8(offset + 4, wakeType);
+  view.setUint32(offset + WAKEUP_EVENT_FIELDS.idx.offset, wakeIdx, true);
+  view.setUint16(offset + WAKEUP_EVENT_FIELDS.wakeType.offset, wakeType, true);
 }
 
 function markPending(channel: any): void {

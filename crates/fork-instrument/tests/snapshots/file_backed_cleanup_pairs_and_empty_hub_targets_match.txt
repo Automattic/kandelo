@@ -1,0 +1,61 @@
+=== effective 743ee8e20045 ===
+(
+    CallFacts {
+        itargets: [
+            (
+                2,
+                "->",
+                [],
+            ),
+        ],
+        cleanup: [
+            (
+                "caller",
+                [
+                    "a",
+                ],
+            ),
+        ],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)
+
+=== untyped 743ee8e20045 ===
+(
+    CallFacts {
+        itargets: [
+            (
+                2,
+                "->",
+                [],
+            ),
+        ],
+        cleanup: [
+            (
+                "caller",
+                [
+                    "a",
+                ],
+            ),
+        ],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)

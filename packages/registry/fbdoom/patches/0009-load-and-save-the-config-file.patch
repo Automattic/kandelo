@@ -1,0 +1,53 @@
+Load and save the config file, as every Doom does.
+
+Doom keeps its settings (screen size, sound volumes, key and mouse
+bindings) in default.cfg, reading it at startup and writing it back at
+exit. fbDOOM comes from doomgeneric, which wraps both directions in
+#if ORIGCODE for embedded targets without a filesystem, and ORIGCODE is
+never defined. So fbDOOM printed "saving config in ..." but neither
+read nor wrote the file, every setting reset on each launch, and a
+system could not ship defaults through the user's config.
+
+Kandelo has a filesystem, so compile the loader and saver back in,
+unchanged from upstream. M_SetConfigDir already creates the directory.
+This restores upstream behavior and is independent of Kandelo.
+
+Reference: chocolate-doom src/m_config.c LoadDefaultCollection and
+SaveDefaultCollection at the pinned commit.
+
+diff --git a/fbdoom/m_config.c b/fbdoom/m_config.c
+index d8722df..23718af 100644
+--- a/fbdoom/m_config.c
++++ b/fbdoom/m_config.c
+@@ -1608,7 +1608,6 @@ static const int scantokey[128] =
+ 
+ static void SaveDefaultCollection(default_collection_t *collection)
+ {
+-#if ORIGCODE
+     default_t *defaults;
+     int i, v;
+     FILE *f;
+@@ -1708,7 +1707,6 @@ static void SaveDefaultCollection(default_collection_t *collection)
+     }
+ 
+     fclose (f);
+-#endif
+ }
+ 
+ // Parses integer values in the configuration file
+@@ -1770,7 +1768,6 @@ static void SetVariable(default_t *def, char *value)
+ 
+ static void LoadDefaultCollection(default_collection_t *collection)
+ {
+-#if ORIGCODE
+     FILE *f;
+     default_t *def;
+     char defname[80];
+@@ -1828,7 +1825,6 @@ static void LoadDefaultCollection(default_collection_t *collection)
+     }
+ 
+     fclose (f);
+-#endif
+ }
+ 
+ // Set the default filenames to use for configuration files.

@@ -53,7 +53,7 @@
 //! [`RECV_EOF`]: wasm_posix_shared::net_readiness::RECV_EOF
 
 use wasm_posix_shared::net_readiness as facts;
-use wasm_posix_shared::poll::{POLLERR, POLLHUP, POLLIN, POLLOUT};
+use wasm_posix_shared::poll::{POLLERR, POLLHUP, POLLIN, POLLOUT, POLLRDHUP};
 
 /// Decide `revents` for a host-delegated stream connection from the facts its
 /// host engine reported and the `events` the caller asked about.
@@ -85,6 +85,10 @@ pub fn stream_revents(host_facts: u32, events: i16) -> i16 {
     // the read returns 0 rather than blocking.
     if events & POLLIN != 0 && flags & (facts::RECV_READY | facts::RECV_EOF) != 0 {
         revents |= POLLIN;
+    }
+
+    if flags & facts::RECV_EOF != 0 {
+        revents |= events & POLLRDHUP;
     }
 
     // POLLOUT: normal data may be written without blocking.

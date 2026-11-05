@@ -6,7 +6,7 @@
 
 pub mod dispatch;
 
-use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering};
 
 use wasm_posix_shared::input::*;
 
@@ -17,6 +17,29 @@ use wasm_posix_shared::input::*;
 /// and reject the device.
 static CANVAS_W: AtomicU32 = AtomicU32::new(1280);
 static CANVAS_H: AtomicU32 = AtomicU32::new(720);
+static POINTER_X: AtomicI32 = AtomicI32::new(0);
+static POINTER_Y: AtomicI32 = AtomicI32::new(0);
+
+/// Absolute axes are device state, even when no reader is open or its event
+/// ring overflows. EVIOCGABS must allow consumers to recover that state.
+pub fn note_absolute_event(device: u8, axis: u16, value: i32) {
+    if device != 1 {
+        return;
+    }
+    match axis {
+        ABS_X => POINTER_X.store(value, Ordering::Relaxed),
+        ABS_Y => POINTER_Y.store(value, Ordering::Relaxed),
+        _ => {}
+    }
+}
+
+pub fn absolute_axis(axis: u16) -> i32 {
+    match axis {
+        ABS_X => POINTER_X.load(Ordering::Relaxed),
+        ABS_Y => POINTER_Y.load(Ordering::Relaxed),
+        _ => 0,
+    }
+}
 
 pub fn canvas_dims() -> (u32, u32) {
     (CANVAS_W.load(Ordering::Relaxed), CANVAS_H.load(Ordering::Relaxed))

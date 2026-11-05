@@ -1,0 +1,99 @@
+Use one scrollbar geometry for rendering and input.
+
+A long list made a thumb only a few pixels high in the widget model, while
+the renderer silently allocated a larger surface to fit its theme end caps.
+Clicks on that extra visible area went to the containing window. Apply the
+minimum in shared layout and always render the exact requested extent.
+
+--- a/client/gui-sdl2/widget_scrollbar.h
++++ b/client/gui-sdl2/widget_scrollbar.h
+@@ -29,9 +29,7 @@
+   Sint16 max;		/* used by scroll: max pixel position */
+ };
+ 
+-#define scrollbar_size(scroll)				\
+-        ((float)((float)(scroll->active * scroll->step) /	\
+-        (float)scroll->count) * (scroll->max - scroll->min))
++int scrollbar_size(const struct scroll_bar *scroll);
+ 
+ #define hide_scrollbar(scrollbar)				\
+ do {								\
+--- a/client/gui-sdl2/widget_scrollbar.c
++++ b/client/gui-sdl2/widget_scrollbar.c
+@@ -89,18 +89,16 @@
+ 
+   tile_len_midd = vert_theme->h / 4 - tile_len_end * 2;
+ 
+-  tile_count_midd = (height - tile_len_end * 2) / tile_len_midd;
++  tile_count_midd = MAX(0, (int)height - tile_len_end * 2) / tile_len_midd;
+ 
+   /* Correction */
+   if (tile_len_midd * tile_count_midd + tile_len_end * 2 < height) {
+     tile_count_midd++;
+   }
+ 
+-  if (!tile_count_midd) {
+-    versurf = create_surf(vert_theme->w, tile_len_end * 2, SDL_SWSURFACE);
+-  } else {
+-    versurf = create_surf(vert_theme->w, height, SDL_SWSURFACE);
+-  }
++  /* Rendering must not silently enlarge a thumb beyond its hit rectangle.
++   * Layout owns the minimum extent in scrollbar_size(). */
++  versurf = create_surf(vert_theme->w, height, SDL_SWSURFACE);
+ 
+   src.x = 0;
+   src.y = start_y;
+@@ -221,18 +219,16 @@
+ 
+   tile_len_midd = horiz_theme->w / 4 - tile_len_end * 2;
+ 
+-  tile_count_midd = (width - tile_len_end * 2) / tile_len_midd;
++  tile_count_midd = MAX(0, (int)width - tile_len_end * 2) / tile_len_midd;
+ 
+   /* Correction */
+   if (tile_len_midd * tile_count_midd + tile_len_end * 2 < width) {
+     tile_count_midd++;
+   }
+ 
+-  if (!tile_count_midd) {
+-    horsurf = create_surf(tile_len_end * 2, horiz_theme->h, SDL_SWSURFACE);
+-  } else {
+-    horsurf = create_surf(width, horiz_theme->h, SDL_SWSURFACE);
+-  }
++  /* Rendering must not silently enlarge a thumb beyond its hit rectangle.
++   * Layout owns the minimum extent in scrollbar_size(). */
++  horsurf = create_surf(width, horiz_theme->h, SDL_SWSURFACE);
+ 
+   src.y = 0;
+   src.x = start_x;
+@@ -329,6 +325,30 @@
+ /* =================================================== */
+ /* =====================            ================== */
+ /* =================================================== */
++
++/**********************************************************************//**
++  One thumb extent for drawing, hit testing, and drag limits. Long lists can
++  have a proportional size smaller than the theme's end caps; applying the
++  minimum only while drawing makes most of the visible thumb unclickable.
++**************************************************************************/
++int scrollbar_size(const struct scroll_bar *scroll)
++{
++  int track = MAX(0, scroll->max - scroll->min);
++  int minimum = adj_size(16);
++  int visible = scroll->active * scroll->step;
++
++  if (scroll->pscroll_bar && scroll->pscroll_bar->theme) {
++    const struct widget *thumb = scroll->pscroll_bar;
++    int theme_extent = get_wtype(thumb) == WT_VSCROLLBAR
++      ? thumb->theme->h : thumb->theme->w;
++
++    minimum = MAX(minimum, 2 * (theme_extent / 16));
++  }
++  if (scroll->count <= visible || scroll->count == 0) {
++    return track;
++  }
++  return MIN(track, MAX(minimum, (int)((float)visible * track / scroll->count)));
++}
+ 
+ /**********************************************************************//**
+   Get step of the scrollbar.

@@ -17,12 +17,7 @@ import {
   CH_RETURN,
   CH_STATUS,
   CH_SYSCALL,
-  KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
-  KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
-  KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
   KERNEL_SCRATCH_MQUEUE_NOTIFICATION_BYTES,
-  STRUCT_SIZE_KERNEL_WAIT_RESULT,
-  WAIT_CLD_KILLED,
 } from "../src/generated/abi";
 import { NodePlatformIO } from "../src/platform/node";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
@@ -48,19 +43,9 @@ interface MqueueNotificationCapacityProbeOptions {
   readonly capacity: number;
 }
 
-interface WaitableChildCapacityProbeOptions {
-  readonly registrationWitness: RegisteredChannelWitness;
-  readonly childPid: number;
-  readonly destination: CapacityProbeDestination;
-  readonly capacity: number;
-}
-
 interface CapacityProbeAuthority {
   probeMqueueNotificationCapacityForTest(
     options: MqueueNotificationCapacityProbeOptions,
-  ): CapacityProbeResult;
-  probeWaitableChildCapacityForTest(
-    options: WaitableChildCapacityProbeOptions,
   ): CapacityProbeResult;
 }
 
@@ -188,7 +173,6 @@ function createCapacityProbeContractHarness() {
     shared: true,
   });
   const mqueueProbeExport = vi.fn(() => 0);
-  const waitableChildProbeExport = vi.fn(() => 0);
   let duringKernelHandle = (): void => {};
   const kernelHandle = vi.fn((pointer: number | bigint) => {
     duringKernelHandle();
@@ -210,7 +194,6 @@ function createCapacityProbeContractHarness() {
         "kernel_handle_channel",
         "kernel_mq_drain_notification",
         "kernel_set_current_tid",
-        "kernel_wait_child_poll",
       ],
       kernelExports: {
         kernel_dequeue_signal: vi.fn(() => 0),
@@ -218,7 +201,6 @@ function createCapacityProbeContractHarness() {
         kernel_handle_channel: kernelHandle,
         kernel_mq_drain_notification: mqueueProbeExport,
         kernel_set_current_tid: vi.fn(() => 0),
-        kernel_wait_child_poll: waitableChildProbeExport,
       },
     },
   );
@@ -257,7 +239,6 @@ function createCapacityProbeContractHarness() {
     runDuringKernelHandle(operation: () => void): void {
       duringKernelHandle = operation;
     },
-    waitableChildProbeExport,
   };
 }
 
@@ -438,97 +419,9 @@ describe("CentralizedKernelWorker", () => {
     }
   });
 
-  it("preserves a waitable child until an exact-capacity result consumes it", async () => {
-    const ECHILD = 10;
-    const EFAULT = 14;
-    const EINVAL = 22;
-    const SIGTERM = 15;
-    const harness = await createRealKernelHarness();
-    const authority = capacityProbeAuthority(harness.worker);
-    let childPid = 0;
-
-    try {
-      childPid =
-        harness.worker.testAuthority.forkKernelProcessForAdvisoryLockTest(
-          harness.pid,
-          harness.pid,
-        );
-      expect(childPid).toBeGreaterThan(0);
-      harness.worker.testAuthority.sendSignalForTest(childPid, SIGTERM);
-
-      const nullDestination =
-        authority.probeWaitableChildCapacityForTest({
-          registrationWitness: harness.channel,
-          childPid,
-          destination: "null",
-          capacity: STRUCT_SIZE_KERNEL_WAIT_RESULT,
-        });
-      expect(nullDestination.result).toBe(-EFAULT);
-      expectUntouchedCanaries(
-        nullDestination,
-        STRUCT_SIZE_KERNEL_WAIT_RESULT,
-      );
-
-      for (const capacity of [
-        STRUCT_SIZE_KERNEL_WAIT_RESULT - 1,
-        STRUCT_SIZE_KERNEL_WAIT_RESULT + 1,
-      ]) {
-        const rejected = authority.probeWaitableChildCapacityForTest({
-          registrationWitness: harness.channel,
-          childPid,
-          destination: "guarded",
-          capacity,
-        });
-        expect(rejected.result).toBe(-EINVAL);
-        expectUntouchedCanaries(
-          rejected,
-          STRUCT_SIZE_KERNEL_WAIT_RESULT,
-        );
-      }
-
-      // WHY: the exact call returning this same child proves that none of the
-      // rejected destinations selected or consumed its sole wait record.
-      const accepted = authority.probeWaitableChildCapacityForTest({
-        registrationWitness: harness.channel,
-        childPid,
-        destination: "guarded",
-        capacity: STRUCT_SIZE_KERNEL_WAIT_RESULT,
-      });
-      expect(accepted.result).toBe(childPid);
-      expect(accepted.guardedBytes[0]).toBe(0xa5);
-      expect(accepted.guardedBytes.at(-1)).toBe(0xa5);
-      const result = new DataView(
-        accepted.guardedBytes.buffer,
-        accepted.guardedBytes.byteOffset + 1,
-        STRUCT_SIZE_KERNEL_WAIT_RESULT,
-      );
-      expect(
-        result.getInt32(KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET, true),
-      ).toBe(SIGTERM);
-      expect(
-        result.getInt32(KERNEL_WAIT_RESULT_SI_CODE_OFFSET, true),
-      ).toBe(WAIT_CLD_KILLED);
-      expect(
-        result.getInt32(KERNEL_WAIT_RESULT_SI_STATUS_OFFSET, true),
-      ).toBe(SIGTERM);
-
-      const consumed = authority.probeWaitableChildCapacityForTest({
-        registrationWitness: harness.channel,
-        childPid,
-        destination: "guarded",
-        capacity: STRUCT_SIZE_KERNEL_WAIT_RESULT,
-      });
-      expect(consumed.result).toBe(-ECHILD);
-      expectUntouchedCanaries(consumed, STRUCT_SIZE_KERNEL_WAIT_RESULT);
-    } finally {
-      harness.worker.unregisterProcess(harness.pid);
-    }
-  });
-
   it("rejects busy capacity probes without reading or replaying their options", async () => {
     const harness = createCapacityProbeContractHarness();
     const mqueueReads = vi.fn();
-    const waitReads = vi.fn();
     const mqueueOptions = observedOptions({
       registrationWitness: harness.channel,
       descriptor: 7,
@@ -536,19 +429,11 @@ describe("CentralizedKernelWorker", () => {
       destination: "guarded" as const,
       capacity: KERNEL_SCRATCH_MQUEUE_NOTIFICATION_BYTES,
     }, mqueueReads);
-    const waitOptions = observedOptions({
-      registrationWitness: harness.channel,
-      childPid: 43,
-      destination: "guarded" as const,
-      capacity: STRUCT_SIZE_KERNEL_WAIT_RESULT,
-    }, waitReads);
     const errors: unknown[] = [];
     harness.runDuringKernelHandle(() => {
       for (const probe of [
         () => harness.authority
           .probeMqueueNotificationCapacityForTest(mqueueOptions),
-        () => harness.authority
-          .probeWaitableChildCapacityForTest(waitOptions),
       ]) {
         try {
           probe();
@@ -560,23 +445,19 @@ describe("CentralizedKernelWorker", () => {
 
     harness.dispatchOuterSyscall();
 
-    expect(errors).toHaveLength(2);
+    expect(errors).toHaveLength(1);
     for (const error of errors) {
       expect(error).toBeInstanceOf(Error);
       expect(String(error)).toMatch(/active|busy|cannot run/i);
     }
     expect(mqueueReads).not.toHaveBeenCalled();
-    expect(waitReads).not.toHaveBeenCalled();
     expect(harness.mqueueProbeExport).not.toHaveBeenCalled();
-    expect(harness.waitableChildProbeExport).not.toHaveBeenCalled();
 
     // A rejected immediate probe must not remain queued behind the outer
     // kernel export and read or execute after that exact scope is revoked.
     for (let turn = 0; turn < 8; turn++) await Promise.resolve();
     expect(mqueueReads).not.toHaveBeenCalled();
-    expect(waitReads).not.toHaveBeenCalled();
     expect(harness.mqueueProbeExport).not.toHaveBeenCalled();
-    expect(harness.waitableChildProbeExport).not.toHaveBeenCalled();
     expect(harness.kernelHandle).toHaveBeenCalledOnce();
   });
 
@@ -594,15 +475,6 @@ describe("CentralizedKernelWorker", () => {
         capacity: KERNEL_SCRATCH_MQUEUE_NOTIFICATION_BYTES,
       });
     }).toThrow(TypeError);
-    expect(() => {
-      harness.authority.probeWaitableChildCapacityForTest({
-        registrationWitness: staleWitness,
-        childPid: 43,
-        destination: "guarded",
-        capacity: STRUCT_SIZE_KERNEL_WAIT_RESULT,
-      });
-    }).toThrow(TypeError);
     expect(harness.mqueueProbeExport).not.toHaveBeenCalled();
-    expect(harness.waitableChildProbeExport).not.toHaveBeenCalled();
   });
 });

@@ -37,6 +37,7 @@ import {
   wasmModuleExports,
   wasmModuleImports,
 } from "./wasm-module-reflection";
+import { noteProcessMemoryInstance } from "./wasm-instance-retention";
 
 // dylink.0 sub-section types
 const WASM_DYLINK_MEM_INFO = 1;
@@ -1932,6 +1933,7 @@ function* instantiateSharedLibrarySteps(
 
     // Instantiate synchronously after validating the side-module fork contract.
     instance = new WebAssembly.Instance(module, instanceImports);
+    noteProcessMemoryInstance(instance);
     preparedActivation?.register(instance);
     const ownedModuleBytes = wasmBytes.slice();
     const initializationForkState = (

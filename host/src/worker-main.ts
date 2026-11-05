@@ -11,6 +11,7 @@ import {
 } from "./fork-side-module-contract";
 import {
   EXEC_RETIRE_SIGNAL_CODE,
+  EXIT_RETIRE_SIGNAL_CODE,
   type CentralizedWorkerInitMessage,
   type CentralizedThreadInitMessage,
   type WorkerToHostMessage,
@@ -142,6 +143,8 @@ import {
   ForkExternrefTokenRecipeProvider,
 } from "./fork-reference-broker";
 import { ForkHostImportWorkerRuntime } from "./fork-host-import-runtime";
+import { trapProcessWorker } from "./fork-worker-import-exceptions";
+import { createHeapSafepointImport } from "./heap-safepoint";
 import {
   ForkImportedGlobalCapture,
   ForkImportedGlobalPlanner,
@@ -160,6 +163,7 @@ import {
 // everything compiled by wasm32-posix) never trigger.
 import { isWasiModule, wasiModuleDefinesMemory } from "./wasi-detect";
 import { synchronizeReceivedSharedWasmMemory } from "./shared-wasm-memory-growth";
+import { noteProcessMemoryInstance } from "./wasm-instance-retention";
 import {
   registerWasmModuleReflection,
   wasmModuleExports,
@@ -178,8 +182,7 @@ const SYS_MMAP_NR = ABI_SYSCALLS.Mmap;
 const PROT_READ_WRITE = 3;
 const MAP_PRIVATE_ANONYMOUS = 0x22;
 const SIGKILL = 9;
-
-class ExecRetirement extends Error {}
+const EINTR_ERRNO = 4;
 
 /** @internal Exported so cross-engine exit-trap recognition is tested. */
 export function isWasmUnreachableTrap(error: unknown): boolean {
@@ -189,6 +192,43 @@ export function isWasmUnreachableTrap(error: unknown): boolean {
   // containing that word from masquerading as a committed guest exit.
   return error instanceof WebAssembly.RuntimeError
     && /\bunreachable\b/i.test(error.message);
+}
+
+function isExecRetirementTrap(
+  error: unknown,
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+): boolean {
+  return error instanceof WebAssembly.RuntimeError
+    && isExecRetirementMarker(new DataView(memory.buffer), channelOffset);
+}
+
+function isExitedWorkerRetirement(
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+): boolean {
+  const view = new DataView(memory.buffer);
+  return view.getUint32(channelOffset + CH_SIG_SIGNUM, true) === SIGKILL
+    && view.getUint32(channelOffset + CH_SIG_SI_CODE, true) === EXIT_RETIRE_SIGNAL_CODE;
+}
+
+/** @internal Exported so the teardown decision is tested without a live channel. */
+export function isProcessTeardownInterrupt(
+  view: DataView,
+  channelOffset: number,
+  errno: number,
+): boolean {
+  return errno === EINTR_ERRNO
+    && view.getUint32(channelOffset + CH_SIG_SIGNUM, true) === SIGKILL;
+}
+
+function clearWorkerRetirementMarker(
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+): void {
+  const view = new DataView(memory.buffer);
+  view.setUint32(channelOffset + CH_SIG_SIGNUM, 0, true);
+  view.setUint32(channelOffset + CH_SIG_SI_CODE, 0, true);
 }
 
 /** @internal Exported so ABI-generated retirement-marker decoding is tested. */
@@ -299,6 +339,10 @@ function continuationMunmap(
   const err = resultView.getUint32(base + CH_ERRNO, true);
   clearDeferredSignalDelivery(resultView, base);
   Atomics.store(resultI32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+  // Teardown interrupts every channel, including this host-side call. The
+  // address space dies with the process, and the queued SIGKILL stays in place
+  // for the guest's post-syscall exit.
+  if (isProcessTeardownInterrupt(resultView, base, err || -result)) return;
   if (err || result < 0) {
     throw new Error(
       `${label}: munmap(0x${addr.toString(16)}, ${size}) failed errno=${err || -result}`,
@@ -493,6 +537,12 @@ function buildKernelImports(
     // Sticky kernel-owned state captured for this exact process image.
     kernel_get_secure_exec: (): number => secureExec ? 1 : 0,
 
+    // [RUNTIME-WORKAROUND: JSC-BLOCKED-WAIT-GC-STARVATION] Called by the
+    // syscall wait after a bounded wait times out; lets a JavaScriptCore VM
+    // finish a collection begun before the thread blocked (suspected cause;
+    // see docs/browser-support.md).
+    kernel_heap_safepoint: createHeapSafepointImport(),
+
     // Fork/exec state — not a fork child.
     kernel_is_fork_child: (): number => 0,
     kernel_apply_fork_fd_actions: (): number => 0,
@@ -504,27 +554,44 @@ function buildKernelImports(
       _buf: number | bigint,
       _max: number,
     ): number => 0,
-    kernel_push_argv: (_ptr: number | bigint, _len: number): void => {},
+    kernel_push_argv: (_ptr: number | bigint, _len: number): number => -38,
     kernel_clear_fork_exec: (): number => 0,
 
     // Exec dispatches through channel
     kernel_execve: (_pathPtr: number | bigint): number => -38, // ENOSYS
 
     // Exit dispatches through channel (SYS_EXIT)
-    kernel_exit: publishExit,
-    kernel_thread_exit: (waitPtr: WasmGuestPointer): void => {
-      const range = checkedWasmMemoryRange(
-        memory,
-        waitPtr,
-        4,
-        ptrWidth,
-        "kernel_thread_exit",
-      );
-      if (range.offset % 4 !== 0) {
-        throw new RangeError("kernel_thread_exit: unaligned wait pointer");
+    kernel_exit: (status: number): void => {
+      const view = new DataView(memory.buffer);
+      const base = channelOffset;
+      if (isExecRetirementMarker(view, base) || isExitedWorkerRetirement(memory, base)) {
+        // Rust already committed exec or exit. Unwind without another
+        // syscall, then let the entry wrapper publish memory_quiescent.
+        // Keep the marker until the Worker boundary: import adapters can
+        // re-trap and replace the JavaScript exception identity.
+        return trapProcessWorker();
       }
-      Atomics.store(new Int32Array(memory.buffer), range.offset / 4, 0);
-      publishExit(0);
+      view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+      view.setBigInt64(base + CH_ARGS, BigInt(status), true);
+      const i32 = new Int32Array(memory.buffer);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+      // Wait until the reusable kernel transaction returns and the host has
+      // committed the exit before terminating this disposable process Worker.
+      while (
+        Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
+        "ok"
+      ) {
+        /* */
+      }
+      onKernelExit?.(status);
+      // Execute unreachable inside Wasm: a RuntimeError thrown by JavaScript
+      // is catchable by guest noexcept handlers, which can issue writev on
+      // this now-retired channel and leave the Worker blocked forever where
+      // terminate() cannot reclaim a blocked Worker (Bun today; older WebKit).
+      // This disposable Worker trap also enforces `_Noreturn` for callers
+      // without a trailing unreachable; the reusable kernel never traps.
+      return trapProcessWorker();
     },
 
     // Clone dispatches through channel (SYS_CLONE)
@@ -1972,6 +2039,8 @@ export function buildDlopenImports(
       nameRange.offset,
       nameRange.length,
     );
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
+    // The copy also guards against memory grow/detach, so it stays even if the engine is fixed.
     // WHY: compilation may grow/detach memory, and Firefox/Chrome reject
     // TextDecoder views backed directly by SharedArrayBuffer.
     return {
@@ -2175,6 +2244,7 @@ export function buildDlopenImports(
         );
         // Copy bytes since memory.buffer may detach during Wasm instantiation
         const bytesCopy = new Uint8Array(bytes);
+        // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
         // TextDecoder.decode() rejects views backed by SharedArrayBuffer
         // in Firefox (and recent Chrome), so copy the name bytes through
         // a non-shared Uint8Array before decoding. Same shape as
@@ -2988,6 +3058,7 @@ export async function centralizedWorkerMain(
   initData: CentralizedWorkerInitMessage,
 ): Promise<void> {
   let processHostImportRuntime: ForkHostImportWorkerRuntime | null = null;
+  let kernelExitStatus: number | null = null;
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
     const ptrWidth = initData.ptrWidth ?? 4;
@@ -3087,7 +3158,6 @@ export async function centralizedWorkerMain(
     const processLongjmpTag = createLongjmpTag(ptrWidth);
     const processCppExceptionTag = createCppExceptionTag(ptrWidth);
     const processForkUnwindTag = createForkUnwindTag();
-    let kernelExitStatus: number | null = null;
     const kernelImports = buildKernelImports(
       memory,
       channelOffset,
@@ -4193,12 +4263,6 @@ export async function centralizedWorkerMain(
           } catch (e) {
             if (isForkUnwindException(e, processForkUnwindTag)) {
               transportedForkUnwind = true;
-            } else if (isWasmUnreachableTrap(e)) {
-              if (kernelExitStatus !== null) {
-                exitCode = kernelExitStatus;
-                break; // Normal exit via kernel_exit -> unreachable trap
-              }
-              throw e;
             } else {
               throw e;
             }
@@ -4229,21 +4293,21 @@ export async function centralizedWorkerMain(
           break;
         }
       } catch (e) {
+        // The old address space is already gone from the kernel. Do not run
+        // guest cleanup/deallocators that could publish another syscall.
+        if (isExitedWorkerRetirement(memory, channelOffset)
+          || isExecRetirementTrap(e, memory, channelOffset)
+          || (kernelExitStatus !== null && isWasmUnreachableTrap(e))) throw e;
         processTableReplication.abortActiveMutations();
         releaseProcessForkArchiveReader();
-        if (isWasmUnreachableTrap(e) && kernelExitStatus !== null) {
-          exitCode = kernelExitStatus;
-        } else {
-          if (processContinuation.phaseName() !== "idle") {
-            try {
-              processContinuation.abort();
-            } catch {
-              // Preserve the execution failure; abort already made its
-              // transaction state unreachable before attempting deallocation.
-            }
+        if (processContinuation.phaseName() !== "idle") {
+          try {
+            processContinuation.abort();
+          } catch {
+            // Preserve the execution failure after aborting its transaction.
           }
-          throw e;
         }
+        throw e;
       }
 
       processContinuation.clear();
@@ -4357,10 +4421,27 @@ export async function centralizedWorkerMain(
     }
   } catch (err) {
     processHostImportRuntime?.clear();
-    if (err instanceof ExecRetirement) {
+    if (isExitedWorkerRetirement(initData.memory, initData.channelOffset)) {
+      // A deferred-signal JS import may throw EINTR before re-entering Wasm.
+      // Rust has already recorded exit: publish only the wrapper's fence.
+      clearWorkerRetirementMarker(initData.memory, initData.channelOffset);
+      return;
+    }
+    if (isExecRetirementTrap(err, initData.memory, initData.channelOffset)) {
+      clearWorkerRetirementMarker(initData.memory, initData.channelOffset);
       port.postMessage({
         type: "exec_retired",
         pid: initData.pid,
+      } satisfies WorkerToHostMessage);
+      return;
+    }
+    if (kernelExitStatus !== null && isWasmUnreachableTrap(err)) {
+      // Rust already committed exit. Guest cleanup can no longer use its
+      // channel; the disposable realm releases its remaining local state.
+      port.postMessage({
+        type: "exit",
+        pid: initData.pid,
+        status: kernelExitStatus,
       } satisfies WorkerToHostMessage);
       return;
     }
@@ -4386,6 +4467,15 @@ export async function centralizedWorkerMain(
     } satisfies WorkerToHostMessage);
   }
 }
+
+// [RUNTIME-WORKAROUND: WEBKIT-TEXTDECODER-WRAPPER-CRASH] One decoder for
+// every export name: a PHP binary has about 22,000 exports. Constructing a
+// TextDecoder per name made each process start create thousands of DOM
+// wrappers, and WebKit's page process crashed in cacheWrapper<TextDecoder>
+// during those bursts. The cause is suspected, not a confirmed WebKit
+// defect: there is no standalone reduction (docs/browser-support.md,
+// "WebKit page-process crash while creating TextDecoders").
+const EXPORT_NAME_DECODER = new TextDecoder();
 
 /**
  * Set up __channel_base in TLS so __do_syscall knows the channel offset.
@@ -4491,7 +4581,7 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
       for (let i = 0; i < exportCount; i++) {
         const [nameLen, nameLenBytes] = readLEB128(src, pos);
         pos += nameLenBytes;
-        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen));
+        const name = EXPORT_NAME_DECODER.decode(src.subarray(pos, pos + nameLen));
         pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readLEB128(src, pos);
@@ -4876,7 +4966,7 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
       for (let i = 0; i < exportCount; i++) {
         const [nameLen, nameLenBytes] = readLEB128(src, pos);
         pos += nameLenBytes;
-        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen));
+        const name = EXPORT_NAME_DECODER.decode(src.subarray(pos, pos + nameLen));
         pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readLEB128(src, pos);
@@ -5262,6 +5352,7 @@ export async function centralizedThreadWorkerMain(
   let processDlopenLock: Int32Array | undefined;
   let processDlopenOwner: Int32Array | undefined;
   let pthreadForkLockHeld = false;
+  let kernelThreadExitStatus: number | null = null;
   const acquirePthreadForkLock = (): boolean => {
     if (!processDlopenLock || !processDlopenOwner) {
       throw new Error(
@@ -5582,7 +5673,6 @@ export async function centralizedThreadWorkerMain(
       }
     };
 
-    let kernelThreadExitStatus: number | null = null;
     const kernelImports = buildKernelImports(
       memory,
       channelOffset,
@@ -5829,6 +5919,7 @@ export async function centralizedThreadWorkerMain(
     const threadInstanceImports = (threadMainImportedState?.imports ??
       routedThreadImportObject) as WebAssembly.Imports;
     const instance = new WebAssembly.Instance(module, threadInstanceImports);
+    noteProcessMemoryInstance(instance);
     threadInstance = instance;
     threadMainImportedState?.complete(instance);
     if (
@@ -5990,11 +6081,6 @@ export async function centralizedThreadWorkerMain(
         } catch (e) {
           if (isForkUnwindException(e, threadForkUnwindTag)) {
             transportedForkUnwind = true;
-          } else if (
-            isWasmUnreachableTrap(e) && kernelThreadExitStatus !== null
-          ) {
-            result = kernelThreadExitStatus;
-            break;
           } else {
             throw e;
           }
@@ -6020,16 +6106,8 @@ export async function centralizedThreadWorkerMain(
         break;
       }
     } else {
-      try {
-        const raw = threadFn(...threadArgs);
-        result = Number(raw);
-      } catch (e) {
-        if (isWasmUnreachableTrap(e) && kernelThreadExitStatus !== null) {
-          result = kernelThreadExitStatus;
-        } else {
-          throw e;
-        }
-      }
+      const raw = threadFn(...threadArgs);
+      result = Number(raw);
     }
 
     // A well-formed replay releases its reader token from the inherited fork
@@ -6076,6 +6154,33 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
+    if (isExitedWorkerRetirement(memory, channelOffset)) {
+      clearWorkerRetirementMarker(memory, channelOffset);
+      return;
+    }
+    if (isExecRetirementTrap(err, memory, channelOffset)) {
+      clearWorkerRetirementMarker(memory, channelOffset);
+      port.postMessage({
+        type: "exec_retired",
+        pid,
+        tid,
+      } satisfies WorkerToHostMessage);
+      return;
+    }
+    if (kernelThreadExitStatus !== null && isWasmUnreachableTrap(err)) {
+      // The process can outlive this pthread. Release host-side replication
+      // locks, but do not run guest deallocators on its closed syscall channel.
+      threadTableReplication?.abortActiveMutations();
+      releasePthreadForkLock();
+      threadExternrefTokens?.clear();
+      threadHostImportRuntime?.clear();
+      port.postMessage({
+        type: "thread_exit",
+        pid,
+        tid,
+      } satisfies WorkerToHostMessage);
+      return;
+    }
     threadTableReplication?.abortActiveMutations();
     releasePthreadForkLock();
     try {
@@ -6086,14 +6191,6 @@ export async function centralizedThreadWorkerMain(
     }
     threadExternrefTokens?.clear();
     threadHostImportRuntime?.clear();
-    if (err instanceof ExecRetirement) {
-      port.postMessage({
-        type: "exec_retired",
-        pid,
-        tid,
-      } satisfies WorkerToHostMessage);
-      return;
-    }
     const message =
       err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
     port.postMessage({

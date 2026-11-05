@@ -4134,3 +4134,43 @@ on the final change.
 This bounds individual helper size without coalescing data or changing
 replay order, but does not establish a lower total instrumenter RSS or a
 successful FrankenPHP build. The full build still needs more free RAM.
+
+**2026-11-05 — Integrate the latest main and retain the ABI-55 program baseline.**
+Merged `origin/main` at `21cfba152` into the draft branch. Main's native,
+streaming fork instrumenter replaces the old Walrus module-state rewrite;
+the old literal-offset and helper-partition edits no longer apply to the
+active instrumenter. Its full FrankenPHP peak RSS remains unmeasured.
+Main also replaced the TypeScript SDK compiler driver with `kandelo-cc`, so
+the Go linker's `--print-file-name` queries now resolve through the Rust
+driver. Its focused Rust test passes.
+
+The new preallocated-thread-slot export initially changed the program
+memory-layout snapshot, and an ABI-56 trial failed the frozen ABI-55
+baseline gate. Programs without this optional export retain the original
+memory layout. The export is now recorded in the kernel-host adapter
+surface, with host adapter version 5 and program ABI 55. The regenerated
+snapshot, frozen baseline check, and resolver-bundle check pass. The host
+process-memory suite passes 8/8, including absent, valid, and invalid
+preallocation declarations. New Go binaries that require preallocation
+need this host behavior; forward compatibility with older hosts is not
+claimed.
+
+The merge also brought main's fallible I/O memory budget. Directory OFD
+rename tracking now uses budgeted paths, weak registry references, and a
+prepare/publish step so allocation can fail before a successful filesystem
+rename. The directory-path tests pass (3 focused assertions across the OFD
+and process-table suites), and `cargo check --workspace` passes. The first
+full `runtime-core --lib` run had 3,159 passes and two failures: the older
+host-path mock test was incompatible with main's handle-only foreign-mount
+contract and has been removed; a real-rootfs test read a stale September
+source-only image and failed to mount it. Refresh the image through the
+normal build path before rerunning that full suite. This is not a full
+runtime or browser validation of the merge.
+
+Next rebuild the ABI-55 package artifacts and WordPress image on the new
+streaming instrumenter, measure the full instrumenter and live server RSS,
+then rerun the Node and Chromium/Firefox/WebKit editor, restart, and
+benchmark gates. The ZTS embed package still uses PHP 8.3.15 while main's
+PHP-FPM package moved to 8.5.12; align versions before claiming a fair
+runtime comparison. Main's package registry and SDK changes need a normal
+resolver build, not only source compilation.

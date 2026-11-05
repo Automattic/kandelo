@@ -1,0 +1,5 @@
+script_path = "packages/registry/sdl2-mixer/build-sdl2-mixer.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = ["packages/registry/sdl2-mixer/build-sdl2-mixer.sh", "scripts/package-build-roots.sh"]

@@ -13,6 +13,10 @@ use crate::lock::{AdvisoryLockManager, FileId, OfdId};
 use crate::ofd::FileType;
 use crate::process::{HostIO, Process};
 
+mod prepared_image;
+mod host_program;
+pub use host_program::prepare_host_program;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PreparedExecOwner {
     Process {
@@ -75,11 +79,17 @@ impl PreparedExecOwner {
     }
 }
 
-/// One exact executable object retained independently of guest descriptors.
+#[derive(Clone, Copy)]
+enum PreparedExecBacking {
+    Source,
+    Derived { source_generation: Option<u64> },
+}
+
+/// One executable object retained independently of guest descriptors.
 ///
 /// The pathname is diagnostic only. `ofd_ref` plus `ofd_id` is the object
-/// lease, and `observed_bytes` is filled only by positioned reads through that
-/// lease. Commit requires complete coverage and compares the same bytes again.
+/// lease. Metadata describes source authority; positioned image observations
+/// drive compilation. Commit requires complete coverage and revalidates both.
 pub struct PreparedExecTarget {
     token: u32,
     owner: PreparedExecOwner,
@@ -89,10 +99,11 @@ pub struct PreparedExecTarget {
     stat: WasmStat,
     statfs: WasmStatfs,
     #[allow(dead_code)] // Retained only for Task 11 diagnostics, never authority.
-    diagnostic_path: Vec<u8>,
+    diagnostic_path: crate::ofd::OfdPath,
     observed_bytes: Vec<u8>,
     observed_ranges: Vec<(usize, usize)>,
     content_drifted: bool,
+    backing: PreparedExecBacking,
 }
 
 impl PreparedExecTarget {
@@ -104,9 +115,25 @@ impl PreparedExecTarget {
         file_id: Option<FileId>,
         stat: WasmStat,
         statfs: WasmStatfs,
-        diagnostic_path: Vec<u8>,
+        diagnostic_path: impl AsRef<[u8]>,
     ) -> Result<Self, Errno> {
-        let size = usize::try_from(stat.st_size).map_err(|_| Errno::EOVERFLOW)?;
+        let image_length = stat.st_size;
+        Self::new_with_image_length(owner, ofd_ref, ofd_id, file_id, stat, statfs, diagnostic_path, image_length)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_image_length(
+        owner: PreparedExecOwner,
+        ofd_ref: OpenFileDescRef,
+        ofd_id: OfdId,
+        file_id: Option<FileId>,
+        stat: WasmStat,
+        statfs: WasmStatfs,
+        diagnostic_path: impl AsRef<[u8]>,
+        image_length: u64,
+    ) -> Result<Self, Errno> {
+        let diagnostic_path = crate::ofd::OfdPath::copy_from(diagnostic_path.as_ref())?;
+        let size = usize::try_from(image_length).map_err(|_| Errno::EOVERFLOW)?;
         if size > platform_limits::MAX_REPORTABLE_TRANSFER_BYTES {
             return Err(Errno::EFBIG);
         }
@@ -128,6 +155,7 @@ impl PreparedExecTarget {
             observed_bytes,
             observed_ranges: Vec::new(),
             content_drifted: false,
+            backing: PreparedExecBacking::Source,
         })
     }
 
@@ -223,6 +251,118 @@ impl PreparedExecTarget {
     }
 }
 
+/// The largest `#!` header prefix the shebang decoder ever inspects.
+///
+/// `parse_shebang` scans at most to byte index 4096 for the terminating
+/// newline, so reading the first `min(size, 4096)` bytes of a target is
+/// sufficient to decode the interpreter line exactly.
+const SHEBANG_HEADER_MAX_BYTES: usize = 4096;
+
+/// One decoded `#!` interpreter line.
+///
+/// This is the Rust-owned replacement for the host's former `parseShebang`
+/// byte interpretation: the kernel decodes the interpreter path and its single
+/// optional argument, and the host merely assembles argv from these fields.
+pub struct Shebang {
+    pub interpreter: alloc::string::String,
+    pub argument: Option<alloc::string::String>,
+}
+
+/// The JavaScript `\s` / `String.prototype.trim` whitespace set.
+///
+/// ECMAScript's `WhiteSpace` + `LineTerminator` production and the RegExp `\s`
+/// class cover the exact same code points, so one predicate faithfully mirrors
+/// both the `.trim()` and `\S`/`\s` behavior of the former `parseShebang`.
+fn is_js_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0009}'
+            | '\u{000A}'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{000D}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+            | '\u{FEFF}'
+    )
+}
+
+/// The code points a JavaScript `.` (no `s` flag) refuses to match.
+fn is_js_line_terminator(c: char) -> bool {
+    matches!(c, '\u{000A}' | '\u{000D}' | '\u{2028}' | '\u{2029}')
+}
+
+/// Decode a `#!` interpreter line exactly as the host's former `parseShebang`
+/// did (`host/src/exec-target.ts`).
+///
+/// Contract, ported byte-for-byte:
+///   * require the `#!` magic (`0x23 0x21`); fewer than two bytes → `None`.
+///   * scan for the terminating newline, bounded at index 4096.
+///   * decode the scanned bytes as UTF-8 with replacement (`TextDecoder`),
+///     drop exactly one trailing `\r` (`/\r$/`), then trim JS whitespace.
+///   * apply `/^(\S+)(?:\s+(.*))?$/`: the first non-whitespace run is the
+///     interpreter, and the remainder after the following whitespace run is a
+///     single optional argument. A trimmed line that is empty, or whose
+///     argument would contain an internal line terminator (so JS `$` cannot
+///     match), yields `None`.
+pub fn parse_shebang(bytes: &[u8]) -> Option<Shebang> {
+    if bytes.len() < 2 || bytes[0] != 0x23 || bytes[1] != 0x21 {
+        return None;
+    }
+    let mut end = 2usize;
+    while end < bytes.len() && end < SHEBANG_HEADER_MAX_BYTES && bytes[end] != 0x0A {
+        end += 1;
+    }
+    // `new TextDecoder().decode(...)`: UTF-8, invalid sequences → U+FFFD.
+    let decoded = alloc::string::String::from_utf8_lossy(&bytes[2..end]);
+    // `.replace(/\r$/, "")`: drop exactly one trailing carriage return.
+    let without_cr = decoded.strip_suffix('\r').unwrap_or(&decoded);
+    // `.trim()`: strip leading and trailing JS whitespace.
+    let line = without_cr.trim_matches(|c: char| is_js_whitespace(c));
+    if line.is_empty() {
+        return None;
+    }
+
+    // `\S+`: the leading non-whitespace run (non-empty, the line is trimmed).
+    let interp_end = line
+        .char_indices()
+        .find(|&(_, c)| is_js_whitespace(c))
+        .map(|(offset, _)| offset)
+        .unwrap_or(line.len());
+    let interpreter = &line[..interp_end];
+    if interp_end == line.len() {
+        return Some(Shebang {
+            interpreter: interpreter.into(),
+            argument: None,
+        });
+    }
+
+    // `\s+`: consume the whitespace run separating interpreter and argument.
+    let arg_start = line[interp_end..]
+        .char_indices()
+        .find(|&(_, c)| !is_js_whitespace(c))
+        .map(|(offset, _)| interp_end + offset)
+        // Only whitespace remained (impossible after `.trim()`); no argument.
+        .unwrap_or(line.len());
+    let argument = &line[arg_start..];
+    // `.*` stops at a line terminator, so an internal one leaves `$` unmatched
+    // and the whole pattern fails — exactly as JS returns null.
+    if argument.chars().any(is_js_line_terminator) {
+        return None;
+    }
+    Some(Shebang {
+        interpreter: interpreter.into(),
+        argument: Some(argument.into()),
+    })
+}
+
 pub struct PreparedExecLedger {
     entries: BTreeMap<u32, PreparedExecTarget>,
     next_token: Option<u32>,
@@ -309,15 +449,27 @@ fn insert_opened_target(
     opened: crate::syscalls::PreparedExecOpen,
 ) -> Result<u32, Errno> {
     let ofd_ref = opened.ofd_ref;
-    let target = match PreparedExecTarget::new(
-        owner,
-        opened.ofd_ref,
-        opened.ofd_id,
-        opened.file_id,
-        opened.stat,
-        opened.statfs,
-        opened.diagnostic_path,
-    ) {
+    let target = (|| {
+        let handle = proc.ofd_table.get(ofd_ref.0).ok_or(Errno::EBADF)?.host_handle;
+        let image_length = exec_image_length(handle, &opened.stat)?;
+        let mut target = PreparedExecTarget::new_with_image_length(
+            owner,
+            opened.ofd_ref,
+            opened.ofd_id,
+            opened.file_id,
+            opened.stat,
+            opened.statfs,
+            opened.diagnostic_path,
+            image_length,
+        )?;
+        if crate::executable_backing::is_executable_handle(handle) {
+            target.backing = PreparedExecBacking::Derived {
+                source_generation: crate::executable_backing::source_generation(handle)?,
+            };
+        }
+        Ok(target)
+    })();
+    let target = match target {
         Ok(target) => target,
         Err(error) => {
             let _ =
@@ -335,7 +487,7 @@ fn insert_opened_target(
     }
 }
 
-fn retain_empty_path_target(
+pub(crate) fn retain_fd_target(
     proc: &mut Process,
     host: &mut dyn HostIO,
     fd: i32,
@@ -345,22 +497,12 @@ fn retain_empty_path_target(
         let ofd = proc.ofd_table.get(ofd_ref.0).ok_or(Errno::EBADF)?;
         (ofd.ofd_id, ofd.file_type, ofd.host_handle, ofd.path.clone())
     };
-    let invalid_handle = host_handle < 0 && !is_kernel_fs_file_handle(host_handle);
+    let invalid_handle = host_handle < 0 && !is_kernel_fs_file_handle(host_handle)
+        && !crate::executable_backing::is_executable_handle(host_handle);
     if file_type != FileType::Regular || invalid_handle {
         return Err(Errno::EACCES);
     }
-    let stat = target_fstat(host, host_handle)?;
-    crate::syscalls::check_prepared_exec_stat(proc, &stat)?;
-    let statfs = if crate::rootfs::is_rootfs_file_handle(host_handle) {
-        // The overlay statfs carries the `/` mount's real `nosuid` flag, so an
-        // AT_EMPTY_PATH exec of a set-ID overlay binary honors (or, on a nosuid
-        // mount, drops) the set-ID bits exactly like the pathname exec path.
-        crate::rootfs::statfs(&diagnostic_path)?
-    } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
-        crate::tmpfs::statfs(&diagnostic_path)?
-    } else {
-        crate::syscalls::host_fstatfs_or_default(host, host_handle)?
-    };
+    let (stat, statfs) = source_authority(proc, host, host_handle, &diagnostic_path)?;
     let file_id = (stat.st_ino != 0).then_some(FileId::Host {
         dev: stat.st_dev,
         ino: stat.st_ino,
@@ -374,6 +516,26 @@ fn retain_empty_path_target(
         statfs,
         diagnostic_path,
     })
+}
+
+pub(crate) fn source_authority(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    handle: i64,
+    diagnostic_path: &[u8],
+) -> Result<(WasmStat, WasmStatfs), Errno> {
+    let stat = target_fstat(host, handle)?;
+    crate::syscalls::check_prepared_exec_stat(proc, &stat)?;
+    let statfs = if crate::executable_backing::is_executable_handle(handle) {
+        crate::executable_backing::source_statfs(handle, host)?
+    } else if crate::rootfs::is_rootfs_file_handle(handle) {
+        crate::rootfs::statfs_for_exec(diagnostic_path)?
+    } else if crate::tmpfs::is_tmpfs_file_handle(handle) {
+        crate::tmpfs::fstatfs(handle)?
+    } else {
+        crate::syscalls::host_fstatfs_or_default(host, handle)?
+    };
+    Ok((stat, statfs))
 }
 
 /// Retain the exact object selected by one pathname or `AT_EMPTY_PATH`
@@ -395,7 +557,7 @@ pub fn prepare(
         if flags & AT_EMPTY_PATH == 0 {
             return Err(Errno::ENOENT);
         }
-        retain_empty_path_target(proc, host, dirfd)?
+        retain_fd_target(proc, host, dirfd)?
     } else {
         crate::syscalls::open_prepared_exec_target(proc, host, dirfd, path, flags)?
     };
@@ -410,8 +572,10 @@ fn retained_host_handle(proc: &Process, target: &PreparedExecTarget) -> Result<i
     // An exec target in an in-kernel filesystem carries a negative rootfs or
     // tmpfs handle, which is a valid backing (not the "no host handle"
     // sentinel).
-    let invalid_handle = ofd.host_handle < 0 && !is_kernel_fs_file_handle(ofd.host_handle);
-    if ofd.ofd_id != target.ofd_id() || ofd.file_type != FileType::Regular || invalid_handle {
+    let invalid_handle = ofd.host_handle < 0 && !is_kernel_fs_file_handle(ofd.host_handle)
+        && !crate::executable_backing::is_executable_handle(ofd.host_handle);
+    if ofd.ofd_id != target.ofd_id() || ofd.file_type != FileType::Regular || invalid_handle
+        || crate::executable_backing::is_executable_handle(ofd.host_handle) != matches!(target.backing, PreparedExecBacking::Derived { .. }) {
         return Err(Errno::ETXTBSY);
     }
     Ok(ofd.host_handle)
@@ -426,7 +590,9 @@ fn is_kernel_fs_file_handle(handle: i64) -> bool {
 /// fstat the retained exec target, honoring in-kernel filesystem handles (a
 /// negative rootfs or tmpfs handle is served by the kernel, not the host).
 fn target_fstat(host: &mut dyn HostIO, host_handle: i64) -> Result<WasmStat, Errno> {
-    if crate::rootfs::is_rootfs_file_handle(host_handle) {
+    if crate::executable_backing::is_executable_handle(host_handle) {
+        crate::executable_backing::source_stat(host_handle, host)
+    } else if crate::rootfs::is_rootfs_file_handle(host_handle) {
         crate::rootfs::fstat(host_handle)
     } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
         crate::tmpfs::fstat(host_handle)
@@ -443,7 +609,9 @@ fn target_pread(
     buf: &mut [u8],
     offset: i64,
 ) -> Result<usize, Errno> {
-    if crate::rootfs::is_rootfs_file_handle(host_handle) {
+    if crate::executable_backing::is_executable_handle(host_handle) {
+        crate::executable_backing::read(host_handle, offset, buf, host)
+    } else if crate::rootfs::is_rootfs_file_handle(host_handle) {
         crate::rootfs::read(host_handle, offset, buf, |req, b| match req {
             crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
             crate::rootfs::ByteReq::DiscardDeferred { uri } => {
@@ -453,7 +621,7 @@ fn target_pread(
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         })
     } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
-        crate::tmpfs::read(host_handle, offset, buf)
+        crate::tmpfs::read(host_handle, offset, buf, &mut |source, source_offset, bytes| host.exchange_source_read(source, source_offset, bytes))
     } else {
         host.host_pread(host_handle, buf, offset)
     }
@@ -463,6 +631,52 @@ pub fn size(proc: &Process, owner_pid: u32, token: u32) -> Result<i64, Errno> {
     let target = proc.prepared_exec_targets.get(token)?;
     owner_matches_ledger_pid(target.owner(), owner_pid)?;
     i64::try_from(target.size()).map_err(|_| Errno::EOVERFLOW)
+}
+
+/// The retained target's complete bytes. `EINVAL` until the host has read
+/// the whole target, `ETXTBSY` if a re-read saw different bytes.
+pub fn artifact_bytes(proc: &Process, owner_pid: u32, token: u32) -> Result<&[u8], Errno> {
+    let target = proc.prepared_exec_targets.get(token)?;
+    owner_matches_ledger_pid(target.owner(), owner_pid)?;
+    target.observed_bytes()
+}
+
+pub fn preparation_plan(
+    proc: &Process,
+    owner_pid: u32,
+    token: u32,
+    profile: crate::program_preparation::PreparationProfile,
+    limits: crate::program_preparation::PreparationLimits,
+) -> Result<crate::program_preparation::PreparationPlan, Errno> {
+    let source = planning_source(proc, owner_pid, token)?;
+    crate::program_preparation::PreparationPlan::from_source(source, profile, limits)
+}
+
+pub fn preparation_plan_inspected(
+    proc: &Process, owner_pid: u32, token: u32,
+    inspection: &kandelo_program_policy::Inspection,
+    profile: crate::program_preparation::PreparationProfile,
+    limits: crate::program_preparation::PreparationLimits,
+) -> Result<crate::program_preparation::PreparationPlan, Errno> {
+    let source = planning_source(proc, owner_pid, token)?;
+    crate::program_preparation::PreparationPlan::from_inspected_source(source, inspection, profile, limits)
+}
+
+fn planning_source(proc: &Process, owner_pid: u32, token: u32) -> Result<&[u8], Errno> {
+    let target = proc.prepared_exec_targets.get(token)?;
+    owner_matches_ledger_pid(target.owner(), owner_pid)?;
+    let source = target.observed_bytes()?;
+    if matches!(target.backing, PreparedExecBacking::Derived { .. }) { return Err(Errno::ENOTSUP); }
+    Ok(source)
+}
+
+pub fn initial_preparation_inspected(
+    proc: &Process, owner_pid: u32, token: u32,
+    inspection: &kandelo_program_policy::Inspection,
+    profile: crate::program_preparation::PreparationProfile,
+    limits: crate::program_preparation::PreparationLimits,
+) -> Result<crate::program_preparation::InitialPreparation, Errno> {
+    crate::program_preparation::initial_preparation(planning_source(proc, owner_pid, token)?, inspection, profile, limits)
 }
 
 pub fn read(
@@ -496,6 +710,123 @@ pub fn read(
     }
     target.record_read(offset, &buffer[..read])?;
     Ok(read)
+}
+
+/// The first `min(size, 4096)` bytes of a file, read through `handle`. That
+/// is everything `parse_shebang` inspects; a short read decodes what arrived.
+fn read_header(
+    host: &mut dyn HostIO,
+    handle: i64,
+    size: usize,
+) -> Result<([u8; SHEBANG_HEADER_MAX_BYTES], usize), Errno> {
+    let want = size.min(SHEBANG_HEADER_MAX_BYTES);
+    let mut header = [0u8; SHEBANG_HEADER_MAX_BYTES];
+    let mut filled = 0usize;
+    while filled < want {
+        let read = target_pread(host, handle, &mut header[filled..want], filled as i64)?;
+        if read == 0 {
+            break;
+        }
+        if read > want - filled {
+            return Err(Errno::EIO);
+        }
+        filled += read;
+    }
+    Ok((header, filled))
+}
+
+/// What the kernel decides a retained exec target is.
+pub enum Admission {
+    /// A WebAssembly program this kernel can run.
+    Program,
+    /// A `#!` script; the caller launches its interpreter instead.
+    Script(Shebang),
+    /// Not runnable here; each string names one reason.
+    Refused(Vec<alloc::string::String>),
+}
+
+/// Decide what a retained target is, from the exact bytes it committed to:
+/// a `#!` script, or else a program judged by `wasm-artifact`. The host has
+/// read the whole target by now, so nothing here touches the file again.
+/// The full fork-instrumentation contract is not judged here; the host still
+/// checks it until the fork decoders move into `wasm-artifact`.
+pub fn admit(
+    proc: &Process,
+    owner_pid: u32,
+    token: u32,
+    expected_abi: u32,
+) -> Result<Admission, Errno> {
+    let bytes = artifact_bytes(proc, owner_pid, token)?;
+    if let Some(script) = parse_shebang(&bytes[..bytes.len().min(SHEBANG_HEADER_MAX_BYTES)]) {
+        return Ok(Admission::Script(script));
+    }
+    let policy = wasm_artifact::ArtifactPolicy {
+        expected_abi: Some(expected_abi),
+        ..wasm_artifact::ArtifactPolicy::default()
+    };
+    let report = wasm_artifact::describe_artifact_policy_failures(bytes, &policy);
+    if report.failures.is_empty() {
+        Ok(Admission::Program)
+    } else {
+        Ok(Admission::Refused(report.failures))
+    }
+}
+
+/// Refuse a `posix_spawn` target before the child exists, so a launch that
+/// cannot run never applies file actions (POSIX runs them exactly once, and
+/// `posix_spawnp` retries the next PATH entry on `ENOENT`/`EACCES`). Checks
+/// what a launch would: the path from the caller's CWD with execute
+/// permission, a WebAssembly or `#!` header, and one `#!` level whose
+/// interpreter must itself be a program (`ENOEXEC` otherwise). Retains
+/// nothing.
+pub fn probe_spawn_target(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    path: &[u8],
+) -> Result<(), Errno> {
+    match probe_one(proc, locks, host, path)? {
+        None => Ok(()),
+        Some(interpreter) => match probe_one(proc, locks, host, interpreter.as_bytes())? {
+            None => Ok(()),
+            Some(_) => Err(Errno::ENOEXEC),
+        },
+    }
+}
+
+/// `Ok(None)` for a program, `Ok(Some(interpreter))` for a script.
+fn probe_one(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    path: &[u8],
+) -> Result<Option<alloc::string::String>, Errno> {
+    let opened =
+        crate::syscalls::open_prepared_exec_target(proc, host, wasm_posix_shared::flags::AT_FDCWD, path, 0)?;
+    let header = match proc.ofd_table.get(opened.ofd_ref.0) {
+        Some(ofd) => {
+            let handle = ofd.host_handle;
+            let source = if crate::executable_backing::is_executable_handle(handle) {
+                crate::executable_backing::verify_source(handle, host)
+            } else { Ok(()) };
+            let size = source.and_then(|()| exec_image_length(handle, &opened.stat)).and_then(|length| usize::try_from(length).map_err(|_| Errno::EOVERFLOW));
+            size.and_then(|size| read_header(host, handle, size))
+        }
+        None => Err(Errno::EBADF),
+    };
+    let _ = crate::syscalls::release_prepared_exec_ofd_with_locks(proc, locks, host, opened.ofd_ref);
+    let (header, filled) = header?;
+    let header = &header[..filled];
+    if header.starts_with(b"#!") {
+        if let Some(script) = parse_shebang(header) {
+            return Ok(Some(script.interpreter));
+        }
+    }
+    if header.starts_with(b"\0asm") {
+        Ok(None)
+    } else {
+        Err(Errno::ENOEXEC)
+    }
 }
 
 pub fn cancel(
@@ -561,6 +892,11 @@ fn revalidate(
     let expected = target.observed_bytes()?;
     let handle = retained_host_handle(proc, target)?;
     let is_kernel_fs = is_kernel_fs_file_handle(handle);
+    let is_pair = crate::executable_backing::is_executable_handle(handle);
+    let source_generation = match target.backing {
+        PreparedExecBacking::Source => None,
+        PreparedExecBacking::Derived { source_generation } => source_generation,
+    };
     let before = target_fstat(host, handle)?;
     if !metadata_matches(target.stat(), &before) {
         return Err(Errno::ETXTBSY);
@@ -574,7 +910,11 @@ fn revalidate(
     // mounts; they cannot remount under the kernel, so their mount identity is
     // the prepared value by construction. Host mounts are still re-checked for
     // a remount race.
-    let live = if is_kernel_fs {
+    let live = if is_pair {
+        if crate::executable_backing::source_generation(handle)? != source_generation { return Err(Errno::ETXTBSY); }
+        crate::executable_backing::verify_source(handle, host)?;
+        crate::executable_backing::source_statfs(handle, host)?
+    } else if is_kernel_fs {
         *target.statfs()
     } else {
         host.host_fstatfs(handle).map_err(|_| Errno::ENOTSUP)?
@@ -593,11 +933,27 @@ fn revalidate(
         }
         offset += read;
     }
+    if is_pair {
+        crate::executable_backing::verify_source(handle, host)?;
+        if crate::executable_backing::source_generation(handle)? != source_generation
+            || !mount_matches(target.statfs(), &crate::executable_backing::source_statfs(handle, host)?) {
+            return Err(Errno::ETXTBSY);
+        }
+    }
     let after = target_fstat(host, handle)?;
     if !metadata_matches(target.stat(), &after) {
         return Err(Errno::ETXTBSY);
     }
+    if is_pair {
+        crate::executable_backing::validate_image(handle, host)?;
+        if crate::executable_backing::source_generation(handle)? != source_generation { return Err(Errno::ETXTBSY); }
+    }
     Ok(())
+}
+
+fn exec_image_length(handle: i64, source: &WasmStat) -> Result<u64, Errno> {
+    if crate::executable_backing::is_executable_handle(handle) { crate::executable_backing::image_size(handle) }
+    else { Ok(source.st_size) }
 }
 
 fn proposed_credentials(
@@ -632,14 +988,27 @@ fn finish_commit(
         .ok_or(Errno::EOVERFLOW)?;
     revalidate(proc, host, &target)?;
     let credentials = proposed_credentials(proc, &target)?;
+    // Read the data model of the image that is about to replace this address
+    // space, BEFORE the point of no return below, so a target whose bytes are
+    // unreadable or drifted fails the exec outright instead of committing an
+    // image under the outgoing image's width.
+    let image_pointer_width = wasm_artifact::detect_pointer_width(target.observed_bytes()?);
     match caller_tid {
         Some(tid) => crate::syscalls::commit_exec_state_with_locks(proc, locks, host, tid)?,
         None => crate::syscalls::commit_spawn_exec_state_with_locks(proc, locks, host)?,
     }
     proc.secure_exec = credentials.euid != credentials.ruid || credentials.egid != credentials.rgid;
     proc.install_credentials(credentials);
+    // The image is committed here and nowhere else, so the address space's
+    // pointer width is replaced here and nowhere else: after the outgoing
+    // image has stopped being the one that runs, and before the host launches
+    // the incoming one. An exec may legitimately change the width.
+    proc.pointer_width = image_pointer_width;
+    // The incoming image's channel is placed by the host with its layout and
+    // registered before that image runs; the outgoing one's address means
+    // nothing to it.
+    proc.main_channel_addr = 0;
     proc.exec_generation = next_generation;
-    proc.executable_path = Some(target.diagnostic_path.clone());
 
     let competing: Vec<_> = proc.prepared_exec_targets.drain().collect();
     for stale in competing {
@@ -677,7 +1046,16 @@ fn commit_taken_target(
     }
     let ofd_ref = target.ofd_ref();
     let result = finish_commit(proc, locks, host, target, caller_tid);
-    let _ = crate::syscalls::release_prepared_exec_ofd_with_locks(proc, locks, host, ofd_ref);
+    // The committed image keeps the lease it was executed through, for its
+    // whole life (`Process::exe`); the image it replaced gives its own up.
+    // A refused commit keeps nothing.
+    let released = match result {
+        Ok(()) => proc.exe.replace(ofd_ref),
+        Err(_) => Some(ofd_ref),
+    };
+    if let Some(released) = released {
+        let _ = crate::syscalls::release_prepared_exec_ofd_with_locks(proc, locks, host, released);
+    }
     result
 }
 
@@ -694,6 +1072,139 @@ pub fn commit_spawn(
         .owner()
         .validate_spawn(parent_pid, child_pid, proc.exec_generation);
     commit_taken_target(proc, locks, host, target, validation, None)
+}
+
+pub fn commit_initial(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    pid: u32,
+    token: u32,
+) -> Result<(), Errno> {
+    let target = proc.prepared_exec_targets.take(token)?;
+    let validation = target.owner().validate_process(pid, pid, proc.exec_generation)
+        .and_then(|()| {
+            if proc.pid != pid || proc.exec_generation != 0 || proc.exe.is_some()
+                || proc.spawn_publication_pending || proc.main_channel_addr != 0 {
+                return Err(Errno::EINVAL);
+            }
+            crate::syscalls::check_prepared_exec_stat(proc, target.stat())
+        });
+    commit_taken_target(proc, locks, host, target, validation, None)
+}
+
+/// Make `opened` the image's executable (`Process::exe`), releasing the one it
+/// replaces.
+fn install_exe(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    opened: OpenFileDescRef,
+) {
+    if let Some(previous) = proc.exe.replace(opened) {
+        let _ = crate::syscalls::release_prepared_exec_ofd_with_locks(proc, locks, host, previous);
+    }
+}
+
+/// Attach the executable a HOST launched this process from, when the host
+/// named it by a path in the process's namespace (a spawn from the VFS).
+///
+/// The path is resolved and judged as the process itself would `execve` it --
+/// its CWD, search permission, a regular file with execute permission -- so
+/// what `/proc/self/exe` then names is what a guest exec of the same path
+/// would have run. An exec or `posix_spawn` never comes here: its commit
+/// keeps the target it already resolved.
+pub fn attach_exe_path(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    path: &[u8],
+) -> Result<(), Errno> {
+    let opened = crate::syscalls::open_prepared_exec_target(
+        proc,
+        host,
+        wasm_posix_shared::flags::AT_FDCWD,
+        path,
+        0,
+    )?;
+    install_exe(proc, locks, host, opened.ofd_ref);
+    Ok(())
+}
+
+/// Attach the executable a HOST launched this process from when the host
+/// supplied the program's bytes itself and no file in the namespace holds
+/// them: `handle` is a host file handle onto those bytes, read through
+/// `host_pread` like any host file, never copied into kernel memory.
+///
+/// The kernel owns `handle` from this call on, refused or not: a refusal
+/// closes it, and an accepted one is closed by the ordinary host-handle
+/// release when the last description of it goes (the image's exit or exec,
+/// and every `/proc/self/exe` descriptor a process opened). That is what lets
+/// the host drop its bytes at exactly the moment nothing can read them.
+///
+/// `name` is the diagnostic name the host launched it under. The bytes have
+/// no name in the namespace, which is what Linux's ` (deleted)` says of an
+/// executable whose file has no names left, so the description's path carries
+/// that marker from the start.
+pub fn attach_exe_host_handle(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    handle: i64,
+    name: &[u8],
+) -> Result<(), Errno> {
+    if handle < 0 {
+        return Err(Errno::EBADF);
+    }
+    let refuse = |host: &mut dyn HostIO, error: Errno| {
+        let _ = host.host_close(handle);
+        Err(error)
+    };
+    if name.is_empty() || name.len() > platform_limits::PATH_MAX_BYTES || name.contains(&0) {
+        return refuse(host, Errno::EINVAL);
+    }
+    let stat = match host.host_fstat(handle) {
+        Ok(stat) => stat,
+        Err(error) => return refuse(host, error),
+    };
+    if stat.st_mode & wasm_posix_shared::mode::S_IFMT != wasm_posix_shared::mode::S_IFREG {
+        return refuse(host, Errno::EINVAL);
+    }
+    let path_length = name.len().checked_add(crate::procfs::EXE_DELETED_SUFFIX.len()).ok_or(Errno::ENOMEM);
+    let mut path = match path_length.and_then(crate::IoBuffer::try_with_capacity) {
+        Ok(path) => path,
+        Err(error) => return refuse(host, error),
+    };
+    path.extend_from_slice(name);
+    path.extend_from_slice(crate::procfs::EXE_DELETED_SUFFIX);
+    let mut prepared = match proc.ofd_table.prepare(
+        FileType::Regular,
+        wasm_posix_shared::flags::O_RDONLY,
+        &path,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => return refuse(host, error),
+    };
+    prepared.value_mut().file_id = (stat.st_ino != 0).then_some(FileId::Host {
+        dev: stat.st_dev,
+        ino: stat.st_ino,
+    });
+    let index = proc.ofd_table.publish(prepared, handle);
+    install_exe(proc, locks, host, OpenFileDescRef(index));
+    Ok(())
+}
+
+/// Release the executable the ending image ran (`Process::exe`). Process exit
+/// is where an image ends without a successor; an exec commit releases the
+/// outgoing image's lease itself.
+pub fn release_process_exe(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+) {
+    if let Some(exe) = proc.exe.take() {
+        let _ = crate::syscalls::release_prepared_exec_ofd_with_locks(proc, locks, host, exe);
+    }
 }
 
 pub fn drain_prepared_exec_targets(
@@ -715,10 +1226,99 @@ impl Default for PreparedExecLedger {
 
 #[cfg(test)]
 mod tests {
-    use super::{PreparedExecLedger, PreparedExecOwner, PreparedExecTarget};
+    use super::{
+        PreparedExecLedger, PreparedExecOwner, PreparedExecTarget, SHEBANG_HEADER_MAX_BYTES,
+        parse_shebang,
+    };
     use crate::fd::OpenFileDescRef;
     use crate::lock::{FileId, OfdId};
     use wasm_posix_shared::{Errno, WasmStat, WasmStatfs};
+    /// Flatten a decoded shebang into borrowed fields for terse assertions.
+    fn decode(bytes: &[u8]) -> Option<(alloc::string::String, Option<alloc::string::String>)> {
+        parse_shebang(bytes).map(|shebang| (shebang.interpreter, shebang.argument))
+    }
+
+    #[test]
+    fn rejects_non_shebang_and_too_short_inputs() {
+        // Fewer than two bytes, or without the exact `#!` magic, is never a
+        // script — byte-for-byte with the former `parseShebang`.
+        assert!(decode(b"").is_none());
+        assert!(decode(b"#").is_none());
+        assert!(decode(b"!/bin/sh").is_none());
+        assert!(decode(b"#x/bin/sh").is_none());
+        assert!(decode(b"\0asm").is_none());
+        // The two-byte prefix present but nothing else → empty line → None.
+        assert!(decode(b"#!").is_none());
+    }
+
+    #[test]
+    fn splits_interpreter_and_single_argument() {
+        assert_eq!(
+            decode(b"#!/bin/sh\n"),
+            Some(("/bin/sh".into(), None)),
+        );
+        assert_eq!(
+            decode(b"#!/bin/exact-interpreter --script-flag\nignored body\n"),
+            Some((
+                "/bin/exact-interpreter".into(),
+                Some("--script-flag".into()),
+            )),
+        );
+        // The remainder after the first whitespace run is one single argument,
+        // internal spaces preserved.
+        assert_eq!(
+            decode(b"#!/usr/bin/env python -u -B\n"),
+            Some(("/usr/bin/env".into(), Some("python -u -B".into()))),
+        );
+    }
+
+    #[test]
+    fn strips_one_trailing_carriage_return_and_surrounding_whitespace() {
+        // `/\r$/` removes the CRLF carriage return the newline scan leaves.
+        assert_eq!(
+            decode(b"#!/bin/sh\r\n"),
+            Some(("/bin/sh".into(), None)),
+        );
+        // `.trim()` removes leading and trailing whitespace around the line.
+        assert_eq!(
+            decode(b"#!  \t /bin/sh -x \t \n"),
+            Some(("/bin/sh".into(), Some("-x".into()))),
+        );
+    }
+
+    #[test]
+    fn treats_a_line_with_only_whitespace_as_no_shebang() {
+        // `#!` followed by only spaces/tabs trims to empty → no match → None.
+        assert!(decode(b"#!   \n").is_none());
+        assert!(decode(b"#!\t \r\n").is_none());
+    }
+
+    #[test]
+    fn caps_the_interpreter_line_scan_at_four_kib() {
+        // A newline beyond index 4096 is never seen; the interpreter token is
+        // taken from the first 4096 bytes exactly as the host bound did.
+        let mut bytes = alloc::vec::Vec::new();
+        bytes.extend_from_slice(b"#!");
+        bytes.extend(core::iter::repeat(b'a').take(8192));
+        bytes.push(b'\n');
+        let (interpreter, argument) = decode(&bytes).unwrap();
+        assert_eq!(interpreter.len(), SHEBANG_HEADER_MAX_BYTES - 2);
+        assert!(argument.is_none());
+        assert!(interpreter.bytes().all(|byte| byte == b'a'));
+    }
+
+    #[test]
+    fn rejects_an_argument_containing_an_internal_line_terminator() {
+        // `.*` cannot cross a bare CR, so JS `$` fails and the whole line does
+        // not match: the result is None (not a truncated argument).
+        assert!(decode(b"#!/bin/sh a\rb\n").is_none());
+        // A CR consumed inside the interpreter/argument whitespace run is fine.
+        assert_eq!(
+            decode(b"#!/bin/sh\rarg\n"),
+            Some(("/bin/sh".into(), Some("arg".into()))),
+        );
+    }
+
 
     fn stat() -> WasmStat {
         WasmStat {
@@ -787,6 +1387,41 @@ mod tests {
         assert!(matches!(ledger.take(first), Err(Errno::EINVAL)));
         assert_eq!(ledger.take(second).unwrap().ofd_id(), OfdId(102));
         assert!(ledger.is_empty());
+    }
+
+    #[test]
+    fn preparation_uses_the_exact_observed_lease_without_changing_source_authority() {
+        use crate::program_preparation::{PreparationLimits, PreparationProfile};
+        let original = include_bytes!("../../../abi/program-fixtures/v55/raw-fork.wasm");
+        let mut metadata = stat();
+        metadata.st_size = original.len() as u64;
+        metadata.st_mode |= wasm_posix_shared::mode::S_ISUID;
+        let mut process = crate::process::Process::new(41);
+        let owner = PreparedExecOwner::Process { pid: 41, caller_tid: 43, generation: 0 };
+        let target = PreparedExecTarget::new(owner, OpenFileDescRef(0), OfdId(101),
+            Some(FileId::Host { dev: 7, ino: 11 }), metadata, statfs(), b"/never/reopen/this/path").unwrap();
+        let token = process.prepared_exec_targets.insert(target).unwrap();
+        let profile = PreparationProfile { preparer_sha256: [1; 32], optimizer_sha256: None, options_sha256: [2; 32],
+            dependency_closure_sha256: [3; 32], program_contract_sha256: wasm_artifact::facts::read_custom_section(
+                original, wasm_artifact::ABI_CONTRACT_SECTION).unwrap().try_into().unwrap(), program_abi: 55 };
+        let limits = PreparationLimits { source_bytes: 1024 * 1024, original_bytes: 1024 * 1024,
+            output_bytes: 4 * 1024 * 1024, metadata_bytes: 1024 * 1024, metadata_work_items: 1_000_000 };
+        assert_eq!(super::preparation_plan(&process, 41, token, profile, limits), Err(Errno::EINVAL));
+        process.prepared_exec_targets.get_mut(token).unwrap().record_read(0, original).unwrap();
+        let plan = super::preparation_plan(&process, 41, token, profile, limits).unwrap();
+        plan.verify_original(original).unwrap();
+        assert_eq!(super::preparation_plan(&process, 42, token, profile, limits), Err(Errno::ESRCH));
+        let retained = process.prepared_exec_targets.get(token).unwrap();
+        assert!(super::metadata_matches(retained.stat(), &metadata));
+        assert_eq!(retained.ofd_ref(), OpenFileDescRef(0));
+        assert_eq!(retained.owner(), owner);
+        assert_eq!(retained.observed_bytes().unwrap(), original);
+        assert_eq!(process.exec_generation, 0);
+        assert!(process.exe.is_none());
+        process.prepared_exec_targets.get_mut(token).unwrap().mark_content_drifted();
+        assert_eq!(super::preparation_plan(&process, 41, token, profile, limits), Err(Errno::ETXTBSY));
+        process.prepared_exec_targets.take(token).unwrap();
+        assert_eq!(super::preparation_plan(&process, 41, token, profile, limits), Err(Errno::EINVAL));
     }
 
     #[test]

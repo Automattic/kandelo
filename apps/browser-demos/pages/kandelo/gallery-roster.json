@@ -10,35 +10,27 @@
       "profile": "node"
     },
     {
-      "product": "browser-nginx",
+      "product": "browser-web-stack",
       "profile": "nginx"
     },
     {
-      "product": "browser-nginx-php",
+      "product": "browser-web-stack",
       "profile": "nginx-php"
     },
     {
-      "product": "browser-nginx-python",
+      "product": "browser-web-stack",
       "profile": "nginx-python"
     },
     {
-      "product": "browser-ruby-todo",
+      "product": "browser-web-stack",
       "profile": "ruby-todo"
     },
     {
-      "product": "browser-wordpress",
+      "product": "browser-wordpress-family",
       "profile": "wordpress-sqlite"
     },
     {
-      "product": "browser-wordpress",
-      "profile": "wordpress-frankenphp"
-    },
-    {
-      "product": "browser-wordpress",
-      "profile": "wordpress-frankenphp-caddy"
-    },
-    {
-      "product": "browser-lamp",
+      "product": "browser-wordpress-family",
       "profile": "wordpress-mariadb"
     },
     {
@@ -48,6 +40,10 @@
     {
       "product": "browser-main-shell",
       "profile": "quake"
+    },
+    {
+      "product": "browser-main-shell",
+      "profile": "freeciv"
     },
     {
       "product": "browser-main-shell",
@@ -68,6 +64,10 @@
     {
       "product": "browser-main-shell",
       "profile": "omarchy"
+    },
+    {
+      "product": "browser-web-stack",
+      "profile": "redis"
     }
   ]
 }

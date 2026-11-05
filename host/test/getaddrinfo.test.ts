@@ -15,7 +15,7 @@ const HAS_PUBLIC_DNS = await new Promise<boolean>((resolve) =>
 
 describe("getaddrinfo override", () => {
   it("resolves numeric IP, NULL name, and hostname via getaddrinfo", async () => {
-    // Attach a FetchNetworkBackend (returns synthetic 10.x.x.x IPs, no real DNS needed)
+    // Attach a FetchNetworkBackend (made-up 198.18.0.0/15 addresses, no real DNS needed)
     const io = new NodePlatformIO();
     (io as any).network = new FetchNetworkBackend();
 
@@ -30,8 +30,8 @@ describe("getaddrinfo override", () => {
     // NULL name should return loopback
     expect(stdout).toContain("OK: NULL name resolved to 127.0.0.1");
 
-    // Hostname should resolve via syscall #140 → FetchNetworkBackend → 10.x.x.x
-    expect(stdout).toContain("OK: example.com resolved to 10.");
+    // Hostname should resolve via syscall #140 → FetchNetworkBackend → 198.18.0.0/15
+    expect(stdout).toContain("OK: example.com resolved to 198.18.");
 
     expect(stdout).toContain("ALL TESTS PASSED");
     expect(exitCode).toBe(0);

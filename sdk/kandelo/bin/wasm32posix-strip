@@ -1,3 +1,0 @@
-#!/bin/bash
-# No-op for Wasm targets. Stripping is handled by linker flags or wasm-opt.
-exit 0

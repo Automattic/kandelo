@@ -1,0 +1,189 @@
+Use SDL's color cursor API instead of painting cursors into the scene.
+
+SDL owns cursor shape, hotspot, animation updates, and presentation on KMS
+and windowed backends. Both color and monochrome options retain their
+sprites; moving either pointer no longer uploads or repaints the game.
+Kandelo supplies the missing KMS cursor plane at the platform layer.
+
+--- a/client/gui-sdl2/gui_mouse.c
++++ b/client/gui-sdl2/gui_mouse.c
+@@ -35,21 +35,13 @@
+ 
+ #include "gui_mouse.h"
+ 
+-struct color_cursor {
+-  SDL_Surface *cursor;
+-  int hot_x;
+-  int hot_y;
+-};
+-
+ SDL_Cursor *fc_cursors[CURSOR_LAST][NUM_CURSOR_FRAMES];
++static SDL_Cursor *color_cursors[CURSOR_LAST][NUM_CURSOR_FRAMES];
+ 
+ enum cursor_type mouse_cursor_type = CURSOR_DEFAULT;
+ bool mouse_cursor_changed = FALSE;
+ 
+ SDL_Cursor *std_cursor = NULL;
+-SDL_Cursor *disabled_cursor = NULL;
+-
+-struct color_cursor current_color_cursor;
+ 
+ /**********************************************************************//**
+   Convert SDL surface to SDL cursor format (code from SDL-dev mailing list)
+@@ -95,41 +87,6 @@
+ }
+ 
+ /**********************************************************************//**
+-  Draw current cursor.
+-**************************************************************************/
+-void draw_mouse_cursor(void)
+-{
+-  int cursor_x = 0;
+-  int cursor_y = 0;
+-  static SDL_Rect area = {0, 0, 0, 0};
+-
+-  if (GUI_SDL_OPTION(use_color_cursors)) {
+-    /* Restore background */
+-    if (area.w != 0) {
+-      flush_rect(&area, TRUE);
+-    }
+-
+-    if (current_color_cursor.cursor != NULL) {
+-      SDL_GetMouseState(&cursor_x, &cursor_y);
+-      area.x = cursor_x - current_color_cursor.hot_x;
+-      area.y = cursor_y - current_color_cursor.hot_y;
+-      area.w = current_color_cursor.cursor->w;
+-      area.h = current_color_cursor.cursor->h;
+-
+-      /* Show cursor */
+-      screen_blit(current_color_cursor.cursor, NULL, &area, 255);
+-      /* Update screen */
+-      update_main_screen();
+-#if 0
+-      SDL_UpdateRect(main_data.screen, area.x, area.y, area.w, area.h);
+-#endif
+-    } else {
+-      area = (SDL_Rect){0, 0, 0, 0};
+-    }
+-  } 
+-}
+-
+-/**********************************************************************//**
+   Load the cursors (mouse substitute sprites), including a goto cursor,
+   an airdrop cursor, a nuke cursor, and a patrol cursor.
+ **************************************************************************/
+@@ -141,10 +98,6 @@
+ 
+   std_cursor = SDL_GetCursor();
+ 
+-  surf = create_surf(1, 1, SDL_SWSURFACE);
+-  disabled_cursor = SurfaceToCursor(surf, 0, 0);
+-  FREESURFACE(surf);
+-
+   for (cursor = 0; cursor < CURSOR_LAST; cursor++) {
+     for (frame = 0; frame < NUM_CURSOR_FRAMES; frame++) {
+       int hot_x, hot_y;
+@@ -154,6 +107,7 @@
+       surf = GET_SURF(sprite);
+ 
+       fc_cursors[cursor][frame] = SurfaceToCursor(surf, hot_x, hot_y);
++      color_cursors[cursor][frame] = SDL_CreateColorCursor(surf, hot_x, hot_y);
+     }
+   }
+ }
+@@ -169,11 +123,11 @@
+   for (cursor = 0; cursor < CURSOR_LAST; cursor++) {
+     for (frame = 0; frame < NUM_CURSOR_FRAMES; frame++) {
+       SDL_FreeCursor(fc_cursors[cursor][frame]);
++      SDL_FreeCursor(color_cursors[cursor][frame]);
+     }
+   }
+ 
+   SDL_FreeCursor(std_cursor);
+-  SDL_FreeCursor(disabled_cursor);
+ }
+ 
+ /**********************************************************************//**
+@@ -193,16 +147,11 @@
+       cursor_frame = 0;
+     }
+ 
+-    if (GUI_SDL_OPTION(use_color_cursors)) {
+-      current_color_cursor.cursor
+-        = GET_SURF(get_cursor_sprite(tileset,
+-                                     mouse_cursor_type,
+-                                     &current_color_cursor.hot_x,
+-                                     &current_color_cursor.hot_y,
+-                                     cursor_frame));
+-    } else {
+-      SDL_SetCursor(fc_cursors[mouse_cursor_type][cursor_frame]);
+-    }
++    /* Cursor ownership belongs to SDL/the display server. Updating an
++     * animated sprite must not repaint the application's entire scene. */
++    SDL_SetCursor(GUI_SDL_OPTION(use_color_cursors)
++                  ? color_cursors[mouse_cursor_type][cursor_frame]
++                  : fc_cursors[mouse_cursor_type][cursor_frame]);
+ 
+     cursor_frame++;
+   }
+@@ -221,14 +170,8 @@
+ 
+   if (mouse_cursor_type == CURSOR_DEFAULT) {
+     SDL_SetCursor(std_cursor);
+-    if (GUI_SDL_OPTION(use_color_cursors)) {
+-      current_color_cursor.cursor = NULL;
+-    }
+     mouse_cursor_changed = FALSE;
+   } else {
+-    if (GUI_SDL_OPTION(use_color_cursors)) {
+-      SDL_SetCursor(disabled_cursor);
+-    }
+     mouse_cursor_changed = TRUE;
+   }
+ }
+--- a/client/gui-sdl2/gui_mouse.h
++++ b/client/gui-sdl2/gui_mouse.h
+@@ -17,7 +17,6 @@
+ #include "mapview_g.h"
+ 
+ void animate_mouse_cursor(void);
+-void draw_mouse_cursor(void);
+ 
+ void unload_cursors(void);
+ 
+--- a/client/gui-sdl2/gui_main.c
++++ b/client/gui-sdl2/gui_main.c
+@@ -481,7 +481,6 @@
+     }
+   }
+ 
+-  draw_mouse_cursor();
+ 
+   return ID_ERROR;
+ }
+@@ -710,7 +709,6 @@
+         case ANIM:
+           update_button_hold_state();
+           animate_mouse_cursor();
+-          draw_mouse_cursor();
+           break;
+         case SHOW_WIDGET_INFO_LABEL:
+           draw_widget_info_label();
+--- a/client/gui-sdl2/mapview.c
++++ b/client/gui-sdl2/mapview.c
+@@ -234,7 +234,6 @@
+     }
+     j = 0;
+ 
+-    draw_mouse_cursor();
+ 
+     /* Render to screen */
+     update_main_screen();
+@@ -270,7 +269,6 @@
+       }
+     }
+ 
+-    draw_mouse_cursor();
+ 
+     /* Render to screen */
+     update_main_screen();

@@ -49,7 +49,7 @@ fi
 
 abi="$(
     grep -oE 'ABI_VERSION: u32 = [0-9]+' \
-        crates/shared/src/lib.rs | awk '{print $4}'
+        crates/program-abi/src/lib.rs | awk '{print $4}'
 )"
 if ! [[ "$abi" =~ ^[0-9]+$ ]]; then
     echo "verify-ci-staging-shell-handoff: could not read the current ABI" >&2

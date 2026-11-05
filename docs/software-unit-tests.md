@@ -5,6 +5,9 @@ large guest software on both Node.js and browser hosts where possible.
 
 Status date: 2026-06-16.
 
+The PHP package was updated to **8.5.12** on 2026-10-21. The dated PHP
+results and inventory totals below remain historical **8.3.15** evidence.
+
 > **PHP evidence provenance:** the PHP counts in this document were imported
 > from the pre-split source PR at commit `bc13ad8631a2`, based on the older
 > platform stack. They combine chronological chunks with targeted reruns and
@@ -28,6 +31,16 @@ Status date: 2026-06-16.
 | Node.js library | Upstream Node.js `test/parallel/test-*.js` and `test/sequential/test-*.js` through the SpiderMonkey-backed Node-compatible runtime | Completed 3925 tests: 336 PASS, 3264 FAIL, 325 TIME | Completed 3925 tests: 339 PASS, 3564 FAIL, 22 TIME |
 
 Logs from the 2026-05-28 full runs are under `test-runs/software-unit-tests/`.
+
+## 2026-10-22 Libevent epoll integration
+
+Libevent 2.1.12 has a reusable library package and an unchanged upstream
+regression runner. The selected three edge-triggering and nine peer-close
+tests pass with zero skips on Node, Chromium, Firefox, and WebKit for both
+wasm32/wasm64 and both libevent epoll modes: 192 upstream case executions.
+The recorded main ABI-50 comparison fails 10 of 12 cases in every
+configuration. The complete upstream suite was not run. See
+[the libevent port](libevent.md) for scope, reproduction, and provenance.
 
 ## 2026-06-16 PHP PHPT Node Source-PR Full Run
 

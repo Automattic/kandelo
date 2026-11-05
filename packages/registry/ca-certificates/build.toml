@@ -1,0 +1,12 @@
+script_path = "packages/registry/ca-certificates/build-ca-certificates.sh"
+inputs = [
+  "packages/registry/ca-certificates/build-ca-certificates.sh",
+  "images/rootfs/etc/ssl/cert.pem",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+publication_state = "pending"

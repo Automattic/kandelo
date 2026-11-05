@@ -279,7 +279,7 @@ jobs:
             set -euo pipefail
             PACKAGE_STAGING_REQUIRED="${{ needs.change-scope.outputs.package_staging_required }}"
 
-            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
+            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/program-abi/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
             # WHY: a published immutable release cannot be reused by a later
@@ -942,7 +942,7 @@ jobs:
         uses: ./.github/actions/setup-nix
 
       - name: Download exact toolchain sysroots
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -987,7 +987,7 @@ jobs:
             --archive "$RUNNER_TEMP/exact-abi-source-test-workspace.tar.zst"
 
       - name: Upload exact ABI source-test workspace
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: exact-abi-source-test-workspace
           path: ${{ runner.temp }}/exact-abi-source-test-workspace.tar.zst
@@ -1054,7 +1054,7 @@ jobs:
         uses: ./.github/actions/setup-nix
 
       - name: Download exact toolchain sysroots
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -1064,7 +1064,7 @@ jobs:
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
       - name: Download exact ABI source-test workspace
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: exact-abi-source-test-workspace
           path: ${{ runner.temp }}/exact-abi-source-test-workspace
@@ -1184,7 +1184,7 @@ jobs:
         uses: ./.github/actions/setup-nix
 
       - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -1220,7 +1220,7 @@ jobs:
         # matrix-overlay path used by first runs and partial staging releases.
         run: |
           set -euo pipefail
-          ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
+          ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/program-abi/src/lib.rs | awk '{print $4}')
           EXPECTED="$RUNNER_TEMP/staging-expected.json"
           BLOCKED="$RUNNER_TEMP/staging-publication-blockers.json"
           bash scripts/dev-shell.sh env \
@@ -1351,7 +1351,7 @@ jobs:
 
       - name: Upload prepared test workspace
         if: env.SKIP_STAGING_TESTS != 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-workspace
           path: ${{ runner.temp }}/test-workspace.tar.zst
@@ -1494,7 +1494,7 @@ jobs:
 
       - name: Download toolchain sysroots artifact
         if: steps.suite.outputs.skip != 'true' && matrix.needs_toolchain == true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -1506,7 +1506,7 @@ jobs:
 
       - name: Download prepared test workspace
         if: steps.suite.outputs.skip != 'true' && matrix.needs_workspace == true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: test-workspace
           path: ${{ runner.temp }}/test-workspace
@@ -1529,7 +1529,7 @@ jobs:
 
       - name: Upload browser test artifacts
         if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: browser-test-artifacts
           path: |
@@ -1915,7 +1915,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload publish-status.json
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: publish-status
           path: publish-status.json

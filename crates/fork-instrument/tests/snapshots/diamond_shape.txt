@@ -1,0 +1,33 @@
+=== closed 8b4f30428d4f ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+    },
+    tail_sites: {},
+}
+
+=== external 8b4f30428d4f ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+    },
+    tail_sites: {},
+}

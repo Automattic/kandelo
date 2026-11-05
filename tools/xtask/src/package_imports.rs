@@ -143,30 +143,22 @@ fn sdk_kernel_contract(sysroot: &Path) -> Result<KernelContract, String> {
     )?;
     // channel_syscall.c supplies this import outside libc.a. Its typed
     // declaration is already authoritative in the shared fork contract.
+    let fork = abi::WPK_FORK_PROCESS_IMPORT;
     let value = |value: &abi::ProgramArtifactValueType| match value {
         abi::ProgramArtifactValueType::I32 => wasmparser::ValType::I32,
         abi::ProgramArtifactValueType::I64 => wasmparser::ValType::I64,
-        abi::ProgramArtifactValueType::Pointer => {
-            if sysroot.ends_with("sysroot64") {
-                wasmparser::ValType::I64
-            } else {
-                wasmparser::ValType::I32
-            }
-        }
-        _ => unreachable!("process worker imports have scalar arguments"),
+        _ => unreachable!("glue-declared kernel imports have scalar signatures"),
     };
-    for declaration in [
-        abi::WPK_FORK_PROCESS_IMPORT,
-        abi::PROCESS_WORKER_THREAD_EXIT_IMPORT,
-    ] {
-        contract
-            .entry(declaration.name.into())
-            .or_default()
-            .insert((
-                declaration.params.iter().map(value).collect(),
-                declaration.results.iter().map(value).collect(),
-            ));
-    }
+    contract.entry(fork.name.into()).or_default().insert((
+        fork.params.iter().map(value).collect(),
+        fork.results.iter().map(value).collect(),
+    ));
+    // The bounded syscall wait in the same file calls this import.
+    let safepoint = abi::HEAP_SAFEPOINT_PROCESS_IMPORT;
+    contract.entry(safepoint.name.into()).or_default().insert((
+        safepoint.params.iter().map(value).collect(),
+        safepoint.results.iter().map(value).collect(),
+    ));
     Ok(contract)
 }
 

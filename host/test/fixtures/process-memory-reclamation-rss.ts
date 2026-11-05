@@ -17,7 +17,7 @@ const programPath = new URL(
 );
 const warmupChildren = Number(process.env.KANDELO_RECLAIM_WARMUP_CHILDREN ?? 4);
 const waveChildren = Number(process.env.KANDELO_RECLAIM_WAVE_CHILDREN ?? 8);
-const waveCount = Number(process.env.KANDELO_RECLAIM_WAVES ?? 6);
+const waveCount = Number(process.env.KANDELO_RECLAIM_WAVES ?? 32);
 const childMiB = Number(process.env.KANDELO_RECLAIM_CHILD_MIB ?? 8);
 const pressureBytes = Number(
   process.env.KANDELO_RECLAIM_PRESSURE_BYTES ?? 4 * MIB,

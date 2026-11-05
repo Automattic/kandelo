@@ -1,10 +1,62 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
+use core::ops::Deref;
 use wasm_posix_shared::Errno;
 
 pub const NGROUPS_MAX: usize = 32;
 pub const ID_UNCHANGED: u32 = u32::MAX;
+
+#[derive(Clone, Debug)]
+pub struct SupplementaryGroups {
+    values: [u32; NGROUPS_MAX],
+    length: usize,
+}
+
+impl SupplementaryGroups {
+    pub const fn new() -> Self { Self { values: [0; NGROUPS_MAX], length: 0 } }
+
+    pub fn copy_from(groups: &[u32]) -> Result<Self, Errno> {
+        if groups.len() > NGROUPS_MAX { return Err(Errno::EINVAL); }
+        let mut result = Self::new();
+        result.values[..groups.len()].copy_from_slice(groups);
+        result.length = groups.len();
+        Ok(result)
+    }
+}
+
+impl Deref for SupplementaryGroups {
+    type Target = [u32];
+    fn deref(&self) -> &[u32] { &self.values[..self.length] }
+}
+
+impl AsRef<[u32]> for SupplementaryGroups {
+    fn as_ref(&self) -> &[u32] { self }
+}
+
+impl<Other: AsRef<[u32]> + ?Sized> PartialEq<Other> for SupplementaryGroups {
+    fn eq(&self, other: &Other) -> bool { self.as_ref() == other.as_ref() }
+}
+
+impl Eq for SupplementaryGroups {}
+
+impl<'a> IntoIterator for &'a SupplementaryGroups {
+    type Item = &'a u32;
+    type IntoIter = core::slice::Iter<'a, u32>;
+    fn into_iter(self) -> Self::IntoIter { self.iter() }
+}
+
+#[cfg(test)]
+impl FromIterator<u32> for SupplementaryGroups {
+    fn from_iter<Groups: IntoIterator<Item = u32>>(groups: Groups) -> Self {
+        let mut result = Self::new();
+        for group in groups {
+            assert!(result.length < NGROUPS_MAX);
+            result.values[result.length] = group;
+            result.length += 1;
+        }
+        result
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Credentials {
@@ -14,7 +66,7 @@ pub struct Credentials {
     pub rgid: u32,
     pub egid: u32,
     pub sgid: u32,
-    pub supplementary_groups: Vec<u32>,
+    pub supplementary_groups: SupplementaryGroups,
 }
 
 impl Credentials {
@@ -30,7 +82,7 @@ impl Credentials {
             rgid: gid,
             egid: gid,
             sgid: gid,
-            supplementary_groups: Vec::new(),
+            supplementary_groups: SupplementaryGroups::new(),
         }
     }
 
@@ -208,7 +260,7 @@ impl Credentials {
         }
 
         let mut candidate = self.clone();
-        candidate.supplementary_groups = groups.to_vec();
+        candidate.supplementary_groups = SupplementaryGroups::copy_from(groups)?;
         *self = candidate;
         Ok(())
     }
@@ -227,7 +279,7 @@ mod tests {
             rgid: 4000,
             egid: 5000,
             sgid: 6000,
-            supplementary_groups: alloc::vec![7000, 8000],
+            supplementary_groups: crate::credentials::SupplementaryGroups::copy_from(&[7000, 8000]).unwrap(),
         }
     }
 

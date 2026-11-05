@@ -7,10 +7,13 @@ import type { PreparedExecLaunchRequest } from "../src/exec-target";
 const PREPARED_EXEC_EXPORTS = [
   "kernel_exec_target_prepare",
   "kernel_spawn_exec_target_prepare",
+  "kernel_spawn_exec_target_prepare_handle",
   "kernel_exec_target_size",
   "kernel_exec_target_read",
+  "kernel_exec_target_admit",
   "kernel_exec_target_cancel",
   "kernel_exec_commit",
+  "kernel_initial_exec_commit",
   "kernel_publish_spawn_child",
   "kernel_spawn_exec_commit",
 ] as const;
@@ -71,6 +74,10 @@ describe("prepared exec target ABI", () => {
       .map(({ name, signature }) => ({ name, signature }));
     expect(execExports).toEqual([
       { name: "kernel_exec_commit", signature: "(i32,i32,i32) -> (i32)" },
+      {
+        name: "kernel_exec_target_admit",
+        signature: "(i32,i32,i32,i32,i32) -> (i32)",
+      },
       { name: "kernel_exec_target_cancel", signature: "(i32,i32) -> (i32)" },
       {
         name: "kernel_exec_target_prepare",
@@ -81,11 +88,16 @@ describe("prepared exec target ABI", () => {
         signature: "(i32,i32,i32,i32,i32,i32) -> (i32)",
       },
       { name: "kernel_exec_target_size", signature: "(i32,i32) -> (i64)" },
+      { name: "kernel_initial_exec_commit", signature: "(i32,i32) -> (i32)" },
       { name: "kernel_publish_spawn_child", signature: "(i32,i32) -> (i32)" },
       { name: "kernel_spawn_exec_commit", signature: "(i32,i32,i32) -> (i32)" },
       {
         name: "kernel_spawn_exec_target_prepare",
         signature: "(i32,i32,i32,i32) -> (i32)",
+      },
+      {
+        name: "kernel_spawn_exec_target_prepare_handle",
+        signature: "(i32,i32,i64,i32,i32) -> (i32)",
       },
     ]);
     for (const legacy of LEGACY_PATHNAME_EXEC_EXPORTS) {
@@ -118,6 +130,7 @@ describe("prepared exec target ABI", () => {
       "kernel_exec_target_prepare",
       "kernel_exec_target_size",
       "kernel_exec_target_read",
+      "kernel_exec_target_admit",
       "kernel_exec_target_cancel",
       "kernel_exec_commit",
     ]) {

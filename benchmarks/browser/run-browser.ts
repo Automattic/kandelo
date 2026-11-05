@@ -8,7 +8,7 @@
  */
 import { chromium, type Browser, type Page } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { tryResolveBinary } from "../../host/src/binary-resolver.js";
@@ -115,11 +115,15 @@ export function materializePublicAsset(
 
   mkdirSync(dirname(publicPath), { recursive: true });
   // Sealed package files are read-only, and copyFileSync preserves that mode.
-  // Replace the public copy instead of overwriting it on the next refresh.
+  // The public copy is not sealed: it lives where the image builders write
+  // (`./run.sh build mariadb-vfs` writes public/mariadb.vfs.zst), so it gets
+  // ordinary file permissions, or the next image build fails with EACCES.
+  // Staging and renaming still replaces it whole on every refresh.
   const staging = mkdtempSync(resolve(dirname(publicPath), ".benchmark-asset-"));
   try {
     const temporary = resolve(staging, "image");
     copyFileSync(sourcePath, temporary);
+    chmodSync(temporary, 0o644);
     renameSync(temporary, publicPath);
   } finally {
     rmSync(staging, { recursive: true, force: true });

@@ -18,7 +18,7 @@
 
 extern crate alloc;
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use wasm_posix_shared::Errno;
@@ -28,9 +28,10 @@ use wasm_posix_shared::fd_flags::FD_CLOFORK;
 
 use crate::credentials::{Credentials, NGROUPS_MAX};
 use crate::fd::{FdEntry, FdTable, OpenFileDescRef};
+use crate::io_buffer::IoBuffer;
 use crate::lock::{FileId, KernelFileKind, OfdId};
 use crate::memory::{MappedRegion, MemoryLayoutMetadata, MemoryManager};
-use crate::ofd::{FileType, OfdTable, OpenFileDesc, SharedOfdState};
+use crate::ofd::{FileType, InheritedOfdRefs, OfdTable, OpenFileDesc, SharedOfdState};
 use crate::process::{Process, ProcessState};
 use crate::signal::{PerThreadSignalState, RtSigEntry, SignalAction, SignalHandler, SignalState};
 use crate::socket::SocketTable;
@@ -51,9 +52,12 @@ const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // (Linux semantics) instead of a copy. The state is produced and consumed by
 // one kernel build, so the version guards against a mismatched kernel, not
 // a persisted format.
+// v18 also preserves the selected source of connected wildcard IPv4 UDP.
 // Production fork serialization still clears and omits pending directed
 // signals; the exec-state fixture preserves them for replacement tests.
-const FORK_VERSION: u32 = 17;
+// v19 retains the KMS cursor BO across exec; fork children own no cursor.
+// v20 carries the image's executable (`Process::exe`) as an inherited OFD.
+const FORK_VERSION: u32 = 20;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -78,75 +82,70 @@ const MAX_EXEC_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
 struct Writer<'a> {
     buf: &'a mut [u8],
     pos: usize,
+    output_full: bool,
 }
 
 impl<'a> Writer<'a> {
     fn new(buf: &'a mut [u8]) -> Self {
-        Writer { buf, pos: 0 }
+        Writer { buf, pos: 0, output_full: false }
     }
 
     fn remaining(&self) -> usize {
         self.buf.len().saturating_sub(self.pos)
     }
 
-    fn write_u8(&mut self, v: u8) -> Result<(), Errno> {
-        if self.remaining() < 1 {
+    fn require(&mut self, length: usize) -> Result<(), Errno> {
+        if self.remaining() < length {
+            self.output_full = true;
             return Err(Errno::ENOMEM);
         }
+        Ok(())
+    }
+
+    fn write_u8(&mut self, v: u8) -> Result<(), Errno> {
+        self.require(1)?;
         self.buf[self.pos] = v;
         self.pos += 1;
         Ok(())
     }
 
     fn write_i32(&mut self, v: i32) -> Result<(), Errno> {
-        if self.remaining() < 4 {
-            return Err(Errno::ENOMEM);
-        }
+        self.require(4)?;
         self.buf[self.pos..self.pos + 4].copy_from_slice(&v.to_le_bytes());
         self.pos += 4;
         Ok(())
     }
 
     fn write_u16(&mut self, v: u16) -> Result<(), Errno> {
-        if self.remaining() < 2 {
-            return Err(Errno::ENOMEM);
-        }
+        self.require(2)?;
         self.buf[self.pos..self.pos + 2].copy_from_slice(&v.to_le_bytes());
         self.pos += 2;
         Ok(())
     }
 
     fn write_u32(&mut self, v: u32) -> Result<(), Errno> {
-        if self.remaining() < 4 {
-            return Err(Errno::ENOMEM);
-        }
+        self.require(4)?;
         self.buf[self.pos..self.pos + 4].copy_from_slice(&v.to_le_bytes());
         self.pos += 4;
         Ok(())
     }
 
     fn write_u64(&mut self, v: u64) -> Result<(), Errno> {
-        if self.remaining() < 8 {
-            return Err(Errno::ENOMEM);
-        }
+        self.require(8)?;
         self.buf[self.pos..self.pos + 8].copy_from_slice(&v.to_le_bytes());
         self.pos += 8;
         Ok(())
     }
 
     fn write_i64(&mut self, v: i64) -> Result<(), Errno> {
-        if self.remaining() < 8 {
-            return Err(Errno::ENOMEM);
-        }
+        self.require(8)?;
         self.buf[self.pos..self.pos + 8].copy_from_slice(&v.to_le_bytes());
         self.pos += 8;
         Ok(())
     }
 
     fn write_bytes(&mut self, data: &[u8]) -> Result<(), Errno> {
-        if self.remaining() < data.len() {
-            return Err(Errno::ENOMEM);
-        }
+        self.require(data.len())?;
         self.buf[self.pos..self.pos + data.len()].copy_from_slice(data);
         self.pos += data.len();
         Ok(())
@@ -395,13 +394,11 @@ fn read_credentials_and_image_facts(r: &mut Reader<'_>) -> Result<(Credentials, 
     if r.remaining() < remaining_required {
         return Err(Errno::EINVAL);
     }
-    let mut supplementary_groups = Vec::new();
-    supplementary_groups
-        .try_reserve_exact(group_count)
-        .map_err(|_| Errno::ENOMEM)?;
-    for _ in 0..group_count {
-        supplementary_groups.push(r.read_u32()?);
+    let mut groups = [0u32; NGROUPS_MAX];
+    for group in &mut groups[..group_count] {
+        *group = r.read_u32()?;
     }
+    let supplementary_groups = crate::credentials::SupplementaryGroups::copy_from(&groups[..group_count])?;
     let secure_exec = match r.read_u32()? {
         0 => false,
         1 => true,
@@ -443,13 +440,13 @@ fn write_ipv4_source_list(w: &mut Writer<'_>, sources: &[[u8; 4]]) -> Result<(),
     Ok(())
 }
 
-fn read_ipv4_source_list(r: &mut Reader<'_>) -> Result<Vec<[u8; 4]>, Errno> {
+fn read_ipv4_source_list(r: &mut Reader<'_>) -> Result<crate::IoBuffer<[u8; 4]>, Errno> {
     let count = read_bounded_count(r, MAX_IPV4_MULTICAST_SOURCES)?;
     let encoded_len = count.checked_mul(4).ok_or(Errno::EINVAL)?;
     if r.remaining() < encoded_len {
         return Err(Errno::EINVAL);
     }
-    let mut sources = Vec::with_capacity(count);
+    let mut sources = crate::IoBuffer::try_with_capacity(count)?;
     for _ in 0..count {
         sources.push(read_ipv4_addr(r)?);
     }
@@ -504,6 +501,8 @@ fn write_durable_socket_state(
         }
         None => w.write_u32(0)?,
     }
+    // A selected source is nonzero; zero encodes no UDP association source.
+    w.write_u32(sock.udp_source_addr.map(u32::from_be_bytes).unwrap_or(0))?;
     Ok(())
 }
 
@@ -522,16 +521,11 @@ fn read_durable_socket_state(
     sock.bind_device = if bind_device_len == u32::MAX {
         None
     } else {
-        Some(
-            r.read_bounded_bytes(bind_device_len as usize, MAX_SOCKET_STRING_LEN)?
-                .to_vec(),
-        )
+        Some(crate::IoBuffer::copy_from(r.read_bounded_bytes(bind_device_len as usize, MAX_SOCKET_STRING_LEN)?)?)
     };
 
     let congestion_len = read_bounded_count(r, MAX_SOCKET_STRING_LEN)?;
-    sock.tcp_congestion = r
-        .read_bounded_bytes(congestion_len, MAX_SOCKET_STRING_LEN)?
-        .to_vec();
+    sock.tcp_congestion = crate::IoBuffer::copy_from(r.read_bounded_bytes(congestion_len, MAX_SOCKET_STRING_LEN)?)?;
 
     let membership_count = read_bounded_count(r, MAX_IPV4_MULTICAST_MEMBERSHIPS)?;
     // Each membership has at least 20 encoded bytes before any source entries.
@@ -539,7 +533,7 @@ fn read_durable_socket_state(
     if r.remaining() < minimum_len {
         return Err(Errno::EINVAL);
     }
-    let mut memberships = Vec::with_capacity(membership_count);
+    let mut memberships = crate::IoBuffer::try_with_capacity(membership_count)?;
     for _ in 0..membership_count {
         let group = read_ipv4_addr(r)?;
         let interface_addr = read_ipv4_addr(r)?;
@@ -569,6 +563,8 @@ fn read_durable_socket_state(
         }),
         _ => return Err(Errno::EINVAL),
     };
+    let source = r.read_u32()?;
+    sock.udp_source_addr = if source == 0 { None } else { Some(source.to_be_bytes()) };
     Ok(())
 }
 
@@ -678,11 +674,6 @@ fn read_file_id(r: &mut Reader<'_>) -> Result<Option<FileId>, Errno> {
 
 // ── DRI sidecar encoding ────────────────────────────────────────────────────
 //
-// Each OFD carries a one-byte variant tag (`DRI_TAG_*`) plus the bytes
-// for the variant's payload. Bo refcount accounting moves entirely into
-// the deserialize side: every bo id we restore on a handle, fb, or
-// PrimeBo state gets an extra `with_registry(|r| r.incref(_))` so the
-// child's eventual close-path decrefs are balanced.
 
 const DRI_TAG_NONE: u8 = 0;
 const DRI_TAG_RENDER_NODE: u8 = 1;
@@ -718,6 +709,7 @@ fn write_kms_fd_state(
     } else {
         0
     })?;
+    w.write_u32(if preserve_master { kms.cursor_bo.unwrap_or(0) } else { 0 })?;
     w.write_u32(kms.fbs.len() as u32)?;
     for (fb_id, fb) in &kms.fbs {
         w.write_u32(*fb_id)?;
@@ -789,27 +781,20 @@ fn write_input_state(
     Ok(())
 }
 
-/// Read a `DriFdState` from the wire and incref every referenced bo
-/// in the global registry so the new OFD has its own refcount. The
-/// caller may still drop the entire OFD if the surrounding deserialize
-/// fails; the trail of increfs is harmless in that case (the OFD's
-/// eventual close-path decref balances it).
+/// Decode graphics state without acquiring global backing references.
 fn read_dri_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::DriFdState, Errno> {
-    use alloc::collections::BTreeMap;
     let handle_count = r.read_u32()? as usize;
     if handle_count > 65536 {
         return Err(Errno::EINVAL);
     }
-    let mut handles: BTreeMap<u32, crate::dri::BoId> = BTreeMap::new();
+    let mut handles = crate::PreparedMap::new();
     for _ in 0..handle_count {
         let handle = r.read_u32()?;
         let bo_id = r.read_u32()?;
-        crate::dri::with_registry(|reg| {
-            reg.incref(bo_id);
-        });
-        handles.insert(handle, bo_id);
+        if handle == 0 || handles.try_insert_io(handle, bo_id)?.is_some() { return Err(Errno::EINVAL); }
     }
     let next_handle = r.read_u32()?;
+    if next_handle == 0 || handles.keys().any(|handle| *handle >= next_handle) { return Err(Errno::EINVAL); }
     Ok(crate::ofd::DriFdState {
         handles,
         next_handle,
@@ -818,13 +803,14 @@ fn read_dri_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::DriFdState, Errno
 }
 
 fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno> {
-    use alloc::collections::{BTreeMap, VecDeque};
     let holds_master = r.read_u8()? != 0;
+    let cursor = r.read_u32()?;
+    let cursor_bo = if cursor == 0 { None } else { Some(cursor) };
     let fb_count = r.read_u32()? as usize;
     if fb_count > 65536 {
         return Err(Errno::EINVAL);
     }
-    let mut fbs: BTreeMap<u32, crate::ofd::KmsFb> = BTreeMap::new();
+    let mut fbs = crate::PreparedMap::new();
     for _ in 0..fb_count {
         let fb_id = r.read_u32()?;
         let bo_id = r.read_u32()?;
@@ -832,10 +818,7 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
         let height = r.read_u32()?;
         let pixel_format = r.read_u32()?;
         let stride = r.read_u32()?;
-        crate::dri::with_registry(|reg| {
-            reg.incref(bo_id);
-        });
-        fbs.insert(
+        if fb_id == 0 || fbs.try_insert_io(
             fb_id,
             crate::ofd::KmsFb {
                 bo_id,
@@ -844,14 +827,15 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
                 pixel_format,
                 stride,
             },
-        );
+        )?.is_some() { return Err(Errno::EINVAL); }
     }
     let next_fb_id = r.read_u32()?;
+    if fbs.keys().any(|id| *id > next_fb_id) { return Err(Errno::EINVAL); }
     let pending_count = r.read_u32()? as usize;
     if pending_count > 65536 {
         return Err(Errno::EINVAL);
     }
-    let mut pending_flips = Vec::with_capacity(pending_count);
+    let mut pending_flips = crate::IoBuffer::try_with_capacity(pending_count)?;
     for _ in 0..pending_count {
         let crtc_id = r.read_u32()?;
         let fb_id = r.read_u32()?;
@@ -862,19 +846,21 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
             user_data,
         });
     }
+    let mut event_ring = crate::IoDeque::new();
+    event_ring.try_reserve(pending_count.checked_mul(32).ok_or(Errno::ENOMEM)?)?;
     Ok(crate::ofd::KmsFdState {
         holds_master,
+        cursor_bo,
         fbs,
         next_fb_id,
         pending_flips,
-        event_ring: VecDeque::new(),
+        event_ring,
     })
 }
 
 fn read_input_state(
     r: &mut Reader<'_>,
-) -> Result<Option<alloc::boxed::Box<crate::ofd::InputFdState>>, Errno> {
-    use alloc::collections::VecDeque;
+) -> Result<Option<crate::IoBox<crate::ofd::InputFdState>>, Errno> {
     let tag = r.read_u8()?;
     match tag {
         INPUT_TAG_NONE => Ok(None),
@@ -892,17 +878,15 @@ fn read_input_state(
             {
                 return Err(Errno::EINVAL);
             }
-            let mut event_ring = VecDeque::with_capacity(ring_len);
+            let mut ring = crate::ofd::InputRing::try_new()?;
+            ring.dropped = dropped;
             for _ in 0..ring_len {
-                event_ring.push_back(r.read_u8()?);
+                ring.event_ring.push_back(r.read_u8()?);
             }
-            Ok(Some(alloc::boxed::Box::new(crate::ofd::InputFdState {
+            Ok(Some(crate::IoBox::try_new(crate::ofd::InputFdState {
                 device,
-                ring: crate::ofd::SharedInputRing::from_ring(crate::ofd::InputRing {
-                    event_ring,
-                    dropped,
-                }),
-            })))
+                ring: crate::ofd::SharedInputRing::try_from_ring(ring)?,
+            })?))
         }
         _ => Err(Errno::EINVAL),
     }
@@ -910,30 +894,27 @@ fn read_input_state(
 
 fn read_dri_state(
     r: &mut Reader<'_>,
-) -> Result<Option<alloc::boxed::Box<crate::ofd::DriOfdState>>, Errno> {
+) -> Result<Option<crate::IoBox<crate::ofd::DriOfdState>>, Errno> {
     use crate::ofd::{DriOfdState, PrimeBoState};
     let tag = r.read_u8()?;
     Ok(match tag {
         DRI_TAG_NONE => None,
         DRI_TAG_RENDER_NODE => {
             let d = read_dri_fd_state(r)?;
-            Some(alloc::boxed::Box::new(DriOfdState::RenderNode(d)))
+            Some(crate::IoBox::try_new(DriOfdState::RenderNode(d))?)
         }
         DRI_TAG_CARD => {
             let dri = read_dri_fd_state(r)?;
             let kms = read_kms_fd_state(r)?;
-            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }))
+            Some(crate::IoBox::try_new(DriOfdState::Card { dri, kms })?)
         }
         DRI_TAG_PRIME_BO => {
             let bo_id = r.read_u32()?;
             let cookie = r.read_u64()?;
-            crate::dri::with_registry(|reg| {
-                reg.incref(bo_id);
-            });
-            Some(alloc::boxed::Box::new(DriOfdState::PrimeBo(PrimeBoState {
+            Some(crate::IoBox::try_new(DriOfdState::PrimeBo(PrimeBoState {
                 bo_id,
                 cookie,
-            })))
+            }))?)
         }
         _ => return Err(Errno::EINVAL),
     })
@@ -959,12 +940,34 @@ fn u32_to_handler(v: u32) -> SignalHandler {
 
 // ── Serialize ───────────────────────────────────────────────────────────────
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SerializationFailure {
+    OutputFull,
+    Resource(Errno),
+}
+
+impl SerializationFailure {
+    pub(crate) fn errno(self) -> Errno {
+        match self { Self::OutputFull => Errno::ENOMEM, Self::Resource(error) => error }
+    }
+}
+
 /// Serialize the process state into a binary buffer for fork.
 ///
 /// Returns the number of bytes written on success, or `Errno::ENOMEM` if
-/// the buffer is too small.
+/// the buffer or the admitted scratch allowance is too small.
 pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Errno> {
+    serialize_fork_state_for_retry(proc, buf).map_err(SerializationFailure::errno)
+}
+
+pub(crate) fn serialize_fork_state_for_retry(proc: &Process, buf: &mut [u8]) -> Result<usize, SerializationFailure> {
     let mut w = Writer::new(buf);
+    serialize_fork_state_into(proc, &mut w).map_err(|error| {
+        if w.output_full { SerializationFailure::OutputFull } else { SerializationFailure::Resource(error) }
+    })
+}
+
+fn serialize_fork_state_into(proc: &Process, mut w: &mut Writer<'_>) -> Result<usize, Errno> {
 
     // ── Header (12 bytes) ──
     w.write_u32(FORK_MAGIC)?;
@@ -1007,42 +1010,29 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 
     // ── FD table ──
     w.write_u32(proc.fd_table.max_fds() as u32)?;
-    let fd_entries: Vec<(i32, &FdEntry)> = proc
-        .fd_table
-        .iter()
-        .filter(|(_, entry)| entry.fd_flags & FD_CLOFORK == 0)
-        .collect();
-    let mut inherited_ofd_refs: BTreeMap<usize, u32> = BTreeMap::new();
-    for (_, entry) in &fd_entries {
-        if proc.ofd_table.get(entry.ofd_ref.0).is_none() {
-            return Err(Errno::EBADF);
-        }
-        let count = inherited_ofd_refs.entry(entry.ofd_ref.0).or_insert(0);
-        *count = count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
-    }
-    w.write_u32(fd_entries.len() as u32)?;
-    for (fd_num, entry) in &fd_entries {
-        w.write_u32(*fd_num as u32)?;
+    let inherited_ofd_refs = InheritedOfdRefs::prepare_with_executable(&proc.ofd_table, &proc.fd_table, FD_CLOFORK, proc.exe)?;
+    w.write_u32(inherited_ofd_refs.descriptor_count as u32)?;
+    for (fd_num, entry) in proc.fd_table.iter().filter(|(_, entry)| entry.fd_flags & FD_CLOFORK == 0) {
+        w.write_u32(fd_num as u32)?;
         w.write_u32(entry.ofd_ref.0 as u32)?;
         w.write_u32(entry.fd_flags)?;
     }
 
     // ── OFD table ──
-    let ofd_entries: Vec<(usize, &OpenFileDesc)> = proc
+    let ofd_entries = || proc
         .ofd_table
         .iter()
-        .filter(|(index, _)| inherited_ofd_refs.contains_key(index))
-        .collect();
-    w.write_u32(ofd_entries.len() as u32)?;
-    for (index, ofd) in &ofd_entries {
-        w.write_u32(*index as u32)?;
+        .filter(|(index, _)| inherited_ofd_refs.count(*index) > 0);
+    w.write_u32(inherited_ofd_refs.len() as u32)?;
+    for (index, ofd) in ofd_entries() {
+        w.write_u32(index as u32)?;
         w.write_u64(ofd.ofd_id.0)?;
         write_file_id(&mut w, ofd.file_id)?;
         w.write_u32(file_type_to_u32(ofd.file_type))?;
         w.write_u32(ofd.status_flags())?;
         w.write_i64(ofd.host_handle)?;
         w.write_i64(ofd.offset())?;
-        w.write_u32(inherited_ofd_refs[index])?;
+        w.write_u32(inherited_ofd_refs.count(index))?;
         w.write_u32(ofd.path.len() as u32)?;
         w.write_bytes(&ofd.path)?;
         // DRI sidecar — `preserve_master = false` because the master
@@ -1054,6 +1044,8 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         // and the controlC0 card binding. The SAB registry is global by
         // `pcm_id` so no per-fork copy is needed.
     }
+    // `Process::exe`: the OFD index plus one, 0 for none.
+    w.write_u32(proc.exe.map_or(0, |exe| exe.0 as u32 + 1))?;
 
     // ── Environment ──
     w.write_u32(proc.environ.len() as u32)?;
@@ -1160,20 +1152,18 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     // ── Socket table (v10) ──
     {
         use crate::socket::{SocketDomain, SocketState, SocketType};
-        let socket_root_count = ofd_entries
-            .iter()
+        let socket_root_count = ofd_entries()
             .filter(|(_, ofd)| ofd.file_type == FileType::Socket)
             .count();
-        let mut socket_roots = Vec::new();
-        socket_roots
-            .try_reserve_exact(socket_root_count)
-            .map_err(|_| Errno::ENOMEM)?;
-        for (_, ofd) in &ofd_entries {
+        let mut socket_roots = IoBuffer::allocate(socket_root_count, false, |roots| {
+            roots.try_reserve_exact(socket_root_count).map_err(|_| Errno::ENOMEM)
+        })?;
+        for (_, ofd) in ofd_entries() {
             if ofd.file_type == FileType::Socket {
                 socket_roots.push(SocketTable::index_from_ofd_handle(ofd.host_handle)?);
             }
         }
-        let mut inherited_sockets = proc.sockets.clone();
+        let mut inherited_sockets = proc.sockets.try_clone()?;
         inherited_sockets.retain_inherited_roots(&socket_roots)?;
 
         if inherited_sockets.len() > MAX_SOCKET_SLOTS {
@@ -1343,7 +1333,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     if fd_count > MAX_FDS {
         return Err(Errno::EINVAL);
     }
-    let mut fd_entries: Vec<Option<FdEntry>> = Vec::new();
+    let mut fd_table = FdTable::with_max(max_fds);
     for _ in 0..fd_count {
         let fd_num = r.read_u32()? as usize;
         let ofd_index = r.read_u32()? as usize;
@@ -1352,22 +1342,18 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         if fd_flags & wasm_posix_shared::fd_flags::FD_CLOFORK != 0 {
             continue;
         }
-        while fd_entries.len() <= fd_num {
-            fd_entries.push(None);
-        }
-        fd_entries[fd_num] = Some(FdEntry {
+        fd_table.restore_entry(fd_num, FdEntry {
             ofd_ref: OpenFileDescRef(ofd_index),
             fd_flags,
-        });
+        })?;
     }
-    let fd_table = FdTable::from_raw(fd_entries, max_fds);
 
     // ── OFD table ──
     let ofd_count = r.read_u32()?;
     if ofd_count > MAX_OFDS {
         return Err(Errno::EINVAL);
     }
-    let mut ofd_entries: Vec<Option<OpenFileDesc>> = Vec::new();
+    let mut ofd_table = OfdTable::new();
     for _ in 0..ofd_count {
         let index = r.read_u32()? as usize;
         let ofd_id = OfdId(r.read_u64()?);
@@ -1384,17 +1370,14 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         }
         let ref_count = r.read_u32()?;
         let path_len = r.read_u32()? as usize;
-        let path = r.read_bounded_bytes(path_len, MAX_PATH_LEN)?.to_vec();
-        while ofd_entries.len() <= index {
-            ofd_entries.push(None);
-        }
+        let path = crate::ofd::OfdPath::copy_from(r.read_bounded_bytes(path_len, MAX_PATH_LEN)?)?;
         let dri_state = read_dri_state(&mut r)?;
         let input_state = read_input_state(&mut r)?;
         let mut ofd = OpenFileDesc {
             ofd_id,
             file_id,
             file_type,
-            shared_state: SharedOfdState::new(status_flags, offset, child_pid),
+            shared_state: SharedOfdState::try_new(status_flags, offset, child_pid)?,
             host_handle,
             ref_count,
             path,
@@ -1407,20 +1390,30 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
             input_state,
         };
         ofd.reset_directory_iterator_for_reopen();
-        ofd_entries[index] = Some(ofd);
+        ofd_table.restore_entry(index, ofd)?;
     }
-    let ofd_table = OfdTable::from_raw(ofd_entries);
+    let exe_index = r.read_u32()?;
+    let exe = match exe_index {
+        0 => None,
+        n => {
+            let index = (n - 1) as usize;
+            if ofd_table.get(index).is_none() {
+                return Err(Errno::EINVAL);
+            }
+            Some(OpenFileDescRef(index))
+        }
+    };
 
     // ── Environment ──
     let env_count = r.read_u32()?;
     if env_count > MAX_ENV_VARS {
         return Err(Errno::EINVAL);
     }
-    let mut environ = Vec::with_capacity(env_count as usize);
+    let mut environ = crate::process::ProcessStrings::try_with_capacity(env_count as usize)?;
     for _ in 0..env_count {
         let len = r.read_u32()? as usize;
         let data = r.read_bounded_bytes(len, MAX_STRING_LEN)?;
-        environ.push(data.to_vec());
+        environ.try_push(data)?;
     }
 
     // ── Argv ──
@@ -1428,17 +1421,17 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     if argv_count > MAX_ARGV {
         return Err(Errno::EINVAL);
     }
-    let mut argv = Vec::with_capacity(argv_count as usize);
+    let mut argv = crate::process::ProcessStrings::try_with_capacity(argv_count as usize)?;
     for _ in 0..argv_count {
         let len = r.read_u32()? as usize;
         let data = r.read_bounded_bytes(len, MAX_STRING_LEN)?;
-        argv.push(data.to_vec());
+        argv.try_push(data)?;
     }
 
     // ── CWD ──
     let cwd_len = r.read_u32()? as usize;
     let cwd_data = r.read_bounded_bytes(cwd_len, MAX_PATH_LEN)?;
-    let cwd = cwd_data.to_vec();
+    let cwd = crate::ofd::OfdPath::copy_from(cwd_data)?;
 
     // ── Rlimits ──
     let mut rlimits = [[0u64; 2]; 16];
@@ -1509,7 +1502,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     if r.remaining() < mapping_bytes {
         return Err(Errno::EINVAL);
     }
-    let mut mappings = Vec::with_capacity(mapping_count);
+    let mut mappings = crate::IoBuffer::try_with_capacity(mapping_count)?;
     for _ in 0..mapping_count {
         let addr = r.read_u32()? as usize;
         let len = r.read_u32()? as usize;
@@ -1527,7 +1520,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     // ── Fork exec state ──
     let path_len = r.read_u32()? as usize;
     let fork_exec_path = if path_len > 0 {
-        Some(r.read_bounded_bytes(path_len, MAX_PATH_LEN)?.to_vec())
+        Some(crate::IoBuffer::copy_from(r.read_bounded_bytes(path_len, MAX_PATH_LEN)?)?)
     } else {
         None
     };
@@ -1536,21 +1529,22 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         if argc > MAX_ARGV as usize {
             return Err(Errno::EINVAL);
         }
-        let mut args = Vec::with_capacity(argc);
+        let mut args = crate::process::ProcessStrings::try_with_capacity(argc)?;
         for _ in 0..argc {
             let len = r.read_u32()? as usize;
-            args.push(r.read_bounded_bytes(len, MAX_STRING_LEN)?.to_vec());
+            args.try_push(r.read_bounded_bytes(len, MAX_STRING_LEN)?)?;
         }
         Some(args)
     } else {
         None
     };
-    let mut fork_fd_actions = Vec::new();
+    let mut fork_fd_actions = crate::IoBuffer::new();
     let action_count = r.read_u32()? as usize;
     let action_bytes = action_count.checked_mul(12).ok_or(Errno::EINVAL)?;
     if r.remaining() < action_bytes {
         return Err(Errno::EINVAL);
     }
+    fork_fd_actions.try_reserve_exact(action_count)?;
     for _ in 0..action_count {
         let action_type = r.read_u32()?;
         let fd1 = r.read_u32()? as i32;
@@ -1637,7 +1631,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
             if r.remaining() < encoded_options_len {
                 return Err(Errno::EINVAL);
             }
-            let mut options = Vec::with_capacity(opt_count);
+            let mut options = crate::IoBuffer::try_with_capacity(opt_count)?;
             for _ in 0..opt_count {
                 let level = r.read_u32()?;
                 let optname = r.read_u32()?;
@@ -1664,13 +1658,14 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
                 let _ = r.read_u32()?;
             }
 
-            let mut sock = SocketInfo::new(domain, sock_type, protocol);
+            let mut sock = SocketInfo::try_new(domain, sock_type, protocol)?;
             sock.state = state;
             sock.peer_idx = peer_idx;
             sock.recv_buf_idx = recv_buf_idx;
             sock.send_buf_idx = send_buf_idx;
             sock.shut_rd = shut_rd;
             sock.shut_wr = shut_wr;
+            if let Some(handle) = host_net_handle { crate::socket::reserve_host_net_handle(handle); }
             sock.host_net_handle = host_net_handle;
             sock.options = options;
             sock.bind_addr = bind_addr;
@@ -1695,7 +1690,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
             let bp_len = r.read_u32()?;
             if bp_len != 0xFFFFFFFF {
                 let bp = r.read_bounded_bytes(bp_len as usize, MAX_PATH_LEN)?;
-                sock.bind_path = Some(bp.to_vec());
+                sock.bind_path = Some(crate::IoBuffer::copy_from(bp)?);
             }
             let aw_raw = r.read_u32()?;
             sock.accept_wake_idx = if aw_raw == 0xFFFFFFFF {
@@ -1704,7 +1699,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
                 Some(aw_raw)
             };
             read_durable_socket_state(&mut r, &mut sock)?;
-            sockets.insert_at(idx, sock);
+            sockets.try_insert_at(idx, sock)?;
         }
     }
 
@@ -1727,6 +1722,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.wait_event = None;
     child.fd_table = fd_table;
     child.ofd_table = ofd_table;
+    child.exe = exe;
     child.pipes.clear();
     child.sockets = sockets;
     child.cwd = cwd;
@@ -1767,7 +1763,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.alt_stack_flags = 2; // SS_DISABLE
     child.alt_stack_size = 0;
     child.alt_stack_depth = 0;
-    child.fork_pipe_replay.clear();
+    child.fork_pipe_replay = IoBuffer::new();
     child.has_exec = false;
     // Fork children do not inherit host framebuffer or DRI bindings.
     child.fb_binding = None;
@@ -1790,6 +1786,7 @@ pub fn deserialize_allocated_fork_state(
 pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Errno> {
     let mut child = Process::new_empty_for_test(child_pid);
     deserialize_fork_state_into(buf, &mut child)?;
+    crate::process_table::bump_inherited_dri_bos(&child);
     Ok(child)
 }
 
@@ -1806,7 +1803,19 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
 /// - OFD table: only OFDs still referenced by remaining FDs after CLOEXEC filtering
 #[cfg(test)]
 pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Errno> {
+    serialize_exec_state_for_retry(proc, buf).map_err(SerializationFailure::errno)
+}
+
+#[cfg(test)]
+fn serialize_exec_state_for_retry(proc: &Process, buf: &mut [u8]) -> Result<usize, SerializationFailure> {
     let mut w = Writer::new(buf);
+    serialize_exec_state_into(proc, &mut w).map_err(|error| {
+        if w.output_full { SerializationFailure::OutputFull } else { SerializationFailure::Resource(error) }
+    })
+}
+
+#[cfg(test)]
+fn serialize_exec_state_into(proc: &Process, mut w: &mut Writer<'_>) -> Result<usize, Errno> {
 
     // ── Header (12 bytes) ──
     w.write_u32(EXEC_MAGIC)?;
@@ -1848,44 +1857,34 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     write_directed_signal_state(&mut w, &proc.main_thread_signals)?;
 
     // ── FD table (filter out CLOEXEC fds) ──
-    let fd_entries: Vec<(i32, &FdEntry)> = proc
-        .fd_table
-        .iter()
-        .filter(|(_, entry)| entry.fd_flags & FD_CLOEXEC == 0)
-        .collect();
-
     // Recompute local OFD references from the surviving fd aliases. A
     // CLOEXEC alias must not leave the replacement process with the parent's
     // stale ref_count, otherwise its eventual last close cannot free the OFD.
-    let mut surviving_ofd_refs: BTreeMap<usize, u32> = BTreeMap::new();
-    for (_, entry) in &fd_entries {
-        *surviving_ofd_refs.entry(entry.ofd_ref.0).or_insert(0) += 1;
-    }
+    let surviving_ofd_refs = InheritedOfdRefs::prepare(&proc.ofd_table, &proc.fd_table, FD_CLOEXEC)?;
 
     w.write_u32(proc.fd_table.max_fds() as u32)?;
-    w.write_u32(fd_entries.len() as u32)?;
-    for (fd_num, entry) in &fd_entries {
-        w.write_u32(*fd_num as u32)?;
+    w.write_u32(surviving_ofd_refs.descriptor_count as u32)?;
+    for (fd_num, entry) in proc.fd_table.iter().filter(|(_, entry)| entry.fd_flags & FD_CLOEXEC == 0) {
+        w.write_u32(fd_num as u32)?;
         w.write_u32(entry.ofd_ref.0 as u32)?;
         w.write_u32(entry.fd_flags)?;
     }
 
     // ── OFD table (only OFDs referenced by remaining FDs) ──
-    let ofd_entries: Vec<(usize, &OpenFileDesc)> = proc
+    let ofd_entries = proc
         .ofd_table
         .iter()
-        .filter(|(index, _)| surviving_ofd_refs.contains_key(index))
-        .collect();
-    w.write_u32(ofd_entries.len() as u32)?;
-    for (index, ofd) in &ofd_entries {
-        w.write_u32(*index as u32)?;
+        .filter(|(index, _)| surviving_ofd_refs.count(*index) > 0);
+    w.write_u32(surviving_ofd_refs.len() as u32)?;
+    for (index, ofd) in ofd_entries {
+        w.write_u32(index as u32)?;
         w.write_u64(ofd.ofd_id.0)?;
         write_file_id(&mut w, ofd.file_id)?;
         w.write_u32(file_type_to_u32(ofd.file_type))?;
         w.write_u32(ofd.status_flags())?;
         w.write_i64(ofd.host_handle)?;
         w.write_i64(ofd.offset())?;
-        w.write_u32(surviving_ofd_refs[index])?;
+        w.write_u32(surviving_ofd_refs.count(index))?;
         w.write_u32(ofd.path.len() as u32)?;
         w.write_bytes(&ofd.path)?;
         // DRI sidecar — `preserve_master = true` because exec keeps
@@ -1954,20 +1953,21 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 /// descriptor fails truthfully with ENOMEM instead of exhausting kernel Wasm
 /// memory.
 #[cfg(test)]
-pub fn serialize_exec_state_with_growing_buffer(proc: &Process) -> Result<Vec<u8>, Errno> {
+pub(crate) fn serialize_exec_state_with_growing_buffer(proc: &Process) -> Result<IoBuffer<u8>, Errno> {
     let mut len = INITIAL_EXEC_STATE_BUFFER_LEN;
 
     loop {
-        let mut buf = alloc::vec![0u8; len];
-        match serialize_exec_state(proc, &mut buf) {
+        let mut buf = IoBuffer::allocate(len, false, |bytes| bytes.try_reserve_exact(len).map_err(|_| Errno::ENOMEM))?;
+        buf.resize(len, 0);
+        match serialize_exec_state_for_retry(proc, &mut buf) {
             Ok(written) => {
                 buf.truncate(written);
                 return Ok(buf);
             }
-            Err(Errno::ENOMEM) if len < MAX_EXEC_STATE_BUFFER_LEN => {
+            Err(SerializationFailure::OutputFull) if len < MAX_EXEC_STATE_BUFFER_LEN => {
                 len = len.saturating_mul(2).min(MAX_EXEC_STATE_BUFFER_LEN);
             }
-            Err(err) => return Err(err),
+            Err(error) => return Err(error.errno()),
         }
     }
 }
@@ -2036,27 +2036,23 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     if fd_count > MAX_FDS {
         return Err(Errno::EINVAL);
     }
-    let mut fd_entries: Vec<Option<FdEntry>> = Vec::new();
+    let mut fd_table = FdTable::with_max(max_fds);
     for _ in 0..fd_count {
         let fd_num = r.read_u32()? as usize;
         let ofd_index = r.read_u32()? as usize;
         let fd_flags = r.read_u32()?;
-        while fd_entries.len() <= fd_num {
-            fd_entries.push(None);
-        }
-        fd_entries[fd_num] = Some(FdEntry {
+        fd_table.restore_entry(fd_num, FdEntry {
             ofd_ref: OpenFileDescRef(ofd_index),
             fd_flags,
-        });
+        })?;
     }
-    let fd_table = FdTable::from_raw(fd_entries, max_fds);
 
     // ── OFD table ──
     let ofd_count = r.read_u32()?;
     if ofd_count > MAX_OFDS {
         return Err(Errno::EINVAL);
     }
-    let mut ofd_entries: Vec<Option<OpenFileDesc>> = Vec::new();
+    let mut ofd_table = OfdTable::new();
     for _ in 0..ofd_count {
         let index = r.read_u32()? as usize;
         let ofd_id = OfdId(r.read_u64()?);
@@ -2073,17 +2069,14 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         }
         let ref_count = r.read_u32()?;
         let path_len = r.read_u32()? as usize;
-        let path = r.read_bounded_bytes(path_len, MAX_PATH_LEN)?.to_vec();
-        while ofd_entries.len() <= index {
-            ofd_entries.push(None);
-        }
+        let path = crate::ofd::OfdPath::copy_from(r.read_bounded_bytes(path_len, MAX_PATH_LEN)?)?;
         let dri_state = read_dri_state(&mut r)?;
         let input_state = read_input_state(&mut r)?;
         let mut ofd = OpenFileDesc {
             ofd_id,
             file_id,
             file_type,
-            shared_state: SharedOfdState::new(status_flags, offset, pid),
+            shared_state: SharedOfdState::try_new(status_flags, offset, pid)?,
             host_handle,
             ref_count,
             path,
@@ -2096,20 +2089,19 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             input_state,
         };
         ofd.reset_directory_iterator_for_reopen();
-        ofd_entries[index] = Some(ofd);
+        ofd_table.restore_entry(index, ofd)?;
     }
-    let ofd_table = OfdTable::from_raw(ofd_entries);
 
     // ── Environment ──
     let env_count = r.read_u32()?;
     if env_count > MAX_ENV_VARS {
         return Err(Errno::EINVAL);
     }
-    let mut environ = Vec::with_capacity(env_count as usize);
+    let mut environ = crate::process::ProcessStrings::try_with_capacity(env_count as usize)?;
     for _ in 0..env_count {
         let len = r.read_u32()? as usize;
         let data = r.read_bounded_bytes(len, MAX_STRING_LEN)?;
-        environ.push(data.to_vec());
+        environ.try_push(data)?;
     }
 
     // ── Argv ──
@@ -2117,17 +2109,17 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     if argv_count > MAX_ARGV {
         return Err(Errno::EINVAL);
     }
-    let mut argv = Vec::with_capacity(argv_count as usize);
+    let mut argv = crate::process::ProcessStrings::try_with_capacity(argv_count as usize)?;
     for _ in 0..argv_count {
         let len = r.read_u32()? as usize;
         let data = r.read_bounded_bytes(len, MAX_STRING_LEN)?;
-        argv.push(data.to_vec());
+        argv.try_push(data)?;
     }
 
     // ── CWD ──
     let cwd_len = r.read_u32()? as usize;
     let cwd_data = r.read_bounded_bytes(cwd_len, MAX_PATH_LEN)?;
-    let cwd = cwd_data.to_vec();
+    let cwd = crate::ofd::OfdPath::copy_from(cwd_data)?;
 
     // ── Rlimits ──
     let mut rlimits = [[0u64; 2]; 16];
@@ -2241,11 +2233,12 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     process.alt_stack_flags = 2; // SS_DISABLE
     process.alt_stack_size = 0;
     process.alt_stack_depth = 0;
-    process.fork_pipe_replay.clear();
+    process.fork_pipe_replay = IoBuffer::new();
     process.has_exec = false;
     process.fb_binding = None;
     process.dri_bindings.clear();
     process.fork_count = 0;
+    crate::process_table::bump_inherited_dri_bos(&process);
     Ok(process)
 }
 
@@ -2254,6 +2247,75 @@ mod tests {
     use super::*;
     use crate::process::Process;
     use crate::signal::SignalHandler;
+
+    #[test]
+    fn graphics_decode_refuses_bad_handles_and_admits_pending_completion() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        for (handles, next_handle) in [([1, 1], 2), ([0, 1], 2), ([1, 2], 2), ([1, 2], 0)] {
+            let mut wire = [0u8; 24];
+            let mut writer = Writer::new(&mut wire);
+            writer.write_u32(2).unwrap();
+            for handle in handles {
+                writer.write_u32(handle).unwrap();
+                writer.write_u32(100).unwrap();
+            }
+            writer.write_u32(next_handle).unwrap();
+            assert!(matches!(read_dri_fd_state(&mut Reader::new(&wire)), Err(Errno::EINVAL)));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        let mut wire = [0u8; 33];
+        let mut writer = Writer::new(&mut wire);
+        writer.write_u8(0).unwrap();
+        writer.write_u32(0).unwrap();
+        writer.write_u32(0).unwrap();
+        writer.write_u32(0).unwrap();
+        writer.write_u32(1).unwrap();
+        writer.write_u32(1).unwrap();
+        writer.write_u32(7).unwrap();
+        writer.write_u64(0x9876).unwrap();
+        for allowance in [0, 2 * core::mem::size_of::<crate::ofd::PendingFlip>()] {
+            let _limit = crate::io_buffer::test_budget(baseline + allowance);
+            assert!(matches!(read_kms_fd_state(&mut Reader::new(&wire)), Err(Errno::ENOMEM)));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        let kms = read_kms_fd_state(&mut Reader::new(&wire)).unwrap();
+        let mut proc = Process::new(1);
+        let index = proc.ofd_table.create(FileType::CharDevice, wasm_posix_shared::flags::O_RDWR, -9, b"/dev/dri/card0".to_vec());
+        proc.ofd_table.get_mut(index).unwrap().dri_state = Some(crate::IoBox::try_new(
+            crate::ofd::DriOfdState::Card { dri: crate::ofd::DriFdState::default(), kms }).unwrap());
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            crate::dri::drain_pending_flips_for_process(&mut proc, 4, 5, 6);
+            let kms = proc.ofd_table.get(index).unwrap().kms().unwrap();
+            assert!(kms.pending_flips.is_empty());
+            assert_eq!(kms.event_ring.len(), 32);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+        drop(proc);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn serializer_distinguishes_output_exhaustion_from_plan_admission_and_releases_scratch() {
+        let proc = Process::new(69);
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut buffer = alloc::vec![0u8; 65536];
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(serialize_fork_state_for_retry(&proc, &mut buffer), Err(SerializationFailure::Resource(Errno::ENOMEM)));
+            assert_eq!(serialize_exec_state_for_retry(&proc, &mut buffer), Err(SerializationFailure::Resource(Errno::ENOMEM)));
+        }
+        assert_eq!(serialize_fork_state_for_retry(&proc, &mut []), Err(SerializationFailure::OutputFull));
+        assert_eq!(serialize_exec_state_for_retry(&proc, &mut []), Err(SerializationFailure::OutputFull));
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        let written = serialize_fork_state_for_retry(&proc, &mut buffer).unwrap();
+        assert!(written > 0);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        let written = serialize_exec_state_for_retry(&proc, &mut buffer).unwrap();
+        assert!(written > 0);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
 
     fn rewrite_total_size(bytes: &mut [u8]) {
         let total_size = u32::try_from(bytes.len()).unwrap();
@@ -2314,7 +2376,7 @@ mod tests {
             rgid: 4000,
             egid: 5000,
             sgid: 6000,
-            supplementary_groups: vec![7000, 8000],
+            supplementary_groups: crate::credentials::SupplementaryGroups::copy_from(&[7000, 8000]).unwrap(),
         });
         proc.secure_exec = true;
         let mut buf = vec![0u8; 64 * 1024];
@@ -2351,7 +2413,7 @@ mod tests {
         for groups in [vec![], (0..32).map(|index| 20_000 + index).collect()] {
             let mut proc = Process::new(1);
             proc.install_credentials(Credentials {
-                supplementary_groups: groups.clone(),
+                supplementary_groups: crate::credentials::SupplementaryGroups::copy_from(&groups).unwrap(),
                 ..Credentials::from_ids(1000, 2000)
             });
             let mut buf = vec![0u8; 64 * 1024];
@@ -2374,7 +2436,7 @@ mod tests {
             rgid: 4000,
             egid: 5000,
             sgid: 6000,
-            supplementary_groups: vec![7000, 8000],
+            supplementary_groups: crate::credentials::SupplementaryGroups::copy_from(&[7000, 8000]).unwrap(),
         });
         proc.secure_exec = true;
         let mut buf = vec![0u8; 64 * 1024];
@@ -2444,7 +2506,7 @@ mod tests {
             rgid: 404,
             egid: 505,
             sgid: 606,
-            supplementary_groups: vec![707, 808, 909],
+            supplementary_groups: crate::credentials::SupplementaryGroups::copy_from(&[707, 808, 909]).unwrap(),
         });
         proc.secure_exec = true;
         let mut buf = vec![0u8; 64 * 1024];
@@ -2518,8 +2580,8 @@ mod tests {
     #[test]
     fn test_roundtrip_with_environment() {
         let mut proc = Process::new(1);
-        proc.environ.push(b"HOME=/home/test".to_vec());
-        proc.environ.push(b"PATH=/usr/bin".to_vec());
+        proc.environ.try_push(&b"HOME=/home/test".to_vec()).unwrap();
+        proc.environ.try_push(&b"PATH=/usr/bin".to_vec()).unwrap();
 
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
@@ -2559,11 +2621,7 @@ mod tests {
             ofd.dir_host_handle = 701;
             ofd.dir_synth_state = 2;
             ofd.dir_entry_offset = 4;
-            ofd.dir_pending_entry = Some(crate::ofd::PendingDirEntry {
-                ino: 55,
-                d_type: 8,
-                name: b"pending".to_vec(),
-            });
+            ofd.dir_pending_entry = Some(crate::ofd::PendingDirEntry::new(55, 8, b"pending").unwrap());
         }
 
         let mut buf = vec![0u8; 64 * 1024];
@@ -2580,7 +2638,7 @@ mod tests {
         let parent_ofd = parent.ofd_table.get(ofd_idx).unwrap();
         assert_eq!(parent_ofd.dir_host_handle, 701);
         assert_eq!(
-            parent_ofd.dir_pending_entry.as_ref().unwrap().name,
+            parent_ofd.dir_pending_entry.as_ref().unwrap().name(),
             b"pending"
         );
     }
@@ -2651,7 +2709,7 @@ mod tests {
     #[test]
     fn test_roundtrip_with_custom_cwd() {
         let mut proc = Process::new(1);
-        proc.cwd = b"/home/user/project".to_vec();
+        proc.cwd = crate::ofd::OfdPath::copy_from(&b"/home/user/project".to_vec()).unwrap();
 
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
@@ -2697,16 +2755,16 @@ mod tests {
     fn test_fork_exec_params_roundtrip() {
         use crate::process::FdAction;
         let mut proc = Process::new(1);
-        proc.fork_exec_path = Some(b"/usr/bin/echo".to_vec());
-        proc.fork_exec_argv = Some(vec![b"echo".to_vec(), b"hello".to_vec(), b"world".to_vec()]);
-        proc.fork_fd_actions = vec![
+        proc.fork_exec_path = Some(crate::IoBuffer::copy_from(b"/usr/bin/echo").unwrap());
+        proc.fork_exec_argv = Some(crate::process::ProcessStrings::copy_from(&[b"echo".as_slice(), b"hello".as_slice(), b"world".as_slice()]).unwrap());
+        proc.fork_fd_actions = crate::IoBuffer::try_adopt(vec![
             FdAction::Close { fd: 3 },
             FdAction::Dup2 {
                 old_fd: 4,
                 new_fd: 1,
             },
             FdAction::Close { fd: 4 },
-        ];
+        ]).unwrap();
 
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
@@ -2943,6 +3001,27 @@ mod tests {
     }
 
     #[test]
+    fn test_fork_roundtrips_connected_wildcard_udp_source() {
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+        let mut proc = Process::new(1);
+        let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Dgram, 17);
+        socket.state = SocketState::Connected;
+        socket.bind_port = 41000;
+        socket.peer_addr = [10, 89, 0, 2];
+        socket.peer_port = 42000;
+        socket.udp_source_addr = Some([10, 89, 0, 1]);
+        let socket_idx = install_socket_for_fork(&mut proc, socket);
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 42).unwrap();
+        let inherited = child.sockets.get(socket_idx).unwrap();
+        assert_eq!(inherited.bind_addr, [0; 4]);
+        assert_eq!(inherited.udp_source_addr, Some([10, 89, 0, 1]));
+        assert_eq!(inherited.peer_addr, [10, 89, 0, 2]);
+        assert_eq!(inherited.state, SocketState::Connected);
+    }
+
+    #[test]
     fn test_fork_roundtrips_durable_ipv6_and_multicast_socket_state() {
         use crate::socket::{
             Ipv4MulticastMembership, SocketDomain, SocketInfo, SocketState, SocketType,
@@ -2964,24 +3043,24 @@ mod tests {
         socket.linger_seconds = 30;
         socket.recv_timeout_us = 1_250_000;
         socket.send_timeout_us = 2_500_000;
-        socket.bind_device = Some(b"lo".to_vec());
-        socket.tcp_congestion = b"reno".to_vec();
-        socket.ipv4_multicast_memberships = vec![
+        socket.bind_device = Some(crate::IoBuffer::copy_from(b"lo").unwrap());
+        socket.tcp_congestion = crate::IoBuffer::copy_from(b"reno").unwrap();
+        socket.ipv4_multicast_memberships = crate::IoBuffer::try_adopt(vec![
             Ipv4MulticastMembership {
                 group: [239, 1, 2, 3],
                 interface_addr: [127, 0, 0, 1],
                 any_source: true,
-                blocked_sources: vec![[127, 0, 0, 9], [127, 0, 0, 10]],
-                included_sources: vec![],
+                blocked_sources: crate::IoBuffer::try_adopt(vec![[127, 0, 0, 9], [127, 0, 0, 10]]).unwrap(),
+                included_sources: crate::IoBuffer::try_adopt(vec![]).unwrap(),
             },
             Ipv4MulticastMembership {
                 group: [232, 4, 5, 6],
                 interface_addr: [10, 88, 0, 2],
                 any_source: false,
-                blocked_sources: vec![],
-                included_sources: vec![[10, 88, 0, 3], [10, 88, 0, 4]],
+                blocked_sources: crate::IoBuffer::try_adopt(vec![]).unwrap(),
+                included_sources: crate::IoBuffer::try_adopt(vec![[10, 88, 0, 3], [10, 88, 0, 4]]).unwrap(),
             },
-        ];
+        ]).unwrap();
         socket.peer_cred = Some(crate::socket::PeerCred { pid: 7, uid: 1000, gid: 100 });
         let socket_idx = install_socket_for_fork(&mut proc, socket);
 
@@ -3013,15 +3092,15 @@ mod tests {
                     group: [239, 1, 2, 3],
                     interface_addr: [127, 0, 0, 1],
                     any_source: true,
-                    blocked_sources: vec![[127, 0, 0, 9], [127, 0, 0, 10]],
-                    included_sources: vec![],
+                    blocked_sources: crate::IoBuffer::try_adopt(vec![[127, 0, 0, 9], [127, 0, 0, 10]]).unwrap(),
+                    included_sources: crate::IoBuffer::try_adopt(vec![]).unwrap(),
                 },
                 Ipv4MulticastMembership {
                     group: [232, 4, 5, 6],
                     interface_addr: [10, 88, 0, 2],
                     any_source: false,
-                    blocked_sources: vec![],
-                    included_sources: vec![[10, 88, 0, 3], [10, 88, 0, 4]],
+                    blocked_sources: crate::IoBuffer::try_adopt(vec![]).unwrap(),
+                    included_sources: crate::IoBuffer::try_adopt(vec![[10, 88, 0, 3], [10, 88, 0, 4]]).unwrap(),
                 },
             ]
         );
@@ -3033,20 +3112,20 @@ mod tests {
 
         let mut proc = Process::new(1);
         let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Dgram, 17);
-        socket.bind_device = Some(vec![b'x'; MAX_SOCKET_STRING_LEN + 1]);
+        socket.bind_device = Some(crate::IoBuffer::try_adopt(vec![b'x'; MAX_SOCKET_STRING_LEN + 1]).unwrap());
         install_socket_for_fork(&mut proc, socket);
         let mut buf = vec![0u8; 64 * 1024];
         assert_eq!(serialize_fork_state(&proc, &mut buf), Err(Errno::EINVAL));
 
         let mut proc = Process::new(1);
         let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Dgram, 17);
-        socket.ipv4_multicast_memberships = vec![Ipv4MulticastMembership {
+        socket.ipv4_multicast_memberships = crate::IoBuffer::try_adopt(vec![Ipv4MulticastMembership {
             group: [239, 1, 2, 3],
             interface_addr: [127, 0, 0, 1],
             any_source: true,
-            blocked_sources: vec![[127, 0, 0, 2]; MAX_IPV4_MULTICAST_SOURCES + 1],
-            included_sources: vec![],
-        }];
+            blocked_sources: crate::IoBuffer::try_adopt(vec![[127, 0, 0, 2]; MAX_IPV4_MULTICAST_SOURCES + 1]).unwrap(),
+            included_sources: crate::IoBuffer::try_adopt(vec![]).unwrap(),
+        }]).unwrap();
         install_socket_for_fork(&mut proc, socket);
         assert_eq!(serialize_fork_state(&proc, &mut buf), Err(Errno::EINVAL));
     }
@@ -3413,7 +3492,7 @@ mod tests {
         }
         dri.next_handle = handles.iter().map(|(h, _)| *h).max().unwrap_or(0) + 1;
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
-            Some(alloc::boxed::Box::new(DriOfdState::RenderNode(dri)));
+            Some(crate::IoBox::new(DriOfdState::RenderNode(dri)));
         proc.fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
             .unwrap();
@@ -3469,6 +3548,25 @@ mod tests {
     }
 
     #[test]
+    fn malformed_fork_and_exec_state_never_acquire_graphics_buffer_references() {
+        let _registry = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|registry| registry.alloc(32, 32, 32).id);
+        let mut proc = Process::new(83);
+        install_render_node_ofd_with_handles(&mut proc, b"/dev/dri/renderD128", -8, &[(1, bo)]);
+        let mut buffer = alloc::vec![0u8; 65536];
+        for exec in [false, true] {
+            let written = if exec { serialize_exec_state(&proc, &mut buffer) } else { serialize_fork_state(&proc, &mut buffer) }.unwrap();
+            buffer[written] = 1;
+            rewrite_total_size(&mut buffer[..written + 1]);
+            let result = if exec { deserialize_exec_state(&buffer[..written + 1], 84) } else { deserialize_fork_state(&buffer[..written + 1], 84) };
+            assert!(matches!(result, Err(Errno::EINVAL)));
+            assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(1));
+        }
+        crate::dri::with_registry(|registry| registry.decref(bo));
+    }
+
+    #[test]
     fn fork_clears_kms_master_in_child() {
         use crate::ofd::{DriFdState, DriOfdState, KmsFdState};
         let _g = crate::dri::bo::TEST_REGISTRY_LOCK
@@ -3488,7 +3586,7 @@ mod tests {
             ..Default::default()
         };
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
-            Some(alloc::boxed::Box::new(DriOfdState::Card {
+            Some(crate::IoBox::new(DriOfdState::Card {
                 dri: DriFdState::default(),
                 kms,
             }));
@@ -3504,6 +3602,64 @@ mod tests {
         assert!(
             !child_kms.holds_master,
             "fork child must not inherit KMS master"
+        );
+    }
+
+    #[test]
+    fn cursor_ownership_survives_exec_but_not_fork() {
+        use crate::ofd::{DriFdState, DriOfdState, KmsFdState};
+        let _lock = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id);
+        let mut proc = Process::new(1);
+        let ofd = proc.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            -9,
+            b"/dev/dri/card0".to_vec(),
+        );
+        proc.ofd_table.get_mut(ofd).unwrap().dri_state =
+            Some(crate::io_owner::IoBox::new(DriOfdState::Card {
+                dri: DriFdState::default(),
+                kms: KmsFdState {
+                    holds_master: true,
+                    cursor_bo: Some(bo),
+                    ..Default::default()
+                },
+            }));
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd), 0)
+            .unwrap();
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
+        assert_eq!(
+            child.ofd_table.get(ofd).unwrap().kms().unwrap().cursor_bo,
+            None
+        );
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
+            1
+        );
+        let written = serialize_exec_state(&proc, &mut buf).unwrap();
+        assert!(deserialize_exec_state(&buf[..written - 1], 1).is_err());
+        assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).unwrap().refcount), 1);
+        let replacement = deserialize_exec_state(&buf[..written], 1).unwrap();
+        assert_eq!(
+            replacement
+                .ofd_table
+                .get(ofd)
+                .unwrap()
+                .kms()
+                .unwrap()
+                .cursor_bo,
+            Some(bo)
+        );
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
+            2
         );
     }
 
@@ -3536,7 +3692,7 @@ mod tests {
         );
         kms.next_fb_id = 43;
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
-            Some(alloc::boxed::Box::new(DriOfdState::Card {
+            Some(crate::IoBox::new(DriOfdState::Card {
                 dri: DriFdState::default(),
                 kms,
             }));
@@ -3590,7 +3746,7 @@ mod tests {
             alloc::format!("/dev/dri/prime-{bo}-{cookie:x}").into_bytes(),
         );
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
-            Some(alloc::boxed::Box::new(DriOfdState::PrimeBo(PrimeBoState {
+            Some(crate::IoBox::new(DriOfdState::PrimeBo(PrimeBoState {
                 bo_id: bo,
                 cookie,
             })));
@@ -3636,7 +3792,7 @@ mod tests {
             ..Default::default()
         };
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
-            Some(alloc::boxed::Box::new(DriOfdState::Card {
+            Some(crate::IoBox::new(DriOfdState::Card {
                 dri: DriFdState::default(),
                 kms,
             }));

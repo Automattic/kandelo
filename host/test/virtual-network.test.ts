@@ -10,8 +10,27 @@ import { NET_READINESS } from "../src/generated/abi";
 const MSG_PEEK = 0x0002;
 
 describe("LocalVirtualNetwork", () => {
+  it("routes multicast once per remote kernel receive domain and retires bindings", () => {
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
+    const sender = net.attachMachine({ id: "a", address: [10, 88, 0, 1] });
+    const receiver = net.attachMachine({ id: "b", address: [10, 88, 0, 2] });
+    const group = new Uint8Array([238, 255, 0, 1]);
+    const received: UdpDatagram[] = [];
+    const target = { kernelReceiver: "process-100", receive: (d: UdpDatagram) => { received.push(d); return 0; } };
+    expect(receiver.bindUdp("first", new Uint8Array(4), 5877, target)).toBe(0);
+    expect(receiver.bindUdp("second", new Uint8Array(4), 5877, target)).toBe(0);
+    expect(sender.udpSourceAddress(group)).toEqual(new Uint8Array([10, 88, 0, 1]));
+    const packet = { srcAddr: new Uint8Array(4), srcPort: 6000, dstAddr: group, dstPort: 5877, data: new Uint8Array([42]) };
+    expect(sender.sendDatagram(packet)).toBe(0);
+    expect(received).toHaveLength(1);
+    expect(received[0].srcAddr).toEqual(new Uint8Array([10, 88, 0, 1]));
+    receiver.unbindUdp("first"); receiver.unbindUdp("second");
+    expect(sender.sendDatagram(packet)).toBe(0);
+    expect(received).toHaveLength(1);
+  });
+
   it("resolves bounded legacy numeric IPv4 forms and valid DNS aliases", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const backend = net.attachMachine({
       id: "server",
       address: [10, 88, 0, 2],
@@ -31,7 +50,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("routes TCP streams between attached machines", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     let accepted: TcpConnectionPeer | null = null;
@@ -55,7 +74,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("honors MSG_PEEK without consuming TCP stream data", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     let accepted: TcpConnectionPeer | null = null;
@@ -76,7 +95,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("reports refused TCP connects when no listener is bound", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
 
@@ -85,7 +104,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("reports host unreachable for unknown virtual addresses", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
 
     client.connect(1, new Uint8Array([10, 88, 0, 99]), 9);
@@ -93,7 +112,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("wakes TCP peers with reset when a machine detaches", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
 
@@ -135,7 +154,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("drains queued TCP data before FIN and keeps an orphaned receive sink", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     let accepted: TcpConnectionPeer | null = null;
@@ -169,7 +188,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("preserves queued TCP data when a cleanly closed machine detaches", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     let accepted: TcpConnectionPeer | null = null;
@@ -194,7 +213,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("keeps the receive direction usable after SHUT_WR", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     let accepted: TcpConnectionPeer | null = null;
@@ -216,7 +235,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("routes UDP datagrams and preserves source metadata", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     const received: UdpDatagram[] = [];
@@ -243,7 +262,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("scopes INADDR_ANY UDP binds to each attached machine", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const one = net.attachMachine({ id: "one", address: [10, 88, 0, 2] });
     const two = net.attachMachine({ id: "two", address: [10, 88, 0, 3] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 4] });
@@ -277,7 +296,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("scopes backend UDP endpoint identifiers to each attached machine", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const one = net.attachMachine({ id: "one", address: [10, 88, 0, 2] });
     const two = net.attachMachine({ id: "two", address: [10, 88, 0, 3] });
     const receivedOne: UdpDatagram[] = [];
@@ -306,7 +325,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("scopes INADDR_ANY TCP listeners to each attached machine", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const one = net.attachMachine({ id: "one", address: [10, 88, 0, 2] });
     const two = net.attachMachine({ id: "two", address: [10, 88, 0, 3] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 4] });
@@ -333,7 +352,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("uses normal UDP errno style for missing destination hosts and ports", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
 
@@ -356,7 +375,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("throws EAGAIN when a connected stream has no data yet", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
 

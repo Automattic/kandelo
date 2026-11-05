@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { BrowserFramebufferMirrors } from "../src/framebuffer/browser-mirror";
+import { describe, expect, it, vi } from "vitest";
 import { FramebufferRegistry } from "../src/framebuffer/registry.js";
 
 describe("FramebufferRegistry", () => {
@@ -177,5 +178,55 @@ describe("FramebufferRegistry", () => {
     // Still pointing at the host buffer — host-owned memory doesn't
     // change on memory.grow.
     expect(b.view).toBe(b.hostBuffer);
+  });
+});
+
+
+describe("browser framebuffer storage", () => {
+  it("waits for the guest growth that follows an mmap bind", () => {
+    vi.useFakeTimers();
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true });
+    const mirrors = new BrowserFramebufferMirrors(() => memory);
+    try {
+      const pixels = mirrors.bind({ pid: 1, addr: 65536, len: 16, w: 2, h: 2, stride: 8, fmt: "BGRA32" }, 1)!;
+      expect(new Uint8Array(pixels)[0]).toBe(0);
+      memory.grow(1);
+      new Uint8Array(memory.buffer, 65536, 16).fill(23);
+      vi.advanceTimersByTime(16);
+      expect(new Uint8Array(pixels)[0]).toBe(23);
+    } finally {
+      mirrors.clear();
+      vi.useRealTimers();
+    }
+  });
+
+  it("copies bounded pixels across memory growth and fences stale generations", () => {
+    vi.useFakeTimers();
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true });
+    let generation = 1;
+    const mirrors = new BrowserFramebufferMirrors((_pid, requested) => requested === generation ? memory : undefined);
+    const binding = { pid: 7, addr: 64, len: 16, w: 2, h: 2, stride: 8, fmt: "BGRA32" as const };
+    try {
+      new Uint8Array(memory.buffer, 64, 16).fill(17);
+      const pixels = mirrors.bind(binding, 1)!;
+      expect(pixels.byteLength).toBe(16);
+      expect(new Uint8Array(pixels)[0]).toBe(17);
+      memory.grow(1);
+      new Uint8Array(memory.buffer, 64, 16).fill(31);
+      vi.advanceTimersByTime(16);
+      expect(new Uint8Array(pixels)[0]).toBe(31);
+      generation = 2;
+      const successor = mirrors.bind(binding, 2)!;
+      mirrors.unbind(7, 1);
+      new Uint8Array(memory.buffer, 64, 16).fill(42);
+      vi.advanceTimersByTime(16);
+      expect(new Uint8Array(successor)[0]).toBe(42);
+      expect(new Uint8Array(pixels)[0]).toBe(31);
+      mirrors.clear();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      mirrors.clear();
+      vi.useRealTimers();
+    }
   });
 });

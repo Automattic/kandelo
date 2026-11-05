@@ -4,10 +4,24 @@ import { OwnedJobs } from '../src/owned-jobs';
 
 afterEach(() => vi.useRealTimers());
 describe('owned command families', () => {
+  it('claims only owned stdout and stderr for capture, including descendants and empty chunks', () => {
+    vi.useFakeTimers();
+    const jobs = new OwnedJobs(vi.fn());
+    jobs.create('private', 10, 1000);
+    jobs.inherit(10, 11);
+    expect(jobs.output(99, 'stdout', new Uint8Array([1]))).toBe(false);
+    expect(jobs.output(10, 'stdout', new Uint8Array())).toBe(true);
+    expect(jobs.output(10, 'stdout', new Uint8Array([2]))).toBe(true);
+    expect(jobs.output(11, 'stderr', new Uint8Array([3]))).toBe(true);
+    expect(jobs.read('private', 0, 16)).toMatchObject({ chunks: [
+      { stream: 'stdout', bytes: new Uint8Array([2]) },
+      { stream: 'stderr', bytes: new Uint8Array([3]) },
+    ] });
+  });
   it('refuses invalid timer and output bounds without accepting a job or cursor', () => {
     vi.useFakeTimers();
     const jobs = new OwnedJobs(vi.fn());
-    for (const timeout of [0, -1, NaN, Infinity, 0x8000_0000]) {
+    for (const timeout of [-1, NaN, Infinity, 0x8000_0000]) {
       expect(() => jobs.create('a', 10, timeout)).toThrow('INVALID_JOB_OPTIONS');
     }
     jobs.create('a', 10, 1000);
@@ -192,4 +206,17 @@ describe('owned command families', () => {
     jobs.cancel('a');
     expect(jobs.read('a')).toMatchObject({ status: 'timed_out' });
   });
+});
+
+it('a zero-deadline family has no timer but still requires every exit and detachment on cancellation', () => {
+  vi.useFakeTimers();
+  const kill = vi.fn(); const jobs = new OwnedJobs(kill);
+  jobs.create('interactive', 10, 0); jobs.inherit(10, 11);
+  expect(vi.getTimerCount()).toBe(0);
+  vi.advanceTimersByTime(0x7fffffff); expect(kill).not.toHaveBeenCalled();
+  jobs.cancel('interactive'); expect(kill.mock.calls.map(call => call[0])).toEqual([10, 11]);
+  jobs.exited(10, 137); jobs.exited(11, 137); jobs.detached(10);
+  expect(jobs.read('interactive')).toMatchObject({ terminationObserved: false });
+  jobs.detached(11); expect(jobs.read('interactive')).toMatchObject({ terminationObserved: true, status: 'cancelled' });
+  jobs.release('interactive'); expect(vi.getTimerCount()).toBe(0);
 });

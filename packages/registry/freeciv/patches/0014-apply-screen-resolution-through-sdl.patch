@@ -1,0 +1,116 @@
+Make the upstream Screen resolution option call SDL's window/display APIs.
+
+The original callback only rearranges widgets, without resizing the window
+or its surfaces. Desktop fullscreen also deliberately ignores the requested
+mode. Use exclusive fullscreen for a selected mode, retaining the preferred
+monitor mode on first launch. Windowed mode uses SDL_SetWindowSize. Rebuild
+surfaces before reflowing the UI and retire the old map allocation.
+
+This is a client bug independent of Kandelo. No custom dimensions, display
+scale, rendering transform, or platform-specific behavior is introduced.
+
+--- a/client/gui-sdl2/gui_main.c
++++ b/client/gui-sdl2/gui_main.c
+@@ -968,10 +968,38 @@
+
+ /**********************************************************************//**
+   Resize the main window after option changed.
++**************************************************************************/
++static void real_change_resolution(void *unused)
++{
++  int width = GUI_SDL_OPTION(screen.width);
++  int height = GUI_SDL_OPTION(screen.height);
++
++  if (GUI_SDL_OPTION(fullscreen)) {
++    SDL_DisplayMode mode = { .w = width, .h = height };
++
++    /* Desktop fullscreen deliberately ignores resolution requests. */
++    if (SDL_SetWindowDisplayMode(main_data.screen, &mode) < 0
++        || SDL_SetWindowFullscreen(main_data.screen, SDL_WINDOW_FULLSCREEN) < 0) {
++      log_error("Cannot change screen resolution: %s", SDL_GetError());
++      return;
++    }
++  } else {
++    SDL_SetWindowSize(main_data.screen, width, height);
++  }
++  SDL_GetWindowSize(main_data.screen, &width, &height);
++  if (!create_surfaces(width, height)) {
++    force_exit_from_event_loop();
++    return;
++  }
++  real_resize_window_callback(NULL);
++}
++
++/**********************************************************************//**
++  Apply after the option dialog has finished using the old surfaces.
+ **************************************************************************/
+ static void resize_window_callback(struct option *poption)
+ {
+-  update_queue_add(real_resize_window_callback, NULL);
++  update_queue_add(real_change_resolution, NULL);
+ }
+
+ /**********************************************************************//**
+@@ -982,12 +1010,20 @@
+   SDL_DisplayMode mode;
+
+   if (GUI_SDL_OPTION(fullscreen)) {
+-    SDL_SetWindowFullscreen(main_data.screen, SDL_WINDOW_FULLSCREEN_DESKTOP);
++    SDL_DisplayMode requested = {
++      .w = GUI_SDL_OPTION(screen.width), .h = GUI_SDL_OPTION(screen.height)
++    };
++
++    if (SDL_SetWindowDisplayMode(main_data.screen, &requested) < 0
++        || SDL_SetWindowFullscreen(main_data.screen, SDL_WINDOW_FULLSCREEN) < 0) {
++      log_error("Cannot enter fullscreen: %s", SDL_GetError());
++      return;
++    }
+   } else {
+     SDL_SetWindowFullscreen(main_data.screen, 0);
+   }
+
+-  SDL_GetWindowDisplayMode(main_data.screen, &mode);
++  SDL_GetWindowSize(main_data.screen, &mode.w, &mode.h);
+
+   if (!create_surfaces(mode.w, mode.h)) {
+     /* Try to revert */
+@@ -1082,6 +1118,12 @@
+
+   if (parse_options(argc, argv)) {
+     if (!GUI_SDL_OPTION(default_screen_size_set)) {
++      SDL_DisplayMode desktop;
++
++      if (GUI_SDL_OPTION(fullscreen)
++          && SDL_GetDesktopDisplayMode(0, &desktop) == 0) {
++        GUI_SDL_OPTION(screen) = VIDEO_MODE(desktop.w, desktop.h);
++      }
+       if (font_size_parameter > 10) {
+         GUI_SDL_OPTION(screen) = VIDEO_MODE(640 * font_size_parameter / 10,
+                                             480 * font_size_parameter / 10);
+--- a/client/gui-sdl2/graphics.c
++++ b/client/gui-sdl2/graphics.c
+@@ -556,6 +556,7 @@
+   unsigned flags;
+
+   free_surfaces();
++  FREESURFACE(main_data.map);
+
+   if (is_bigendian()) {
+     main_surface = SDL_CreateRGBSurface(0, width, height, 32,
+@@ -645,10 +646,13 @@
+   }
+
+   if (flags_in & SDL_WINDOW_FULLSCREEN) {
+-    SDL_DisplayMode mode;
++    SDL_DisplayMode mode = { .w = width, .h = height };
+
+-    /* Use SDL_WINDOW_FULLSCREEN_DESKTOP instead of real SDL_WINDOW_FULLSCREEN */
+-    SDL_SetWindowFullscreen(main_data.screen, SDL_WINDOW_FULLSCREEN_DESKTOP);
++    if (SDL_SetWindowDisplayMode(main_data.screen, &mode) < 0
++        || SDL_SetWindowFullscreen(main_data.screen, SDL_WINDOW_FULLSCREEN) < 0) {
++      log_error("Cannot enter fullscreen: %s", SDL_GetError());
++      return FALSE;
++    }
+     SDL_GetWindowDisplayMode(main_data.screen, &mode);
+     width = mode.w;
+     height = mode.h;

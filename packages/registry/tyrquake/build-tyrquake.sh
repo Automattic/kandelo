@@ -63,8 +63,11 @@ apply_patches() {
             >/dev/null 2>&1; then
             echo "    $name"
             kandelo_package_git_apply_patch "$SRC" "$patch_file"
+        elif GIT_CEILING_DIRECTORIES="$(dirname "$SRC")" git -C "$SRC" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+            echo "    $name (already applied)"
         else
-            echo "    $name (already applied or superseded)"
+            echo "ERROR: patch $name does not apply cleanly" >&2
+            exit 1
         fi
     done
 }
@@ -106,3 +109,7 @@ echo "==> quake.wasm built (VID=$QUAKE_VID_TARGET IN=$QUAKE_IN_TARGET SND=$QUAKE
 cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary tyrquake "$OUT_BIN" quake.wasm
+
+install_local_runtime_file tyrquake "${HERE}/sessions.json" sessions.json
+install_local_runtime_file tyrquake "${HERE}/quake-data" quake-data
+install_local_runtime_file tyrquake "${HERE}/quake-activity" quake-activity

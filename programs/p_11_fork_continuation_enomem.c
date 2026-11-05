@@ -12,16 +12,55 @@
 #define WASM_PAGE_BYTES (64u * 1024u)
 #define MAX_FILLER_MAPPINGS 512
 
+#ifndef P11_RECURSION_DEPTH
+#define P11_RECURSION_DEPTH 4096
+#endif
+
+#ifdef P11_WIDE_FRAME
+// A second shape reaches another continuation page with fewer native calls.
+// Volatile reads must stay live across recursion; shadow-stack arrays would
+// consume linear memory instead of widening the captured Wasm activation.
+typedef unsigned __int128 carry_value_t;
+static volatile carry_value_t carry_seeds[16] = {
+    11, 23, 37, 41, 53, 67, 79, 83,
+    97, 101, 113, 127, 137, 149, 157, 163,
+};
+#endif
+
 static void *filler_mappings[MAX_FILLER_MAPPINGS];
 
 __attribute__((noinline))
 static pid_t fork_at_depth(int depth) {
     if (depth == 0) return fork();
 
+#ifdef P11_WIDE_FRAME
+    const carry_value_t a = carry_seeds[0], b = carry_seeds[1];
+    const carry_value_t c = carry_seeds[2], d = carry_seeds[3];
+    const carry_value_t e = carry_seeds[4], f = carry_seeds[5];
+    const carry_value_t g = carry_seeds[6], h = carry_seeds[7];
+    const carry_value_t i = carry_seeds[8], j = carry_seeds[9];
+    const carry_value_t k = carry_seeds[10], l = carry_seeds[11];
+    const carry_value_t m = carry_seeds[12], n = carry_seeds[13];
+    const carry_value_t o = carry_seeds[14], p = carry_seeds[15];
+#endif
     pid_t result = fork_at_depth(depth - 1);
     // WHY: keep each recursive activation live across fork so instrumentation
     // must save enough frames to request a second continuation chunk.
     __asm__ volatile("" : "+r"(depth));
+#ifdef P11_WIDE_FRAME
+    if (a != carry_seeds[0] || b != carry_seeds[1]
+        || c != carry_seeds[2] || d != carry_seeds[3]
+        || e != carry_seeds[4] || f != carry_seeds[5]
+        || g != carry_seeds[6] || h != carry_seeds[7]
+        || i != carry_seeds[8] || j != carry_seeds[9]
+        || k != carry_seeds[10] || l != carry_seeds[11]
+        || m != carry_seeds[12] || n != carry_seeds[13]
+        || o != carry_seeds[14] || p != carry_seeds[15]) {
+        static const char message[] = "FAIL: continuation carry values changed\n";
+        write(STDERR_FILENO, message, sizeof(message) - 1);
+        _exit(97);
+    }
+#endif
     return result + (depth == -1);
 }
 
@@ -179,7 +218,7 @@ int main(void) {
     }
 
     errno = 0;
-    const pid_t failed_child = fork_at_depth(4096);
+    const pid_t failed_child = fork_at_depth(P11_RECURSION_DEPTH);
     const int fork_errno = errno;
     if (failed_child != -1 || fork_errno != ENOMEM) {
         printf(

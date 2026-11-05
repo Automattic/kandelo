@@ -164,7 +164,10 @@ static const struct kandelo_ioctl_contract kandelo_ioctl_contracts[] = {
     { 0x00008905u, 2u, 2u, 4u, 4u },
     { 0x00008910u, 2u, 3u, 32u, 40u },
     { 0x00008912u, 2u, 3u, 8u, 16u },
+    { 0x00008913u, 2u, 3u, 32u, 40u },
     { 0x00008915u, 2u, 3u, 32u, 40u },
+    { 0x00008919u, 2u, 3u, 32u, 40u },
+    { 0x0000891Bu, 2u, 3u, 32u, 40u },
     { 0x00008927u, 2u, 3u, 32u, 40u },
     { 0x00008933u, 2u, 3u, 32u, 40u },
     { 0x40044590u, 1u, 0u, 0u, 0u },
@@ -208,8 +211,10 @@ static const struct kandelo_ioctl_contract kandelo_ioctl_contracts[] = {
     { 0xC01064E1u, 2u, 3u, 16u, 16u },
     { 0xC01464A6u, 2u, 3u, 20u, 20u },
     { 0xC01864B0u, 2u, 1u, 24u, 24u },
+    { 0xC01C64A3u, 2u, 1u, 28u, 28u },
     { 0xC02064B2u, 2u, 3u, 32u, 32u },
     { 0xC0246400u, 2u, 3u, 36u, 4294967295u },
+    { 0xC02464BBu, 2u, 1u, 36u, 36u },
     { 0xC0406400u, 2u, 3u, 4294967295u, 64u },
     { 0xC04064A0u, 2u, 3u, 64u, 64u },
     { 0xC05064A7u, 2u, 3u, 80u, 80u },
@@ -218,7 +223,7 @@ static const struct kandelo_ioctl_contract kandelo_ioctl_contracts[] = {
     { 0xC06864B8u, 2u, 3u, 104u, 104u },
 };
 
-#define KANDELO_IOCTL_CONTRACT_COUNT 99u
+#define KANDELO_IOCTL_CONTRACT_COUNT 104u
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_1[] = {
     { 0u, 4u, 0u, 0u, 4096u, 0u, 0u },
@@ -323,10 +328,6 @@ static const struct kandelo_marshal_arg kandelo_marshal_args_37[] = {
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_40[] = {
     { 1u, 2u, 3u, 0u, 16u, 0u, 0u },
-};
-
-static const struct kandelo_marshal_arg kandelo_marshal_args_41[] = {
-    { 0u, 1u, 3u, 0u, 16u, 0u, 0u },
 };
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_43[] = {
@@ -531,10 +532,6 @@ static const struct kandelo_marshal_arg kandelo_marshal_args_123[] = {
     { 1u, 2u, 3u, 1u, 16u, 0u, 0u },
 };
 
-static const struct kandelo_marshal_arg kandelo_marshal_args_124[] = {
-    { 2u, 1u, 3u, 0u, 16u, 0u, 0u },
-};
-
 static const struct kandelo_marshal_arg kandelo_marshal_args_125[] = {
     { 1u, 4u, 0u, 1u, 4096u, 0u, 0u },
     { 2u, 1u, 3u, 1u, 32u, 0u, 0u },
@@ -575,11 +572,6 @@ static const struct kandelo_marshal_arg kandelo_marshal_args_137[] = {
 static const struct kandelo_marshal_arg kandelo_marshal_args_138[] = {
 };
 
-static const struct kandelo_marshal_arg kandelo_marshal_args_139[] = {
-    { 1u, 2u, 3u, 1u, 4u, 0u, 0u },
-    { 3u, 2u, 3u, 1u, 144u, 0u, 0u },
-};
-
 static const struct kandelo_marshal_arg kandelo_marshal_args_140[] = {
     { 0u, 4u, 0u, 0u, 256u, 0u, 0u },
     { 1u, 2u, 3u, 0u, 4u, 0u, 0u },
@@ -591,12 +583,6 @@ static const struct kandelo_marshal_arg kandelo_marshal_args_205[] = {
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_206[] = {
     { 0u, 2u, 3u, 0u, 8u, 0u, 0u },
-};
-
-static const struct kandelo_marshal_arg kandelo_marshal_args_207[] = {
-    { 0u, 1u, 3u, 0u, 8u, 0u, 0u },
-    { 1u, 2u, 4u, 1u, 128u, 128u, 0u },
-    { 2u, 1u, 3u, 1u, 16u, 0u, 0u },
 };
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_209[] = {
@@ -682,11 +668,6 @@ static const struct kandelo_marshal_arg kandelo_marshal_args_271[] = {
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_272[] = {
     { 1u, 4u, 0u, 0u, 4096u, 0u, 0u },
-};
-
-static const struct kandelo_marshal_arg kandelo_marshal_args_288[] = {
-    { 2u, 2u, 4u, 0u, 128u, 128u, 0u },
-    { 4u, 2u, 3u, 1u, 144u, 0u, 0u },
 };
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_290[] = {
@@ -789,6 +770,68 @@ static const struct kandelo_marshal_arg kandelo_marshal_args_343[] = {
 static const struct kandelo_marshal_arg kandelo_marshal_args_347[] = {
 };
 
+static const struct kandelo_marshal_arg kandelo_marshal_args_350[] = {
+    { 1u, 4u, 0u, 0u, 256u, 0u, 0u },
+    { 2u, 2u, 1u, 1u, 3u, 1u, 0u },
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_351[] = {
+    { 1u, 2u, 1u, 1u, 2u, 1u, 0u },
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_352[] = {
+    { 1u, 4u, 0u, 0u, 256u, 0u, 0u },
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_353[] = {
+    { 1u, 4u, 0u, 0u, 256u, 0u, 0u },
+    { 2u, 1u, 1u, 1u, 3u, 1u, 0u },
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_354[] = {
+    { 0u, 4u, 0u, 0u, 4096u, 0u, 0u },
+    { 1u, 4u, 0u, 0u, 256u, 0u, 0u },
+    { 2u, 2u, 1u, 1u, 3u, 1u, 0u },
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_355[] = {
+    { 0u, 4u, 0u, 0u, 4096u, 0u, 0u },
+    { 1u, 2u, 1u, 1u, 2u, 1u, 0u },
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_356[] = {
+    { 0u, 4u, 0u, 0u, 4096u, 0u, 0u },
+    { 1u, 4u, 0u, 0u, 256u, 0u, 0u },
+    { 2u, 2u, 1u, 1u, 3u, 1u, 0u },
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_357[] = {
+    { 0u, 4u, 0u, 0u, 4096u, 0u, 0u },
+    { 1u, 2u, 1u, 1u, 2u, 1u, 0u },
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_358[] = {
+    { 0u, 4u, 0u, 0u, 4096u, 0u, 0u },
+    { 1u, 4u, 0u, 0u, 256u, 0u, 0u },
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_359[] = {
+    { 0u, 4u, 0u, 0u, 4096u, 0u, 0u },
+    { 1u, 4u, 0u, 0u, 256u, 0u, 0u },
+    { 2u, 1u, 1u, 1u, 3u, 1u, 0u },
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_360[] = {
+    { 0u, 4u, 0u, 0u, 4096u, 0u, 0u },
+    { 1u, 4u, 0u, 0u, 256u, 0u, 0u },
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_361[] = {
+    { 0u, 4u, 0u, 0u, 4096u, 0u, 0u },
+    { 1u, 4u, 0u, 0u, 256u, 0u, 0u },
+    { 2u, 1u, 1u, 1u, 3u, 1u, 0u },
+};
+
 static const struct kandelo_marshal_arg kandelo_marshal_args_377[] = {
     { 1u, 1u, 3u, 0u, 8u, 0u, 0u },
 };
@@ -831,7 +874,6 @@ static const struct kandelo_marshal_syscall kandelo_marshal_table[] = {
     { 36u, 0u, 2u, kandelo_marshal_args_36 },
     { 37u, 0u, 2u, kandelo_marshal_args_37 },
     { 40u, 0u, 1u, kandelo_marshal_args_40 },
-    { 41u, 0u, 1u, kandelo_marshal_args_41 },
     { 43u, 0u, 2u, kandelo_marshal_args_43 },
     { 44u, 0u, 2u, kandelo_marshal_args_44 },
     { 45u, 0u, 1u, kandelo_marshal_args_45 },
@@ -879,7 +921,6 @@ static const struct kandelo_marshal_syscall kandelo_marshal_table[] = {
     { 120u, 0u, 1u, kandelo_marshal_args_120 },
     { 122u, 0u, 1u, kandelo_marshal_args_122 },
     { 123u, 0u, 1u, kandelo_marshal_args_123 },
-    { 124u, 0u, 1u, kandelo_marshal_args_124 },
     { 125u, 0u, 2u, kandelo_marshal_args_125 },
     { 129u, 0u, 2u, kandelo_marshal_args_129 },
     { 130u, 0u, 1u, kandelo_marshal_args_130 },
@@ -889,11 +930,9 @@ static const struct kandelo_marshal_syscall kandelo_marshal_table[] = {
     { 136u, 0u, 1u, kandelo_marshal_args_136 },
     { 137u, 0u, 0u, kandelo_marshal_args_137 },
     { 138u, 0u, 0u, kandelo_marshal_args_138 },
-    { 139u, 0u, 2u, kandelo_marshal_args_139 },
     { 140u, 0u, 2u, kandelo_marshal_args_140 },
     { 205u, 0u, 1u, kandelo_marshal_args_205 },
     { 206u, 0u, 1u, kandelo_marshal_args_206 },
-    { 207u, 0u, 3u, kandelo_marshal_args_207 },
     { 209u, 0u, 2u, kandelo_marshal_args_209 },
     { 211u, 0u, 1u, kandelo_marshal_args_211 },
     { 224u, 0u, 1u, kandelo_marshal_args_224 },
@@ -914,7 +953,6 @@ static const struct kandelo_marshal_syscall kandelo_marshal_table[] = {
     { 269u, 0u, 1u, kandelo_marshal_args_269 },
     { 271u, 0u, 1u, kandelo_marshal_args_271 },
     { 272u, 0u, 1u, kandelo_marshal_args_272 },
-    { 288u, 0u, 2u, kandelo_marshal_args_288 },
     { 290u, 0u, 2u, kandelo_marshal_args_290 },
     { 291u, 0u, 2u, kandelo_marshal_args_291 },
     { 294u, 0u, 1u, kandelo_marshal_args_294 },
@@ -940,13 +978,25 @@ static const struct kandelo_marshal_syscall kandelo_marshal_table[] = {
     { 342u, 0u, 1u, kandelo_marshal_args_342 },
     { 343u, 0u, 0u, kandelo_marshal_args_343 },
     { 347u, 0u, 0u, kandelo_marshal_args_347 },
+    { 350u, 0u, 2u, kandelo_marshal_args_350 },
+    { 351u, 0u, 1u, kandelo_marshal_args_351 },
+    { 352u, 0u, 1u, kandelo_marshal_args_352 },
+    { 353u, 0u, 2u, kandelo_marshal_args_353 },
+    { 354u, 0u, 3u, kandelo_marshal_args_354 },
+    { 355u, 0u, 2u, kandelo_marshal_args_355 },
+    { 356u, 0u, 3u, kandelo_marshal_args_356 },
+    { 357u, 0u, 2u, kandelo_marshal_args_357 },
+    { 358u, 0u, 2u, kandelo_marshal_args_358 },
+    { 359u, 0u, 3u, kandelo_marshal_args_359 },
+    { 360u, 0u, 2u, kandelo_marshal_args_360 },
+    { 361u, 0u, 3u, kandelo_marshal_args_361 },
     { 377u, 0u, 1u, kandelo_marshal_args_377 },
     { 382u, 0u, 1u, kandelo_marshal_args_382 },
     { 383u, 0u, 1u, kandelo_marshal_args_383 },
     { 384u, 0u, 2u, kandelo_marshal_args_384 },
 };
 
-#define KANDELO_MARSHAL_SYSCALL_COUNT 137u
+#define KANDELO_MARSHAL_SYSCALL_COUNT 144u
 
 /* Phase 2 RAW syscalls: keep raw args, never build a record.
 * Source of truth: wasm_posix_shared::host_raw_syscalls. Sorted

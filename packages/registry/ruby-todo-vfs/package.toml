@@ -1,7 +1,7 @@
 kind = "program"
 name = "ruby-todo-vfs"
 version = "0.1.0"
-kernel_abi = 43
+kernel_abi = 52
 depends_on = [
   "ruby@4.0.5",
 ]

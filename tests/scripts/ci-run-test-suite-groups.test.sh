@@ -139,6 +139,7 @@ cp \
     "$REPO_ROOT/scripts/activate-ci-test-workspace.sh" \
     "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh" \
     "$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt" \
+    "$REPO_ROOT/scripts/check-vitest-evidence-classes.sh" \
     "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
     "$REPO_ROOT/scripts/ci-vitest-resource-isolated-cases.tsv" \
     "$REPO_ROOT/scripts/pack-ci-test-workspace.sh" \
@@ -490,6 +491,10 @@ run_group sortix basic "basic"
 run_group sortix runtime "limits malloc stdio io signal process paths udp"
 run_group sortix all "--all"
 
+# Every Vitest group lists the live file inventory to prove the evidence-class
+# registry covers it exactly; the stub npx answers with this fixture inventory.
+exact_vitest_inventory=$'../packages/registry/ruby/test/posix-spawn.test.ts\n../packages/registry/zip/test/zip.test.ts\ntest/prepared-product.test.ts\ntest/source-only.test.ts\ntest/zip.test.ts'
+
 run_vitest_group() {
     local group="$1"
     local expected_vitest="$2"
@@ -501,6 +506,7 @@ run_vitest_group() {
     : > "$bun_capture"
     PATH="$FIXTURE/bin:$PATH" \
         VITEST_CAPTURE="$vitest_capture" \
+        VITEST_FILES_ONLY_INVENTORY="$exact_vitest_inventory" \
         VITEST_LIST_INVENTORY="$resource_inventory" \
         BUN_CAPTURE="$bun_capture" \
         bash "$FIXTURE/scripts/ci-run-test-suite.sh" vitest "$group"
@@ -561,7 +567,6 @@ run_vitest_group 2/2 \
     "vitest run --shard=2/2 $resource_exclude $disabled_software_excludes" 0
 run_vitest_group resource-isolated "$resource_invocations" 0
 
-exact_vitest_inventory=$'../packages/registry/ruby/test/posix-spawn.test.ts\n../packages/registry/zip/test/zip.test.ts\ntest/prepared-product.test.ts\ntest/source-only.test.ts\ntest/zip.test.ts'
 exact_vitest_capture="$TMP_DIR/vitest-exact-abi-source.args"
 exact_vitest_selected="$TMP_DIR/vitest-exact-abi-source.selected"
 : > "$exact_vitest_capture"
@@ -653,12 +658,67 @@ run_invalid_exact_manifest prepared-test \
 cp "$exact_manifest_valid" "$exact_manifest"
 cp "$source_only_valid" "$FIXTURE/host/test/source-only.test.ts"
 
+run_invalid_vitest_registry() {
+    local group="$1"
+    local label="$2"
+    local expected="$3"
+    local inventory="${4:-$exact_vitest_inventory}"
+    local safe_group="${group//\//-}"
+    local output="$TMP_DIR/vitest-registry-$safe_group-$label.out"
+    local capture="$TMP_DIR/vitest-registry-$safe_group-$label.args"
+    : > "$capture"
+    if PATH="$FIXTURE/bin:$PATH" \
+        VITEST_CAPTURE="$capture" \
+        VITEST_FILES_ONLY_INVENTORY="$inventory" \
+        VITEST_LIST_INVENTORY="$resource_inventory" \
+        BUN_CAPTURE="$TMP_DIR/vitest-registry-$safe_group-$label.bun" \
+        bash "$FIXTURE/scripts/ci-run-test-suite.sh" vitest "$group" \
+            > "$output" 2>&1; then
+        echo "vitest/$group accepted a registry with $label" >&2
+        exit 1
+    fi
+    grep -Fq -- "$expected" "$output" || {
+        echo "vitest/$group reported the wrong $label error" >&2
+        cat "$output" >&2
+        exit 1
+    }
+    if grep -q '^vitest run' "$capture"; then
+        echo "vitest/$group ran tests despite a registry with $label" >&2
+        exit 1
+    fi
+}
+
+# Every Vitest group, not only exact-abi-source, rejects registry drift in
+# both directions before any test runs: a row whose file is gone, a collected
+# file without a row, and a row for a file Vitest does not collect.
+for vitest_group in all 1/2 2/2 resource-isolated exact-abi-source; do
+    {
+        cat "$exact_manifest_valid"
+        printf '%s\t%s\n' 'host/test/deleted.test.ts' prepared-product
+    } | LC_ALL=C sort > "$exact_manifest"
+    run_invalid_vitest_registry "$vitest_group" stale-row \
+        "stale row at scripts/ci-vitest-evidence-classes.tsv:1: host/test/deleted.test.ts is not a regular file"
+    cp "$exact_manifest_valid" "$exact_manifest"
+
+    : > "$FIXTURE/host/test/unclassified.test.ts"
+    run_invalid_vitest_registry "$vitest_group" unclassified \
+        "unclassified test: Vitest collects host/test/unclassified.test.ts" \
+        "$exact_vitest_inventory"$'\ntest/unclassified.test.ts'
+    rm "$FIXTURE/host/test/unclassified.test.ts"
+
+    run_invalid_vitest_registry "$vitest_group" uncollected \
+        "uncollected row: scripts/ci-vitest-evidence-classes.tsv classifies host/test/zip.test.ts" \
+        "${exact_vitest_inventory%$'\n'test/zip.test.ts}"
+done
+cp "$exact_manifest_valid" "$exact_manifest"
+
 run_invalid_resource_manifest() {
     local label="$1"
     local expected="$2"
     local output="$TMP_DIR/vitest-resource-invalid-$label.out"
     if PATH="$FIXTURE/bin:$PATH" \
         VITEST_CAPTURE="$TMP_DIR/vitest-resource-invalid-$label.args" \
+        VITEST_FILES_ONLY_INVENTORY="$exact_vitest_inventory" \
         VITEST_LIST_INVENTORY="$resource_inventory" \
         BUN_CAPTURE="$TMP_DIR/vitest-resource-invalid-$label.bun" \
         bash "$FIXTURE/scripts/ci-run-test-suite.sh" \
@@ -1539,6 +1599,7 @@ mkdir -p \
     "$pack_extract/apps/browser-demos"
 cp \
     "$FIXTURE/scripts/activate-ci-test-workspace.sh" \
+    "$FIXTURE/scripts/check-vitest-evidence-classes.sh" \
     "$FIXTURE/scripts/ci-run-test-suite.sh" \
     "$FIXTURE/scripts/ci-check-browser-assets.sh" \
     "$FIXTURE/scripts/resolve-binary.sh" \

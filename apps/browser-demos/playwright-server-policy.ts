@@ -4,7 +4,9 @@ export interface PlaywrightServerEnvironment {
   KANDELO_ABI_STAGING_BROWSER_OBSERVATION?: string;
   KANDELO_ABI_STAGING_BROWSER_SESSION?: string;
   KANDELO_CANONICAL_FLAT_SHELL_STRICT?: string;
+  KANDELO_NETWORK_LAB?: string;
   KANDELO_PLAYWRIGHT_SERVE_DIST?: string;
+  KANDELO_PROGRAM_COMPATIBILITY_IMAGE_URL?: string;
   KANDELO_SOURCE_ROOTFS_SHELL_STRICT?: string;
 }
 
@@ -19,6 +21,9 @@ export function playwrightTestIgnoreForEnvironment(
   );
   if (env.KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT === undefined) {
     ignored.push(/abi-staging-pages-assembled-site\.spec\.ts$/);
+  }
+  if (env.KANDELO_PROGRAM_COMPATIBILITY_IMAGE_URL === undefined) {
+    ignored.push(/program-compatibility\.spec\.ts$/);
   }
   // Ordinary browser runs have no protected evidence handoff. Keep an
   // explicitly named evidence spec visible so its missing-input check fails
@@ -36,6 +41,12 @@ export function playwrightTestIgnoreForEnvironment(
   ) {
     ignored.push(/abi-staging-product-evidence\.spec\.ts$/);
   }
+  // The separate-networks lab needs Docker and a dev server configured with
+  // the lab's STUN server (test/network-lab/run.sh). Ordinary runs leave it
+  // out; naming it keeps its missing-input checks visible as failures.
+  if (!argv.some((argument) => /(?:^|[/\\])kandelo-network-lab\.spec\.ts(?::\d+)?$/.test(argument))) {
+    ignored.push(/kandelo-network-lab\.spec\.ts$/);
+  }
   return ignored;
 }
 
@@ -51,6 +62,7 @@ export function shouldReuseExistingPlaywrightServer(
   return (
     !env.CI &&
     env.KANDELO_CANONICAL_FLAT_SHELL_STRICT !== "1" &&
+    env.KANDELO_NETWORK_LAB !== "1" &&
     env.KANDELO_PLAYWRIGHT_SERVE_DIST !== "1" &&
     env.KANDELO_SOURCE_ROOTFS_SHELL_STRICT !== "1"
   );

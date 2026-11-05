@@ -1,0 +1,1104 @@
+{
+  "metadata": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "started_utc": "2026-10-24 22:15:39 UTC",
+    "logical_cpus": 18,
+    "python": "3.13.12",
+    "rounds": 3,
+    "guard_bytes": 17179869184,
+    "timeout_s": 1800,
+    "binary": ".context/native-package-comparison-build/measured-binary",
+    "binary_sha256": "7c02cf1becd836ea9e12a0610faa2f2aed7227d1539667c1518a6330c3a81f0e",
+    "cli": ".context/native-package-comparison-build/measured-cli",
+    "cli_sha256": "4f0696e405a7f47f879b3b2098fd933c4acc80c80c53d1c90e4e2445a4a0f815",
+    "input_sha256": {
+      "sed.wasm": "84e19d120b83b97e76466b22720198cfd9fb9ecc05175b94fc5dcd9f493f983c",
+      "grep.wasm": "4c18ca1cc2cb1cba4c1c4d316b1310a8238e6dbc1da8af8993d49673ff91bf4d",
+      "make.wasm": "c2cccef52c8200c8878dd459734ae46b3d4071d95b32168a4139d7cb4e366b8d",
+      "gawk.wasm": "ddbb7b179637ec4a62046fa9a760c896c85692094cbaf2f654138d3be7e7261a",
+      "coreutils.wasm": "dcf362baa67fa3f156a579ad301748ea72613aaf79a467c2f81249d7815d7273",
+      "bash.wasm": "6263c438e7e0290722a99d0087eb04e28b3ed474efc74a44d618af30fdd2a343"
+    },
+    "rayon_threads": 2,
+    "scope": "Complete transforms with common immutable I/O, feature metadata, serial structural validation, atomic publication and checksums; no Binaryen or guest execution in raw transforms. Optional CLI Os timings include Binaryen but do not measure its child-process memory. Separate Node compile/contract checks."
+  },
+  "build": {
+    "source_base_commit": "7f6a87b10ae57c5eb90790058d63d1a3fcbf6cde",
+    "source_files": 205,
+    "binary_sha256": "7c02cf1becd836ea9e12a0610faa2f2aed7227d1539667c1518a6330c3a81f0e",
+    "cli_sha256": "4f0696e405a7f47f879b3b2098fd933c4acc80c80c53d1c90e4e2445a4a0f815",
+    "changed_from_lexical_snapshot": [
+      "crates/fork-instrument/examples/memory_comparison/full.rs",
+      "scripts/check-fork-memory-artifact.ts"
+    ],
+    "production_sources_match_lexical_snapshot": true,
+    "note": "Only measurement helpers differ from the 19f lexical snapshot. Production source unchanged. Raw and CLI comparison coordinator records CPU time, load and strict no-op byte identity."
+  },
+  "transforms": 72,
+  "separate_compile_contract_validators": 72,
+  "summary": [
+    {
+      "input": {
+        "package": "sed",
+        "version": "4.9",
+        "archive_sha256": "6e226b732e1cd739464ad6862bd1a1aba42d7982922da7a53519631d24975181",
+        "input_kind": "original SDK link; no package-specific Binaryen or instrumentation",
+        "source": ".context/package-transform-builds/sed/work/sed-src/sed/sed",
+        "bytes": 329303,
+        "sha256": "84e19d120b83b97e76466b22720198cfd9fb9ecc05175b94fc5dcd9f493f983c",
+        "installer_bypassed_instrumentation": true,
+        "installer_input_sha256": null,
+        "matches_installer_input": null
+      },
+      "raw": {
+        "walrus": {
+          "output_bytes": 329303,
+          "output_sha256": "84e19d120b83b97e76466b22720198cfd9fb9ecc05175b94fc5dcd9f493f983c",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 16.14892578125,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.58984375,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 50.10009765625,
+              "maximum": 50.10009765625
+            }
+          ],
+          "participates": false,
+          "contract_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "data_sha256": "90897cc521ee2fc86b32a932cec25ccd2231833b845b5c14c1524b9224166551",
+          "wall_seconds": {
+            "median": 0.028467916883528233,
+            "minimum": 0.02770333318039775,
+            "maximum": 0.1889557500835508
+          },
+          "cpu_seconds": {
+            "median": 0.019375999999999977,
+            "minimum": 0.019375000000000003,
+            "maximum": 0.019795
+          },
+          "physical_bytes": {
+            "median": 25330168,
+            "minimum": 25313784,
+            "maximum": 25362960
+          },
+          "rust_requested_bytes": {
+            "median": 20670383,
+            "minimum": 20670383,
+            "maximum": 20670383
+          }
+        },
+        "native": {
+          "output_bytes": 329303,
+          "output_sha256": "84e19d120b83b97e76466b22720198cfd9fb9ecc05175b94fc5dcd9f493f983c",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 16.14892578125,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.58984375,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 50.10009765625,
+              "maximum": 50.10009765625
+            }
+          ],
+          "participates": false,
+          "contract_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "data_sha256": "90897cc521ee2fc86b32a932cec25ccd2231833b845b5c14c1524b9224166551",
+          "wall_seconds": {
+            "median": 0.01704208320006728,
+            "minimum": 0.017024290980771184,
+            "maximum": 0.01718025002628565
+          },
+          "cpu_seconds": {
+            "median": 0.009050999999999997,
+            "minimum": 0.008997999999999985,
+            "maximum": 0.009249999999999967
+          },
+          "physical_bytes": {
+            "median": 3080648,
+            "minimum": 3080648,
+            "maximum": 3080648
+          },
+          "rust_requested_bytes": {
+            "median": 581679,
+            "minimum": 581679,
+            "maximum": 581679
+          }
+        }
+      },
+      "cli": {
+        "walrus": {
+          "output_bytes": 329303,
+          "output_sha256": "84e19d120b83b97e76466b22720198cfd9fb9ecc05175b94fc5dcd9f493f983c",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 16.14892578125,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.58984375,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 50.10009765625,
+              "maximum": 50.10009765625
+            }
+          ],
+          "wall_seconds": {
+            "median": 0.027946416987106204,
+            "minimum": 0.02777987509034574,
+            "maximum": 0.02811950002796948
+          },
+          "cpu_seconds": {
+            "median": 0.017885000000000026,
+            "minimum": 0.017568999999999946,
+            "maximum": 0.018025999999999903
+          }
+        },
+        "native": {
+          "output_bytes": 329303,
+          "output_sha256": "84e19d120b83b97e76466b22720198cfd9fb9ecc05175b94fc5dcd9f493f983c",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 16.14892578125,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.58984375,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 50.10009765625,
+              "maximum": 50.10009765625
+            }
+          ],
+          "wall_seconds": {
+            "median": 0.017106791958212852,
+            "minimum": 0.017080665798857808,
+            "maximum": 0.01724058296531439
+          },
+          "cpu_seconds": {
+            "median": 0.007597999999999966,
+            "minimum": 0.007450999999999958,
+            "maximum": 0.007746000000000169
+          }
+        }
+      },
+      "native_analysis_sources": [
+        "closure"
+      ],
+      "scan": {
+        "input-bytes": 329303,
+        "functions": 695,
+        "operators": 126556,
+        "max-body-bytes": 9532
+      }
+    },
+    {
+      "input": {
+        "package": "grep",
+        "version": "3.11",
+        "archive_sha256": "1db2aedde89d0dea42b16d9528f894c8d15dae4e190b59aecc78f5a951276eab",
+        "input_kind": "original SDK link; no package-specific Binaryen or instrumentation",
+        "source": ".context/package-transform-builds/grep/work/grep-src/src/grep",
+        "bytes": 386499,
+        "sha256": "4c18ca1cc2cb1cba4c1c4d316b1310a8238e6dbc1da8af8993d49673ff91bf4d",
+        "installer_bypassed_instrumentation": true,
+        "installer_input_sha256": null,
+        "matches_installer_input": null
+      },
+      "raw": {
+        "walrus": {
+          "output_bytes": 386499,
+          "output_sha256": "4c18ca1cc2cb1cba4c1c4d316b1310a8238e6dbc1da8af8993d49673ff91bf4d",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 16.14892578125,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.58984375,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 50.10009765625,
+              "maximum": 50.10009765625
+            }
+          ],
+          "participates": false,
+          "contract_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "data_sha256": "8a732f0389d000f7fe5897f1e3da1c2945c7c6912e313ca0e3c253a7c22e97ee",
+          "wall_seconds": {
+            "median": 0.03292158409021795,
+            "minimum": 0.02981762494891882,
+            "maximum": 0.0332335839048028
+          },
+          "cpu_seconds": {
+            "median": 0.02212000000000003,
+            "minimum": 0.02159800000000006,
+            "maximum": 0.02213000000000015
+          },
+          "physical_bytes": {
+            "median": 29573624,
+            "minimum": 29557264,
+            "maximum": 29573624
+          },
+          "rust_requested_bytes": {
+            "median": 24804022,
+            "minimum": 24804022,
+            "maximum": 24804022
+          }
+        },
+        "native": {
+          "output_bytes": 386499,
+          "output_sha256": "4c18ca1cc2cb1cba4c1c4d316b1310a8238e6dbc1da8af8993d49673ff91bf4d",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 16.14892578125,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.58984375,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 50.10009765625,
+              "maximum": 50.10009765625
+            }
+          ],
+          "participates": false,
+          "contract_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "data_sha256": "8a732f0389d000f7fe5897f1e3da1c2945c7c6912e313ca0e3c253a7c22e97ee",
+          "wall_seconds": {
+            "median": 0.017808874836191535,
+            "minimum": 0.01742654200643301,
+            "maximum": 0.01942329201847315
+          },
+          "cpu_seconds": {
+            "median": 0.010000999999999927,
+            "minimum": 0.009644000000000041,
+            "maximum": 0.01002800000000012
+          },
+          "physical_bytes": {
+            "median": 3146184,
+            "minimum": 3146184,
+            "maximum": 3146184
+          },
+          "rust_requested_bytes": {
+            "median": 617947,
+            "minimum": 617947,
+            "maximum": 617947
+          }
+        }
+      },
+      "cli": {
+        "walrus": {
+          "output_bytes": 386499,
+          "output_sha256": "4c18ca1cc2cb1cba4c1c4d316b1310a8238e6dbc1da8af8993d49673ff91bf4d",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 16.14892578125,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.58984375,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 50.10009765625,
+              "maximum": 50.10009765625
+            }
+          ],
+          "wall_seconds": {
+            "median": 0.028642707969993353,
+            "minimum": 0.02856945781968534,
+            "maximum": 0.029947874834761024
+          },
+          "cpu_seconds": {
+            "median": 0.020013999999999865,
+            "minimum": 0.01989299999999994,
+            "maximum": 0.02003499999999997
+          }
+        },
+        "native": {
+          "output_bytes": 386499,
+          "output_sha256": "4c18ca1cc2cb1cba4c1c4d316b1310a8238e6dbc1da8af8993d49673ff91bf4d",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 16.14892578125,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.58984375,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 50.10009765625,
+              "maximum": 50.10009765625
+            }
+          ],
+          "wall_seconds": {
+            "median": 0.017267000162974,
+            "minimum": 0.017050708876922727,
+            "maximum": 0.01728470902889967
+          },
+          "cpu_seconds": {
+            "median": 0.008016999999999885,
+            "minimum": 0.007962999999999831,
+            "maximum": 0.008044999999999747
+          }
+        }
+      },
+      "native_analysis_sources": [
+        "closure"
+      ],
+      "scan": {
+        "input-bytes": 386499,
+        "functions": 820,
+        "operators": 150137,
+        "max-body-bytes": 9532
+      }
+    },
+    {
+      "input": {
+        "package": "make",
+        "version": "4.4.1",
+        "archive_sha256": "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3",
+        "input_kind": "original SDK link; no package-specific Binaryen or instrumentation",
+        "source": ".context/package-transform-builds/make/work/make-src/make",
+        "bytes": 428883,
+        "sha256": "c2cccef52c8200c8878dd459734ae46b3d4071d95b32168a4139d7cb4e366b8d",
+        "installer_bypassed_instrumentation": true,
+        "installer_input_sha256": null,
+        "matches_installer_input": null
+      },
+      "raw": {
+        "walrus": {
+          "output_bytes": 428883,
+          "output_sha256": "c2cccef52c8200c8878dd459734ae46b3d4071d95b32168a4139d7cb4e366b8d",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 16.14892578125,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.58984375,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 50.10009765625,
+              "maximum": 50.10009765625
+            }
+          ],
+          "participates": false,
+          "contract_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "data_sha256": "46207d5205ecfaf281da7da7d7d9b39b4e71f22dac0b3424d08d0defeaf25779",
+          "wall_seconds": {
+            "median": 0.03328404203057289,
+            "minimum": 0.032833458157256246,
+            "maximum": 0.033519749995321035
+          },
+          "cpu_seconds": {
+            "median": 0.023227000000000053,
+            "minimum": 0.0232,
+            "maximum": 0.023338000000000303
+          },
+          "physical_bytes": {
+            "median": 31146488,
+            "minimum": 31130104,
+            "maximum": 31162872
+          },
+          "rust_requested_bytes": {
+            "median": 26432859,
+            "minimum": 26432859,
+            "maximum": 26432859
+          }
+        },
+        "native": {
+          "output_bytes": 428883,
+          "output_sha256": "c2cccef52c8200c8878dd459734ae46b3d4071d95b32168a4139d7cb4e366b8d",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 16.14892578125,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.58984375,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 50.10009765625,
+              "maximum": 50.10009765625
+            }
+          ],
+          "participates": false,
+          "contract_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "data_sha256": "46207d5205ecfaf281da7da7d7d9b39b4e71f22dac0b3424d08d0defeaf25779",
+          "wall_seconds": {
+            "median": 0.019588583149015903,
+            "minimum": 0.018075291998684406,
+            "maximum": 0.01985429204069078
+          },
+          "cpu_seconds": {
+            "median": 0.010622000000000131,
+            "minimum": 0.010414999999999952,
+            "maximum": 0.011633000000000171
+          },
+          "physical_bytes": {
+            "median": 3113416,
+            "minimum": 3097032,
+            "maximum": 3162568
+          },
+          "rust_requested_bytes": {
+            "median": 622320,
+            "minimum": 622320,
+            "maximum": 622320
+          }
+        }
+      },
+      "cli": {
+        "walrus": {
+          "output_bytes": 428883,
+          "output_sha256": "c2cccef52c8200c8878dd459734ae46b3d4071d95b32168a4139d7cb4e366b8d",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 16.14892578125,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.58984375,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 50.10009765625,
+              "maximum": 50.10009765625
+            }
+          ],
+          "wall_seconds": {
+            "median": 0.029622208094224334,
+            "minimum": 0.02958233398385346,
+            "maximum": 0.03093762486241758
+          },
+          "cpu_seconds": {
+            "median": 0.021134000000000208,
+            "minimum": 0.02076800000000001,
+            "maximum": 0.02122399999999991
+          }
+        },
+        "native": {
+          "output_bytes": 428883,
+          "output_sha256": "c2cccef52c8200c8878dd459734ae46b3d4071d95b32168a4139d7cb4e366b8d",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 16.14892578125,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.58984375,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 50.10009765625,
+              "maximum": 50.10009765625
+            }
+          ],
+          "wall_seconds": {
+            "median": 0.017107707913964987,
+            "minimum": 0.016726916888728738,
+            "maximum": 0.017279457999393344
+          },
+          "cpu_seconds": {
+            "median": 0.008472000000000146,
+            "minimum": 0.008006999999999764,
+            "maximum": 0.008498999999999701
+          }
+        }
+      },
+      "native_analysis_sources": [
+        "closure"
+      ],
+      "scan": {
+        "input-bytes": 428883,
+        "functions": 752,
+        "operators": 162074,
+        "max-body-bytes": 14578
+      }
+    },
+    {
+      "input": {
+        "package": "gawk",
+        "version": "5.3.0",
+        "archive_sha256": "ca9c16d3d11d0ff8c69d79dc0b47267e1329a69b39b799895604ed447d3ca90b",
+        "input_kind": "original SDK link; no package-specific Binaryen or instrumentation",
+        "source": ".context/package-transform-builds/gawk/work/gawk-src/gawk",
+        "bytes": 2384170,
+        "sha256": "ddbb7b179637ec4a62046fa9a760c896c85692094cbaf2f654138d3be7e7261a",
+        "installer_bypassed_instrumentation": false,
+        "installer_input_sha256": "ddbb7b179637ec4a62046fa9a760c896c85692094cbaf2f654138d3be7e7261a",
+        "matches_installer_input": true
+      },
+      "raw": {
+        "walrus": {
+          "output_bytes": 1634104,
+          "output_sha256": "598c7b980b55a797b936f80ed0b381cb33f6d5bc0352bb6d4fc4c86de4c5c077",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 15.4013671875,
+              "maximum": 16.14892578125
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.15283203125,
+              "maximum": 21.58984375
+            },
+            {
+              "minutes": 15,
+              "minimum": 49.4453125,
+              "maximum": 50.10009765625
+            }
+          ],
+          "participates": true,
+          "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
+          "data_sha256": "6c614642c3177fa96a3e8140cfdebf2d54af7772ac925a921eaf2626f70b2d58",
+          "wall_seconds": {
+            "median": 1.0460209581069648,
+            "minimum": 1.0225233749952167,
+            "maximum": 1.143568875035271
+          },
+          "cpu_seconds": {
+            "median": 1.035923,
+            "minimum": 1.0120280000000004,
+            "maximum": 1.1173310000000005
+          },
+          "physical_bytes": {
+            "median": 126861936,
+            "minimum": 126829120,
+            "maximum": 129696344
+          },
+          "rust_requested_bytes": {
+            "median": 94769182,
+            "minimum": 94769182,
+            "maximum": 94769182
+          }
+        },
+        "native": {
+          "output_bytes": 1810654,
+          "output_sha256": "9512138baea4105c1ad05b2a29643ab162d98d4ef9b39c4bd2127ed170eb35bf",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 15.4013671875,
+              "maximum": 15.65625
+            },
+            {
+              "minutes": 5,
+              "minimum": 21.10009765625,
+              "maximum": 21.39697265625
+            },
+            {
+              "minutes": 15,
+              "minimum": 49.2607421875,
+              "maximum": 49.86474609375
+            }
+          ],
+          "participates": true,
+          "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
+          "data_sha256": "6c614642c3177fa96a3e8140cfdebf2d54af7772ac925a921eaf2626f70b2d58",
+          "wall_seconds": {
+            "median": 4.241250833962113,
+            "minimum": 4.03176641697064,
+            "maximum": 4.68871995806694
+          },
+          "cpu_seconds": {
+            "median": 4.0779689999999995,
+            "minimum": 4.004051,
+            "maximum": 4.651445000000001
+          },
+          "physical_bytes": {
+            "median": 31130128,
+            "minimum": 31048184,
+            "maximum": 33096184
+          },
+          "rust_requested_bytes": {
+            "median": 7834524,
+            "minimum": 7834524,
+            "maximum": 7834524
+          }
+        }
+      },
+      "cli": {
+        "walrus": {
+          "output_bytes": 1417765,
+          "output_sha256": "f82baf4bec9442ef0641bd6c38a617ae3b26c43b859d8b15e121a34970deddb5",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 14.5634765625,
+              "maximum": 15.609375
+            },
+            {
+              "minutes": 5,
+              "minimum": 20.603515625,
+              "maximum": 21.10009765625
+            },
+            {
+              "minutes": 15,
+              "minimum": 48.59130859375,
+              "maximum": 49.2607421875
+            }
+          ],
+          "wall_seconds": {
+            "median": 1.8755520840641111,
+            "minimum": 1.7684660840313882,
+            "maximum": 2.086581791052595
+          },
+          "cpu_seconds": {
+            "median": 7.106608000000004,
+            "minimum": 6.974271000000001,
+            "maximum": 7.223143000000001
+          }
+        },
+        "native": {
+          "output_bytes": 1491007,
+          "output_sha256": "722826e03a2129537005357805dc4070ece2f4b91a2af92dc681625be8967439",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 14.19775390625,
+              "maximum": 15.609375
+            },
+            {
+              "minutes": 5,
+              "minimum": 20.42724609375,
+              "maximum": 21.10009765625
+            },
+            {
+              "minutes": 15,
+              "minimum": 48.36474609375,
+              "maximum": 49.2607421875
+            }
+          ],
+          "wall_seconds": {
+            "median": 5.423007625155151,
+            "minimum": 4.905509833013639,
+            "maximum": 5.7692918330430984
+          },
+          "cpu_seconds": {
+            "median": 11.554798000000002,
+            "minimum": 10.987629999999996,
+            "maximum": 12.304912
+          }
+        }
+      },
+      "native_analysis_sources": [
+        "facts"
+      ],
+      "scan": {
+        "input-bytes": 2384170,
+        "functions": 1598,
+        "operators": 336873,
+        "max-body-bytes": 28272
+      }
+    },
+    {
+      "input": {
+        "package": "coreutils",
+        "version": "9.6",
+        "archive_sha256": "7a0124327b398fd9eb1a6abde583389821422c744ffa10734b24f557610d3283",
+        "input_kind": "original SDK link; no package-specific Binaryen or instrumentation",
+        "source": ".context/package-transform-builds/coreutils/work/coreutils-src/src/coreutils",
+        "bytes": 6431132,
+        "sha256": "dcf362baa67fa3f156a579ad301748ea72613aaf79a467c2f81249d7815d7273",
+        "installer_bypassed_instrumentation": false,
+        "installer_input_sha256": "dcf362baa67fa3f156a579ad301748ea72613aaf79a467c2f81249d7815d7273",
+        "matches_installer_input": true
+      },
+      "raw": {
+        "walrus": {
+          "output_bytes": 2117317,
+          "output_sha256": "6994e63902d6729207d2c9ac03b1d37fa467f75568213f7ffe771d387ac1b3c7",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 13.40478515625,
+              "maximum": 14.19775390625
+            },
+            {
+              "minutes": 5,
+              "minimum": 20.05078125,
+              "maximum": 20.42724609375
+            },
+            {
+              "minutes": 15,
+              "minimum": 47.904296875,
+              "maximum": 48.36474609375
+            }
+          ],
+          "participates": true,
+          "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
+          "data_sha256": "55170b00aacb6c8fde6fd97fa45be66f7a73689087b5ac0a9c82d92cb3a0639f",
+          "wall_seconds": {
+            "median": 0.5245114171411842,
+            "minimum": 0.518850666936487,
+            "maximum": 0.5307744578458369
+          },
+          "cpu_seconds": {
+            "median": 0.5119219999999913,
+            "minimum": 0.5089939999999968,
+            "maximum": 0.5150070000000069
+          },
+          "physical_bytes": {
+            "median": 173245064,
+            "minimum": 172720800,
+            "maximum": 173310600
+          },
+          "rust_requested_bytes": {
+            "median": 137843895,
+            "minimum": 137843223,
+            "maximum": 137843979
+          }
+        },
+        "native": {
+          "output_bytes": 2124109,
+          "output_sha256": "a53089feb897c45d3575c0c7f3b696359f02238f78e7a1f18c67ee1f60261ae3",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 13.40478515625,
+              "maximum": 14.19775390625
+            },
+            {
+              "minutes": 5,
+              "minimum": 20.05078125,
+              "maximum": 20.42724609375
+            },
+            {
+              "minutes": 15,
+              "minimum": 47.904296875,
+              "maximum": 48.36474609375
+            }
+          ],
+          "participates": true,
+          "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
+          "data_sha256": "55170b00aacb6c8fde6fd97fa45be66f7a73689087b5ac0a9c82d92cb3a0639f",
+          "wall_seconds": {
+            "median": 2.5564324581064284,
+            "minimum": 2.546570541104302,
+            "maximum": 2.5971638339105994
+          },
+          "cpu_seconds": {
+            "median": 2.5407870000000052,
+            "minimum": 2.5365370000000125,
+            "maximum": 2.5803390000000013
+          },
+          "physical_bytes": {
+            "median": 29295144,
+            "minimum": 29229584,
+            "maximum": 29950504
+          },
+          "rust_requested_bytes": {
+            "median": 6161090,
+            "minimum": 6161090,
+            "maximum": 6161090
+          }
+        }
+      },
+      "cli": {
+        "walrus": {
+          "output_bytes": 1773842,
+          "output_sha256": "f41ef33c3b44d8d33361c908da77553264ad9efa8c2cbdf3b1bbc69f32548b37",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 12.77490234375,
+              "maximum": 13.40478515625
+            },
+            {
+              "minutes": 5,
+              "minimum": 19.70166015625,
+              "maximum": 20.05078125
+            },
+            {
+              "minutes": 15,
+              "minimum": 47.455078125,
+              "maximum": 47.904296875
+            }
+          ],
+          "wall_seconds": {
+            "median": 0.8893746670801193,
+            "minimum": 0.8847679160535336,
+            "maximum": 0.8911144169978797
+          },
+          "cpu_seconds": {
+            "median": 3.611316999999996,
+            "minimum": 3.6102229999999924,
+            "maximum": 3.620752000000003
+          }
+        },
+        "native": {
+          "output_bytes": 1776533,
+          "output_sha256": "ee47e1a091fc2a973e00b39570010e087d4b20ad3e296251055af50ae22d8d34",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 12.15185546875,
+              "maximum": 13.4521484375
+            },
+            {
+              "minutes": 5,
+              "minimum": 19.45751953125,
+              "maximum": 20.05078125
+            },
+            {
+              "minutes": 15,
+              "minimum": 47.2060546875,
+              "maximum": 47.904296875
+            }
+          ],
+          "wall_seconds": {
+            "median": 2.9454161250032485,
+            "minimum": 2.935551624977961,
+            "maximum": 2.970629666931927
+          },
+          "cpu_seconds": {
+            "median": 5.659585000000005,
+            "minimum": 5.652697,
+            "maximum": 5.702947
+          }
+        }
+      },
+      "native_analysis_sources": [
+        "facts"
+      ],
+      "scan": {
+        "input-bytes": 6431132,
+        "functions": 3484,
+        "operators": 700637,
+        "max-body-bytes": 32891
+      }
+    },
+    {
+      "input": {
+        "package": "bash",
+        "version": "5.2.37",
+        "archive_sha256": "9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014da621ff",
+        "input_kind": "original SDK link; no package-specific Binaryen or instrumentation",
+        "source": ".context/package-transform-builds/bash/work/bash-src/bash",
+        "bytes": 5244315,
+        "sha256": "6263c438e7e0290722a99d0087eb04e28b3ed474efc74a44d618af30fdd2a343",
+        "installer_bypassed_instrumentation": false,
+        "installer_input_sha256": "11dfd0178a008bed4b139e559e7d4bb6c08d6c15d106108eb59b988e98280679",
+        "matches_installer_input": false
+      },
+      "raw": {
+        "walrus": {
+          "output_bytes": 2032575,
+          "output_sha256": "411a6353b647ea87eb1e24adec37c5b3cf9152f068f7db60865d025ce0c93c68",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 10.650390625,
+              "maximum": 12.15185546875
+            },
+            {
+              "minutes": 5,
+              "minimum": 18.63525390625,
+              "maximum": 19.45751953125
+            },
+            {
+              "minutes": 15,
+              "minimum": 46.265625,
+              "maximum": 47.2060546875
+            }
+          ],
+          "participates": true,
+          "contract_sha256": "7601dc00c40ce77a19c773f422f02983a5df8c432d3dee062d9c95d932fcab74",
+          "data_sha256": "1a572633ce4e76ba9e0ef0629ccb24058d8720ad5817529c9dadf3909dce5a9e",
+          "wall_seconds": {
+            "median": 1.9800056249368936,
+            "minimum": 1.9573508750181645,
+            "maximum": 1.9970382920000702
+          },
+          "cpu_seconds": {
+            "median": 1.9658779999999982,
+            "minimum": 1.9457769999999996,
+            "maximum": 1.9820280000000015
+          },
+          "physical_bytes": {
+            "median": 153666184,
+            "minimum": 153551496,
+            "maximum": 154370720
+          },
+          "rust_requested_bytes": {
+            "median": 115144573,
+            "minimum": 115144573,
+            "maximum": 115144573
+          }
+        },
+        "native": {
+          "output_bytes": 2344797,
+          "output_sha256": "f838f7d75d78188e3fdb7b49b5ed2f36d6a316d76dd40f137a716e2c8e037280",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 10.59814453125,
+              "maximum": 12.15185546875
+            },
+            {
+              "minutes": 5,
+              "minimum": 18.49169921875,
+              "maximum": 19.45751953125
+            },
+            {
+              "minutes": 15,
+              "minimum": 46.052734375,
+              "maximum": 47.2060546875
+            }
+          ],
+          "participates": true,
+          "contract_sha256": "7601dc00c40ce77a19c773f422f02983a5df8c432d3dee062d9c95d932fcab74",
+          "data_sha256": "1a572633ce4e76ba9e0ef0629ccb24058d8720ad5817529c9dadf3909dce5a9e",
+          "wall_seconds": {
+            "median": 7.01844675000757,
+            "minimum": 7.004418583819643,
+            "maximum": 7.31053154100664
+          },
+          "cpu_seconds": {
+            "median": 6.994671000000007,
+            "minimum": 6.983366999999992,
+            "maximum": 7.26384599999999
+          },
+          "physical_bytes": {
+            "median": 28410408,
+            "minimum": 28115472,
+            "maximum": 28623376
+          },
+          "rust_requested_bytes": {
+            "median": 10837048,
+            "minimum": 10837048,
+            "maximum": 10837048
+          }
+        }
+      },
+      "cli": {
+        "walrus": {
+          "output_bytes": 1892830,
+          "output_sha256": "61ea4b0f361a61af1a35f77d175d3948051a985ba224a2b348c370e7d09c4873",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 9.14013671875,
+              "maximum": 10.59814453125
+            },
+            {
+              "minutes": 5,
+              "minimum": 17.5185546875,
+              "maximum": 18.49169921875
+            },
+            {
+              "minutes": 15,
+              "minimum": 44.9033203125,
+              "maximum": 46.052734375
+            }
+          ],
+          "wall_seconds": {
+            "median": 2.5766475000418723,
+            "minimum": 2.5757183330133557,
+            "maximum": 2.7611998340580612
+          },
+          "cpu_seconds": {
+            "median": 7.81140500000002,
+            "minimum": 7.758016000000007,
+            "maximum": 7.9723209999999884
+          }
+        },
+        "native": {
+          "output_bytes": 2093021,
+          "output_sha256": "70260b49ec0ab33af056c120be5964d8bab3fd15acf66e70674e24606e339645",
+          "load_averages": [
+            {
+              "minutes": 1,
+              "minimum": 8.75,
+              "maximum": 10.3095703125
+            },
+            {
+              "minutes": 5,
+              "minimum": 17.15625,
+              "maximum": 18.30078125
+            },
+            {
+              "minutes": 15,
+              "minimum": 44.45458984375,
+              "maximum": 45.82373046875
+            }
+          ],
+          "wall_seconds": {
+            "median": 7.884802374988794,
+            "minimum": 7.744828041875735,
+            "maximum": 7.9220570421312
+          },
+          "cpu_seconds": {
+            "median": 14.221836999999994,
+            "minimum": 14.158665000000008,
+            "maximum": 14.324849999999996
+          }
+        }
+      },
+      "native_analysis_sources": [
+        "facts"
+      ],
+      "scan": {
+        "input-bytes": 5244315,
+        "functions": 2496,
+        "operators": 448419,
+        "max-body-bytes": 67485
+      }
+    }
+  ]
+}

@@ -1,0 +1,266 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>JSC: GC handed to a mutator parked in memory.atomic.wait32</title>
+<pre id="out"></pre>
+<script>
+// Standalone reproduction; nothing here comes from Kandelo. Serve this
+// directory with
+//   Cross-Origin-Opener-Policy: same-origin
+//   Cross-Origin-Embedder-Policy: require-corp
+// and open repro.html?mode=A|B|C|D&children=24.
+//
+// THIS PAGE DOES NOT JUDGE THE DEFECT BY ITSELF. The defect it shows (every
+// shared JavaScriptCore "Heap Helper Thread" pinned by collections stranded
+// in blocked workers) is visible only in a stack sample of the WebKit page
+// process taken after the workers block, for example on macOS:
+//   sample <WebContent pid> 2
+// and counting Heap Helper Threads inside SlotVisitor::drainFromShared.
+// The page reports a verdict only for what it can see itself: `reproduced`
+// if one of its own workers stops making progress for 15 s, otherwise
+// `inconclusive` once it finishes.
+//
+// A "kernel" worker spawns N "process" workers. Each process worker
+// instantiates a tiny module that imports a shared memory and parks in
+// memory.atomic.wait32 on a word nobody notifies (like a process blocked in
+// a read() that never completes). The kernel worker then keeps creating
+// 32-bit shared WebAssembly.Memory objects while holding the last 12 alive,
+// which exceeds JSC's fast-memory slots and makes each construction run a
+// synchronous full collection in the kernel VM. It posts a heartbeat after
+// every construction.
+//
+// Modes for the process workers:
+//   A  park immediately (no collection in flight in that VM)
+//   B  build a live object graph and churn garbage so a collection is in
+//      flight, then park with an infinite timeout
+//   C  like B, but park with a 50 ms timeout and allocate one ArrayBuffer
+//      from JavaScript after every timeout
+//   D  like C, but without the ArrayBuffer allocation
+//
+// Optional probes, added while looking for a signal the page can observe
+// (neither has distinguished mode B from mode C; see entry.md):
+//   probe=1        after the process workers block, a separate worker
+//                  registers objects with a FinalizationRegistry, drops
+//                  them, allocates, and idles; it reports how many
+//                  callbacks ran (a callback needs a finished collection).
+//   transients=N   before the kernel loop, start N busy workers that each
+//                  own a shared memory with a 4 GiB maximum and terminate
+//                  them while a collection is in flight in their VM. If
+//                  their VMs could not finish dying, the 4 GiB
+//                  reservations would run out (about 15 fit at once) and a
+//                  later worker's construction would fail.
+const params = new URLSearchParams(location.search);
+const mode = params.get('mode') ?? 'B';
+const children = Number(params.get('children') ?? '24');
+const iterations = Number(params.get('iterations') ?? '300');
+const live = Number(params.get('live') ?? '500000');
+const alloc = params.get('alloc') ?? 'kernel';
+const settle = Number(params.get('settle') ?? '0');
+const idle = Number(params.get('idle') ?? '0');
+const transients = Number(params.get('transients') ?? '0');
+const out = document.getElementById('out');
+window.__state = { mode, children, beats: 0, lastBeatAt: performance.now(), blocked: 0, done: false, errors: [] };
+const log = (line) => { out.textContent += line + '\n'; };
+
+const wasmBytes = [0,0x61,0x73,0x6d,1,0,0,0,
+  1,0x0c,2,0x60,2,0x7f,0x7e,1,0x7f,0x60,1,0x7f,1,0x7f,
+  2,0x12,1,3,0x65,0x6e,0x76,6,0x6d,0x65,0x6d,0x6f,0x72,0x79,2,3,1,0x80,0x80,1,
+  3,3,2,0,1,
+  7,0x0f,2,4,0x77,0x61,0x69,0x74,0,0,4,0x67,0x72,0x6f,0x77,0,1,
+  0x0a,0x15,2,0x0c,0,0x20,0,0x41,0,0x20,1,0xfe,1,2,0,0x0b,6,0,0x20,0,0x40,0,0x0b];
+
+function processWorkerMain() {
+  onmessage = async ({ data }) => {
+    const { memory, module, mode } = data;
+    const instance = await WebAssembly.instantiate(module, { env: { memory } });
+    if (mode !== 'A') {
+      // A large live graph makes concurrent marking take a while. Garbage
+      // and a memory.grow (which reports extra memory to this VM's heap)
+      // make this VM start a collection; a few more allocations let the
+      // collection begin before the worker parks.
+      self.live = [];
+      for (let i = 0; i < data.live; i++) self.live.push({ i, next: self.live[i - 1], s: 'v' + i });
+      let sink;
+      for (let i = 0; i < 1000000 + Math.floor(Math.random() * 1000000); i++) sink = { i };
+      instance.exports.grow(256);
+      for (let i = 0; i < Math.floor(Math.random() * 200000); i++) sink = { i };
+      self.sink = sink;
+    }
+    postMessage('blocking');
+    if (mode === 'C') {
+      for (;;) { instance.exports.wait(0, 50000000n); void new ArrayBuffer(8); }
+    } else if (mode === 'D') {
+      for (;;) instance.exports.wait(0, 50000000n);
+    } else {
+      instance.exports.wait(0, -1n);
+    }
+  };
+}
+
+
+function probeWorkerMain() {
+  // Allocate so collections start in this VM, then idle in the event loop.
+  // A FinalizationRegistry callback for a dropped object can run only after
+  // a collection in this VM completes.
+  onmessage = async ({ data }) => {
+    const { rounds, garbage, idleMs, live } = data;
+    self.live = [];
+    for (let i = 0; i < live; i++) self.live.push({ i, s: 'p' + i });
+    let fired = 0, registered = 0;
+    const fr = new FinalizationRegistry(() => { fired++; });
+    const began = performance.now();
+    let firstAt = null;
+    for (let r = 0; r < rounds; r++) {
+      (() => { const o = { r }; fr.register(o, r); registered++; })();
+      let sink; const t = performance.now();
+      for (let k = 0; k < garbage; k++) sink = { k, s: 'g' + k };
+      self.sink = sink; self.maxRound = Math.max(self.maxRound ?? 0, performance.now() - t);
+      await new Promise((resolve) => setTimeout(resolve, idleMs));
+      if (fired && firstAt === null) firstAt = performance.now() - began;
+      postMessage({ probeBeat: r, fired, registered, maxRound: self.maxRound });
+    }
+    postMessage({ probeDone: true, fired, registered, firstAt, maxRound: self.maxRound, ms: performance.now() - began });
+  };
+}
+
+function kernelWorkerMain() {
+  onmessage = async ({ data }) => {
+    const { mode, children, iterations, wasmBytes, processSource, live, alloc, settle, idle, transients } = data;
+    // alloc=factory constructs each memory in a disposable worker and
+    // retries in this VM only after RangeError.
+    const factoryUrl = URL.createObjectURL(new Blob(['onmessage=()=>{try{postMessage(new WebAssembly.Memory({initial:16,maximum:4096,shared:true}));}catch(e){postMessage({error:String(e)});}};'], { type: 'application/javascript' }));
+    const construct = async () => {
+      if (alloc !== 'factory') return new WebAssembly.Memory({ initial: 16, maximum: 4096, shared: true });
+      const factory = new Worker(factoryUrl);
+      try {
+        const reply = await new Promise((resolve) => { factory.onmessage = ({ data }) => resolve(data); factory.postMessage(0); });
+        if (reply instanceof WebAssembly.Memory) return reply;
+        postMessage({ ownerRetry: true });
+      } finally { factory.onmessage = null; factory.terminate(); }
+      return new WebAssembly.Memory({ initial: 16, maximum: 4096, shared: true });
+    };
+    // The kernel keeps its own live heap so its collections run concurrently.
+    self.kernelLive = [];
+    for (let i = 0; i < live; i++) self.kernelLive.push({ i, s: 'k' + i });
+    const module = await WebAssembly.compile(new Uint8Array(wasmBytes));
+    const processUrl = URL.createObjectURL(new Blob([processSource], { type: 'application/javascript' }));
+    const processes = [];
+    let blocked = 0;
+    await new Promise((resolve) => {
+      for (let i = 0; i < children; i++) {
+        const memory = new WebAssembly.Memory({ initial: 16, maximum: 4096, shared: true });
+        const worker = new Worker(processUrl);
+        worker.onmessage = () => { blocked++; postMessage({ blocked }); if (blocked === children) resolve(); };
+        worker.postMessage({ memory, module, mode, live });
+        processes.push({ worker, memory });
+      }
+    });
+    // settle: give the shared GC helper threads time to be captured by
+    // collections stranded in parked process workers.
+    await new Promise((resolve) => setTimeout(resolve, settle));
+    // transients: start busy workers (each owning a memory) and terminate
+    // them while a collection is in flight in their VM. Their VM teardown
+    // must finish that collection before the memory can be released.
+    const transientUrl = URL.createObjectURL(new Blob([`onmessage = ({ data }) => {
+      let memory;
+      try { memory = new WebAssembly.Memory({ initial: 1, maximum: data.max, shared: true }); }
+      catch (e) { postMessage({ error: String(e) }); return; }
+      self.memory = memory; self.live = [];
+      for (let i = 0; i < 300000; i++) self.live.push({ i, s: 't' + i });
+      postMessage('busy');
+      for (;;) { let g; for (let i = 0; i < 100000; i++) g = { i, s: 'x' + i }; self.g = g; }
+    };`], { type: 'application/javascript' }));
+    const tmax = Number(data.tmax ?? 65536);
+    for (let t = 0; t < transients; t++) {
+      const worker = new Worker(transientUrl);
+      const reply = await new Promise((resolve) => { worker.onmessage = ({ data }) => resolve(data); worker.postMessage({ max: tmax }); });
+      if (reply && reply.error) { postMessage({ transientError: reply.error, at: t }); worker.terminate(); break; }
+      await new Promise((resolve) => setTimeout(resolve, 50 + Math.random() * 100));
+      worker.terminate();
+      await new Promise((resolve) => setTimeout(resolve, Number(data.gap ?? 200)));
+      postMessage({ transientOk: t + 1 });
+    }
+    if (transients) postMessage({ transientsTerminated: transients });
+    const held = [];
+    for (let i = 0; i < iterations; i++) {
+      // idle: churn garbage so a collection starts, then sit in the event
+      // loop (as an event-driven kernel does between messages) before allocating.
+      if (idle) {
+        let churn;
+        for (let k = 0; k < 400000; k++) churn = { k, s: 'g' + k };
+        self.churn = churn;
+        await new Promise((resolve) => setTimeout(resolve, idle));
+      }
+      const started = performance.now();
+      try {
+        held.push(await construct());
+      } catch (error) {
+        postMessage({ error: String(error), iteration: i });
+      }
+      if (held.length > 12) held.shift();
+      let garbage;
+      for (let k = 0; k < 200000; k++) garbage = { k };
+      self.garbage = garbage;
+      postMessage({ beat: i, constructMs: performance.now() - started });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    postMessage({ done: true });
+  };
+}
+
+const source = (fn) => `(${fn.toString()})();`;
+const probeDelay = Number(params.get('probeDelay') ?? '3000');
+function startProbe() {
+  setTimeout(() => {
+    const probe = new Worker(URL.createObjectURL(new Blob([source(probeWorkerMain)], { type: 'application/javascript' })));
+    const state = window.__state;
+    state.probeStarted = performance.now();
+    probe.onmessage = ({ data }) => {
+      if (data.probeDone) { state.probe = data; log('probe ' + JSON.stringify(data)); return; }
+      state.probeBeat = data; state.probeLastAt = performance.now();
+    };
+    probe.postMessage({ rounds: Number(params.get('rounds') ?? '100'), garbage: Number(params.get('garbage') ?? '200000'), idleMs: Number(params.get('idleMs') ?? '50'), live: Number(params.get('plive') ?? '300000') });
+  }, probeDelay);
+}
+const kernel = new Worker(URL.createObjectURL(new Blob([source(kernelWorkerMain)], { type: 'application/javascript' })));
+kernel.onmessage = ({ data }) => {
+  const state = window.__state;
+  if (data.transientOk) { state.transientOk = data.transientOk; state.lastBeatAt = performance.now(); return; }
+  if (data.transientError) { state.transientError = data; return; }
+  if (data.transientsTerminated) { state.transientsTerminated = data.transientsTerminated; return; }
+  if (data.ownerRetry) { state.ownerRetries = (state.ownerRetries ?? 0) + 1; return; }
+  if (data.blocked !== undefined) { state.blocked = data.blocked; state.lastBeatAt = performance.now(); if (data.blocked === children && params.get('probe') === '1') startProbe(); return; }
+  if (data.error) { state.errors.push(data); log(`error at ${data.iteration}: ${data.error}`); return; }
+  if (data.done) { state.done = true; log('done'); return; }
+  state.beats = data.beat + 1;
+  state.lastBeatAt = performance.now();
+  state.maxConstructMs = Math.max(state.maxConstructMs ?? 0, data.constructMs);
+  if (data.beat % 25 === 0) log(`beat ${data.beat} construct ${data.constructMs.toFixed(1)} ms`);
+};
+kernel.onerror = (event) => window.__state.errors.push({ error: event.message });
+kernel.postMessage({ mode, children, iterations, wasmBytes, live, alloc, settle, idle, transients, tmax: Number(params.get('tmax') ?? '65536'), gap: Number(params.get('gap') ?? '200'), processSource: source(processWorkerMain) });
+log(`mode ${mode}, ${children} process workers`);
+// The page's own verdict. It can see a worker that stops making progress
+// and a failed construction; it cannot see pinned helper threads.
+const STALL_MS = 15000;
+const finish = (verdict, details) => {
+  if (window.__reproVerdict) return;
+  window.__reproVerdict = { verdict, details };
+  log(`${verdict}: ${details}`);
+};
+const watchdog = setInterval(() => {
+  const state = window.__state;
+  const now = performance.now();
+  if (state.transientError) {
+    finish('reproduced', `transient worker ${state.transientError.at} could not create its memory: ${state.transientError.transientError}`);
+  } else if (!state.done && now - state.lastBeatAt > STALL_MS) {
+    finish('reproduced', `the kernel worker made no progress for ${STALL_MS / 1000} s (blocked ${state.blocked}/${children}, beats ${state.beats})`);
+  } else if (params.get('probe') === '1' && state.probeLastAt && !state.probe && now - state.probeLastAt > STALL_MS) {
+    finish('reproduced', `the probe worker made no progress for ${STALL_MS / 1000} s`);
+  } else if (state.done && (params.get('probe') !== '1' || state.probe)) {
+    const probe = state.probe ? `; probe ran ${state.probe.fired}/${state.probe.registered} finalization callbacks` : '';
+    finish('inconclusive', `mode ${mode}: no worker stalled (${state.beats ?? 0} constructions, ${state.transientOk ?? 0} transients${probe}); helper-thread pinning is visible only in a stack sample`);
+  }
+  if (window.__reproVerdict) clearInterval(watchdog);
+}, 500);
+
+</script>

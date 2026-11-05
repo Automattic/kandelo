@@ -1,6 +1,5 @@
 extern crate alloc;
 
-use alloc::borrow::Cow;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use wasm_posix_shared::access::{R_OK, W_OK, X_OK};
@@ -20,13 +19,14 @@ use wasm_posix_shared::{
 };
 
 use crate::blocked_retry::{BlockingRetryOperation, BlockingRetryTarget, StableOfdTarget};
+use crate::exchange::device::ExchangeDevice;
 use crate::fd::OpenFileDescRef;
 use crate::lock::{
     AdvisoryLockManager, AdvisoryLockType, FileId, KernelFileKind, LockMutation, LockOwner,
     LockRange, OfdId,
 };
 use crate::ofd::FileType;
-use crate::pipe::{PipeBuffer, DEFAULT_PIPE_CAPACITY};
+use crate::pipe::{AncillaryFds, IntoAncillaryFds, PipeBuffer, DEFAULT_PIPE_CAPACITY};
 use crate::process::{HostAppendOutcome, HostIO, Process};
 use crate::signal::SignalHandler;
 use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_FAILED};
@@ -125,7 +125,7 @@ pub fn current_tid_for_process(proc: &Process) -> u32 {
     }
 }
 
-fn require_io_fd(proc: &Process, fd: i32) -> Result<(), Errno> {
+pub(crate) fn require_io_fd(proc: &Process, fd: i32) -> Result<(), Errno> {
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.is_path_only() {
@@ -356,18 +356,18 @@ fn dev_fd_link_target(
     proc: &Process,
     path: &[u8],
     target_fd: i32,
-) -> Result<Vec<u8>, Errno> {
+) -> Result<crate::IoBuffer<u8>, Errno> {
     match path {
-        b"/dev/stdin" => Ok(b"/dev/fd/0".to_vec()),
-        b"/dev/stdout" => Ok(b"/dev/fd/1".to_vec()),
-        b"/dev/stderr" => Ok(b"/dev/fd/2".to_vec()),
+        b"/dev/stdin" => crate::IoBuffer::copy_from(b"/dev/fd/0"),
+        b"/dev/stdout" => crate::IoBuffer::copy_from(b"/dev/fd/1"),
+        b"/dev/stderr" => crate::IoBuffer::copy_from(b"/dev/fd/2"),
         _ => {
             let entry = proc.fd_table.get(target_fd).map_err(|_| Errno::ENOENT)?;
             let ofd = proc
                 .ofd_table
                 .get(entry.ofd_ref.0)
                 .ok_or(Errno::ENOENT)?;
-            ofd.current_path()
+            crate::IoBuffer::copy_from(ofd.current_path()?.as_slice())
         }
     }
 }
@@ -761,35 +761,25 @@ fn handle_fb_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
 /// `/dev/dri/*` open. No-op for non-DRI virtual devices, so
 /// `sys_open` / `sys_openat` can call this unconditionally with
 /// whichever `VirtualDevice` matched.
-fn install_dri_state_on_open(proc: &mut Process, ofd_idx: usize, dev: VirtualDevice) {
+fn install_dri_state_on_open(description: &mut crate::ofd::OpenFileDesc, dev: VirtualDevice) -> Result<(), Errno> {
     let state = match dev {
-        VirtualDevice::DriRenderD128 => Some(crate::ofd::DriOfdState::RenderNode(
-            crate::ofd::DriFdState::default(),
-        )),
-        VirtualDevice::DriCard0 => Some(crate::ofd::DriOfdState::Card {
-            dri: crate::ofd::DriFdState::default(),
-            kms: crate::ofd::KmsFdState::default(),
-        }),
+        VirtualDevice::DriRenderD128 => Some(crate::ofd::DriOfdState::RenderNode(crate::ofd::DriFdState::default())),
+        VirtualDevice::DriCard0 => Some(crate::ofd::DriOfdState::Card { dri: crate::ofd::DriFdState::default(), kms: crate::ofd::KmsFdState::default() }),
         _ => None,
     };
-    if let Some(s) = state {
-        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-            ofd.dri_state = Some(alloc::boxed::Box::new(s));
-        }
-    }
+    description.dri_state = state.map(crate::IoBox::try_new).transpose()?;
+    Ok(())
 }
 
 /// Install the evdev sidecar on a freshly-allocated OFD for a
 /// `/dev/input/event{0,1}` open. No-op for any other virtual device.
-fn install_input_state_on_open(proc: &mut Process, ofd_idx: usize, dev: VirtualDevice) {
+fn install_input_state_on_open(description: &mut crate::ofd::OpenFileDesc, dev: VirtualDevice) -> Result<(), Errno> {
     if let VirtualDevice::InputEvent { device } = dev {
-        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-            ofd.input_state = Some(alloc::boxed::Box::new(crate::ofd::InputFdState {
-                device,
-                ..Default::default()
-            }));
-        }
+        description.input_state = Some(crate::IoBox::try_new(crate::ofd::InputFdState {
+            device, ring: crate::ofd::SharedInputRing::try_new()?,
+        })?);
     }
+    Ok(())
 }
 
 /// Borrow the `DriFdState` hung off the OFD at `ofd_idx`, returning
@@ -890,10 +880,11 @@ fn release_process_dri_mappings(proc: &mut Process, host: &mut dyn HostIO) {
     }
 }
 
-pub fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
-    // /dev/fb0 cleanup: exec wipes the address-space binding. Tell the host
-    // before its memory snapshot is invalidated, but retain device ownership
-    // while a non-CLOEXEC fb fd remains open in this same process.
+/// Drop the `/dev/fb0` binding when munmap, exec, or exit discards its
+/// mapping. Tell the host while the process Memory is still valid, and
+/// retain device ownership while an fb fd remains open in this process; the
+/// last close releases it.
+fn release_process_fb_binding(proc: &mut Process, host: &mut dyn HostIO) {
     if proc.fb_binding.is_some() {
         host.unbind_framebuffer(proc.pid as i32);
         proc.fb_binding = None;
@@ -901,6 +892,12 @@ pub fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
             maybe_release_fb0(proc.pid);
         }
     }
+}
+
+pub fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
+    proc.epoll_waits.clear();
+    // A non-CLOEXEC fb fd survives exec, so it keeps device ownership.
+    release_process_fb_binding(proc, host);
     // Device state belongs to surviving open descriptions, not the discarded
     // Wasm image. A final PCM CLOEXEC close leaves its tail to the audio clock.
     release_process_dri_mappings(proc, host);
@@ -953,6 +950,10 @@ fn commit_exec_state_impl(
             return Err(Errno::ESRCH);
         }
     }
+    // Sibling threads parked in the kernel belong to the old image. Exec keeps
+    // the pid, so their parks must be dropped here, before any decision could
+    // be published into the replacement image's channels.
+    crate::wait_park::retire_process(proc.pid);
     // The old image owns every blocked request snapshot. Release its stable
     // kernel targets before closing CLOEXEC descriptors or discarding sibling
     // threads, so no retry can survive into the replacement program.
@@ -980,6 +981,7 @@ fn commit_exec_state_impl(
         }
     }
     cancel_fifo_opens_for_process(proc);
+    proc.epoll_waits.clear();
 
     let cloexec_fds: Vec<i32> = proc
         .fd_table
@@ -1039,7 +1041,7 @@ fn commit_exec_state_impl(
     proc.fork_exec_path = None;
     proc.fork_exec_argv = None;
     proc.fork_fd_actions.clear();
-    proc.fork_pipe_replay.clear();
+    proc.fork_pipe_replay = crate::io_buffer::IoBuffer::new();
     proc.fork_count = 0;
     proc.has_exec = true;
     Ok(())
@@ -1053,6 +1055,26 @@ fn input_state(
         .get(ofd_idx)
         .and_then(|o| o.input())
         .ok_or(Errno::EBADF)
+}
+
+fn prepare_dri_handle(
+    proc: &mut Process, ofd_idx: usize,
+) -> Result<(u32, crate::prepared_map::PreparedEntry<u32, crate::dri::BoId>), Errno> {
+    let dri = dri_state_mut(proc, ofd_idx)?;
+    let next = dri.next_handle.checked_add(1).ok_or(Errno::EMFILE)?;
+    Ok((next, dri.handles.prepare_io(dri.next_handle, 0)?))
+}
+
+fn publish_dri_handle(
+    proc: &mut Process, ofd_idx: usize, next_handle: u32,
+    prepared: crate::prepared_map::PreparedEntry<u32, crate::dri::BoId>,
+) -> u32 {
+    let handle = *prepared.key();
+    let dri = dri_state_mut(proc, ofd_idx).expect("prepared DRI description disappeared");
+    assert_eq!(dri.next_handle, handle, "prepared DRI handle changed before publication");
+    dri.handles.publish_io(prepared);
+    dri.next_handle = next_handle;
+    handle
 }
 
 /// Release a per-fd handle (DESTROY_DUMB / GEM_CLOSE): drops the
@@ -1137,7 +1159,7 @@ fn probe_dri_process_pointer(
     pointer: u64,
     len: usize,
 ) -> Result<u64, Errno> {
-    let mut probe: alloc::vec::Vec<u8> = alloc::vec![0u8; len];
+    let mut probe = crate::guest_ptr::zeroed_io_staging(len, len)?;
     if host.proc_read_bytes(pid, pointer, &mut probe) < 0 {
         return Err(Errno::EFAULT);
     }
@@ -1168,6 +1190,7 @@ fn handle_dri_ioctl(
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
             cap.value = match cap.capability {
                 DRM_CAP_DUMB_BUFFER => 1,
+                0x8 | 0x9 => if host.kms_cursor_supported() { 64 } else { 0 },
                 DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
                 _ => 0,
             };
@@ -1187,11 +1210,11 @@ fn handle_dri_ioctl(
             }
             // Allocate in registry first so we know the size/stride
             // before asking the host.
+            let (next_handle, mut prepared_handle) = prepare_dri_handle(proc, ofd_idx)?;
             let (bo_id, size, stride) = crate::dri::with_registry(|r| {
                 r.try_alloc(req.width, req.height, req.bpp)
                     .map(|bo| (bo.id, bo.size, bo.stride))
-            })
-            .ok_or(Errno::EINVAL)?;
+            })?;
             // Ask the host to back the bo with a SAB. Roll back the
             // registry allocation on host failure so the BoId space
             // doesn't leak.
@@ -1202,34 +1225,8 @@ fn handle_dri_ioctl(
                 });
                 return Err(Errno::ENOMEM);
             }
-            // Register a fresh per-fd handle. On EMFILE, roll back the
-            // bo and host backing.
-            let handle = match dri_state_mut(proc, ofd_idx) {
-                Ok(dri) => {
-                    let h = dri.next_handle;
-                    match dri.next_handle.checked_add(1) {
-                        Some(n) => {
-                            dri.next_handle = n;
-                            dri.handles.insert(h, bo_id);
-                            h
-                        }
-                        None => {
-                            crate::dri::with_registry(|r| {
-                                r.decref(bo_id);
-                            });
-                            host.gbm_bo_destroy(pid, bo_id);
-                            return Err(Errno::EMFILE);
-                        }
-                    }
-                }
-                Err(e) => {
-                    crate::dri::with_registry(|r| {
-                        r.decref(bo_id);
-                    });
-                    host.gbm_bo_destroy(pid, bo_id);
-                    return Err(e);
-                }
-            };
+            *prepared_handle.value_mut() = bo_id;
+            let handle = publish_dri_handle(proc, ofd_idx, next_handle, prepared_handle);
             req.handle = handle;
             req.pitch = stride;
             req.size = size;
@@ -1250,11 +1247,11 @@ fn handle_dri_ioctl(
             // GPU-tier bos are always 32bpp (ARGB/XRGB8888). Allocate in
             // the registry first so the id/stride are known before asking
             // the host to build the texture. Roll back on host failure.
+            let (next_handle, mut prepared_handle) = prepare_dri_handle(proc, ofd_idx)?;
             let (bo_id, stride) = crate::dri::with_registry(|r| {
                 r.try_alloc_gpu(req.width, req.height, 32)
                     .map(|bo| (bo.id, bo.stride))
-            })
-            .ok_or(Errno::EINVAL)?;
+            })?;
             let host_rc =
                 host.gbm_gpu_bo_create(pid, bo_id, req.width, req.height, req.format, req.usage);
             if host_rc < 0 {
@@ -1263,34 +1260,8 @@ fn handle_dri_ioctl(
                 });
                 return Err(Errno::ENOMEM);
             }
-            // Register a fresh per-fd handle. On EMFILE, roll back the bo
-            // and its host texture.
-            let handle = match dri_state_mut(proc, ofd_idx) {
-                Ok(dri) => {
-                    let h = dri.next_handle;
-                    match dri.next_handle.checked_add(1) {
-                        Some(n) => {
-                            dri.next_handle = n;
-                            dri.handles.insert(h, bo_id);
-                            h
-                        }
-                        None => {
-                            crate::dri::with_registry(|r| {
-                                r.decref(bo_id);
-                            });
-                            host.gbm_bo_destroy(pid, bo_id);
-                            return Err(Errno::EMFILE);
-                        }
-                    }
-                }
-                Err(e) => {
-                    crate::dri::with_registry(|r| {
-                        r.decref(bo_id);
-                    });
-                    host.gbm_bo_destroy(pid, bo_id);
-                    return Err(e);
-                }
-            };
+            *prepared_handle.value_mut() = bo_id;
+            let handle = publish_dri_handle(proc, ofd_idx, next_handle, prepared_handle);
             // Write back over the same 16-byte buffer: width/height are
             // echoed unchanged, `format`/`usage` slots become
             // `handle`/`stride` outputs (see WpkDrmGpuBoCreate docs).
@@ -1357,45 +1328,14 @@ fn handle_dri_ioctl(
                 .get(&req.handle)
                 .ok_or(Errno::ENOENT)?;
 
-            // Materialise the cookie (idempotent — re-export reuses
-            // the existing one). Bump the bo refcount for the new OFD
-            // that will hold the prime fd.
-            let cookie =
-                crate::dri::with_registry(|r| r.ensure_prime_cookie(bo_id)).ok_or(Errno::EINVAL)?;
-            crate::dri::with_registry(|r| r.incref(bo_id));
-
-            // Allocate a fresh OFD with the prime-bo sidecar. The
-            // PRIME_FD_HOST_HANDLE sentinel is disjoint from the
-            // VirtualDevice range, so this fd is never routed to a render
-            // or card ioctl path.
+            let cookie = crate::dri::with_registry(|registry| registry.ensure_prime_cookie(bo_id)).ok_or(Errno::EINVAL)?;
             let path = alloc::format!("/dev/dri/prime-{}-{:x}", bo_id, cookie).into_bytes();
-            let prime_ofd = proc.ofd_table.create(
-                crate::ofd::FileType::CharDevice,
-                wasm_posix_shared::flags::O_RDWR,
-                crate::ofd::PRIME_FD_HOST_HANDLE,
-                path,
-            );
-            if let Some(new_ofd) = proc.ofd_table.get_mut(prime_ofd) {
-                new_ofd.dri_state = Some(alloc::boxed::Box::new(crate::ofd::DriOfdState::PrimeBo(
-                    crate::ofd::PrimeBoState { bo_id, cookie },
-                )));
-            }
-            let fd_flags = if req.flags & wasm_posix_shared::flags::O_CLOEXEC != 0 {
-                wasm_posix_shared::fd_flags::FD_CLOEXEC
-            } else {
-                0
-            };
-            let new_fd = match proc
-                .fd_table
-                .alloc(crate::fd::OpenFileDescRef(prime_ofd), fd_flags)
-            {
-                Ok(fd) => fd,
-                Err(e) => {
-                    proc.ofd_table.dec_ref(prime_ofd);
-                    let _ = crate::dri::with_registry(|r| r.decref(bo_id));
-                    return Err(e);
-                }
-            };
+            let fd_flags = if req.flags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+            let new_fd = proc.open_descriptor(FileType::CharDevice, O_RDWR, &path, fd_flags, |_, description| {
+                description.dri_state = Some(crate::IoBox::try_new(crate::ofd::DriOfdState::PrimeBo(crate::ofd::PrimeBoState { bo_id, cookie }))?);
+                crate::dri::with_registry(|registry| registry.incref(bo_id));
+                Ok(crate::ofd::PRIME_FD_HOST_HANDLE)
+            })?;
             req.fd = new_fd;
             unsafe {
                 core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
@@ -1427,28 +1367,10 @@ fn handle_dri_ioctl(
                 return Err(Errno::EACCES);
             }
 
-            crate::dri::with_registry(|r| r.incref(prime.bo_id));
-
-            let handle = match dri_state_mut(proc, ofd_idx) {
-                Ok(dri) => {
-                    let h = dri.next_handle;
-                    match dri.next_handle.checked_add(1) {
-                        Some(n) => {
-                            dri.next_handle = n;
-                            dri.handles.insert(h, prime.bo_id);
-                            h
-                        }
-                        None => {
-                            let _ = crate::dri::with_registry(|r| r.decref(prime.bo_id));
-                            return Err(Errno::EMFILE);
-                        }
-                    }
-                }
-                Err(e) => {
-                    let _ = crate::dri::with_registry(|r| r.decref(prime.bo_id));
-                    return Err(e);
-                }
-            };
+            let (next_handle, mut prepared) = prepare_dri_handle(proc, ofd_idx)?;
+            *prepared.value_mut() = prime.bo_id;
+            crate::dri::with_registry(|registry| registry.incref(prime.bo_id)).ok_or(Errno::EOVERFLOW)?;
+            let handle = publish_dri_handle(proc, ofd_idx, next_handle, prepared);
             req.handle = handle;
             unsafe {
                 core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
@@ -1691,14 +1613,14 @@ fn handle_dri_ioctl(
             // forward to host.gl_query, then copy the result back. The
             // kernel never decodes the bytes — `op` is the only thing
             // the host needs to dispatch.
-            let mut in_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.in_buf_len as usize];
+            let mut in_buf = crate::guest_ptr::zeroed_io_staging(info.in_buf_len as usize, gl::MAX_QUERY_IN_LEN as usize)?;
             if info.in_buf_len > 0 {
                 let rc = host.proc_read_bytes(pid, u64::from(info.in_buf_ptr), &mut in_buf);
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
             }
-            let mut out_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.out_buf_len as usize];
+            let mut out_buf = crate::guest_ptr::zeroed_io_staging(info.out_buf_len as usize, gl::MAX_QUERY_OUT_LEN as usize)?;
             let written = host.gl_query(pid, info.op, &in_buf, &mut out_buf);
             if written < 0 {
                 return Err(Errno::EIO);
@@ -1743,6 +1665,11 @@ fn handle_dri_card_ioctl(
             if crate::dri::master::drop_master(pid, ofd_idx) {
                 if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
                     kms.holds_master = false;
+                    if let Some(old) = kms.cursor_bo.take() {
+                        if crate::dri::with_registry(|r| r.decref(old)) == Some(0) {
+                            host.gbm_bo_destroy(pid, old);
+                        }
+                    }
                 }
                 host.kms_drop_master(pid);
             }
@@ -1847,13 +1774,18 @@ fn handle_dri_card_ioctl(
             if req.connector_id != 1 {
                 return Err(Errno::ENOENT);
             }
-            let modes_ptr = (req.count_modes >= 1 && req.modes_ptr != 0)
+            let modes = crate::dri::modes::connector_modes(host.kms_mode_info(1));
+            let mode_count = modes.len() as u32;
+            // Linux reports the available count on both calls, but copies
+            // the list only if the caller supplied enough capacity. A resize
+            // between the count and fill calls can therefore be retried.
+            let modes_ptr = (req.count_modes >= mode_count && req.modes_ptr != 0)
                 .then(|| {
                     probe_dri_process_pointer(
                         host,
                         pid,
                         req.modes_ptr,
-                        core::mem::size_of::<WpkDrmModeModeinfo>(),
+                        modes.len() * core::mem::size_of::<WpkDrmModeModeinfo>(),
                     )
                 })
                 .transpose()?;
@@ -1861,11 +1793,10 @@ fn handle_dri_card_ioctl(
                 .then(|| probe_dri_process_pointer(host, pid, req.encoders_ptr, 4))
                 .transpose()?;
             if let Some(pointer) = modes_ptr {
-                let mode = host.kms_mode_info(1);
                 let mode_bytes = unsafe {
                     core::slice::from_raw_parts(
-                        &mode as *const _ as *const u8,
-                        core::mem::size_of::<WpkDrmModeModeinfo>(),
+                        modes.as_ptr() as *const u8,
+                        modes.len() * core::mem::size_of::<WpkDrmModeModeinfo>(),
                     )
                 };
                 let rc = host.proc_write_bytes(pid, pointer, mode_bytes);
@@ -1888,7 +1819,7 @@ fn handle_dri_card_ioctl(
                 modes_ptr: req.modes_ptr,
                 props_ptr: req.props_ptr,
                 prop_values_ptr: req.prop_values_ptr,
-                count_modes: 1,
+                count_modes: mode_count,
                 count_encoders: 1,
                 encoder_id: 1,
                 connector_id: 1,
@@ -1932,11 +1863,10 @@ fn handle_dri_card_ioctl(
             if req.pitches[0] != bo_stride {
                 return Err(Errno::EINVAL);
             }
-            let fb_id = {
+            let (fb_id, prepared) = {
                 let kms = kms_state_mut(proc, ofd_idx)?;
                 let id = kms.next_fb_id.checked_add(1).ok_or(Errno::ENOMEM)?;
-                kms.next_fb_id = id;
-                kms.fbs.insert(
+                let prepared = kms.fbs.prepare_io(
                     id,
                     crate::ofd::KmsFb {
                         bo_id,
@@ -1945,10 +1875,11 @@ fn handle_dri_card_ioctl(
                         pixel_format: req.pixel_format,
                         stride: req.pitches[0],
                     },
-                );
-                id
+                )?;
+                (id, prepared)
             };
-            crate::dri::with_registry(|r| r.incref(bo_id));
+            crate::dri::with_registry(|registry| registry.incref(bo_id)).ok_or(Errno::EOVERFLOW)?;
+            kms_state_mut(proc, ofd_idx)?.next_fb_id = fb_id;
             let rc = host.kms_addfb(
                 pid,
                 fb_id,
@@ -1959,12 +1890,10 @@ fn handle_dri_card_ioctl(
                 req.pitches[0],
             );
             if rc < 0 {
-                if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
-                    kms.fbs.remove(&fb_id);
-                }
                 let _ = crate::dri::with_registry(|r| r.decref(bo_id));
                 return Err(Errno::ENOMEM);
             }
+            kms_state_mut(proc, ofd_idx)?.fbs.publish_io(prepared);
             req.fb_id = fb_id;
             unsafe {
                 core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
@@ -1986,6 +1915,73 @@ fn handle_dri_card_ioctl(
                 host.gbm_bo_destroy(pid, bo_id);
             }
             host.kms_rmfb(pid, fb_id);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_CURSOR | DRM_IOCTL_MODE_CURSOR2 => {
+            let size = if request == DRM_IOCTL_MODE_CURSOR2 { 36 } else { 28 };
+            if buf.len() < size {
+                return Err(Errno::EINVAL);
+            }
+            let word = |i: usize| {
+                u32::from_le_bytes(buf[i * 4..i * 4 + 4].try_into().unwrap())
+            };
+            let flags = word(0);
+            let crtc = word(1);
+            let (x, y) = (word(2) as i32, word(3) as i32);
+            let (width, height, handle) = (word(4), word(5), word(6));
+            let (hot_x, hot_y) = if size == 36 {
+                (word(7) as i32, word(8) as i32)
+            } else {
+                (0, 0)
+            };
+            if flags == 0 || flags & !3 != 0 {
+                return Err(Errno::EINVAL);
+            }
+            if crtc != 1 {
+                return Err(Errno::ENOENT);
+            }
+            if !kms_state(proc, ofd_idx)?.holds_master {
+                return Err(Errno::EACCES);
+            }
+            // WHY: older hosts must instantiate without cursor imports, but
+            // must not accept invisible cursor state or retain its BOs.
+            if !host.kms_cursor_supported() {
+                return Err(Errno::ENOTSUP);
+            }
+            let mut bo_id = 0;
+            if flags & 1 != 0 {
+                if handle != 0 {
+                    if width == 0 || height == 0 || width > 64 || height > 64 {
+                        return Err(Errno::EINVAL);
+                    }
+                    bo_id = *dri_state(proc, ofd_idx)?.handles.get(&handle)
+                        .ok_or(Errno::ENOENT)?;
+                    // Linux legacy cursor images use packed ARGB8888 rows,
+                    // independently of the dumb allocation's original pitch.
+                    let valid = crate::dri::with_registry(|r| {
+                        r.get(bo_id).is_some_and(|bo| {
+                            bo.tier == crate::dri::BoTier::CpuShared
+                                && bo.size >= u64::from(width) * u64::from(height) * 4
+                        })
+                    });
+                    if !valid {
+                        return Err(Errno::EINVAL);
+                    }
+                    crate::dri::with_registry(|r| r.incref(bo_id));
+                }
+                // WHY: cursor scanout outlives its userspace GEM handle.
+                // Swap references only after validating the entire request.
+                let old = core::mem::replace(
+                    &mut kms_state_mut(proc, ofd_idx)?.cursor_bo,
+                    (bo_id != 0).then_some(bo_id),
+                );
+                if let Some(old) = old {
+                    if crate::dri::with_registry(|r| r.decref(old)) == Some(0) {
+                        host.gbm_bo_destroy(pid, old);
+                    }
+                }
+            }
+            host.kms_cursor(pid, crtc, flags, bo_id, width, height, x, y, hot_x, hot_y);
             Ok(())
         }
         DRM_IOCTL_MODE_SETCRTC => {
@@ -2029,6 +2025,7 @@ fn handle_dri_card_ioctl(
                     return Err(Errno::EBUSY);
                 }
             }
+            kms_state_mut(proc, ofd_idx)?.prepare_flip()?;
             // Best-effort commit stats: a clock-read failure leaves
             // the flip queued and just skips the per-crtc counter
             // bump. The host reads the running totals via the
@@ -2168,7 +2165,7 @@ fn handle_input_ioctl(
             let (w, h) = crate::input::canvas_dims();
             let abs = match axis {
                 ABS_X => WpkInputAbsinfo {
-                    value: 0,
+                    value: crate::input::absolute_axis(ABS_X),
                     minimum: 0,
                     maximum: (w as i32) - 1,
                     fuzz: 0,
@@ -2176,7 +2173,7 @@ fn handle_input_ioctl(
                     resolution: 1,
                 },
                 ABS_Y => WpkInputAbsinfo {
-                    value: 0,
+                    value: crate::input::absolute_axis(ABS_Y),
                     minimum: 0,
                     maximum: (h as i32) - 1,
                     fuzz: 0,
@@ -2260,50 +2257,80 @@ pub fn dri_release_ofd_state(
     pid: i32,
     host: &mut dyn HostIO,
     ofd_idx: usize,
-    state: Option<alloc::boxed::Box<crate::ofd::DriOfdState>>,
+    state: Option<crate::IoBox<crate::ofd::DriOfdState>>,
 ) {
-    let Some(state) = state else {
-        return;
-    };
-    // Helper: decref a bo, destroy host backing on the last drop.
-    let release_bo = |host: &mut dyn HostIO, bo_id: u32| {
-        let new_count = crate::dri::with_registry(|r| r.decref(bo_id));
-        if new_count == Some(0) {
-            host.gbm_bo_destroy(pid, bo_id);
+    visit_dri_release_effects(pid, ofd_idx, state,
+        |effect| apply_dri_release_effect(pid, effect, host));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum DriReleaseEffect {
+    DestroyBo(u32),
+    RemoveFramebuffer(u32),
+    DropMaster,
+    UnbindGl,
+}
+
+pub fn apply_dri_release_effect(
+    pid: i32,
+    effect: DriReleaseEffect,
+    host: &mut (impl HostIO + ?Sized),
+) {
+    match effect {
+        DriReleaseEffect::DestroyBo(bo) => host.gbm_bo_destroy(pid, bo),
+        DriReleaseEffect::RemoveFramebuffer(fb) => host.kms_rmfb(pid, fb),
+        DriReleaseEffect::DropMaster => host.kms_drop_master(pid),
+        DriReleaseEffect::UnbindGl => host.gl_unbind(pid),
+    }
+}
+
+pub fn visit_dri_release_effects(
+    pid: i32,
+    ofd_idx: usize,
+    state: Option<crate::IoBox<crate::ofd::DriOfdState>>,
+    mut apply: impl FnMut(DriReleaseEffect),
+) {
+    let Some(state) = state else { return; };
+    let release_bo = |apply: &mut dyn FnMut(DriReleaseEffect), bo_id: u32| {
+        if crate::dri::with_registry(|registry| registry.decref(bo_id)) == Some(0) {
+            apply(DriReleaseEffect::DestroyBo(bo_id));
         }
     };
-    match *state {
-        crate::ofd::DriOfdState::PrimeBo(p) => {
-            release_bo(host, p.bo_id);
-        }
+    match state.into_inner() {
+        crate::ofd::DriOfdState::PrimeBo(prime) => release_bo(&mut apply, prime.bo_id),
         crate::ofd::DriOfdState::RenderNode(dri) => {
-            if dri.gl.is_some() {
-                host.gl_unbind(pid);
-            }
-            for (_handle, bo_id) in dri.handles.into_iter() {
-                release_bo(host, bo_id);
-            }
+            if dri.gl.is_some() { apply(DriReleaseEffect::UnbindGl); }
+            for (_, bo_id) in dri.handles.into_pairs() { release_bo(&mut apply, bo_id); }
         }
         crate::ofd::DriOfdState::Card { dri, kms } => {
-            // KMS-side cleanup first: release framebuffers (each
-            // holds an extra bo refcount) and notify the host so it
-            // can drop GL textures / canvases bound to those fbs.
-            for (fb_id, fb) in kms.fbs.into_iter() {
-                release_bo(host, fb.bo_id);
-                host.kms_rmfb(pid, fb_id);
+            if let Some(bo_id) = kms.cursor_bo { release_bo(&mut apply, bo_id); }
+            for (fb_id, framebuffer) in kms.fbs.into_pairs() {
+                release_bo(&mut apply, framebuffer.bo_id);
+                apply(DriReleaseEffect::RemoveFramebuffer(fb_id));
             }
-            // Drop master if this OFD held it — otherwise a
-            // dangling holder would block future SET_MASTER calls
-            // by other processes.
-            crate::dri::master::release_if_held(kms.holds_master, pid, ofd_idx, host);
-            if dri.gl.is_some() {
-                host.gl_unbind(pid);
+            if kms.holds_master && crate::dri::master::drop_master(pid, ofd_idx) {
+                apply(DriReleaseEffect::DropMaster);
             }
-            for (_handle, bo_id) in dri.handles.into_iter() {
-                release_bo(host, bo_id);
-            }
+            if dri.gl.is_some() { apply(DriReleaseEffect::UnbindGl); }
+            for (_, bo_id) in dri.handles.into_pairs() { release_bo(&mut apply, bo_id); }
         }
     }
+}
+
+#[cfg(test)]
+pub fn collect_dri_release_effects(
+    pid: i32,
+    ofd_idx: usize,
+    state: Option<crate::IoBox<crate::ofd::DriOfdState>>,
+) -> Vec<DriReleaseEffect> {
+    let mut effects = Vec::new();
+    visit_dri_release_effects(pid, ofd_idx, state, |effect| effects.push(effect));
+    effects
+}
+
+#[cfg(test)]
+pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host: &mut dyn HostIO) {
+    for effect in effects { apply_dri_release_effect(pid, effect, host); }
 }
 
 /// Build a synthetic WasmStat for a virtual device.
@@ -2559,8 +2586,8 @@ fn namespace_readlink_raw(
     proc: &Process,
     host: &mut dyn HostIO,
     path: &[u8],
-) -> Result<Vec<u8>, Errno> {
-    let mut target = alloc::vec![0u8; NAMESPACE_PATH_MAX];
+) -> Result<crate::IoBuffer<u8>, Errno> {
+    let mut target = crate::guest_ptr::zeroed_io_staging(NAMESPACE_PATH_MAX, NAMESPACE_PATH_MAX)?;
     let len = if let Some(entry) = crate::procfs::match_procfs(path, proc.pid) {
         crate::procfs::validate_entry(proc, &entry)?;
         if !entry.is_symlink() {
@@ -2755,7 +2782,17 @@ fn resolve_namespace_path_from(
             // Preserve final fd-link metadata for procfs handling instead of
             // feeding its descriptive OFD path to a filesystem backend.
             // Directory-fd traversal through procfs remains a documented gap.
-            if matches!(procfs_entry, Some(crate::procfs::ProcfsEntry::FdLink(_, _))) {
+            // `/proc/<pid>/exe` is the same kind of magic link: it names the
+            // executable the image runs (`Process::exe`), which may have no
+            // path left at all, so it is opened as itself, never re-resolved
+            // through the text `readlink` reports.
+            if matches!(
+                procfs_entry,
+                Some(
+                    crate::procfs::ProcfsEntry::FdLink(_, _)
+                        | crate::procfs::ProcfsEntry::Exe(_)
+                )
+            ) {
                 if !is_final || require_directory {
                     return Err(Errno::ENOTDIR);
                 }
@@ -2824,6 +2861,23 @@ fn resolve_namespace_path_from(
     })
 }
 
+/// The canonical spelling of an existing path, following a final symlink or
+/// not. For callers outside this module that must key state by path.
+pub(crate) fn canonical_path(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    follow: bool,
+) -> Result<Vec<u8>, Errno> {
+    let options = if follow { PathResolveOptions::FOLLOW } else { PathResolveOptions::NOFOLLOW };
+    Ok(resolve_namespace_path(proc, host, path, options)?.path)
+}
+
+/// `check_access` for callers outside this module.
+pub(crate) fn check_access_mode(proc: &Process, st: &WasmStat, amode: u32) -> Result<(), Errno> {
+    check_access(proc, st, amode)
+}
+
 fn resolve_namespace_path(
     proc: &Process,
     host: &mut dyn HostIO,
@@ -2885,6 +2939,16 @@ pub fn inspect_namespace_read_file(
     }
     check_access(proc, &stat, R_OK)?;
     let path = &resolved.path;
+    if let Some(entry) = crate::procfs::match_procfs(path, proc.pid) {
+        let content = crate::procfs::generate_content(proc, &entry)?;
+        if offset as u64 >= content.len() as u64 {
+            return Ok(0);
+        }
+        let start = offset as usize;
+        let count = out.len().min(content.len() - start);
+        out[..count].copy_from_slice(&content[start..start + count]);
+        return Ok(count);
+    }
     if crate::tmpfs::claims_path(path) {
         return crate::tmpfs::read_file_at(path, offset, out);
     }
@@ -2918,7 +2982,7 @@ pub fn inspect_namespace_directory(
     proc: &Process,
     host: &mut dyn HostIO,
     path: &[u8],
-) -> Result<Vec<(Vec<u8>, WasmStat, Option<Vec<u8>>)>, Errno> {
+) -> Result<crate::IoBuffer<(crate::IoBuffer<u8>, WasmStat, Option<crate::IoBuffer<u8>>)>, Errno> {
     let resolved = resolve_namespace_path_from(proc, host, path, b"/", PathResolveOptions::FOLLOW)?;
     let stat = resolved.stat.ok_or(Errno::ENOENT)?;
     if stat.st_mode & S_IFMT != S_IFDIR {
@@ -2934,15 +2998,15 @@ pub fn inspect_namespace_directory(
         Some(entries)
     } else if crate::devfs::owns_path(directory) {
         let entry = crate::devfs::match_devfs_dir(directory).ok_or(Errno::ENOTDIR)?;
-        Some(crate::devfs::dir_entries(proc, &entry))
+        Some(crate::devfs::dir_entries(proc, &entry)?)
     } else {
         None
     };
     if let Some(names) = virtual_entries {
-        let mut entries = Vec::new();
+        let mut entries = crate::IoBuffer::new();
         for (name, _, _) in names {
             if let Some(entry) = inspect_directory_entry(proc, host, directory, &name)? {
-                entries.push(entry);
+                entries.try_push(entry)?;
             }
         }
         return Ok(entries);
@@ -2955,8 +3019,8 @@ pub fn inspect_namespace_directory(
         crate::hostdir::opendir(host, directory)?
     };
     let result = (|| {
-        let mut entries = Vec::new();
-        let mut name = alloc::vec![0u8; NAMESPACE_NAME_MAX];
+        let mut entries = crate::IoBuffer::new();
+        let mut name = [0u8; NAMESPACE_NAME_MAX];
         loop {
             let entry = if crate::tmpfs::is_tmpfs_dir_handle(handle) {
                 crate::tmpfs::readdir(handle, &mut name)?
@@ -2976,7 +3040,7 @@ pub fn inspect_namespace_directory(
                 continue;
             }
             if let Some(entry) = inspect_directory_entry(proc, host, directory, name)? {
-                entries.push(entry);
+                entries.try_push(entry)?;
             }
         }
         // Images need not contain the kernel's virtual mount directories.
@@ -2985,7 +3049,7 @@ pub fn inspect_namespace_directory(
             for name in ROOT_VIRTUAL_DIRENTS {
                 if !entries.iter().any(|(entry_name, _, _)| entry_name.as_slice() == *name) {
                     if let Some(entry) = inspect_directory_entry(proc, host, directory, name)? {
-                        entries.push(entry);
+                        entries.try_push(entry)?;
                     }
                 }
             }
@@ -3017,14 +3081,14 @@ fn inspect_directory_entry(
     host: &mut dyn HostIO,
     directory: &[u8],
     name: &[u8],
-) -> Result<Option<(Vec<u8>, WasmStat, Option<Vec<u8>>)>, Errno> {
+) -> Result<Option<(crate::IoBuffer<u8>, WasmStat, Option<crate::IoBuffer<u8>>)>, Errno> {
     let child = directory_entry_path(directory, name);
     if let Some(fd) = match_dev_fd(&child) {
         return match dev_fd_link_target(proc, &child, fd) {
             Ok(target) => Ok(Some((
-                name.to_vec(),
+                crate::IoBuffer::copy_from(name)?,
                 dev_fd_lstat(proc, &child, fd)?,
-                Some(target.to_vec()),
+                Some(target),
             ))),
             Err(Errno::ENOENT) => Ok(None),
             Err(error) => Err(error),
@@ -3044,7 +3108,7 @@ fn inspect_directory_entry(
     } else {
         None
     };
-    Ok(Some((name.to_vec(), stat, target)))
+    Ok(Some((crate::IoBuffer::copy_from(name)?, stat, target)))
 }
 
 fn ensure_host_mutable_namespace_path(path: &[u8]) -> Result<(), Errno> {
@@ -3216,13 +3280,46 @@ pub struct PreparedExecOpen {
     pub file_id: Option<FileId>,
     pub stat: WasmStat,
     pub statfs: WasmStatfs,
-    pub diagnostic_path: Vec<u8>,
+    pub diagnostic_path: crate::ofd::OfdPath,
 }
 
 /// Open one pathname target directly into the OFD table without publishing a
 /// guest descriptor. The resulting reference is owned by the prepared-target
 /// ledger, so RLIMIT_NOFILE and POSIX close-any-fd lock semantics do not enter
 /// this internal authority path.
+/// The exec target behind `/proc/<pid>/exe`: a fresh description of the
+/// running image's executable, judged like any other target.
+fn open_prepared_exec_target_exe(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    pid: u32,
+) -> Result<PreparedExecOpen, Errno> {
+    if pid != proc.pid { return Err(Errno::EACCES); }
+    let exe = proc.exe.ok_or(Errno::ENOENT)?;
+    let (host_handle, path) = {
+        let ofd = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?;
+        (ofd.host_handle, ofd.path.clone())
+    };
+    let (stat, statfs) = crate::exec_target::source_authority(proc, host, host_handle, &path)?;
+    let (ofd_index, _) = reopen_process_exe(proc, host, pid, O_RDONLY)?;
+    let (ofd_ref, ofd_id, diagnostic_path) = {
+        let ofd = proc.ofd_table.get(ofd_index).ok_or(Errno::EIO)?;
+        (OpenFileDescRef(ofd_index), ofd.ofd_id, ofd.path.clone())
+    };
+    let file_id = (stat.st_ino != 0).then_some(FileId::Host {
+        dev: stat.st_dev,
+        ino: stat.st_ino,
+    });
+    Ok(PreparedExecOpen {
+        ofd_ref,
+        ofd_id,
+        file_id,
+        stat,
+        statfs,
+        diagnostic_path,
+    })
+}
+
 pub fn open_prepared_exec_target(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -3244,6 +3341,18 @@ pub fn open_prepared_exec_target(
     let resolved = resolve_at_path(proc, host, dirfd, path, options)?.path;
     check_search_path(proc, host, &resolved)?;
 
+    if let Some(crate::procfs::ProcfsEntry::FdLink(pid, fd)) =
+        crate::procfs::match_procfs(&resolved, proc.pid)
+    {
+        if flags & AT_SYMLINK_NOFOLLOW != 0 {
+            return Err(Errno::ELOOP);
+        }
+        if pid != proc.pid {
+            return Err(Errno::EACCES);
+        }
+        return crate::exec_target::retain_fd_target(proc, host, fd);
+    }
+
     // Kernel devfs owns its namespace. Every node it holds is a character
     // device, a directory, or a `/dev/fd` entry, and POSIX gives EACCES for
     // executing any of them — a devfs path can never be the regular file
@@ -3259,8 +3368,17 @@ pub fn open_prepared_exec_target(
         return Err(Errno::EACCES);
     }
 
+    // `execve("/proc/self/exe")` re-runs the image's own executable -- the
+    // object that was executed, even if its path is gone or now names
+    // something else.
+    if let Some(crate::procfs::ProcfsEntry::Exe(pid)) =
+        crate::procfs::match_procfs(&resolved, proc.pid)
+    {
+        return open_prepared_exec_target_exe(proc, host, pid);
+    }
+
     if crate::tmpfs::claims_path(&resolved) {
-        // The kernel's tmpfs owns the scratch mounts (`/tmp`, `/home/maker`,
+        // The kernel's tmpfs owns the scratch mounts (`/tmp`, `/var/tmp`,
         // ...): a program copied or compiled there is executed from the tmpfs
         // inode. There is no host file behind the path, so the host-mount
         // branch below could only answer ENOSYS.
@@ -3273,52 +3391,17 @@ pub fn open_prepared_exec_target(
         return open_prepared_exec_target_kernel_fs(proc, &resolved, flags, KernelExecFs::Rootfs);
     }
 
-    let open_flags = O_RDONLY
-        | if flags & AT_SYMLINK_NOFOLLOW != 0 {
-            O_NOFOLLOW
-        } else {
-            0
-        };
-    let host_handle = crate::hostdir::open(host, &resolved, open_flags, 0)?;
-    let stat = match host.host_fstat(host_handle) {
-        Ok(stat) => stat,
-        Err(error) => {
-            let _ = host.host_close(host_handle);
-            return Err(error);
-        }
-    };
-    if stat.st_mode & S_IFMT != S_IFREG {
-        let _ = host.host_close(host_handle);
-        return Err(Errno::EACCES);
-    }
-    if let Err(error) = check_access(proc, &stat, X_OK) {
-        let _ = host.host_close(host_handle);
-        return Err(error);
-    }
-    let statfs = match host_fstatfs_or_default(host, host_handle) {
-        Ok(statfs) => statfs,
-        Err(error) => {
-            let _ = host.host_close(host_handle);
-            return Err(error);
-        }
-    };
-    let file_id = (stat.st_ino != 0).then_some(FileId::Host {
-        dev: stat.st_dev,
-        ino: stat.st_ino,
-    });
-    let ofd_index = proc
-        .ofd_table
-        .create(FileType::Regular, O_RDONLY, host_handle, resolved.clone());
-    let ofd = proc.ofd_table.get_mut(ofd_index).ok_or(Errno::EIO)?;
-    ofd.file_id = file_id;
-
-    Ok(PreparedExecOpen {
-        ofd_ref: OpenFileDescRef(ofd_index),
-        ofd_id: ofd.ofd_id,
-        file_id,
-        stat,
-        statfs,
-        diagnostic_path: resolved,
+    let open_flags = O_RDONLY | if flags & AT_SYMLINK_NOFOLLOW != 0 { O_NOFOLLOW } else { 0 };
+    prepare_exec_description(proc, &resolved, |proc| {
+        let handle = crate::hostdir::open(host, &resolved, open_flags, 0)?;
+        let result = (|| {
+            let stat = host.host_fstat(handle)?;
+            check_prepared_exec_stat(proc, &stat)?;
+            let statfs = host_fstatfs_or_default(host, handle)?;
+            Ok((handle, stat, statfs))
+        })();
+        if result.is_err() { let _ = host.host_close(handle); }
+        result
     })
 }
 
@@ -3343,94 +3426,38 @@ enum KernelExecFs {
 /// `/usr/bin/login`, `su`, `passwd`) elevates through exec exactly as it does
 /// on a host `/` mount, producing the same AT_SECURE / euid transition; a
 /// `nosuid` mount drops the bits, matching POSIX.
-fn open_prepared_exec_target_kernel_fs(
-    proc: &mut Process,
-    resolved: &[u8],
-    flags: u32,
-    fs: KernelExecFs,
-) -> Result<PreparedExecOpen, Errno> {
-    let open_flags = O_RDONLY
-        | if flags & AT_SYMLINK_NOFOLLOW != 0 {
-            O_NOFOLLOW
-        } else {
-            0
+fn open_prepared_exec_target_kernel_fs(proc: &mut Process, resolved: &[u8], flags: u32, fs: KernelExecFs) -> Result<PreparedExecOpen, Errno> {
+    let open_flags = O_RDONLY | if flags & AT_SYMLINK_NOFOLLOW != 0 { O_NOFOLLOW } else { 0 };
+    prepare_exec_description(proc, resolved, |proc| {
+        let opened = match fs {
+            KernelExecFs::Rootfs => crate::rootfs::open(resolved, open_flags, 0, proc.effective_uid(), proc.effective_gid()),
+            KernelExecFs::Tmpfs => crate::tmpfs::open(resolved, open_flags, 0, proc.effective_uid(), proc.effective_gid()),
         };
-    let opened = match fs {
-        KernelExecFs::Rootfs => crate::rootfs::open(
-            resolved,
-            open_flags,
-            0,
-            proc.effective_uid(),
-            proc.effective_gid(),
-        ),
-        KernelExecFs::Tmpfs => crate::tmpfs::open(
-            resolved,
-            open_flags,
-            0,
-            proc.effective_uid(),
-            proc.effective_gid(),
-        ),
-    };
-    let host_handle = match opened {
-        Ok(handle) => handle,
-        // A directory is never an executable, and POSIX and Linux both report
-        // EACCES for one. `rootfs::open` reports EISDIR, which is the right
-        // answer for ordinary `open(2)` and the wrong one for exec, and it
-        // fires before the `!S_IFREG` guard below can be reached — so for a
-        // rootfs-claimed path that guard was unreachable and EISDIR escaped to
-        // the guest. Both EISDIR sites inside `rootfs::open` are exactly
-        // `inode.is_dir()`, so this maps the one errno it can mean here
-        // without weakening `open(2)` itself.
-        Err(Errno::EISDIR) => return Err(Errno::EACCES),
-        Err(error) => return Err(error),
-    };
-    let stat = match fs {
-        KernelExecFs::Rootfs => crate::rootfs::fstat(host_handle),
-        KernelExecFs::Tmpfs => crate::tmpfs::fstat(host_handle),
-    };
-    let stat = match stat {
-        Ok(stat) => stat,
-        Err(error) => {
-            crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
-            return Err(error);
-        }
-    };
-    if stat.st_mode & S_IFMT != S_IFREG {
-        crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
-        return Err(Errno::EACCES);
-    }
-    if let Err(error) = check_access(proc, &stat, X_OK) {
-        crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
-        return Err(error);
-    }
-    let statfs = match fs {
-        KernelExecFs::Rootfs => crate::rootfs::statfs(resolved),
-        KernelExecFs::Tmpfs => crate::tmpfs::statfs(resolved),
-    };
-    let statfs = match statfs {
-        Ok(statfs) => statfs,
-        Err(error) => {
-            crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
-            return Err(error);
-        }
-    };
-    let file_id = (stat.st_ino != 0).then_some(FileId::Host {
-        dev: stat.st_dev,
-        ino: stat.st_ino,
-    });
-    let ofd_index =
-        proc.ofd_table
-            .create(FileType::Regular, O_RDONLY, host_handle, resolved.to_vec());
-    let ofd = proc.ofd_table.get_mut(ofd_index).ok_or(Errno::EIO)?;
-    ofd.file_id = file_id;
-    Ok(PreparedExecOpen {
-        ofd_ref: OpenFileDescRef(ofd_index),
-        ofd_id: ofd.ofd_id,
-        file_id,
-        stat,
-        statfs,
-        diagnostic_path: resolved.to_vec(),
+        let handle = match opened { Ok(handle) => handle, Err(Errno::EISDIR) => return Err(Errno::EACCES), Err(error) => return Err(error) };
+        let result = (|| {
+            let stat = match fs { KernelExecFs::Rootfs => crate::rootfs::fstat(handle)?, KernelExecFs::Tmpfs => crate::tmpfs::fstat(handle)? };
+            check_prepared_exec_stat(proc, &stat)?;
+            let statfs = match fs { KernelExecFs::Rootfs => crate::rootfs::statfs_for_exec(resolved)?, KernelExecFs::Tmpfs => crate::tmpfs::statfs(resolved)? };
+            Ok((handle, stat, statfs))
+        })();
+        if result.is_err() { crate::descriptor_backing::release_for_ofd(FileType::Regular, handle); }
+        result
     })
+}
+
+fn prepare_exec_description(proc: &mut Process, resolved: &[u8], open: impl FnOnce(&mut Process) -> Result<(i64, WasmStat, wasm_posix_shared::WasmStatfs), Errno>) -> Result<PreparedExecOpen, Errno> {
+    let mut prepared = proc.ofd_table.prepare(FileType::Regular, O_RDONLY, resolved)?;
+    let (handle, stat, statfs) = match open(proc) {
+        Ok(opened) => opened,
+        Err(error) => { proc.ofd_table.cancel(prepared); return Err(error); }
+    };
+    let file_id = (stat.st_ino != 0).then_some(FileId::Host { dev: stat.st_dev, ino: stat.st_ino });
+    let description = prepared.value_mut();
+    description.file_id = file_id;
+    let ofd_id = description.ofd_id;
+    let diagnostic_path = description.path.clone();
+    let index = proc.ofd_table.publish(prepared, handle);
+    Ok(PreparedExecOpen { ofd_ref: OpenFileDescRef(index), ofd_id, file_id, stat, statfs, diagnostic_path })
 }
 
 fn fifo_open_owner(proc: &Process) -> u64 {
@@ -3441,11 +3468,10 @@ fn fifo_open_owner(proc: &Process) -> u64 {
 
 pub fn cancel_fifo_open_for_owner(proc: &mut Process, owner: u64) -> bool {
     let cancelled = unsafe { crate::pipe::global_pipe_table().cancel_fifo_open(owner) };
-    let Some(waiter) = cancelled else {
+    let Some(mut waiter) = cancelled else {
         return false;
     };
-    let released = proc.fd_table.release_reserved(waiter.reserved_fd);
-    debug_assert!(released, "FIFO waiter lost its reserved descriptor");
+    release_fifo_waiter_descriptor(proc, &mut waiter);
     true
 }
 
@@ -3458,7 +3484,9 @@ pub fn cancel_fifo_open_for_owner(proc: &mut Process, owner: u64) -> bool {
 /// Taking the saved value makes duplicate cancellation idempotent.
 pub fn cancel_host_owned_wait_for_tid(proc: &mut Process, tid: u32) -> bool {
     let owner = ((proc.pid as u64) << 32) | tid as u64;
-    let mut cancelled = cancel_fifo_open_for_owner(proc, owner);
+    let epoll_wait = proc.epoll_waits.iter().any(|(owner, _)| *owner == tid);
+    crate::epoll::finish_wait(proc, tid);
+    let mut cancelled = cancel_fifo_open_for_owner(proc, owner) || epoll_wait;
     if proc.cancel_signal_mask_wait_for(tid) {
         cancelled = true;
     }
@@ -3479,16 +3507,22 @@ pub fn cancel_host_owned_wait_for_live_tid(
         return Err(Errno::ESRCH);
     }
     cancel_host_owned_wait_for_tid(proc, tid);
+    // A wait the kernel owns ends here too, with EINTR, and the host
+    // publishes that decision like any other. Hosts call this only for a
+    // wakeable cancellation point, so a plain syscall's park is untouched.
+    crate::wait_park::cancel_task(proc.pid, tid);
     Ok(())
 }
 
 fn cancel_fifo_opens_for_process(proc: &mut Process) {
-    let waiters =
-        unsafe { crate::pipe::global_pipe_table().cancel_fifo_opens_for_process(proc.pid) };
-    for waiter in waiters {
-        let released = proc.fd_table.release_reserved(waiter.reserved_fd);
-        debug_assert!(released, "FIFO waiter lost its reserved descriptor");
-    }
+    unsafe { crate::pipe::global_pipe_table() }.cancel_fifo_opens_for_process(proc.pid, |mut waiter| {
+        release_fifo_waiter_descriptor(proc, &mut waiter);
+    });
+}
+
+fn release_fifo_waiter_descriptor(proc: &mut Process, waiter: &mut crate::pipe::FifoOpenWaiter) {
+    if let Some(prepared) = waiter.prepared_descriptor.take() { proc.cancel_descriptor(prepared); }
+    else { assert!(proc.fd_table.release_reserved(waiter.reserved_fd), "FIFO waiter lost its reserved descriptor"); }
 }
 
 fn has_caught_signal_for_current_thread(proc: &Process) -> bool {
@@ -3523,45 +3557,15 @@ fn close_fifo_open_endpoint(pipe_idx: usize, side: crate::pipe::FifoOpenSide) {
     pipes.free_if_closed(pipe_idx);
 }
 
-fn install_fifo_open(
-    proc: &mut Process,
-    pipe_idx: usize,
-    path: Vec<u8>,
-    status_flags: u32,
-    fd_flags: u32,
-    side: crate::pipe::FifoOpenSide,
-    reserved_fd: Option<i32>,
-) -> Result<i32, Errno> {
-    let pipe_handle = -((pipe_idx as i64) + 1);
-    let ofd_idx = proc
-        .ofd_table
-        .create(FileType::Pipe, status_flags, pipe_handle, path);
-    let installed_fd = match reserved_fd {
-        Some(fd) => proc
-            .fd_table
-            .install_reserved(fd, OpenFileDescRef(ofd_idx), fd_flags)
-            .map(|()| fd),
-        None => proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags),
-    };
-    match installed_fd {
-        Ok(fd) => {
-            let Some(pipe) = (unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }) else {
-                let _ = proc.fd_table.free(fd);
-                proc.ofd_table.dec_ref(ofd_idx);
-                return Err(Errno::EIO);
-            };
-            pipe.publish_fifo_open(side);
-            Ok(fd)
-        }
-        Err(error) => {
-            proc.ofd_table.dec_ref(ofd_idx);
-            if let Some(fd) = reserved_fd {
-                proc.fd_table.release_reserved(fd);
-            }
-            close_fifo_open_endpoint(pipe_idx, side);
-            Err(error)
-        }
+fn install_fifo_open(proc: &mut Process, pipe_idx: usize, prepared: crate::process::PreparedDescriptor, fd_flags: u32, side: crate::pipe::FifoOpenSide) -> Result<i32, Errno> {
+    if unsafe { crate::pipe::global_pipe_table() }.get(pipe_idx).is_none() {
+        proc.cancel_descriptor(prepared);
+        close_fifo_open_endpoint(pipe_idx, side);
+        return Err(Errno::EIO);
     }
+    let fd = proc.publish_descriptor(prepared, -((pipe_idx as i64) + 1), fd_flags);
+    unsafe { crate::pipe::global_pipe_table() }.get_mut(pipe_idx).expect("prepared FIFO disappeared").publish_fifo_open(side);
+    Ok(fd)
 }
 
 /// Continue one logical blocking FIFO open before resolving its original
@@ -3569,208 +3573,99 @@ fn install_fifo_open(
 /// thread slept; its reserved endpoint, not the old spelling, owns the wait.
 fn resume_fifo_open(proc: &mut Process) -> Result<Option<i32>, Errno> {
     let owner = fifo_open_owner(proc);
-    if unsafe { crate::pipe::global_pipe_table() }
-        .find_fifo_open(owner)
-        .is_none()
-    {
-        return Ok(None);
-    }
-    if has_caught_signal_for_current_thread(proc) {
-        cancel_fifo_open_for_owner(proc, owner);
-        return Err(Errno::EINTR);
-    }
-    let ready = unsafe { crate::pipe::global_pipe_table().take_ready_fifo_open(owner) };
-    let Some((pipe_idx, waiter)) = ready else {
-        return Err(Errno::EAGAIN);
-    };
-    install_fifo_open(
-        proc,
-        pipe_idx,
-        waiter.path,
-        waiter.status_flags,
-        waiter.fd_flags,
-        waiter.side,
-        Some(waiter.reserved_fd),
-    )
-    .map(Some)
+    if unsafe { crate::pipe::global_pipe_table() }.find_fifo_open(owner).is_none() { return Ok(None); }
+    if has_caught_signal_for_current_thread(proc) { cancel_fifo_open_for_owner(proc, owner); return Err(Errno::EINTR); }
+    let Some((pipe_idx, mut waiter)) = unsafe { crate::pipe::global_pipe_table() }.take_ready_fifo_open(owner) else { return Err(Errno::EAGAIN); };
+    let prepared = waiter.prepared_descriptor.take().expect("FIFO waiter lost its prepared OFD");
+    install_fifo_open(proc, pipe_idx, prepared, waiter.fd_flags, waiter.side).map(Some)
 }
 
-fn try_open_fifo(
-    proc: &mut Process,
-    host: &mut dyn HostIO,
-    resolved: &[u8],
-    oflags: u32,
-    exclusive_create: bool,
-) -> Result<Option<i32>, Errno> {
-    let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.lookup(resolved) else {
-        return Ok(None);
-    };
-    if exclusive_create {
-        return Err(Errno::EEXIST);
-    }
-    if oflags & O_DIRECTORY != 0 {
-        return Err(Errno::ENOTDIR);
-    }
-    if oflags & O_PATH != 0 {
-        check_search_path(proc, host, resolved)?;
-        let status_flags = oflags & !CREATION_FLAGS;
-        let fd_flags = oflags_to_fd_flags(oflags);
-        let pipe_handle = -((pipe_idx as i64) + 1);
-        let kind = crate::pipe::InFlightPipeRefKind::Path;
-        unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
-            .ok_or(Errno::EIO)?
-            .add_reference(kind);
-        let ofd_idx =
-            proc.ofd_table
-                .create(FileType::Pipe, status_flags, pipe_handle, resolved.to_vec());
-        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-            Ok(fd) => Ok(Some(fd)),
-            Err(error) => {
-                proc.ofd_table.dec_ref(ofd_idx);
-                if let Some(pipe) = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) } {
-                    pipe.close_reference(kind);
-                }
-                unsafe { crate::pipe::global_pipe_table().free_if_closed(pipe_idx) };
-                Err(error)
-            }
-        };
-    }
-    check_open_permissions(proc, host, resolved, oflags)?;
+fn publish_virtual_device_fd(proc: &mut Process, device: VirtualDevice, status_flags: u32, fd_flags: u32, resolved: Vec<u8>) -> Result<i32, Errno> {
+    proc.open_descriptor(FileType::CharDevice, status_flags, &resolved, fd_flags, |proc, description| {
+        install_dri_state_on_open(description, device)?;
+        install_input_state_on_open(description, device)?;
+        match device {
+            VirtualDevice::Fb0 => acquire_fb0_or_busy(proc.pid)?,
+            VirtualDevice::Mice => acquire_mice_or_busy(proc.pid)?,
+            VirtualDevice::Clipboard => crate::clipboard::acquire_or_busy(proc.pid)?,
+            _ => {},
+        }
+        Ok(device.host_handle())
+    })
+}
 
-    let access_mode = oflags & O_ACCMODE;
-    if !matches!(access_mode, O_RDONLY | O_WRONLY | O_RDWR) {
-        return Err(Errno::EINVAL);
+fn try_open_fifo(proc: &mut Process, host: &mut dyn HostIO, resolved: &[u8], oflags: u32, exclusive_create: bool) -> Result<Option<i32>, Errno> {
+    let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.lookup(resolved) else { return Ok(None); };
+    if exclusive_create { return Err(Errno::EEXIST); }
+    if oflags & O_DIRECTORY != 0 { return Err(Errno::ENOTDIR); }
+    if oflags & O_PATH == 0 && oflags & O_ACCMODE != O_RDONLY
+        && crate::exchange::xattr::area(resolved) == crate::exchange::xattr::Area::Input {
+        return Err(Errno::EPERM);
     }
-    let nonblocking = oflags & O_NONBLOCK != 0;
-    let owner = fifo_open_owner(proc);
     let status_flags = oflags & !CREATION_FLAGS;
     let fd_flags = oflags_to_fd_flags(oflags);
-    let mut reserved_side = None;
-    {
-        let pipe =
-            unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }.ok_or(Errno::EIO)?;
-        let ready = match access_mode {
-            O_RDONLY if nonblocking => true,
-            O_RDONLY => pipe.is_write_end_open(),
-            O_WRONLY if nonblocking => {
-                if !pipe.has_readers() {
-                    return Err(Errno::ENXIO);
-                }
-                true
-            }
+    if oflags & O_PATH != 0 {
+        check_search_path(proc, host, resolved)?;
+        return proc.open_descriptor(FileType::Pipe, status_flags, resolved, fd_flags, |_, _| {
+            unsafe { crate::pipe::global_pipe_table() }.get_mut(pipe_idx).ok_or(Errno::EIO)?
+                .add_reference(crate::pipe::InFlightPipeRefKind::Path);
+            Ok(-((pipe_idx as i64) + 1))
+        }).map(Some);
+    }
+    check_open_permissions(proc, host, resolved, oflags)?;
+    let access_mode = oflags & O_ACCMODE;
+    if !matches!(access_mode, O_RDONLY | O_WRONLY | O_RDWR) { return Err(Errno::EINVAL); }
+    let nonblocking = oflags & O_NONBLOCK != 0;
+    let owner = fifo_open_owner(proc);
+    let ready = {
+        let pipe = unsafe { crate::pipe::global_pipe_table() }.get(pipe_idx).ok_or(Errno::EIO)?;
+        match access_mode {
+            O_RDONLY => nonblocking || pipe.is_write_end_open(),
+            O_WRONLY if nonblocking && !pipe.has_readers() => return Err(Errno::ENXIO),
             O_WRONLY => pipe.has_readers(),
             O_RDWR => true,
             _ => unreachable!(),
+        }
+    };
+    if !ready && has_caught_signal_for_current_thread(proc) { return Err(Errno::EINTR); }
+    let prepared = proc.prepare_descriptor(FileType::Pipe, status_flags, resolved)?;
+    let pipe = unsafe { crate::pipe::global_pipe_table() }.get_mut(pipe_idx).expect("validated FIFO disappeared");
+    if let Err(error) = pipe.prepare_fifo_io() { proc.cancel_descriptor(prepared); return Err(error); }
+    if !ready {
+        let side = if access_mode == O_RDONLY { crate::pipe::FifoOpenSide::Reader } else { crate::pipe::FifoOpenSide::Writer };
+        let waiting = pipe.prepare_fifo_open(owner, side, resolved, status_flags, fd_flags, prepared.fd());
+        let mut waiting = match waiting {
+            Ok(waiting) => waiting,
+            Err(error) => { proc.cancel_descriptor(prepared); pipe.release_fifo_buffer_if_idle(); return Err(error); }
         };
-        if !ready {
-            if has_caught_signal_for_current_thread(proc) {
-                return Err(Errno::EINTR);
-            }
-            let side = if access_mode == O_RDONLY {
-                crate::pipe::FifoOpenSide::Reader
-            } else {
-                crate::pipe::FifoOpenSide::Writer
-            };
-            let reserved_fd = proc.fd_table.reserve()?;
-            if !pipe.reserve_fifo_open(
-                owner,
-                side,
-                resolved.to_vec(),
-                status_flags,
-                fd_flags,
-                reserved_fd,
-            ) {
-                proc.fd_table.release_reserved(reserved_fd);
-                return Err(Errno::EIO);
-            }
-            return Err(Errno::EAGAIN);
-        }
-
-        match access_mode {
-            O_RDONLY => {
-                pipe.add_reference(crate::pipe::InFlightPipeRefKind::Read {
-                    // publish_fifo_open joins the cohort after fd allocation.
-                    fifo_read_only: false,
-                });
-                reserved_side = Some(crate::pipe::FifoOpenSide::Reader);
-            }
-            O_WRONLY => {
-                pipe.add_reference(crate::pipe::InFlightPipeRefKind::Write);
-                reserved_side = Some(crate::pipe::FifoOpenSide::Writer);
-            }
-            O_RDWR => {
-                pipe.add_reference(crate::pipe::InFlightPipeRefKind::ReadWrite);
-            }
-            _ => unreachable!(),
-        }
+        waiting.bind_descriptor(prepared);
+        pipe.publish_fifo_open_reservation(waiting);
+        return Err(Errno::EAGAIN);
     }
-
+    match access_mode {
+        O_RDONLY => pipe.add_reference(crate::pipe::InFlightPipeRefKind::Read { fifo_read_only: false }),
+        O_WRONLY => pipe.add_reference(crate::pipe::InFlightPipeRefKind::Write),
+        O_RDWR => pipe.add_reference(crate::pipe::InFlightPipeRefKind::ReadWrite),
+        _ => unreachable!(),
+    }
     if access_mode == O_RDWR {
-        let pipe_handle = -((pipe_idx as i64) + 1);
-        let ofd_idx =
-            proc.ofd_table
-                .create(FileType::Pipe, status_flags, pipe_handle, resolved.to_vec());
-        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-            Ok(fd) => {
-                let Some(pipe) = (unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) })
-                else {
-                    let _ = proc.fd_table.free(fd);
-                    proc.ofd_table.dec_ref(ofd_idx);
-                    return Err(Errno::EIO);
-                };
-                pipe.publish_fifo_read_write_open();
-                Ok(Some(fd))
-            }
-            Err(error) => {
-                proc.ofd_table.dec_ref(ofd_idx);
-                if let Some(pipe) = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) } {
-                    pipe.close_reference(crate::pipe::InFlightPipeRefKind::ReadWrite);
-                }
-                unsafe { crate::pipe::global_pipe_table().free_if_closed(pipe_idx) };
-                Err(error)
-            }
-        };
+        let fd = proc.publish_descriptor(prepared, -((pipe_idx as i64) + 1), fd_flags);
+        pipe.publish_fifo_read_write_open();
+        return Ok(Some(fd));
     }
-    install_fifo_open(
-        proc,
-        pipe_idx,
-        resolved.to_vec(),
-        status_flags,
-        fd_flags,
-        reserved_side.expect("single-ended FIFO open records its side"),
-        None,
-    )
-    .map(Some)
+    let side = if access_mode == O_RDONLY { crate::pipe::FifoOpenSide::Reader } else { crate::pipe::FifoOpenSide::Writer };
+    install_fifo_open(proc, pipe_idx, prepared, fd_flags, side).map(Some)
 }
 
 /// Publish one new PTY endpoint OFD as an fd, undoing both ownership layers
 /// if the descriptor table rejects publication.
-fn publish_pty_fd(
-    proc: &mut Process,
-    host: &mut dyn HostIO,
-    file_type: FileType,
-    pty_idx: usize,
-    status_flags: u32,
-    fd_flags: u32,
-    path: Vec<u8>,
-) -> Result<i32, Errno> {
-    let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
-    match file_type {
-        FileType::PtyMaster => pty.master_refs += 1,
-        FileType::PtySlave => pty.slave_refs += 1,
-        _ => return Err(Errno::EINVAL),
-    }
-    let ofd_idx = proc
-        .ofd_table
-        .create(file_type, status_flags, pty_idx as i64, path);
-    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-        Ok(fd) => Ok(fd),
-        Err(error) => {
-            let cleanup = release_ofd_reference_impl(proc, None, host, ofd_idx);
-            debug_assert!(cleanup.is_ok(), "PTY publication rollback failed");
-            Err(error)
-        }
-    }
+fn publish_pty_fd(proc: &mut Process, _host: &mut dyn HostIO, file_type: FileType, pty_idx: usize, status_flags: u32, fd_flags: u32, path: Vec<u8>) -> Result<i32, Errno> {
+    if !matches!(file_type, FileType::PtyMaster | FileType::PtySlave) { return Err(Errno::EINVAL); }
+    proc.open_descriptor(file_type, status_flags, &path, fd_flags, |_, _| {
+        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+        match file_type { FileType::PtyMaster => pty.master_refs += 1, FileType::PtySlave => pty.slave_refs += 1, _ => unreachable!() }
+        Ok(pty_idx as i64)
+    })
 }
 
 /// Open a file, returning the new file descriptor number.
@@ -3833,15 +3728,6 @@ pub fn sys_open(
 
     // Virtual device nodes — handle in-kernel, no host call
     if let Some(dev) = match_virtual_device(&resolved) {
-        if dev == VirtualDevice::Fb0 {
-            acquire_fb0_or_busy(proc.pid)?;
-        }
-        if dev == VirtualDevice::Mice {
-            acquire_mice_or_busy(proc.pid)?;
-        }
-        if dev == VirtualDevice::Clipboard {
-            crate::clipboard::acquire_or_busy(proc.pid)?;
-        }
         let status_flags = oflags & !CREATION_FLAGS;
         if dev == VirtualDevice::Dsp {
             // /dev/dsp is playback-only, but the standard OSS open (pcaudiolib,
@@ -3852,52 +3738,15 @@ pub fn sys_open(
             if !matches!(status_flags & O_ACCMODE, O_WRONLY | O_RDWR) {
                 return Err(Errno::EOPNOTSUPP);
             }
-            let pcm_handle = crate::audio::open_stream()?;
-            crate::audio::set_nonblock(pcm_handle, status_flags & O_NONBLOCK != 0)?;
-            let ofd_idx = proc.ofd_table.create(
-                FileType::PcmPlayback,
-                status_flags,
-                pcm_handle,
-                resolved,
-            );
-            let fd_flags = oflags_to_fd_flags(oflags);
-            return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-                Ok(fd) => Ok(fd),
-                Err(error) => {
-                    proc.ofd_table.dec_ref(ofd_idx);
-                    crate::audio::rollback_open(pcm_handle);
-                    Err(error)
-                }
-            };
+            return open_pcm_descriptor(proc, status_flags, oflags_to_fd_flags(oflags), &resolved);
         }
-        let ofd_idx = proc.ofd_table.create(
-            FileType::CharDevice,
-            status_flags,
-            dev.host_handle(),
-            resolved,
-        );
-        install_dri_state_on_open(proc, ofd_idx, dev);
-        install_input_state_on_open(proc, ofd_idx, dev);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return publish_virtual_device_fd(proc, dev, status_flags, fd_flags, resolved);
     }
 
     // /dev/ptmx — allocate a new PTY master
     if resolved == b"/dev/ptmx" {
-        let pty_idx = crate::pty::alloc_pty(proc.effective_uid(), proc.effective_gid())
-            .ok_or(Errno::ENOSPC)?;
-        let status_flags = oflags & !CREATION_FLAGS;
-        let fd_flags = oflags_to_fd_flags(oflags);
-        return publish_pty_fd(
-            proc,
-            host,
-            FileType::PtyMaster,
-            pty_idx,
-            status_flags,
-            fd_flags,
-            resolved,
-        );
+        return open_new_pty_descriptor(proc, oflags, &resolved);
     }
 
     // /dev/pts/N — open PTY slave
@@ -3963,6 +3812,13 @@ pub fn sys_open(
         return Ok(fd);
     }
 
+    // `/proc/<pid>/exe` opens the executable the image runs, not a path.
+    if let Some(crate::procfs::ProcfsEntry::Exe(pid)) =
+        crate::procfs::match_procfs(&resolved, proc.pid)
+    {
+        return open_process_exe(proc, host, pid, oflags);
+    }
+
     // Procfs (/proc/...) — in-kernel virtual filesystem
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
@@ -3984,26 +3840,13 @@ pub fn sys_open(
         }
         let status_flags = oflags & !CREATION_FLAGS;
         let object_id = synthetic_file_object_id(&resolved).ok_or(Errno::EINVAL)?;
-        let host_handle = crate::descriptor_backing::alloc_synthetic_regular();
-        let ofd_idx = proc
-            .ofd_table
-            .create(FileType::Regular, status_flags, host_handle, resolved);
-        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Kernel {
-            kind: KernelFileKind::SyntheticRegular,
-            object_id,
+        return proc.open_descriptor(FileType::Regular, status_flags, &resolved, oflags_to_fd_flags(oflags), |_, description| {
+            description.file_id = Some(FileId::Kernel { kind: KernelFileKind::SyntheticRegular, object_id });
+            crate::descriptor_backing::try_alloc_synthetic_regular()
         });
-        let fd_flags = oflags_to_fd_flags(oflags);
-        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-            Ok(fd) => Ok(fd),
-            Err(err) => {
-                proc.ofd_table.dec_ref(ofd_idx);
-                crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
-                Err(err)
-            }
-        };
     }
 
-    // In-kernel tmpfs backing for the scratch mounts (/tmp, /var/*, /root, ...).
+    // In-kernel tmpfs backing for the scratch mounts (/tmp, /var/*, ...).
     // Serve the open entirely from Rust; the host is never consulted.
     if crate::tmpfs::claims_path(&resolved) {
         // Enforce search/access/parent-write permissions exactly as the host
@@ -4011,6 +3854,9 @@ pub fn sys_open(
         check_open_permissions(proc, host, &resolved, oflags)?;
         if oflags & O_CREAT != 0 {
             tmpfs_stamp_now(host)?;
+        }
+        if let Some(node) = crate::exchange::device::device_node_at(&resolved) {
+            return open_exchange_node(proc, host, node, resolved, oflags);
         }
         if crate::tmpfs::is_dir(&resolved) {
             // A directory cannot be opened for writing.
@@ -4042,51 +3888,7 @@ pub fn sys_open(
 
     let created = check_open_permissions(proc, host, &resolved, oflags)?;
 
-    let host_handle = crate::hostdir::open(host, &resolved, oflags, effective_mode)?;
-    if created {
-        crate::hostdir::chown(host, &resolved, proc.effective_uid(), proc.effective_gid())?;
-    }
-
-    // Cache lock identity from fstat on the live handle. Path-based stat is
-    // intentionally not authoritative across hard links, rename, or unlink.
-    // Every successfully opened host descriptor must complete this query so
-    // close(2) can later remove process locks even when this descriptor never
-    // performs a lock operation itself. An inode of zero remains the explicit
-    // unsupported-locking boundary, but an fstat failure makes the open fail.
-    let live_stat = match host.host_fstat(host_handle) {
-        Ok(stat) => stat,
-        Err(err) => {
-            let _ = host.host_close(host_handle);
-            return Err(err);
-        }
-    };
-    let file_type = if oflags & O_DIRECTORY != 0 {
-        FileType::Directory
-    } else if live_stat.st_mode & wasm_posix_shared::mode::S_IFMT
-        == wasm_posix_shared::mode::S_IFDIR
-    {
-        FileType::Directory
-    } else {
-        FileType::Regular
-    };
-
-    // Status flags = oflags minus creation-only flags
-    let status_flags = oflags & !CREATION_FLAGS;
-
-    let ofd_idx = proc
-        .ofd_table
-        .create(file_type, status_flags, host_handle, resolved);
-    if matches!(file_type, FileType::Regular | FileType::Directory) && live_stat.st_ino != 0 {
-        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Host {
-            dev: live_stat.st_dev,
-            ino: live_stat.st_ino,
-        });
-    }
-
-    let fd_flags = oflags_to_fd_flags(oflags);
-
-    let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-    Ok(fd)
+    open_host_file(proc, host, resolved, oflags, effective_mode, created)
 }
 
 /// Open (optionally creating) a regular file on an in-kernel tmpfs scratch
@@ -4096,46 +3898,108 @@ pub fn sys_open(
 /// EISDIR for a directory path until a later increment adds directory OFDs.
 /// Permission enforcement against the inode mode is likewise deferred; scratch
 /// mounts are broadly writable today.
-fn open_scratch_tmpfs(
+fn open_host_file(proc: &mut Process, host: &mut dyn HostIO, resolved: Vec<u8>, oflags: u32, mode: u32, created: bool) -> Result<i32, Errno> {
+    let mut prepared = proc.prepare_descriptor(FileType::Regular, oflags & !CREATION_FLAGS, &resolved)?;
+    let opened = (|| -> Result<i64, Errno> {
+        let handle = crate::hostdir::open(host, &resolved, oflags, mode)?;
+        if created {
+            if let Err(error) = crate::hostdir::chown(host, &resolved, proc.effective_uid(), proc.effective_gid()) {
+                let _ = host.host_close(handle);
+                return Err(error);
+            }
+        }
+        let stat = match host.host_fstat(handle) {
+            Ok(stat) => stat,
+            Err(error) => { let _ = host.host_close(handle); return Err(error); }
+        };
+        let description = prepared.description_mut();
+        if oflags & O_DIRECTORY != 0 || stat.st_mode & S_IFMT == S_IFDIR { description.file_type = FileType::Directory; }
+        if stat.st_ino != 0 { description.file_id = Some(FileId::Host { dev: stat.st_dev, ino: stat.st_ino }); }
+        Ok(handle)
+    })();
+    match opened {
+        Ok(handle) => {
+            if let Err(error) = proc.register_prepared_directory(&prepared) {
+                let _ = host.host_close(handle);
+                proc.cancel_descriptor(prepared);
+                return Err(error);
+            }
+            Ok(proc.publish_descriptor(prepared, handle, oflags_to_fd_flags(oflags)))
+        }
+        Err(error) => { proc.cancel_descriptor(prepared); Err(error) }
+    }
+}
+
+fn open_pcm_descriptor(proc: &mut Process, status_flags: u32, fd_flags: u32, path: &[u8]) -> Result<i32, Errno> {
+    proc.open_descriptor(FileType::PcmPlayback, status_flags, path, fd_flags, |_, _| {
+        let handle = crate::audio::open_stream()?;
+        if let Err(error) = crate::audio::set_nonblock(handle, status_flags & O_NONBLOCK != 0) {
+            crate::audio::rollback_open(handle);
+            return Err(error);
+        }
+        Ok(handle)
+    })
+}
+
+fn open_new_pty_descriptor(proc: &mut Process, oflags: u32, path: &[u8]) -> Result<i32, Errno> {
+    proc.open_descriptor(FileType::PtyMaster, oflags & !CREATION_FLAGS, path, oflags_to_fd_flags(oflags), |proc, _| {
+        let index = crate::pty::alloc_pty(proc.effective_uid(), proc.effective_gid()).ok_or(Errno::ENOSPC)?;
+        crate::pty::get_pty(index).expect("new PTY missing").master_refs += 1;
+        Ok(index as i64)
+    })
+}
+
+fn open_scratch_tmpfs(proc: &mut Process, resolved: Vec<u8>, oflags: u32, effective_mode: u32) -> Result<i32, Errno> {
+    if oflags & O_CREAT != 0 && crate::tmpfs::lstat(&resolved).is_err() {
+        crate::exchange::policy::check_create(&resolved)?;
+    }
+    open_kernel_file(proc, resolved, oflags, effective_mode, KernelExecFs::Tmpfs)
+}
+
+fn open_exchange_node(
     proc: &mut Process,
+    host: &mut dyn HostIO,
+    node: crate::exchange::device::ExchangeNode,
     resolved: Vec<u8>,
     oflags: u32,
-    effective_mode: u32,
 ) -> Result<i32, Errno> {
-    let host_handle = crate::tmpfs::open(
-        &resolved,
-        oflags,
-        effective_mode,
-        proc.effective_uid(),
-        proc.effective_gid(),
-    )?;
-    // Lock identity from the freshly opened inode's stable tmpfs dev/ino.
-    let stat = match crate::tmpfs::fstat(host_handle) {
-        Ok(stat) => stat,
-        Err(err) => {
-            crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
-            return Err(err);
+    use crate::exchange::device::ExchangeNode;
+    if oflags & O_CREAT != 0 && oflags & O_EXCL != 0 { return Err(Errno::EEXIST); }
+    if oflags & O_DIRECTORY != 0 { return Err(Errno::ENOTDIR); }
+    if oflags & O_ACCMODE != O_RDONLY { return Err(Errno::EPERM); }
+    proc.open_descriptor(FileType::CharDevice, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |proc, _| {
+        let device = match node {
+            ExchangeNode::Events => crate::exchange::open_events(proc.effective_uid(), proc.effective_gid())?,
+            ExchangeNode::Clone => {
+                tmpfs_stamp_now(host)?;
+                crate::exchange::open_session(proc.effective_uid(), proc.effective_gid())?
+            }
+        };
+        Ok(device.host_handle())
+    })
+}
+
+fn open_kernel_file(proc: &mut Process, resolved: Vec<u8>, oflags: u32, effective_mode: u32, fs: KernelExecFs) -> Result<i32, Errno> {
+    proc.open_descriptor(FileType::Regular, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |proc, description| {
+        let handle = match fs {
+            KernelExecFs::Rootfs => crate::rootfs::open(&resolved, oflags, effective_mode, proc.effective_uid(), proc.effective_gid())?,
+            KernelExecFs::Tmpfs => crate::tmpfs::open(&resolved, oflags, effective_mode, proc.effective_uid(), proc.effective_gid())?,
+        };
+        let stat = match fs {
+            KernelExecFs::Rootfs => crate::rootfs::fstat(handle),
+            KernelExecFs::Tmpfs => crate::tmpfs::fstat(handle),
+        };
+        match stat {
+            Ok(stat) => {
+                if stat.st_ino != 0 { description.file_id = Some(FileId::Host { dev: stat.st_dev, ino: stat.st_ino }); }
+                Ok(handle)
+            }
+            Err(error) => {
+                crate::descriptor_backing::release_for_ofd(FileType::Regular, handle);
+                Err(error)
+            }
         }
-    };
-    let status_flags = oflags & !CREATION_FLAGS;
-    let ofd_idx = proc
-        .ofd_table
-        .create(FileType::Regular, status_flags, host_handle, resolved);
-    if stat.st_ino != 0 {
-        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Host {
-            dev: stat.st_dev,
-            ino: stat.st_ino,
-        });
-    }
-    let fd_flags = oflags_to_fd_flags(oflags);
-    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-        Ok(fd) => Ok(fd),
-        Err(err) => {
-            proc.ofd_table.dec_ref(ofd_idx);
-            crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
-            Err(err)
-        }
-    }
+    })
 }
 
 /// Path `stat(2)` routed through the in-kernel tmpfs for scratch mounts. tmpfs
@@ -4166,6 +4030,14 @@ fn fs_lstat(host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
 /// so a subsequent metadata mutation (create/write/truncate/chmod/chown) stamps
 /// accurate atime/mtime/ctime. One host clock read per mutating syscall; both
 /// in-kernel filesystem cores stay host-free.
+/// Unix time in milliseconds, for exchange IDs.
+fn exchange_now_ms(host: &mut dyn HostIO) -> Result<u64, Errno> {
+    let (sec, nsec) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
+    let sec = u64::try_from(sec).map_err(|_| Errno::EINVAL)?;
+    let nsec = u64::try_from(nsec).map_err(|_| Errno::EINVAL)?;
+    Ok(sec * 1000 + nsec / 1_000_000)
+}
+
 fn tmpfs_stamp_now(host: &mut dyn HostIO) -> Result<(), Errno> {
     let (sec, nsec) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
     let sec = u64::try_from(sec).map_err(|_| Errno::EINVAL)?;
@@ -4179,103 +4051,29 @@ fn tmpfs_stamp_now(host: &mut dyn HostIO) -> Result<(), Errno> {
 /// `FileType::Directory` OFD carrying the tmpfs directory sentinel in both
 /// `host_handle` and `dir_host_handle`; getdents regenerates entries from the
 /// live store, so there is no host handle and no backing to refcount.
-fn open_scratch_tmpfs_dir(
-    proc: &mut Process,
-    resolved: Vec<u8>,
-    oflags: u32,
-) -> Result<i32, Errno> {
-    let status_flags = oflags & !CREATION_FLAGS;
-    let ofd_idx = proc.ofd_table.create(
-        FileType::Directory,
-        status_flags,
-        crate::tmpfs::TMPFS_DIR_SENTINEL,
-        resolved,
-    );
-    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-        ofd.dir_host_handle = crate::tmpfs::TMPFS_DIR_SENTINEL;
-    }
-    let fd_flags = oflags_to_fd_flags(oflags);
-    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-        Ok(fd) => Ok(fd),
-        Err(err) => {
-            proc.ofd_table.dec_ref(ofd_idx);
-            Err(err)
-        }
-    }
+fn open_scratch_tmpfs_dir(proc: &mut Process, resolved: Vec<u8>, oflags: u32) -> Result<i32, Errno> {
+    proc.open_descriptor(FileType::Directory, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |_, description| {
+        description.dir_host_handle = crate::tmpfs::TMPFS_DIR_SENTINEL;
+        Ok(crate::tmpfs::TMPFS_DIR_SENTINEL)
+    })
 }
 
 /// Open (optionally creating/truncating) a regular file in the in-kernel rootfs
 /// overlay. Mirrors `open_scratch_tmpfs`: metadata comes from Rust; base-file
 /// bytes are fetched lazily by the read path (from the image, or by deferred
 /// URI).
-fn open_rootfs(
-    proc: &mut Process,
-    resolved: Vec<u8>,
-    oflags: u32,
-    effective_mode: u32,
-) -> Result<i32, Errno> {
-    let host_handle = crate::rootfs::open(
-        &resolved,
-        oflags,
-        effective_mode,
-        proc.effective_uid(),
-        proc.effective_gid(),
-    )?;
-    // Lock identity from the freshly opened inode's stable rootfs dev/ino.
-    let stat = match crate::rootfs::fstat(host_handle) {
-        Ok(stat) => stat,
-        Err(err) => {
-            crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
-            return Err(err);
-        }
-    };
-    let status_flags = oflags & !CREATION_FLAGS;
-    let ofd_idx = proc
-        .ofd_table
-        .create(FileType::Regular, status_flags, host_handle, resolved);
-    if stat.st_ino != 0 {
-        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Host {
-            dev: stat.st_dev,
-            ino: stat.st_ino,
-        });
-    }
-    let fd_flags = oflags_to_fd_flags(oflags);
-    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-        Ok(fd) => Ok(fd),
-        Err(err) => {
-            proc.ofd_table.dec_ref(ofd_idx);
-            crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
-            Err(err)
-        }
-    }
+fn open_rootfs(proc: &mut Process, resolved: Vec<u8>, oflags: u32, effective_mode: u32) -> Result<i32, Errno> {
+    open_kernel_file(proc, resolved, oflags, effective_mode, KernelExecFs::Rootfs)
 }
 
 /// Open a rootfs directory for iteration. Mirrors `open_scratch_tmpfs_dir`: a
 /// `FileType::Directory` OFD carrying the rootfs directory sentinel; getdents
 /// regenerates entries from the live store, so there is no host handle.
-fn open_rootfs_dir(
-    proc: &mut Process,
-    resolved: Vec<u8>,
-    oflags: u32,
-) -> Result<i32, Errno> {
-    let status_flags = oflags & !CREATION_FLAGS;
-    let ofd_idx = proc.ofd_table.create(
-        FileType::Directory,
-        status_flags,
-        crate::rootfs::ROOTFS_DIR_SENTINEL,
-        resolved,
-    );
-    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-        ofd.dir_host_handle = crate::rootfs::ROOTFS_DIR_SENTINEL;
-    }
-    let fd_flags = oflags_to_fd_flags(oflags);
-    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-        Ok(fd) => Ok(fd),
-        Err(err) => {
-            proc.ofd_table.dec_ref(ofd_idx);
-            Err(err)
-        }
-    }
+fn open_rootfs_dir(proc: &mut Process, resolved: Vec<u8>, oflags: u32) -> Result<i32, Errno> {
+    proc.open_descriptor(FileType::Directory, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |_, description| {
+        description.dir_host_handle = crate::rootfs::ROOTFS_DIR_SENTINEL;
+        Ok(crate::rootfs::ROOTFS_DIR_SENTINEL)
+    })
 }
 
 fn publish_advisory_lock_mutation(mutation: LockMutation) {
@@ -4297,6 +4095,9 @@ pub fn drain_deferred_scm_rights_releases(
             publish_advisory_lock_mutation(locks.remove_ofd(released.ofd_id));
         }
         if let Some(handle) = released.host_close {
+            let _ = host.host_close(handle);
+        }
+        if let Some(handle) = released.secondary_host_close {
             let _ = host.host_close(handle);
         }
         // A batch discarded before recvmsg still owns the bo reference
@@ -4429,10 +4230,7 @@ pub fn snapshot_scm_rights_fd(
     };
     validate_scm_rights_transfer_metadata(ofd.file_type, ofd.host_handle)?;
 
-    let mut path = Vec::new();
-    path.try_reserve_exact(ofd.path.len())
-        .map_err(|_| Errno::ENOMEM)?;
-    path.extend_from_slice(&ofd.path);
+    let path = ofd.path.clone();
     let mut in_flight = crate::pipe::InFlightFd::new_with_shared_state(
         ofd.ofd_id,
         ofd.file_id,
@@ -4501,8 +4299,8 @@ pub fn validate_scm_rights_in_flight_fd(
 /// get the same ownership and final-close behavior.
 pub fn install_scm_rights_fds(
     proc: &mut Process,
-    in_flight: Vec<crate::pipe::InFlightFd>,
-) -> Vec<i32> {
+    in_flight: impl IntoAncillaryFds,
+) -> crate::IoBuffer<i32> {
     install_scm_rights_fds_with_flags(proc, in_flight, 0)
 }
 
@@ -4510,65 +4308,73 @@ pub fn install_scm_rights_fds(
 ///
 /// `MSG_CMSG_CLOEXEC` must be applied in the same `FdTable::alloc` operation
 /// that publishes the fd; setting it afterward would expose a race with exec.
-pub fn install_scm_rights_fds_with_flags(
-    proc: &mut Process,
-    in_flight: Vec<crate::pipe::InFlightFd>,
-    fd_flags: u32,
-) -> Vec<i32> {
-    let mut new_fds = Vec::new();
-    if new_fds.try_reserve_exact(in_flight.len()).is_err() {
-        // The recvmsg wrapper reports the dropped batch as MSG_CTRUNC. Do not
-        // panic or install a prefix that cannot itself be reported.
-        return new_fds;
-    }
+pub fn install_scm_rights_fds_with_flags(proc: &mut Process, in_flight: impl IntoAncillaryFds, fd_flags: u32) -> crate::IoBuffer<i32> {
+    let mut new_fds = crate::IoBuffer::new();
+    let Ok(in_flight) = in_flight.into_ancillary() else { return new_fds; };
+    if new_fds.try_reserve_exact(in_flight.len()).is_err() { return new_fds; }
     for mut entry in in_flight {
-        // Production validates before retain. Keep the receive boundary closed
-        // too. Only a genuinely owned, completely reconstructible queue entry
-        // can publish a receiver fd; dropping a rejected owned entry rolls its
-        // retained backing reference through the deferred cleanup path.
-        if !entry.owns_reference() || validate_scm_rights_in_flight_fd(&entry).is_err() {
-            continue;
+        if !entry.owns_reference() || validate_scm_rights_in_flight_fd(&entry).is_err() { continue; }
+        let fd = match proc.fd_table.reserve() { Ok(fd) => fd, Err(_) => continue };
+        let prepared = proc.ofd_table.prepare_transferred(entry.ofd_id, entry.file_id, entry.file_type,
+            entry.status_flags, entry.host_handle, entry.offset, entry.shared_state(), entry.path.clone());
+        let mut prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(_) => { proc.fd_table.release_reserved(fd); continue; }
+        };
+        if let Some(prime) = entry.prime_bo.clone() {
+            let sidecar = match crate::IoBox::try_new(crate::ofd::DriOfdState::PrimeBo(prime.clone())) {
+                Ok(sidecar) => sidecar,
+                Err(_) => { proc.ofd_table.cancel(prepared); proc.fd_table.release_reserved(fd); continue; }
+            };
+            prepared.value_mut().dri_state = Some(sidecar);
+            crate::dri::with_registry(|registry| registry.incref(prime.bo_id));
         }
-
-        let ofd_idx = proc.ofd_table.create_transferred(
-            entry.ofd_id,
-            entry.file_id,
-            entry.file_type,
-            entry.status_flags,
-            entry.host_handle,
-            entry.offset,
-            entry.shared_state(),
-            // The receiver becomes the only consumer of this snapshot path;
-            // moving it avoids an infallible allocation in a receive path
-            // whose resource failures must remain recoverable.
-            core::mem::take(&mut entry.path),
-        );
-        match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-            Ok(new_fd) => {
-                // Take a bo refcount for the receiver's new fd; its close
-                // drops it (dri_release_ofd_state). The queued entry holds
-                // its own reference across the hop (see
-                // InFlightFd::retain_reference), so the sender may close
-                // its fd the instant sendmsg returns, as SCM_RIGHTS allows.
-                if let Some(pb) = entry.prime_bo.clone() {
-                    crate::dri::with_registry(|r| r.incref(pb.bo_id));
-                    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-                        ofd.dri_state = Some(alloc::boxed::Box::new(
-                            crate::ofd::DriOfdState::PrimeBo(pb),
-                        ));
-                    }
-                }
-                entry.transfer_reference();
-                new_fds.push(new_fd);
-            }
-            Err(_) => {
-                proc.ofd_table.dec_ref(ofd_idx);
-                // `entry` still owns the queued resource reference; Drop
-                // releases it through the deferred cleanup path.
-            }
-        }
+        let index = proc.ofd_table.publish(prepared, entry.host_handle);
+        proc.fd_table.install_reserved(fd, OpenFileDescRef(index), fd_flags).expect("received descriptor reservation changed");
+        entry.transfer_reference();
+        new_fds.push(fd);
     }
     new_fds
+}
+
+pub fn rollback_scm_rights_fds(
+    proc: &mut Process, locks: &mut AdvisoryLockManager, host: &mut dyn HostIO,
+    descriptors: crate::IoBuffer<i32>,
+) {
+    for fd in descriptors {
+        let ofd_ref = proc.fd_table.free(fd).expect("unpublished received descriptor disappeared");
+        let _ = release_ofd_reference_impl(proc, Some(&mut *locks), host, ofd_ref.0);
+    }
+    finish_scm_rights_cleanup(locks, host);
+}
+
+pub fn publish_scm_rights(
+    proc: &mut Process, locks: &mut AdvisoryLockManager, host: &mut dyn HostIO,
+    mut in_flight: AncillaryFds, output: crate::msghdr::ScmRightsOutput,
+) -> Result<crate::msghdr::PublishedScmRights, Errno> {
+    let result = (|| {
+        let capacity = if output.addr == 0 { 0 } else {
+            crate::msghdr::control_fd_capacity(output.pointer_width, output.capacity)?
+        };
+        let install_count = capacity.min(in_flight.len());
+        let had_excess = in_flight.len() > install_count;
+        in_flight.truncate(install_count);
+        let attempted = in_flight.len();
+        let descriptors = install_scm_rights_fds_with_flags(proc, in_flight, output.fd_flags);
+        let truncated = had_excess || descriptors.len() < attempted;
+        let control_len = match crate::msghdr::write_scm_rights(host, proc.pid as i32,
+            output.addr, output.capacity, output.pointer_width, &descriptors) {
+            Ok(control_len) => control_len,
+            Err(error) => {
+                rollback_scm_rights_fds(proc, locks, host, descriptors);
+                return Err(error);
+            }
+        };
+        Ok(crate::msghdr::PublishedScmRights { control_len, truncated, descriptors })
+    })();
+    unsafe { crate::pipe::global_pipe_table().finish_ancillary_transition(); }
+    finish_scm_rights_cleanup(locks, host);
+    result
 }
 
 fn release_final_ofd_locks(locks: Option<&mut AdvisoryLockManager>, ofd_id: OfdId) {
@@ -4893,6 +4699,9 @@ fn release_ofd_reference_impl(
                     if pty.master_refs > 0 {
                         pty.master_refs -= 1;
                         if pty.master_refs == 0 {
+                            crate::epoll::notify(crate::epoll::Source::Pty(pty.index, false), 0x10);
+                        }
+                        if pty.master_refs == 0 {
                             crate::wakeup::push_pty_readiness();
                         }
                     }
@@ -4906,6 +4715,9 @@ fn release_ofd_reference_impl(
                 if let Some(pty) = crate::pty::get_pty(pty_idx) {
                     if pty.slave_refs > 0 {
                         pty.slave_refs -= 1;
+                        if pty.slave_refs == 0 {
+                            crate::epoll::notify(crate::epoll::Source::Pty(pty.index, true), 0x10);
+                        }
                         if pty.slave_refs == 0 {
                             crate::wakeup::push_pty_readiness();
                         }
@@ -4922,7 +4734,12 @@ fn release_ofd_reference_impl(
                 }
                 // Kernel regular-file backings own the cross-process OFD
                 // lifetime used by procfs and read-only synthetic files.
-                if file_type == FileType::Regular
+                if file_type == FileType::Regular && crate::executable_backing::is_executable_handle(host_handle) {
+                    let effects = crate::descriptor_backing::release_for_ofd_effects(file_type, host_handle);
+                    if effects.final_ofd_reference { release_final_ofd_locks(locks.as_deref_mut(), ofd_id); }
+                    else { crate::ofd::note_possibly_orphaned_ofd_locks(); }
+                    effects.close_with(host)?;
+                } else if file_type == FileType::Regular
                     && (crate::procfs::is_procfs_buf_handle(host_handle)
                         || crate::descriptor_backing::is_synthetic_regular_handle(host_handle)
                         || crate::tmpfs::is_tmpfs_file_handle(host_handle)
@@ -4930,6 +4747,10 @@ fn release_ofd_reference_impl(
                 {
                     if crate::descriptor_backing::release_for_ofd(file_type, host_handle) {
                         release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
+                    } else {
+                        // Another open of the same file keeps the backing
+                        // alive, which says nothing about this description.
+                        crate::ofd::note_possibly_orphaned_ofd_locks();
                     }
                 } else if host_handle == crate::procfs::PROCFS_DIR_HANDLE
                     || host_handle == crate::devfs::DEVFS_DIR_HANDLE
@@ -4937,6 +4758,13 @@ fn release_ofd_reference_impl(
                     || host_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
                 {
                     // Procfs/devfs/tmpfs/rootfs directory: nothing to clean up
+                } else if file_type == FileType::CharDevice
+                    && crate::exchange::is_exchange_handle(host_handle)
+                {
+                    // Exchange descriptions are kernel-global and shared
+                    // across fork; the last reference ends the consumer or
+                    // removes the work session.
+                    crate::descriptor_backing::release_for_ofd(file_type, host_handle);
                 } else if file_type == FileType::CharDevice && host_handle < 0 {
                     // Virtual char devices have no host handle to close.
                     // Nothing to clean up on host side
@@ -5022,7 +4850,7 @@ pub fn ensure_blocking_retry_ofd_binding(
     tid: u32,
     syscall: u32,
     fd: i32,
-    mut ancillary: Option<Vec<crate::pipe::InFlightFd>>,
+    mut ancillary: Option<AncillaryFds>,
 ) -> Result<i64, Errno> {
     let operation = BlockingRetryOperation::from_syscall(syscall)?;
     if !operation.is_single_ofd() {
@@ -5194,6 +5022,9 @@ pub fn ensure_blocking_retry_sysv_message_binding(
         return Err(Errno::EINVAL);
     }
     if let Ok(token) = proc.blocked_retries.token_for(tid, operation) {
+        if let Some(message) = pending_send {
+            proc.blocked_retries.retain_sysv_message(token, message)?;
+        }
         return Ok(token);
     }
     if proc.blocked_retries.has_binding_for_tid(tid) {
@@ -5343,6 +5174,7 @@ pub fn cleanup_exiting_thread_with_state(
     let release_result = release_blocking_retry_bindings_for_tid(proc, locks, host, tid);
     let owner = ((proc.pid as u64) << 32) | tid as u64;
     cancel_fifo_open_for_owner(proc, owner);
+    crate::wait_park::retire_task(proc.pid, tid);
     let thread = proc.remove_thread(tid).ok_or(Errno::ESRCH)?;
     release_result?;
     Ok(thread)
@@ -5393,7 +5225,7 @@ pub fn discard_blocking_retry_bindings_for_process_removal(proc: &mut Process) {
 pub fn clone_active_sendmsg_ancillary(
     proc: &Process,
     tid: u32,
-) -> Result<Option<Vec<crate::pipe::InFlightFd>>, Errno> {
+) -> Result<Option<AncillaryFds>, Errno> {
     let Some(binding) = proc
         .blocked_retries
         .active_binding(tid, BlockingRetryOperation::Sendmsg)?
@@ -5403,14 +5235,7 @@ pub fn clone_active_sendmsg_ancillary(
     let BlockingRetryTarget::Sendmsg { ancillary, .. } = &binding.target else {
         return Err(Errno::EINVAL);
     };
-    let mut cloned = Vec::new();
-    cloned
-        .try_reserve_exact(ancillary.len())
-        .map_err(|_| Errno::ENOMEM)?;
-    for fd in ancillary {
-        cloned.push(fd.try_clone_retained()?);
-    }
-    Ok(Some(cloned))
+    Ok(Some(ancillary.try_clone_retained()?))
 }
 
 /// Take the scatter/gather request a blocked `writev`/`readv` retained.
@@ -5568,6 +5393,11 @@ pub fn sys_read(
                     if n > 0 {
                         return Ok(n);
                     }
+                    // A failed writer (a Kandelo exchange input whose host
+                    // stream errored): truncated data is EIO, never EOF.
+                    if let Some(error) = pipe.read_error() {
+                        return Err(error);
+                    }
                     if pipe.read_end_has_eof() {
                         return Ok(0);
                     }
@@ -5581,7 +5411,7 @@ pub fn sys_read(
             let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
             let domain = sock.domain;
             let sock_type = sock.sock_type;
-            let shut_rd = sock.shut_rd;
+            let shut_rd = socket_read_shutdown(sock);
             if shut_rd {
                 return Ok(0);
             }
@@ -5596,6 +5426,7 @@ pub fn sys_read(
                             let pipe =
                                 unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
                                     .ok_or(Errno::EBADF)?;
+                            if let Some(error) = pipe.stream_error() { return Err(error); }
                             let n = pipe.read(buf);
                             if n > 0 {
                                 return Ok(n);
@@ -5712,6 +5543,10 @@ pub fn sys_read(
                     Ok(value)
                 }
             })?;
+            crate::epoll::notify(
+                crate::epoll::Source::Backing(FileType::EventFd, host_handle),
+                0x104,
+            );
             buf[..8].copy_from_slice(&value.to_le_bytes());
             Ok(8)
         }
@@ -5748,6 +5583,17 @@ pub fn sys_read(
             Err(Errno::EAGAIN)
         }
         _ => {
+            // Kandelo exchange devices (`events`, work sessions).
+            if file_type == FileType::CharDevice {
+                if let Some(device) = ExchangeDevice::from_host_handle(host_handle) {
+                    return match device {
+                        ExchangeDevice::Events => crate::exchange::device::read_events(buf),
+                        ExchangeDevice::Session(number) => {
+                            crate::exchange::device::read_session(number, buf)
+                        }
+                    };
+                }
+            }
             // Virtual character devices — handle in-kernel
             if file_type == FileType::CharDevice {
                 if let Some(dev) = VirtualDevice::from_host_handle(host_handle) {
@@ -5982,12 +5828,22 @@ pub fn sys_read(
                 return Ok(n);
             }
 
+            if file_type == FileType::Regular && crate::executable_backing::is_executable_handle(host_handle) {
+                let current_offset = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset();
+                let count = crate::executable_backing::read(host_handle, current_offset, buf, host)?;
+                let offset = checked_host_cursor_advance(current_offset, buf.len(), count)?;
+                proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?.set_offset(offset);
+                return Ok(count);
+            }
+
             // In-kernel tmpfs: byte source is Rust memory; cursor is Rust-owned
             // like ordinary files.
             if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
                 let current_offset =
                     proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset();
-                let n = crate::tmpfs::read(host_handle, current_offset, buf)?;
+                let n = crate::tmpfs::read(host_handle, current_offset, buf, &mut |source, source_offset, bytes| {
+                    host.exchange_source_read(source, source_offset, bytes)
+                })?;
                 let new_offset = checked_host_cursor_advance(current_offset, buf.len(), n)?;
                 proc.ofd_table
                     .get_mut(ofd_idx)
@@ -6094,6 +5950,11 @@ pub fn sys_write(
                 {
                     let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
                         .ok_or(Errno::EBADF)?;
+                    // The writer declared the stream finished (a published
+                    // exchange stream's `user.kandelo.end`).
+                    if pipe.is_write_sealed() {
+                        return Err(Errno::EPERM);
+                    }
                     if !pipe.is_read_end_open() {
                         proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                         return Err(Errno::EPIPE);
@@ -6117,7 +5978,7 @@ pub fn sys_write(
             let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
             let domain = sock.domain;
             let sock_type = sock.sock_type;
-            let shut_wr = sock.shut_wr;
+            let shut_wr = socket_write_shutdown(sock);
             if shut_wr {
                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                 return Err(Errno::EPIPE);
@@ -6133,6 +5994,7 @@ pub fn sys_write(
                             let pipe =
                                 unsafe { crate::pipe::global_pipe_table().get_mut(send_buf_idx) }
                                     .ok_or(Errno::EBADF)?;
+                            if let Some(error) = pipe.stream_error() { return Err(error); }
                             if !pipe.is_read_end_open() {
                                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                                 return Err(Errno::EPIPE);
@@ -6196,6 +6058,10 @@ pub fn sys_write(
                 efd.counter += value;
                 Ok(())
             })?;
+            crate::epoll::notify(
+                crate::epoll::Source::Backing(FileType::EventFd, host_handle),
+                0x41,
+            );
             Ok(8)
         }
         FileType::PtyMaster => {
@@ -6282,6 +6148,12 @@ pub fn sys_write(
                 return Ok(n);
             }
 
+            // Exchange devices are opened read-only.
+            if file_type == FileType::CharDevice
+                && ExchangeDevice::from_host_handle(host_handle).is_some()
+            {
+                return Err(Errno::EBADF);
+            }
             // Virtual character devices — handle in-kernel
             if file_type == FileType::CharDevice {
                 if let Some(dev) = VirtualDevice::from_host_handle(host_handle) {
@@ -6373,21 +6245,13 @@ pub fn sys_write(
                 let memfd_idx = (-(host_handle + 1)) as usize;
                 return crate::descriptor_backing::with_memfds(|table| {
                     let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
-                    if writable_len > 0 && status_flags & O_APPEND != 0 {
-                        backing.offset =
-                            i64::try_from(backing.data.len()).map_err(|_| Errno::EOVERFLOW)?;
-                    }
-                    let offset = usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)?;
+                    if writable_len == 0 { return Ok(0); }
+                    let offset = if status_flags & O_APPEND != 0 { backing.data.len() }
+                        else { usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)? };
                     let end = offset.checked_add(writable_len).ok_or(Errno::EFBIG)?;
-                    if end > backing.data.len() {
-                        backing.data.resize(end, 0);
-                    }
-                    backing.data[offset..end].copy_from_slice(&buf[..writable_len]);
-                    backing.touch_modified();
-                    backing.offset = backing
-                        .offset
-                        .checked_add(i64::try_from(writable_len).map_err(|_| Errno::EOVERFLOW)?)
-                        .ok_or(Errno::EOVERFLOW)?;
+                    let next_offset = i64::try_from(end).map_err(|_| Errno::EFBIG)?;
+                    backing.write_at(offset, &buf[..writable_len])?;
+                    backing.offset = next_offset;
                     Ok(writable_len)
                 });
             }
@@ -6594,6 +6458,14 @@ pub fn sys_lseek(
         return Ok(offset);
     }
 
+    // Exchange devices are streams: `events` is a line stream and a session
+    // description reads its number once. Like a pipe, they cannot seek.
+    if ofd.file_type == FileType::CharDevice
+        && ExchangeDevice::from_host_handle(ofd.host_handle).is_some()
+    {
+        return Err(Errno::ESPIPE);
+    }
+
     // Virtual char devices: seek is a no-op for null/zero/etc. /dev/fb0
     // is the exception — seek positions the cursor for the write-based
     // pixel-blit path used by fbDOOM-style software.
@@ -6694,6 +6566,19 @@ pub fn sys_lseek(
         }
         crate::descriptor_backing::set_current_offset(ofd.file_type, ofd.host_handle, new_pos)?;
         return Ok(new_pos);
+    }
+
+    if ofd.file_type == FileType::Regular && crate::executable_backing::is_executable_handle(ofd.host_handle) {
+        let size = i64::try_from(crate::executable_backing::image_size(ofd.host_handle)?).map_err(|_| Errno::EOVERFLOW)?;
+        let position = match whence {
+            SEEK_SET => offset,
+            SEEK_CUR => ofd.offset().checked_add(offset).ok_or(Errno::EOVERFLOW)?,
+            SEEK_END => size.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
+            _ => return Err(Errno::EINVAL),
+        };
+        if position < 0 { return Err(Errno::EINVAL); }
+        ofd.set_offset(position);
+        return Ok(position);
     }
 
     // In-kernel tmpfs: the seek is computed against Rust-owned size/cursor;
@@ -6807,6 +6692,10 @@ pub fn sys_pread(
 
     let host_handle = ofd.host_handle;
 
+    if ofd.file_type == FileType::Regular && crate::executable_backing::is_executable_handle(host_handle) {
+        return crate::executable_backing::read(host_handle, offset, buf, host);
+    }
+
     if crate::descriptor_backing::is_synthetic_regular_handle(host_handle) {
         let data = synthetic_file_content(&ofd.path).ok_or(Errno::EBADF)?;
         let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
@@ -6820,7 +6709,9 @@ pub fn sys_pread(
 
     // In-kernel tmpfs: positioned read from Rust memory, no cursor change.
     if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
-        return crate::tmpfs::read(host_handle, offset, buf);
+        return crate::tmpfs::read(host_handle, offset, buf, &mut |source, source_offset, bytes| {
+            host.exchange_source_read(source, source_offset, bytes)
+        });
     }
 
     // In-kernel rootfs overlay: positioned read; base-file bytes via the byte source.
@@ -7256,16 +7147,11 @@ pub fn sys_pwrite(
 
     if file_type == FileType::MemFd {
         let memfd_idx = (-(host_handle + 1)) as usize;
+        if writable_len == 0 { return Ok(0); }
         let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
-        let end = start.checked_add(writable_len).ok_or(Errno::EFBIG)?;
         return crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
-            if end > backing.data.len() {
-                backing.data.resize(end, 0);
-            }
-            backing.data[start..end].copy_from_slice(&buf[..writable_len]);
-            backing.touch_modified();
-            Ok(writable_len)
+            backing.write_at(start, &buf[..writable_len])
         });
     }
 
@@ -7296,30 +7182,6 @@ pub fn sys_pwrite(
         return Err(Errno::EIO);
     }
     Ok(written)
-}
-
-/// preadv -- scatter-gather read at offset.
-/// Reads into multiple buffers from a file descriptor at the given offset
-/// without modifying the file position.
-fn try_initialized_vec(length: usize) -> Result<Vec<u8>, Errno> {
-    try_initialized_vec_with_reserve(length, |bytes, additional| {
-        bytes
-            .try_reserve_exact(additional)
-            .map_err(|_| Errno::ENOMEM)
-    })
-}
-
-fn try_initialized_vec_with_reserve(
-    length: usize,
-    reserve: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), Errno>,
-) -> Result<Vec<u8>, Errno> {
-    let mut bytes = Vec::new();
-    reserve(&mut bytes, length)?;
-    if bytes.capacity() < length {
-        return Err(Errno::ENOMEM);
-    }
-    bytes.resize(length, 0);
-    Ok(bytes)
 }
 
 /// sendfile -- copy data between file descriptors.
@@ -7697,44 +7559,33 @@ pub fn sys_pipe(proc: &mut Process) -> Result<(i32, i32), Errno> {
     // should get the same FDs pointing to the shared pipe buffers.
     if proc.fork_child && !proc.fork_pipe_replay.is_empty() {
         let (read_fd, write_fd) = proc.fork_pipe_replay.remove(0);
+        if proc.fork_pipe_replay.is_empty() {
+            proc.fork_pipe_replay = crate::io_buffer::IoBuffer::new();
+        }
         return Ok((read_fd, write_fd));
     }
 
-    let pipe = PipeBuffer::new(DEFAULT_PIPE_CAPACITY);
-
-    // Find or append a slot in the global pipe table.
-    let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
+    let read = proc.prepare_descriptor(FileType::Pipe, O_RDONLY, b"/dev/pipe")?;
+    let write = match proc.prepare_descriptor(FileType::Pipe, O_WRONLY, b"/dev/pipe") {
+        Ok(write) => write,
+        Err(error) => { proc.cancel_descriptor(read); return Err(error); }
+    };
+    let pipe_idx = match PipeBuffer::try_new(DEFAULT_PIPE_CAPACITY)
+        .and_then(|pipe| unsafe { crate::pipe::global_pipe_table().try_alloc(pipe) })
+    {
+        Ok(index) => index,
+        Err(error) => {
+            proc.cancel_descriptor(read);
+            proc.cancel_descriptor(write);
+            return Err(error);
+        }
+    };
 
     // Pipe handle is negative: -(pipe_idx + 1)
     let pipe_handle = -((pipe_idx as i64) + 1);
 
-    // Create two OFDs: read end (O_RDONLY) and write end (O_WRONLY).
-    let read_ofd =
-        proc.ofd_table
-            .create(FileType::Pipe, O_RDONLY, pipe_handle, b"/dev/pipe".to_vec());
-    let write_ofd =
-        proc.ofd_table
-            .create(FileType::Pipe, O_WRONLY, pipe_handle, b"/dev/pipe".to_vec());
-
-    // Allocate two fds.
-    let read_fd = match proc.fd_table.alloc(OpenFileDescRef(read_ofd), 0) {
-        Ok(fd) => fd,
-        Err(e) => {
-            proc.ofd_table.dec_ref(read_ofd);
-            proc.ofd_table.dec_ref(write_ofd);
-            return Err(e);
-        }
-    };
-
-    let write_fd = match proc.fd_table.alloc(OpenFileDescRef(write_ofd), 0) {
-        Ok(fd) => fd,
-        Err(e) => {
-            proc.fd_table.free(read_fd).ok();
-            proc.ofd_table.dec_ref(read_ofd);
-            proc.ofd_table.dec_ref(write_ofd);
-            return Err(e);
-        }
-    };
+    let read_fd = proc.publish_descriptor(read, pipe_handle, 0);
+    let write_fd = proc.publish_descriptor(write, pipe_handle, 0);
 
     Ok((read_fd, write_fd))
 }
@@ -7778,7 +7629,7 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
         let is_fifo = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
             .is_some_and(crate::pipe::PipeBuffer::is_fifo);
         if is_fifo {
-            let live_path = unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx);
+            let live_path = unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)?;
             if let Some(live_path) = live_path {
                 if let Ok(Some(st)) = fifo_path_stat_raw(host, &live_path, true) {
                     return Ok(st);
@@ -7832,6 +7683,11 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
             proc.effective_gid(),
         ))
     } else if ofd.file_type == FileType::CharDevice {
+        // An exchange description stats as the node it was opened through,
+        // whose owner, group, and mode decide who may open it.
+        if let Some(device) = ExchangeDevice::from_host_handle(ofd.host_handle) {
+            return crate::tmpfs::lstat(device.node_path());
+        }
         if let Some(dev) = VirtualDevice::from_host_handle(ofd.host_handle) {
             return Ok(virtual_device_stat(
                 dev,
@@ -7895,6 +7751,8 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
             _pad: 0,
             st_rdev: 0,
         })
+    } else if ofd.file_type == FileType::Regular && crate::executable_backing::is_executable_handle(ofd.host_handle) {
+        crate::executable_backing::stat(ofd.host_handle, host)
     } else if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) {
         synthetic_file_stat(&ofd.path, proc.effective_uid(), proc.effective_gid())
             .ok_or(Errno::EBADF)
@@ -7970,6 +7828,109 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
 /// Return the same live OFD metadata through a procfs fd link as `fstat(fd)`.
 /// A numeric procfs fd name that is not open is absent, not an EBADF syscall
 /// argument owned by the caller.
+/// The metadata of the regular file behind an executable's description:
+/// served by the in-kernel filesystem that owns the handle, or the host.
+fn exe_backing_fstat(host: &mut dyn HostIO, host_handle: i64) -> Result<WasmStat, Errno> {
+    if crate::executable_backing::is_executable_handle(host_handle) {
+        crate::executable_backing::stat(host_handle, host)
+    } else if crate::rootfs::is_rootfs_file_handle(host_handle) {
+        crate::rootfs::fstat(host_handle)
+    } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
+        crate::tmpfs::fstat(host_handle)
+    } else if host_handle >= 0 {
+        host.host_fstat(host_handle)
+    } else {
+        Err(Errno::EBADF)
+    }
+}
+
+/// The metadata `/proc/<pid>/exe` follows to: the running image's file.
+pub(crate) fn process_exe_stat(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    pid: u32,
+) -> Result<WasmStat, Errno> {
+    if pid != proc.pid {
+        return Err(Errno::EACCES);
+    }
+    let exe = proc.exe.ok_or(Errno::ENOENT)?;
+    let host_handle = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?.host_handle;
+    exe_backing_fstat(host, host_handle)
+}
+
+/// A NEW open file description of the executable the image runs
+/// (`Process::exe`), at offset 0, sharing its backing -- what Linux gives an
+/// open of `/proc/self/exe`: the object that was executed, even after its
+/// path was unlinked or now names a different file. Returns the description's
+/// index (one reference, no descriptor yet) and the file's metadata.
+///
+/// Only the caller's own image. Linux lets a process open another's `exe`
+/// with ptrace access, which Kandelo does not model, so another pid is
+/// `EACCES` -- the errno Linux gives a caller without that access.
+fn reopen_process_exe(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    pid: u32,
+    status_flags: u32,
+) -> Result<(usize, WasmStat), Errno> {
+    if pid != proc.pid {
+        return Err(Errno::EACCES);
+    }
+    let exe = proc.exe.ok_or(Errno::ENOENT)?;
+    let (file_type, host_handle, path, file_id) = {
+        let ofd = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?;
+        (ofd.file_type, ofd.host_handle, ofd.path.clone(), ofd.file_id)
+    };
+    let stat = exe_backing_fstat(host, host_handle)?;
+    let mut prepared = proc.ofd_table.prepare(file_type, status_flags, &path)?;
+    prepared.value_mut().file_id = file_id;
+    // One more owner of the backing, exactly as an inherited description is.
+    let retained = (|| {
+        if !crate::descriptor_backing::add_ref_for_ofd(file_type, host_handle)? {
+            if host_handle < 0 {
+                return Err(Errno::EBADF);
+            }
+            crate::ofd::host_handle_fork_ref(host_handle)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = retained {
+        proc.ofd_table.cancel(prepared);
+        return Err(error);
+    }
+    let index = proc.ofd_table.publish(prepared, host_handle);
+    Ok((index, stat))
+}
+
+/// `open("/proc/<pid>/exe")`: a descriptor for the running image's file.
+///
+/// Read-only: writing to a file a process is executing is `ETXTBSY` on Linux,
+/// and an open of the exe link for writing asks exactly that. The file's own
+/// read permission still applies.
+fn open_process_exe(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    pid: u32,
+    oflags: u32,
+) -> Result<i32, Errno> {
+    if oflags & O_ACCMODE != O_RDONLY {
+        return Err(Errno::ETXTBSY);
+    }
+    if oflags & O_DIRECTORY != 0 {
+        return Err(Errno::ENOTDIR);
+    }
+    let stat = process_exe_stat(proc, host, pid)?;
+    check_access(proc, &stat, R_OK)?;
+    let (index, _) = reopen_process_exe(proc, host, pid, oflags & !CREATION_FLAGS)?;
+    match proc.fd_table.alloc(OpenFileDescRef(index), oflags_to_fd_flags(oflags)) {
+        Ok(fd) => Ok(fd),
+        Err(error) => {
+            let _ = release_ofd_reference_impl(proc, None, host, index);
+            Err(error)
+        }
+    }
+}
+
 pub fn procfs_fd_target_stat(
     proc: &Process,
     host: &mut dyn HostIO,
@@ -8454,12 +8415,14 @@ fn fifo_path_stat_raw(
         let mut st = crate::tmpfs::lstat(resolved)?;
         st.st_mode = wasm_posix_shared::mode::S_IFIFO | (st.st_mode & 0o7777);
         st.st_size = 0;
+        unsafe { crate::pipe::global_pipe_table() }.get_mut(pipe_idx).ok_or(Errno::EIO)?.update_fifo_metadata(st);
         return Ok(Some(st));
     }
     if crate::rootfs::claims_path(resolved) {
         let mut st = crate::rootfs::lstat(resolved)?;
         st.st_mode = wasm_posix_shared::mode::S_IFIFO | (st.st_mode & 0o7777);
         st.st_size = 0;
+        unsafe { crate::pipe::global_pipe_table() }.get_mut(pipe_idx).ok_or(Errno::EIO)?.update_fifo_metadata(st);
         return Ok(Some(st));
     }
     let mut st = if follow {
@@ -8533,6 +8496,9 @@ fn procfs_entry_stat(
 ) -> Result<WasmStat, Errno> {
     crate::procfs::validate_entry(proc, entry)?;
     if follow {
+        if let crate::procfs::ProcfsEntry::Exe(pid) = entry {
+            return process_exe_stat(proc, host, *pid);
+        }
         if let crate::procfs::ProcfsEntry::FdLink(pid, fd) = entry {
             if *pid == proc.pid {
                 return procfs_fd_target_stat(proc, host, *fd);
@@ -8644,14 +8610,22 @@ pub fn sys_mkdir(
     path: &[u8],
     mode: u32,
 ) -> Result<(), Errno> {
-    let resolved =
-        resolve_namespace_path(proc, host, path, PathResolveOptions::CREATE_DIRECTORY)?.path;
+    let entry = resolve_namespace_path(proc, host, path, PathResolveOptions::CREATE_DIRECTORY)?;
+    // Resolution has already checked search permission on the ancestors.
+    // An existing final entry needs no parent mutation: report EEXIST before
+    // testing write permission, as for mkfifo and symlink creation. Recursive
+    // mkdir users must be able to traverse existing root-owned ancestors.
+    if entry.stat.is_some() {
+        return Err(Errno::EEXIST);
+    }
+    let resolved = entry.path;
     // In-kernel tmpfs owns the scratch mounts; create the directory in Rust and
     // assign ownership from the caller's credentials directly.
     if crate::tmpfs::claims_path(&resolved) {
         let effective_mode = mode & !proc.umask;
         check_parent_writable(proc, host, &resolved)?;
         tmpfs_stamp_now(host)?;
+        crate::exchange::policy::check_create(&resolved)?;
         return crate::tmpfs::mkdir(
             &resolved,
             effective_mode,
@@ -8677,6 +8651,32 @@ pub fn sys_mkdir(
     crate::hostdir::chown(host, &resolved, proc.effective_uid(), proc.effective_gid())
 }
 
+/// unlink on a tmpfs path. Unlinking a published exchange output withdraws
+/// it, so the host is told.
+fn tmpfs_unlink(resolved: &[u8]) -> Result<(), Errno> {
+    let output = crate::exchange::policy::outbox_child_name(resolved)
+        .and_then(|_| crate::exchange::outputs::output_id(resolved));
+    crate::tmpfs::unlink(resolved)?;
+    if let Some(output) = output {
+        crate::exchange::outputs::on_withdrawn(output);
+    }
+    Ok(())
+}
+
+/// rmdir on a tmpfs path. Removing an exchange batch directory is the
+/// consumer's acknowledgement, so the batch settles with its last status.
+fn tmpfs_rmdir(resolved: &[u8]) -> Result<(), Errno> {
+    crate::exchange::policy::check_remove(resolved)?;
+    let batch_name = crate::exchange::batches::inbox_child_name(resolved);
+    let status = batch_name
+        .map(|_| crate::tmpfs::xattr_get(resolved, b"user.kandelo.status").unwrap_or_default());
+    crate::tmpfs::rmdir(resolved)?;
+    if let (Some(name), Some(status)) = (batch_name, status) {
+        crate::exchange::batches::on_inbox_entry_removed(name, status);
+    }
+    Ok(())
+}
+
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
     if final_component_is_dot(path) {
@@ -8684,7 +8684,7 @@ pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     }
     if crate::tmpfs::claims_path(&resolved) {
         check_may_delete(proc, host, &resolved)?;
-        return crate::tmpfs::rmdir(&resolved);
+        return tmpfs_rmdir(&resolved);
     }
     if crate::rootfs::claims_path(&resolved) {
         check_may_delete(proc, host, &resolved)?;
@@ -8730,6 +8730,10 @@ fn make_fifo(
     if resolved.stat.is_some() {
         return Err(Errno::EEXIST);
     }
+    let mut prepared_name = unsafe { crate::fifo::global_fifo_table() }
+        .prepare_registration(&resolved.path, 0)?;
+    let pipe_idx = unsafe { crate::pipe::global_pipe_table() }.prepare_slot()?;
+    prepared_name.set_pipe(pipe_idx);
     // In-kernel tmpfs owns the scratch mounts: the fifo has no host marker file
     // (there is no host mount to hold it). A tmpfs `Special(S_IFIFO)`
     // inode owns the fifo's metadata — so chmod/chown/utimensat/stat route through
@@ -8739,6 +8743,7 @@ fn make_fifo(
         check_parent_writable(proc, host, &resolved.path)?;
         tmpfs_stamp_now(host)?;
         let effective_mode = mode & !proc.umask;
+        crate::exchange::policy::check_create(&resolved.path)?;
         crate::tmpfs::mknod_special(
             &resolved.path,
             effective_mode & 0o7777,
@@ -8750,12 +8755,8 @@ fn make_fifo(
         // above is the authority that `fifo_path_stat_raw` reads back.
         let metadata = crate::tmpfs::lstat(&resolved.path)?;
         let pipe = crate::pipe::PipeBuffer::new_fifo(crate::pipe::DEFAULT_PIPE_CAPACITY, metadata);
-        let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
-        if !unsafe { crate::fifo::global_fifo_table() }.register(resolved.path.clone(), pipe_idx) {
-            unsafe { crate::pipe::global_pipe_table().remove_fifo_name(pipe_idx) };
-            let _ = crate::tmpfs::unlink(&resolved.path);
-            return Err(Errno::EEXIST);
-        }
+        unsafe { crate::pipe::global_pipe_table() }.publish_prepared(pipe_idx, pipe);
+        assert!(unsafe { crate::fifo::global_fifo_table() }.publish_registration(prepared_name));
         return Ok(());
     }
     // In-kernel rootfs overlay owns `/`: same fifo model as tmpfs (a
@@ -8774,12 +8775,8 @@ fn make_fifo(
         )?;
         let metadata = crate::rootfs::lstat(&resolved.path)?;
         let pipe = crate::pipe::PipeBuffer::new_fifo(crate::pipe::DEFAULT_PIPE_CAPACITY, metadata);
-        let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
-        if !unsafe { crate::fifo::global_fifo_table() }.register(resolved.path.clone(), pipe_idx) {
-            unsafe { crate::pipe::global_pipe_table().remove_fifo_name(pipe_idx) };
-            let _ = crate::rootfs::unlink(&resolved.path);
-            return Err(Errno::EEXIST);
-        }
+        unsafe { crate::pipe::global_pipe_table() }.publish_prepared(pipe_idx, pipe);
+        assert!(unsafe { crate::fifo::global_fifo_table() }.publish_registration(prepared_name));
         return Ok(());
     }
     ensure_host_mutable_namespace_path(&resolved.path)?;
@@ -8812,12 +8809,8 @@ fn make_fifo(
     metadata.st_mode = wasm_posix_shared::mode::S_IFIFO | (metadata.st_mode & 0o7777);
     metadata.st_size = 0;
     let pipe = crate::pipe::PipeBuffer::new_fifo(crate::pipe::DEFAULT_PIPE_CAPACITY, metadata);
-    let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
-    if !unsafe { crate::fifo::global_fifo_table() }.register(resolved.path.clone(), pipe_idx) {
-        unsafe { crate::pipe::global_pipe_table().remove_fifo_name(pipe_idx) };
-        let _ = crate::hostdir::unlink(host, &resolved.path);
-        return Err(Errno::EEXIST);
-    }
+    unsafe { crate::pipe::global_pipe_table() }.publish_prepared(pipe_idx, pipe);
+    assert!(unsafe { crate::fifo::global_fifo_table() }.publish_registration(prepared_name));
     Ok(())
 }
 
@@ -8846,7 +8839,8 @@ fn unlink_fifo_marker(host: &mut dyn HostIO, resolved: &[u8]) -> Option<Result<(
         // A tmpfs fifo has no host marker file; drop its `Special(S_IFIFO)`
         // inode. A host fifo removes its marker file instead.
         if crate::tmpfs::claims_path(resolved) {
-            crate::tmpfs::unlink(resolved)?;
+            crate::exchange::policy::check_remove(resolved)?;
+            tmpfs_unlink(resolved)?;
         } else if crate::rootfs::claims_path(resolved) {
             crate::rootfs::unlink(resolved)?;
         } else {
@@ -8859,34 +8853,26 @@ fn unlink_fifo_marker(host: &mut dyn HostIO, resolved: &[u8]) -> Option<Result<(
         }
         unsafe { crate::pipe::global_pipe_table() }
             .remove_fifo_name_at(pipe_idx, ctime_sec, ctime_nsec);
+        // An exchange input stream no one can reach releases its source.
+        crate::exchange::streams::touch(pipe_idx);
         Ok(())
     })();
     Some(result)
 }
 
 fn rekey_fifo_names_after_rename(
-    oldpath: &[u8],
-    newpath: &[u8],
+    prepared: crate::fifo::PreparedFifoRename,
     displaced_ctime: Option<(u64, u32)>,
 ) {
     let registry = unsafe { crate::fifo::global_fifo_table() };
-    let old_pipe = registry.lookup(oldpath);
-    let new_pipe = registry.lookup(newpath);
-    // rename(old, new) is a no-op when both names are hard links to the same
-    // inode. Preserve both aliases and their namespace reference counts.
-    if old_pipe.is_some() && old_pipe == new_pipe {
-        return;
-    }
-    let replaced = registry.rename_path(oldpath, newpath);
-    debug_assert!(replaced.is_empty() || displaced_ctime.is_some());
     let pipes = unsafe { crate::pipe::global_pipe_table() };
-    for pipe_idx in replaced {
+    registry.publish_rename(prepared, |pipe_idx| {
         if let Some((ctime_sec, ctime_nsec)) = displaced_ctime {
             pipes.remove_fifo_name_at(pipe_idx, ctime_sec, ctime_nsec);
         } else {
             pipes.remove_fifo_name(pipe_idx);
         }
-    }
+    });
 }
 
 fn refresh_displaced_fifo_before_rename(
@@ -8904,24 +8890,51 @@ fn refresh_displaced_fifo_before_rename(
     Ok(None)
 }
 
-fn register_fifo_hardlink(
+fn prepare_fifo_hardlink(oldpath: &[u8], newpath: &[u8]) -> Result<Option<crate::fifo::PreparedFifoName>, Errno> {
+    let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.lookup(oldpath) else {
+        return Ok(None);
+    };
+    let pipes = unsafe { crate::pipe::global_pipe_table() };
+    let pipe = pipes.get(pipe_idx).ok_or(Errno::EIO)?;
+    if pipe.fifo_name_count() == u32::MAX { return Err(Errno::EMLINK); }
+    unsafe { crate::fifo::global_fifo_table() }.prepare_registration(newpath, pipe_idx).map(Some)
+}
+
+fn rename_with_fifo_registration(
     host: &mut dyn HostIO,
     oldpath: &[u8],
     newpath: &[u8],
+    rename: impl FnOnce(&mut dyn HostIO) -> Result<(), Errno>,
 ) -> Result<(), Errno> {
-    let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.lookup(oldpath) else {
-        return Ok(());
-    };
-    if !unsafe { crate::fifo::global_fifo_table() }.register(newpath.to_vec(), pipe_idx) {
-        let _ = crate::hostdir::unlink(host, newpath);
-        return Err(Errno::EIO);
+    let prepared_unix = unsafe { crate::unix_socket::global_unix_socket_registry() }.prepare_rename(oldpath, newpath)?;
+    let displaced_ctime = refresh_displaced_fifo_before_rename(host, oldpath, newpath)?;
+    let prepared = unsafe { crate::fifo::global_fifo_table() }.prepare_rename(oldpath, newpath)?;
+    rename(host)?;
+    rekey_fifo_names_after_rename(prepared, displaced_ctime);
+    if unsafe { crate::unix_socket::global_unix_socket_registry() }.publish_rename(prepared_unix) {
+        crate::wakeup::push_datagram_writable();
     }
-    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }.ok_or_else(|| {
-        unsafe { crate::fifo::global_fifo_table() }.remove(newpath);
-        let _ = crate::hostdir::unlink(host, newpath);
-        Errno::EIO
-    })?;
-    pipe.add_fifo_name();
+    Ok(())
+}
+
+fn publish_fifo_hardlink(prepared: Option<crate::fifo::PreparedFifoName>) {
+    if let Some(prepared) = prepared {
+        let pipe_idx = prepared.pipe_index();
+        let pipe = unsafe { crate::pipe::global_pipe_table() }.get_mut(pipe_idx)
+            .expect("prepared FIFO hardlink lost its pipe");
+        pipe.add_fifo_name();
+        assert!(unsafe { crate::fifo::global_fifo_table() }.publish_registration(prepared));
+    }
+}
+
+fn link_with_fifo_registration(
+    oldpath: &[u8],
+    newpath: &[u8],
+    link: impl FnOnce() -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    let prepared = prepare_fifo_hardlink(oldpath, newpath)?;
+    link()?;
+    publish_fifo_hardlink(prepared);
     Ok(())
 }
 
@@ -8936,11 +8949,12 @@ pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
         if let Some(result) = unlink_fifo_marker(host, &resolved) {
             return result;
         }
+        crate::exchange::policy::check_remove(&resolved)?;
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.unregister(&resolved) {
             crate::wakeup::push_datagram_writable();
         }
-        return crate::tmpfs::unlink(&resolved);
+        return tmpfs_unlink(&resolved);
     }
     // In-kernel rootfs overlay owns `/`: same fifo/socket handling as tmpfs — a
     // fifo lives in the fifo/pipe table, a bound AF_UNIX socket in the registry;
@@ -9001,6 +9015,7 @@ pub fn sys_rename(
     };
     let new = resolve_namespace_path(proc, host, newpath, new_options)?.path;
     let old = old_entry.path;
+    let rename_paths = proc.ofd_table.prepare_directory_rename(&old, &new)?;
     // Route by in-kernel tmpfs authority: both endpoints on tmpfs → in-kernel
     // rename; a tmpfs/host mix is a cross-filesystem rename → EXDEV.
     let old_tmpfs = crate::tmpfs::claims_path(&old);
@@ -9010,18 +9025,20 @@ pub fn sys_rename(
             return Err(Errno::EXDEV);
         }
         check_may_rename(proc, host, &old, &new)?;
+        if crate::exchange::policy::check_rename(&old, &new)?
+            == crate::exchange::policy::Rename::Publish
+        {
+            tmpfs_stamp_now(host)?;
+            crate::exchange::outputs::publish(&old, &new, exchange_now_ms(host)?)?;
+            rename_paths.publish();
+            return Ok(());
+        }
         // A tmpfs fifo lives in the fifo/pipe table keyed by path (alongside its
         // Special inode), and an AF_UNIX socket in the unix-socket registry.
         // Advance a displaced fifo's cached ctime and rekey both registries
         // across the move, exactly as the host path does below.
-        let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old, &new)?;
-        crate::tmpfs::rename(&old, &new)?;
-        proc.ofd_table.rename_directory_paths(&old, &new);
-        rekey_fifo_names_after_rename(&old, &new, displaced_ctime);
-        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.rename_path(&old, &new) {
-            crate::wakeup::push_datagram_writable();
-        }
+        rename_with_fifo_registration(host, &old, &new, |_| crate::tmpfs::rename(&old, &new))?;
+        rename_paths.publish();
         return Ok(());
     }
     // Route by in-kernel rootfs authority (neither endpoint is tmpfs here). Both
@@ -9033,12 +9050,8 @@ pub fn sys_rename(
             return Err(Errno::EXDEV);
         }
         check_may_rename(proc, host, &old, &new)?;
-        crate::rootfs::rename(&old, &new)?;
-        proc.ofd_table.rename_directory_paths(&old, &new);
-        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.rename_path(&old, &new) {
-            crate::wakeup::push_datagram_writable();
-        }
+        rename_with_fifo_registration(host, &old, &new, |_| crate::rootfs::rename(&old, &new))?;
+        rename_paths.publish();
         return Ok(());
     }
     ensure_host_mutable_namespace_path(&old)?;
@@ -9049,14 +9062,8 @@ pub fn sys_rename(
     if fs_lstat(host, &new).is_ok() {
         check_sticky_child(proc, host, &new)?;
     }
-    let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old, &new)?;
-    crate::hostdir::rename(host, &old, &new)?;
-    proc.ofd_table.rename_directory_paths(&old, &new);
-    rekey_fifo_names_after_rename(&old, &new, displaced_ctime);
-    let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-    if registry.rename_path(&old, &new) {
-        crate::wakeup::push_datagram_writable();
-    }
+    rename_with_fifo_registration(host, &old, &new, |host| crate::hostdir::rename(host, &old, &new))?;
+    rename_paths.publish();
     Ok(())
 }
 
@@ -9079,7 +9086,8 @@ pub fn sys_link(
         check_search_path(proc, host, &old)?;
         check_parent_writable(proc, host, &new)?;
         tmpfs_stamp_now(host)?;
-        return crate::tmpfs::link(&old, &new);
+        crate::exchange::policy::check_link(&old, &new)?;
+        return link_with_fifo_registration(&old, &new, || crate::tmpfs::link(&old, &new));
     }
     let old_rootfs = crate::rootfs::claims_path(&old);
     let new_rootfs = crate::rootfs::claims_path(&new);
@@ -9090,14 +9098,13 @@ pub fn sys_link(
         check_search_path(proc, host, &old)?;
         check_parent_writable(proc, host, &new)?;
         tmpfs_stamp_now(host)?;
-        return crate::rootfs::link(&old, &new);
+        return link_with_fifo_registration(&old, &new, || crate::rootfs::link(&old, &new));
     }
     ensure_host_mutable_namespace_path(&old)?;
     ensure_host_mutable_namespace_path(&new)?;
     check_search_path(proc, host, &old)?;
     check_parent_writable(proc, host, &new)?;
-    crate::hostdir::link(host, &old, &new)?;
-    register_fifo_hardlink(host, &old, &new)
+    link_with_fifo_registration(&old, &new, || crate::hostdir::link(host, &old, &new))
 }
 
 pub fn sys_symlink(
@@ -9111,6 +9118,7 @@ pub fn sys_symlink(
     if crate::tmpfs::claims_path(&link) {
         check_parent_writable(proc, host, &link)?;
         tmpfs_stamp_now(host)?;
+        crate::exchange::policy::check_create(&link)?;
         return crate::tmpfs::symlink(target, &link, proc.effective_uid(), proc.effective_gid());
     }
     if crate::rootfs::claims_path(&link) {
@@ -9358,7 +9366,7 @@ pub fn sys_chdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
         return Err(Errno::ENOTDIR);
     }
     check_access(proc, &stat, X_OK)?;
-    proc.cwd = resolved.path;
+    proc.cwd = crate::ofd::OfdPath::copy_from(&resolved.path)?;
     Ok(())
 }
 
@@ -9409,24 +9417,22 @@ pub fn sys_opendir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Re
         // the name into a hidden host directory.
         return Err(Errno::EOPNOTSUPP);
     }
+    let index = proc.dir_streams.iter().position(Option::is_none).unwrap_or(proc.dir_streams.len());
+    let handle = i32::try_from(index).map_err(|_| Errno::EMFILE)?;
+    let path = crate::ofd::OfdPath::copy_from(&resolved.path)?;
+    if index == proc.dir_streams.len() { proc.dir_streams.try_reserve(1)?; }
     let host_handle = crate::hostdir::opendir(host, &resolved.path)?;
     let stream = DirStream {
         host_handle,
-        path: resolved.path,
+        path,
         position: 0,
         synth_dot_state: 0,
     };
 
-    // Find a free slot or append
-    for (i, slot) in proc.dir_streams.iter().enumerate() {
-        if slot.is_none() {
-            proc.dir_streams[i] = Some(stream);
-            return Ok(i as i32);
-        }
-    }
-    let idx = proc.dir_streams.len();
-    proc.dir_streams.push(Some(stream));
-    Ok(idx as i32)
+    if index == proc.dir_streams.len() {
+        proc.dir_streams.push(Some(stream));
+    } else { proc.dir_streams[index] = Some(stream); }
+    Ok(handle)
 }
 
 /// Read the next directory entry. Returns:
@@ -9738,11 +9744,11 @@ pub fn sys_getdents64(
 
         // Get all PIDs for /proc root listing; includes self + other processes
         #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        let mut pids = crate::procfs::procfs_all_pids();
+        let mut pids = crate::procfs::procfs_all_pids()?;
         #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-        let mut pids = alloc::vec::Vec::<u32>::new();
+        let mut pids = crate::IoBuffer::<u32>::new();
         if pids.is_empty() {
-            pids.push(proc.pid); // fallback: at least self
+            pids.try_push(proc.pid)?;
         }
 
         // Check if this is a cross-process directory (e.g. /proc/<other_pid>/fd)
@@ -9895,7 +9901,7 @@ pub fn sys_getdents64(
     };
 
     let mut pos = 0usize;
-    let mut name_buf = [0u8; 256];
+    let mut name_buf = crate::io_buffer::IoBuffer::new();
     // Use persistent entry offset from OFD for d_off values (seekdir cookie)
     let mut entry_offset = proc
         .ofd_table
@@ -9947,8 +9953,19 @@ pub fn sys_getdents64(
             .dir_pending_entry
             .take();
         let next_entry = if let Some(entry) = pending {
-            Some((entry.ino, entry.d_type, Cow::Owned(entry.name), true))
+            let (ino, d_type, name) = entry.into_parts();
+            name_buf = name;
+            Some((ino, d_type, true))
         } else {
+            let capacity = wasm_posix_shared::platform_limits::NAME_MAX_BYTES;
+            if let Err(error) = name_buf.reserve_with(capacity, |bytes| bytes.try_reserve_exact(capacity).map_err(|_| Errno::ENOMEM)) {
+                if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                    ofd.dir_entry_offset = entry_offset;
+                    ofd.set_directory_offset(entry_offset);
+                }
+                return if pos == 0 { Err(error) } else { Ok(pos) };
+            }
+            name_buf.resize(capacity, 0);
             match host.host_readdir(dir_handle, &mut name_buf) {
                 Ok(Some((d_ino, host_d_type, name_len))) => {
                     if name_len > name_buf.len() {
@@ -9961,12 +9978,8 @@ pub fn sys_getdents64(
                         }
                         return Ok(pos);
                     }
-                    Some((
-                        d_ino,
-                        host_d_type as u8,
-                        Cow::Borrowed(&name_buf[..name_len]),
-                        false,
-                    ))
+                    name_buf.truncate(name_len);
+                    Some((d_ino, host_d_type as u8, false))
                 }
                 Ok(None) => None,
                 Err(err) => {
@@ -9982,20 +9995,20 @@ pub fn sys_getdents64(
             }
         };
         match next_entry {
-            Some((d_ino, host_d_type, name, d_type_is_final)) => {
+            Some((d_ino, host_d_type, d_type_is_final)) => {
+                let name = name_buf.as_slice();
                 // Skip host "." and ".." entries (we already synthesized them)
-                if name.as_ref() == b"."
-                    || name.as_ref() == b".."
-                    || is_root_virtual_dirent(&path, name.as_ref())
+                if name == b"."
+                    || name == b".."
+                    || is_root_virtual_dirent(&path, name)
                 {
                     continue;
                 }
 
-                let entry_path = directory_entry_path(&path, name.as_ref());
                 let d_type = if d_type_is_final {
                     host_d_type
                 } else if unsafe { crate::fifo::global_fifo_table() }
-                    .lookup(&entry_path)
+                    .lookup_child(&path, name)
                     .is_some()
                 {
                     1 // DT_FIFO
@@ -10009,15 +10022,13 @@ pub fn sys_getdents64(
                     d_ino,
                     entry_offset,
                     d_type,
-                    name.as_ref(),
+                    name,
                 );
                 if written == 0 {
                     if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-                        ofd.dir_pending_entry = Some(crate::ofd::PendingDirEntry {
-                            ino: d_ino,
-                            d_type,
-                            name: name.into_owned(),
-                        });
+                        ofd.dir_pending_entry = Some(crate::ofd::PendingDirEntry::from_buffer(
+                            d_ino, d_type, core::mem::replace(&mut name_buf, crate::io_buffer::IoBuffer::new()),
+                        ));
                         ofd.dir_entry_offset = entry_offset - 1;
                         ofd.set_directory_offset(entry_offset - 1);
                     }
@@ -10158,6 +10169,8 @@ pub fn sys_setpgid(proc: &mut Process, pid: u32, pgid: u32) -> Result<(), Errno>
     }
     let new_pgid = if pgid == 0 { proc.pid } else { pgid };
     proc.pgid = new_pgid;
+    // A parent's `waitpid(-pgid)` may have gained or lost this child.
+    crate::wait_park::note_children_changed();
     Ok(())
 }
 
@@ -10184,6 +10197,7 @@ pub fn sys_setsid(proc: &mut Process) -> Result<u32, Errno> {
     proc.sid = proc.pid;
     proc.pgid = proc.pid;
     proc.is_session_leader = true;
+    crate::wait_park::note_children_changed();
     Ok(proc.sid)
 }
 
@@ -10377,28 +10391,11 @@ pub fn sys_sigtimedwait(
     mask: u64,
     _timeout_ms: i32,
 ) -> Result<(u32, u64, i32, i32, i32), Errno> {
-    use wasm_posix_shared::signal::NSIG;
-
     let tid = current_tid_for_process(proc);
-
-    // Scan the calling thread's pending set (shared + directed) for a match.
-    let pending_in_mask = proc.pending_for(tid) & mask;
-    if pending_in_mask != 0 {
-        let signum = pending_in_mask.trailing_zeros() + 1;
-        if signum < NSIG {
-            let info = proc.consume_signal_for(tid, signum).ok_or(Errno::EAGAIN)?;
-            let (word_1, word_2) = match info.timer_id {
-                Some(timer_id) => (
-                    timer_id as i32,
-                    proc.accept_posix_timer_notification(timer_id).unwrap_or(0),
-                ),
-                None => (info.sender_pid as i32, info.sender_uid as i32),
-            };
-            return Ok((signum, info.si_value_bits, info.si_code, word_1, word_2));
-        }
+    match crate::wait_signal::take_signal_for(proc, tid, mask) {
+        Some(t) => Ok((t.signum, t.value_bits, t.code, t.word_1, t.word_2)),
+        None => Err(Errno::EAGAIN),
     }
-
-    Err(Errno::EAGAIN)
 }
 
 /// sigsuspend -- temporarily replace the signal mask and suspend until a signal is delivered.
@@ -10561,14 +10558,19 @@ fn cleanup_process_for_exit(
     mut locks: Option<&mut AdvisoryLockManager>,
     host: &mut dyn HostIO,
 ) {
+    proc.epoll_waits.clear();
     // Prepared executable tokens are exact OFD leases owned by this image,
     // not guest descriptors. Retire them before the ordinary fd walk so exit,
     // signal death, and trap cleanup cannot leave host-visible authority alive.
+    // The executable the image ran goes with it (`Process::exe`): a zombie
+    // runs nothing, so it holds no executable resident.
     if let Some(machine_locks) = locks.as_deref_mut() {
         crate::exec_target::drain_prepared_exec_targets(proc, machine_locks, host);
+        crate::exec_target::release_process_exe(proc, machine_locks, host);
     } else {
         let mut isolated_locks = AdvisoryLockManager::new();
         crate::exec_target::drain_prepared_exec_targets(proc, &mut isolated_locks, host);
+        crate::exec_target::release_process_exe(proc, &mut isolated_locks, host);
     }
 
     // The exiting image owns every blocked request. Consume its stable
@@ -10589,6 +10591,10 @@ fn cleanup_process_for_exit(
     // ProcessTable removal would leak both resources past process exit.
     cancel_fifo_opens_for_process(proc);
 
+    // Exit discards the address space, like Linux do_exit's exit_mm. Drop
+    // the framebuffer mapping here rather than at reap, so the fd walk below
+    // releases /dev/fb0 ownership instead of leaving it with the zombie.
+    release_process_fb_binding(proc, host);
     release_process_dri_mappings(proc, host);
 
     // Snapshot the sparse table because sys_close mutates it. RLIMIT_NOFILE
@@ -10615,6 +10621,13 @@ fn cleanup_process_for_exit(
     if let Some(locks) = locks {
         publish_advisory_lock_mutation(locks.remove_process(proc.pid));
     }
+
+    // A zombie owes its parent an exit status, not its environment. These live
+    // in the bounded I/O pool, so unreaped children must not keep them there,
+    // or a parent that reaps late can exhaust the pool and fail its own fork.
+    // Only argv[0] stays, because procfs names the process from it.
+    proc.environ = crate::process::ProcessStrings::new();
+    proc.argv.keep_name();
 }
 
 /// Exit normally, publishing the parent-visible status after cleanup.
@@ -10730,26 +10743,18 @@ fn guest_clock_now(host: &mut dyn HostIO, host_clock_id: u32) -> Result<(i64, i6
     host.host_clock_gettime(host_clock_id)
 }
 
-/// Sleep for the specified duration.
-pub fn sys_nanosleep(
-    _proc: &Process,
-    _host: &mut dyn HostIO,
-    req: &WasmTimespec,
-) -> Result<(), Errno> {
-    if req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1_000_000_000 {
-        return Err(Errno::EINVAL);
-    }
-    credit_image_build_sleep(req.tv_sec, req.tv_nsec);
-    Ok(())
+/// An image-build kernel's realtime clock advances by the time a task sleeps
+/// (`image_build_determinism`): the full requested duration, credited when
+/// the sleep begins, so the credit depends on the task's history and not on
+/// when a signal happened to end it. A no-op otherwise.
+fn credit_image_build_sleep_ns(ns: i64) {
+    crate::image_build_determinism::credit_current_task_sleep(ns.max(0) as u64);
 }
 
-/// An image-build kernel's realtime clock advances by the time a task sleeps
-/// (`image_build_determinism`); a no-op otherwise.
-fn credit_image_build_sleep(sec: i64, nsec: i64) {
-    let ns = (sec.max(0) as u64)
-        .saturating_mul(1_000_000_000)
-        .saturating_add(nsec.max(0) as u64);
-    crate::image_build_determinism::credit_current_task_sleep(ns);
+/// [`guest_clock_now`] in nanoseconds.
+fn guest_clock_ns(host: &mut dyn HostIO, clock_id: u32) -> Result<i64, Errno> {
+    let (sec, nsec) = guest_clock_now(host, clock_id)?;
+    Ok(sec.saturating_mul(1_000_000_000).saturating_add(nsec))
 }
 
 /// Get clock resolution. Returns hardcoded values since Wasm doesn't
@@ -10775,53 +10780,6 @@ pub fn sys_clock_getres(_proc: &Process, clock_id: u32) -> Result<WasmTimespec, 
             })
         }
         _ => Err(Errno::EINVAL),
-    }
-}
-
-/// Sleep using a specific clock. For TIMER_ABSTIME, rewrite the requested
-/// deadline to the relative duration consumed by the host channel.
-pub fn sys_clock_nanosleep(
-    _proc: &Process,
-    host: &mut dyn HostIO,
-    clock_id: u32,
-    flags: u32,
-    req: &WasmTimespec,
-    req_ptr: *const u8,
-) -> Result<(), Errno> {
-    use wasm_posix_shared::clock::*;
-    // Validate clock_id
-    if clock_id != CLOCK_REALTIME && clock_id != CLOCK_MONOTONIC && clock_id != CLOCK_BOOTTIME {
-        return Err(Errno::EINVAL);
-    }
-    // Validate timespec
-    if req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1_000_000_000 {
-        return Err(Errno::EINVAL);
-    }
-    const TIMER_ABSTIME: u32 = 1;
-    if flags & TIMER_ABSTIME != 0 {
-        // Absolute sleep: compute relative delay from the clock the guest
-        // computed its deadline on.
-        let (now_sec, now_nsec) = guest_clock_now(host, clock_id)?;
-        let mut sec = req.tv_sec - now_sec;
-        let mut nsec = req.tv_nsec - now_nsec;
-        if nsec < 0 {
-            sec -= 1;
-            nsec += 1_000_000_000;
-        }
-        // Write relative delay to scratch and return immediately; the host
-        // reads it from CH_DATA and sets up the timer.
-        let out = unsafe { core::slice::from_raw_parts_mut(req_ptr as *mut u8, 16) };
-        if sec < 0 {
-            out[0..16].fill(0);
-        } else {
-            out[0..8].copy_from_slice(&sec.to_le_bytes());
-            out[8..16].copy_from_slice(&nsec.to_le_bytes());
-            credit_image_build_sleep(sec, nsec);
-        }
-        Ok(())
-    } else {
-        credit_image_build_sleep(req.tv_sec, req.tv_nsec);
-        Ok(())
     }
 }
 
@@ -10883,13 +10841,19 @@ pub fn sys_utimensat(
         if ofd.is_path_only() {
             return Err(Errno::EBADF);
         }
+        if ofd.file_type == FileType::Regular && crate::executable_backing::is_executable_handle(ofd.host_handle) {
+            if !check_utimens_permissions(proc, &crate::executable_backing::stat(ofd.host_handle, host)?, times)? {
+                return Ok(());
+            }
+            return Err(Errno::EPERM);
+        }
         if let Some(pipe_idx) = named_fifo_pipe_idx(proc, dirfd)? {
             let st = sys_fstat(proc, host, dirfd)?;
             if !check_utimens_permissions(proc, &st, times)? {
                 return Ok(());
             }
             if let Some(live_path) =
-                unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
+                unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)?
             {
                 if crate::tmpfs::claims_path(&live_path)
                     || crate::rootfs::claims_path(&live_path)
@@ -11002,7 +10966,7 @@ pub fn sys_utimensat(
     let resolved = if path.is_empty() && dirfd != wasm_posix_shared::flags::AT_FDCWD {
         let entry = proc.fd_table.get(dirfd)?;
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-        ofd.current_path()?
+        ofd.path.to_vec()
     } else {
         resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path
     };
@@ -11087,21 +11051,21 @@ pub fn sys_mremap(
     }
 
     // Page-align both sizes
-    let aligned_old = (old_len + 0xFFFF) & !0xFFFF;
-    let aligned_new = (new_len + 0xFFFF) & !0xFFFF;
+    let aligned_old = old_len.checked_add(0xFFFF).ok_or(Errno::EINVAL)? & !0xFFFF;
+    let aligned_new = new_len.checked_add(0xFFFF).ok_or(Errno::EINVAL)? & !0xFFFF;
 
     // Shrink: munmap the tail portion
     if aligned_new <= aligned_old {
         if aligned_new < aligned_old {
             proc.memory
-                .munmap(old_addr + aligned_new, aligned_old - aligned_new);
+                .munmap(old_addr.checked_add(aligned_new).ok_or(Errno::EINVAL)?, aligned_old - aligned_new)?;
         }
         return Ok(old_addr);
     }
 
     // Grow: check if the mapping can expand in place
     let extra = aligned_new - aligned_old;
-    let grow_start = old_addr + aligned_old;
+    let grow_start = old_addr.checked_add(aligned_old).ok_or(Errno::EINVAL)?;
     if proc.memory.can_grow_at(grow_start, extra) {
         if proc
             .memory
@@ -11122,13 +11086,14 @@ pub fn sys_mremap(
     // the user process resumes.
     if flags & MREMAP_MAYMOVE != 0 {
         use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE};
+        proc.memory.prepare_mremap_move(old_addr, aligned_old)?;
         let new_addr = proc
             .memory
             .mmap_anonymous(0, aligned_new, 3, MAP_PRIVATE | MAP_ANONYMOUS);
         if new_addr == wasm_posix_shared::mmap::MAP_FAILED {
             return Err(Errno::ENOMEM);
         }
-        proc.memory.munmap(old_addr, aligned_old);
+        proc.memory.munmap(old_addr, aligned_old)?;
         return Ok(new_addr);
     }
 
@@ -11191,7 +11156,8 @@ pub fn sys_setenv(
         if let Some(eq_pos) = entry.iter().position(|&b| b == b'=') {
             if &entry[..eq_pos] == name {
                 if overwrite {
-                    let mut new_entry = name.to_vec();
+                    let mut new_entry = crate::IoBuffer::try_with_capacity(encoded_entry_bytes)?;
+                    new_entry.extend_from_slice(name);
                     new_entry.push(b'=');
                     new_entry.extend_from_slice(value);
                     *entry = new_entry;
@@ -11202,10 +11168,11 @@ pub fn sys_setenv(
     }
 
     // Not found - add new
-    let mut new_entry = name.to_vec();
+    let mut new_entry = crate::IoBuffer::try_with_capacity(encoded_entry_bytes)?;
+    new_entry.extend_from_slice(name);
     new_entry.push(b'=');
     new_entry.extend_from_slice(value);
-    proc.environ.push(new_entry);
+    proc.environ.try_push_owned(new_entry)?;
     Ok(())
 }
 
@@ -11248,6 +11215,29 @@ pub fn fd_supports_mmap_writeback(proc: &Process, fd: i32) -> bool {
 /// pixel range to a display surface. Linux fbdev allows only one mapping
 /// per process; a second mmap on the same fd returns `EINVAL`.
 pub fn sys_mmap(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    addr: usize,
+    len: usize,
+    prot: u32,
+    flags: u32,
+    fd: i32,
+    offset: i64,
+) -> Result<usize, Errno> {
+    let cleanup = if flags & wasm_posix_shared::mmap::MAP_FIXED != 0 && addr != 0 && len != 0 {
+        let aligned = len.checked_add(0xFFFF).ok_or(Errno::EINVAL)? & !0xFFFF;
+        Some(unsafe { crate::memory::global_shared_mapping_table() }.stage_cleanup_mappings(proc.pid, addr as u64, aligned as u64)?)
+    } else { None };
+    let result = sys_mmap_prepared(proc, host, addr, len, prot, flags, fd, offset);
+    if result.is_ok() {
+        if let Some(cleanup) = cleanup {
+            unsafe { crate::memory::global_shared_mapping_table() }.publish_cleanup_preparation(cleanup);
+        }
+    }
+    result
+}
+
+fn sys_mmap_prepared(
     proc: &mut Process,
     host: &mut dyn HostIO,
     addr: usize,
@@ -11406,6 +11396,7 @@ pub fn sys_mmap(
             if len != bo_size as usize && len != aligned_bo_size {
                 return Err(Errno::EINVAL);
             }
+            proc.dri_bindings.try_reserve(1)?;
             let alloc_flags = flags | MAP_ANONYMOUS;
             let addr_out = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
             if addr_out == MAP_FAILED {
@@ -11413,7 +11404,7 @@ pub fn sys_mmap(
             }
             let bind_rc = host.gbm_bo_bind(proc.pid as i32, bo_id, addr_out, len);
             if bind_rc < 0 {
-                proc.memory.munmap(addr_out, len);
+                proc.memory.munmap(addr_out, len)?;
                 return Err(Errno::ENOMEM);
             }
             proc.dri_bindings.push(crate::process::DriBoBinding {
@@ -11430,6 +11421,9 @@ pub fn sys_mmap(
         // mapping is populated after the kernel commits it, from a context
         // that cannot wait, so fetching later would leave zeros where the
         // bytes had not arrived (see `rootfs::prefetch_range`).
+        if ofd.file_type == FileType::Regular && crate::executable_backing::is_executable_handle(ofd.host_handle) {
+            crate::executable_backing::prefetch(ofd.host_handle, offset, len, host)?;
+        }
         if ofd.file_type == FileType::Regular
             && crate::rootfs::is_rootfs_file_handle(ofd.host_handle)
         {
@@ -11481,6 +11475,10 @@ pub fn sys_munmap(
         return Err(Errno::EINVAL);
     }
 
+    proc.memory.prepare_munmap(addr, aligned_len)?;
+    let cleanup = unsafe { crate::memory::global_shared_mapping_table() }
+        .stage_cleanup_mappings(proc.pid, addr as u64, aligned_len as u64)?;
+
     // /dev/fb0 cleanup: if this munmap fully covers the framebuffer
     // binding, drop it and tell the host. We check before the actual
     // munmap so the host stops reading the region before its address
@@ -11493,12 +11491,7 @@ pub fn sys_munmap(
         false
     };
     if fb_release {
-        proc.fb_binding = None;
-        host.unbind_framebuffer(proc.pid as i32);
-        // Release ownership if the process also has no remaining Fb0 fds.
-        if !proc_has_fb0_fd(proc) {
-            maybe_release_fb0(proc.pid);
-        }
+        release_process_fb_binding(proc, host);
     }
 
     // GL cmdbuf cleanup: any munmap overlap invalidates the host's
@@ -11513,22 +11506,19 @@ pub fn sys_munmap(
     // remaining fragment must mmap the bo again before expecting
     // host-side synchronization.
     let pid = proc.pid as i32;
-    let mut released: alloc::vec::Vec<crate::process::DriBoBinding> = alloc::vec::Vec::new();
-    proc.dri_bindings.retain(|b| {
-        if ranges_overlap(addr, aligned_len, b.addr, b.len) {
-            released.push(*b);
+    proc.dri_bindings.retain(|binding| {
+        if ranges_overlap(addr, aligned_len, binding.addr, binding.len) {
+            host.gbm_bo_unbind(pid, binding.bo_id, binding.addr, binding.len);
             false
         } else {
             true
         }
     });
-    for b in &released {
-        host.gbm_bo_unbind(pid, b.bo_id, b.addr, b.len);
-    }
 
     // Linux munmap succeeds (returns 0) even if no mappings overlap the range,
     // as long as the address is valid and page-aligned.
-    proc.memory.munmap(addr, aligned_len);
+    proc.memory.munmap(addr, aligned_len)?;
+    unsafe { crate::memory::global_shared_mapping_table() }.publish_cleanup_preparation(cleanup);
     Ok(())
 }
 
@@ -11598,29 +11588,12 @@ pub fn sys_socket(
         _ => return Err(Errno::EPROTOTYPE),
     };
 
-    let sock = SocketInfo::new(dom, stype, protocol);
-    let sock_idx = proc.sockets.alloc(sock);
-
-    let mut status_flags = O_RDWR;
-    if sock_type & SOCK_NONBLOCK != 0 {
-        status_flags |= O_NONBLOCK;
-    }
-    let host_handle = -((sock_idx as i64) + 1);
-    let ofd_idx = proc.ofd_table.create(
-        FileType::Socket,
-        status_flags,
-        host_handle,
-        b"/dev/socket".to_vec(),
-    );
-
-    let fd_flags = if sock_type & SOCK_CLOEXEC != 0 {
-        FD_CLOEXEC
-    } else {
-        0
-    };
-    let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-
-    Ok(fd)
+    let status_flags = O_RDWR | if sock_type & SOCK_NONBLOCK != 0 { O_NONBLOCK } else { 0 };
+    let fd_flags = if sock_type & SOCK_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+    proc.open_descriptor(FileType::Socket, status_flags, b"/dev/socket", fd_flags, |proc, _| {
+        let index = proc.sockets.try_alloc(SocketInfo::try_new(dom, stype, protocol)?)?;
+        Ok(-((index as i64) + 1))
+    })
 }
 
 /// Create a connected pair of Unix domain stream or datagram sockets.
@@ -11645,24 +11618,51 @@ pub fn sys_socketpair(
         _ => return Err(Errno::EPROTOTYPE),
     };
 
+    let status_flags = O_RDWR | if sock_type & SOCK_NONBLOCK != 0 { O_NONBLOCK } else { 0 };
+    let first = proc.prepare_descriptor(FileType::Socket, status_flags, b"/dev/socket")?;
+    let second = match proc.prepare_descriptor(FileType::Socket, status_flags, b"/dev/socket") {
+        Ok(second) => second,
+        Err(error) => { proc.cancel_descriptor(first); return Err(error); }
+    };
+    let prepared_sockets = (|| {
+        let first = SocketInfo::try_new(SocketDomain::Unix, stype, 0)?;
+        let second = SocketInfo::try_new(SocketDomain::Unix, stype, 0)?;
+        proc.sockets.prepare_additional(2)?;
+        Ok((first, second))
+    })();
+    let (mut sock_a, mut sock_b) = match prepared_sockets {
+        Ok(sockets) => sockets,
+        Err(error) => {
+            proc.cancel_descriptor(first);
+            proc.cancel_descriptor(second);
+            return Err(error);
+        }
+    };
+
     // Stream payloads use machine-wide pipes so they survive fork. Datagram
     // socketpairs retain their message boundaries in each peer's atomic queue
     // and therefore must not acquire unrelated stream buffers.
     let pipe_indices = if stype == SocketType::Stream {
         let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-        Some(pipe_table.alloc_pair(
-            PipeBuffer::new(DEFAULT_PIPE_CAPACITY),
-            PipeBuffer::new(DEFAULT_PIPE_CAPACITY),
-        ))
+        let prepared = (|| pipe_table.try_alloc_pair(
+            PipeBuffer::try_new(DEFAULT_PIPE_CAPACITY)?,
+            PipeBuffer::try_new(DEFAULT_PIPE_CAPACITY)?,
+        ))();
+        match prepared {
+            Ok(indices) => Some(indices),
+            Err(error) => {
+                proc.cancel_descriptor(first);
+                proc.cancel_descriptor(second);
+                return Err(error);
+            }
+        }
     } else {
         None
     };
 
-    let mut sock_a = SocketInfo::new(SocketDomain::Unix, stype, 0);
     sock_a.state = SocketState::Connected;
     sock_a.peer_cred = Some(socket_peer_cred(proc));
 
-    let mut sock_b = SocketInfo::new(SocketDomain::Unix, stype, 0);
     sock_b.state = SocketState::Connected;
     sock_b.peer_cred = Some(socket_peer_cred(proc));
     if let Some((buf_ab_idx, buf_ba_idx)) = pipe_indices {
@@ -11675,42 +11675,16 @@ pub fn sys_socketpair(
         sock_b.global_pipes = true;
     }
 
-    let sock_a_idx = proc.sockets.alloc(sock_a);
-    let sock_b_idx = proc.sockets.alloc(sock_b);
+    let sock_a_idx = proc.sockets.publish_prepared(sock_a);
+    let sock_b_idx = proc.sockets.publish_prepared(sock_b);
 
     // Set peer indices
     proc.sockets.get_mut(sock_a_idx).unwrap().peer_idx = Some(sock_b_idx);
     proc.sockets.get_mut(sock_b_idx).unwrap().peer_idx = Some(sock_a_idx);
 
-    // Create OFDs
-    let mut status_flags = O_RDWR;
-    if sock_type & SOCK_NONBLOCK != 0 {
-        status_flags |= O_NONBLOCK;
-    }
-
-    let handle_a = -((sock_a_idx as i64) + 1);
-    let handle_b = -((sock_b_idx as i64) + 1);
-    let ofd_a = proc.ofd_table.create(
-        FileType::Socket,
-        status_flags,
-        handle_a,
-        b"/dev/socket".to_vec(),
-    );
-    let ofd_b = proc.ofd_table.create(
-        FileType::Socket,
-        status_flags,
-        handle_b,
-        b"/dev/socket".to_vec(),
-    );
-
-    let fd_flags = if sock_type & SOCK_CLOEXEC != 0 {
-        FD_CLOEXEC
-    } else {
-        0
-    };
-    let fd0 = proc.fd_table.alloc(OpenFileDescRef(ofd_a), fd_flags)?;
-    let fd1 = proc.fd_table.alloc(OpenFileDescRef(ofd_b), fd_flags)?;
-
+    let fd_flags = if sock_type & SOCK_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+    let fd0 = proc.publish_descriptor(first, -((sock_a_idx as i64) + 1), fd_flags);
+    let fd1 = proc.publish_descriptor(second, -((sock_b_idx as i64) + 1), fd_flags);
     Ok((fd0, fd1))
 }
 
@@ -11891,22 +11865,20 @@ fn bind_device_allows_ipv6(sock: &crate::socket::SocketInfo, addr: [u8; 16]) -> 
     }
 }
 
-fn is_supported_udp_bind_addr(addr: [u8; 4]) -> bool {
-    addr == [0, 0, 0, 0]
-        || is_loopback_addr(addr)
-        || is_virtual_network_addr(addr)
-        || addr == [255, 255, 255, 255]
-}
-
-fn is_supported_udp_route_addr(addr: [u8; 4]) -> bool {
-    addr == [0, 0, 0, 0]
-        || is_loopback_addr(addr)
-        || is_virtual_network_addr(addr)
-        || is_ipv4_multicast_addr(addr)
-}
-
 fn is_virtual_network_addr(addr: [u8; 4]) -> bool {
     addr[0] == 10 && addr[1] == 88
+}
+
+/// A destination that names every host on a link: the limited broadcast
+/// address, or the configured interface's directed (subnet) broadcast
+/// address. Sending to either needs `SO_BROADCAST`. Only a destination that
+/// would leave the machine is checked against the host's interface.
+fn requires_broadcast_permission(addr: [u8; 4], host: &mut dyn HostIO) -> bool {
+    addr == [255, 255, 255, 255]
+        || (addr != [0, 0, 0, 0]
+            && !is_loopback_addr(addr)
+            && !is_ipv4_multicast_addr(addr)
+            && crate::netif::is_interface_broadcast(addr, host))
 }
 
 fn is_ipv4_multicast_addr(addr: [u8; 4]) -> bool {
@@ -12131,9 +12103,6 @@ fn udp_bind_socket(
     addr: [u8; 4],
     port: u16,
 ) -> Result<(), Errno> {
-    if !is_supported_udp_bind_addr(addr) {
-        return Err(Errno::EADDRNOTAVAIL);
-    }
     if !bind_device_allows_ipv4(proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?, addr, true) {
         return Err(Errno::EADDRNOTAVAIL);
     }
@@ -12192,7 +12161,7 @@ fn udp_socket_accepts_datagram(
 
 fn udp_queue_datagram(
     sock: &mut crate::socket::SocketInfo,
-    make_datagram: impl FnOnce() -> crate::socket::Datagram,
+    make_datagram: impl FnOnce() -> Result<crate::socket::Datagram, Errno>,
 ) {
     // This is a fixed internal queue limit; SO_RCVBUF is currently advisory.
     // UDP is unreliable, so a full receive queue drops the incoming datagram
@@ -12200,7 +12169,13 @@ fn udp_queue_datagram(
     if sock.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT {
         return;
     }
-    sock.dgram_queue.push(make_datagram());
+    if sock.dgram_queue.try_reserve(1).is_err() { return; }
+    if let Ok(datagram) = make_datagram() {
+        sock.dgram_queue.push(datagram);
+        if let Some(id) = sock.poll_identity.get() {
+            crate::epoll::notify(crate::epoll::Source::Description(id), 0x41);
+        }
+    }
 }
 
 fn unix_queue_datagram(
@@ -12215,6 +12190,9 @@ fn unix_queue_datagram(
     }
     sock.dgram_queue.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
     sock.dgram_queue.push(make_datagram()?);
+    if let Some(id) = sock.poll_identity.get() {
+        crate::epoll::notify(crate::epoll::Source::Description(id), 0x41);
+    }
     Ok(())
 }
 
@@ -12237,25 +12215,37 @@ fn ipv4_multicast_membership_mut(
     sock: &mut crate::socket::SocketInfo,
     group: [u8; 4],
     interface_addr: [u8; 4],
-) -> &mut crate::socket::Ipv4MulticastMembership {
+    source: Option<([u8; 4], bool)>,
+) -> Result<&mut crate::socket::Ipv4MulticastMembership, Errno> {
     if let Some(idx) = sock
         .ipv4_multicast_memberships
         .iter()
         .position(|m| m.group == group && m.interface_addr == interface_addr)
     {
-        return &mut sock.ipv4_multicast_memberships[idx];
+        let membership = &mut sock.ipv4_multicast_memberships[idx];
+        if let Some((source, blocked)) = source {
+            let sources = if blocked { &mut membership.blocked_sources } else { &mut membership.included_sources };
+            if !sources.contains(&source) { sources.try_reserve(1)?; }
+        }
+        return Ok(membership);
     }
+    let mut blocked_sources = crate::IoBuffer::new();
+    let mut included_sources = crate::IoBuffer::new();
+    if let Some((_, blocked)) = source {
+        if blocked { blocked_sources.try_reserve(1)?; } else { included_sources.try_reserve(1)?; }
+    }
+    sock.ipv4_multicast_memberships.try_reserve(1)?;
     sock.ipv4_multicast_memberships
         .push(crate::socket::Ipv4MulticastMembership {
             group,
             interface_addr,
             any_source: false,
-            blocked_sources: Vec::new(),
-            included_sources: Vec::new(),
+            blocked_sources,
+            included_sources,
         });
-    sock.ipv4_multicast_memberships
+    Ok(sock.ipv4_multicast_memberships
         .last_mut()
-        .expect("membership was just pushed")
+        .expect("membership was just pushed"))
 }
 
 fn ipv4_multicast_leave_if_empty(sock: &mut crate::socket::SocketInfo, idx: usize) {
@@ -12300,25 +12290,35 @@ pub fn sys_setsockopt_ipv4_multicast(
     }
 
     match optname {
+        IP_ADD_MEMBERSHIP | MCAST_JOIN_GROUP | IP_DROP_MEMBERSHIP | MCAST_LEAVE_GROUP => {}
+        IP_BLOCK_SOURCE | MCAST_BLOCK_SOURCE | IP_UNBLOCK_SOURCE | MCAST_UNBLOCK_SOURCE
+        | IP_ADD_SOURCE_MEMBERSHIP | MCAST_JOIN_SOURCE_GROUP | IP_DROP_SOURCE_MEMBERSHIP | MCAST_LEAVE_SOURCE_GROUP => {
+            if source.is_none() { return Err(Errno::EINVAL); }
+        }
+        _ => return Err(Errno::ENOPROTOOPT),
+    }
+    sock.prepare_option(IPPROTO_IP, optname)?;
+
+    match optname {
         IP_ADD_MEMBERSHIP | MCAST_JOIN_GROUP => {
-            let membership = ipv4_multicast_membership_mut(sock, group, interface_addr);
+            let membership = ipv4_multicast_membership_mut(sock, group, interface_addr, None)?;
             membership.any_source = true;
-            sock.set_option(IPPROTO_IP, optname, 1);
+            sock.set_option(IPPROTO_IP, optname, 1)?;
             Ok(())
         }
         IP_DROP_MEMBERSHIP | MCAST_LEAVE_GROUP => {
             sock.ipv4_multicast_memberships
                 .retain(|m| !(m.group == group && m.interface_addr == interface_addr));
-            sock.set_option(IPPROTO_IP, optname, 1);
+            sock.set_option(IPPROTO_IP, optname, 1)?;
             Ok(())
         }
         IP_BLOCK_SOURCE | MCAST_BLOCK_SOURCE => {
             let source = source.ok_or(Errno::EINVAL)?;
-            let membership = ipv4_multicast_membership_mut(sock, group, interface_addr);
+            let membership = ipv4_multicast_membership_mut(sock, group, interface_addr, Some((source, true)))?;
             if !membership.blocked_sources.contains(&source) {
                 membership.blocked_sources.push(source);
             }
-            sock.set_option(IPPROTO_IP, optname, 1);
+            sock.set_option(IPPROTO_IP, optname, 1)?;
             Ok(())
         }
         IP_UNBLOCK_SOURCE | MCAST_UNBLOCK_SOURCE => {
@@ -12330,16 +12330,16 @@ pub fn sys_setsockopt_ipv4_multicast(
             {
                 membership.blocked_sources.retain(|s| *s != source);
             }
-            sock.set_option(IPPROTO_IP, optname, 1);
+            sock.set_option(IPPROTO_IP, optname, 1)?;
             Ok(())
         }
         IP_ADD_SOURCE_MEMBERSHIP | MCAST_JOIN_SOURCE_GROUP => {
             let source = source.ok_or(Errno::EINVAL)?;
-            let membership = ipv4_multicast_membership_mut(sock, group, interface_addr);
+            let membership = ipv4_multicast_membership_mut(sock, group, interface_addr, Some((source, false)))?;
             if !membership.included_sources.contains(&source) {
                 membership.included_sources.push(source);
             }
-            sock.set_option(IPPROTO_IP, optname, 1);
+            sock.set_option(IPPROTO_IP, optname, 1)?;
             Ok(())
         }
         IP_DROP_SOURCE_MEMBERSHIP | MCAST_LEAVE_SOURCE_GROUP => {
@@ -12354,7 +12354,7 @@ pub fn sys_setsockopt_ipv4_multicast(
                     .retain(|s| *s != source);
                 ipv4_multicast_leave_if_empty(sock, idx);
             }
-            sock.set_option(IPPROTO_IP, optname, 1);
+            sock.set_option(IPPROTO_IP, optname, 1)?;
             Ok(())
         }
         _ => Err(Errno::ENOPROTOOPT),
@@ -12397,6 +12397,27 @@ fn udp_purge_unaccepted_datagrams(proc: &mut Process, sock_idx: usize) -> Result
     Ok(())
 }
 
+/// Select multicast egress from socket state and the real host interface.
+/// An unconfigured host retains local-only multicast; loopback never escapes.
+fn udp_multicast_interface(sock: &crate::socket::SocketInfo, host: &mut dyn HostIO) -> [u8; 4] {
+    use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_IF};
+    let configured = sock
+        .get_option(IPPROTO_IP, IP_MULTICAST_IF)
+        .unwrap_or(0)
+        .to_le_bytes();
+    if configured != [0; 4] {
+        configured
+    } else if sock.bind_device.as_deref() == Some(b"lo") {
+        [127, 0, 0, 1]
+    } else if sock.bind_addr != [0; 4] {
+        sock.bind_addr
+    } else {
+        host.host_network_interface()
+            .map(|iface| iface.address)
+            .unwrap_or([0; 4])
+    }
+}
+
 fn udp_send_datagram(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -12418,7 +12439,7 @@ fn udp_send_datagram(
     if state == SocketState::Connected {
         udp_take_socket_error(proc, sock_idx)?;
     }
-    if dst_addr == [255, 255, 255, 255] {
+    if requires_broadcast_permission(dst_addr, host) {
         use wasm_posix_shared::socket::{SOL_SOCKET, SO_BROADCAST};
 
         let broadcast_enabled = proc
@@ -12457,33 +12478,24 @@ fn udp_send_datagram(
     };
     let (src_pid, src_uid, src_gid) = (proc.pid, proc.real_uid(), proc.real_gid());
     if is_ipv4_multicast_addr(dst_addr) {
-        use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_IF, IP_MULTICAST_LOOP};
+        use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_LOOP};
 
-        let (loop_enabled, outgoing_interface) = {
-            let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-            let loop_enabled = sock.get_option(IPPROTO_IP, IP_MULTICAST_LOOP).unwrap_or(1) != 0;
-            let configured = sock
-                .get_option(IPPROTO_IP, IP_MULTICAST_IF)
-                .unwrap_or(0)
-                .to_le_bytes();
-            let outgoing_interface = if configured != [0; 4] {
-                configured
-            } else if sock.bind_device.as_deref() == Some(b"lo") {
-                [127, 0, 0, 1]
-            } else if is_loopback_addr(sock.bind_addr) || is_virtual_network_addr(sock.bind_addr) {
-                sock.bind_addr
-            } else {
-                [0; 4]
-            };
-            (loop_enabled, outgoing_interface)
-        };
-        if src_addr == [0; 4] && outgoing_interface != [0; 4] {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        let loop_enabled = sock.get_option(IPPROTO_IP, IP_MULTICAST_LOOP).unwrap_or(1) != 0;
+        let outgoing_interface = udp_multicast_interface(sock, host);
+        if src_addr == [0; 4] {
             src_addr = outgoing_interface;
+        }
+        // Local loop suppression must not suppress transmission to other
+        // machines. The fabric excludes the source machine; the kernel owns
+        // the local copy and its membership/source filtering.
+        if outgoing_interface != [0; 4] && !is_loopback_addr(outgoing_interface) {
+            host.host_udp_send(&src_addr, src_port, &dst_addr, dst_port, buf)?;
         }
         if !loop_enabled {
             return Ok(buf.len());
         }
-        let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
+        let endpoints = crate::socket::udp_endpoints(dst_addr, dst_port);
         for endpoint in endpoints {
             if endpoint.pid != proc.pid {
                 continue;
@@ -12505,8 +12517,8 @@ fn udp_send_datagram(
                 continue;
             }
             if let Some(target) = proc.sockets.get_mut(endpoint.sock_idx) {
-                udp_queue_datagram(target, || Datagram {
-                    data: buf.to_vec(),
+                udp_queue_datagram(target, || Ok(Datagram {
+                    data: crate::IoBuffer::copy_from(buf)?,
                     src_addr,
                     src_addr6: [0; 16],
                     dst_addr,
@@ -12517,8 +12529,8 @@ fn udp_send_datagram(
                     src_pid,
                     src_uid,
                     src_gid,
-                    ancillary_fds: Vec::new(),
-                });
+                    ancillary_fds: crate::pipe::AncillaryFds::new(),
+                }));
             }
         }
         return Ok(buf.len());
@@ -12537,7 +12549,7 @@ fn udp_send_datagram(
         };
     }
     let mut delivered = false;
-    let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
+    let endpoints = crate::socket::udp_endpoints(dst_addr, dst_port);
     for endpoint in endpoints {
         if endpoint.pid != proc.pid {
             continue;
@@ -12551,8 +12563,8 @@ fn udp_send_datagram(
             continue;
         }
         if let Some(target) = proc.sockets.get_mut(endpoint.sock_idx) {
-            udp_queue_datagram(target, || Datagram {
-                data: buf.to_vec(),
+            udp_queue_datagram(target, || Ok(Datagram {
+                data: crate::IoBuffer::copy_from(buf)?,
                 src_addr,
                 src_addr6: [0; 16],
                 dst_addr,
@@ -12563,8 +12575,8 @@ fn udp_send_datagram(
                 src_pid,
                 src_uid,
                 src_gid,
-                ancillary_fds: Vec::new(),
-            });
+                ancillary_fds: crate::pipe::AncillaryFds::new(),
+            }));
             delivered = true;
             break;
         }
@@ -12584,7 +12596,7 @@ fn unix_dgram_send_to_sock(
     src_sock_idx: usize,
     dst_sock_idx: usize,
     buf: &[u8],
-    ancillary_fds: Vec<crate::pipe::InFlightFd>,
+    ancillary_fds: AncillaryFds,
 ) -> Result<usize, Errno> {
     use crate::socket::Datagram;
 
@@ -12620,10 +12632,7 @@ fn unix_dgram_send_to_sock(
         // Reserve queue capacity before allocating or copying a payload. A
         // full reliable queue must fail with EAGAIN without constructing a
         // detached data/control message.
-        let mut data = Vec::new();
-        data.try_reserve_exact(buf.len())
-            .map_err(|_| Errno::ENOMEM)?;
-        data.extend_from_slice(buf);
+        let data = crate::IoBuffer::copy_from(buf)?;
         Ok(Datagram {
             data,
             src_addr: [0; 4],
@@ -12841,8 +12850,8 @@ fn udp6_send_datagram(
             continue;
         }
         if let Some(target) = proc.sockets.get_mut(idx) {
-            udp_queue_datagram(target, || Datagram {
-                data: buf.to_vec(),
+            udp_queue_datagram(target, || Ok(Datagram {
+                data: crate::IoBuffer::copy_from(buf)?,
                 src_addr: [0; 4],
                 src_addr6: src_addr,
                 dst_addr: [0; 4],
@@ -12853,8 +12862,8 @@ fn udp6_send_datagram(
                 src_pid,
                 src_uid,
                 src_gid,
-                ancillary_fds: Vec::new(),
-            });
+                ancillary_fds: crate::pipe::AncillaryFds::new(),
+            }));
             delivered = true;
             break;
         }
@@ -12876,10 +12885,13 @@ pub fn inject_udp_datagram_into(
     src_addr: [u8; 4],
     src_port: u16,
     data: &[u8],
+    ingress_interface: [u8; 4],
 ) -> i32 {
     use crate::socket::Datagram;
+    let multicast = is_ipv4_multicast_addr(dst_addr);
+    let mut delivered = false;
 
-    let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
+    let endpoints = crate::socket::udp_endpoints(dst_addr, dst_port);
     for endpoint in endpoints {
         if endpoint.pid != proc.pid {
             continue;
@@ -12887,14 +12899,26 @@ pub fn inject_udp_datagram_into(
         let accepts = proc
             .sockets
             .get(endpoint.sock_idx)
-            .map(|sock| udp_socket_accepts_datagram(sock, src_addr, src_port))
+            .map(|sock| {
+                if multicast {
+                    udp_socket_accepts_multicast_datagram(
+                        sock,
+                        dst_addr,
+                        src_addr,
+                        src_port,
+                        ingress_interface,
+                    )
+                } else {
+                    udp_socket_accepts_datagram(sock, src_addr, src_port)
+                }
+            })
             .unwrap_or(false);
         if !accepts {
             continue;
         }
         if let Some(target) = proc.sockets.get_mut(endpoint.sock_idx) {
-            udp_queue_datagram(target, || Datagram {
-                data: data.to_vec(),
+            udp_queue_datagram(target, || Ok(Datagram {
+                data: crate::IoBuffer::copy_from(data)?,
                 src_addr,
                 src_addr6: [0; 16],
                 dst_addr,
@@ -12905,12 +12929,19 @@ pub fn inject_udp_datagram_into(
                 src_pid: 0,
                 src_uid: 0,
                 src_gid: 0,
-                ancillary_fds: Vec::new(),
-            });
-            return 0;
+                ancillary_fds: crate::pipe::AncillaryFds::new(),
+            }));
+            delivered = true;
+            if !multicast {
+                return 0;
+            }
         }
     }
-    -(Errno::ECONNREFUSED as i32)
+    if delivered || multicast {
+        0
+    } else {
+        -(Errno::ECONNREFUSED as i32)
+    }
 }
 
 /// Owned routing facts captured after a successful process-local UDP send.
@@ -12926,16 +12957,18 @@ pub struct CrossProcessLoopbackUdpRoute {
     sender_uid: u32,
     sender_gid: u32,
     connected: bool,
+    multicast_interface: Option<[u8; 4]>,
     dst_addr: [u8; 4],
     dst_port: u16,
     src_addr: [u8; 4],
     src_port: u16,
 }
 
-/// Capture an IPv4 loopback route after `send`, `sendto`, or `sendmsg` has
+/// Capture an IPv4 loopback or multicast route after `send`, `sendto`, or `sendmsg` has
 /// completed its process-local work.
 pub fn cross_process_loopback_udp_route(
     proc: &Process,
+    host: &mut dyn HostIO,
     fd: i32,
     addr: Option<&[u8]>,
 ) -> Option<CrossProcessLoopbackUdpRoute> {
@@ -12958,11 +12991,21 @@ pub fn cross_process_loopback_udp_route(
         None => return None,
     };
     let dst_addr = udp_canonical_dst_addr(dst_addr);
-    if !is_loopback_addr(dst_addr) {
+    let multicast = is_ipv4_multicast_addr(dst_addr);
+    if !is_loopback_addr(dst_addr) && !multicast {
         return None;
     }
+    let multicast_interface = if multicast {
+        use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_LOOP};
+        if sock.get_option(IPPROTO_IP, IP_MULTICAST_LOOP).unwrap_or(1) == 0 {
+            return None;
+        }
+        Some(udp_multicast_interface(sock, host))
+    } else {
+        None
+    };
     let src_addr = if sock.bind_addr == [0; 4] {
-        udp_route_local_addr(dst_addr)
+        multicast_interface.unwrap_or_else(|| udp_route_local_addr(dst_addr))
     } else {
         sock.bind_addr
     };
@@ -12973,6 +13016,7 @@ pub fn cross_process_loopback_udp_route(
         sender_uid: proc.real_uid(),
         sender_gid: proc.real_gid(),
         connected: sock.state == SocketState::Connected,
+        multicast_interface,
         dst_addr,
         dst_port,
         src_addr,
@@ -12980,13 +13024,14 @@ pub fn cross_process_loopback_udp_route(
     })
 }
 
-/// Deliver one successful IPv4 loopback send to an accepting socket owned by
-/// another process on this machine.
+/// Deliver one successful IPv4 loopback send to an accepting foreign socket,
+/// or a multicast send to every matching foreign socket on this machine.
 ///
 /// Process-local UDP delivery already chooses one accepting endpoint. If the
 /// sender owns such an endpoint, it has already received the datagram and this
 /// function must not duplicate it into an inherited or `SO_REUSEADDR` peer.
-/// Otherwise, choose the first accepting foreign endpoint by the same registry
+/// Multicast instead fans out to all matching foreign sockets. For unicast,
+/// choose the first accepting foreign endpoint by the same registry
 /// order. A full UDP queue still counts as delivery because UDP drops incoming
 /// datagrams rather than reporting receiver backpressure to the sender.
 pub fn deliver_cross_process_loopback_udp(
@@ -12996,19 +13041,16 @@ pub fn deliver_cross_process_loopback_udp(
 ) -> bool {
     use crate::socket::Datagram;
 
-    let endpoints = crate::socket::udp_lookup(route.dst_addr, route.dst_port);
+    let endpoints = crate::socket::udp_endpoints(route.dst_addr, route.dst_port);
     let sender_already_received = table.get(route.sender_pid).is_some_and(|sender| {
         endpoints.iter().any(|endpoint| {
             endpoint.pid == route.sender_pid
-                && sender
-                    .sockets
-                    .get(endpoint.sock_idx)
-                    .is_some_and(|sock| {
-                        udp_socket_accepts_datagram(sock, route.src_addr, route.src_port)
-                    })
+                && sender.sockets.get(endpoint.sock_idx).is_some_and(|sock| {
+                    udp_socket_accepts_datagram(sock, route.src_addr, route.src_port)
+                })
         })
     });
-    if sender_already_received {
+    if sender_already_received && route.multicast_interface.is_none() {
         return false;
     }
 
@@ -13020,20 +13062,27 @@ pub fn deliver_cross_process_loopback_udp(
         let Some(target) = table.get_mut(endpoint.pid) else {
             continue;
         };
-        let accepts = target
-            .sockets
-            .get(endpoint.sock_idx)
-            .is_some_and(|sock| {
+        let accepts = target.sockets.get(endpoint.sock_idx).is_some_and(|sock| {
+            if let Some(interface) = route.multicast_interface {
+                udp_socket_accepts_multicast_datagram(
+                    sock,
+                    route.dst_addr,
+                    route.src_addr,
+                    route.src_port,
+                    interface,
+                )
+            } else {
                 udp_socket_accepts_datagram(sock, route.src_addr, route.src_port)
-            });
+            }
+        });
         if !accepts {
             continue;
         }
         let Some(socket) = target.sockets.get_mut(endpoint.sock_idx) else {
             continue;
         };
-        udp_queue_datagram(socket, || Datagram {
-            data: data.to_vec(),
+        udp_queue_datagram(socket, || Ok(Datagram {
+            data: crate::IoBuffer::copy_from(data)?,
             src_addr: route.src_addr,
             src_addr6: [0; 16],
             dst_addr: route.dst_addr,
@@ -13046,10 +13095,12 @@ pub fn deliver_cross_process_loopback_udp(
             src_pid: route.sender_pid,
             src_uid: route.sender_uid,
             src_gid: route.sender_gid,
-            ancillary_fds: Vec::new(),
-        });
+            ancillary_fds: crate::pipe::AncillaryFds::new(),
+        }));
         delivered = true;
-        break;
+        if route.multicast_interface.is_none() {
+            break;
+        }
     }
 
     if delivered && route.connected {
@@ -13083,7 +13134,17 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
 
     match sock.domain {
-        SocketDomain::Inet => Ok(write_sockaddr_in(buf, sock.bind_addr, sock.bind_port)),
+        SocketDomain::Inet => {
+            let address = if sock.sock_type == crate::socket::SocketType::Dgram
+                && sock.state == crate::socket::SocketState::Connected
+                && sock.bind_addr == [0; 4]
+            {
+                sock.udp_source_addr.ok_or(Errno::EADDRNOTAVAIL)?
+            } else {
+                sock.bind_addr
+            };
+            Ok(write_sockaddr_in(buf, address, sock.bind_port))
+        }
         SocketDomain::Inet6 => Ok(write_sockaddr_in6(buf, sock.bind_addr6, sock.bind_port)),
         SocketDomain::Unix => {
             use wasm_posix_shared::socket::AF_UNIX;
@@ -13159,8 +13220,8 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
 
 /// Shut down part of a full-duplex socket connection.
 ///
-/// For AF_INET/AF_INET6 sockets with SHUT_RDWR, also releases this process's
-/// reference to the host network handle.
+/// Host-backed streams retain their handle until close: shutdown changes
+/// directions on the shared connection without releasing descriptor ownership.
 pub fn sys_shutdown(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -13177,11 +13238,24 @@ pub fn sys_shutdown(
     }
 
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    if !matches!(how, SHUT_RD | SHUT_WR | SHUT_RDWR) {
+        return Err(Errno::EINVAL);
+    }
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if let Some(handle) = sock.host_net_handle {
+        let changes_read = matches!(how, SHUT_RD | SHUT_RDWR) && !sock.shut_rd;
+        let changes_write = matches!(how, SHUT_WR | SHUT_RDWR) && !sock.shut_wr;
+        if changes_read || changes_write {
+            // Apply host shutdown before changing kernel flags. An unsupported
+            // adapter must not masquerade as a successful half-close.
+            host.host_net_shutdown(handle, how)?;
+        }
+    }
     // Taking the resource indexes makes shutdown idempotent and prevents a
     // later close, process exit, fork, or SCM_RIGHTS transfer from dropping or
     // resurrecting the same pipe reference. Explicit SHUT_RD is a hard receive
     // refusal; only normal close uses TCP's orderly orphaned-receive state.
-    let (send_idx, recv_idx, net_handle, datagram_send_state_changed) = {
+    let (send_idx, recv_idx, datagram_send_state_changed) = {
         let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
         let is_unix_dgram = sock.domain == crate::socket::SocketDomain::Unix
             && sock.sock_type == crate::socket::SocketType::Dgram;
@@ -13200,7 +13274,6 @@ pub fn sys_shutdown(
                 (
                     None,
                     sock.recv_buf_idx.take(),
-                    None,
                     is_unix_dgram && !was_shut_rd,
                 )
             }
@@ -13208,7 +13281,6 @@ pub fn sys_shutdown(
                 sock.shut_wr = true;
                 (
                     sock.send_buf_idx.take(),
-                    None,
                     None,
                     is_unix_dgram && !was_shut_wr,
                 )
@@ -13219,7 +13291,6 @@ pub fn sys_shutdown(
                 (
                     sock.send_buf_idx.take(),
                     sock.recv_buf_idx.take(),
-                    sock.host_net_handle.take(),
                     is_unix_dgram && (!was_shut_rd || !was_shut_wr),
                 )
             }
@@ -13230,6 +13301,7 @@ pub fn sys_shutdown(
     let pipe_table = unsafe { crate::pipe::global_pipe_table() };
     if let Some(send_idx) = send_idx {
         if let Some(pipe) = pipe_table.get_mut(send_idx) {
+            pipe.shutdown_write();
             pipe.close_write_end();
             // Wake a local writer that was blocked before shut_wr became true.
             crate::wakeup::push(send_idx as u32, crate::wakeup::WAKE_WRITABLE);
@@ -13238,24 +13310,54 @@ pub fn sys_shutdown(
     }
     if let Some(recv_idx) = recv_idx {
         if let Some(pipe) = pipe_table.get_mut(recv_idx) {
+            pipe.shutdown_read();
             pipe.close_read_end();
             // Wake a local reader that was blocked before shut_rd became true.
             crate::wakeup::push(recv_idx as u32, crate::wakeup::WAKE_READABLE);
         }
         pipe_table.free_if_closed(recv_idx);
     }
-    if let Some(net_handle) = net_handle {
-        if crate::socket::host_net_handle_close_ref(net_handle) {
-            let _ = host.host_net_close(net_handle);
-        }
-    }
     // AF_UNIX datagram writers and readiness waiters are not backed by a
     // targetable pipe. A read-side or write-side shutdown changes whether the
     // next send blocks or fails, so ask the host to retry them broadly.
     if datagram_send_state_changed {
         crate::wakeup::push_datagram_writable();
+        if matches!(how, SHUT_RD | SHUT_RDWR) {
+            if let Some(id) = proc.sockets.get(sock_idx).and_then(|s| s.poll_identity.get()) {
+                crate::epoll::notify(
+                    crate::epoll::Source::DatagramCapacity(id),
+                    wasm_posix_shared::epoll::EPOLLOUT
+                        | wasm_posix_shared::epoll::EPOLLWRNORM
+                        | wasm_posix_shared::epoll::EPOLLWRBAND,
+                );
+            }
+        }
     }
+    notify_socket_readiness(
+        proc,
+        sock_idx,
+        match how {
+            SHUT_RD => 0x2041,
+            SHUT_WR => 0x304,
+            _ => 0x2151,
+        },
+    );
     Ok(())
+}
+
+fn socket_read_shutdown(sock: &crate::socket::SocketInfo) -> bool {
+    sock.shut_rd
+        || sock
+            .recv_buf_idx
+            .and_then(|idx| unsafe { crate::pipe::global_pipe_table().get(idx) })
+            .is_some_and(|p| p.read_shutdown())
+}
+fn socket_write_shutdown(sock: &crate::socket::SocketInfo) -> bool {
+    sock.shut_wr
+        || sock
+            .send_buf_idx
+            .and_then(|idx| unsafe { crate::pipe::global_pipe_table().get(idx) })
+            .is_some_and(|p| p.write_shutdown())
 }
 
 /// Send data on a connected socket.
@@ -13302,7 +13404,7 @@ pub fn sys_send(
             SocketDomain::Unix if sock.state == SocketState::Connected => {
                 let peer_idx = sock.peer_idx;
                 if let Some(peer_idx) = peer_idx {
-                    let result = unix_dgram_send_to_sock(proc, sock_idx, peer_idx, buf, Vec::new());
+                    let result = unix_dgram_send_to_sock(proc, sock_idx, peer_idx, buf, AncillaryFds::new());
                     return finish_datagram_send(proc, flags, result);
                 }
                 return Err(Errno::ECONNREFUSED);
@@ -13313,7 +13415,7 @@ pub fn sys_send(
     if sock.state != SocketState::Connected {
         return Err(Errno::ENOTCONN);
     }
-    if sock.shut_wr {
+    if socket_write_shutdown(sock) {
         if flags & MSG_NOSIGNAL == 0 {
             proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
         }
@@ -13343,6 +13445,9 @@ pub fn sys_send(
             return Err(Errno::EPIPE);
         };
         peer_sock.oob_byte = Some(oob_byte);
+        if let Some(id) = peer_sock.poll_identity.get() {
+            crate::epoll::notify(crate::epoll::Source::Description(id), 2);
+        }
         return Ok(buf.len());
     }
 
@@ -13420,7 +13525,7 @@ pub fn sys_recv(
     if sock.state != SocketState::Connected {
         return Err(Errno::ENOTCONN);
     }
-    if sock.shut_rd {
+    if socket_read_shutdown(sock) {
         return Ok(0);
     }
 
@@ -13452,6 +13557,7 @@ pub fn sys_recv(
             loop {
                 let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
                     .ok_or(Errno::EBADF)?;
+                if let Some(error) = pipe.stream_error() { return Err(error); }
                 if waitall {
                     let remaining = buf.len().saturating_sub(total);
                     if pipe.available() < remaining
@@ -13502,13 +13608,19 @@ pub fn sys_getsockopt(proc: &mut Process, fd: i32, level: u32, optname: u32) -> 
             }),
             // Linux semantics: return cached errno and clear it.
             SO_ERROR => {
+                let mut stream_error = 0;
+                for index in [sock.recv_buf_idx, sock.send_buf_idx].into_iter().flatten() {
+                    if let Some(pipe) = unsafe {crate::pipe::global_pipe_table().get_mut(index)} {
+                        stream_error = stream_error.max(pipe.take_stream_error());
+                    }
+                }
                 let err = sock.connect_error;
                 if err != 0 {
                     if let Some(s) = proc.sockets.get_mut(sock_idx) {
                         s.connect_error = 0;
                     }
                 }
-                Ok(err)
+                Ok(if err != 0 {err} else {stream_error})
             }
             SO_ACCEPTCONN => Ok(if sock.state == SocketState::Listening {
                 1
@@ -13703,13 +13815,13 @@ pub fn sys_setsockopt_linger(
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-    sock.linger_onoff = l_onoff;
-    sock.linger_seconds = l_linger;
     sock.set_option(
         wasm_posix_shared::socket::SOL_SOCKET,
         wasm_posix_shared::socket::SO_LINGER,
         if l_onoff != 0 { 1 } else { 0 },
-    );
+    )?;
+    sock.linger_onoff = l_onoff;
+    sock.linger_seconds = l_linger;
     Ok(())
 }
 
@@ -13734,28 +13846,29 @@ pub fn sys_setsockopt_bindtodevice(
     }
     let name = device.split(|&b| b == 0).next().unwrap_or(device);
     if name.is_empty() {
-        sock.bind_device = None;
         sock.set_option(
             wasm_posix_shared::socket::SOL_SOCKET,
             wasm_posix_shared::socket::SO_BINDTODEVICE,
             0,
-        );
+        )?;
+        sock.bind_device = None;
         return Ok(());
     }
     if name != b"lo" && name != b"eth0" {
         return Err(Errno::ENODEV);
     }
-    sock.bind_device = Some(name.to_vec());
+    let name = crate::IoBuffer::copy_from(name)?;
     sock.set_option(
         wasm_posix_shared::socket::SOL_SOCKET,
         wasm_posix_shared::socket::SO_BINDTODEVICE,
         1,
-    );
+    )?;
+    sock.bind_device = Some(name);
     Ok(())
 }
 
 /// Get SO_BINDTODEVICE's bound interface name.
-pub fn sys_getsockopt_bindtodevice(proc: &Process, fd: i32) -> Result<Vec<u8>, Errno> {
+pub fn sys_getsockopt_bindtodevice(proc: &Process, fd: i32) -> Result<crate::IoBuffer<u8>, Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -13769,11 +13882,11 @@ pub fn sys_getsockopt_bindtodevice(proc: &Process, fd: i32) -> Result<Vec<u8>, E
     ) {
         return Err(Errno::ENOPROTOOPT);
     }
-    Ok(sock.bind_device.clone().unwrap_or_default())
+    crate::IoBuffer::copy_from(sock.bind_device.as_deref().unwrap_or_default())
 }
 
 /// Get TCP_CONGESTION's algorithm name.
-pub fn sys_getsockopt_tcp_congestion(proc: &Process, fd: i32) -> Result<Vec<u8>, Errno> {
+pub fn sys_getsockopt_tcp_congestion(proc: &Process, fd: i32) -> Result<crate::IoBuffer<u8>, Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -13788,7 +13901,7 @@ pub fn sys_getsockopt_tcp_congestion(proc: &Process, fd: i32) -> Result<Vec<u8>,
     {
         return Err(Errno::ENOPROTOOPT);
     }
-    Ok(sock.tcp_congestion.clone())
+    crate::IoBuffer::copy_from(&sock.tcp_congestion)
 }
 
 /// Set TCP_CONGESTION's algorithm name.
@@ -13820,12 +13933,13 @@ pub fn sys_setsockopt_tcp_congestion(
     if name != b"cubic" {
         return Err(Errno::ENOENT);
     }
-    sock.tcp_congestion = name.to_vec();
+    let name = crate::IoBuffer::copy_from(name)?;
     sock.set_option(
         wasm_posix_shared::socket::IPPROTO_TCP,
         wasm_posix_shared::socket::TCP_CONGESTION,
         1,
-    );
+    )?;
+    sock.tcp_congestion = name;
     Ok(())
 }
 
@@ -13889,7 +14003,7 @@ pub fn sys_setsockopt(
             | SO_PASSCRED
             | SO_ATTACH_REUSEPORT_CBPF
             | SO_ZEROCOPY => {
-                sock.set_option(level, optname, value);
+                sock.set_option(level, optname, value)?;
                 Ok(())
             }
             SO_LINGER | SO_BINDTODEVICE => Err(Errno::ENOPROTOOPT),
@@ -13902,18 +14016,18 @@ pub fn sys_setsockopt(
                 if addr != [0; 4] && !is_loopback_addr(addr) && !is_virtual_network_addr(addr) {
                     return Err(Errno::EADDRNOTAVAIL);
                 }
-                sock.set_option(level, optname, value);
+                sock.set_option(level, optname, value)?;
                 Ok(())
             }
             IP_MULTICAST_TTL => {
                 if value > u8::MAX as u32 {
                     return Err(Errno::EINVAL);
                 }
-                sock.set_option(level, optname, value);
+                sock.set_option(level, optname, value)?;
                 Ok(())
             }
             IP_MULTICAST_LOOP => {
-                sock.set_option(level, optname, u32::from(value != 0));
+                sock.set_option(level, optname, u32::from(value != 0))?;
                 Ok(())
             }
             IP_TOS
@@ -13926,7 +14040,7 @@ pub fn sys_setsockopt(
             | MCAST_UNBLOCK_SOURCE
             | MCAST_JOIN_SOURCE_GROUP
             | MCAST_LEAVE_SOURCE_GROUP => {
-                sock.set_option(level, optname, value);
+                sock.set_option(level, optname, value)?;
                 Ok(())
             }
             IP_MTU => Err(Errno::ENOPROTOOPT),
@@ -13943,12 +14057,12 @@ pub fn sys_setsockopt(
                 if sock.sock_type == crate::socket::SocketType::Dgram && value == 0 {
                     return Err(Errno::EOPNOTSUPP);
                 }
-                sock.set_option(level, optname, if value != 0 { 1 } else { 0 });
+                sock.set_option(level, optname, if value != 0 { 1 } else { 0 })?;
                 Ok(())
             }
             IPV6_MULTICAST_IF | IPV6_MULTICAST_HOPS | IPV6_MULTICAST_LOOP | IPV6_PKTINFO
             | IPV6_RECVPKTINFO | IPV6_RECVTCLASS | IPV6_DONTFRAG | IPV6_TCLASS => {
-                sock.set_option(level, optname, value);
+                sock.set_option(level, optname, value)?;
                 Ok(())
             }
             _ => Err(Errno::ENOPROTOOPT),
@@ -13956,7 +14070,7 @@ pub fn sys_setsockopt(
         IPPROTO_TCP => match optname {
             TCP_NODELAY | TCP_CORK | TCP_KEEPIDLE | TCP_KEEPINTVL | TCP_KEEPCNT
             | TCP_DEFER_ACCEPT | TCP_QUICKACK | TCP_USER_TIMEOUT => {
-                sock.set_option(level, optname, value);
+                sock.set_option(level, optname, value)?;
                 Ok(())
             }
             TCP_CONGESTION => Err(Errno::ENOPROTOOPT),
@@ -14118,8 +14232,8 @@ pub fn sys_bind(
                 // bytes after sun_family, including the leading NUL. No
                 // filesystem inode is created and embedded/trailing NUL bytes
                 // are part of the address.
-                let original = path_bytes.to_vec();
-                (original.clone(), original)
+                let original = crate::IoBuffer::copy_from(path_bytes)?;
+                (original.to_vec(), original)
             } else {
                 let path_end = path_bytes
                     .iter()
@@ -14128,7 +14242,7 @@ pub fn sys_bind(
                 if path_end == 0 {
                     return Err(Errno::EINVAL);
                 }
-                let original = path_bytes[..path_end].to_vec();
+                let original = crate::IoBuffer::copy_from(&path_bytes[..path_end])?;
                 (
                     resolve_namespace_path(
                         proc,
@@ -14146,6 +14260,8 @@ pub fn sys_bind(
             // O_EXCL so a pre-existing path turns into EADDRINUSE, matching the
             // registry contract below. Other host_open errors, such as ENOENT
             // for a missing parent directory, propagate unchanged.
+            let prepared_name = unsafe { crate::unix_socket::global_unix_socket_registry() }
+                .prepare_registration(&resolved, proc.pid, sock_idx)?;
             if !abstract_unix {
                 use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
                 // Kernel devfs owns its namespace. A name that does not exist
@@ -14168,6 +14284,7 @@ pub fn sys_bind(
                 if crate::tmpfs::claims_path(&resolved) {
                     // In-kernel tmpfs owns the node; the socket endpoint stays in
                     // the path-keyed registry below.
+                    crate::exchange::policy::check_create(&resolved)?;
                     tmpfs_stamp_now(host)?;
                     match crate::tmpfs::mknod_special(
                         &resolved,
@@ -14210,7 +14327,7 @@ pub fn sys_bind(
             // (host had no inode but registry did — shouldn't happen normally)
             // unwind the host inode so we don't leak.
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-            if !registry.register(resolved.clone(), proc.pid, sock_idx) {
+            if !registry.publish_registration(prepared_name) {
                 if !abstract_unix {
                     if crate::tmpfs::claims_path(&resolved) {
                         let _ = crate::tmpfs::unlink(&resolved);
@@ -14238,6 +14355,28 @@ pub fn sys_bind(
 ///
 /// Sets the socket state to Listening so that connect() can find it.
 pub fn sys_listen(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    backlog: u32,
+) -> Result<(), Errno> {
+    let result = sys_listen_impl(proc, host, fd, backlog);
+    if result.is_ok() || matches!(result, Err(Errno::EINPROGRESS)) {
+        if let Some(ofd) = proc
+            .fd_table
+            .get(fd)
+            .ok()
+            .and_then(|e| proc.ofd_table.get(e.ofd_ref.0))
+        {
+            if ofd.file_type == FileType::Socket {
+                notify_socket_readiness(proc, (-(ofd.host_handle + 1)) as usize, 0x215f);
+            }
+        }
+    }
+    result
+}
+
+fn sys_listen_impl(
     proc: &mut Process,
     host: &mut dyn HostIO,
     fd: i32,
@@ -14281,6 +14420,9 @@ pub fn sys_listen(
 
     let own_cred = socket_peer_cred(proc);
     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    let prepared_backlog = if sock.shared_backlog_idx.is_none() {
+        Some(unsafe { crate::socket::shared_listener_backlog_table().try_alloc()? })
+    } else { None };
     if domain == SocketDomain::Unix {
         // Linux records the listener's credentials at every listen(); each
         // client that connects later copies them as its SO_PEERCRED.
@@ -14298,7 +14440,7 @@ pub fn sys_listen(
                 wasm_posix_shared::socket::IPPROTO_TCP,
                 wasm_posix_shared::socket::TCP_DEFER_ACCEPT,
                 value.saturating_add(1),
-            );
+            )?;
         }
     }
     sock.state = SocketState::Listening;
@@ -14311,7 +14453,7 @@ pub fn sys_listen(
     // on one kernel-owned queue rather than receiving per-process copies.
     let domain = sock.domain;
     if sock.shared_backlog_idx.is_none() {
-        let backlog_idx = unsafe { crate::socket::shared_listener_backlog_table().alloc() };
+        let backlog_idx = prepared_backlog.expect("new listener backlog was not prepared");
         sock.shared_backlog_idx = Some(backlog_idx);
     }
 
@@ -14339,34 +14481,6 @@ pub fn sys_listen(
     Ok(())
 }
 
-fn discard_accepted_socket_without_fd(proc: &mut Process, sock_idx: usize) {
-    let Some(sock) = proc.sockets.get(sock_idx) else {
-        return;
-    };
-    let (recv_idx, send_idx, peer_idx) = (sock.recv_buf_idx, sock.send_buf_idx, sock.peer_idx);
-    if let Some(peer_idx) = peer_idx {
-        if let Some(peer) = proc.sockets.get_mut(peer_idx) {
-            if peer.peer_idx == Some(sock_idx) {
-                peer.peer_idx = None;
-            }
-        }
-    }
-    let pipes = unsafe { crate::pipe::global_pipe_table() };
-    if let Some(recv_idx) = recv_idx {
-        if let Some(pipe) = pipes.get_mut(recv_idx) {
-            pipe.close_read_end();
-        }
-        pipes.free_if_closed(recv_idx);
-    }
-    if let Some(send_idx) = send_idx {
-        if let Some(pipe) = pipes.get_mut(send_idx) {
-            pipe.close_write_end();
-        }
-        pipes.free_if_closed(send_idx);
-    }
-    proc.sockets.free(sock_idx);
-}
-
 /// Accept a connection on a listening socket.
 ///
 /// Pops a pending connection from the listener's backlog, creates an OFD + FD
@@ -14392,103 +14506,84 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
         return Err(Errno::EINVAL);
     }
 
-    // All listeners use a shared cross-process accept queue. The accepted
-    // SocketInfo is created lazily in whichever process wins accept().
-    if let Some(shared_idx) = sock.shared_backlog_idx {
-        let domain = sock.domain;
-        let bind_addr = sock.bind_addr;
-        let bind_addr6 = sock.bind_addr6;
-        let bind_path = sock.bind_path.clone();
-        let bind_port = sock.bind_port;
-        let pending = unsafe { crate::socket::shared_listener_backlog_table().pop(shared_idx) };
-        if let Some(pc) = pending {
-            let mut accepted = SocketInfo::new(domain, SocketType::Stream, 0);
-            accepted.state = SocketState::Connected;
-            accepted.recv_buf_idx = Some(pc.recv_pipe_idx);
-            accepted.send_buf_idx = Some(pc.send_pipe_idx);
-            accepted.bind_port = bind_port;
-            match domain {
-                SocketDomain::Inet => {
-                    accepted.bind_addr = bind_addr;
-                    accepted.peer_addr = pc.peer_addr;
-                }
-                SocketDomain::Inet6 => {
-                    accepted.bind_addr6 = bind_addr6;
-                    accepted.peer_addr6 = if pc.peer_is_ipv6 {
-                        pc.peer_addr6
-                    } else {
-                        ipv4_mapped_addr6(pc.peer_addr)
-                    };
-                }
-                SocketDomain::Unix => {
-                    accepted.bind_path = bind_path;
-                }
-            }
-            accepted.peer_port = pc.peer_port;
-            accepted.peer_cred = pc.peer_cred;
-            accepted.global_pipes = true;
-            let accepted_sock_idx = proc.sockets.alloc(accepted);
-            if domain == SocketDomain::Unix && pc.peer_pid == proc.pid {
-                if let Some(peer_idx) = pc.peer_sock_idx {
-                    let peer_matches = proc.sockets.get(peer_idx).is_some_and(|peer| {
-                        peer.domain == SocketDomain::Unix
-                            && peer.sock_type == SocketType::Stream
-                            && peer.state == SocketState::Connected
-                            && peer.send_buf_idx == Some(pc.recv_pipe_idx)
-                            && peer.recv_buf_idx == Some(pc.send_pipe_idx)
-                    });
-                    if peer_matches {
-                        proc.sockets.get_mut(accepted_sock_idx).unwrap().peer_idx = Some(peer_idx);
-                        proc.sockets.get_mut(peer_idx).unwrap().peer_idx = Some(accepted_sock_idx);
+    proc.open_descriptor(FileType::Socket, accepted_status_flags, b"/dev/socket", 0, |proc, _| {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        // All listeners use a shared cross-process accept queue. The accepted
+        // SocketInfo is created lazily in whichever process wins accept().
+        if let Some(shared_idx) = sock.shared_backlog_idx {
+            let domain = sock.domain;
+            let bind_addr = sock.bind_addr;
+            let bind_addr6 = sock.bind_addr6;
+            let bind_path = sock.bind_path.as_deref().map(crate::IoBuffer::copy_from).transpose()?;
+            let bind_port = sock.bind_port;
+            let mut accepted = SocketInfo::try_new(domain, SocketType::Stream, 0)?;
+            proc.sockets.prepare_additional(1)?;
+            let pending = unsafe { crate::socket::shared_listener_backlog_table().pop(shared_idx) };
+            if let Some(pc) = pending {
+                accepted.state = SocketState::Connected;
+                accepted.recv_buf_idx = Some(pc.recv_pipe_idx);
+                accepted.send_buf_idx = Some(pc.send_pipe_idx);
+                accepted.bind_port = bind_port;
+                match domain {
+                    SocketDomain::Inet => {
+                        accepted.bind_addr = if pc.local_addr == [0;4] {bind_addr} else {pc.local_addr};
+                        accepted.peer_addr = pc.peer_addr;
+                    }
+                    SocketDomain::Inet6 => {
+                        accepted.bind_addr6 = bind_addr6;
+                        accepted.peer_addr6 = if pc.peer_is_ipv6 {
+                            pc.peer_addr6
+                        } else {
+                            ipv4_mapped_addr6(pc.peer_addr)
+                        };
+                    }
+                    SocketDomain::Unix => {
+                        accepted.bind_path = bind_path;
                     }
                 }
-            }
-            let host_handle = -((accepted_sock_idx as i64) + 1);
-            let ofd_idx = proc.ofd_table.create(
-                FileType::Socket,
-                accepted_status_flags,
-                host_handle,
-                b"/dev/socket".to_vec(),
-            );
-            return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0) {
-                Ok(new_fd) => Ok(new_fd),
-                Err(err) => {
-                    proc.ofd_table.dec_ref(ofd_idx);
-                    discard_accepted_socket_without_fd(proc, accepted_sock_idx);
-                    Err(err)
+                accepted.peer_port = pc.peer_port;
+                accepted.peer_cred = pc.peer_cred;
+                accepted.global_pipes = true;
+                let accepted_sock_idx = proc.sockets.publish_prepared(accepted);
+                if domain == SocketDomain::Unix && pc.peer_pid == proc.pid {
+                    if let Some(peer_idx) = pc.peer_sock_idx {
+                        let peer_matches = proc.sockets.get(peer_idx).is_some_and(|peer| {
+                            peer.domain == SocketDomain::Unix
+                                && peer.sock_type == SocketType::Stream
+                                && peer.state == SocketState::Connected
+                                && peer.send_buf_idx == Some(pc.recv_pipe_idx)
+                                && peer.recv_buf_idx == Some(pc.send_pipe_idx)
+                        });
+                        if peer_matches {
+                            proc.sockets.get_mut(accepted_sock_idx).unwrap().peer_idx = Some(peer_idx);
+                            proc.sockets.get_mut(peer_idx).unwrap().peer_idx = Some(accepted_sock_idx);
+                        }
+                    }
                 }
-            };
+                return Ok(-((accepted_sock_idx as i64) + 1));
+            }
+            // Shared queue empty — retain the inline fallback for legacy/manual
+            // listener state, then return EAGAIN if both queues are empty.
+            let _ = SocketType::Stream; // silence unused-import warning if path unused
+            let _ = SocketDomain::Inet;
         }
-        // Shared queue empty — retain the inline fallback for legacy/manual
-        // listener state, then return EAGAIN if both queues are empty.
-        let _ = SocketType::Stream; // silence unused-import warning if path unused
-        let _ = SocketDomain::Inet;
-    }
 
-    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-    if sock.listen_backlog.is_empty() {
-        return Err(Errno::EAGAIN);
-    }
-    let accepted_sock_idx = sock.listen_backlog.remove(0);
-
-    // Create OFD for the accepted socket
-    let host_handle = -((accepted_sock_idx as i64) + 1);
-    let ofd_idx = proc.ofd_table.create(
-        FileType::Socket,
-        accepted_status_flags,
-        host_handle,
-        b"/dev/socket".to_vec(),
-    );
-
-    // Allocate fd
-    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0) {
-        Ok(new_fd) => Ok(new_fd),
-        Err(err) => {
-            proc.ofd_table.dec_ref(ofd_idx);
-            discard_accepted_socket_without_fd(proc, accepted_sock_idx);
-            Err(err)
+        let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+        if sock.listen_backlog.is_empty() {
+            return Err(Errno::EAGAIN);
         }
-    }
+        let accepted_sock_idx = sock.listen_backlog.remove(0);
+
+        Ok(-((accepted_sock_idx as i64) + 1))
+    })
+}
+
+fn prepare_inline_stream_accept(proc: &mut Process, listener_idx: usize) -> Result<crate::socket::SocketInfo, Errno> {
+    let domain = proc.sockets.get(listener_idx).ok_or(Errno::ECONNREFUSED)?.domain;
+    let accepted = crate::socket::SocketInfo::try_new(domain, crate::socket::SocketType::Stream, 0)?;
+    proc.sockets.prepare_additional(1)?;
+    proc.sockets.get_mut(listener_idx).ok_or(Errno::ECONNREFUSED)?.listen_backlog.try_reserve(1)?;
+    Ok(accepted)
 }
 
 /// Connect a socket to an address.
@@ -14508,8 +14603,30 @@ pub fn sys_connect(
     fd: i32,
     addr: &[u8],
 ) -> Result<(), Errno> {
+    let result = sys_connect_impl(proc, host, fd, addr);
+    if result.is_ok() || matches!(result, Err(Errno::EINPROGRESS)) {
+        if let Some(ofd) = proc
+            .fd_table
+            .get(fd)
+            .ok()
+            .and_then(|e| proc.ofd_table.get(e.ofd_ref.0))
+        {
+            if ofd.file_type == FileType::Socket {
+                notify_socket_readiness(proc, (-(ofd.host_handle + 1)) as usize, 0x215f);
+            }
+        }
+    }
+    result
+}
+
+fn sys_connect_impl(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    addr: &[u8],
+) -> Result<(), Errno> {
     use crate::pipe::PipeBuffer;
-    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+    use crate::socket::{SocketDomain, SocketState, SocketType};
 
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
@@ -14526,6 +14643,7 @@ pub fn sys_connect(
                 if family == 0 {
                     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                     sock.peer_addr = [0, 0, 0, 0];
+                    sock.udp_source_addr = None;
                     sock.peer_port = 0;
                     sock.connect_error = 0;
                     sock.state = if sock.bind_port == 0 {
@@ -14541,7 +14659,7 @@ pub fn sys_connect(
                 if raw_ip == [0, 0, 0, 0] && port == 0 {
                     return Err(Errno::EADDRNOTAVAIL);
                 }
-                if ip == [255, 255, 255, 255] {
+                if requires_broadcast_permission(ip, host) {
                     use wasm_posix_shared::socket::{SOL_SOCKET, SO_BROADCAST};
 
                     let broadcast_enabled =
@@ -14550,17 +14668,38 @@ pub fn sys_connect(
                         return Err(Errno::EACCES);
                     }
                 }
-                if !is_supported_udp_route_addr(ip) {
-                    return Err(Errno::ENETUNREACH);
-                }
                 if !bind_device_allows_ipv4(sock, ip, false) {
                     return Err(Errno::ENETUNREACH);
                 }
 
+                // Keep the wildcard binding's receive ownership intact while
+                // recording the actual source selected for this association.
+                // The host owns its interface; the kernel must not assume a
+                // demo subnet or invent a routable local address.
+                let routed_source = if is_loopback_addr(ip) {
+                    udp_route_local_addr(ip)
+                } else if is_ipv4_multicast_addr(ip) {
+                    use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_IF};
+                    let selected = sock.get_option(IPPROTO_IP, IP_MULTICAST_IF)
+                        .unwrap_or(0).to_le_bytes();
+                    if is_loopback_addr(selected) {
+                        selected
+                    } else if is_loopback_addr(sock.bind_addr) {
+                        sock.bind_addr
+                    } else if sock.bind_device.as_deref() == Some(b"lo") {
+                        [127, 0, 0, 1]
+                    } else {
+                        host.host_udp_source_address(&ip)?
+                    }
+                } else {
+                    host.host_udp_source_address(&ip)?
+                };
+                let source = if sock.bind_addr != [0; 4] { sock.bind_addr } else { routed_source };
                 udp_ensure_bound(proc, host, sock_idx, udp_route_local_addr(ip))?;
                 {
                     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                     sock.state = SocketState::Connected;
+                    sock.udp_source_addr = Some(source);
                     sock.peer_addr = ip;
                     sock.peer_port = port;
                     sock.connect_error = 0;
@@ -14637,10 +14776,11 @@ pub fn sys_connect(
                     }
                 }
                 let listener_idx = listener_idx.ok_or(Errno::ECONNREFUSED)?;
+                let mut accepted_sock = prepare_inline_stream_accept(proc, listener_idx)?;
 
                 let (pipe_a_idx, pipe_b_idx) = unsafe {
                     crate::pipe::global_pipe_table()
-                        .alloc_pair(PipeBuffer::new(65536), PipeBuffer::new(65536))
+                        .try_alloc_pair(PipeBuffer::try_new(65536)?, PipeBuffer::try_new(65536)?)?
                 };
 
                 let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
@@ -14659,7 +14799,6 @@ pub fn sys_connect(
                 }
 
                 let listener = proc.sockets.get(listener_idx).ok_or(Errno::EBADF)?;
-                let mut accepted_sock = SocketInfo::new(SocketDomain::Inet6, SocketType::Stream, 0);
                 accepted_sock.state = SocketState::Connected;
                 accepted_sock.recv_buf_idx = Some(pipe_a_idx);
                 accepted_sock.send_buf_idx = Some(pipe_b_idx);
@@ -14668,7 +14807,7 @@ pub fn sys_connect(
                 accepted_sock.bind_port = listener.bind_port;
                 accepted_sock.peer_addr6 = client_addr6;
                 accepted_sock.peer_port = client_port;
-                let accepted_idx = proc.sockets.alloc(accepted_sock);
+                let accepted_idx = proc.sockets.publish_prepared(accepted_sock);
 
                 let listener = proc.sockets.get_mut(listener_idx).ok_or(Errno::EBADF)?;
                 listener.listen_backlog.push(accepted_idx);
@@ -14753,13 +14892,15 @@ pub fn sys_connect(
                     }
                 }
                 let listener_idx = listener_idx.ok_or(Errno::ECONNREFUSED)?;
+                let mut accepted_sock = prepare_inline_stream_accept(proc, listener_idx)?;
 
                 // Allocate two pipe buffers for bidirectional data:
                 //   pipe_a: client writes → server reads
                 //   pipe_b: server writes → client reads
                 let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-                let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
-                let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
+                let (pipe_a_idx, pipe_b_idx) = pipe_table.try_alloc_pair(
+                    PipeBuffer::try_new(65536)?, PipeBuffer::try_new(65536)?,
+                )?;
 
                 // Assign ephemeral port/addr to client if unbound
                 let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
@@ -14785,7 +14926,6 @@ pub fn sys_connect(
                 let listener_addr = listener.bind_addr;
                 let listener_addr6 = listener.bind_addr6;
                 let listener_port = listener.bind_port;
-                let mut accepted_sock = SocketInfo::new(listener_domain, SocketType::Stream, 0);
                 accepted_sock.state = SocketState::Connected;
                 accepted_sock.recv_buf_idx = Some(pipe_a_idx); // reads from pipe_a (client's writes)
                 accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to pipe_b (client's reads)
@@ -14799,7 +14939,7 @@ pub fn sys_connect(
                 }
                 accepted_sock.peer_port = client_port;
                 accepted_sock.global_pipes = true;
-                let accepted_idx = proc.sockets.alloc(accepted_sock);
+                let accepted_idx = proc.sockets.publish_prepared(accepted_sock);
 
                 // Push to listener's backlog
                 let listener = proc.sockets.get_mut(listener_idx).ok_or(Errno::EBADF)?;
@@ -14838,10 +14978,12 @@ pub fn sys_connect(
                 // while it is pending rather than leaking HostIO's internal
                 // EAGAIN retry sentinel. AF_UNIX and local/virtual routes do not
                 // enter this branch.
-                let net_handle = sock_idx as i32;
+                let net_handle = if let Some(handle) = sock.host_net_handle { handle } else { crate::socket::allocate_host_net_handle()? };
                 let was_connecting = sock.state == SocketState::Connecting;
                 if !was_connecting {
-                    host.host_net_connect(net_handle, &ip, port)?;
+                    if sock.bind_port != 0 || sock.bind_addr != [0;4] {
+                        host.host_net_connect_from(net_handle,&ip,port,sock.bind_addr,sock.bind_port)?;
+                    } else {host.host_net_connect(net_handle, &ip, port)?;}
                     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                     sock.state = SocketState::Connecting;
                     sock.host_net_handle = Some(net_handle);
@@ -14850,6 +14992,7 @@ pub fn sys_connect(
                     Ok(()) => {
                         let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                         sock.state = SocketState::Connected;
+                        if let Ok((addr,port)) = host.host_net_local_endpoint(net_handle) { sock.bind_addr=addr; sock.bind_port=port; }
                         Ok(())
                     }
                     Err(Errno::EAGAIN) => Err(if was_connecting {
@@ -14982,14 +15125,20 @@ pub fn sys_connect(
             let accept_wake_idx = listener.accept_wake_idx;
             let listener_cred = listener.peer_cred;
             let own_cred = socket_peer_cred(proc);
+            let prepared_accepted = if let Some(shared_idx) = shared_idx {
+                unsafe { crate::socket::shared_listener_backlog_table().prepare_push(shared_idx)?; }
+                None
+            } else { Some(prepare_inline_stream_accept(proc, listener_sock_idx)?) };
 
             // Create pipe pair for bidirectional communication (in global table for fork safety)
             let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-            let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
-            let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
+            let (pipe_a_idx, pipe_b_idx) = pipe_table.try_alloc_pair(
+                PipeBuffer::try_new(65536)?, PipeBuffer::try_new(65536)?,
+            )?;
 
             if let Some(shared_idx) = shared_idx {
                 let pending = crate::socket::PendingConnection {
+                    local_addr: [0;4],
                     peer_addr: [0; 4],
                     peer_addr6: [0; 16],
                     peer_is_ipv6: false,
@@ -14999,9 +15148,10 @@ pub fn sys_connect(
                     peer_cred: Some(own_cred),
                     recv_pipe_idx: pipe_a_idx,
                     send_pipe_idx: pipe_b_idx,
+                    host_connection_id: 0,
                 };
                 if !unsafe {
-                    crate::socket::shared_listener_backlog_table().push(shared_idx, pending)
+                    crate::socket::shared_listener_backlog_table().publish_prepared(shared_idx, pending)
                 } {
                     pipe_table.discard_unclaimed(pipe_a_idx);
                     pipe_table.discard_unclaimed(pipe_b_idx);
@@ -15018,13 +15168,13 @@ pub fn sys_connect(
             } else {
                 // Defensive compatibility for manually restored listener state
                 // without a shared queue.
-                let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
+                let mut accepted_sock = prepared_accepted.expect("inline accept was not prepared");
                 accepted_sock.state = SocketState::Connected;
                 accepted_sock.recv_buf_idx = Some(pipe_a_idx);
                 accepted_sock.send_buf_idx = Some(pipe_b_idx);
                 accepted_sock.peer_cred = Some(own_cred);
                 accepted_sock.global_pipes = true;
-                let accepted_idx = proc.sockets.alloc(accepted_sock);
+                let accepted_idx = proc.sockets.publish_prepared(accepted_sock);
 
                 proc.sockets
                     .get_mut(listener_sock_idx)
@@ -15151,7 +15301,7 @@ pub fn sys_sendto(
         }
         SocketDomain::Unix => {
             let peer_idx = resolve_unix_datagram_destination(proc, host, addr)?;
-            unix_dgram_send_to_sock(proc, sock_idx, peer_idx, buf, Vec::new())
+            unix_dgram_send_to_sock(proc, sock_idx, peer_idx, buf, AncillaryFds::new())
         }
     };
     finish_datagram_send(proc, flags, result)
@@ -15162,20 +15312,7 @@ pub struct MessageReceive {
     pub return_len: usize,
     pub addr_len: usize,
     pub output_flags: u32,
-    pub ancillary_fds: Vec<crate::pipe::InFlightFd>,
-}
-
-fn try_clone_ancillary_fds(
-    fds: &[crate::pipe::InFlightFd],
-) -> Result<Vec<crate::pipe::InFlightFd>, Errno> {
-    let mut cloned = Vec::new();
-    cloned
-        .try_reserve_exact(fds.len())
-        .map_err(|_| Errno::ENOMEM)?;
-    for fd in fds {
-        cloned.push(fd.try_clone_retained()?);
-    }
-    Ok(cloned)
+    pub ancillary_fds: AncillaryFds,
 }
 
 /// Receive one atomic datagram, optionally transferring its control message.
@@ -15216,7 +15353,7 @@ fn recv_datagram_message(
             return_len: 0,
             addr_len: 0,
             output_flags: 0,
-            ancillary_fds: Vec::new(),
+            ancillary_fds: crate::pipe::AncillaryFds::new(),
         });
     }
 
@@ -15244,9 +15381,9 @@ fn recv_datagram_message(
         // Clone ownership first so allocation/retain failure cannot leave
         // caller-visible data in the scratch result of a failed peek.
         let ancillary_fds = if receive_ancillary {
-            try_clone_ancillary_fds(&datagram.ancillary_fds)?
+            datagram.ancillary_fds.try_clone_retained()?
         } else {
-            Vec::new()
+            AncillaryFds::new()
         };
         let copy_len = buf.len().min(datagram.data.len());
         buf[..copy_len].copy_from_slice(&datagram.data[..copy_len]);
@@ -15259,12 +15396,15 @@ fn recv_datagram_message(
         )
     } else {
         let mut datagram = sock.dgram_queue.remove(datagram_idx);
+        if let Some(id) = sock.poll_identity.get() {
+            crate::epoll::notify(crate::epoll::Source::DatagramCapacity(id), 0x304);
+        }
         let copy_len = buf.len().min(datagram.data.len());
         buf[..copy_len].copy_from_slice(&datagram.data[..copy_len]);
         let ancillary_fds = if receive_ancillary {
             core::mem::take(&mut datagram.ancillary_fds)
         } else {
-            Vec::new()
+            AncillaryFds::new()
         };
         (
             datagram.data.len(),
@@ -15344,8 +15484,18 @@ pub fn sys_poll(
     fds: &mut [WasmPollFd],
     timeout_ms: i32,
 ) -> Result<i32, Errno> {
+    sys_poll_with_peers(proc, host, fds, timeout_ms, &mut [])
+}
+
+pub fn sys_poll_with_peers(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fds: &mut [WasmPollFd],
+    timeout_ms: i32,
+    peers: &mut [&mut Process],
+) -> Result<i32, Errno> {
     // First non-blocking check
-    let ready = poll_check(proc, host, fds);
+    let ready = poll_check_depth(proc, host, fds, 0, peers);
     if ready > 0 || timeout_ms == 0 {
         return Ok(ready);
     }
@@ -15359,14 +15509,14 @@ pub fn sys_poll(
 
 /// Single non-blocking pass checking fd readiness. Used by sys_poll's loop.
 fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd]) -> i32 {
-    poll_check_depth(proc, host, fds, 0)
+    poll_check_depth(proc, host, fds, 0, &mut [])
 }
 
 /// Maximum epoll-on-epoll recursion depth for readiness checks. Real
 /// nesting (a compositor registering libinput's epoll fd inside
 /// `wl_event_loop`'s epoll) is one level; this caps pathological cycles
 /// where an epoll transitively monitors itself through a different fd.
-const POLL_CHECK_MAX_DEPTH: u32 = 4;
+const POLL_CHECK_MAX_DEPTH: u32 = 5;
 
 /// Single non-blocking pass checking fd readiness, tracking nested-epoll
 /// recursion depth. Used by `sys_poll`'s loop and by the `FileType::Epoll`
@@ -15376,6 +15526,7 @@ fn poll_check_depth(
     host: &mut dyn HostIO,
     fds: &mut [WasmPollFd],
     depth: u32,
+    peers: &mut [&mut Process],
 ) -> i32 {
     use wasm_posix_shared::poll::*;
 
@@ -15415,6 +15566,24 @@ fn poll_check_depth(
             continue;
         }
 
+        let requested_events = pollfd.events;
+        let normal_aliases = !matches!(
+            ofd.file_type,
+            FileType::EventFd | FileType::TimerFd | FileType::SignalFd | FileType::Epoll
+        );
+        if normal_aliases && pollfd.events & POLLRDNORM != 0 {
+            pollfd.events |= POLLIN;
+        }
+        let write_aliases = if ofd.file_type == FileType::Socket {
+            POLLWRNORM | POLLWRBAND
+        } else if normal_aliases {
+            POLLWRNORM
+        } else {
+            0
+        };
+        if pollfd.events & write_aliases != 0 {
+            pollfd.events |= POLLOUT;
+        }
         let mut revents: i16 = 0;
 
         match ofd.file_type {
@@ -15452,62 +15621,12 @@ fn poll_check_depth(
                 }
             }
             FileType::Epoll => {
-                // A nested epoll fd is readable when any fd in its own interest
-                // list is ready; recurse a non-blocking pass over that list.
                 if pollfd.events & POLLIN != 0 && depth < POLL_CHECK_MAX_DEPTH {
-                    const EPOLLIN: u32 = 0x001;
-                    const EPOLLOUT: u32 = 0x004;
-
-                    // Owned list (the shared instance lives in
-                    // `descriptor_backing::with_epolls`, keyed by this epoll
-                    // OFD), resolved to descriptors this process holds that
-                    // still reach each registration's description.
-                    let interests: Vec<crate::process::EpollInterest> =
-                        epoll_resolved_interests(proc, pollfd.fd)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|(fd, mut i)| {
-                                i.fd = fd;
-                                i
-                            })
-                            .collect();
+                    let idx = (-(ofd.host_handle + 1)) as usize;
+                                if epoll_evaluate(proc, host, idx, 1, false, depth + 1, peers)
+                        .is_ok_and(|out| !out.is_empty())
                     {
-                        let mut tmp: Vec<WasmPollFd> = interests
-                            .iter()
-                            // Guard against a direct self-monitoring cycle.
-                            .filter(|i| i.fd != pollfd.fd)
-                            .map(|i| {
-                                let mut ev: i16 = 0;
-                                if i.events & EPOLLIN != 0 {
-                                    ev |= POLLIN;
-                                }
-                                if i.events & EPOLLOUT != 0 {
-                                    ev |= POLLOUT;
-                                }
-                                WasmPollFd {
-                                    fd: i.fd,
-                                    events: ev,
-                                    revents: 0,
-                                }
-                            })
-                            .collect();
-                        if !tmp.is_empty() {
-                            poll_check_depth(proc, host, &mut tmp, depth + 1);
-                            // Count only conditions epoll_wait would actually
-                            // report. `live_epoll_interests` already drops
-                            // registrations whose description closed (as
-                            // Linux does), but `poll_check_depth`'s return
-                            // also counts POLLNVAL, which epoll_wait never
-                            // reports. Counting it would make the outer epoll
-                            // report ready forever while epoll_wait on the
-                            // inner one yields no events — a 100% CPU spin.
-                            let ready = tmp.iter().any(|p| {
-                                p.revents & (POLLIN | POLLOUT | POLLERR | POLLHUP) != 0
-                            });
-                            if ready {
                                 revents |= POLLIN;
-                            }
-                        }
                     }
                 }
             }
@@ -15548,6 +15667,19 @@ fn poll_check_depth(
                     }
                     // Mice doesn't accept writes — never report POLLOUT.
                 } else if ofd.file_type == FileType::CharDevice
+                    && ExchangeDevice::from_host_handle(ofd.host_handle).is_some()
+                {
+                    // `events` is readable while a line is waiting, matching
+                    // sys_read's EAGAIN; a session description always reads
+                    // (its number, then end-of-file). Neither accepts writes.
+                    let readable = match ExchangeDevice::from_host_handle(ofd.host_handle) {
+                        Some(ExchangeDevice::Events) => crate::exchange::device::events_readable(),
+                        _ => true,
+                    };
+                    if pollfd.events & POLLIN != 0 && readable {
+                        revents |= POLLIN;
+                    }
+                } else if ofd.file_type == FileType::CharDevice
                     && VirtualDevice::from_host_handle(ofd.host_handle)
                         == Some(VirtualDevice::Clipboard)
                 {
@@ -15571,6 +15703,9 @@ fn poll_check_depth(
                 } else if ofd.file_type == FileType::CharDevice
                     && VirtualDevice::from_host_handle(ofd.host_handle)
                         == Some(VirtualDevice::DriCard0)
+                    || ofd.file_type == FileType::CharDevice
+                        && VirtualDevice::from_host_handle(ofd.host_handle)
+                            == Some(VirtualDevice::DriRenderD128)
                 {
                     // /dev/dri/card0 gates POLLIN on the per-fd
                     // `event_ring` actually holding a DRM event.
@@ -15660,14 +15795,19 @@ fn poll_check_depth(
                                 if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
                                     revents |= POLLIN;
                                 }
+                                // A failed writer: the next read returns EIO.
+                                if pipe.available() == 0 && pipe.read_error().is_some() {
+                                    revents |= POLLERR;
+                                }
                                 if pipe.read_end_has_hangup() {
                                     revents |= POLLHUP;
                                 }
                             }
                             O_WRONLY => {
-                                if !pipe.has_readers() {
+                                if !pipe.has_readers() || pipe.is_write_sealed() {
                                     revents |= POLLERR;
-                                } else if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
+                                }
+                                if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
                                     revents |= POLLOUT;
                                 }
                             }
@@ -15688,15 +15828,24 @@ fn poll_check_depth(
                 let sock_idx = (-(ofd.host_handle + 1)) as usize;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
                     use crate::socket::{SocketState, SocketType};
-                    let stream_write_shutdown = sock.sock_type != SocketType::Dgram && sock.shut_wr;
-                    // POLLERR: report full shutdown as an error for stream sockets.
+                    let stream_write_shutdown = sock.sock_type != SocketType::Dgram && socket_write_shutdown(sock);
+                    // Full local shutdown is a hangup, not a synthetic error.
                     // Datagram sockets handle shutdown readiness below: read shutdown
                     // is EOF-like for poll, while write shutdown suppresses POLLOUT.
-                    if sock.sock_type != SocketType::Dgram && sock.shut_wr && sock.shut_rd {
-                        revents |= POLLERR;
+                    if sock.sock_type != SocketType::Dgram && socket_write_shutdown(sock)
+                        && socket_read_shutdown(sock)
+                    {
+                        revents |= POLLHUP;
                     }
                     if sock.sock_type != SocketType::Dgram
-                        && sock.shut_rd
+                        && socket_read_shutdown(sock) {
+                        revents |= pollfd.events & POLLRDHUP;
+                    }
+                    if sock.oob_byte.is_some() {
+                        revents |= pollfd.events & POLLPRI;
+                    }
+                    if sock.sock_type != SocketType::Dgram
+                        && socket_read_shutdown(sock)
                         && (pollfd.events & POLLIN != 0)
                     {
                         revents |= POLLIN;
@@ -15722,10 +15871,10 @@ fn poll_check_depth(
                         if sock.connect_error != 0 {
                             revents |= POLLERR;
                         }
-                        if sock.shut_wr {
+                        if socket_write_shutdown(sock) {
                             revents |= POLLHUP;
                         }
-                        if pollfd.events & POLLIN != 0 && sock.shut_rd {
+                        if pollfd.events & POLLIN != 0 && socket_read_shutdown(sock) {
                             revents |= POLLIN;
                         } else if pollfd.events & POLLIN != 0
                             && sock
@@ -15751,7 +15900,8 @@ fn poll_check_depth(
                                         && unix_dgram_target_accepts_sender(peer, sock_idx)
                                         && peer.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT
                                 });
-                        if pollfd.events & POLLOUT != 0 && !sock.shut_wr && !unix_peer_queue_full {
+                        if pollfd.events & POLLOUT != 0 && !socket_write_shutdown(sock)
+                            && !unix_peer_queue_full {
                             revents |= POLLOUT;
                         }
                     }
@@ -15759,11 +15909,23 @@ fn poll_check_depth(
                     if let Some(recv_idx) = sock.recv_buf_idx {
                         let pipe_ref = unsafe { crate::pipe::global_pipe_table().get(recv_idx) };
                         if let Some(pipe) = pipe_ref {
-                            if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
+                            if pipe.stream_error().is_some() { revents |= POLLERR; }
+                            if pollfd.events & POLLIN != 0 && (pipe.available() > 0 || !pipe.is_write_end_open()) {
                                 revents |= POLLIN;
                             }
                             if !pipe.is_write_end_open() {
-                                revents |= POLLHUP;
+                                revents |= pollfd.events & POLLRDHUP;
+                                if socket_write_shutdown(sock)
+                                    || sock.domain == crate::socket::SocketDomain::Unix
+                                        && sock
+                                            .send_buf_idx
+                                            .and_then(|idx| unsafe {
+                                                crate::pipe::global_pipe_table().get(idx)
+                                            })
+                                            .is_some_and(|send| !send.is_read_end_open())
+                                {
+                                    revents |= POLLHUP;
+                                }
                             }
                         }
                     }
@@ -15771,7 +15933,8 @@ fn poll_check_depth(
                     if let Some(send_idx) = sock.send_buf_idx {
                         let pipe_ref = unsafe { crate::pipe::global_pipe_table().get(send_idx) };
                         if let Some(pipe) = pipe_ref {
-                            if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
+                            if pipe.stream_error().is_some() { revents |= POLLERR; }
+                            if pollfd.events & POLLOUT != 0 && pipe.stream_error().is_none() && pipe.is_read_end_open() && pipe.free_space() > 0 {
                                 revents |= POLLOUT;
                             }
                         }
@@ -15827,6 +15990,7 @@ fn poll_check_depth(
                                     Ok(()) => {
                                         if let Some(s) = proc.sockets.get_mut(sock_idx) {
                                             s.state = SocketState::Connected;
+                                                if let Ok((addr,port)) = host.host_net_local_endpoint(net_handle) {s.bind_addr=addr;s.bind_port=port;}
                                         }
                                         match host.host_net_readiness(net_handle) {
                                             Ok(host_facts) => {
@@ -15865,39 +16029,39 @@ fn poll_check_depth(
                                     }
                                 }
                             }
+                            // A host-delegated connect that failed stays
+                            // failed. Report it on every poll, not only the
+                            // one that observed the failure: the error stays
+                            // pending until SO_ERROR consumes it, and reads
+                            // and writes return at once instead of blocking.
+                            // Reporting nothing here left a caller whose first
+                            // wait absorbed the failure (curl's multi loop)
+                            // waiting for a connection that had already
+                            // failed, until its own timeout.
+                            SocketState::Closed => {
+                                if sock.connect_error != 0 {
+                                    revents |= POLLERR;
+                                }
+                                revents |= pollfd.events & (POLLIN | POLLOUT);
+                            }
                             _ => {}
                         }
                     }
                     if stream_write_shutdown {
                         revents &= !POLLOUT;
                     }
-                    // NOTE: POSIX XSH poll() also requires that "POLLHUP and
-                    // POLLOUT are mutually exclusive: a stream can never be
-                    // writable if a hangup has occurred", and the pipe-backed
-                    // path above can still report both — its recv-pipe hangup
-                    // check and its send-pipe writability check are
-                    // independent. That is deliberately NOT fixed here by
-                    // masking POLLOUT off, because the real divergence is one
-                    // step earlier: the pipe-backed path raises POLLHUP for a
-                    // peer that merely closed its write end, and never sets
-                    // POLLIN at end-of-file, so POLLHUP is doing double duty
-                    // as the reader's EOF wakeup. Linux treats that state as
-                    // RCV_SHUTDOWN — EPOLLIN|EPOLLRDHUP with EPOLLOUT intact
-                    // — and reserves EPOLLHUP for `sk_shutdown ==
-                    // SHUTDOWN_MASK`. Masking POLLOUT off would make this
-                    // POSIX-valid but move it further from Linux and stop
-                    // writers on a half-closed AF_UNIX socket. Correcting it
-                    // properly means reporting EOF as POLLIN there, which
-                    // changes wakeups for every AF_UNIX and loopback socket
-                    // and needs the conformance suites to validate.
-                    //
-                    // The host-delegated path above has no such ambiguity:
-                    // its facts distinguish RECV_EOF from HANGUP, and
-                    // `net_readiness::stream_revents` applies the exclusion.
                 }
             }
         }
 
+        if normal_aliases && revents & POLLIN != 0 {
+            revents |= requested_events & POLLRDNORM;
+        }
+        if revents & POLLOUT != 0 {
+            revents |= requested_events & write_aliases;
+        }
+        revents &= requested_events | POLLERR | POLLHUP | POLLNVAL;
+        pollfd.events = requested_events;
         pollfd.revents = revents;
         if revents != 0 {
             ready_count += 1;
@@ -15919,18 +16083,6 @@ pub fn sys_gettimeofday(_proc: &mut Process, host: &mut dyn HostIO) -> Result<(i
     let (sec, nsec) = host.host_clock_gettime(0)?; // CLOCK_REALTIME = 0
     let usec = nsec / 1000; // nanoseconds to microseconds
     Ok((sec, usec))
-}
-
-/// Sleep for a specified number of microseconds.
-///
-/// Like [`sys_nanosleep`], this validates and returns; it does not sleep. The
-/// duration is the caller's `usec` argument, which the runtime reads from the
-/// channel and parks on. Sleeping here would block the single kernel thread
-/// that multiplexes every process in the machine, so a `usleep(500000)` in one
-/// process would stall all of them for half a second.
-pub fn sys_usleep(_proc: &mut Process, _host: &mut dyn HostIO, usec: u32) -> Result<(), Errno> {
-    credit_image_build_sleep(i64::from(usec / 1_000_000), i64::from(usec % 1_000_000) * 1_000);
-    Ok(())
 }
 
 /// Resolve a path relative to a directory fd through the global namespace.
@@ -16019,15 +16171,6 @@ pub fn sys_openat(
 
     // Virtual device nodes — handle in-kernel, no host call
     if let Some(dev) = match_virtual_device(&resolved) {
-        if dev == VirtualDevice::Fb0 {
-            acquire_fb0_or_busy(proc.pid)?;
-        }
-        if dev == VirtualDevice::Mice {
-            acquire_mice_or_busy(proc.pid)?;
-        }
-        if dev == VirtualDevice::Clipboard {
-            crate::clipboard::acquire_or_busy(proc.pid)?;
-        }
         let status_flags = oflags & !CREATION_FLAGS;
         if dev == VirtualDevice::Dsp {
             // /dev/dsp is playback-only, but the standard OSS open (pcaudiolib,
@@ -16038,52 +16181,15 @@ pub fn sys_openat(
             if !matches!(status_flags & O_ACCMODE, O_WRONLY | O_RDWR) {
                 return Err(Errno::EOPNOTSUPP);
             }
-            let pcm_handle = crate::audio::open_stream()?;
-            crate::audio::set_nonblock(pcm_handle, status_flags & O_NONBLOCK != 0)?;
-            let ofd_idx = proc.ofd_table.create(
-                FileType::PcmPlayback,
-                status_flags,
-                pcm_handle,
-                resolved,
-            );
-            let fd_flags = oflags_to_fd_flags(oflags);
-            return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-                Ok(fd) => Ok(fd),
-                Err(error) => {
-                    proc.ofd_table.dec_ref(ofd_idx);
-                    crate::audio::rollback_open(pcm_handle);
-                    Err(error)
-                }
-            };
+            return open_pcm_descriptor(proc, status_flags, oflags_to_fd_flags(oflags), &resolved);
         }
-        let ofd_idx = proc.ofd_table.create(
-            FileType::CharDevice,
-            status_flags,
-            dev.host_handle(),
-            resolved,
-        );
-        install_dri_state_on_open(proc, ofd_idx, dev);
-        install_input_state_on_open(proc, ofd_idx, dev);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return publish_virtual_device_fd(proc, dev, status_flags, fd_flags, resolved);
     }
 
     // /dev/ptmx — allocate a new PTY master
     if resolved == b"/dev/ptmx" {
-        let pty_idx = crate::pty::alloc_pty(proc.effective_uid(), proc.effective_gid())
-            .ok_or(Errno::ENOSPC)?;
-        let status_flags = oflags & !CREATION_FLAGS;
-        let fd_flags = oflags_to_fd_flags(oflags);
-        return publish_pty_fd(
-            proc,
-            host,
-            FileType::PtyMaster,
-            pty_idx,
-            status_flags,
-            fd_flags,
-            resolved,
-        );
+        return open_new_pty_descriptor(proc, oflags, &resolved);
     }
 
     // /dev/pts/N — open PTY slave
@@ -16147,6 +16253,13 @@ pub fn sys_openat(
         return Ok(fd);
     }
 
+    // `/proc/<pid>/exe` opens the executable the image runs, not a path.
+    if let Some(crate::procfs::ProcfsEntry::Exe(pid)) =
+        crate::procfs::match_procfs(&resolved, proc.pid)
+    {
+        return open_process_exe(proc, host, pid, oflags);
+    }
+
     // Procfs (/proc/...) — in-kernel virtual filesystem
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
@@ -16168,23 +16281,10 @@ pub fn sys_openat(
         }
         let status_flags = oflags & !CREATION_FLAGS;
         let object_id = synthetic_file_object_id(&resolved).ok_or(Errno::EINVAL)?;
-        let host_handle = crate::descriptor_backing::alloc_synthetic_regular();
-        let ofd_idx = proc
-            .ofd_table
-            .create(FileType::Regular, status_flags, host_handle, resolved);
-        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Kernel {
-            kind: KernelFileKind::SyntheticRegular,
-            object_id,
+        return proc.open_descriptor(FileType::Regular, status_flags, &resolved, oflags_to_fd_flags(oflags), |_, description| {
+            description.file_id = Some(FileId::Kernel { kind: KernelFileKind::SyntheticRegular, object_id });
+            crate::descriptor_backing::try_alloc_synthetic_regular()
         });
-        let fd_flags = oflags_to_fd_flags(oflags);
-        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-            Ok(fd) => Ok(fd),
-            Err(err) => {
-                proc.ofd_table.dec_ref(ofd_idx);
-                crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
-                Err(err)
-            }
-        };
     }
 
     let effective_mode = if oflags & O_CREAT != 0 {
@@ -16193,7 +16293,7 @@ pub fn sys_openat(
         mode
     };
 
-    // In-kernel tmpfs backing for the scratch mounts (/tmp, /var/*, /root, ...).
+    // In-kernel tmpfs backing for the scratch mounts (/tmp, /var/*, ...).
     // Serve the open entirely from Rust; the host is never consulted.
     if crate::tmpfs::claims_path(&resolved) {
         // Enforce search/access/parent-write permissions exactly as the host
@@ -16201,6 +16301,9 @@ pub fn sys_openat(
         check_open_permissions(proc, host, &resolved, oflags)?;
         if oflags & O_CREAT != 0 {
             tmpfs_stamp_now(host)?;
+        }
+        if let Some(node) = crate::exchange::device::device_node_at(&resolved) {
+            return open_exchange_node(proc, host, node, resolved, oflags);
         }
         if crate::tmpfs::is_dir(&resolved) {
             // A directory cannot be opened for writing.
@@ -16232,46 +16335,7 @@ pub fn sys_openat(
 
     let created = check_open_permissions(proc, host, &resolved, oflags)?;
 
-    let host_handle = crate::hostdir::open(host, &resolved, oflags, effective_mode)?;
-    if created {
-        crate::hostdir::chown(host, &resolved, proc.effective_uid(), proc.effective_gid())?;
-    }
-
-    // Keep openat(2) on the same live-handle identity contract as open(2).
-    // A descriptor without this cached identity could later evade POSIX's
-    // close-any-fd lock cleanup if a second fstat also failed during close.
-    let live_stat = match host.host_fstat(host_handle) {
-        Ok(stat) => stat,
-        Err(err) => {
-            let _ = host.host_close(host_handle);
-            return Err(err);
-        }
-    };
-    let file_type = if oflags & O_DIRECTORY != 0 {
-        FileType::Directory
-    } else if live_stat.st_mode & wasm_posix_shared::mode::S_IFMT
-        == wasm_posix_shared::mode::S_IFDIR
-    {
-        FileType::Directory
-    } else {
-        FileType::Regular
-    };
-
-    let status_flags = oflags & !CREATION_FLAGS;
-    let ofd_idx = proc
-        .ofd_table
-        .create(file_type, status_flags, host_handle, resolved);
-    if matches!(file_type, FileType::Regular | FileType::Directory) && live_stat.st_ino != 0 {
-        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Host {
-            dev: live_stat.st_dev,
-            ino: live_stat.st_ino,
-        });
-    }
-
-    let fd_flags = oflags_to_fd_flags(oflags);
-
-    let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-    Ok(fd)
+    open_host_file(proc, host, resolved, oflags, effective_mode, created)
 }
 
 /// fstatat -- stat relative to directory fd.
@@ -16383,7 +16447,7 @@ pub fn sys_unlinkat(
         // Mirrors `sys_rmdir`.
         if crate::tmpfs::claims_path(&resolved) {
             check_may_delete(proc, host, &resolved)?;
-            return crate::tmpfs::rmdir(&resolved);
+            return tmpfs_rmdir(&resolved);
         }
         if crate::rootfs::claims_path(&resolved) {
             check_may_delete(proc, host, &resolved)?;
@@ -16403,11 +16467,12 @@ pub fn sys_unlinkat(
         if let Some(result) = unlink_fifo_marker(host, &resolved) {
             return result;
         }
+        crate::exchange::policy::check_remove(&resolved)?;
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.unregister(&resolved) {
             crate::wakeup::push_datagram_writable();
         }
-        return crate::tmpfs::unlink(&resolved);
+        return tmpfs_unlink(&resolved);
     }
     if crate::rootfs::claims_path(&resolved) {
         check_may_delete(proc, host, &resolved)?;
@@ -16456,18 +16521,22 @@ pub fn sys_mkdirat(
     path: &[u8],
     mode: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_at_path(
+    let entry = resolve_at_path(
         proc,
         host,
         dirfd,
         path,
         PathResolveOptions::CREATE_DIRECTORY,
-    )?
-    .path;
+    )?;
+    if entry.stat.is_some() {
+        return Err(Errno::EEXIST);
+    }
+    let resolved = entry.path;
     if crate::tmpfs::claims_path(&resolved) {
         let effective_mode = mode & !proc.umask;
         check_parent_writable(proc, host, &resolved)?;
         tmpfs_stamp_now(host)?;
+        crate::exchange::policy::check_create(&resolved)?;
         return crate::tmpfs::mkdir(
             &resolved,
             effective_mode,
@@ -16516,6 +16585,7 @@ pub fn sys_renameat(
     };
     let new_resolved = resolve_at_path(proc, host, newdirfd, newpath, new_options)?.path;
     let old_resolved = old_entry.path;
+    let rename_paths = proc.ofd_table.prepare_directory_rename(&old_resolved, &new_resolved)?;
     // See sys_rename: both endpoints on tmpfs → in-kernel rename; a mix → EXDEV.
     let old_tmpfs = crate::tmpfs::claims_path(&old_resolved);
     let new_tmpfs = crate::tmpfs::claims_path(&new_resolved);
@@ -16524,19 +16594,19 @@ pub fn sys_renameat(
             return Err(Errno::EXDEV);
         }
         check_may_rename(proc, host, &old_resolved, &new_resolved)?;
+        if crate::exchange::policy::check_rename(&old_resolved, &new_resolved)?
+            == crate::exchange::policy::Rename::Publish
+        {
+            tmpfs_stamp_now(host)?;
+            crate::exchange::outputs::publish(&old_resolved, &new_resolved, exchange_now_ms(host)?)?;
+            rename_paths.publish();
+            return Ok(());
+        }
         // Keep the fifo/pipe table and unix-socket registry coherent across the
         // move (see sys_rename): advance a displaced fifo's cached ctime, rekey
         // both registries.
-        let displaced_ctime =
-            refresh_displaced_fifo_before_rename(host, &old_resolved, &new_resolved)?;
-        crate::tmpfs::rename(&old_resolved, &new_resolved)?;
-        proc.ofd_table
-            .rename_directory_paths(&old_resolved, &new_resolved);
-        rekey_fifo_names_after_rename(&old_resolved, &new_resolved, displaced_ctime);
-        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.rename_path(&old_resolved, &new_resolved) {
-            crate::wakeup::push_datagram_writable();
-        }
+        rename_with_fifo_registration(host, &old_resolved, &new_resolved, |_| crate::tmpfs::rename(&old_resolved, &new_resolved))?;
+        rename_paths.publish();
         return Ok(());
     }
     // In-kernel rootfs authority (neither endpoint is tmpfs). Both on rootfs →
@@ -16548,13 +16618,8 @@ pub fn sys_renameat(
             return Err(Errno::EXDEV);
         }
         check_may_rename(proc, host, &old_resolved, &new_resolved)?;
-        crate::rootfs::rename(&old_resolved, &new_resolved)?;
-        proc.ofd_table
-            .rename_directory_paths(&old_resolved, &new_resolved);
-        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.rename_path(&old_resolved, &new_resolved) {
-            crate::wakeup::push_datagram_writable();
-        }
+        rename_with_fifo_registration(host, &old_resolved, &new_resolved, |_| crate::rootfs::rename(&old_resolved, &new_resolved))?;
+        rename_paths.publish();
         return Ok(());
     }
     ensure_host_mutable_namespace_path(&old_resolved)?;
@@ -16565,15 +16630,8 @@ pub fn sys_renameat(
     if fs_lstat(host, &new_resolved).is_ok() {
         check_sticky_child(proc, host, &new_resolved)?;
     }
-    let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old_resolved, &new_resolved)?;
-    crate::hostdir::rename(host, &old_resolved, &new_resolved)?;
-    proc.ofd_table
-        .rename_directory_paths(&old_resolved, &new_resolved);
-    rekey_fifo_names_after_rename(&old_resolved, &new_resolved, displaced_ctime);
-    let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-    if registry.rename_path(&old_resolved, &new_resolved) {
-        crate::wakeup::push_datagram_writable();
-    }
+    rename_with_fifo_registration(host, &old_resolved, &new_resolved, |host| crate::hostdir::rename(host, &old_resolved, &new_resolved))?;
+    rename_paths.publish();
     Ok(())
 }
 
@@ -16742,7 +16800,11 @@ pub fn sys_ioctl(
                 if ofd.host_handle < 0 {
                     let sock_idx = (-(ofd.host_handle + 1)) as usize;
                     if let Some(sock) = proc.sockets.get(sock_idx) {
-                        if let Some(recv_idx) = sock.recv_buf_idx {
+                        if sock.sock_type == crate::socket::SocketType::Dgram {
+                            // A datagram is indivisible: report the next packet,
+                            // not the total queue or the stream pipe's bytes.
+                            sock.dgram_queue.first().map(|packet| packet.data.len() as i32).unwrap_or(0)
+                        } else if let Some(recv_idx) = sock.recv_buf_idx {
                             unsafe { crate::pipe::global_pipe_table().get(recv_idx) }
                                 .map(|p| p.available() as i32)
                                 .unwrap_or(0)
@@ -16939,6 +17001,41 @@ pub fn sys_ioctl(
         buf[ns..].fill(0);
         buf[ns..ns + 2].copy_from_slice(&crate::netif::AF_INET.to_le_bytes());
         buf[ns + 4..ns + 8].copy_from_slice(&addr);
+        return Ok(());
+    }
+    // The address family queries share SIOCGIFADDR's `struct sockaddr_in`
+    // reply. An interface without the address reports EADDRNOTAVAIL.
+    if request == wasm_posix_shared::ioctl_contract::SIOCGIFNETMASK
+        || request == wasm_posix_shared::ioctl_contract::SIOCGIFBRDADDR
+    {
+        if buf.len() < crate::netif::IF_NAMESIZE + 8 {
+            return Err(Errno::EINVAL);
+        }
+        let (name_buf, name_len) = crate::netif::read_name_bytes(buf);
+        let iface =
+            crate::netif::find_by_name(&name_buf[..name_len]).ok_or(Errno::ENODEV)?;
+        let addr = if request == wasm_posix_shared::ioctl_contract::SIOCGIFNETMASK {
+            crate::netif::interface_config(iface, host).map(|config| config.netmask)
+        } else {
+            crate::netif::interface_broadcast(iface, host)
+        }
+        .ok_or(Errno::EADDRNOTAVAIL)?;
+        let ns = crate::netif::IF_NAMESIZE;
+        buf[ns..].fill(0);
+        buf[ns..ns + 2].copy_from_slice(&crate::netif::AF_INET.to_le_bytes());
+        buf[ns + 4..ns + 8].copy_from_slice(&addr);
+        return Ok(());
+    }
+    if request == wasm_posix_shared::ioctl_contract::SIOCGIFFLAGS {
+        if buf.len() < crate::netif::IF_NAMESIZE + 2 {
+            return Err(Errno::EINVAL);
+        }
+        let (name_buf, name_len) = crate::netif::read_name_bytes(buf);
+        let iface =
+            crate::netif::find_by_name(&name_buf[..name_len]).ok_or(Errno::ENODEV)?;
+        let ns = crate::netif::IF_NAMESIZE;
+        let flags = crate::netif::interface_flags(iface, host);
+        buf[ns..ns + 2].copy_from_slice(&flags.to_le_bytes());
         return Ok(());
     }
     if request == wasm_posix_shared::ioctl_contract::SIOCGIFINDEX {
@@ -17227,7 +17324,7 @@ pub fn sys_ioctl(
             };
             // POSIX: TIOCSWINSZ sends SIGWINCH to the foreground process group
             if fg_pgid > 0 {
-                proc.signals.raise(wasm_posix_shared::signal::SIGWINCH);
+                proc.raise_signal(wasm_posix_shared::signal::SIGWINCH);
             }
             Ok(())
         }
@@ -17331,6 +17428,11 @@ pub fn sys_ioctl(
 /// prctl — process control operations.
 /// PR_SET_NAME stores thread name, PR_GET_NAME returns it.
 /// All other operations are no-ops returning success.
+/// Linux child-subreaper `prctl` options. Not implemented: both fail with
+/// `EINVAL`, as on Linux before 3.4.
+pub const PR_SET_CHILD_SUBREAPER: u32 = 36;
+pub const PR_GET_CHILD_SUBREAPER: u32 = 37;
+
 pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) -> Result<(), Errno> {
     use wasm_posix_shared::{kernel_scratch_wire, prctl};
 
@@ -17355,6 +17457,9 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
                 .copy_from_slice(&proc.thread_name);
             Ok(())
         }
+        // Orphans are always adopted by synthetic init. Reporting success
+        // would let a supervisor believe it adopts descendants it never sees.
+        PR_SET_CHILD_SUBREAPER | PR_GET_CHILD_SUBREAPER => Err(Errno::EINVAL),
         _ => Ok(()), // no-op for unrecognized operations
     }
 }
@@ -17401,20 +17506,202 @@ pub fn sys_set_robust_list() -> Result<(), Errno> {
     Ok(())
 }
 
-/// futex — real implementation using host Atomics.wait/notify.
+/// The task a waiting syscall acts for: whose memory holds its arguments and
+/// who parks. `pointer_width` decides how a guest `struct timespec`'s
+/// `tv_nsec` is read (a wasm32 `long` is four bytes plus padding).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuestTask {
+    pub pid: u32,
+    pub tid: u32,
+    pub pointer_width: u8,
+}
+
+impl GuestTask {
+    pub const fn wasm32(pid: u32, tid: u32) -> Self {
+        Self { pid, tid, pointer_width: 4 }
+    }
+}
+
+/// Read a guest `struct timespec` (16 bytes on both caller widths: an `i64`
+/// `tv_sec` and a `tv_nsec` in the next eight bytes) and return it as
+/// nanoseconds. `EFAULT` if unreadable, `EINVAL` if not a valid duration;
+/// a value too large for `i64` nanoseconds saturates (it is a deadline no
+/// machine will reach).
+pub fn read_guest_timespec_ns(host: &mut dyn HostIO, task: GuestTask, addr: u64) -> Result<i64, Errno> {
+    let mut raw = [0u8; 16];
+    if addr == 0 || host.proc_read_bytes(task.pid as i32, addr, &mut raw) < 0 {
+        return Err(Errno::EFAULT);
+    }
+    let sec = i64::from_le_bytes(raw[0..8].try_into().expect("8 bytes"));
+    // WHY by width: a wasm32 caller's `long tv_nsec` is four bytes followed
+    // by padding musl does not initialise, so only the low half is the value.
+    let nsec = if task.pointer_width == 4 {
+        i64::from(i32::from_le_bytes(raw[8..12].try_into().expect("4 bytes")))
+    } else {
+        i64::from_le_bytes(raw[8..16].try_into().expect("8 bytes"))
+    };
+    if sec < 0 || !(0..1_000_000_000).contains(&nsec) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(sec
+        .checked_mul(1_000_000_000)
+        .and_then(|ns| ns.checked_add(nsec))
+        .unwrap_or(i64::MAX))
+}
+
+/// Park the caller until `deadline` (kernel `CLOCK_MONOTONIC` ns), or answer
+/// at once if it has already passed. `remainder` is the guest `rem` address a
+/// signal interruption fills with the unslept time (relative sleeps only).
+fn park_sleep(
+    task: GuestTask,
+    now: i64,
+    deadline: i64,
+    remainder: Option<u64>,
+) -> Result<ParkOutcome, Errno> {
+    if deadline <= now {
+        return Ok(ParkOutcome::Done(0));
+    }
+    let generation = crate::wait_park::with(|parks| {
+        parks.park(
+            task.pid,
+            task.tid,
+            crate::wait_queue::WaitKind::Sleep,
+            alloc::vec::Vec::new(),
+            Some(deadline),
+            crate::wait_park::Resume::Sleep {
+                remainder,
+                deadline,
+            },
+        )
+    })?;
+    Ok(ParkOutcome::Parked(generation))
+}
+
+/// nanosleep(2), owned by the kernel: the caller parks in
+/// [`crate::wait_park`] with a `CLOCK_MONOTONIC` deadline.
+///
+/// # Why the kernel owns the sleep
+///
+/// The host used to take the kernel's "success", start a JavaScript timer
+/// for the duration it re-read from the marshalled request, and publish the
+/// result when the timer fired -- unless one of four separate host arms (a
+/// signal, a pthread_cancel, a PTY resize, a SIGCONT) got there first. The
+/// native host had no such timer at all, so its sleeps returned at once.
+/// Parking here makes the deadline and every early end one kernel decision,
+/// visible to a deterministic scheduler through the same clock read as every
+/// other park.
+///
+/// `rem` is written only when a signal ends the sleep early, as POSIX
+/// requires; it was never written before. The write happens when the
+/// decision is drained, which is the moment before the guest observes it.
+///
+/// Linux answers a sleep interrupted by a caught signal with `EINTR` even
+/// under `SA_RESTART`; the park's resume rule says so.
+pub fn sys_nanosleep(
+    host: &mut dyn HostIO,
+    task: GuestTask,
+    req: u64,
+    rem: u64,
+) -> Result<ParkOutcome, Errno> {
+    let span = read_guest_timespec_ns(host, task, req)?;
+    let now = crate::wait_park::now_ns(host)?;
+    credit_image_build_sleep_ns(span);
+    park_sleep(task, now, now.saturating_add(span), (rem != 0).then_some(rem))
+}
+
+/// clock_nanosleep(2), owned by the kernel. See [`sys_nanosleep`].
+///
+/// A relative request parks for its duration on the monotonic clock whatever
+/// the named clock, because the two advance together here. An absolute
+/// (`TIMER_ABSTIME`) request is converted to a monotonic deadline once, at
+/// park time, by reading the named clock. Known gap: a later
+/// `clock_settime(CLOCK_REALTIME)` does not move a parked absolute realtime
+/// sleep, as Linux would; Kandelo does not let guests set the realtime clock.
+/// `rem` is never written for an absolute sleep (POSIX).
+pub fn sys_clock_nanosleep(
+    host: &mut dyn HostIO,
+    task: GuestTask,
+    clock_id: u32,
+    flags: u32,
+    req: u64,
+    rem: u64,
+) -> Result<ParkOutcome, Errno> {
+    use wasm_posix_shared::clock::*;
+    const TIMER_ABSTIME: u32 = 1;
+    if clock_id != CLOCK_REALTIME && clock_id != CLOCK_MONOTONIC && clock_id != CLOCK_BOOTTIME {
+        return Err(Errno::EINVAL);
+    }
+    let span = read_guest_timespec_ns(host, task, req)?;
+    let now = crate::wait_park::now_ns(host)?;
+    if flags & TIMER_ABSTIME == 0 {
+        credit_image_build_sleep_ns(span);
+        return park_sleep(task, now, now.saturating_add(span), (rem != 0).then_some(rem));
+    }
+    // Measured against the clock the guest computed its deadline on: an
+    // image-build kernel's guest clocks are logical, not the kernel's.
+    let left = span.saturating_sub(guest_clock_ns(host, clock_id)?);
+    if left > 0 {
+        credit_image_build_sleep_ns(left);
+    }
+    park_sleep(task, now, now.saturating_add(left.max(0)), None)
+}
+
+/// Kandelo's `usleep` syscall: a relative sleep with no remainder.
+/// See [`sys_nanosleep`].
+pub fn sys_usleep(host: &mut dyn HostIO, task: GuestTask, usec: u32) -> Result<ParkOutcome, Errno> {
+    let now = crate::wait_park::now_ns(host)?;
+    credit_image_build_sleep_ns(i64::from(usec) * 1_000);
+    park_sleep(task, now, now.saturating_add(i64::from(usec) * 1_000), None)
+}
+
+
+/// What a waiting syscall did: answered now, or parked the caller in the
+/// kernel (`futex`, `nanosleep`, `clock_nanosleep`, `usleep`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParkOutcome {
+    /// The syscall's result.
+    Done(i32),
+    /// The caller is parked in [`crate::wait_park`] under this generation;
+    /// its result will arrive as a completion record.
+    Parked(u64),
+}
+
+/// futex(2), owned by the kernel.
+///
+/// # Why the kernel owns the wait
+///
+/// Every futex operation that matters is a syscall, and every syscall is
+/// serialized through the kernel. A compare-and-park performed here is
+/// therefore atomic with respect to every `FUTEX_WAKE`: if the wake is handled
+/// first, the later wait reads the new word and answers `EAGAIN`; if the wait
+/// is handled first, the wake finds it parked. No host-side `Atomics.waitAsync`
+/// on the guest word is involved, which is also Linux's model -- the wait
+/// queue is kernel state, not a property of the memory word.
+///
+/// The futex word is read through [`HostIO::proc_read_bytes`], the kernel's
+/// cross-memory primitive, and compared once on that copy.
+///
+/// `FUTEX_PRIVATE_FLAG` is accepted and ignored: waits are keyed by
+/// `(pid, address)`, and Kandelo processes never share a linear memory, so a
+/// shared futex and a private one name the same queue.
+///
+/// Known gap: `FUTEX_WAKE_OP` does not perform its atomic read-modify-write of
+/// `*uaddr2` (the cross-memory primitive is a copy, not an atomic RMW); it
+/// wakes `val` waiters on `uaddr` and `val2` on `uaddr2`, as the host did
+/// before. musl never issues it.
+#[allow(clippy::too_many_arguments)]
 pub fn sys_futex(
     host: &mut dyn HostIO,
-    uaddr: usize,
+    task: GuestTask,
+    uaddr: u64,
     op: u32,
     val: u32,
-    timeout: u32,
-    uaddr2: usize,
+    timeout: u64,
+    uaddr2: u64,
     val3: u32,
-) -> Result<i32, Errno> {
+) -> Result<ParkOutcome, Errno> {
     const FUTEX_WAIT: u32 = 0;
     const FUTEX_WAKE: u32 = 1;
-    #[allow(dead_code)]
-    const FUTEX_FD: u32 = 2;
     const FUTEX_REQUEUE: u32 = 3;
     const FUTEX_CMP_REQUEUE: u32 = 4;
     const FUTEX_WAKE_OP: u32 = 5;
@@ -17422,41 +17709,125 @@ pub fn sys_futex(
     const FUTEX_WAKE_BITSET: u32 = 10;
     const FUTEX_PRIVATE_FLAG: u32 = 128;
     const FUTEX_CLOCK_REALTIME: u32 = 256;
+    const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
+    let GuestTask { pid, tid, .. } = task;
 
-    let base_op = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
-
-    match base_op {
-        FUTEX_WAIT | FUTEX_WAIT_BITSET => Err(Errno::EAGAIN),
-        FUTEX_WAKE | FUTEX_WAKE_BITSET => host.host_futex_wake(uaddr, val),
-        FUTEX_REQUEUE => {
-            // Wake val waiters on uaddr, requeue up to val2 waiters to uaddr2.
-            // We can't truly requeue across futex addresses with Atomics, so
-            // wake val + val2 on uaddr instead — woken threads will re-check
-            // their conditions and re-wait on the correct address if needed.
-            let val2 = timeout; // timeout param repurposed as val2 for REQUEUE
-            host.host_futex_wake(uaddr, val + val2)
+    let command = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+    if uaddr & 3 != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let read_word = |host: &mut dyn HostIO, addr: u64| -> Result<u32, Errno> {
+        let mut word = [0u8; 4];
+        if host.proc_read_bytes(pid as i32, addr, &mut word) < 0 {
+            return Err(Errno::EFAULT);
         }
-        FUTEX_CMP_REQUEUE => {
-            // Like REQUEUE but check *uaddr == val3 first
-            let val2 = timeout;
-            let actual = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
-            if actual != val3 {
+        Ok(u32::from_le_bytes(word))
+    };
+    let check_uaddr2 = || -> Result<(), Errno> {
+        if uaddr2 & 3 != 0 {
+            Err(Errno::EINVAL)
+        } else {
+            Ok(())
+        }
+    };
+    // Linux passes REQUEUE/CMP_REQUEUE/WAKE_OP's second count in the timeout
+    // argument slot, as an integer.
+    let val2 = timeout as u32;
+    let wake = |addr: u64, max: u32, bitset: u32| -> usize {
+        crate::wait_park::with(|parks| parks.futex_wake(pid, addr, max as usize, bitset))
+    };
+
+    match command {
+        FUTEX_WAIT | FUTEX_WAIT_BITSET => {
+            let bitset = if command == FUTEX_WAIT {
+                FUTEX_BITSET_MATCH_ANY
+            } else {
+                val3
+            };
+            if bitset == 0 {
+                return Err(Errno::EINVAL);
+            }
+            if read_word(host, uaddr)? != val {
                 return Err(Errno::EAGAIN);
             }
-            host.host_futex_wake(uaddr, val + val2)
+            let now = crate::wait_park::now_ns(host)?;
+            // The wait's length, relative, on the guest's own clock.
+            let timeout_ns = if timeout == 0 {
+                None
+            } else {
+                let span = read_guest_timespec_ns(host, task, timeout)?;
+                Some(if command == FUTEX_WAIT {
+                    // FUTEX_WAIT's timeout is relative.
+                    span
+                } else {
+                    // FUTEX_WAIT_BITSET's is absolute, on CLOCK_REALTIME with
+                    // FUTEX_CLOCK_REALTIME and CLOCK_MONOTONIC otherwise.
+                    // Measure it against the clock the guest computed it on
+                    // (an image-build kernel's guest clocks are logical) once,
+                    // at park time.
+                    let clock = if op & FUTEX_CLOCK_REALTIME != 0 {
+                        wasm_posix_shared::clock::CLOCK_REALTIME
+                    } else {
+                        wasm_posix_shared::clock::CLOCK_MONOTONIC
+                    };
+                    span.saturating_sub(guest_clock_ns(host, clock)?)
+                })
+            };
+            if timeout_ns.is_some_and(|ns| ns <= 0) {
+                return Err(Errno::ETIMEDOUT);
+            }
+            let deadline = timeout_ns.map(|ns| now.saturating_add(ns));
+            let generation = crate::wait_park::with(|parks| {
+                parks.park(
+                    pid,
+                    tid,
+                    crate::wait_queue::WaitKind::Futex,
+                    alloc::vec![crate::wait_queue::WakeSource::Futex { pid, addr: uaddr }],
+                    deadline,
+                    crate::wait_park::Resume::Futex {
+                        bitset,
+                        timeout_ns: timeout_ns.map(|ns| ns as u64),
+                    },
+                )
+            })?;
+            Ok(ParkOutcome::Parked(generation))
+        }
+        FUTEX_WAKE | FUTEX_WAKE_BITSET => {
+            let bitset = if command == FUTEX_WAKE {
+                FUTEX_BITSET_MATCH_ANY
+            } else {
+                val3
+            };
+            if bitset == 0 {
+                return Err(Errno::EINVAL);
+            }
+            Ok(ParkOutcome::Done(wake(uaddr, val, bitset) as i32))
+        }
+        FUTEX_REQUEUE | FUTEX_CMP_REQUEUE => {
+            check_uaddr2()?;
+            if command == FUTEX_CMP_REQUEUE && read_word(host, uaddr)? != val3 {
+                return Err(Errno::EAGAIN);
+            }
+            let woken = wake(uaddr, val, FUTEX_BITSET_MATCH_ANY);
+            let moved = crate::wait_park::with(|parks| {
+                parks.futex_requeue(pid, uaddr, uaddr2, val2 as usize)
+            });
+            // Linux: REQUEUE returns the number woken; CMP_REQUEUE the number
+            // woken or requeued.
+            let total = if command == FUTEX_CMP_REQUEUE {
+                woken + moved
+            } else {
+                woken
+            };
+            Ok(ParkOutcome::Done(i32::try_from(total).unwrap_or(i32::MAX)))
         }
         FUTEX_WAKE_OP => {
-            // Wake val waiters on uaddr, then conditionally wake val3 on uaddr2
-            // Simplified: wake val on uaddr + val3 on uaddr2
-            let woken1 = host.host_futex_wake(uaddr, val)?;
-            let woken2 = if uaddr2 != 0 && val3 > 0 {
-                host.host_futex_wake(uaddr2, val3)?
-            } else {
-                0
-            };
-            Ok(woken1 + woken2)
+            check_uaddr2()?;
+            let woken = wake(uaddr, val, FUTEX_BITSET_MATCH_ANY)
+                + wake(uaddr2, val2, FUTEX_BITSET_MATCH_ANY);
+            Ok(ParkOutcome::Done(i32::try_from(woken).unwrap_or(i32::MAX)))
         }
-        _ => Ok(0), // no-op for unrecognized ops
+        _ => Err(Errno::ENOSYS),
     }
 }
 
@@ -17520,6 +17891,17 @@ pub fn sys_ppoll(
     timeout_ms: i32,
     mask: Option<u64>,
 ) -> Result<i32, Errno> {
+    sys_ppoll_with_peers(proc, host, fds, timeout_ms, mask, &mut [])
+}
+
+pub fn sys_ppoll_with_peers(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fds: &mut [WasmPollFd],
+    timeout_ms: i32,
+    mask: Option<u64>,
+    peers: &mut [&mut Process],
+) -> Result<i32, Errno> {
     // A per-task LIFO context keeps this swap distinct from waits nested in a
     // caught handler while host retries reuse the active top context.
     let tid = current_tid_for_process(proc);
@@ -17531,7 +17913,7 @@ pub fn sys_ppoll(
             return Err(Errno::EINTR);
         }
     }
-    let result = sys_poll(proc, host, fds, timeout_ms);
+    let result = sys_poll_with_peers(proc, host, fds, timeout_ms, peers);
     if mask.is_some()
         && !matches!(result, Err(Errno::EAGAIN))
         && proc.deliverable_for(tid) == 0
@@ -17553,6 +17935,30 @@ pub fn sys_pselect6(
     timeout_ms: i32,
     mask: Option<u64>,
 ) -> Result<i32, Errno> {
+    sys_pselect6_with_peers(
+        proc,
+        host,
+        nfds,
+        readfds,
+        writefds,
+        exceptfds,
+        timeout_ms,
+        mask,
+        &mut [],
+    )
+}
+
+pub fn sys_pselect6_with_peers(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    nfds: i32,
+    readfds: Option<&mut [u8]>,
+    writefds: Option<&mut [u8]>,
+    exceptfds: Option<&mut [u8]>,
+    timeout_ms: i32,
+    mask: Option<u64>,
+    peers: &mut [&mut Process],
+) -> Result<i32, Errno> {
     // A per-task LIFO context keeps this swap distinct from waits nested in a
     // caught handler while host retries reuse the active top context.
     let tid = current_tid_for_process(proc);
@@ -17564,7 +17970,8 @@ pub fn sys_pselect6(
             return Err(Errno::EINTR);
         }
     }
-    let result = sys_select(proc, host, nfds, readfds, writefds, exceptfds, timeout_ms);
+    let result = sys_select_with_peers(proc, host, nfds, readfds, writefds, exceptfds, timeout_ms, peers,
+    );
     if mask.is_some()
         && !matches!(result, Err(Errno::EAGAIN))
         && proc.deliverable_for(tid) == 0
@@ -17602,33 +18009,12 @@ pub fn sys_eventfd2(proc: &mut Process, initval: u32, flags: u32) -> Result<i32,
         semaphore,
     };
 
-    let efd_idx = crate::descriptor_backing::with_eventfds(|table| table.alloc(state));
-
-    // Eventfd handle is negative: -(efd_idx + 1)
-    let efd_handle = -((efd_idx as i64) + 1);
-
-    // Status flags: O_RDWR (readable and writable), plus O_NONBLOCK if requested
-    let mut status_flags = O_RDWR;
-    if nonblock {
-        status_flags |= O_NONBLOCK;
-    }
-
-    let ofd_idx = proc.ofd_table.create(
-        FileType::EventFd,
-        status_flags,
-        efd_handle,
-        b"/dev/eventfd".to_vec(),
-    );
-
+    let status_flags = O_RDWR | if nonblock { O_NONBLOCK } else { 0 };
     let fd_flags = if cloexec { FD_CLOEXEC } else { 0 };
-    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-        Ok(fd) => Ok(fd),
-        Err(e) => {
-            proc.ofd_table.dec_ref(ofd_idx);
-            crate::descriptor_backing::with_eventfds(|table| table.release(efd_idx));
-            Err(e)
-        }
-    }
+    proc.open_descriptor(FileType::EventFd, status_flags, b"/dev/eventfd", fd_flags, |_, _| {
+        let index = crate::descriptor_backing::with_eventfds(|table| table.try_alloc(state))?;
+        Ok(-((index as i64) + 1))
+    })
 }
 
 /// epoll_create1 — create an epoll instance.
@@ -17650,22 +18036,11 @@ pub fn sys_epoll_create1(proc: &mut Process, flags: u32) -> Result<i32, Errno> {
     // The instance belongs to the open file description this descriptor
     // names, not to the process: `fork`, `dup`, and a non-CLOEXEC `exec` all
     // reach the same instance through their inherited OFD.
-    let ep_idx = crate::descriptor_backing::with_epolls(|table| table.alloc(EpollInstance::new()));
-
-    let ep_handle = -((ep_idx as i64) + 1);
-    let ofd_idx = proc
-        .ofd_table
-        .create(FileType::Epoll, O_RDWR, ep_handle, b"/dev/epoll".to_vec());
-
     let fd_flags = if cloexec { FD_CLOEXEC } else { 0 };
-    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-        Ok(fd) => Ok(fd),
-        Err(e) => {
-            proc.ofd_table.dec_ref(ofd_idx);
-            crate::descriptor_backing::with_epolls(|table| table.release(ep_idx));
-            Err(e)
-        }
-    }
+    proc.open_descriptor(FileType::Epoll, O_RDWR, b"/dev/epoll", fd_flags, |_, _| {
+        let index = crate::descriptor_backing::with_epolls(|table| table.try_alloc(EpollInstance::new()))?;
+        Ok(-((index as i64) + 1))
+    })
 }
 
 /// Find a descriptor in `proc` that currently names the open file description
@@ -17673,10 +18048,9 @@ pub fn sys_epoll_create1(proc: &mut Process, flags: u32) -> Result<i32, Errno> {
 ///
 /// An epoll interest names a *description*, so the descriptor that reaches it
 /// can differ from the registration number after `dup`, and can exist in a
-/// `fork` child that never called `epoll_ctl` itself. `None` means this
-/// process holds no descriptor for the description — either it was released
-/// (Linux removes such an interest) or only another process still holds it
-/// (see the `epoll_pwait()` row of `docs/posix-status.md`).
+/// `fork` child that never called `epoll_ctl` itself. `None` means the
+/// caller has no descriptor for the description; event delivery also searches
+/// the disjoint peer process records before consulting descriptor-free backings.
 fn fd_naming_ofd_id(
     proc: &Process,
     ofd_id: crate::lock::OfdId,
@@ -17698,25 +18072,11 @@ fn fd_naming_ofd_id(
         .map(|(fd, _)| fd)
 }
 
-/// Resolve `epfd`'s shared interest list into descriptors `proc` currently
-/// holds.
-///
-/// The instance is owned by the open file description `epfd` names, not by the
-/// process (see [`crate::descriptor_backing::with_epolls`]), so this is the one
-/// place that turns registrations back into per-caller descriptor numbers. The
-/// registration number an interest carries is only a hint: after `dup` the same
-/// description is reachable at another number, after close/reopen the same
-/// number names something else, and in a `fork` child the number may never have
-/// been used for `epoll_ctl` at all.
-///
-/// An interest whose description this process can no longer reach contributes
-/// nothing and is dropped — see the `epoll_pwait()` row of
-/// `docs/posix-status.md` for the residual divergence when only a sibling still
-/// holds the description.
-///
-/// Errors mirror `epoll_pwait`: `EBADF` for a descriptor that is not open or an
-/// instance that is gone, `EINVAL` for a descriptor that is not an epoll
-/// instance.
+/// Resolve caller-local descriptors for host wake hints and fd introspection.
+/// This is not the event-delivery resolver: an interest can remain live while
+/// only a sibling process or a queued descriptor transfer owns its description.
+/// The delivery engine consults those owners independently of these hints.
+/// Errors are EBADF for an absent fd/backing and EINVAL for a non-epoll fd.
 pub fn epoll_resolved_interests(
     proc: &Process,
     epfd: i32,
@@ -17727,19 +18087,36 @@ pub fn epoll_resolved_interests(
         return Err(Errno::EINVAL);
     }
     let ep_idx = (-(ofd.host_handle + 1)) as usize;
-    let interests: Vec<crate::process::EpollInterest> =
-        crate::descriptor_backing::with_epolls(|table| {
-            table
-                .get(ep_idx)
+    crate::descriptor_backing::with_epolls(|table| {
+        let instance = table.get(ep_idx).ok_or(Errno::EBADF)?;
+        let mut resolved = Vec::new();
+        resolved.try_reserve_exact(instance.interests.len()).map_err(|_| Errno::ENOMEM)?;
+        for interest in &instance.interests {
+            if let Some(fd) = fd_naming_ofd_id(proc, interest.ofd_id, interest.fd) {
+                resolved.push((fd, interest.clone()));
+            }
+        }
+        Ok(resolved)
+    })
+}
+
+pub fn epoll_wait_resolved_interests(
+    proc: &Process,
+    epfd: i32,
+) -> Result<Vec<(i32, crate::process::EpollInterest)>, Errno> {
+    let tid = current_tid_for_process(proc);
+    if let Some((_, lease)) = proc.epoll_waits.iter().find(|(owner, _)| *owner == tid) {
+        let interests = crate::descriptor_backing::with_epolls(|t| {
+            t.get(lease.index)
                 .map(|ep| ep.interests.clone())
                 .ok_or(Errno::EBADF)
         })?;
-    Ok(interests
-        .into_iter()
-        .filter_map(|interest| {
-            fd_naming_ofd_id(proc, interest.ofd_id, interest.fd).map(|fd| (fd, interest))
-        })
-        .collect())
+        return Ok(interests
+            .into_iter()
+            .filter_map(|i| fd_naming_ofd_id(proc, i.ofd_id, i.fd).map(|fd| (fd, i)))
+            .collect());
+    }
+    epoll_resolved_interests(proc, epfd)
 }
 
 /// Whether an `epoll_ctl` operation reads the caller's `struct epoll_event`.
@@ -17768,28 +18145,176 @@ pub fn epoll_ctl_reads_event(op: i32) -> bool {
 /// process's epoll descriptors and resolves each shared interest list through
 /// [`epoll_resolved_interests`], exactly as `epoll_pwait` does.
 pub fn epoll_watched_fd(proc: &Process, index: usize) -> Option<i32> {
-    let mut epfds: Vec<i32> = proc
-        .fd_table
-        .iter()
-        .filter(|(_, entry)| {
-            proc.ofd_table
-                .get(entry.ofd_ref.0)
-                .is_some_and(|ofd| ofd.file_type == FileType::Epoll)
-        })
-        .map(|(fd, _)| fd)
-        .collect();
-    epfds.sort_unstable();
-    epfds
-        .into_iter()
-        .filter_map(|epfd| epoll_resolved_interests(proc, epfd).ok())
-        .flatten()
-        .map(|(fd, _)| fd)
-        .nth(index)
+    let mut remaining = index;
+    for (_, descriptor) in proc.fd_table.iter() {
+        let Some(ofd) = proc.ofd_table.get(descriptor.ofd_ref.0) else { continue; };
+        if ofd.file_type != FileType::Epoll { continue; }
+        let epoll_index = (-(ofd.host_handle + 1)) as usize;
+        let found = crate::descriptor_backing::with_epolls(|table| {
+            let instance = table.get(epoll_index)?;
+            for interest in &instance.interests {
+                let Some(fd) = fd_naming_ofd_id(proc, interest.ofd_id, interest.fd) else { continue; };
+                if remaining == 0 { return Some(fd); }
+                remaining -= 1;
+            }
+            None
+        });
+        if found.is_some() { return found; }
+    }
+    None
 }
 
-/// epoll_ctl — modify an epoll interest list.
-///
-/// op: EPOLL_CTL_ADD (1), EPOLL_CTL_DEL (2), EPOLL_CTL_MOD (3).
+fn epoll_index(proc: &Process,
+    epfd: i32) -> Result<usize, Errno> {
+    let entry = proc.fd_table.get(epfd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Epoll {
+        return Err(Errno::EINVAL);
+    }
+    Ok((-(ofd.host_handle + 1)) as usize)
+}
+
+pub fn notify_socket_readiness(proc: &Process, sock_idx: usize, events: u32) {
+    for (fd, entry) in proc.fd_table.iter() {
+        if proc.ofd_table.get(entry.ofd_ref.0).is_some_and(|o| {
+            o.file_type == FileType::Socket && o.host_handle == -(sock_idx as i64 + 1)
+        }) {
+            if let Ok(sources) = epoll_sources(proc, fd) {
+                let id = proc.ofd_table
+            .get(entry.ofd_ref.0)
+            .unwrap().ofd_id;
+
+    crate::descriptor_backing::with_epolls(|table| {
+                    for (_, ep) in table.iter_mut() {
+                        for i in &mut ep.interests {
+                            if i.ofd_id == id {
+                                i.sources = sources.clone();
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+    for (_, ofd) in proc.ofd_table.iter() {
+        if ofd.file_type == FileType::Socket && ofd.host_handle == -(sock_idx as i64 + 1) {
+            crate::epoll::notify(crate::epoll::Source::Description(ofd.ofd_id), events);
+        }
+    }
+}
+
+fn epoll_sources(proc: &Process, fd: i32) -> Result<Vec<crate::epoll::Source>, Errno> {
+    use crate::epoll::Source;
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    let mut sources = alloc::vec![
+        Source::Description(ofd.ofd_id),
+        Source::Backing(ofd.file_type, ofd.host_handle)
+    ];
+    match ofd.file_type {
+        FileType::Pipe if ofd.host_handle < 0 => {
+            let idx = (-(ofd.host_handle + 1)) as u32;
+            if ofd.status_flags() & O_ACCMODE != O_WRONLY {
+                sources.push(Source::Pipe(idx, crate::wakeup::WAKE_READABLE));
+            }
+            if ofd.status_flags() & O_ACCMODE != O_RDONLY {
+                sources.push(Source::Pipe(idx, crate::wakeup::WAKE_WRITABLE));
+            }
+        }
+        FileType::Socket => {
+            let sock = proc
+                .sockets
+                .get((-(ofd.host_handle + 1)) as usize)
+                .ok_or(Errno::EBADF)?;
+            sock.poll_identity.set(Some(ofd.ofd_id));
+            if sock.sock_type == crate::socket::SocketType::Dgram {
+                if let Some(peer_idx) = sock.peer_idx {
+                    if let Some((_, peer_ofd)) = proc.ofd_table.iter().find(|(_, o)| {
+                        o.file_type == FileType::Socket && o.host_handle == -(peer_idx as i64 + 1)
+                    }) {
+                        peer_ofd.mark_epoll_watched();
+                        if let Some(peer) = proc.sockets.get(peer_idx) {
+                            peer.poll_identity.set(Some(peer_ofd.ofd_id));
+                        }
+                        sources.push(Source::DatagramCapacity(peer_ofd.ofd_id));
+                    }
+                }
+            }
+            if let Some(idx) = sock.recv_buf_idx {
+                sources.push(Source::Pipe(idx as u32, crate::wakeup::WAKE_READABLE));
+            }
+            if let Some(idx) = sock.send_buf_idx {
+                sources.push(Source::Pipe(idx as u32, crate::wakeup::WAKE_WRITABLE));
+            }
+            if let Some(idx) = sock.accept_wake_idx {
+                sources.push(Source::Accept(idx));
+            }
+            if let Some(handle) = sock.host_net_handle {
+                sources.push(Source::Network(handle));
+            }
+        }
+        FileType::PtyMaster | FileType::PtySlave => {
+            sources.push(Source::Pty(
+                ofd.host_handle as u32,
+                ofd.file_type == FileType::PtyMaster,
+            ));
+        }
+        FileType::CharDevice => sources.push(Source::Device(ofd.host_handle)),
+        _ => {}
+    }
+    Ok(sources)
+}
+
+/// Reject cycles and chains containing more than five epoll instances. Linux
+/// counts the four edges between them, including paths entering the changed fd.
+fn epoll_check_graph(parent: usize, child: usize) -> Result<(), Errno> {
+    crate::descriptor_backing::with_epolls(|table| {
+        let graph: Vec<(usize, Vec<usize>)> = table
+            .iter_mut()
+            .map(|(idx, ep)| {
+                let mut children: Vec<usize> = ep
+                    .interests
+                    .iter()
+                    .flat_map(|i| i.sources.iter())
+                    .filter_map(|s| match s {
+                        crate::epoll::Source::Backing(FileType::Epoll, h) => {
+                            Some((-(h + 1)) as usize)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if idx == parent {
+                    children.push(child);
+                }
+                (idx, children)
+            })
+            .collect();
+        fn visit(graph: &[(usize, Vec<usize>)], node: usize, path: &mut Vec<usize>) -> bool {
+            if path.contains(&node) || path.len() >= 5 {
+                return false;
+            }
+            path.push(node);
+            let valid = graph
+                .iter()
+                .find(|(idx, _)| *idx == node)
+                .is_none_or(|(_, children)| {
+                    children.iter().all(|child| visit(graph, *child, path))
+                });
+            path.pop();
+            valid
+        }
+        if graph
+            .iter()
+            .all(|(idx, _)| visit(&graph, *idx, &mut Vec::new()))
+        {
+            Ok(())
+        } else {
+            Err(Errno::ELOOP)
+        }
+    })
+}
+
+/// Change a registration keyed by (descriptor number, open file description).
 pub fn sys_epoll_ctl(
     proc: &mut Process,
     epfd: i32,
@@ -17798,78 +18323,450 @@ pub fn sys_epoll_ctl(
     events: u32,
     data: u64,
 ) -> Result<(), Errno> {
-    const EPOLL_CTL_ADD: i32 = 1;
-    const EPOLL_CTL_DEL: i32 = 2;
-    const EPOLL_CTL_MOD: i32 = 3;
-
-    // Look up the epoll instance
-    let entry = proc.fd_table.get(epfd)?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-    if ofd.file_type != FileType::Epoll {
+    use wasm_posix_shared::epoll::*;
+    let ep_idx = epoll_index(proc, epfd)?;
+    let target_entry = proc.fd_table.get(fd)?;
+    let target = proc
+        .ofd_table
+        .get(target_entry.ofd_ref.0)
+        .ok_or(Errno::EBADF)?;
+    let target_id = target.ofd_id;
+    if target.is_path_only() {
+        return Err(Errno::EBADF);
+    }
+    if target.file_type == FileType::Epoll && target.host_handle == -(ep_idx as i64 + 1) {
         return Err(Errno::EINVAL);
     }
-    let ep_idx = (-(ofd.host_handle + 1)) as usize;
-
-    // Verify the target fd exists, and take the identity of the open file
-    // description it names. Linux keys an interest on `(struct file *, fd)`,
-    // so a descriptor number reused by a later `open` is a *different*
-    // registration and a `dup` at another number is a second one.
-    let target_ofd_id = {
-        let entry = proc.fd_table.get(fd)?;
-        proc.ofd_table
-            .get(entry.ofd_ref.0)
-            .ok_or(Errno::EBADF)?
-            .ofd_id
-    };
-
-    crate::descriptor_backing::with_epolls(|table| {
-        let ep = table.get_mut(ep_idx).ok_or(Errno::EBADF)?;
-        let existing = ep
+    // Linux regular files, directories, and devices without ->poll cannot be
+    // attached. poll()'s always-ready regular-file rule is not epoll support.
+    if matches!(
+        target.file_type,
+        FileType::Regular | FileType::Directory | FileType::MemFd
+    ) || target.file_type == FileType::CharDevice
+        && matches!(
+            VirtualDevice::from_host_handle(target.host_handle),
+            Some(
+                VirtualDevice::Null
+                    | VirtualDevice::Zero
+                    | VirtualDevice::Full
+                    | VirtualDevice::Urandom
+                    | VirtualDevice::Fb0
+            )
+        )
+    {
+        return Err(Errno::EPERM);
+    }
+    if !matches!(op, 1..=3) {
+        return Err(Errno::EINVAL);
+    }
+    let existing = crate::descriptor_backing::with_epolls(|table| {
+        let ep = table.get(ep_idx).ok_or(Errno::EBADF)?;
+        Ok(ep
             .interests
             .iter()
-            .position(|e| e.fd == fd && e.ofd_id == target_ofd_id);
-
-        match op {
-            EPOLL_CTL_ADD => {
-                if existing.is_some() {
-                    return Err(Errno::EEXIST);
-                }
-                // An interest carrying this descriptor number but a different
-                // description survives on Linux only while that description
-                // does. One this process can no longer reach is dead here, so
-                // drop it instead of letting a close/reopen loop grow the
-                // interest list without bound.
-                ep.interests
-                    .retain(|e| e.fd != fd || fd_naming_ofd_id(proc, e.ofd_id, e.fd).is_some());
-                ep.interests.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
-                ep.interests.push(crate::process::EpollInterest {
-                    fd,
-                    ofd_id: target_ofd_id,
-                    events,
-                    data,
-                });
-                Ok(())
-            }
-            EPOLL_CTL_DEL => {
-                let pos = existing.ok_or(Errno::ENOENT)?;
-                ep.interests.swap_remove(pos);
-                Ok(())
-            }
-            EPOLL_CTL_MOD => {
-                let pos = existing.ok_or(Errno::ENOENT)?;
-                ep.interests[pos].events = events;
-                ep.interests[pos].data = data;
-                Ok(())
-            }
-            _ => Err(Errno::EINVAL),
+            .find(|i| i.fd == fd && i.ofd_id == target_id)
+            .cloned())
+    })?;
+    if op != 2 {
+        // EPOLLWAKEUP has no effect without CAP_BLOCK_SUSPEND; Kandelo exposes
+        // no system suspend or capability to prevent it, matching that case.
+        if events & EPOLLEXCLUSIVE != 0
+            && (op != 1
+                || target.file_type == FileType::Epoll
+                || events
+                    & !(EPOLLIN
+                        | EPOLLOUT
+                        | EPOLLERR
+                        | EPOLLHUP
+                        | EPOLLWAKEUP
+                        | EPOLLET
+                        | EPOLLEXCLUSIVE)
+                    != 0)
+            || op == 3
+                && existing
+                    .as_ref()
+                    .is_some_and(|i| i.events & EPOLLEXCLUSIVE != 0)
+        {
+            return Err(Errno::EINVAL);
         }
-    })
+    }
+    if op == 1 && existing.is_some() {
+        return Err(Errno::EEXIST);
+    }
+    if op != 1 && existing.is_none() {
+        return Err(Errno::ENOENT);
+    }
+    if op == 1 && target.file_type == FileType::Epoll {
+        epoll_check_graph(ep_idx, (-(target.host_handle + 1)) as usize)?;
+    }
+    let sources = epoll_sources(proc, fd)?;
+    target.mark_epoll_watched();
+    crate::descriptor_backing::with_epolls(|table| {
+        let ep = table.get_mut(ep_idx).ok_or(Errno::EBADF)?;
+        let pos = ep
+            .interests
+            .iter()
+            .position(|i| i.fd == fd && i.ofd_id == target_id);
+        if op == 2 {
+            ep.interests.remove(pos.ok_or(Errno::ENOENT)?);
+            ep.cursor %= ep.interests.len().max(1);
+        } else {
+            let interest = crate::process::EpollInterest {
+                fd,
+                ofd_id: target_id,
+                events: events | EPOLLERR | EPOLLHUP,
+                data,
+                pending: true,
+                disabled: false,
+                sources,
+                network_generations: [None; 2],
+                device_generation: None,
+            };
+            if let Some(pos) = pos {
+                ep.interests[pos] = interest;
+            } else {
+                ep.interests.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+                ep.interests.push(interest);
+            }
+        }
+        Ok(())
+    })?;
+    // ADD/MOD may make an already-ready child visible to an outer epoll.
+    crate::epoll::notify(
+        crate::epoll::Source::Backing(FileType::Epoll, -(ep_idx as i64 + 1)),
+        EPOLLIN,
+    );
+    Ok(())
 }
 
-/// epoll_pwait — wait for events on an epoll instance.
-///
-/// Builds pollfds from the interest list, delegates to sys_poll,
-/// then maps the results back to epoll_event format.
+fn epoll_backing_readiness(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    i: &crate::process::EpollInterest,
+) -> Result<u32, Errno> {
+    use crate::epoll::Source;
+    use wasm_posix_shared::epoll::*;
+    let mut ready = 0;
+    for source in &i.sources {
+        match *source {
+            Source::Pipe(idx, direction) => {
+                if let Some(pipe) = unsafe { crate::pipe::global_pipe_table().get(idx as usize) } {
+                    if direction == crate::wakeup::WAKE_READABLE {
+                        if pipe.available() != 0 {
+                            ready |= EPOLLIN | EPOLLRDNORM;
+                        }
+                        if pipe.read_end_has_hangup() {
+                            ready |= EPOLLHUP;
+                        }
+                    } else {
+                        if pipe.free_space() != 0 {
+                            ready |= EPOLLOUT | EPOLLWRNORM;
+                        }
+                        if !pipe.has_readers() {
+                            ready |= EPOLLERR;
+                        }
+                    }
+                }
+            }
+            Source::Backing(FileType::EventFd, h) => {
+                if let Some(counter) = crate::descriptor_backing::with_eventfds(|t| {
+                    t.get((-(h + 1)) as usize).map(|e| e.counter)
+                }) {
+                    if counter != 0 {
+                        ready |= EPOLLIN;
+                    }
+                    if counter < u64::MAX - 1 {
+                        ready |= EPOLLOUT;
+                    }
+                }
+            }
+            Source::Backing(FileType::TimerFd, h) => {
+                let idx = (-(h + 1)) as usize;
+                timerfd_refresh(host, idx)?;
+                if crate::descriptor_backing::with_timerfds(|t| {
+                    t.get(idx).is_some_and(|e| e.expirations != 0)
+                }) {
+                    ready |= EPOLLIN;
+                }
+            }
+            Source::Backing(FileType::SignalFd, h) => {
+                crate::epoll::signal_generation(
+                    i.ofd_id,
+                    proc.signal_readiness_generations(current_tid_for_process(proc)),
+                );
+                let mask = crate::descriptor_backing::with_signalfds(|t| {
+                    t.get((-(h + 1)) as usize).map(|e| e.mask)
+                })
+                .unwrap_or(0);
+                if proc.pending_for(current_tid_for_process(proc)) & mask != 0 {
+                    ready |= EPOLLIN;
+                }
+            }
+            Source::Backing(FileType::PcmPlayback, h) => {
+                crate::epoll::device_generation(
+                    *source,
+                    crate::audio::readiness_generation(),
+                    EPOLLOUT | EPOLLWRNORM | EPOLLERR,
+                );
+                if crate::audio::has_fatal_error(h).unwrap_or(false) {
+                    ready |= EPOLLERR;
+                } else if crate::audio::poll_writable(h).unwrap_or(false) {
+                    ready |= EPOLLOUT | EPOLLWRNORM;
+                }
+            }
+            Source::Pty(idx, master) => {
+                if let Some(pty) = crate::pty::get_pty(idx as usize) {
+                    if if master {
+                        pty.master_has_data()
+                    } else {
+                        pty.slave_has_data()
+                    } {
+                        ready |= EPOLLIN | EPOLLRDNORM;
+                    }
+                    ready |= EPOLLOUT | EPOLLWRNORM;
+                    if if master {
+                        pty.slave_refs == 0
+                    } else {
+                        pty.master_refs == 0
+                    } {
+                        ready |= EPOLLHUP;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(ready & i.events)
+}
+
+fn epoll_socket_readiness(sock: &crate::socket::SocketInfo, mut ready: u32) -> u32 {
+    use crate::socket::{SocketDomain, SocketState, SocketType};
+    use wasm_posix_shared::epoll::*;
+    let stream = sock.sock_type == SocketType::Stream;
+    let mut writable = EPOLLOUT | EPOLLWRNORM;
+    if sock.domain == SocketDomain::Unix || !stream {
+        writable |= EPOLLWRBAND;
+    } else {
+        ready &= !EPOLLWRBAND;
+    }
+    let read_shutdown = socket_read_shutdown(sock);
+    let write_shutdown = socket_write_shutdown(sock);
+    if !stream {
+        // A datagram write shutdown alone is not a hangup. Receive shutdown
+        // is local EOF; a peer's send shutdown does not close our receive side.
+        ready &= !EPOLLHUP;
+        if read_shutdown {
+            ready |= EPOLLIN | EPOLLRDNORM | EPOLLRDHUP;
+            if write_shutdown {
+                ready |= EPOLLHUP;
+            }
+        }
+    } else if matches!(
+        sock.state,
+        SocketState::Unbound | SocketState::Bound | SocketState::Closed
+    ) {
+        ready |= EPOLLHUP | writable;
+    }
+    let peer_refuses_writes = sock
+        .send_buf_idx
+        .and_then(|idx| unsafe { crate::pipe::global_pipe_table().get(idx) })
+        .is_some_and(|pipe| !pipe.is_read_end_open());
+    // Linux epoll keeps immediate write failures observable as writable,
+    // including OUT together with HUP. Its socket mask is distinct from the
+    // POSIX poll policy: suppressing OUT here can strand an epoll writer.
+    if write_shutdown || peer_refuses_writes || stream && ready & EPOLLHUP != 0 {
+        ready |= writable;
+    }
+    ready
+}
+
+fn epoll_interest_readiness(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    interest: &crate::process::EpollInterest,
+    depth: u32,
+    peers: &mut [&mut Process],
+) -> Result<u32, Errno> {
+    use wasm_posix_shared::epoll::*;
+    let mut owner_index = None;
+    let fd = if let Some(fd) = fd_naming_ofd_id(proc, interest.ofd_id, interest.fd) {
+        Some(fd)
+    } else {
+        peers.iter().enumerate().find_map(|(idx, peer)| {
+            fd_naming_ofd_id(peer, interest.ofd_id, interest.fd).map(|fd| {
+                owner_index = Some(idx);
+                fd
+            })
+        })
+    };
+    let Some(fd) = fd else {
+        return epoll_backing_readiness(proc, host, interest);
+    };
+    let owner: &Process = if let Some(idx) = owner_index {
+        &peers[idx]
+    } else {
+        proc
+    };
+    let Some(ofd) = owner
+        .fd_table
+        .get(fd)
+        .ok()
+        .and_then(|e| owner.ofd_table.get(e.ofd_ref.0))
+    else {
+        return Ok(0);
+    };
+    if ofd.file_type == FileType::Epoll {
+        let idx = (-(ofd.host_handle + 1)) as usize;
+        return Ok(
+            if depth < POLL_CHECK_MAX_DEPTH
+                && epoll_evaluate(proc, host, idx, 1, false, depth + 1, peers)
+                    .is_ok_and(|v| !v.is_empty())
+            {
+                EPOLLIN & interest.events
+            } else {
+                0
+            },
+        );
+    }
+    // A signalfd observes the waiting task's signal queue, even if its open
+    // description is retained only by a sibling process.
+    if ofd.file_type == FileType::PcmPlayback {
+        crate::epoll::device_generation(
+            crate::epoll::Source::Backing(FileType::PcmPlayback, ofd.host_handle),
+            crate::audio::readiness_generation(),
+            EPOLLOUT | EPOLLWRNORM | EPOLLERR,
+        );
+    }
+    if ofd.file_type == FileType::SignalFd {
+        crate::epoll::signal_generation(
+            interest.ofd_id,
+            proc.signal_readiness_generations(current_tid_for_process(proc)),
+        );
+        let idx = (-(ofd.host_handle + 1)) as usize;
+        let mask =
+            crate::descriptor_backing::with_signalfds(|t| t.get(idx).map(|s| s.mask)).unwrap_or(0);
+        return Ok(
+            if proc.pending_for(current_tid_for_process(proc)) & mask != 0 {
+                EPOLLIN & interest.events
+            } else {
+                0
+            },
+        );
+    }
+    let socket_idx = (ofd.file_type == FileType::Socket)
+        .then(|| (-(ofd.host_handle + 1)) as usize);
+    let mut pollfd = [WasmPollFd {
+        fd,
+        events: interest.events as i16,
+        revents: 0,
+    }];
+    let owner = if let Some(idx) = owner_index {
+        &mut *peers[idx]
+    } else {
+        proc
+    };
+    if let Ok(sources) = epoll_sources(owner, fd) {
+        for source in &sources {
+            if let crate::epoll::Source::Network(handle) = source {
+                let generations = [
+                    host.host_net_readiness_generation(*handle, 0),
+                    host.host_net_readiness_generation(*handle, 1),
+                ];
+                if interest.events & (EPOLLET | EPOLLEXCLUSIVE) != 0
+                    && generations.iter().any(Option::is_none)
+                {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+                let terminal = host
+                    .host_net_readiness(*handle)
+                    .map(|facts| crate::net_readiness::stream_revents(facts, 0) as u32)
+                    .unwrap_or(EPOLLERR);
+                crate::epoll::network_generation(*handle, generations, terminal);
+            }
+        }
+        crate::descriptor_backing::with_epolls(|table| {
+            for (_, ep) in table.iter_mut() {
+                for i in &mut ep.interests {
+                    if i.ofd_id == interest.ofd_id {
+                        i.sources = sources.clone();
+                    }
+                }
+            }
+        });
+    }
+    poll_check_depth(owner, host, &mut pollfd, depth, &mut []);
+    let mut ready = pollfd[0].revents as u16 as u32;
+    if let Some(sock) = socket_idx.and_then(|idx| owner.sockets.get(idx)) {
+        ready = epoll_socket_readiness(sock, ready);
+    }
+    Ok(ready & interest.events & !(wasm_posix_shared::poll::POLLNVAL as u32))
+}
+
+/// Peek or consume one fair batch. The global backing lock is never held
+/// across a readiness check: timer refreshes and nested epolls can notify it.
+fn epoll_evaluate(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    idx: usize,
+    maxevents: usize,
+    consume: bool,
+    depth: u32,
+    peers: &mut [&mut Process],
+) -> Result<Vec<(u32, u64)>, Errno> {
+    use wasm_posix_shared::epoll::*;
+    let (interests, cursor) = crate::descriptor_backing::with_epolls(|table| {
+        table
+            .get(idx)
+            .map(|ep| (ep.interests.clone(), ep.cursor))
+            .ok_or(Errno::EBADF)
+    })?;
+    let mut out = Vec::new();
+    for offset in 0..interests.len() {
+        let pos = (cursor + offset) % interests.len();
+        let interest = &interests[pos];
+        if interest.disabled {
+            continue;
+        }
+        // Always refresh backing readiness, including lazy timers. Only a
+        // notification (or ADD/MOD) can enqueue another edge-triggered event.
+        let ready = epoll_interest_readiness(proc, host, interest, depth, peers)?;
+        let pending = crate::descriptor_backing::with_epolls(|table| {
+            table
+                .get(idx)
+                .and_then(|ep| ep.interests.get(pos))
+                .is_some_and(|i| i.pending)
+        });
+        let gated = interest.events & (EPOLLET | EPOLLEXCLUSIVE) != 0;
+        if ready == 0 {
+            crate::descriptor_backing::with_epolls(|table| {
+                if let Some(i) = table.get_mut(idx).and_then(|ep| ep.interests.get_mut(pos)) {
+                    i.pending = false;
+                }
+            });
+            continue;
+        }
+        if gated && !pending {
+            continue;
+        }
+        out.push((ready, interest.data));
+        if consume {
+            crate::descriptor_backing::with_epolls(|table| {
+                if let Some(ep) = table.get_mut(idx) {
+                    if let Some(i) = ep.interests.get_mut(pos) {
+                        i.pending = i.events & EPOLLET == 0;
+                        i.disabled = i.events & EPOLLONESHOT != 0;
+                    }
+                    ep.cursor = (pos + 1) % ep.interests.len().max(1);
+                }
+            });
+        }
+        if out.len() == maxevents {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 pub fn sys_epoll_pwait(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -17878,116 +18775,75 @@ pub fn sys_epoll_pwait(
     timeout_ms: i32,
     sigmask: Option<u64>,
 ) -> Result<(i32, Vec<(u32, u64)>), Errno> {
-    use wasm_posix_shared::poll::*;
+    sys_epoll_pwait_with_peers(proc, host, epfd, maxevents, timeout_ms, sigmask, &mut [])
+}
 
-    if maxevents <= 0 {
-        return Err(Errno::EINVAL);
-    }
-
-    let interests = epoll_resolved_interests(proc, epfd)?;
-
-    // The same atomic mask swap as sys_ppoll/sys_pselect6, in a per-task
-    // LIFO wait context. The mask stays swapped across EAGAIN retries so a
-    // cross-process signal arriving while parked is deliverable, wakes the
-    // retry loop, and surfaces as EINTR — foot's SIGCHLD reaper blocks the
-    // signal everywhere except inside epoll_pwait. (Main #948/DRI desktop;
-    // a host that runs the wait itself scopes the same context through
-    // `kernel_swap_poll_sigmask`/`kernel_restore_poll_sigmask`.)
+/// The kernel passes disjoint process records so interests remain observable
+/// when the caller closed its last alias but another process retains the OFD.
+pub fn sys_epoll_pwait_with_peers(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    epfd: i32,
+    maxevents: i32,
+    timeout_ms: i32,
+    sigmask: Option<u64>,
+    peers: &mut [&mut Process],
+) -> Result<(i32, Vec<(u32, u64)>), Errno> {
     let tid = current_tid_for_process(proc);
-    if let Some(new_mask) = sigmask {
-        use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
-        let m = new_mask
-            & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+    if let Some(mask) = sigmask {
         proc.enter_signal_mask_wait_for(
             tid,
             crate::signal::SignalMaskWaitKind::EpollPwait,
-            m,
-        );
-        if proc.deliverable_for(tid) != 0 {
-            return Err(Errno::EINTR);
-        }
-    }
-
-    if interests.is_empty() {
-        // No interests: there is nothing that can ever become ready, so this
-        // evaluation is complete with zero events. The caller owns the wait,
-        // and reports the timeout when it expires.
-        //
-        // This deliberately does not sleep. A `host_nanosleep` here would run
-        // on the single kernel thread that multiplexes every process in the
-        // machine, stalling all of them for the caller's whole timeout.
-        let _ = timeout_ms;
-        if sigmask.is_some() && proc.deliverable_for(tid) == 0 {
-            proc.finish_signal_mask_wait_for(
-                tid,
-                crate::signal::SignalMaskWaitKind::EpollPwait,
-            );
-        }
-        return Ok((0, Vec::new()));
-    }
-
-    // Map EPOLL events to poll events
-    use wasm_posix_shared::epoll::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT};
-    #[allow(dead_code)]
-    const EPOLLRDHUP: u32 = 0x2000;
-
-    // Build pollfds from interests
-    let mut pollfds: Vec<WasmPollFd> = interests
-        .iter()
-        .map(|(fd, interest)| {
-            let mut poll_events: i16 = 0;
-            if interest.events & EPOLLIN != 0 {
-                poll_events |= POLLIN;
-            }
-            if interest.events & EPOLLOUT != 0 {
-                poll_events |= POLLOUT;
-            }
-            WasmPollFd {
-                fd: *fd,
-                events: poll_events,
-                revents: 0,
-            }
-        })
-        .collect();
-
-    // Delegate to sys_poll; on anything but an EAGAIN park, restore the
-    // saved mask unless a signal is pending (then kernel_dequeue_signal
-    // restores it after the dequeue picks the signal that ended the wait).
-    let ready = sys_poll(proc, host, &mut pollfds, timeout_ms);
-    if sigmask.is_some()
-        && !matches!(ready, Err(Errno::EAGAIN))
-        && proc.deliverable_for(tid) == 0
-    {
-        proc.finish_signal_mask_wait_for(
-            tid,
-            crate::signal::SignalMaskWaitKind::EpollPwait,
+            mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP)),
         );
     }
-
-    let _ready_count = ready?;
-
-    // Map poll results back to epoll events
-    let mut events_out: Vec<(u32, u64)> = Vec::new();
-    for (i, pollfd) in pollfds.iter().enumerate() {
-        if pollfd.revents != 0 && events_out.len() < maxevents as usize {
-            let mut ep_events: u32 = 0;
-            if pollfd.revents & POLLIN != 0 {
-                ep_events |= EPOLLIN;
-            }
-            if pollfd.revents & POLLOUT != 0 {
-                ep_events |= EPOLLOUT;
-            }
-            if pollfd.revents & POLLERR != 0 {
-                ep_events |= EPOLLERR;
-            }
-            if pollfd.revents & POLLHUP != 0 {
-                ep_events |= EPOLLHUP;
-            }
-            events_out.push((ep_events, interests[i].1.data));
+    let result = (|| {
+        if maxevents <= 0 || maxevents > wasm_posix_shared::epoll::MAX_EVENTS {
+            return Err(Errno::EINVAL);
         }
+        let idx = if let Some((_, lease)) = proc.epoll_waits.iter().find(|(owner, _)| *owner == tid)
+        {
+            lease.index
+        } else {
+            epoll_index(proc, epfd)?
+        };
+        let result =
+            epoll_evaluate(proc, host, idx, maxevents as usize, true, 0, peers).and_then(|out| {
+                if !out.is_empty() || timeout_ms == 0 {
+                    Ok((out.len() as i32, out))
+                } else if proc.deliverable_for(tid) != 0 {
+                    Err(Errno::EINTR)
+                } else {
+                    Err(Errno::EAGAIN)
+                }
+            });
+        if matches!(result, Err(Errno::EAGAIN))
+            && !proc.epoll_waits.iter().any(|(owner, _)| *owner == tid)
+        {
+            let entry = proc.fd_table.get(epfd)?;
+            let state = proc
+                .ofd_table
+                .get(entry.ofd_ref.0)
+                .ok_or(Errno::EBADF)?
+                .shared_state();
+            proc.epoll_waits.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+            let lease = crate::epoll::WaitLease::new(idx, state)?;
+            proc.epoll_waits.push((tid, lease));
+        }
+        result
+    })();
+    if !matches!(result, Err(Errno::EAGAIN)) {
+        crate::epoll::finish_wait(proc, tid);
     }
-
-    Ok((events_out.len() as i32, events_out))
+    // Linux restores the original mask before the signal boundary on ready,
+    // timeout and error returns. Only an interrupted wait needs its temporary
+    // mask for handler delivery; EAGAIN is our internal parked-wait sentinel.
+    // Include validation/allocation errors and host-preinstalled mask scopes
+    // even when this retry's sigmask argument is None.
+    if !matches!(result, Err(Errno::EAGAIN | Errno::EINTR)) {
+        proc.finish_signal_mask_wait_for(tid, crate::signal::SignalMaskWaitKind::EpollPwait);
+    }
+    result
 }
 
 /// timerfd_create — create a timer file descriptor.
@@ -18013,28 +18869,12 @@ pub fn sys_timerfd_create(proc: &mut Process, clock_id: u32, flags: u32) -> Resu
         expirations: 0,
     };
 
-    let tfd_idx = crate::descriptor_backing::with_timerfds(|table| table.alloc(state));
-
-    let handle = -((tfd_idx as i64) + 1);
-    let mut status_flags = O_RDWR;
-    if nonblock {
-        status_flags |= O_NONBLOCK;
-    }
-    let ofd_idx = proc.ofd_table.create(
-        FileType::TimerFd,
-        status_flags,
-        handle,
-        b"/dev/timerfd".to_vec(),
-    );
+    let status_flags = O_RDWR | if nonblock { O_NONBLOCK } else { 0 };
     let fd_flags = if cloexec { FD_CLOEXEC } else { 0 };
-    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-        Ok(fd) => Ok(fd),
-        Err(e) => {
-            proc.ofd_table.dec_ref(ofd_idx);
-            crate::descriptor_backing::with_timerfds(|table| table.release(tfd_idx));
-            Err(e)
-        }
-    }
+    proc.open_descriptor(FileType::TimerFd, status_flags, b"/dev/timerfd", fd_flags, |_, _| {
+        let index = crate::descriptor_backing::with_timerfds(|table| table.try_alloc(state))?;
+        Ok(-((index as i64) + 1))
+    })
 }
 
 /// timerfd_settime — arm or disarm a timer.
@@ -18177,11 +19017,21 @@ fn timerfd_refresh(host: &mut dyn HostIO, tfd_idx: usize) -> Result<(), Errno> {
         return Ok(());
     };
     let (now_sec, now_nsec) = host.host_clock_gettime(clock_id)?;
-    crate::descriptor_backing::with_timerfds(|table| {
+    let changed = crate::descriptor_backing::with_timerfds(|table| {
         if let Some(tfd) = table.get_mut(tfd_idx) {
+            let before = tfd.expirations;
             timerfd_compute_expirations(tfd, now_sec, now_nsec);
+            tfd.expirations != before
+        } else {
+            false
         }
     });
+    if changed {
+        crate::epoll::notify(
+            crate::epoll::Source::Backing(FileType::TimerFd, -(tfd_idx as i64 + 1)),
+            0x41,
+        );
+    }
     Ok(())
 }
 
@@ -18245,40 +19095,21 @@ pub fn sys_signalfd4(proc: &mut Process, fd: i32, mask: u64, flags: u32) -> Resu
         if ofd.file_type != FileType::SignalFd {
             return Err(Errno::EINVAL);
         }
-        let sfd_idx = (-(ofd.host_handle + 1)) as usize;
+        let index = (-(ofd.host_handle + 1)) as usize;
         crate::descriptor_backing::with_signalfds(|table| {
-            let sfd = table.get_mut(sfd_idx).ok_or(Errno::EBADF)?;
-            sfd.mask = mask;
+            let state = table.get_mut(index).ok_or(Errno::EBADF)?;
+            state.mask = mask;
             Ok(())
         })?;
         return Ok(fd);
     }
-
-    // Create new signalfd
     let state = SignalFdState { mask };
-
-    let sfd_idx = crate::descriptor_backing::with_signalfds(|table| table.alloc(state));
-
-    let handle = -((sfd_idx as i64) + 1);
-    let mut status_flags = O_RDONLY;
-    if nonblock {
-        status_flags |= O_NONBLOCK;
-    }
-    let ofd_idx = proc.ofd_table.create(
-        FileType::SignalFd,
-        status_flags,
-        handle,
-        b"/dev/signalfd".to_vec(),
-    );
+    let status_flags = O_RDONLY | if nonblock { O_NONBLOCK } else { 0 };
     let fd_flags = if cloexec { FD_CLOEXEC } else { 0 };
-    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-        Ok(fd) => Ok(fd),
-        Err(e) => {
-            proc.ofd_table.dec_ref(ofd_idx);
-            crate::descriptor_backing::with_signalfds(|table| table.release(sfd_idx));
-            Err(e)
-        }
-    }
+    proc.open_descriptor(FileType::SignalFd, status_flags, b"/dev/signalfd", fd_flags, |_, _| {
+        let index = crate::descriptor_backing::with_signalfds(|table| table.try_alloc(state))?;
+        Ok(-((index as i64) + 1))
+    })
 }
 
 /// umask — set file creation mask, return previous mask
@@ -18615,6 +19446,9 @@ pub fn sys_ftruncate(
     if access == O_RDONLY {
         return Err(Errno::EINVAL);
     }
+    if crate::executable_backing::is_executable_handle(host_handle) {
+        return Err(Errno::EPERM);
+    }
 
     // In-kernel tmpfs: truncate Rust memory. RLIMIT_FSIZE still applies; size
     // comes from tmpfs so the tmpfs handle is never fstat'd against the host.
@@ -18682,10 +19516,9 @@ pub fn sys_ftruncate(
         let new_len = usize::try_from(length).map_err(|_| Errno::EFBIG)?;
         crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
-            backing.data.resize(new_len, 0);
-            backing.touch_modified();
-            Ok(())
+            backing.resize(new_len)
         })?;
+        crate::kernel_file_mapping::notify_truncated(FileType::MemFd, host_handle, length as u64);
         return Ok(());
     }
 
@@ -18727,25 +19560,48 @@ pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
 
     match ofd.file_type {
         FileType::Regular | FileType::Directory => {
-            // A synthetic in-kernel handle (tmpfs scratch mount or the rootfs
-            // overlay/COW file) has no durable host backing, so fsync/fdatasync
-            // is correctly a no-op success — mirroring the host memfs backend
-            // (where fsync is already a no-op) and matching the read/write/lseek
-            // short-circuit convention. Reaching host_fsync with a sentinel
-            // handle would hit the host with a bad fd and fail spuriously.
-            // Directories on those filesystems too: fsync of a directory fd is
-            // how software makes a newly created name durable.
+            if crate::executable_backing::is_executable_handle(ofd.host_handle) {
+                return crate::executable_backing::sync(ofd.host_handle, host);
+            }
             if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle)
                 || ofd.host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL
-                || crate::rootfs::is_rootfs_file_handle(ofd.host_handle)
-                || ofd.host_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
             {
                 return Ok(());
+            }
+            if crate::rootfs::is_rootfs_file_handle(ofd.host_handle)
+                || ofd.host_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
+            {
+                return crate::rootfs::sync_persistence();
             }
             host.host_fsync(ofd.host_handle)
         }
         _ => Err(Errno::EINVAL),
     }
+}
+
+pub fn syncfs_targets_rootfs(proc: &Process, fd: i32) -> Result<bool, Errno> {
+    require_io_fd(proc, fd)?;
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if !matches!(ofd.file_type, FileType::Regular | FileType::Directory) {
+        return Err(Errno::EINVAL);
+    }
+    let handle = if crate::executable_backing::is_executable_handle(ofd.host_handle) {
+        crate::executable_backing::image_handle(ofd.host_handle)?
+    } else { ofd.host_handle };
+    if crate::rootfs::is_rootfs_file_handle(handle)
+        || crate::rootfs::is_rootfs_dir_handle(handle)
+        || handle == crate::rootfs::ROOTFS_DIR_SENTINEL
+    {
+        return Ok(true);
+    }
+    if crate::tmpfs::is_tmpfs_file_handle(handle)
+        || crate::tmpfs::is_tmpfs_dir_handle(handle)
+        || handle == crate::tmpfs::TMPFS_DIR_SENTINEL
+    {
+        return Ok(false);
+    }
+    Err(Errno::ENOTSUP)
 }
 
 /// truncate -- truncate a file to a specified length (path-based).
@@ -18787,12 +19643,22 @@ pub fn sys_fchmod(
     if ofd.is_path_only() {
         return Err(Errno::EBADF);
     }
+    if ofd.file_type == FileType::Regular && crate::executable_backing::is_executable_handle(ofd.host_handle) {
+        return Err(Errno::EPERM);
+    }
     if let Some(pipe_idx) = named_fifo_pipe_idx(proc, fd)? {
         let st = sys_fstat(proc, host, fd)?;
         check_owner_or_root(proc, &st)?;
         let ctime = if let Some(live_path) =
-            unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
+            unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)?
         {
+            if crate::tmpfs::claims_path(&live_path) || crate::rootfs::claims_path(&live_path) {
+                tmpfs_stamp_now(host)?;
+                if crate::rootfs::claims_path(&live_path) { crate::rootfs::chmod(&live_path, mode)?; }
+                else { crate::tmpfs::chmod(&live_path, mode)?; }
+                fifo_path_stat_raw(host, &live_path, true)?.ok_or(Errno::EIO)?;
+                return Ok(());
+            }
             crate::hostdir::chmod(host, &live_path, mode)?;
             None
         } else {
@@ -18875,12 +19741,22 @@ pub fn sys_fchown(
     if ofd.is_path_only() {
         return Err(Errno::EBADF);
     }
+    if ofd.file_type == FileType::Regular && crate::executable_backing::is_executable_handle(ofd.host_handle) {
+        return Err(Errno::EPERM);
+    }
     if let Some(pipe_idx) = named_fifo_pipe_idx(proc, fd)? {
         let st = sys_fstat(proc, host, fd)?;
         let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
         let ctime = if let Some(live_path) =
-            unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
+            unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)?
         {
+            if crate::tmpfs::claims_path(&live_path) || crate::rootfs::claims_path(&live_path) {
+                tmpfs_stamp_now(host)?;
+                if crate::rootfs::claims_path(&live_path) { crate::rootfs::chown(&live_path, uid, gid, true)?; }
+                else { crate::tmpfs::chown(&live_path, uid, gid, true)?; }
+                fifo_path_stat_raw(host, &live_path, true)?.ok_or(Errno::EIO)?;
+                return Ok(());
+            }
             crate::hostdir::chown(host, &live_path, uid, gid)?;
             None
         } else {
@@ -19008,7 +19884,7 @@ pub fn sys_vector_io(
             let outgoing = if kind.is_write() {
                 crate::msghdr::gather(host, pid, &entries)?
             } else {
-                Vec::new()
+                crate::IoBuffer::new()
             };
             crate::blocked_retry::PendingVectorIo {
                 entries,
@@ -19022,7 +19898,7 @@ pub fn sys_vector_io(
         VectorIoKind::Write => sys_write(proc, host, fd, &request.outgoing),
         VectorIoKind::Pwrite { offset } => sys_pwrite(proc, host, fd, &request.outgoing, offset),
         VectorIoKind::Read | VectorIoKind::Pread { .. } => {
-            match try_initialized_vec(request.total) {
+            match crate::guest_ptr::zeroed_io_staging(request.total, wasm_posix_shared::platform_limits::MAX_REPORTABLE_TRANSFER_BYTES) {
                 Err(error) => Err(error),
                 Ok(mut staging) => {
                     let read = match kind {
@@ -19270,7 +20146,8 @@ pub fn sys_linkat(
         check_search_path(proc, host, &old_resolved)?;
         check_parent_writable(proc, host, &new_resolved)?;
         tmpfs_stamp_now(host)?;
-        return crate::tmpfs::link(&old_resolved, &new_resolved);
+        crate::exchange::policy::check_link(&old_resolved, &new_resolved)?;
+        return link_with_fifo_registration(&old_resolved, &new_resolved, || crate::tmpfs::link(&old_resolved, &new_resolved));
     }
     let old_rootfs = crate::rootfs::claims_path(&old_resolved);
     let new_rootfs = crate::rootfs::claims_path(&new_resolved);
@@ -19281,14 +20158,13 @@ pub fn sys_linkat(
         check_search_path(proc, host, &old_resolved)?;
         check_parent_writable(proc, host, &new_resolved)?;
         tmpfs_stamp_now(host)?;
-        return crate::rootfs::link(&old_resolved, &new_resolved);
+        return link_with_fifo_registration(&old_resolved, &new_resolved, || crate::rootfs::link(&old_resolved, &new_resolved));
     }
     ensure_host_mutable_namespace_path(&old_resolved)?;
     ensure_host_mutable_namespace_path(&new_resolved)?;
     check_search_path(proc, host, &old_resolved)?;
     check_parent_writable(proc, host, &new_resolved)?;
-    crate::hostdir::link(host, &old_resolved, &new_resolved)?;
-    register_fifo_hardlink(host, &old_resolved, &new_resolved)
+    link_with_fifo_registration(&old_resolved, &new_resolved, || crate::hostdir::link(host, &old_resolved, &new_resolved))
 }
 
 /// symlinkat -- create symbolic link relative to directory fd.
@@ -19313,6 +20189,7 @@ pub fn sys_symlinkat(
     if crate::tmpfs::claims_path(&resolved_link) {
         check_parent_writable(proc, host, &resolved_link)?;
         tmpfs_stamp_now(host)?;
+        crate::exchange::policy::check_create(&resolved_link)?;
         return crate::tmpfs::symlink(
             target,
             &resolved_link,
@@ -19390,10 +20267,32 @@ pub fn sys_select(
     proc: &mut Process,
     host: &mut dyn HostIO,
     nfds: i32,
+    readfds: Option<&mut [u8]>,
+    writefds: Option<&mut [u8]>,
+    exceptfds: Option<&mut [u8]>,
+    timeout_ms: i32,
+) -> Result<i32, Errno> {
+    sys_select_with_peers(
+        proc,
+        host,
+        nfds,
+        readfds,
+        writefds,
+        exceptfds,
+        timeout_ms,
+        &mut [],
+    )
+}
+
+pub fn sys_select_with_peers(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    nfds: i32,
     mut readfds: Option<&mut [u8]>,
     mut writefds: Option<&mut [u8]>,
     mut exceptfds: Option<&mut [u8]>,
     timeout_ms: i32,
+    peers: &mut [&mut Process],
 ) -> Result<i32, Errno> {
     use wasm_posix_shared::poll::{POLLERR, POLLHUP, POLLIN, POLLOUT, POLLPRI};
     use wasm_posix_shared::select::{FD_SETSIZE, FD_SET_BYTES};
@@ -19462,7 +20361,7 @@ pub fn sys_select(
             events,
             revents: 0,
         };
-        poll_check(proc, host, core::slice::from_mut(&mut pollfd));
+        poll_check_depth(proc, host, core::slice::from_mut(&mut pollfd), 0, peers);
 
         let revents = pollfd.revents;
         let mut counted = false;
@@ -19785,6 +20684,13 @@ pub fn sys_fstatfs(
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
 
+    if ofd.file_type == FileType::Regular && crate::executable_backing::is_executable_handle(ofd.host_handle) {
+        let image = crate::executable_backing::image_handle(ofd.host_handle)?;
+        if crate::rootfs::is_rootfs_file_handle(image) { return crate::rootfs::statfs(b"/"); }
+        if crate::tmpfs::is_tmpfs_file_handle(image) { return crate::tmpfs::statfs(b"/tmp"); }
+        return host_fstatfs_or_default(host, image);
+    }
+
     if let Some(statfs) = virtual_statfs_for_path(&ofd.path, proc.pid) {
         return Ok(statfs);
     }
@@ -19848,9 +20754,9 @@ pub fn sys_getresgid(proc: &Process) -> (u32, u32, u32) {
 
 /// getgroups — get supplementary group IDs.
 pub fn sys_getgroups(proc: &Process, size: u32) -> Result<&[u32], Errno> {
-    if size as usize > crate::credentials::NGROUPS_MAX {
-        return Err(Errno::EINVAL);
-    }
+    // POSIX: EINVAL only when a nonzero size is smaller than the number of
+    // groups. A larger buffer is always enough; NGROUPS_MAX bounds the count,
+    // not the caller's buffer.
     if size != 0 && (size as usize) < proc.supplementary_groups().len() {
         return Err(Errno::EINVAL);
     }
@@ -19904,8 +20810,9 @@ pub fn sys_sendmsg(
     iov_base: &[u8],
     flags: u32,
     addr: Option<&[u8]>,
-    mut ancillary_fds: Vec<crate::pipe::InFlightFd>,
+    ancillary_fds: impl IntoAncillaryFds,
 ) -> Result<usize, Errno> {
+    let mut ancillary_fds = ancillary_fds.into_ancillary()?;
     use crate::socket::{SocketDomain, SocketState, SocketType};
     use wasm_posix_shared::socket::{MSG_NOSIGNAL, MSG_OOB};
 
@@ -20053,7 +20960,7 @@ pub fn sys_recvmsg(
             return_len: received,
             addr_len: 0,
             output_flags: reflected_flags,
-            ancillary_fds: Vec::new(),
+            ancillary_fds: crate::pipe::AncillaryFds::new(),
         });
     }
     if state != SocketState::Connected {
@@ -20064,7 +20971,7 @@ pub fn sys_recvmsg(
             return_len: 0,
             addr_len: 0,
             output_flags: reflected_flags,
-            ancillary_fds: Vec::new(),
+            ancillary_fds: crate::pipe::AncillaryFds::new(),
         });
     }
 
@@ -20099,21 +21006,11 @@ pub fn sys_recvmsg(
                 return_len: total,
                 addr_len: 0,
                 output_flags: reflected_flags,
-                ancillary_fds: Vec::new(),
+                ancillary_fds: crate::pipe::AncillaryFds::new(),
             });
         }
         return Err(Errno::EAGAIN);
     }
-}
-
-/// wait4 — wait for a child process. Delegates to host.
-pub fn sys_waitpid(
-    _proc: &mut Process,
-    host: &mut dyn HostIO,
-    pid: i32,
-    options: u32,
-) -> Result<(i32, i32), Errno> {
-    host.host_waitpid(pid, options)
 }
 
 /// Width-independent system information serialized at the Wasm boundary.
@@ -20170,40 +21067,22 @@ pub fn sys_memfd_create(proc: &mut Process, name: &[u8], flags: u32) -> Result<i
         return Err(Errno::EINVAL);
     }
 
-    let memfd_idx = crate::descriptor_backing::with_memfds(|table| {
-        table.alloc(crate::descriptor_backing::MemFdBacking::new())
-    });
-
-    // Create OFD with MemFd file type.
-    // Use negative host_handle encoding: -(memfd_idx + 1)
-    let host_handle = -((memfd_idx as i64) + 1);
-    // Build path: "memfd:<name>"
-    let mut path = alloc::vec![b'm', b'e', b'm', b'f', b'd', b':'];
+    let mut path = Vec::new();
+    path.try_reserve_exact(6 + name.len()).map_err(|_| Errno::ENOMEM)?;
+    path.extend_from_slice(b"memfd:");
     path.extend_from_slice(name);
-
-    let ofd_idx = proc
-        .ofd_table
-        .create(FileType::MemFd, O_RDWR, host_handle, path);
-    let cloexec = if flags & MFD_CLOEXEC != 0 {
-        FD_CLOEXEC
-    } else {
-        0
-    };
-    match proc
-        .fd_table
-        .alloc(crate::fd::OpenFileDescRef(ofd_idx), cloexec)
-    {
-        Ok(fd) => Ok(fd),
-        Err(err) => {
-            proc.ofd_table.dec_ref(ofd_idx);
-            crate::descriptor_backing::with_memfds(|table| table.release(memfd_idx));
-            Err(err)
-        }
-    }
+    let cloexec = if flags & MFD_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+    proc.open_descriptor(FileType::MemFd, O_RDWR, &path, cloexec, |_, _| {
+        let index = crate::descriptor_backing::with_memfds(|table| table.try_alloc(crate::descriptor_backing::MemFdBacking::new()))?;
+        Ok(-((index as i64) + 1))
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    mod epoll_semantics {
+        include!("epoll_tests.rs");
+    }
     use super::*;
     use wasm_posix_shared::abi::extended_syscalls;
     use wasm_posix_shared::Syscall;
@@ -20231,7 +21110,7 @@ mod tests {
             rgid,
             egid,
             sgid: rgid,
-            supplementary_groups: supplementary_groups.to_vec(),
+            supplementary_groups: crate::credentials::SupplementaryGroups::copy_from(supplementary_groups).unwrap(),
         });
     }
 
@@ -20311,7 +21190,7 @@ mod tests {
         sys_close(&mut guest, &mut host, fd).unwrap();
         sys_chown(&mut guest, &mut host, b"/tmp/inspect-live/data", 123, 456).unwrap();
         let mut table = crate::process_table::ProcessTable::new();
-        table.ensure_init();
+        table.ensure_init().unwrap();
         let inspector = table.get(crate::process_table::SYNTHETIC_INIT_PID).unwrap();
         let followed =
             inspect_namespace_stat(inspector, &mut host, b"/inspection/current/data", true)
@@ -20367,10 +21246,32 @@ mod tests {
     }
 
     #[test]
+    fn inspection_reads_kernel_generated_procfs_without_creating_descriptors() {
+        let mut table = crate::process_table::ProcessTable::new();
+        table.ensure_init().unwrap();
+        let inspector = table.get(crate::process_table::SYNTHETIC_INIT_PID).unwrap();
+        let mut host = MockHostIO::new();
+        let mut bytes = [0; 2048];
+        let length = inspect_namespace_read_file(inspector, &mut host, b"/proc/kandelo/fs_memory", 0, &mut bytes).unwrap();
+        let text = core::str::from_utf8(&bytes[..length]).unwrap();
+        assert!(text.starts_with("version 1\nunits admission_credits\nlifetime kernel\n"));
+        assert!(text.contains("journal_writeback live="));
+        let mounts = crate::procfs::MOUNTS_CONTENT;
+        let length = inspect_namespace_read_file(inspector, &mut host, b"/proc/self/mounts", 7, &mut bytes[..13]).unwrap();
+        assert_eq!(&bytes[..length], &mounts[7..20]);
+        assert_eq!(inspect_namespace_read_file(inspector, &mut host, b"/proc/mounts", i64::MAX, &mut bytes).unwrap(), 0);
+        assert_eq!(inspect_namespace_read_file(inspector, &mut host, b"/proc/mounts", -1, &mut bytes).unwrap_err(), Errno::EINVAL);
+        assert_eq!(inspect_namespace_read_file(inspector, &mut host, b"/proc", 0, &mut bytes).unwrap_err(), Errno::EISDIR);
+        assert_eq!(inspect_namespace_read_file(inspector, &mut host, b"/proc/kandelo/absent", 0, &mut bytes).unwrap_err(), Errno::ENOENT);
+        assert!(inspector.fd_table.get(0).is_err());
+        assert!(inspector.dir_streams.is_empty());
+    }
+
+    #[test]
     fn inspection_lists_virtual_names_without_opening_devices_or_init_fds() {
         let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
         let mut table = crate::process_table::ProcessTable::new();
-        table.ensure_init();
+        table.ensure_init().unwrap();
         let inspector = table.get(crate::process_table::SYNTHETIC_INIT_PID).unwrap();
         let mut host = MockHostIO::new();
         let proc = inspect_namespace_directory(inspector, &mut host, b"/proc").unwrap();
@@ -20425,7 +21326,7 @@ mod tests {
         let mut host = MockHostIO::new();
 
         // Create + write + read a file on a scratch mount.
-        let fd = sys_open(&mut proc, &mut host, b"/srv/wire_f", O_CREAT | O_RDWR, 0o644).unwrap();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/wire_f", O_CREAT | O_RDWR, 0o644).unwrap();
         assert_eq!(sys_write(&mut proc, &mut host, fd, b"hello").unwrap(), 5);
         assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET).unwrap(), 0);
         let mut buf = [0u8; 16];
@@ -20439,63 +21340,63 @@ mod tests {
         sys_close(&mut proc, &mut host, fd).unwrap();
 
         // Path lstat also comes from tmpfs, not the host.
-        let lst = sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap();
+        let lst = sys_lstat(&mut proc, &mut host, b"/tmp/wire_f").unwrap();
         assert_eq!(lst.st_size, 5);
         assert!(in_tmpfs_range(lst.st_dev));
 
         // truncate(path) works end-to-end (open + ftruncate + close, all tmpfs).
-        sys_truncate(&mut proc, &mut host, b"/srv/wire_f", 2).unwrap();
+        sys_truncate(&mut proc, &mut host, b"/tmp/wire_f", 2).unwrap();
         assert_eq!(
-            sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap().st_size,
+            sys_lstat(&mut proc, &mut host, b"/tmp/wire_f").unwrap().st_size,
             2
         );
 
         // chmod/chown on a tmpfs file are served in Rust and reflected by stat.
-        sys_chmod(&mut proc, &mut host, b"/srv/wire_f", 0o600).unwrap();
+        sys_chmod(&mut proc, &mut host, b"/tmp/wire_f", 0o600).unwrap();
         assert_eq!(
-            sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap().st_mode & 0o777,
+            sys_lstat(&mut proc, &mut host, b"/tmp/wire_f").unwrap().st_mode & 0o777,
             0o600
         );
-        sys_chown(&mut proc, &mut host, b"/srv/wire_f", 1000, 1000).unwrap();
-        let cst = sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap();
+        sys_chown(&mut proc, &mut host, b"/tmp/wire_f", 1000, 1000).unwrap();
+        let cst = sys_lstat(&mut proc, &mut host, b"/tmp/wire_f").unwrap();
         assert_eq!((cst.st_uid, cst.st_gid), (1000, 1000));
 
         // statfs reports the in-kernel tmpfs (TMPFS_MAGIC); access is computed
         // from the tmpfs stat, no host call.
         assert_eq!(
-            sys_statfs(&mut proc, &mut host, b"/srv/wire_f").unwrap().f_type,
+            sys_statfs(&mut proc, &mut host, b"/tmp/wire_f").unwrap().f_type,
             0x0102_1994
         );
-        sys_access(&mut proc, &mut host, b"/srv/wire_f", R_OK).unwrap();
+        sys_access(&mut proc, &mut host, b"/tmp/wire_f", R_OK).unwrap();
 
         // Atomic write-temp-then-rename, entirely within tmpfs.
         let tmpf =
-            sys_open(&mut proc, &mut host, b"/srv/atomic.tmp", O_CREAT | O_RDWR, 0o644).unwrap();
+            sys_open(&mut proc, &mut host, b"/tmp/atomic.tmp", O_CREAT | O_RDWR, 0o644).unwrap();
         assert_eq!(sys_write(&mut proc, &mut host, tmpf, b"committed").unwrap(), 9);
         sys_close(&mut proc, &mut host, tmpf).unwrap();
-        sys_rename(&mut proc, &mut host, b"/srv/atomic.tmp", b"/srv/atomic").unwrap();
+        sys_rename(&mut proc, &mut host, b"/tmp/atomic.tmp", b"/tmp/atomic").unwrap();
         assert_eq!(
-            sys_lstat(&mut proc, &mut host, b"/srv/atomic.tmp").unwrap_err(),
+            sys_lstat(&mut proc, &mut host, b"/tmp/atomic.tmp").unwrap_err(),
             Errno::ENOENT
         );
         assert_eq!(
-            sys_lstat(&mut proc, &mut host, b"/srv/atomic").unwrap().st_size,
+            sys_lstat(&mut proc, &mut host, b"/tmp/atomic").unwrap().st_size,
             9
         );
-        sys_unlink(&mut proc, &mut host, b"/srv/atomic").unwrap();
+        sys_unlink(&mut proc, &mut host, b"/tmp/atomic").unwrap();
 
         // mkdir under a scratch mount is served by tmpfs.
-        sys_mkdir(&mut proc, &mut host, b"/srv/wire_d", 0o755).unwrap();
-        let dst = sys_lstat(&mut proc, &mut host, b"/srv/wire_d").unwrap();
+        sys_mkdir(&mut proc, &mut host, b"/tmp/wire_d", 0o755).unwrap();
+        let dst = sys_lstat(&mut proc, &mut host, b"/tmp/wire_d").unwrap();
         assert_eq!(dst.st_mode & S_IFMT, S_IFDIR);
         assert!(in_tmpfs_range(dst.st_dev));
 
         // Directory listing via getdents64 on a tmpfs directory OFD.
         let child =
-            sys_open(&mut proc, &mut host, b"/srv/wire_d/child", O_CREAT | O_RDWR, 0o644).unwrap();
+            sys_open(&mut proc, &mut host, b"/tmp/wire_d/child", O_CREAT | O_RDWR, 0o644).unwrap();
         sys_close(&mut proc, &mut host, child).unwrap();
         let dfd =
-            sys_open(&mut proc, &mut host, b"/srv/wire_d", O_RDONLY | O_DIRECTORY, 0).unwrap();
+            sys_open(&mut proc, &mut host, b"/tmp/wire_d", O_RDONLY | O_DIRECTORY, 0).unwrap();
         let mut names: Vec<Vec<u8>> = Vec::new();
         let mut dbuf = [0u8; 512];
         loop {
@@ -20525,41 +21426,41 @@ mod tests {
         sys_close(&mut proc, &mut host, dfd).unwrap();
 
         // Symlink create / readlink / follow, entirely within tmpfs.
-        sys_symlink(&mut proc, &mut host, b"wire_f", b"/srv/wire_link").unwrap();
-        let ll = sys_lstat(&mut proc, &mut host, b"/srv/wire_link").unwrap();
+        sys_symlink(&mut proc, &mut host, b"wire_f", b"/tmp/wire_link").unwrap();
+        let ll = sys_lstat(&mut proc, &mut host, b"/tmp/wire_link").unwrap();
         assert_eq!(ll.st_mode & S_IFMT, S_IFLNK);
         assert_eq!(ll.st_size, 6); // len("wire_f")
         let mut tgt = [0u8; 32];
-        let tn = sys_readlink(&mut proc, &mut host, b"/srv/wire_link", &mut tgt).unwrap();
+        let tn = sys_readlink(&mut proc, &mut host, b"/tmp/wire_link", &mut tgt).unwrap();
         assert_eq!(&tgt[..tn], b"wire_f");
-        // stat() follows the relative link to /srv/wire_f (2 bytes after truncate).
-        let sl = sys_stat(&mut proc, &mut host, b"/srv/wire_link").unwrap();
+        // stat() follows the relative link to /tmp/wire_f (2 bytes after truncate).
+        let sl = sys_stat(&mut proc, &mut host, b"/tmp/wire_link").unwrap();
         assert_eq!(sl.st_mode & S_IFMT, S_IFREG);
         assert_eq!(sl.st_size, 2);
-        sys_unlink(&mut proc, &mut host, b"/srv/wire_link").unwrap();
+        sys_unlink(&mut proc, &mut host, b"/tmp/wire_link").unwrap();
 
         // The host was NEVER consulted for a scratch path: no open, no lstat.
         assert!(
-            !host.handle_paths.values().any(|p| p.starts_with(b"/srv")),
+            !host.handle_paths.values().any(|p| p.starts_with(b"/tmp")),
             "host was asked to open a scratch path: {:?}",
             host.handle_paths,
         );
         assert!(
-            !host.lstat_paths.iter().any(|p| p.starts_with(b"/srv")),
+            !host.lstat_paths.iter().any(|p| p.starts_with(b"/tmp")),
             "host was asked to lstat a scratch path: {:?}",
             host.lstat_paths,
         );
 
         // unlink/rmdir remove them from the tmpfs namespace.
-        sys_unlink(&mut proc, &mut host, b"/srv/wire_f").unwrap();
+        sys_unlink(&mut proc, &mut host, b"/tmp/wire_f").unwrap();
         assert_eq!(
-            sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap_err(),
+            sys_lstat(&mut proc, &mut host, b"/tmp/wire_f").unwrap_err(),
             Errno::ENOENT
         );
-        sys_unlink(&mut proc, &mut host, b"/srv/wire_d/child").unwrap();
-        sys_rmdir(&mut proc, &mut host, b"/srv/wire_d").unwrap();
+        sys_unlink(&mut proc, &mut host, b"/tmp/wire_d/child").unwrap();
+        sys_rmdir(&mut proc, &mut host, b"/tmp/wire_d").unwrap();
         assert_eq!(
-            sys_lstat(&mut proc, &mut host, b"/srv/wire_d").unwrap_err(),
+            sys_lstat(&mut proc, &mut host, b"/tmp/wire_d").unwrap_err(),
             Errno::ENOENT
         );
     }
@@ -20622,18 +21523,18 @@ mod tests {
 
         // Precondition: the plain sibling removes a file here, so a failure
         // below is about `unlinkat` and not about the directory.
-        let fd = sys_open(&mut proc, &mut host, b"/srv/by-unlink", O_CREAT | O_RDWR, 0o644).unwrap();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/by-unlink", O_CREAT | O_RDWR, 0o644).unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();
-        assert_in_tmpfs(&mut proc, &mut host, b"/srv/by-unlink");
-        sys_unlink(&mut proc, &mut host, b"/srv/by-unlink").unwrap();
-        assert_gone_from_tmpfs(&mut proc, &mut host, b"/srv/by-unlink");
+        assert_in_tmpfs(&mut proc, &mut host, b"/tmp/by-unlink");
+        sys_unlink(&mut proc, &mut host, b"/tmp/by-unlink").unwrap();
+        assert_gone_from_tmpfs(&mut proc, &mut host, b"/tmp/by-unlink");
 
         let fd =
-            sys_open(&mut proc, &mut host, b"/srv/by-unlinkat", O_CREAT | O_RDWR, 0o644).unwrap();
+            sys_open(&mut proc, &mut host, b"/tmp/by-unlinkat", O_CREAT | O_RDWR, 0o644).unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();
-        assert_in_tmpfs(&mut proc, &mut host, b"/srv/by-unlinkat");
-        sys_unlinkat(&mut proc, &mut host, AT_FDCWD, b"/srv/by-unlinkat", 0).unwrap();
-        assert_gone_from_tmpfs(&mut proc, &mut host, b"/srv/by-unlinkat");
+        assert_in_tmpfs(&mut proc, &mut host, b"/tmp/by-unlinkat");
+        sys_unlinkat(&mut proc, &mut host, AT_FDCWD, b"/tmp/by-unlinkat", 0).unwrap();
+        assert_gone_from_tmpfs(&mut proc, &mut host, b"/tmp/by-unlinkat");
     }
 
     #[test]
@@ -20643,22 +21544,22 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
 
-        sys_mkdir(&mut proc, &mut host, b"/srv/by-rmdir", 0o755).unwrap();
-        assert_in_tmpfs(&mut proc, &mut host, b"/srv/by-rmdir");
-        sys_rmdir(&mut proc, &mut host, b"/srv/by-rmdir").unwrap();
-        assert_gone_from_tmpfs(&mut proc, &mut host, b"/srv/by-rmdir");
+        sys_mkdir(&mut proc, &mut host, b"/tmp/by-rmdir", 0o755).unwrap();
+        assert_in_tmpfs(&mut proc, &mut host, b"/tmp/by-rmdir");
+        sys_rmdir(&mut proc, &mut host, b"/tmp/by-rmdir").unwrap();
+        assert_gone_from_tmpfs(&mut proc, &mut host, b"/tmp/by-rmdir");
 
-        sys_mkdir(&mut proc, &mut host, b"/srv/by-unlinkat-dir", 0o755).unwrap();
-        assert_in_tmpfs(&mut proc, &mut host, b"/srv/by-unlinkat-dir");
+        sys_mkdir(&mut proc, &mut host, b"/tmp/by-unlinkat-dir", 0o755).unwrap();
+        assert_in_tmpfs(&mut proc, &mut host, b"/tmp/by-unlinkat-dir");
         sys_unlinkat(
             &mut proc,
             &mut host,
             AT_FDCWD,
-            b"/srv/by-unlinkat-dir",
+            b"/tmp/by-unlinkat-dir",
             AT_REMOVEDIR,
         )
         .unwrap();
-        assert_gone_from_tmpfs(&mut proc, &mut host, b"/srv/by-unlinkat-dir");
+        assert_gone_from_tmpfs(&mut proc, &mut host, b"/tmp/by-unlinkat-dir");
     }
 
     #[test]
@@ -20756,6 +21657,12 @@ mod tests {
 
         let mut user = user_process(2);
         let denied = |r: Result<(), Errno>| r.unwrap_err();
+        // An already occupied name does not create an entry. Searchable,
+        // root-owned ancestors need not be writable for this EEXIST result.
+        for path in [b"/locked".as_slice(), b"/locked/dir", b"/locked/file", b"/tmp/perm-root-owned"] {
+            assert_eq!(denied(sys_mkdir(&mut user, &mut host, path, 0o755)), Errno::EEXIST);
+            assert_eq!(denied(sys_mkdirat(&mut user, &mut host, AT_FDCWD, path, 0o755)), Errno::EEXIST);
+        }
         assert_eq!(denied(sys_unlink(&mut user, &mut host, b"/locked/file")), Errno::EACCES);
         assert_eq!(
             denied(sys_unlinkat(&mut user, &mut host, AT_FDCWD, b"/locked/file", 0)),
@@ -21260,6 +22167,55 @@ mod tests {
         assert_eq!(sys_getsockopt_timeout(&proc, fd, send_opt), Ok(2_500_000));
     }
 
+    #[test]
+    fn socket_backlog_admission_precedes_connect_and_accept_consumption() {
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_STREAM};
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(0x6eec_0031);
+        let mut host = MockHostIO::new();
+        let addr = b"\x01\x00\x00memory-backlog-admission";
+        let listener = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        sys_bind(&mut proc, &mut host, listener, addr).unwrap();
+        sys_listen(&mut proc, &mut host, listener, 4).unwrap();
+        let client = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let listener_index = test_socket_idx(&proc, listener);
+        let client_index = test_socket_idx(&proc, client);
+        let shared = proc.sockets.get(listener_index).unwrap().shared_backlog_idx.unwrap();
+        let pipes_before = unsafe { crate::pipe::global_pipe_table() }.count_active();
+        {
+            let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(sys_connect(&mut proc, &mut host, client, addr), Err(Errno::ENOMEM));
+            assert_eq!(proc.sockets.get(client_index).unwrap().state, crate::socket::SocketState::Unbound);
+            assert_eq!(unsafe { crate::pipe::global_pipe_table() }.count_active(), pipes_before);
+            assert_eq!(unsafe { crate::socket::shared_listener_backlog_table() }.len(shared), 0);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        sys_connect(&mut proc, &mut host, client, addr).unwrap();
+        sys_write(&mut proc, &mut host, client, b"retained").unwrap();
+        let prepared = proc.prepare_descriptor(FileType::Socket, O_RDWR, b"/dev/socket").unwrap();
+        let with_prepared = crate::io_buffer::IO_MEMORY.usage().0;
+        proc.cancel_descriptor(prepared);
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let descriptor_bytes = with_prepared - baseline;
+        let fds_before = proc.fd_table.iter().count();
+        let ofds_before = proc.ofd_table.iter().count();
+        for allowance in [descriptor_bytes, descriptor_bytes + 2 * (addr.len() - 2)] {
+            let _limit = crate::io_buffer::test_budget(baseline + allowance);
+            assert_eq!(sys_accept(&mut proc, &mut host, listener), Err(Errno::ENOMEM));
+            assert_eq!(unsafe { crate::socket::shared_listener_backlog_table() }.len(shared), 1);
+            assert_eq!(proc.fd_table.iter().count(), fds_before);
+            assert_eq!(proc.ofd_table.iter().count(), ofds_before);
+            assert_eq!(proc.ofd_table.reserved_count(), 0);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        let accepted = sys_accept(&mut proc, &mut host, listener).unwrap();
+        let mut data = [0u8; 8];
+        assert_eq!(sys_read(&mut proc, &mut host, accepted, &mut data), Ok(8));
+        assert_eq!(&data, b"retained");
+        for fd in [accepted, client, listener] { sys_close(&mut proc, &mut host, fd).unwrap(); }
+    }
+
     fn test_unix_addr(path: &[u8]) -> Vec<u8> {
         let mut addr = vec![0; 2 + path.len() + 1];
         addr[0] = wasm_posix_shared::socket::AF_UNIX as u8;
@@ -21309,6 +22265,8 @@ mod tests {
                     | b"/home/user"
                     | b"/opt"
                     | b"/root"
+                    | b"/run"
+                    | b"/run/kandelo"
                     | b"/some"
                     | b"/src"
                     | b"/srv"
@@ -21604,9 +22562,14 @@ mod tests {
         /// returns the same owners host_stat would for the path.
         handle_owners: std::collections::HashMap<i64, (u32, u32)>,
         handle_paths: std::collections::HashMap<i64, Vec<u8>>,
+        /// What `host_network_interface` reports; `None` is no address.
+        network_interface: Option<crate::netif::InterfaceConfig>,
         freeze_exec_handles: bool,
         frozen_handle_stats: std::collections::HashMap<i64, WasmStat>,
         frozen_handle_bytes: std::collections::HashMap<i64, Vec<u8>>,
+        /// Per-path content a frozen exec handle snapshots in preference to
+        /// `prepared_exec_bytes`, for tests that open several targets.
+        path_exec_bytes: std::collections::HashMap<Vec<u8>, Vec<u8>>,
         path_inodes: std::collections::HashMap<Vec<u8>, u64>,
         next_inode: u64,
         missing_paths: std::collections::HashSet<Vec<u8>>,
@@ -21623,6 +22586,7 @@ mod tests {
         /// Recorded pid for every `gl_unbind` call.
         gl_unbind_calls: Vec<i32>,
         proc_write_calls: Vec<(i32, u64, Vec<u8>)>,
+        cursor_supported: bool,
         /// Simulated guest linear memory for `proc_read_bytes` /
         /// `proc_write_bytes`. Without it every cross-memory call fails with
         /// the trait's `-ENOSYS` default, which would make a test that means
@@ -21636,8 +22600,11 @@ mod tests {
         gl_submit_rc: i32,
         net_connect_result: Result<(), Errno>,
         net_connect_status_result: Result<(), Errno>,
+        net_shutdown_calls: Vec<(i32,u32)>,
+        net_shutdown_result: Result<(),Errno>,
         net_send_result: Result<usize, Errno>,
         net_connect_calls: Vec<(i32, Vec<u8>, u16)>,
+        udp_source_result: Result<[u8; 4], Errno>,
         net_listen_calls: Vec<(i32, u16, [u8; 4])>,
         getaddrinfo_bytes: Option<Vec<u8>>,
         getaddrinfo_reported: usize,
@@ -21755,9 +22722,11 @@ mod tests {
                 file_times: std::collections::HashMap::new(),
                 handle_owners: std::collections::HashMap::new(),
                 handle_paths: std::collections::HashMap::new(),
+                network_interface: None,
                 freeze_exec_handles: false,
                 frozen_handle_stats: std::collections::HashMap::new(),
                 frozen_handle_bytes: std::collections::HashMap::new(),
+                path_exec_bytes: std::collections::HashMap::new(),
                 path_inodes: std::collections::HashMap::new(),
                 next_inode: 1,
                 missing_paths: std::collections::HashSet::new(),
@@ -21770,6 +22739,7 @@ mod tests {
                 gbm_bo_unbind_calls: Vec::new(),
                 gl_unbind_calls: Vec::new(),
                 proc_write_calls: Vec::new(),
+                cursor_supported: false,
                 // 64 KiB — one wasm page, enough for every address these
                 // tests use and small enough that a deliberately-high
                 // address is out of range.
@@ -21778,8 +22748,11 @@ mod tests {
                 gl_submit_rc: 0,
                 net_connect_result: Err(Errno::ECONNREFUSED),
                 net_connect_status_result: Err(Errno::ECONNREFUSED),
+                net_shutdown_calls: Vec::new(),
+                net_shutdown_result: Ok(()),
                 net_send_result: Err(Errno::ENOTCONN),
                 net_connect_calls: Vec::new(),
+                udp_source_result: Err(Errno::ENETUNREACH),
                 net_listen_calls: Vec::new(),
                 getaddrinfo_bytes: None,
                 getaddrinfo_reported: 0,
@@ -21907,7 +22880,12 @@ mod tests {
             if self.freeze_exec_handles {
                 let snapshot = self.host_fstat(handle)?;
                 self.frozen_handle_stats.insert(handle, snapshot);
-                if let Some(bytes) = self.prepared_exec_bytes.clone() {
+                if let Some(bytes) = self
+                    .path_exec_bytes
+                    .get(path)
+                    .cloned()
+                    .or_else(|| self.prepared_exec_bytes.clone())
+                {
                     self.frozen_handle_bytes.insert(handle, bytes);
                 }
             }
@@ -22197,6 +23175,15 @@ mod tests {
     }
 
     impl HostIO for MockHostIO {
+        fn kms_cursor_supported(&mut self) -> bool { self.cursor_supported }
+
+        fn host_udp_source_address(&mut self, _dst: &[u8; 4]) -> Result<[u8; 4], Errno> {
+            self.udp_source_result
+        }
+        fn host_network_interface(&mut self) -> Option<crate::netif::InterfaceConfig> {
+            self.network_interface
+        }
+
         fn host_close(&mut self, handle: i64) -> Result<(), Errno> {
             // One import closes both kinds of handle, so this double dispatches
             // on which kind it issued — exactly as `VirtualPlatformIO` and
@@ -22520,9 +23507,6 @@ mod tests {
             }
             Ok(buf.len())
         }
-        fn host_waitpid(&mut self, _pid: i32, _options: u32) -> Result<(i32, i32), Errno> {
-            Err(Errno::ECHILD)
-        }
         fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno> {
             self.net_connect_calls.push((handle, addr.to_vec(), port));
             self.net_connect_result
@@ -22547,6 +23531,10 @@ mod tests {
         ) -> Result<usize, Errno> {
             Err(Errno::ENOTCONN)
         }
+        fn host_net_shutdown(&mut self, handle: i32, how: u32) -> Result<(), Errno> {
+            self.net_shutdown_calls.push((handle, how));
+            self.net_shutdown_result
+        }
         fn host_net_close(&mut self, _handle: i32) -> Result<(), Errno> {
             Ok(())
         }
@@ -22561,9 +23549,6 @@ mod tests {
             let copied = bytes.len().min(result.len());
             result[..copied].copy_from_slice(&bytes[..copied]);
             Ok(self.getaddrinfo_reported)
-        }
-        fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
-            Ok(0)
         }
         fn bind_framebuffer(
             &mut self,
@@ -22694,6 +23679,147 @@ mod tests {
         table_addr
     }
 
+    // --- futex: the kernel owns the wait (crate::wait_park) ----------------
+    //
+    // These replace host-side checks that lived in kernel-worker.ts's
+    // handleFutex before the wait moved into the kernel: every one of them is
+    // now a kernel decision, made once for every host.
+
+    const FUTEX_WAIT_OP: u32 = 0;
+    const FUTEX_WAKE_OP_WAKE: u32 = 1;
+    const FUTEX_WAKE_OP_CODE: u32 = 5;
+
+    #[test]
+    fn futex_wait_answers_eagain_when_the_word_already_changed() {
+        let mut host = MockHostIO::new();
+        host.proc_memory[0x100..0x104].copy_from_slice(&7u32.to_le_bytes());
+        assert_eq!(
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, FUTEX_WAIT_OP, 6, 0, 0, 0),
+            Err(Errno::EAGAIN)
+        );
+        assert_eq!(crate::wait_park::with(|p| p.len()), 0, "a mismatch must not park");
+    }
+
+    #[test]
+    fn futex_wait_parks_in_the_kernel_and_a_wake_decides_zero() {
+        let mut host = MockHostIO::new();
+        let outcome = sys_futex(&mut host, GuestTask::wasm32(5, 6), 0x100, FUTEX_WAIT_OP, 0, 0, 0, 0).unwrap();
+        let ParkOutcome::Parked(generation) = outcome else {
+            panic!("a matching word must park, got {outcome:?}");
+        };
+        assert_eq!(
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, FUTEX_WAKE_OP_WAKE, 1, 0, 0, 0),
+            Ok(ParkOutcome::Done(1))
+        );
+        let done = crate::wait_park::with(|p| p.take_completions());
+        assert_eq!(done.len(), 1);
+        assert_eq!((done[0].generation, done[0].tid, done[0].value), (generation, 6, 0));
+    }
+
+    #[test]
+    fn futex_rejects_a_misaligned_or_unreadable_word() {
+        let mut host = MockHostIO::new();
+        assert_eq!(
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x102, FUTEX_WAIT_OP, 0, 0, 0, 0),
+            Err(Errno::EINVAL)
+        );
+        // The last aligned word of guest memory is readable; one past it is not.
+        let last = host.proc_memory.len() as u64 - 4;
+        assert_eq!(
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), last, FUTEX_WAIT_OP, 0, 0, 0, 0).map(|_| ()),
+            Ok(()),
+            "an aligned word inside memory is readable"
+        );
+        crate::wait_park::retire_process(5);
+        let end = host.proc_memory.len() as u64;
+        assert_eq!(
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), end, FUTEX_WAIT_OP, 0, 0, 0, 0),
+            Err(Errno::EFAULT)
+        );
+    }
+
+    #[test]
+    fn futex_rejects_a_non_normalized_timeout_before_parking() {
+        for (sec, nsec) in [(-1i64, 0i64), (0, -1), (0, 1_000_000_000)] {
+            let mut host = MockHostIO::new();
+            host.proc_memory[0x200..0x208].copy_from_slice(&sec.to_le_bytes());
+            host.proc_memory[0x208..0x210].copy_from_slice(&nsec.to_le_bytes());
+            assert_eq!(
+                sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, FUTEX_WAIT_OP, 0, 0x200, 0, 0),
+                Err(Errno::EINVAL),
+                "({sec}, {nsec})"
+            );
+            assert_eq!(crate::wait_park::with(|p| p.len()), 0);
+        }
+    }
+
+    #[test]
+    fn futex_wait_bitset_measures_its_absolute_deadline_on_the_selected_clock() {
+        // FUTEX_WAIT_BITSET's timeout is an absolute deadline on
+        // CLOCK_MONOTONIC, or CLOCK_REALTIME with FUTEX_CLOCK_REALTIME (ABI
+        // 52). Give the two clocks very different readings so measuring the
+        // deadline against the wrong one cannot pass by accident.
+        const FUTEX_WAIT_BITSET: u32 = 9;
+        const FUTEX_PRIVATE_FLAG: u32 = 128;
+        const FUTEX_CLOCK_REALTIME: u32 = 256;
+        for realtime in [false, true] {
+            let mut host = MockHostIO::new();
+            host.monotonic_time = Some((123_456, 500_000_000));
+            host.clock_time = (1_800_000_000, 500_000_000);
+            let (now_sec, now_nsec) = if realtime {
+                host.clock_time
+            } else {
+                host.monotonic_time.unwrap()
+            };
+            let op = FUTEX_WAIT_BITSET
+                | FUTEX_PRIVATE_FLAG
+                | if realtime { FUTEX_CLOCK_REALTIME } else { 0 };
+            host.proc_memory[0x200..0x208].copy_from_slice(&now_sec.to_le_bytes());
+            host.proc_memory[0x208..0x210]
+                .copy_from_slice(&(now_nsec + 100_000).to_le_bytes());
+            let outcome =
+                sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, op, 0, 0x200, 0, u32::MAX).unwrap();
+            assert!(matches!(outcome, ParkOutcome::Parked(_)), "realtime={realtime}");
+            let monotonic_now = 123_456i64 * 1_000_000_000 + 500_000_000;
+            assert_eq!(
+                crate::wait_park::with(|p| p.next_timeout_ns(monotonic_now)),
+                Some(100_000),
+                "a deadline 100 us ahead on the selected clock (realtime={realtime})"
+            );
+            crate::wait_park::retire_process(5);
+
+            // An absolute deadline already passed times out without parking.
+            host.proc_memory[0x200..0x208].copy_from_slice(&(now_sec - 1).to_le_bytes());
+            assert_eq!(
+                sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, op, 0, 0x200, 0, u32::MAX),
+                Err(Errno::ETIMEDOUT),
+                "realtime={realtime}"
+            );
+            assert_eq!(crate::wait_park::with(|p| p.len()), 0);
+        }
+    }
+
+    #[test]
+    fn a_high_wasm64_futex_address_never_aliases_a_low_one() {
+        // Waits are keyed on the full 64-bit guest address. A wasm64 wake at
+        // 4 GiB + 0x100 must not reach a waiter at 0x100 -- the aliasing the
+        // host's width checks used to guard against, now impossible by type.
+        let mut host = MockHostIO::new();
+        let waiter = GuestTask { pid: 5, tid: 6, pointer_width: 8 };
+        let waker = GuestTask { pid: 5, tid: 5, pointer_width: 8 };
+        let outcome = sys_futex(&mut host, waiter, 0x100, FUTEX_WAIT_OP, 0, 0, 0, 0).unwrap();
+        assert!(matches!(outcome, ParkOutcome::Parked(_)));
+        assert_eq!(
+            sys_futex(&mut host, waker, 0x1_0000_0100, FUTEX_WAKE_OP_WAKE, 1, 0, 0, 0),
+            Ok(ParkOutcome::Done(0))
+        );
+        assert_eq!(
+            sys_futex(&mut host, waker, 0x200, FUTEX_WAKE_OP_CODE, 0, 1, 0x1_0000_0100, 0),
+            Ok(ParkOutcome::Done(0))
+        );
+        crate::wait_park::retire_process(5);
+    }
+
     /// Read back the bytes one staged iovec entry names.
     fn guest_iovec_contents(
         host: &MockHostIO,
@@ -22763,6 +23889,102 @@ mod tests {
         let mut proc = Process::new(pid);
         set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[]);
         proc
+    }
+
+    #[test]
+    fn device_descriptor_refusal_never_claims_or_releases_another_owner() {
+        use crate::fd::FdTable;
+        use crate::metadata_budget::MetadataBudget;
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::flags::AT_FDCWD;
+        let _guard = crate::clipboard::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        static BUDGET: MetadataBudget = MetadataBudget::new(4096);
+        for use_openat in [false, true] {
+            for (path, owner) in [
+                (b"/dev/fb0".as_slice(), &crate::process_table::FB0_OWNER),
+                (b"/dev/input/mice".as_slice(), &crate::mouse::MICE_OWNER),
+                (b"/dev/kandelo/clipboard".as_slice(), &crate::clipboard::CLIPBOARD_OWNER),
+            ] {
+                owner.store(-1, Ordering::SeqCst);
+                BUDGET.set_limit(0).unwrap();
+                let mut proc = Process::new(81013);
+                let mut other = Process::new(81014);
+                let mut host = MockHostIO::new();
+                let mut descriptors = FdTable::with_budget(1024, &BUDGET);
+                for (fd, entry) in proc.fd_table.iter() {
+                    descriptors.restore_entry(fd as usize, *entry).unwrap();
+                }
+                proc.fd_table = descriptors;
+                let open = |proc: &mut Process, host: &mut MockHostIO| {
+                    if use_openat {
+                        sys_openat(proc, host, AT_FDCWD, path, O_RDWR, 0)
+                    } else {
+                        sys_open(proc, host, path, O_RDWR, 0)
+                    }
+                };
+                assert_eq!(open(&mut proc, &mut host), Err(Errno::ENOMEM));
+                assert_eq!(owner.load(Ordering::SeqCst), -1);
+                let fd = open(&mut other, &mut host).unwrap();
+                assert_eq!(owner.load(Ordering::SeqCst), other.pid as i32);
+                BUDGET.set_limit(4096).unwrap();
+                assert_eq!(open(&mut proc, &mut host), Err(Errno::EBUSY));
+                assert_eq!(BUDGET.usage().0, 0);
+                assert_eq!(proc.fd_table.iter().count(), 3);
+                assert_eq!(proc.ofd_table.iter().count(), 3);
+                assert_eq!(owner.load(Ordering::SeqCst), other.pid as i32);
+                sys_close(&mut other, &mut host, fd).unwrap();
+                assert_eq!(owner.load(Ordering::SeqCst), -1);
+                let fd = open(&mut proc, &mut host).unwrap();
+                sys_close(&mut proc, &mut host, fd).unwrap();
+                assert_eq!(owner.load(Ordering::SeqCst), -1);
+                assert_eq!(BUDGET.usage().0, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn open_descriptor_admission_failure_releases_host_handles_and_ofds() {
+        use crate::fd::FdTable;
+        use crate::metadata_budget::MetadataBudget;
+        use wasm_posix_shared::flags::AT_FDCWD;
+        static BUDGET: MetadataBudget = MetadataBudget::new(4096);
+        for use_openat in [false, true] {
+            for path in [b"/tmp/descriptor-admission".as_slice(), b"/dev/null".as_slice()] {
+                BUDGET.set_limit(0).unwrap();
+                let mut proc = Process::new(81012);
+                let mut host = MockHostIO::new();
+                let mut descriptors = FdTable::with_budget(1024, &BUDGET);
+                for (fd, entry) in proc.fd_table.iter() {
+                    descriptors.restore_entry(fd as usize, *entry).unwrap();
+                }
+                proc.fd_table = descriptors;
+                let open = |proc: &mut Process, host: &mut MockHostIO| {
+                    if use_openat {
+                        sys_openat(proc, host, AT_FDCWD, path, O_RDONLY, 0)
+                    } else {
+                        sys_open(proc, host, path, O_RDONLY, 0)
+                    }
+                };
+                assert_eq!(open(&mut proc, &mut host), Err(Errno::ENOMEM));
+                assert_eq!(proc.fd_table.iter().count(), 3);
+                assert_eq!(proc.ofd_table.iter().count(), 3);
+                assert_eq!(BUDGET.usage().0, 0);
+                assert_eq!(host.next_handle, 100);
+                assert!(host.closed_handles.is_empty());
+                BUDGET.set_limit(4096).unwrap();
+                let fd = open(&mut proc, &mut host).unwrap();
+                assert_eq!(fd, 3);
+                sys_close(&mut proc, &mut host, fd).unwrap();
+                if path == b"/dev/null" {
+                    assert_eq!(host.next_handle, 100);
+                    assert!(host.closed_handles.is_empty());
+                } else {
+                    assert_eq!(host.next_handle, 101);
+                    assert_eq!(host.closed_handles, alloc::vec![100]);
+                }
+                assert_eq!(BUDGET.usage().0, 0);
+            }
+        }
     }
 
     #[test]
@@ -22966,6 +24188,11 @@ mod tests {
         assert_eq!(
             sys_getgroups(&proc, ordered.len() as u32 - 1),
             Err(Errno::EINVAL),
+        );
+        // A buffer larger than NGROUPS_MAX is valid, as on Linux.
+        assert_eq!(
+            sys_getgroups(&proc, crate::credentials::NGROUPS_MAX as u32 + 32),
+            Ok(ordered.as_slice()),
         );
 
         assert_eq!(proc.seteuid(1000), Ok(()));
@@ -23602,7 +24829,7 @@ mod tests {
             rgid: 1000,
             egid: 1000,
             sgid: 1000,
-            supplementary_groups: vec![],
+            supplementary_groups: crate::credentials::SupplementaryGroups::copy_from(&[]).unwrap(),
         });
         let mut host = MockHostIO::new();
         host.set_dir_with_owner(b"/tmp", 0, 0, 0o1777);
@@ -24066,6 +25293,101 @@ mod tests {
 
         sys_close(&mut proc, &mut host, rfd).unwrap();
         sys_unlink(&mut proc, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_waiter_admission_failure_releases_reserved_fds_and_buffers() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_007);
+        let mut host = MockHostIO::new();
+        sys_close(&mut proc, &mut host, 0).unwrap();
+        let fifo = b"/tmp/fifo_waiter_admission";
+        create_test_fifo(&mut proc, &mut host, fifo, 0o600);
+        let pipe_idx = unsafe { crate::fifo::global_fifo_table() }.lookup(fifo).unwrap();
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        for flags in [O_RDONLY, O_WRONLY] {
+            for allocation_failure in [false, true] {
+                let _budget = crate::io_buffer::test_budget(if allocation_failure { baseline + 2 * DEFAULT_PIPE_CAPACITY + 4096 } else { baseline });
+                if allocation_failure { crate::prepared_map::fail_after_allocations(0); }
+                assert_eq!(sys_open(&mut proc, &mut host, fifo, flags, 0), Err(Errno::ENOMEM));
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+                let pipe = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }.unwrap();
+                assert_eq!(pipe.resident_buffer_bytes(), 0);
+                assert!(!pipe.has_readers());
+                assert!(!pipe.is_write_end_open());
+                assert!(!pipe.has_fifo_open_waiter(fifo_open_owner(&proc)));
+                let reserved = proc.fd_table.reserve().unwrap();
+                assert_eq!(reserved, 0);
+                assert!(proc.fd_table.release_reserved(reserved));
+            }
+        }
+        assert_eq!(sys_open(&mut proc, &mut host, fifo, O_RDONLY, 0), Err(Errno::EAGAIN));
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 > baseline);
+        {
+            let _budget = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            cancel_fifo_opens_for_process(&mut proc);
+        }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        let reserved = proc.fd_table.reserve().unwrap();
+        assert_eq!(reserved, 0);
+        assert!(proc.fd_table.release_reserved(reserved));
+        assert_eq!(unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }.unwrap().resident_buffer_bytes(), 0);
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_buffer_allocation_failure_does_not_publish_endpoints_or_leak_reserved_fds() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_008);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_buffer_admission";
+        create_test_fifo(&mut proc, &mut host, fifo, 0o600);
+        let pipe_idx = unsafe { crate::fifo::global_fifo_table() }.lookup(fifo).unwrap();
+        for flags in [O_RDONLY | O_NONBLOCK, O_RDWR | O_NONBLOCK, O_RDONLY, O_WRONLY] {
+            unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }.unwrap().fail_next_fifo_buffer_allocation();
+            assert_eq!(sys_open(&mut proc, &mut host, fifo, flags, 0), Err(Errno::ENOMEM));
+            let pipe = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }.unwrap();
+            assert_eq!(pipe.resident_buffer_bytes(), 0);
+            assert!(!pipe.has_readers());
+            assert!(!pipe.is_write_end_open());
+            assert!(!pipe.has_fifo_open_waiter(fifo_open_owner(&proc)));
+            let reserved = proc.fd_table.reserve().unwrap();
+            assert_eq!(reserved, 3);
+            proc.fd_table.release_reserved(reserved);
+        }
+        let fd = sys_open(&mut proc, &mut host, fifo, O_RDWR | O_NONBLOCK, 0).unwrap();
+        assert_eq!(unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }.unwrap().resident_buffer_bytes(), crate::pipe::DEFAULT_PIPE_CAPACITY);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }.unwrap().resident_buffer_bytes(), 0);
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_path_only_and_failed_nonblocking_writer_do_not_allocate_a_data_buffer() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(81_009);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_buffer_priority";
+        create_test_fifo(&mut proc, &mut host, fifo, 0o600);
+        let pipe_idx = unsafe { crate::fifo::global_fifo_table() }.lookup(fifo).unwrap();
+        unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }.unwrap().fail_next_fifo_buffer_allocation();
+        let path_fd = sys_open(&mut proc, &mut host, fifo, O_PATH, 0).unwrap();
+        assert_eq!(sys_open(&mut proc, &mut host, fifo, O_WRONLY | O_NONBLOCK, 0), Err(Errno::ENXIO));
+        assert_eq!(unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }.unwrap().resident_buffer_bytes(), 0);
+        assert_eq!(sys_open(&mut proc, &mut host, fifo, O_RDONLY | O_NONBLOCK, 0), Err(Errno::ENOMEM));
+        let fd = sys_open(&mut proc, &mut host, fifo, O_RDWR | O_NONBLOCK, 0).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"old"), Ok(3));
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }.unwrap().resident_buffer_bytes(), 0);
+        let fd = sys_open(&mut proc, &mut host, fifo, O_RDWR | O_NONBLOCK, 0).unwrap();
+        assert_eq!(sys_read(&mut proc, &mut host, fd, &mut [0; 3]), Err(Errno::EAGAIN));
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+        sys_close(&mut proc, &mut host, path_fd).unwrap();
     }
 
     #[test]
@@ -24701,6 +26023,165 @@ mod tests {
     }
 
     #[test]
+    fn pipe_and_socketpair_payload_refusal_releases_both_reserved_descriptors() {
+        let mut proc = Process::new(81_062);
+        let mut host = MockHostIO::new();
+        proc.sockets.prepare_additional(2).unwrap();
+        let held_fd = sys_dup(&mut proc, 0).unwrap();
+        assert_eq!(held_fd, 3);
+        let (first, second) = proc.fd_table.reserve_pair().unwrap();
+        assert_eq!((first, second), (4, 5));
+        proc.fd_table.release_reserved(first);
+        proc.fd_table.release_reserved(second);
+        let first = proc.prepare_descriptor(FileType::Socket, O_RDWR, b"/dev/socket").unwrap();
+        let second = proc.prepare_descriptor(FileType::Socket, O_RDWR, b"/dev/socket").unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        proc.cancel_descriptor(first);
+        proc.cancel_descriptor(second);
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let descriptor_bytes = held - baseline;
+        let defaults = crate::socket::SocketInfo::new(crate::socket::SocketDomain::Unix,
+            crate::socket::SocketType::Stream, 0);
+        let socket_default_bytes = 2 * (crate::io_buffer::IO_MEMORY.usage().0 - baseline);
+        drop(defaults);
+        let active = unsafe { crate::pipe::global_pipe_table() }.count_active();
+        for available in [0, descriptor_bytes + socket_default_bytes,
+            descriptor_bytes + socket_default_bytes + 2 * DEFAULT_PIPE_CAPACITY] {
+            let _limit = crate::io_buffer::test_budget(baseline + available);
+            if available == 0 { assert_eq!(sys_pipe(&mut proc), Err(Errno::ENOMEM)); }
+            assert_eq!(sys_socketpair(&mut proc, &mut host, wasm_posix_shared::socket::AF_UNIX,
+                wasm_posix_shared::socket::SOCK_STREAM, 0), Err(Errno::ENOMEM));
+            assert_eq!(proc.fd_table.iter().count(), 4);
+            assert_eq!(proc.ofd_table.iter().count(), 3);
+            assert_eq!(proc.sockets.len(), 0);
+            assert_eq!(unsafe { crate::pipe::global_pipe_table() }.count_active(), active);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+            let (first, second) = proc.fd_table.reserve_pair().unwrap();
+            assert_eq!((first, second), (4, 5));
+            proc.fd_table.release_reserved(first);
+            proc.fd_table.release_reserved(second);
+        }
+        let (read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        assert_eq!((read_fd, write_fd), (4, 5));
+        sys_close(&mut proc, &mut host, read_fd).unwrap();
+        sys_close(&mut proc, &mut host, write_fd).unwrap();
+        let (first, second) = sys_socketpair(&mut proc, &mut host, wasm_posix_shared::socket::AF_UNIX,
+            wasm_posix_shared::socket::SOCK_STREAM, 0).unwrap();
+        assert_eq!((first, second), (4, 5));
+        sys_close(&mut proc, &mut host, first).unwrap();
+        sys_close(&mut proc, &mut host, second).unwrap();
+        sys_close(&mut proc, &mut host, held_fd).unwrap();
+        assert_eq!(unsafe { crate::pipe::global_pipe_table() }.count_active(), active);
+    }
+
+    #[test]
+    fn ofd_refusal_precedes_rootfs_create_truncate_and_openat_publication() {
+        static FD_MEMORY: crate::metadata_budget::MetadataBudget = crate::metadata_budget::MetadataBudget::new(4096);
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        let mut proc = Process::new(81_063);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/existing", O_CREAT | O_RDWR, 0o640).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"retained"), Ok(8));
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        let original = crate::rootfs::lstat(b"/existing").unwrap();
+        let mut descriptors = crate::fd::FdTable::with_budget(1024, &FD_MEMORY);
+        for (fd, entry) in proc.fd_table.iter() { descriptors.restore_entry(fd as usize, *entry).unwrap(); }
+        proc.fd_table = descriptors;
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        for use_openat in [false, true] {
+            for (path, flags) in [(b"/existing".as_slice(), O_RDONLY), (b"/existing", O_WRONLY | O_TRUNC), (b"/new", O_CREAT | O_RDWR)] {
+                {
+                    let _limit = crate::io_buffer::test_budget(baseline);
+                    let result = if use_openat { sys_openat(&mut proc, &mut host, AT_FDCWD, path, flags, 0o600) }
+                        else { sys_open(&mut proc, &mut host, path, flags, 0o600) };
+                    assert_eq!(result, Err(Errno::ENOMEM));
+                }
+                assert_eq!(proc.fd_table.iter().count(), 3);
+                assert_eq!(proc.ofd_table.iter().count(), 3);
+                assert_eq!(proc.ofd_table.reserved_count(), 0);
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+                assert_eq!(FD_MEMORY.usage().0, 0);
+                let current = crate::rootfs::lstat(b"/existing").unwrap();
+                assert_eq!((current.st_size, current.st_mode, current.st_mtime_sec, current.st_mtime_nsec),
+                    (original.st_size, original.st_mode, original.st_mtime_sec, original.st_mtime_nsec));
+                assert_eq!(crate::rootfs::lstat(b"/new").unwrap_err(), Errno::ENOENT);
+            }
+        }
+        let fd = sys_open(&mut proc, &mut host, b"/existing", O_RDONLY, 0).unwrap();
+        let mut bytes = [0; 8];
+        assert_eq!(sys_read(&mut proc, &mut host, fd, &mut bytes), Ok(8));
+        assert_eq!(&bytes, b"retained");
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        let fd = sys_openat(&mut proc, &mut host, AT_FDCWD, b"/existing", O_WRONLY | O_TRUNC, 0).unwrap();
+        assert_eq!(crate::rootfs::lstat(b"/existing").unwrap().st_size, 0);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn fifo_rootfs_namespace_admission_precedes_create_link_and_directory_rename() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::mkdir(b"/directory", 0o755, 0, 0).unwrap();
+        let mut proc = Process::new(81_061);
+        let mut host = MockHostIO::new();
+        let fifo = b"/directory/fifo";
+        let declined = b"/declined-fifo";
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(sys_mkfifo(&mut proc, &mut host, declined, 0o640), Err(Errno::ENOMEM));
+        }
+        crate::prepared_map::fail_after_allocations(0);
+        assert_eq!(sys_mkfifo(&mut proc, &mut host, declined, 0o640), Err(Errno::ENOMEM));
+        assert_eq!(crate::rootfs::lstat(declined).unwrap_err(), Errno::ENOENT);
+        assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(declined), None);
+        sys_mkfifo(&mut proc, &mut host, fifo, 0o640).unwrap();
+        let pipe_idx = unsafe { crate::fifo::global_fifo_table() }.lookup(fifo).unwrap();
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(sys_link(&mut proc, &mut host, fifo, b"/alias"), Err(Errno::ENOMEM));
+            assert_eq!(sys_rename(&mut proc, &mut host, b"/directory", b"/renamed"), Err(Errno::ENOMEM));
+        }
+        assert_eq!(crate::rootfs::lstat(b"/alias").unwrap_err(), Errno::ENOENT);
+        assert_eq!(crate::rootfs::lstat(b"/renamed").unwrap_err(), Errno::ENOENT);
+        assert_eq!(crate::rootfs::lstat(fifo).unwrap().st_nlink, 1);
+        assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(fifo), Some(pipe_idx));
+        sys_link(&mut proc, &mut host, fifo, b"/alias").unwrap();
+        sys_linkat(&mut proc, &mut host, AT_FDCWD, fifo, AT_FDCWD, b"/another", 0).unwrap();
+        assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(b"/alias"), Some(pipe_idx));
+        assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(b"/another"), Some(pipe_idx));
+        assert_eq!(unsafe { crate::pipe::global_pipe_table() }.get(pipe_idx).unwrap().fifo_name_count(), 3);
+        sys_rename(&mut proc, &mut host, b"/directory", b"/renamed").unwrap();
+        assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(fifo), None);
+        assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(b"/renamed/fifo"), Some(pipe_idx));
+        sys_renameat(&mut proc, &mut host, AT_FDCWD, b"/renamed", AT_FDCWD, b"/directory").unwrap();
+        sys_rename(&mut proc, &mut host, fifo, b"/alias").unwrap();
+        assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(fifo), Some(pipe_idx));
+        assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(b"/alias"), Some(pipe_idx));
+        let fd = sys_open(&mut proc, &mut host, b"/another", O_RDWR | O_NONBLOCK, 0).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"fifo"), Ok(4));
+        let mut bytes = [0; 4];
+        assert_eq!(sys_read(&mut proc, &mut host, fd, &mut bytes), Ok(4));
+        assert_eq!(&bytes, b"fifo");
+        sys_fchmod(&mut proc, &mut host, fd, 0o644).unwrap();
+        sys_fchown(&mut proc, &mut host, fd, 7, 8).unwrap();
+        let metadata = crate::rootfs::lstat(fifo).unwrap();
+        assert_eq!((metadata.st_mode, metadata.st_uid, metadata.st_gid), (S_IFIFO | 0o644, 7, 8));
+        for path in [fifo.as_slice(), b"/alias", b"/another"] {
+            sys_unlink(&mut proc, &mut host, path).unwrap();
+        }
+        let metadata = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!((metadata.st_mode, metadata.st_uid, metadata.st_gid, metadata.st_nlink), (S_IFIFO | 0o644, 7, 8, 0));
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(unsafe { crate::pipe::global_pipe_table() }.get(pipe_idx).is_none());
+    }
+
+    #[test]
     fn fifo_hardlink_and_recreated_name_keep_distinct_pipe_identities() {
         let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
         let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
@@ -25006,6 +26487,44 @@ mod tests {
     }
 
     #[test]
+    fn getdents64_admits_name_before_consumption_and_retries_pending_at_full_budget() {
+        let mut proc = Process::new(81_076);
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = 2;
+        let fd = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let ofd_index = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(sys_getdents64(&mut proc, &mut host, fd, &mut [0; 48]), Ok(48));
+            assert_eq!(host.dir_entry_index, 0);
+            assert_eq!(sys_getdents64(&mut proc, &mut host, fd, &mut [0; 32]), Err(Errno::ENOMEM));
+            assert_eq!(host.dir_entry_index, 0);
+            let ofd = proc.ofd_table.get(ofd_index).unwrap();
+            assert_eq!(ofd.offset(), 2);
+            assert!(ofd.dir_pending_entry.is_none());
+        }
+        assert_eq!(sys_getdents64(&mut proc, &mut host, fd, &mut [0; 31]), Err(Errno::EINVAL));
+        assert_eq!(host.dir_entry_index, 1);
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        assert_eq!(held - baseline, 2 * wasm_posix_shared::platform_limits::NAME_MAX_BYTES);
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(sys_getdents64(&mut proc, &mut host, fd, &mut [0; 31]), Err(Errno::EINVAL));
+            assert_eq!(host.dir_entry_index, 1);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            for name in [b"test.txt".as_slice(), b"foo.txt"] {
+                let mut record = [0; 32];
+                assert_eq!(sys_getdents64(&mut proc, &mut host, fd, &mut record), Ok(32));
+                assert_eq!(&record[19..19 + name.len()], name);
+            }
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        assert_eq!(sys_getdents64(&mut proc, &mut host, fd, &mut [0; 32]), Ok(0));
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
     fn test_getdents64_pending_entry_is_a_stable_snapshot() {
         let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
         let mut proc = Process::new(81_073);
@@ -25143,7 +26662,7 @@ mod tests {
         );
         let snapshot = {
             let ofd = proc.ofd_table.get(ofd_idx).unwrap();
-            assert_eq!(ofd.dir_pending_entry.as_ref().unwrap().name, b"foo.txt");
+            assert_eq!(ofd.dir_pending_entry.as_ref().unwrap().name(), b"foo.txt");
             (
                 ofd.dir_host_handle,
                 ofd.dir_synth_state,
@@ -25489,7 +27008,7 @@ mod tests {
     fn test_stat_resolves_relative_path() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        proc.cwd = b"/home/user".to_vec();
+        proc.cwd = crate::ofd::OfdPath::copy_from(&b"/home/user".to_vec()).unwrap();
         // Should not fail - relative paths get cwd prepended
         let stat = sys_stat(&mut proc, &mut host, b"file.txt").unwrap();
         assert_eq!(stat.st_mode & S_IFREG, S_IFREG);
@@ -26032,6 +27551,7 @@ mod tests {
     fn test_mkdir_delegates_to_host() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.set_missing_path(b"/tmp/newdir");
         sys_mkdir(&mut proc, &mut host, b"/tmp/newdir", 0o755).unwrap();
     }
 
@@ -26142,6 +27662,20 @@ mod tests {
     }
 
     #[test]
+    fn cwd_refusal_preserves_original_and_fchdir_uses_existing_owner() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let directory = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let _limit = crate::io_buffer::test_budget(held);
+        assert_eq!(sys_chdir(&mut proc, &mut host, b"/tmp"), Err(Errno::ENOMEM));
+        assert_eq!(proc.cwd, b"/");
+        sys_fchdir(&mut proc, directory).unwrap();
+        assert_eq!(proc.cwd, b"/tmp");
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+    }
+
+    #[test]
     fn test_chdir_changes_cwd() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -26167,7 +27701,7 @@ mod tests {
     #[test]
     fn pathname_resolution_does_not_erase_missing_or_nondirectory_components() {
         let mut proc = Process::new(1);
-        proc.cwd = b"/work".to_vec();
+        proc.cwd = crate::ofd::OfdPath::copy_from(&b"/work".to_vec()).unwrap();
         let mut host = MockHostIO::new();
         host.set_dir_with_owner(b"/work", 0, 0, 0o755);
         host.set_missing_path(b"/work/missing");
@@ -26461,6 +27995,32 @@ mod tests {
         let dh = sys_opendir(&mut proc, &mut host, b"/tmp").unwrap();
         assert!(dh >= 0);
         sys_closedir(&mut proc, &mut host, dh).unwrap();
+    }
+
+    #[test]
+    fn opendir_admission_prepares_path_and_arena_without_a_leaked_handle() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let path = crate::ofd::OfdPath::copy_from(b"/tmp").unwrap();
+        let path_bytes = crate::io_buffer::IO_MEMORY.usage().0 - baseline;
+        drop(path);
+        for allowance in [0, path_bytes] {
+            let _limit = crate::io_buffer::test_budget(baseline + allowance);
+            assert_eq!(sys_opendir(&mut proc, &mut host, b"/tmp"), Err(Errno::ENOMEM));
+            assert!(proc.dir_streams.is_empty());
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+            let mut issued = mock_all_issued_dir_handles();
+            let mut closed = host.closed_dir_handles.clone();
+            issued.sort_unstable();
+            closed.sort_unstable();
+            assert_eq!(closed, issued);
+        }
+        let directory = sys_opendir(&mut proc, &mut host, b"/tmp").unwrap();
+        let opened = crate::io_buffer::IO_MEMORY.usage().0;
+        sys_closedir(&mut proc, &mut host, directory).unwrap();
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 < opened);
+        assert!(proc.dir_streams.iter().all(Option::is_none));
     }
 
     #[test]
@@ -26986,6 +28546,24 @@ mod tests {
     }
 
     #[test]
+    fn exit_releases_a_zombies_environment_and_keeps_only_its_name() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (before, _) = crate::io_buffer::IO_MEMORY.usage();
+        let variable = alloc::vec![b'x'; 16 * 1024];
+        for _ in 0..8 { proc.environ.try_push(&variable).unwrap(); }
+        proc.argv.try_push(b"/bin/sh").unwrap();
+        proc.argv.try_push(&variable).unwrap();
+        let (loaded, _) = crate::io_buffer::IO_MEMORY.usage();
+        assert!(loaded >= before + 9 * variable.len());
+        sys_exit(&mut proc, &mut host, 0);
+        assert_eq!(proc.environ.len(), 0);
+        assert_eq!(proc.argv.len(), 1);
+        assert_eq!(proc.argv.first().map(|name| name.as_ref()), Some(b"/bin/sh".as_slice()));
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 < before + variable.len());
+    }
+
+    #[test]
     fn test_exit_with_zero_status() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -27088,7 +28666,7 @@ mod tests {
         let mut proc = Process::new(1);
         proc.add_thread(crate::process::ThreadInfo::new(2, 0, 0, 0));
         proc.posix_timers
-            .push(Some(crate::process::PosixTimerState {
+            .try_push(Some(crate::process::PosixTimerState {
                 clock_id: 1,
                 sigev_signo: 10,
                 sigev_value_bits: 7,
@@ -27101,7 +28679,7 @@ mod tests {
                 notification_pending: true,
                 overrun_current: 2,
                 overrun_last: 0,
-            }));
+            })).unwrap();
         proc.get_thread_mut(2)
             .unwrap()
             .signals
@@ -27473,6 +29051,117 @@ mod tests {
 
         sys_close_with_locks(&mut proc, &mut locks, &mut host, first).unwrap();
         sys_close_with_locks(&mut proc, &mut locks, &mut host, second).unwrap();
+    }
+
+    // PR #1538's cases (mho22): an OFD or flock lock belongs to the open
+    // file description, so the holder's close must release it and wake the
+    // waiters even while an independent open keeps the same tmpfs or rootfs
+    // file (the same inode) open. The kernel runs
+    // `ProcessTable::release_orphaned_ofd_locks` after every channel syscall;
+    // these tests run it where the kernel would.
+    fn table_open(
+        table: &mut crate::process_table::ProcessTable,
+        host: &mut MockHostIO,
+        pid: u32,
+        path: &[u8],
+        flags: u32,
+    ) -> i32 {
+        let (proc, _) = table.process_and_advisory_locks(pid).unwrap();
+        sys_open(proc, host, path, flags, 0o644).unwrap()
+    }
+
+    fn table_flock(
+        table: &mut crate::process_table::ProcessTable,
+        host: &mut MockHostIO,
+        pid: u32,
+        fd: i32,
+        operation: u32,
+    ) -> Result<(), Errno> {
+        let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+        sys_flock(proc, locks, fd, operation, host)
+    }
+
+    fn table_close(
+        table: &mut crate::process_table::ProcessTable,
+        host: &mut MockHostIO,
+        pid: u32,
+        fd: i32,
+    ) {
+        let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+        sys_close_with_locks(proc, locks, host, fd).unwrap();
+        table.release_orphaned_ofd_locks();
+    }
+
+    fn assert_flock_released_and_waiters_woken_when_holder_closes(path: &[u8]) {
+        let mut table = crate::process_table::ProcessTable::new();
+        let holder = table.create_process().unwrap();
+        let waiter = table.create_process().unwrap();
+        let mut host = MockHostIO::new();
+        let holder_fd = table_open(&mut table, &mut host, holder, path, O_RDWR | O_CREAT);
+        let waiter_fd = table_open(&mut table, &mut host, waiter, path, O_RDWR);
+
+        table_flock(&mut table, &mut host, holder, holder_fd, LOCK_EX).unwrap();
+        assert_eq!(
+            table_flock(&mut table, &mut host, waiter, waiter_fd, LOCK_EX),
+            Err(Errno::EAGAIN)
+        );
+        let mut wake_buf = [0u8; 40];
+        crate::wakeup::drain(&mut wake_buf, 8);
+
+        // The waiter's open keeps the inode open; the holder's description
+        // still dies with its last descriptor.
+        table_close(&mut table, &mut host, holder, holder_fd);
+
+        assert!(table.advisory_locks().is_empty());
+        assert_eq!(crate::wakeup::drain(&mut wake_buf, 8), 1);
+        assert_eq!(wake_buf[4], crate::wakeup::WAKE_ADVISORY_LOCK);
+        table_flock(&mut table, &mut host, waiter, waiter_fd, LOCK_EX).unwrap();
+        table_close(&mut table, &mut host, waiter, waiter_fd);
+        let (proc, _) = table.process_and_advisory_locks(waiter).unwrap();
+        sys_unlink(proc, &mut host, path).unwrap();
+    }
+
+    #[test]
+    fn tmpfs_flock_is_released_and_wakes_waiters_when_holder_closes() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        assert_flock_released_and_waiters_woken_when_holder_closes(b"/tmp/flock-close-wake");
+    }
+
+    #[test]
+    fn rootfs_flock_is_released_and_wakes_waiters_when_holder_closes() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        assert_flock_released_and_waiters_woken_when_holder_closes(b"/flock-close-wake");
+    }
+
+    #[test]
+    fn tmpfs_flock_survives_fork_until_final_close() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let path = b"/tmp/flock-fork-close";
+        let mut table = crate::process_table::ProcessTable::new();
+        let parent = table.create_process().unwrap();
+        let peer = table.create_process().unwrap();
+        let mut host = MockHostIO::new();
+        let fd = table_open(&mut table, &mut host, parent, path, O_RDWR | O_CREAT);
+        let peer_fd = table_open(&mut table, &mut host, peer, path, O_RDWR);
+        table_flock(&mut table, &mut host, parent, fd, LOCK_EX).unwrap();
+
+        let child = table.fork_process_for_caller(parent, parent).unwrap();
+
+        // The child's copy of the descriptor shares the description, so the
+        // parent's close leaves the lock in place.
+        table_close(&mut table, &mut host, parent, fd);
+        assert_eq!(
+            table_flock(&mut table, &mut host, peer, peer_fd, LOCK_EX | LOCK_NB),
+            Err(Errno::EAGAIN)
+        );
+        table_close(&mut table, &mut host, child, fd);
+        table_flock(&mut table, &mut host, peer, peer_fd, LOCK_EX | LOCK_NB).unwrap();
+
+        table_close(&mut table, &mut host, peer, peer_fd);
+        let (proc, _) = table.process_and_advisory_locks(peer).unwrap();
+        sys_unlink(proc, &mut host, path).unwrap();
     }
 
     #[test]
@@ -28134,8 +29823,8 @@ mod tests {
         let mut table = ProcessTable::new();
         let mut host = MockHostIO::new();
         assert_eq!(table.create_process().unwrap(), PARENT);
-        table.get_mut(PARENT).unwrap().argv = vec![b"parent-program".to_vec()];
-        let expected = crate::procfs::generate_stat(table.get(PARENT).unwrap());
+        table.get_mut(PARENT).unwrap().argv = crate::process::ProcessStrings::copy_from(&vec![b"parent-program".to_vec()]).unwrap();
+        let expected = crate::procfs::generate_stat(table.get(PARENT).unwrap()).unwrap();
         let inherited_fd = crate::procfs::procfs_open(
             table.get_mut(PARENT).unwrap(),
             &crate::procfs::ProcfsEntry::Stat(PARENT),
@@ -28196,7 +29885,7 @@ mod tests {
         .unwrap();
         assert_eq!(&third, &expected[16..27]);
 
-        let fresh_expected = crate::procfs::generate_stat(table.get(spawn_child).unwrap());
+        let fresh_expected = crate::procfs::generate_stat(table.get(spawn_child).unwrap()).unwrap();
         let fresh_fd = crate::procfs::procfs_open(
             table.get_mut(spawn_child).unwrap(),
             &crate::procfs::ProcfsEntry::Stat(spawn_child),
@@ -28548,7 +30237,7 @@ mod tests {
         ));
         let procfs_index = crate::descriptor_backing::with_procfs_bufs(|table| {
             table.alloc(crate::descriptor_backing::ProcfsBacking::new(
-                b"proc".to_vec(),
+                crate::IoBuffer::copy_from(b"proc").unwrap(),
             ))
         });
         let procfs_regular = -(crate::procfs::PROCFS_BUF_BASE + procfs_index as i64);
@@ -28672,7 +30361,7 @@ mod tests {
             proc.ofd_table
                 .create(FileType::Regular, O_RDWR, 41, b"/dri-sidecar".to_vec());
         proc.ofd_table.get_mut(dri_ofd).unwrap().dri_state =
-            Some(Box::new(DriOfdState::RenderNode(DriFdState::default())));
+            Some(crate::IoBox::new(DriOfdState::RenderNode(DriFdState::default())));
         let dri_fd = proc.fd_table.alloc(OpenFileDescRef(dri_ofd), 0).unwrap();
         assert_scm_rights_snapshot_rejected_without_retain(&proc, dri_fd);
 
@@ -29043,6 +30732,100 @@ mod tests {
     }
 
     #[test]
+    fn second_queued_identity_admission_failure_rolls_back_batch_without_publishing_bytes() {
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut proc = Process::new(70_902);
+        let mut host = MockHostIO::new();
+        let mut locks = AdvisoryLockManager::new();
+        let (sender, receiver) = sys_socketpair(&mut proc, &mut host,
+            wasm_posix_shared::socket::AF_UNIX, wasm_posix_shared::socket::SOCK_DGRAM, 0).unwrap();
+        let seed_fd = sys_memfd_create(&mut proc, b"seed", 0).unwrap();
+        let first_fd = sys_memfd_create(&mut proc, b"first", 0).unwrap();
+        let second_fd = sys_memfd_create(&mut proc, b"second", 0).unwrap();
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let seed = retain_fd_for_scm_rights(&proc, seed_fd);
+        let mut warm = Vec::new();
+        for _ in 0..4 { warm.push(seed.try_clone_retained().unwrap()); }
+        drop(warm);
+        let deferred = crate::pipe::deferred_in_flight_release_state();
+        assert_eq!((deferred.0, deferred.1), (4, 1));
+        assert!(deferred.2 >= 7);
+        let first = snapshot_scm_rights_fd(&proc, first_fd).unwrap();
+        let second = snapshot_scm_rights_fd(&proc, second_fd).unwrap();
+        let (first_id, second_id) = (first.ofd_id, second.ofd_id);
+        let mut batch = AncillaryFds::try_with_capacity(2).unwrap();
+        batch.push(first);
+        batch.push(second);
+        let old = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(old + 4 * core::mem::size_of::<(OfdId, u32)>());
+            assert_eq!(sys_sendmsg(&mut proc, &mut host, sender, b"not-published", 0, None,
+                batch), Err(Errno::ENOMEM));
+            let failed = crate::pipe::deferred_in_flight_release_state();
+            assert_eq!((failed.0, failed.1), (5, 1));
+            assert!(!crate::ofd::has_in_flight_ofd(first_id));
+            assert!(!crate::ofd::has_in_flight_ofd(second_id));
+        }
+        assert!(matches!(sys_recvmsg(&mut proc, &mut host, receiver, &mut [0u8; 32],
+            wasm_posix_shared::socket::MSG_DONTWAIT, &mut []), Err(Errno::EAGAIN)));
+        drain_deferred_scm_rights_releases(&mut locks, &mut host);
+        drop(seed);
+        drain_deferred_scm_rights_releases(&mut locks, &mut host);
+        assert_eq!(crate::pipe::deferred_in_flight_release_state(), (0, 0, 0));
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        let batch = vec![snapshot_scm_rights_fd(&proc, first_fd).unwrap(), snapshot_scm_rights_fd(&proc, second_fd).unwrap()];
+        assert_eq!(sys_sendmsg(&mut proc, &mut host, sender, b"R", 0, None, batch), Ok(1));
+        let mut byte = [0u8; 1];
+        let received = sys_recvmsg(&mut proc, &mut host, receiver, &mut byte, 0, &mut []).unwrap();
+        assert_eq!(byte, *b"R");
+        assert_eq!(received.ancillary_fds.len(), 2);
+        drop(received);
+        drain_deferred_scm_rights_releases(&mut locks, &mut host);
+        for fd in [seed_fd, first_fd, second_fd, sender, receiver] {
+            sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_peek_cleanup_admission_preserves_message_and_queued_right() {
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut proc = Process::new(70_903);
+        let mut host = MockHostIO::new();
+        let mut locks = AdvisoryLockManager::new();
+        let (sender, receiver) = sys_socketpair(&mut proc, &mut host,
+            wasm_posix_shared::socket::AF_UNIX, wasm_posix_shared::socket::SOCK_DGRAM, 0).unwrap();
+        let carried = sys_memfd_create(&mut proc, b"peek-admission", 0).unwrap();
+        assert_eq!(sys_sendmsg(&mut proc, &mut host, sender, b"W", 0, None, AncillaryFds::new()), Ok(1));
+        drop(sys_recvmsg(&mut proc, &mut host, receiver, &mut [0u8; 1], 0, &mut []).unwrap());
+        let snapshot = snapshot_scm_rights_fd(&proc, carried).unwrap();
+        let id = snapshot.ofd_id;
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        assert_eq!(sys_sendmsg(&mut proc, &mut host, sender, b"P", 0, None, vec![snapshot]), Ok(1));
+        let old = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(old + 2 * core::mem::size_of::<crate::pipe::InFlightFd>());
+            assert!(matches!(sys_recvmsg(&mut proc, &mut host, receiver, &mut [0u8; 1],
+                wasm_posix_shared::socket::MSG_PEEK, &mut []), Err(Errno::ENOMEM)));
+            assert!(crate::ofd::has_in_flight_ofd(id));
+            assert_eq!(crate::pipe::deferred_in_flight_release_state().1, 1);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, old);
+        }
+        let mut byte = [0u8; 1];
+        let received = sys_recvmsg(&mut proc, &mut host, receiver, &mut byte, 0, &mut []).unwrap();
+        assert_eq!(byte, *b"P");
+        assert_eq!(received.ancillary_fds.len(), 1);
+        assert_eq!(received.ancillary_fds[0].ofd_id, id);
+        drop(received);
+        drain_deferred_scm_rights_releases(&mut locks, &mut host);
+        assert!(!crate::ofd::has_in_flight_ofd(id));
+        assert_eq!(crate::pipe::deferred_in_flight_release_state(), (0, 0, 0));
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        for fd in [carried, sender, receiver] {
+            sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+        }
+    }
+
+    #[test]
     fn scm_rights_install_publishes_cloexec_with_the_new_fd() {
         let _guard = SCM_RIGHTS_LIFETIME_LOCK
             .lock()
@@ -29129,7 +30912,7 @@ mod tests {
         let deferred_after = crate::pipe::deferred_in_flight_release_state();
         assert_eq!(deferred_after.0, deferred_before.0);
         assert_eq!(deferred_after.1, deferred_before.1);
-        assert!(deferred_after.2 >= deferred_before.2);
+        assert_eq!(deferred_after.2, 0);
     }
 
     #[test]
@@ -29166,7 +30949,7 @@ mod tests {
         assert_eq!(sender_ofd.dir_entry_offset, 3);
         assert_eq!(sender_ofd.offset(), 3);
         assert_eq!(
-            sender_ofd.dir_pending_entry.as_ref().unwrap().name,
+            sender_ofd.dir_pending_entry.as_ref().unwrap().name(),
             b"foo.txt"
         );
 
@@ -29215,7 +30998,7 @@ mod tests {
         assert_eq!(sender_ofd.dir_host_handle, sender_live_dir_handle);
         assert_eq!(sender_ofd.dir_entry_offset, 3);
         assert_eq!(
-            sender_ofd.dir_pending_entry.as_ref().unwrap().name,
+            sender_ofd.dir_pending_entry.as_ref().unwrap().name(),
             b"foo.txt"
         );
 
@@ -29264,12 +31047,12 @@ mod tests {
             rgid: 4000,
             egid: 5000,
             sgid: 6000,
-            supplementary_groups: vec![7000, 8000],
+            supplementary_groups: crate::credentials::SupplementaryGroups::copy_from(&[7000, 8000]).unwrap(),
         };
         {
             let parent = table.get_mut(parent_pid).unwrap();
             parent.install_credentials(parent_credentials.clone());
-            parent.cwd = b"/real-owned".to_vec();
+            parent.cwd = crate::ofd::OfdPath::copy_from(&b"/real-owned".to_vec()).unwrap();
         }
 
         let mut host = MockHostIO::new();
@@ -29525,6 +31308,80 @@ mod tests {
     }
 
     #[test]
+    fn scm_rights_peek_admission_refusal_preserves_stream_and_datagram_carriers() {
+        use wasm_posix_shared::socket::{AF_UNIX, MSG_PEEK, SOCK_DGRAM, SOCK_STREAM};
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for socket_type in [SOCK_STREAM, SOCK_DGRAM] {
+            let mut proc = Process::new(70_940 + socket_type);
+            let mut host = MockHostIO::new();
+            let mut locks = AdvisoryLockManager::new();
+            let (sender, receiver) = sys_socketpair(&mut proc, &mut host, AF_UNIX, socket_type, 0).unwrap();
+            let carried = sys_memfd_create(&mut proc, b"admitted-peek", 0).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, carried, b"retained"), Ok(8));
+            sys_lseek(&mut proc, &mut host, carried, 0, SEEK_SET).unwrap();
+            set_whole_file_ofd_lock(&mut proc, &mut locks, &mut host, carried);
+            let ofd_id = scm_rights_test_ofd_id(&proc, carried);
+            let mut batch = AncillaryFds::try_with_capacity(1).unwrap();
+            batch.push(snapshot_scm_rights_fd(&proc, carried).unwrap());
+            assert_eq!(sys_sendmsg(&mut proc, &mut host, sender, b"carrier", 0, None, batch), Ok(7));
+            sys_close_with_locks(&mut proc, &mut locks, &mut host, carried).unwrap();
+            let mut data = [0x55; 7];
+            let mut address = [0; 16];
+            {
+                let held = crate::io_buffer::IO_MEMORY.usage().0;
+                let _limit = crate::io_buffer::test_budget(held);
+                assert!(matches!(sys_recvmsg(&mut proc, &mut host, receiver, &mut data, MSG_PEEK, &mut address), Err(Errno::ENOMEM)));
+                assert_eq!(data, [0x55; 7]);
+                assert!(crate::ofd::has_in_flight_ofd(ofd_id));
+                assert_eq!(locks.len(), 1);
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            }
+            let received = sys_recvmsg(&mut proc, &mut host, receiver, &mut data, 0, &mut address).unwrap();
+            assert_eq!(received.return_len, 7);
+            assert_eq!(&data, b"carrier");
+            let installed = install_scm_rights_fds(&mut proc, received.ancillary_fds);
+            assert_eq!(installed.len(), 1);
+            assert!(!crate::ofd::has_in_flight_ofd(ofd_id));
+            let mut carried_data = [0; 8];
+            assert_eq!(sys_read(&mut proc, &mut host, installed[0], &mut carried_data), Ok(8));
+            assert_eq!(&carried_data, b"retained");
+            for fd in [installed[0], sender, receiver] {
+                sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+            }
+            assert!(locks.is_empty());
+        }
+    }
+
+    #[test]
+    fn scm_rights_index_output_refusal_drops_queued_owners_before_fd_publication() {
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut sender = Process::new(70_950);
+        let mut receiver = Process::new(70_951);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let fd = sys_memfd_create(&mut sender, b"admitted-receive", 0).unwrap();
+        set_whole_file_ofd_lock(&mut sender, &mut locks, &mut host, fd);
+        let ofd_id = scm_rights_test_ofd_id(&sender, fd);
+        let mut batch = AncillaryFds::try_with_capacity(1).unwrap();
+        batch.push(retain_fd_for_scm_rights(&sender, fd));
+        sys_close_with_locks(&mut sender, &mut locks, &mut host, fd).unwrap();
+        let descriptors = receiver.fd_table.iter().count();
+        let ofds = receiver.ofd_table.iter().count();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert!(install_scm_rights_fds(&mut receiver, batch).is_empty());
+            assert_eq!(receiver.fd_table.iter().count(), descriptors);
+            assert_eq!(receiver.ofd_table.iter().count(), ofds);
+            assert_eq!(receiver.ofd_table.reserved_count(), 0);
+        }
+        assert!(!crate::ofd::has_in_flight_ofd(ofd_id));
+        assert_eq!(locks.len(), 1);
+        finish_scm_rights_cleanup(&mut locks, &mut host);
+        assert!(locks.is_empty());
+    }
+
+    #[test]
     fn scm_rights_transfer_preserves_memfd_ofd_identity_and_lock_lifetime() {
         let _guard = SCM_RIGHTS_LIFETIME_LOCK
             .lock()
@@ -29570,7 +31427,7 @@ mod tests {
         let deferred_transferred = crate::pipe::deferred_in_flight_release_state();
         assert_eq!(deferred_transferred.0, deferred_before.0);
         assert_eq!(deferred_transferred.1, deferred_before.1);
-        assert!(deferred_transferred.2 >= deferred_retained.2);
+        assert_eq!(deferred_transferred.2, 0);
         let received_entry = receiver.fd_table.get(received[0]).unwrap();
         let received_ofd = receiver.ofd_table.get(received_entry.ofd_ref.0).unwrap();
         assert_eq!(received_ofd.ofd_id, expected_ofd_id);
@@ -29613,7 +31470,7 @@ mod tests {
         let deferred_drained = crate::pipe::deferred_in_flight_release_state();
         assert_eq!(deferred_drained.0, deferred_before.0);
         assert_eq!(deferred_drained.1, deferred_before.1);
-        assert!(deferred_drained.2 >= deferred_dropped.2);
+        assert_eq!(deferred_drained.2, 0);
     }
 
     #[test]
@@ -29651,7 +31508,7 @@ mod tests {
         let deferred_drained = crate::pipe::deferred_in_flight_release_state();
         assert_eq!(deferred_drained.0, deferred_before.0);
         assert_eq!(deferred_drained.1, deferred_before.1);
-        assert!(deferred_drained.2 >= deferred_failed.2);
+        assert_eq!(deferred_drained.2, 0);
     }
 
     #[test]
@@ -29722,7 +31579,7 @@ mod tests {
                 SENDER_PID,
                 137,
                 carrier_fd,
-                Some(vec![snapshot]),
+                Some(AncillaryFds::try_adopt(vec![snapshot]).unwrap()),
             )
             .unwrap();
             assert_eq!(sender.blocked_retries.binding_count(), 1);
@@ -29825,7 +31682,7 @@ mod tests {
         let deferred_after = crate::pipe::deferred_in_flight_release_state();
         assert_eq!(deferred_after.0, deferred_before.0);
         assert_eq!(deferred_after.1, deferred_before.1);
-        assert!(deferred_after.2 >= deferred_before.2);
+        assert_eq!(deferred_after.2, 0);
     }
 
     #[test]
@@ -30055,7 +31912,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_accept_discards_and_drains_preaccepted_stream_scm_rights() {
+    fn failed_accept_preserves_preaccepted_stream_scm_rights_for_retry() {
         use wasm_posix_shared::socket::{AF_UNIX, SOCK_STREAM};
 
         let _scm_guard = SCM_RIGHTS_LIFETIME_LOCK
@@ -30112,6 +31969,28 @@ mod tests {
             "failed accept must not publish a descriptor",
         );
         assert_eq!(proc.ofd_table.iter().count(), ofd_count_before);
+        proc.fd_table.set_max_fds(1024);
+        {
+            let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(sys_accept(&mut proc, &mut host, listener), Err(Errno::ENOMEM));
+            assert_eq!(proc.fd_table.iter().count(), fd_count_before);
+            assert_eq!(proc.ofd_table.iter().count(), ofd_count_before);
+            assert_eq!(proc.ofd_table.reserved_count(), 0);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        assert!(crate::ofd::has_in_flight_ofd(carried_ofd_id));
+        assert_eq!(crate::ofd::host_handle_ref_count(carried_host_handle), 1);
+        assert_eq!(locks.len(), 1);
+        finish_scm_rights_cleanup(&mut locks, &mut host);
+        assert!(crate::ofd::has_in_flight_ofd(carried_ofd_id));
+        let accepted = sys_accept(&mut proc, &mut host, listener).unwrap();
+        let mut pending = [0; 10];
+        assert_eq!(sys_recv(&mut proc, &mut host, accepted, &mut pending,
+            wasm_posix_shared::socket::MSG_PEEK), Ok(10));
+        assert_eq!(&pending, b"unaccepted");
+        assert!(crate::ofd::has_in_flight_ofd(carried_ofd_id));
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, accepted).unwrap();
         assert_eq!(
             sys_send(
                 &mut proc,
@@ -30122,13 +32001,6 @@ mod tests {
             ),
             Err(Errno::EPIPE),
         );
-        assert!(!crate::ofd::has_in_flight_ofd(carried_ofd_id));
-        assert!(crate::pipe::has_deferred_in_flight_releases());
-        assert_eq!(crate::ofd::host_handle_ref_count(carried_host_handle), 1);
-        assert_eq!(locks.len(), 1);
-
-        // Exercise the exact cleanup boundary used by kernel_accept4 on both
-        // success and failure returns.
         finish_scm_rights_cleanup(&mut locks, &mut host);
         assert_finished_host_scm_release(
             &locks,
@@ -30138,7 +32010,6 @@ mod tests {
             deferred_before,
         );
 
-        proc.fd_table.set_max_fds(1024);
         for fd in [client, listener] {
             sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
         }
@@ -30413,7 +32284,8 @@ mod tests {
 
         let mut fork_state = vec![0u8; 64 * 1024];
         let written = crate::fork::serialize_fork_state(&parent, &mut fork_state).unwrap();
-        let mut child = crate::fork::deserialize_fork_state(&fork_state[..written], 87).unwrap();
+        let mut child = Process::new_empty_for_test(87);
+        crate::fork::deserialize_allocated_fork_state(&fork_state[..written], &mut child).unwrap();
         crate::process_table::bump_inherited_resource_refcounts(parent.pid, &child).unwrap();
 
         sys_close_with_locks(&mut parent, &mut locks, &mut host, first).unwrap();
@@ -30624,62 +32496,145 @@ mod tests {
         assert!(matches!(sys_clock_getres(&proc, 10), Err(Errno::EINVAL),));
     }
 
+    /// Write a guest timespec at `addr` in the mock's process memory.
+    fn put_timespec(host: &mut MockHostIO, addr: usize, sec: i64, nsec_bytes: [u8; 8]) {
+        host.proc_memory[addr..addr + 8].copy_from_slice(&sec.to_le_bytes());
+        host.proc_memory[addr + 8..addr + 16].copy_from_slice(&nsec_bytes);
+    }
+
+    const MOCK_NOW_NS: i64 = 1_234_567_890 * 1_000_000_000 + 123_456_789;
+
     #[test]
-    fn test_nanosleep_rejects_negative() {
-        let proc = Process::new(1);
+    fn nanosleep_rejects_an_invalid_or_unreadable_request_without_parking() {
+        for (sec, nsec) in [(-1i64, 0i64), (0, -1), (0, 1_000_000_000)] {
+            let mut host = MockHostIO::new();
+            put_timespec(&mut host, 0x200, sec, nsec.to_le_bytes());
+            assert_eq!(
+                sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), 0x200, 0),
+                Err(Errno::EINVAL),
+                "({sec}, {nsec})"
+            );
+        }
         let mut host = MockHostIO::new();
-        let req = WasmTimespec {
-            tv_sec: -1,
-            tv_nsec: 0,
-        };
-        assert_eq!(sys_nanosleep(&proc, &mut host, &req), Err(Errno::EINVAL));
+        assert_eq!(sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), 0, 0), Err(Errno::EFAULT));
+        let end = host.proc_memory.len() as u64;
+        assert_eq!(
+            sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), end, 0),
+            Err(Errno::EFAULT)
+        );
+        assert_eq!(crate::wait_park::with(|p| p.len()), 0);
     }
 
     #[test]
-    fn test_nanosleep_rejects_invalid_nsec() {
-        let proc = Process::new(1);
+    fn nanosleep_parks_until_its_monotonic_deadline() {
         let mut host = MockHostIO::new();
-        let req = WasmTimespec {
-            tv_sec: 0,
-            tv_nsec: 1_000_000_000,
+        put_timespec(&mut host, 0x200, 1, 500_000_000i64.to_le_bytes());
+        let ParkOutcome::Parked(generation) =
+            sys_nanosleep(&mut host, GuestTask::wasm32(1, 2), 0x200, 0x300).unwrap()
+        else {
+            panic!("a positive sleep must park");
         };
-        assert_eq!(sys_nanosleep(&proc, &mut host, &req), Err(Errno::EINVAL));
+        crate::wait_park::with(|p| {
+            assert_eq!(p.next_timeout_ns(MOCK_NOW_NS), Some(1_500_000_000));
+            p.expire(MOCK_NOW_NS + 1_499_999_999);
+            assert!(p.take_completions().is_empty(), "not due yet");
+            p.expire(MOCK_NOW_NS + 1_500_000_000);
+            let done = p.take_completions();
+            assert_eq!((done[0].generation, done[0].tid, done[0].value), (generation, 2, 0));
+            assert_eq!(done[0].remainder, None, "a sleep that ran out leaves rem alone");
+        });
     }
 
     #[test]
-    fn test_nanosleep_valid() {
-        let proc = Process::new(1);
+    fn a_zero_sleep_answers_at_once() {
         let mut host = MockHostIO::new();
-        let req = WasmTimespec {
-            tv_sec: 1,
-            tv_nsec: 500_000_000,
-        };
-        assert_eq!(sys_nanosleep(&proc, &mut host, &req), Ok(()));
+        assert_eq!(
+            sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), 0x200, 0),
+            Ok(ParkOutcome::Done(0))
+        );
+        assert_eq!(
+            sys_usleep(&mut host, GuestTask::wasm32(1, 1), 0),
+            Ok(ParkOutcome::Done(0))
+        );
+        assert_eq!(crate::wait_park::with(|p| p.len()), 0);
     }
 
     #[test]
-    fn test_clock_nanosleep_boottime_absolute_uses_monotonic_equivalent() {
-        let proc = Process::new(1);
+    fn a_wasm32_timespec_ignores_the_padding_after_tv_nsec() {
+        // musl's wasm32 `struct timespec` is `{ i64 tv_sec; long tv_nsec;
+        // int :32; }`; the padding is not initialised by designated
+        // initialisers, so it must not reach validation.
+        let mut garbage_high = [0u8; 8];
+        garbage_high[0..4].copy_from_slice(&5i32.to_le_bytes());
+        garbage_high[4..8].copy_from_slice(&0x7eadbeefu32.to_le_bytes());
         let mut host = MockHostIO::new();
-        let req = WasmTimespec {
-            tv_sec: 1_234_567_891,
-            tv_nsec: 123_456_789,
-        };
-        let mut relative = [0_u8; 16];
+        put_timespec(&mut host, 0x200, 0, garbage_high);
+        assert!(matches!(
+            sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), 0x200, 0),
+            Ok(ParkOutcome::Parked(_))
+        ));
+        crate::wait_park::retire_process(1);
+        let wasm64 = GuestTask { pid: 1, tid: 1, pointer_width: 8 };
+        assert_eq!(
+            sys_nanosleep(&mut host, wasm64, 0x200, 0),
+            Err(Errno::EINVAL),
+            "a wasm64 long is all eight bytes"
+        );
+    }
 
+    #[test]
+    fn clock_nanosleep_converts_an_absolute_deadline_once() {
+        use wasm_posix_shared::clock::{CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_REALTIME};
+        const TIMER_ABSTIME: u32 = 1;
+        for clock in [CLOCK_REALTIME, CLOCK_BOOTTIME, CLOCK_MONOTONIC] {
+            let mut host = MockHostIO::new();
+            // One second after the mock's "now" on every clock.
+            put_timespec(&mut host, 0x200, 1_234_567_891, 123_456_789i64.to_le_bytes());
+            assert!(matches!(
+                sys_clock_nanosleep(&mut host, GuestTask::wasm32(1, 1), clock, TIMER_ABSTIME, 0x200, 0),
+                Ok(ParkOutcome::Parked(_))
+            ));
+            assert_eq!(
+                crate::wait_park::with(|p| p.next_timeout_ns(MOCK_NOW_NS)),
+                Some(1_000_000_000),
+                "clock {clock}"
+            );
+            crate::wait_park::retire_process(1);
+            // A deadline already behind the clock answers at once.
+            put_timespec(&mut host, 0x200, 1_000, 0i64.to_le_bytes());
+            assert_eq!(
+                sys_clock_nanosleep(&mut host, GuestTask::wasm32(1, 1), clock, TIMER_ABSTIME, 0x200, 0),
+                Ok(ParkOutcome::Done(0)),
+                "clock {clock}"
+            );
+        }
+        let mut host = MockHostIO::new();
+        put_timespec(&mut host, 0x200, 1, 0i64.to_le_bytes());
         assert_eq!(
             sys_clock_nanosleep(
-                &proc,
                 &mut host,
-                wasm_posix_shared::clock::CLOCK_BOOTTIME,
-                1,
-                &req,
-                relative.as_mut_ptr(),
+                GuestTask::wasm32(1, 1),
+                wasm_posix_shared::clock::CLOCK_PROCESS_CPUTIME_ID,
+                0,
+                0x200,
+                0
             ),
-            Ok(()),
+            Err(Errno::EINVAL)
         );
-        assert_eq!(i64::from_le_bytes(relative[0..8].try_into().unwrap()), 1);
-        assert_eq!(i64::from_le_bytes(relative[8..16].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn usleep_parks_for_its_microseconds() {
+        let mut host = MockHostIO::new();
+        assert!(matches!(
+            sys_usleep(&mut host, GuestTask::wasm32(1, 1), 2_500),
+            Ok(ParkOutcome::Parked(_))
+        ));
+        assert_eq!(
+            crate::wait_park::with(|p| p.next_timeout_ns(MOCK_NOW_NS)),
+            Some(2_500_000)
+        );
+        crate::wait_park::retire_process(1);
     }
 
     #[test]
@@ -30840,6 +32795,23 @@ mod tests {
     fn test_isatty_invalid_fd() {
         let proc = Process::new(1);
         assert_eq!(sys_isatty(&proc, 99), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn environment_refusal_preserves_existing_entry_and_permits_allocation_free_removal() {
+        let mut proc = Process::new(1);
+        sys_setenv(&mut proc, b"KEY", b"original", true).unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let _limit = crate::io_buffer::test_budget(held);
+        sys_setenv(&mut proc, b"KEY", b"ignored", false).unwrap();
+        assert_eq!(sys_setenv(&mut proc, b"KEY", b"replacement", true), Err(Errno::ENOMEM));
+        assert_eq!(sys_setenv(&mut proc, b"NEW", b"value", true), Err(Errno::ENOMEM));
+        assert_eq!(proc.environ.len(), 1);
+        assert_eq!(proc.environ[0], b"KEY=original");
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        sys_unsetenv(&mut proc, b"KEY").unwrap();
+        assert!(proc.environ.is_empty());
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 < held);
     }
 
     #[test]
@@ -31025,6 +32997,65 @@ mod tests {
     }
 
     #[test]
+    fn munmap_metadata_refusal_preserves_mappings_and_device_bindings() {
+        use wasm_posix_shared::mmap::MAP_PRIVATE;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let base = 0x04000000;
+        let page = 0x10000;
+        let original = crate::memory::MappedRegion {
+            addr: base, len: 4 * page, prot: 3, flags: MAP_PRIVATE | MAP_ANONYMOUS,
+        };
+        proc.memory.set_mappings(crate::IoBuffer::copy_from(&[original]).unwrap());
+        proc.dri_bindings.try_push(crate::process::DriBoBinding {
+            addr: base + page, len: page, bo_id: 7,
+        }).unwrap();
+        proc.fb_binding = Some(crate::process::FbBinding {
+            addr: base + page, len: page, w: 1, h: 1, stride: 4, fmt: 0,
+        });
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(sys_munmap(&mut proc, &mut host, base + page, page), Err(Errno::ENOMEM));
+            assert_eq!(proc.memory.mappings(), &[original]);
+            assert_eq!(proc.dri_bindings.len(), 1);
+            assert!(proc.fb_binding.is_some());
+            assert!(host.gbm_bo_unbind_calls.is_empty());
+            assert!(host.gl_unbind_calls.is_empty());
+        }
+        sys_munmap(&mut proc, &mut host, base + page, page).unwrap();
+        assert_eq!(proc.memory.mappings().len(), 2);
+        assert!(proc.dri_bindings.is_empty());
+        assert!(proc.fb_binding.is_none());
+        assert_eq!(host.gbm_bo_unbind_calls, vec![(1, 7, base + page, page)]);
+    }
+
+    #[test]
+    fn mremap_move_admits_both_new_mapping_and_old_mapping_split_before_mutation() {
+        use wasm_posix_shared::mmap::MAP_PRIVATE;
+        let mut proc = Process::new(1);
+        let base = 0x04000000;
+        let page = 0x10000;
+        let original = crate::memory::MappedRegion {
+            addr: base, len: 4 * page, prot: 3, flags: MAP_PRIVATE | MAP_ANONYMOUS,
+        };
+        proc.memory.set_mappings(crate::IoBuffer::copy_from(&[original]).unwrap());
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(sys_mremap(&mut proc, base + page, page, 2 * page, 1), Err(Errno::ENOMEM));
+            assert_eq!(proc.memory.mappings(), &[original]);
+        }
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let _limit = crate::io_buffer::test_budget(held + 6 * core::mem::size_of::<crate::memory::MappedRegion>());
+        let moved = sys_mremap(&mut proc, base + page, page, 2 * page, 1).unwrap();
+        assert_eq!(moved, base + 4 * page);
+        assert_eq!(proc.memory.mappings().len(), 3);
+        assert!(proc.memory.is_mapped(base));
+        assert!(!proc.memory.is_mapped(base + page));
+        assert!(proc.memory.is_mapped(base + 2 * page));
+        assert!(proc.memory.is_mapped(moved));
+    }
+
+    #[test]
     fn test_munmap_rounds_length_before_releasing_pages() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -31112,6 +33143,77 @@ mod tests {
     fn test_mprotect_succeeds_noop() {
         let proc = Process::new(1);
         assert_eq!(sys_mprotect(&proc, 0, 4096, 3), Ok(()));
+    }
+
+    #[test]
+    fn pipe_and_socketpair_descriptor_failures_leave_no_published_resources() {
+        use crate::fd::FdTable;
+        use crate::metadata_budget::MetadataBudget;
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM, SOCK_STREAM};
+        static BUDGET: MetadataBudget = MetadataBudget::new(4096);
+        for socket_type in [None, Some(SOCK_STREAM), Some(SOCK_DGRAM)] {
+            for expected_error in [Errno::ENOMEM, Errno::EMFILE] {
+                for available in [0, 1] {
+                    BUDGET.set_limit(4096).unwrap();
+                    let mut proc = Process::new(81010);
+                    let mut host = MockHostIO::new();
+                    let mut descriptors = FdTable::with_budget(1024, &BUDGET);
+                    for (fd, entry) in proc.fd_table.iter() {
+                        descriptors.restore_entry(fd as usize, *entry).unwrap();
+                    }
+                    let probe = descriptors.reserve().unwrap();
+                    let slot_bytes = BUDGET.usage().0;
+                    assert!(descriptors.release_reserved(probe));
+                    proc.fd_table = descriptors;
+                    if expected_error == Errno::ENOMEM {
+                        BUDGET.set_limit(available * slot_bytes).unwrap();
+                    } else {
+                        proc.fd_table.set_max_fds(3 + available);
+                    }
+                    let pipes = unsafe { crate::pipe::global_pipe_table() }.count_active();
+                    let create = |proc: &mut Process, host: &mut MockHostIO| match socket_type {
+                        Some(socket_type) => sys_socketpair(proc, host, AF_UNIX, socket_type, 0),
+                        None => sys_pipe2(proc, O_CLOEXEC),
+                    };
+                    assert_eq!(create(&mut proc, &mut host), Err(expected_error));
+                    assert_eq!(proc.fd_table.iter().count(), 3);
+                    assert_eq!(proc.ofd_table.iter().count(), 3);
+                    assert_eq!(proc.sockets.len(), 0);
+                    assert_eq!(unsafe { crate::pipe::global_pipe_table() }.count_active(), pipes);
+                    assert_eq!(BUDGET.usage().0, 0);
+                    BUDGET.set_limit(4096).unwrap();
+                    proc.fd_table.set_max_fds(1024);
+                    let (first, second) = create(&mut proc, &mut host).unwrap();
+                    assert_eq!((first, second), (3, 4));
+                    sys_close(&mut proc, &mut host, first).unwrap();
+                    sys_close(&mut proc, &mut host, second).unwrap();
+                    assert_eq!(unsafe { crate::pipe::global_pipe_table() }.count_active(), pipes);
+                    assert_eq!(BUDGET.usage().0, 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn socket_descriptor_admission_failure_does_not_allocate_socket_or_ofd() {
+        use crate::fd::FdTable;
+        use crate::metadata_budget::MetadataBudget;
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM, SOCK_STREAM};
+        static BUDGET: MetadataBudget = MetadataBudget::new(0);
+        for socket_type in [SOCK_STREAM, SOCK_DGRAM] {
+            let mut proc = Process::new(81011);
+            let mut host = MockHostIO::new();
+            let mut descriptors = FdTable::with_budget(1024, &BUDGET);
+            for (fd, entry) in proc.fd_table.iter() {
+                descriptors.restore_entry(fd as usize, *entry).unwrap();
+            }
+            proc.fd_table = descriptors;
+            assert_eq!(sys_socket(&mut proc, &mut host, AF_UNIX, socket_type, 0), Err(Errno::ENOMEM));
+            assert_eq!(proc.sockets.len(), 0);
+            assert_eq!(proc.ofd_table.iter().count(), 3);
+            assert_eq!(proc.fd_table.iter().count(), 3);
+            assert_eq!(BUDGET.usage().0, 0);
+        }
     }
 
     #[test]
@@ -31529,7 +33631,7 @@ mod tests {
         proc.alarm_deadline_ns = 8_000_000_000;
         proc.alarm_interval_ns = 1_000_000_000;
         proc.vfork_child = true;
-        proc.posix_timers.push(Some(PosixTimerState {
+        proc.posix_timers.try_push(Some(PosixTimerState {
             clock_id: 0,
             sigev_signo: SIGINT,
             sigev_value_bits: 0,
@@ -31542,7 +33644,7 @@ mod tests {
             notification_pending: false,
             overrun_current: 0,
             overrun_last: 0,
-        }));
+        })).unwrap();
 
         commit_exec_state(&mut proc, &mut host, 11).unwrap();
 
@@ -31573,7 +33675,7 @@ mod tests {
         let pid = proc.pid;
         proc.main_thread_signals.raise_with_value(32, 77);
         proc.posix_timers
-            .push(Some(crate::process::PosixTimerState {
+            .try_push(Some(crate::process::PosixTimerState {
                 clock_id: 1,
                 sigev_signo: 10,
                 sigev_value_bits: 88,
@@ -31586,7 +33688,7 @@ mod tests {
                 notification_pending: true,
                 overrun_current: 0,
                 overrun_last: 0,
-            }));
+            })).unwrap();
         proc.main_thread_signals.raise_timer(10, 88, 0);
         proc.signals.raise(SIGTERM);
 
@@ -31654,11 +33756,7 @@ mod tests {
             ofd.dir_host_handle = 77;
             ofd.dir_synth_state = 2;
             ofd.dir_entry_offset = 9;
-            ofd.dir_pending_entry = Some(crate::ofd::PendingDirEntry {
-                ino: 91,
-                d_type: 8,
-                name: b"pending.txt".to_vec(),
-            });
+            ofd.dir_pending_entry = Some(crate::ofd::PendingDirEntry::new(91, 8, b"pending.txt").unwrap());
         }
         let dir_fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap();
         // Both fabricated handles must be ones this double believes it issued,
@@ -31666,9 +33764,10 @@ mod tests {
         // raw directory fd's own stream.
         host.seed_dir_handle(88);
         host.seed_dir_handle(77);
+        proc.dir_streams.try_reserve(1).unwrap();
         proc.dir_streams.push(Some(DirStream {
             host_handle: 88,
-            path: b"/tmp".to_vec(),
+            path: crate::ofd::OfdPath::copy_from(b"/tmp").unwrap(),
             position: 4,
             synth_dot_state: 2,
         }));
@@ -31686,7 +33785,7 @@ mod tests {
         assert_eq!(
             ofd.dir_pending_entry
                 .as_ref()
-                .map(|entry| entry.name.as_slice()),
+                .map(|entry| entry.name()),
             Some(b"pending.txt".as_slice()),
         );
 
@@ -31850,6 +33949,136 @@ mod tests {
         use wasm_posix_shared::socket::*;
         let result = sys_socketpair(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0);
         assert_eq!(result, Err(Errno::EAFNOSUPPORT));
+    }
+
+    #[test]
+    fn host_tcp_shutdown_sends_fin_and_preserves_the_handle() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Ok(());
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let addr = [2, 0, 0, 80, 10, 89, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0];
+        sys_connect(&mut proc, &mut host, fd, &addr).unwrap();
+        let handle = host.net_connect_calls[0].0;
+        sys_shutdown(&mut proc, &mut host, fd, SHUT_WR).unwrap();
+        sys_shutdown(&mut proc, &mut host, fd, SHUT_WR).unwrap();
+        assert_eq!(host.net_shutdown_calls, vec![(handle, SHUT_WR)]);
+        sys_shutdown(&mut proc, &mut host, fd, SHUT_RDWR).unwrap();
+        let ofd = proc
+            .ofd_table
+            .get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
+            .unwrap();
+        assert_eq!(
+            proc.sockets
+                .get((-(ofd.host_handle + 1)) as usize)
+                .unwrap()
+                .host_net_handle,
+            Some(handle)
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn unsupported_host_shutdown_does_not_change_kernel_flags() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Ok(());
+        host.net_shutdown_result = Err(Errno::EOPNOTSUPP);
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_connect(
+            &mut proc,
+            &mut host,
+            fd,
+            &[2, 0, 0, 80, 10, 89, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0],
+        )
+        .unwrap();
+        assert_eq!(
+            sys_shutdown(&mut proc, &mut host, fd, SHUT_WR),
+            Err(Errno::EOPNOTSUPP)
+        );
+        let ofd = proc
+            .ofd_table
+            .get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
+            .unwrap();
+        assert!(
+            !proc
+                .sockets
+                .get((-(ofd.host_handle + 1)) as usize)
+                .unwrap()
+                .shut_wr
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn unrelated_process_socket_slots_have_distinct_host_connections() {
+        use wasm_posix_shared::socket::*;
+        let mut first = Process::new(1);
+        let mut second = Process::new(2);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Ok(());
+        let a = sys_socket(&mut first, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let b = sys_socket(&mut second, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let addr = [2, 0, 0, 80, 10, 89, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0];
+        sys_connect(&mut first, &mut host, a, &addr).unwrap();
+        sys_connect(&mut second, &mut host, b, &addr).unwrap();
+        assert_ne!(host.net_connect_calls[0].0, host.net_connect_calls[1].0);
+        sys_close(&mut first, &mut host, a).unwrap();
+        sys_close(&mut second, &mut host, b).unwrap();
+    }
+
+    #[test]
+    fn accepted_tcp_reset_is_observable_after_dup_and_clears_only_so_error() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let listener = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let addr = [2, 0, 0x46, 0xa5, 127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        sys_bind(&mut proc, &mut host, listener, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, listener, 4).unwrap();
+        let client = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client, &addr).unwrap();
+        let accepted = sys_accept(&mut proc, &mut host, listener).unwrap();
+        let alias = sys_dup(&mut proc, accepted).unwrap();
+        let ofd = proc
+            .ofd_table
+            .get(proc.fd_table.get(accepted).unwrap().ofd_ref.0)
+            .unwrap();
+        let sock = proc.sockets.get((-(ofd.host_handle + 1)) as usize).unwrap();
+        let indexes = [sock.recv_buf_idx.unwrap(), sock.send_buf_idx.unwrap()];
+        sys_send(&mut proc, &mut host, client, b"discard", 0).unwrap();
+        for index in indexes {
+            unsafe { crate::pipe::global_pipe_table().get_mut(index).unwrap() }
+                .reset_stream(Errno::ECONNRESET);
+        }
+        assert_eq!(
+            sys_recv(&mut proc, &mut host, alias, &mut [0; 16], 0),
+            Err(Errno::ECONNRESET)
+        );
+        assert_eq!(
+            sys_write(&mut proc, &mut host, accepted, b"reply"),
+            Err(Errno::ECONNRESET)
+        );
+        assert_eq!(
+            sys_getsockopt(&mut proc, alias, SOL_SOCKET, SO_ERROR),
+            Ok(104)
+        );
+        assert_eq!(
+            sys_getsockopt(&mut proc, accepted, SOL_SOCKET, SO_ERROR),
+            Ok(0)
+        );
+        assert_eq!(
+            sys_read(&mut proc, &mut host, accepted, &mut [0; 16]),
+            Err(Errno::ECONNRESET)
+        );
+        for fd in [alias, accepted, client, listener] {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
     }
 
     #[test]
@@ -32124,6 +34353,7 @@ mod tests {
 
         sys_setsockopt_bindtodevice(&mut proc, fd, b"\0").unwrap();
         assert!(sys_getsockopt_bindtodevice(&proc, fd).unwrap().is_empty());
+        host.udp_source_result = Ok([10, 88, 0, 1]);
         sys_connect(&mut proc, &mut host, fd, &external).unwrap();
 
         let unix = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
@@ -32740,6 +34970,46 @@ mod tests {
     }
 
     #[test]
+    fn test_failed_external_connect_stays_reported_on_later_polls() {
+        use wasm_posix_shared::fcntl_cmd::F_SETFL;
+        use wasm_posix_shared::poll::{POLLERR, POLLIN, POLLOUT};
+        use wasm_posix_shared::socket::*;
+        use wasm_posix_shared::WasmPollFd;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Err(Errno::EAGAIN);
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_fcntl(&mut proc, fd, F_SETFL, O_NONBLOCK).unwrap();
+        let addr = [2, 0, 0, 80, 203, 0, 113, 6, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &addr).unwrap_err(), Errno::EINPROGRESS);
+
+        host.net_connect_status_result = Err(Errno::ECONNREFUSED);
+        let mut poll_once = |proc: &mut Process, host: &mut MockHostIO, events| {
+            let mut pollfd = WasmPollFd { fd, events, revents: 0 };
+            let ready = sys_poll(proc, host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+            (ready, pollfd.revents)
+        };
+        // The poll that observes the failure and every later one agree.
+        for _ in 0..3 {
+            let (ready, revents) = poll_once(&mut proc, &mut host, POLLOUT);
+            assert_eq!(ready, 1);
+            assert_eq!(revents & (POLLERR | POLLOUT), POLLERR | POLLOUT);
+        }
+        assert_eq!(
+            sys_getsockopt(&mut proc, fd, SOL_SOCKET, SO_ERROR).unwrap(),
+            Errno::ECONNREFUSED as u32,
+        );
+        // Once SO_ERROR consumed the error, the socket is still not waiting
+        // for anything: I/O on it returns at once.
+        let (ready, revents) = poll_once(&mut proc, &mut host, POLLIN | POLLOUT);
+        assert_eq!(ready, 1);
+        assert_eq!(revents & POLLERR, 0);
+        assert_eq!(revents & (POLLIN | POLLOUT), POLLIN | POLLOUT);
+    }
+
+    #[test]
     fn test_poll_regular_file_always_ready() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -32823,8 +35093,8 @@ mod tests {
         sock.state = crate::socket::SocketState::Connected;
         sock.peer_addr6 = loopback;
         sock.peer_port = 7000;
-        sock.dgram_queue.push(crate::socket::Datagram {
-            data: b"wrong".to_vec(),
+        sock.dgram_queue.try_push(crate::socket::Datagram {
+            data: crate::IoBuffer::copy_from(b"wrong").unwrap(),
             src_addr: [0; 4],
             src_addr6: [0; 16],
             dst_addr: [0; 4],
@@ -32835,8 +35105,8 @@ mod tests {
             src_pid: 0,
             src_uid: 0,
             src_gid: 0,
-            ancillary_fds: Vec::new(),
-        });
+            ancillary_fds: crate::pipe::AncillaryFds::new(),
+        }).unwrap();
 
         let mut pfd = WasmPollFd {
             fd,
@@ -32851,8 +35121,8 @@ mod tests {
             .get_mut(idx)
             .unwrap()
             .dgram_queue
-            .push(crate::socket::Datagram {
-                data: b"right".to_vec(),
+            .try_push(crate::socket::Datagram {
+                data: crate::IoBuffer::copy_from(b"right").unwrap(),
                 src_addr: [0; 4],
                 src_addr6: loopback,
                 dst_addr: [0; 4],
@@ -32863,8 +35133,8 @@ mod tests {
                 src_pid: 0,
                 src_uid: 0,
                 src_gid: 0,
-                ancillary_fds: Vec::new(),
-            });
+                ancillary_fds: crate::pipe::AncillaryFds::new(),
+            }).unwrap();
         assert_eq!(
             sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pfd), 0).unwrap(),
             1
@@ -32888,8 +35158,8 @@ mod tests {
         let sock = proc.sockets.get_mut(idx).unwrap();
         sock.state = crate::socket::SocketState::Connected;
         sock.peer_idx = Some(7);
-        sock.dgram_queue.push(crate::socket::Datagram {
-            data: b"peer".to_vec(),
+        sock.dgram_queue.try_push(crate::socket::Datagram {
+            data: crate::IoBuffer::copy_from(b"peer").unwrap(),
             src_addr: [0; 4],
             src_addr6: [0; 16],
             dst_addr: [0; 4],
@@ -32900,8 +35170,8 @@ mod tests {
             src_pid: 9999,
             src_uid: 0,
             src_gid: 0,
-            ancillary_fds: Vec::new(),
-        });
+            ancillary_fds: crate::pipe::AncillaryFds::new(),
+        }).unwrap();
         let mut pfd = WasmPollFd {
             fd,
             events: POLLIN,
@@ -32915,8 +35185,8 @@ mod tests {
             .get_mut(idx)
             .unwrap()
             .dgram_queue
-            .push(crate::socket::Datagram {
-                data: b"peer".to_vec(),
+            .try_push(crate::socket::Datagram {
+                data: crate::IoBuffer::copy_from(b"peer").unwrap(),
                 src_addr: [0; 4],
                 src_addr6: [0; 16],
                 dst_addr: [0; 4],
@@ -32927,8 +35197,8 @@ mod tests {
                 src_pid: owner_pid,
                 src_uid: 0,
                 src_gid: 0,
-                ancillary_fds: Vec::new(),
-            });
+                ancillary_fds: crate::pipe::AncillaryFds::new(),
+            }).unwrap();
         assert_eq!(
             sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pfd), 0).unwrap(),
             1
@@ -33226,14 +35496,6 @@ mod tests {
     }
 
     #[test]
-    fn test_usleep() {
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        // MockHostIO nanosleep is a no-op, so this should succeed
-        sys_usleep(&mut proc, &mut host, 1000).unwrap();
-    }
-
-    #[test]
     fn test_openat_at_fdcwd() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -33290,7 +35552,7 @@ mod tests {
         let pipe = sys_fstatat(&mut proc, &mut host, pipe_fd, b"", AT_EMPTY_PATH).unwrap();
         assert_eq!(pipe.st_mode & S_IFMT, S_IFIFO);
 
-        proc.cwd = b"/home/user".to_vec();
+        proc.cwd = crate::ofd::OfdPath::copy_from(&b"/home/user".to_vec()).unwrap();
         let cwd = sys_fstatat(
             &mut proc,
             &mut host,
@@ -33436,6 +35698,7 @@ mod tests {
     fn test_mkdirat_at_fdcwd() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.set_missing_path(b"/tmp/newdir");
         let result = sys_mkdirat(&mut proc, &mut host, AT_FDCWD, b"/tmp/newdir", 0o755);
         assert!(result.is_ok());
     }
@@ -34242,6 +36505,103 @@ mod tests {
     }
 
     #[test]
+    fn test_udp_fionread_preserves_next_packet_and_empty_datagrams() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9051);
+        let mut host = MockHostIO::new();
+        let (sender, receiver) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        for payload in [&b"first"[..], &b"second-long"[..], &b""[..], &b"xy"[..]] {
+            sys_send(&mut proc, &mut host, sender, payload, 0).unwrap();
+        }
+        let mut count = [0u8; 4];
+        let mut data = [0u8; 3];
+        for (index, expected) in [5, 11, 0, 2, 0].into_iter().enumerate() {
+            // Repeated observations must neither consume nor sum packets.
+            for _ in 0..2 {
+                sys_ioctl(&mut proc, &mut host, receiver, 0x541B, &mut count).unwrap();
+                assert_eq!(i32::from_le_bytes(count), expected);
+            }
+            if index < 4 {
+                assert_eq!(sys_recv(&mut proc, &mut host, receiver, &mut data, MSG_DONTWAIT).unwrap(), (expected as usize).min(data.len()));
+            }
+        }
+        sys_close(&mut proc, &mut host, sender).unwrap();
+        sys_close(&mut proc, &mut host, receiver).unwrap();
+    }
+
+    #[test]
+    fn test_udp_reconnect_checks_routes_even_after_loopback_auto_bind() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9054);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut destination = [0u8; 16];
+        destination[0] = AF_INET as u8;
+        destination[2..4].copy_from_slice(&9000u16.to_be_bytes());
+        destination[4..8].copy_from_slice(&[127, 0, 0, 1]);
+        sys_connect(&mut proc, &mut host, fd, &destination).unwrap();
+        let mut before = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut before).unwrap();
+        destination[4..8].copy_from_slice(&[8, 8, 8, 8]);
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &destination), Err(Errno::ENETUNREACH));
+        let mut after = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut after).unwrap();
+        assert_eq!(before, after);
+        sys_getpeername(&proc, fd, &mut after).unwrap();
+        assert_eq!(&after[4..8], &[127, 0, 0, 1]);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_udp_connected_multicast_uses_the_existing_loopback_interface() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9053);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        sys_setsockopt(&mut proc, fd, IPPROTO_IP, IP_MULTICAST_IF,
+            u32::from_le_bytes([127, 0, 0, 1])).unwrap();
+        let mut destination = [0u8; 16];
+        destination[0] = AF_INET as u8;
+        destination[2..4].copy_from_slice(&9000u16.to_be_bytes());
+        destination[4..8].copy_from_slice(&[239, 1, 2, 3]);
+        sys_connect(&mut proc, &mut host, fd, &destination).unwrap();
+        let mut name = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(&name[4..8], &[127, 0, 0, 1]);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_udp_connect_source_is_host_owned_and_disconnect_restores_binding() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9052);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut wildcard = [0u8; 16];
+        wildcard[0] = AF_INET as u8;
+        sys_bind(&mut proc, &mut host, fd, &wildcard).unwrap();
+        let mut destination = wildcard;
+        destination[2..4].copy_from_slice(&9000u16.to_be_bytes());
+        destination[4..8].copy_from_slice(&[192, 0, 2, 20]);
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &destination), Err(Errno::ENETUNREACH));
+        host.udp_source_result = Ok([192, 0, 2, 10]);
+        sys_connect(&mut proc, &mut host, fd, &destination).unwrap();
+        let mut name = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(&name[4..8], &[192, 0, 2, 10]);
+        let port = name[2..4].to_vec();
+        let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+        let socket = proc.sockets.get((-(ofd.host_handle + 1)) as usize).unwrap();
+        assert_eq!(socket.bind_addr, [0; 4]);
+        assert_eq!(socket.clone().udp_source_addr, Some([192, 0, 2, 10]));
+        sys_connect(&mut proc, &mut host, fd, &[0u8; 16]).unwrap();
+        sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(&name[4..8], &[0; 4]);
+        assert_eq!(name[2..4], port);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
     fn test_ioctl_fionread_regular() {
         let mut proc = terminal_process(1);
         let mut host = MockHostIO::new();
@@ -34348,6 +36708,23 @@ mod tests {
         sys_prctl(&mut proc, prctl::PR_GET_NAME, 0, &mut out).unwrap();
         assert_eq!(&out[..5], b"hello");
         assert_eq!(out[5], 0);
+    }
+
+    #[test]
+    fn test_prctl_child_subreaper_is_unsupported() {
+        // Orphans are always adopted by synthetic init. Claiming subreaper
+        // status would let a supervisor believe it adopts descendants that
+        // in fact go to init.
+        let mut proc = Process::new(1);
+        let mut buf = [0u8; 0];
+        assert_eq!(
+            sys_prctl(&mut proc, PR_SET_CHILD_SUBREAPER, 1, &mut buf),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            sys_prctl(&mut proc, PR_GET_CHILD_SUBREAPER, 0, &mut buf),
+            Err(Errno::EINVAL)
+        );
     }
 
     #[test]
@@ -34793,14 +37170,14 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         host.pathconf_result = Ok(Some(NAMESPACE_PATH_MAX as i64));
-        proc.cwd = namespace_boundary_path(254, true);
+        proc.cwd = crate::ofd::OfdPath::copy_from(&namespace_boundary_path(254, true)).unwrap();
         assert_eq!(proc.cwd.len(), 4095);
 
         assert_eq!(
             sys_pathconf(&proc, &mut host, b".", pc::PATH_MAX),
             Ok(Some(NAMESPACE_PATH_MAX as i64))
         );
-        let mut child = proc.cwd.clone();
+        let mut child = proc.cwd.to_vec();
         child.extend_from_slice(b"/child");
         assert_eq!(
             sys_pathconf(&proc, &mut host, b"child", pc::PATH_MAX),
@@ -34808,7 +37185,7 @@ mod tests {
         );
         assert_eq!(
             host.pathconf_calls,
-            vec![(proc.cwd.clone(), pc::PATH_MAX), (child, pc::PATH_MAX),]
+            vec![(proc.cwd.to_vec(), pc::PATH_MAX), (child, pc::PATH_MAX),]
         );
     }
 
@@ -35201,6 +37578,42 @@ mod tests {
     }
 
     #[test]
+    fn test_syncfs_validates_fd_and_rejects_host_mounts() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        assert_eq!(syncfs_targets_rootfs(&proc, 99), Err(Errno::EBADF));
+        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        assert_eq!(syncfs_targets_rootfs(&proc, read_fd), Err(Errno::EINVAL));
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_CREAT | O_RDWR, 0o644).unwrap();
+        assert_eq!(syncfs_targets_rootfs(&proc, fd), Err(Errno::ENOTSUP));
+    }
+
+    #[test]
+    fn test_syncfs_accepts_in_kernel_filesystems() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/data", 0o755, 0, 0, 2).unwrap();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let root_file =
+            sys_open(&mut proc, &mut host, b"/data/file", O_CREAT | O_RDWR, 0o644).unwrap();
+        let root_dir = sys_open(&mut proc, &mut host, b"/data", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let tmp_file =
+            sys_open(&mut proc, &mut host, b"/tmp/file", O_CREAT | O_RDWR, 0o644).unwrap();
+        let tmp_dir = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        for fd in [root_file, root_dir] {
+            assert_eq!(syncfs_targets_rootfs(&proc, fd), Ok(true));
+        }
+        for fd in [tmp_file, tmp_dir] {
+            assert_eq!(syncfs_targets_rootfs(&proc, fd), Ok(false));
+        }
+        assert!(host.fsync_calls.is_empty());
+    }
+
+    #[test]
     fn test_fsync_directory_delegates_to_host() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -35239,7 +37652,7 @@ mod tests {
         let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let fd = sys_open(&mut proc, &mut host, b"/srv/f", O_CREAT | O_RDWR, 0o644).unwrap();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/f", O_CREAT | O_RDWR, 0o644).unwrap();
         assert!(crate::tmpfs::is_tmpfs_file_handle(
             proc.ofd_table
                 .get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
@@ -35293,8 +37706,8 @@ mod tests {
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        sys_mkdir(&mut proc, &mut host, b"/srv/fsync-dir", 0o755).unwrap();
-        for dir in [&b"/data"[..], &b"/srv/fsync-dir"[..]] {
+        sys_mkdir(&mut proc, &mut host, b"/tmp/fsync-dir", 0o755).unwrap();
+        for dir in [&b"/data"[..], &b"/tmp/fsync-dir"[..]] {
             let fd = sys_open(&mut proc, &mut host, dir, O_RDONLY | O_DIRECTORY, 0).unwrap();
             assert_eq!(sys_fsync(&mut proc, &mut host, fd), Ok(()));
             assert_eq!(sys_fdatasync(&mut proc, &mut host, fd), Ok(()));
@@ -36155,23 +38568,119 @@ mod tests {
     }
 
     #[test]
+    fn epoll_keeps_main_readiness_and_mask_semantics_under_filesystem_cache_pressure() {
+        use wasm_posix_shared::poll::POLLIN;
+        let mut proc = Process::new(81_130);
+        let mut host = MockHostIO::new();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let eventfd = sys_eventfd2(&mut proc, 0, O_NONBLOCK).unwrap();
+        let tid = current_tid_for_process(&proc);
+        let original = crate::signal::sig_bit(wasm_posix_shared::signal::SIGUSR1);
+        proc.set_blocked_for(tid, original);
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(sys_epoll_ctl(&mut proc, epfd, 1, eventfd, 1, 77), Ok(()));
+        }
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert!(matches!(sys_epoll_pwait(&mut proc, &mut host, epfd, 1, 1, Some(0)), Err(Errno::EAGAIN)));
+            assert_eq!(proc.blocked_for(tid), 0);
+            assert_eq!(proc.mask_wait_depth_for(tid), 1);
+            assert_eq!(epoll_watched_fd(&proc, 0), Some(eventfd));
+            assert_eq!(epoll_watched_fd(&proc, 1), None);
+            assert!(matches!(sys_epoll_pwait(&mut proc, &mut host, epfd, 0, 1, Some(0)), Err(Errno::EINVAL)));
+            assert_eq!(proc.mask_wait_depth_for(tid), 0);
+            assert_eq!(proc.blocked_for(tid), original);
+        }
+        sys_write(&mut proc, &mut host, eventfd, &1u64.to_le_bytes()).unwrap();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            let mut pollfd = [WasmPollFd { fd: epfd, events: POLLIN, revents: 0 }];
+            assert_eq!(sys_poll(&mut proc, &mut host, &mut pollfd, 0), Ok(1));
+            assert_eq!(pollfd[0].revents & POLLIN, POLLIN);
+        }
+        let (ready, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 1, 0, Some(0)).unwrap();
+        assert_eq!((ready, events[0].1), (1, 77));
+        assert_eq!(proc.blocked_for(tid), original);
+        assert_eq!(proc.mask_wait_depth_for(tid), 0);
+        sys_close(&mut proc, &mut host, eventfd).unwrap();
+        sys_close(&mut proc, &mut host, epfd).unwrap();
+    }
+
+    #[test]
+    fn memfd_growth_refusal_preserves_append_state_and_pinned_mapping_data() {
+        let mut proc = Process::new(81_131);
+        let mut host = MockHostIO::new();
+        let fd = sys_memfd_create(&mut proc, b"admitted-growth", 0).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"original"), Ok(8));
+        assert_eq!(sys_lseek(&mut proc, &mut host, fd, 2, SEEK_SET), Ok(2));
+        sys_fcntl(&mut proc, fd, F_SETFL, O_APPEND).unwrap();
+        let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+        let index = (-(ofd.host_handle + 1)) as usize;
+        let mapping = crate::kernel_file_mapping::mapping_handle_for(FileType::MemFd, ofd.host_handle).unwrap();
+        crate::kernel_file_mapping::pin(mapping).unwrap();
+        let generation = crate::kernel_file_mapping::content_generation(mapping).unwrap();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(sys_write(&mut proc, &mut host, fd, b"!"), Err(Errno::ENOMEM));
+            assert_eq!(sys_pwrite(&mut proc, &mut host, fd, b"!", 64), Err(Errno::ENOMEM));
+            assert_eq!(sys_ftruncate(&mut proc, &mut host, fd, 64), Err(Errno::ENOMEM));
+            assert_eq!(crate::kernel_file_mapping::pwrite(mapping, 64, b"!", &mut host), Err(Errno::ENOMEM));
+            assert_eq!(sys_write(&mut proc, &mut host, fd, b""), Ok(0));
+            assert_eq!(sys_pwrite(&mut proc, &mut host, fd, b"", 64), Ok(0));
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_CUR), Ok(2));
+            assert_eq!(crate::kernel_file_mapping::content_generation(mapping), Some(generation));
+            let mut bytes = [0; 8];
+            assert_eq!(crate::kernel_file_mapping::pread(mapping, 0, &mut bytes, &mut host), Ok(8));
+            assert_eq!(&bytes, b"original");
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"!"), Ok(1));
+        assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_CUR), Ok(9));
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        let other = sys_memfd_create(&mut proc, b"different-backing", 0).unwrap();
+        let other_handle = proc.ofd_table.get(proc.fd_table.get(other).unwrap().ofd_ref.0).unwrap().host_handle;
+        assert_ne!((-(other_handle + 1)) as usize, index);
+        let mut bytes = [0; 9];
+        assert_eq!(crate::kernel_file_mapping::pread(mapping, 0, &mut bytes, &mut host), Ok(9));
+        assert_eq!(&bytes, b"original!");
+        crate::kernel_file_mapping::unpin(mapping);
+        assert!(crate::descriptor_backing::with_memfds(|table| table.get(index).is_none()));
+        sys_close(&mut proc, &mut host, other).unwrap();
+    }
+
+    #[test]
     fn vector_io_allocation_failure_is_enomem() {
-        // The aggregate-length and staging-allocation rules moved to
-        // `msghdr::read_iovecs` / `guest_ptr::zeroed_staging` with the table
-        // walk itself. What stays here is the one helper the vector path still
-        // owns: the read staging buffer.
-        assert_eq!(
-            try_initialized_vec_with_reserve(7, |bytes, length| {
-                assert!(bytes.is_empty());
-                assert_eq!(length, 7);
-                Err(Errno::ENOMEM)
-            }),
-            Err(Errno::ENOMEM),
-        );
-        assert_eq!(
-            try_initialized_vec_with_reserve(3, |_, _| Ok(())),
-            Err(Errno::ENOMEM),
-        );
+        use wasm_posix_shared::Syscall;
+        let mut proc = Process::new(81_090);
+        let mut host = MockHostIO::new();
+        let mut locks = AdvisoryLockManager::new();
+        let (reader, writer) = sys_pipe(&mut proc).unwrap();
+        for width in [4u8, 8] {
+            assert_eq!(sys_write(&mut proc, &mut host, writer, &[b'R'; 64]), Ok(64));
+            let table = stage_guest_iovecs(&mut host, IOV_TABLE_ADDR, IOV_BUFFERS_ADDR, &[&[0x55; 64]], width);
+            let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+            let entry_credit = 2 * core::mem::size_of::<crate::msghdr::NativeIovec>();
+            let table_credit = 4 * width as usize;
+            for allowance in [0, entry_credit + table_credit, entry_credit + 127] {
+                let _limit = crate::io_buffer::test_budget(baseline + allowance);
+                assert_eq!(sys_vector_io(&mut proc, &mut host, &mut locks, 0, Syscall::Readv as u32,
+                    reader, table, 1, width, VectorIoKind::Read), Err(Errno::ENOMEM));
+                assert_eq!(&host.proc_memory[IOV_BUFFERS_ADDR as usize..IOV_BUFFERS_ADDR as usize + 64], &[0x55; 64]);
+                assert_eq!(proc.blocked_retries.binding_count(), 0);
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+            }
+            assert_eq!(sys_vector_io(&mut proc, &mut host, &mut locks, 0, Syscall::Readv as u32,
+                reader, table, 1, width, VectorIoKind::Read), Ok(64));
+            assert_eq!(&host.proc_memory[IOV_BUFFERS_ADDR as usize..IOV_BUFFERS_ADDR as usize + 64], &[b'R'; 64]);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, reader).unwrap();
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, writer).unwrap();
     }
 
     #[test]
@@ -36795,7 +39304,7 @@ mod tests {
     }
 
     #[test]
-    fn test_poll_socket_pollerr() {
+    fn test_poll_socket_shutdown_hup() {
         use wasm_posix_shared::poll::*;
         use wasm_posix_shared::socket::*;
 
@@ -36803,7 +39312,7 @@ mod tests {
         let mut host = MockHostIO::new();
         let (fd0, _fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
 
-        // Shutdown both directions to trigger POLLERR
+        // An orderly full shutdown is HUP; it is not a transport error.
         sys_shutdown(&mut proc, &mut host, fd0, SHUT_RDWR).unwrap();
 
         let mut fds = [WasmPollFd {
@@ -36813,7 +39322,8 @@ mod tests {
         }];
         let result = sys_poll(&mut proc, &mut host, &mut fds, 0).unwrap();
         assert!(result > 0);
-        assert_ne!(fds[0].revents & POLLERR, 0);
+        assert_ne!(fds[0].revents & POLLHUP, 0);
+        assert_eq!(fds[0].revents & POLLERR, 0);
     }
 
     #[test]
@@ -37396,7 +39906,7 @@ mod tests {
     #[test]
     fn test_realpath_relative() {
         let mut proc = Process::new(1);
-        proc.cwd = b"/home/user".to_vec();
+        proc.cwd = crate::ofd::OfdPath::copy_from(&b"/home/user".to_vec()).unwrap();
         let mut host = MockHostIO::new();
         let mut buf = [0u8; 256];
         let len = sys_realpath(&mut proc, &mut host, b"file.txt", &mut buf).unwrap();
@@ -37406,7 +39916,7 @@ mod tests {
     #[test]
     fn test_realpath_dotdot() {
         let mut proc = Process::new(1);
-        proc.cwd = b"/home/user".to_vec();
+        proc.cwd = crate::ofd::OfdPath::copy_from(&b"/home/user".to_vec()).unwrap();
         let mut host = MockHostIO::new();
         let mut buf = [0u8; 256];
         let len = sys_realpath(&mut proc, &mut host, b"../file.txt", &mut buf).unwrap();
@@ -37416,7 +39926,7 @@ mod tests {
     #[test]
     fn test_realpath_dot() {
         let mut proc = Process::new(1);
-        proc.cwd = b"/home/user".to_vec();
+        proc.cwd = crate::ofd::OfdPath::copy_from(&b"/home/user".to_vec()).unwrap();
         let mut host = MockHostIO::new();
         let mut buf = [0u8; 256];
         let len = sys_realpath(&mut proc, &mut host, b"./file.txt", &mut buf).unwrap();
@@ -37620,6 +40130,7 @@ mod tests {
 
     struct TrackingHostIO {
         next_handle: i64,
+        missing_paths: std::collections::HashSet<Vec<u8>>,
         last_open_path: Vec<u8>,
         last_stat_path: Vec<u8>,
         last_lstat_path: Vec<u8>,
@@ -37650,6 +40161,7 @@ mod tests {
         fn new() -> Self {
             TrackingHostIO {
                 next_handle: 100,
+                missing_paths: std::collections::HashSet::new(),
                 last_open_path: Vec::new(),
                 last_stat_path: Vec::new(),
                 last_lstat_path: Vec::new(),
@@ -37683,6 +40195,9 @@ mod tests {
         }
         fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
             self.last_stat_path = path.to_vec();
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
             let mode = test_default_mode(path);
             Ok(WasmStat {
                 st_dev: 0,
@@ -37704,6 +40219,9 @@ mod tests {
         }
         fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
             self.last_lstat_path = path.to_vec();
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
             // Return regular file/dir by default (not symlink) so realpath works
             let mode = test_default_mode(path);
             Ok(WasmStat {
@@ -37726,6 +40244,7 @@ mod tests {
         }
         fn host_mkdir(&mut self, path: &[u8], _mode: u32) -> Result<(), Errno> {
             self.last_mkdir_path = path.to_vec();
+            self.missing_paths.remove(path);
             Ok(())
         }
         fn host_rmdir(&mut self, path: &[u8]) -> Result<(), Errno> {
@@ -37871,9 +40390,6 @@ impl HostIO for TrackingHostIO {
             }
             Ok(buf.len())
         }
-        fn host_waitpid(&mut self, _pid: i32, _options: u32) -> Result<(i32, i32), Errno> {
-            Err(Errno::ECHILD)
-        }
         fn host_net_connect(
             &mut self,
             _handle: i32,
@@ -37910,9 +40426,6 @@ impl HostIO for TrackingHostIO {
         }
         fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
-        }
-        fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
-            Ok(0)
         }
         fn bind_framebuffer(
             &mut self,
@@ -38008,6 +40521,7 @@ impl HostIO for TrackingHostIO {
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
         let dirfd = open_dir_fd(&mut proc, &mut host, b"/home/dir");
+        host.missing_paths.insert(b"/home/dir/newdir".to_vec());
         let result = sys_mkdirat(&mut proc, &mut host, dirfd, b"newdir", 0o755);
         assert!(result.is_ok());
         assert_eq!(host.last_mkdir_path, b"/home/dir/newdir");
@@ -38023,17 +40537,6 @@ impl HostIO for TrackingHostIO {
         assert!(result.is_ok());
         assert_eq!(host.last_rename_old, b"/src/dir/old");
         assert_eq!(host.last_rename_new, b"/dst/dir/new");
-    }
-
-    #[test]
-    fn test_openat_uses_live_directory_path_after_rename() {
-        let mut proc = Process::new(1);
-        let mut host = TrackingHostIO::new();
-        let dirfd = open_dir_fd(&mut proc, &mut host, b"/home/dir");
-
-        sys_rename(&mut proc, &mut host, b"/home/dir", b"/home/newdir").unwrap();
-        sys_openat(&mut proc, &mut host, dirfd, b"file", O_RDONLY, 0).unwrap();
-        assert_eq!(host.last_open_path, b"/home/newdir/file");
     }
 
     #[test]
@@ -38800,10 +41303,10 @@ impl HostIO for TrackingHostIO {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         proc.set_pid_for_test(9039);
-        proc.cwd = namespace_boundary_path(254, true);
+        proc.cwd = crate::ofd::OfdPath::copy_from(&namespace_boundary_path(254, true)).unwrap();
         assert_eq!(proc.cwd.len(), 4095);
 
-        let mut canonical = proc.cwd.clone();
+        let mut canonical = proc.cwd.to_vec();
         canonical.extend_from_slice(b"/s");
         host.set_missing_path(&canonical);
         let addr = test_unix_addr(b"s");
@@ -39049,9 +41552,6 @@ impl HostIO for NetMock {
                 }
                 Ok(b.len())
             }
-            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-                Err(Errno::ECHILD)
-            }
             fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
                 Ok(())
             }
@@ -39078,9 +41578,6 @@ impl HostIO for NetMock {
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Err(Errno::ENOENT)
-            }
-            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
-                Ok(0)
             }
             fn bind_framebuffer(
                 &mut self,
@@ -39990,7 +42487,7 @@ impl HostIO for NetMock {
                 .unwrap(),
                 20,
             );
-            cross_process_loopback_udp_route(sender, send_fd, Some(&destination)).unwrap()
+            cross_process_loopback_udp_route(sender, &mut host, send_fd, Some(&destination)).unwrap()
         };
         assert!(deliver_cross_process_loopback_udp(
             &mut table,
@@ -40027,7 +42524,7 @@ impl HostIO for NetMock {
                 sys_send(sender, &mut host, send_fd, b"connected one", 0).unwrap(),
                 13,
             );
-            cross_process_loopback_udp_route(sender, send_fd, None).unwrap()
+            cross_process_loopback_udp_route(sender, &mut host, send_fd, None).unwrap()
         };
         assert!(deliver_cross_process_loopback_udp(
             &mut table,
@@ -40048,7 +42545,7 @@ impl HostIO for NetMock {
 
         let route = {
             let sender = table.get(sender_pid).unwrap();
-            cross_process_loopback_udp_route(sender, send_fd, None).unwrap()
+            cross_process_loopback_udp_route(sender, &mut host, send_fd, None).unwrap()
         };
         assert!(deliver_cross_process_loopback_udp(
             &mut table,
@@ -40145,6 +42642,37 @@ impl HostIO for NetMock {
             Errno::EPIPE,
             "write shutdown must precede broadcast permission",
         );
+    }
+
+    #[test]
+    fn test_subnet_broadcast_requires_so_broadcast() {
+        let mut proc = Process::new(9061);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        host.network_interface = crate::netif::InterfaceConfig::validated([10, 89, 0, 2], [255, 255, 255, 0]);
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut dest = [0u8; 16];
+        dest[0] = AF_INET as u8;
+        dest[3] = 9;
+        dest[4..8].copy_from_slice(&[10, 89, 0, 255]);
+        assert_eq!(sys_sendto(&mut proc, &mut host, fd, b"x", 0, &dest).unwrap_err(), Errno::EACCES);
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &dest).unwrap_err(), Errno::EACCES);
+        sys_setsockopt(&mut proc, fd, SOL_SOCKET, SO_BROADCAST, 1).unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, fd, b"x", 0, &dest).unwrap_err(),
+            Errno::ENETUNREACH,
+            "with SO_BROADCAST the subnet broadcast reaches HostIO",
+        );
+
+        // An ordinary member of the subnet is unicast and needs no permission,
+        // and without an assignment the address is no broadcast at all.
+        let plain = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut member = dest;
+        member[4..8].copy_from_slice(&[10, 89, 0, 3]);
+        assert_eq!(sys_sendto(&mut proc, &mut host, plain, b"x", 0, &member).unwrap_err(), Errno::ENETUNREACH);
+        host.network_interface = None;
+        assert_eq!(sys_sendto(&mut proc, &mut host, plain, b"x", 0, &dest).unwrap_err(), Errno::ENETUNREACH);
     }
 
     #[test]
@@ -40573,6 +43101,93 @@ impl HostIO for NetMock {
         }
         for path in [send_path.as_slice(), recv_path.as_slice()] {
             sys_unlink(&mut proc, &mut host, path).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_multicast_cross_process_fanout_filters_and_loop_suppression() {
+        use wasm_posix_shared::socket::*;
+        let mut table = crate::process_table::ProcessTable::new();
+        let pids = [
+            table.create_process().unwrap(),
+            table.create_process().unwrap(),
+            table.create_process().unwrap(),
+        ];
+        let mut host = MockHostIO::new();
+        let group = [238, 255, 0, 1];
+        let lo = [127, 0, 0, 1];
+        let mut bind = [0u8; 16];
+        bind[0] = AF_INET as u8;
+        bind[2..4].copy_from_slice(&35877u16.to_be_bytes());
+        let mut receivers = Vec::new();
+        for pid in pids {
+            let proc = table.get_mut(pid).unwrap();
+            let fd = sys_socket(proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+            sys_setsockopt(proc, fd, SOL_SOCKET, SO_REUSEADDR, 1).unwrap();
+            sys_bind(proc, &mut host, fd, &bind).unwrap();
+            sys_setsockopt_ipv4_multicast(proc, fd, IP_ADD_MEMBERSHIP, group, lo, None).unwrap();
+            receivers.push((pid, fd));
+        }
+        let sender = table.get_mut(pids[0]).unwrap();
+        let fd = sys_socket(sender, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        sys_setsockopt(
+            sender,
+            fd,
+            IPPROTO_IP,
+            IP_MULTICAST_IF,
+            u32::from_le_bytes(lo),
+        )
+        .unwrap();
+        let mut destination = bind;
+        destination[4..8].copy_from_slice(&group);
+        sys_sendto(sender, &mut host, fd, b"all", 0, &destination).unwrap();
+        let route =
+            cross_process_loopback_udp_route(sender, &mut host, fd, Some(&destination)).unwrap();
+        assert!(deliver_cross_process_loopback_udp(
+            &mut table, route, b"all"
+        ));
+        for (pid, receiver) in &receivers {
+            let proc = table.get_mut(*pid).unwrap();
+            let idx = test_socket_idx(proc, *receiver);
+            let sock = proc.sockets.get_mut(idx).unwrap();
+            assert_eq!(sock.dgram_queue.remove(0).data, b"all");
+            assert!(
+                sock.dgram_queue.is_empty(),
+                "one copy per subscribed socket"
+            );
+        }
+        let receiver = table.get_mut(pids[2]).unwrap();
+        sys_setsockopt_ipv4_multicast(
+            receiver,
+            receivers[2].1,
+            IP_DROP_MEMBERSHIP,
+            group,
+            lo,
+            None,
+        )
+        .unwrap();
+        let sender = table.get_mut(pids[0]).unwrap();
+        sys_sendto(sender, &mut host, fd, b"remaining", 0, &destination).unwrap();
+        let route =
+            cross_process_loopback_udp_route(sender, &mut host, fd, Some(&destination)).unwrap();
+        assert!(deliver_cross_process_loopback_udp(
+            &mut table,
+            route,
+            b"remaining"
+        ));
+        let receiver = table.get_mut(pids[2]).unwrap();
+        assert!(receiver
+            .sockets
+            .get(test_socket_idx(receiver, receivers[2].1))
+            .unwrap()
+            .dgram_queue
+            .is_empty());
+        let sender = table.get_mut(pids[0]).unwrap();
+        sys_setsockopt(sender, fd, IPPROTO_IP, IP_MULTICAST_LOOP, 0).unwrap();
+        sys_sendto(sender, &mut host, fd, b"no-loop", 0, &destination).unwrap();
+        assert!(cross_process_loopback_udp_route(sender, &mut host, fd, Some(&destination)).is_none());
+        for pid in pids {
+            crate::socket::udp_cleanup_process(pid);
         }
     }
 
@@ -41852,6 +44467,48 @@ impl HostIO for NetMock {
     }
 
     #[test]
+    fn datagram_queue_admission_preserves_accepted_packets_and_protocol_failure_policy() {
+        use crate::socket::{Datagram, SocketDomain, SocketInfo, SocketType};
+        fn packet(bytes: &[u8]) -> Result<Datagram, Errno> {
+            Ok(Datagram { data: crate::IoBuffer::copy_from(bytes)?,
+                src_addr: [0; 4], src_addr6: [0; 16], dst_addr: [0; 4], dst_addr6: [0; 16],
+                src_port: 0, src_sock_idx: None, ipv6_tclass: 0, src_pid: 0, src_uid: 0, src_gid: 0,
+                ancillary_fds: AncillaryFds::new() })
+        }
+        let before_socket = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut socket = SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0);
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            udp_queue_datagram(&mut socket, || panic!("queue refusal must precede payload construction"));
+            assert_eq!(unix_queue_datagram(&mut socket, || panic!("queue refusal must precede payload construction")), Err(Errno::ENOMEM));
+            assert!(socket.dgram_queue.is_empty());
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        socket.dgram_queue.try_reserve(2).unwrap();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(unix_queue_datagram(&mut socket, || packet(b"new")), Err(Errno::ENOMEM));
+            assert!(socket.dgram_queue.is_empty());
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+        unix_queue_datagram(&mut socket, || packet(b"accepted")).unwrap();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(unix_queue_datagram(&mut socket, || packet(b"new")), Err(Errno::ENOMEM));
+            udp_queue_datagram(&mut socket, || packet(b"new"));
+            assert_eq!(socket.dgram_queue.len(), 1);
+            assert_eq!(socket.dgram_queue[0].data, b"accepted");
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+        assert_eq!(socket.dgram_queue.remove(0).data, b"accepted");
+        drop(socket);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, before_socket);
+    }
+
+    #[test]
     fn test_udp_recv_queue_tail_drops_on_overflow() {
         use wasm_posix_shared::socket::*;
 
@@ -42091,7 +44748,7 @@ impl HostIO for NetMock {
     /// Snapshot the shared interest list of the epoll instance at `ep_idx`.
     fn epoll_interests(ep_idx: usize) -> Vec<crate::process::EpollInterest> {
         crate::descriptor_backing::with_epolls(|table| {
-            table.get(ep_idx).expect("live epoll instance").interests.clone()
+            table.get(ep_idx).expect("live epoll instance").interests.as_slice().to_vec()
         })
     }
 
@@ -42305,7 +44962,7 @@ impl HostIO for NetMock {
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
         let ep_idx = (-(ofd.host_handle + 1)) as usize;
         let interests = epoll_interests(ep_idx);
-        assert_eq!(interests[0].events, epollout);
+        assert_eq!(interests[0].events, epollout | 0x18);
         assert_eq!(interests[0].data, 20);
     }
 
@@ -42585,9 +45242,30 @@ impl HostIO for NetMock {
     fn fork_child_of(parent: &Process, child_pid: u32) -> Process {
         let mut buf = alloc::vec![0u8; 256 * 1024];
         let written = crate::fork::serialize_fork_state(parent, &mut buf).unwrap();
-        let child = crate::fork::deserialize_fork_state(&buf[..written], child_pid).unwrap();
+        let mut child = Process::new_empty_for_test(child_pid);
+        crate::fork::deserialize_allocated_fork_state(&buf[..written], &mut child).unwrap();
         crate::process_table::bump_inherited_resource_refcounts(parent.pid, &child).unwrap();
         child
+    }
+
+    #[test]
+    fn fork_helper_acquires_graphics_backing_once_and_normal_exit_releases_it() {
+        let _registry = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|registry| registry.alloc(32, 32, 32).id);
+        let mut parent = Process::new(128);
+        let index = parent.ofd_table.create(FileType::CharDevice, 0,
+            crate::ofd::PRIME_FD_HOST_HANDLE, b"/dev/dri/test".to_vec());
+        parent.ofd_table.get_mut(index).unwrap().dri_state = Some(crate::IoBox::new(
+            crate::ofd::DriOfdState::PrimeBo(crate::ofd::PrimeBoState { bo_id: bo, cookie: 73 })));
+        parent.fd_table.alloc(OpenFileDescRef(index), 0).unwrap();
+        let mut child = fork_child_of(&parent, 129);
+        assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(2));
+        let mut host = MockHostIO::new();
+        sys_exit(&mut child, &mut host, 0);
+        assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(1));
+        sys_exit(&mut parent, &mut host, 0);
+        assert!(crate::dri::with_registry(|registry| registry.get(bo).is_none()));
     }
 
     #[test]
@@ -43560,7 +46238,7 @@ impl HostIO for NetMock {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         proc.posix_timers
-            .push(Some(crate::process::PosixTimerState {
+            .try_push(Some(crate::process::PosixTimerState {
                 clock_id: 1,
                 sigev_signo: 10,
                 sigev_value_bits: 0x0123_4567_89ab_cdef,
@@ -43573,7 +46251,7 @@ impl HostIO for NetMock {
                 notification_pending: true,
                 overrun_current: 3,
                 overrun_last: 0,
-            }));
+            })).unwrap();
         proc.signals.raise_timer(10, 0x0123_4567_89ab_cdef, 0);
         let fd = sys_signalfd4(&mut proc, -1, crate::signal::sig_bit(10), O_NONBLOCK).unwrap();
         let mut buf = [0u8; 128];
@@ -43914,9 +46592,6 @@ impl HostIO for SymlinkMock {
                 }
                 Ok(b.len())
             }
-            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-                Err(Errno::ECHILD)
-            }
             fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
                 Ok(())
             }
@@ -43942,9 +46617,6 @@ impl HostIO for SymlinkMock {
                 Ok(())
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn bind_framebuffer(
@@ -44126,9 +46798,6 @@ impl HostIO for LoopMock {
                 }
                 Ok(b.len())
             }
-            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-                Err(Errno::ECHILD)
-            }
             fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
                 Ok(())
             }
@@ -44154,9 +46823,6 @@ impl HostIO for LoopMock {
                 Ok(())
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn bind_framebuffer(
@@ -44335,9 +47001,6 @@ impl HostIO for RelSymlinkMock {
                 }
                 Ok(b.len())
             }
-            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-                Err(Errno::ECHILD)
-            }
             fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
                 Ok(())
             }
@@ -44363,9 +47026,6 @@ impl HostIO for RelSymlinkMock {
                 Ok(())
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn bind_framebuffer(
@@ -44911,7 +47571,7 @@ impl HostIO for RelSymlinkMock {
     #[test]
     fn test_procfs_self_stat_open_read_close() {
         let mut proc = Process::new(1);
-        proc.argv.push(b"test".to_vec());
+        proc.argv.try_push(&b"test".to_vec()).unwrap();
         let mut host = MockHostIO::new();
 
         // open /proc/self/stat
@@ -45676,6 +48336,67 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
     }
 
+    /// Map `/dev/fb0` in `proc`, leaving the fd open unless `close_fd`.
+    fn map_fb0_for_exit_test(proc: &mut Process, host: &mut TrackingHostIO, close_fd: bool) {
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::flags::O_RDWR;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let fd = sys_open(proc, host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let len = (640 * 400 * 4) as usize;
+        sys_mmap(proc, host, 0, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
+        if close_fd {
+            // The mapping outlives its fd, so ownership must survive close.
+            sys_close(proc, host, fd).unwrap();
+        }
+        assert_eq!(
+            crate::process_table::FB0_OWNER.load(Ordering::SeqCst),
+            proc.pid as i32
+        );
+    }
+
+    /// Linux tears down the address space and closes files in do_exit,
+    /// before the process becomes a zombie. A zombie can stay unreaped
+    /// indefinitely, so it must not keep /dev/fb0 busy for other processes.
+    #[test]
+    fn exit_releases_mapped_fb0_before_reap() {
+        use core::sync::atomic::Ordering;
+        for close_fd in [false, true] {
+            let mut proc = Process::new(41);
+            let mut host = TrackingHostIO::new();
+            map_fb0_for_exit_test(&mut proc, &mut host, close_fd);
+
+            sys_exit(&mut proc, &mut host, 0);
+
+            assert_eq!(proc.state, ProcessState::Exited);
+            assert!(proc.fb_binding.is_none());
+            assert_eq!(host.unbind_framebuffer_calls, alloc::vec![proc.pid as i32]);
+            assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+
+            // Another process can claim the device while the zombie is unreaped.
+            let mut successor = Process::new(42);
+            let fd = sys_open(&mut successor, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+            sys_close(&mut successor, &mut host, fd).unwrap();
+            assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+        }
+    }
+
+    #[test]
+    fn signal_exit_releases_mapped_fb0_before_reap() {
+        use core::sync::atomic::Ordering;
+        let mut proc = Process::new(43);
+        let mut host = TrackingHostIO::new();
+        map_fb0_for_exit_test(&mut proc, &mut host, true);
+
+        sys_exit_by_signal(&mut proc, &mut host, wasm_posix_shared::signal::SIGKILL);
+
+        assert_eq!(proc.state, ProcessState::Exited);
+        assert!(proc.fb_binding.is_none());
+        assert_eq!(host.unbind_framebuffer_calls, alloc::vec![proc.pid as i32]);
+        assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+    }
+
     #[test]
     fn open_dev_fb0_is_single_owner() {
         use core::sync::atomic::Ordering;
@@ -45771,6 +48492,25 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn exit_releases_mice_before_reap() {
+        use core::sync::atomic::Ordering;
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut owner = Process::new(1);
+        let mut successor = Process::new(2);
+        let mut host = MockHostIO::new();
+        sys_open(&mut owner, &mut host, b"/dev/input/mice", O_RDONLY, 0).unwrap();
+
+        sys_exit(&mut owner, &mut host, 0);
+
+        assert_eq!(owner.state, ProcessState::Exited);
+        assert_eq!(crate::mouse::MICE_OWNER.load(Ordering::SeqCst), -1);
+        let fd = sys_open(&mut successor, &mut host, b"/dev/input/mice", O_RDONLY, 0).unwrap();
+        sys_close(&mut successor, &mut host, fd).unwrap();
+    }
+
+    #[test]
     fn read_mice_drains_injected_packets() {
         let _g = MICE_OWNER_LOCK.lock().unwrap();
         reset_mice_state();
@@ -45836,6 +48576,26 @@ impl HostIO for RelSymlinkMock {
         assert!(!crate::clipboard::has_data());
         let fd2 = sys_open(&mut other, &mut host, b"/dev/kandelo/clipboard", O_RDWR, 0).unwrap();
         sys_close(&mut other, &mut host, fd2).unwrap();
+    }
+
+    #[test]
+    fn exit_releases_clipboard_before_reap() {
+        use core::sync::atomic::Ordering;
+        let _g = crate::clipboard::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::clipboard::reset_for_test();
+        let mut agent = Process::new(1);
+        let mut other = Process::new(2);
+        let mut host = MockHostIO::new();
+        sys_open(&mut agent, &mut host, b"/dev/kandelo/clipboard", O_RDWR, 0).unwrap();
+        crate::clipboard::offer(b"private").unwrap();
+
+        sys_exit(&mut agent, &mut host, 0);
+
+        assert_eq!(agent.state, ProcessState::Exited);
+        assert_eq!(crate::clipboard::CLIPBOARD_OWNER.load(Ordering::SeqCst), -1);
+        assert!(!crate::clipboard::has_data());
+        let fd = sys_open(&mut other, &mut host, b"/dev/kandelo/clipboard", O_RDWR, 0).unwrap();
+        sys_close(&mut other, &mut host, fd).unwrap();
     }
 
     #[test]
@@ -46953,7 +49713,7 @@ impl HostIO for RelSymlinkMock {
 
         let connector = WpkDrmModeGetConnector {
             modes_ptr: 0x0000_0001_0000_5678,
-            count_modes: 1,
+            count_modes: u32::MAX,
             connector_id: 1,
             ..Default::default()
         };
@@ -46974,6 +49734,56 @@ impl HostIO for RelSymlinkMock {
             ),
             Err(Errno::EFAULT),
         );
+        assert!(host.proc_write_calls.is_empty());
+    }
+
+    #[test]
+    fn dri_connector_mode_query_respects_capacity_and_validates_all_outputs() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeGetConnector>()];
+        let query = |proc: &mut Process, host: &mut MockHostIO, buf: &mut [u8], req| {
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req); }
+            sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_GETCONNECTOR, buf)
+        };
+        let request = WpkDrmModeGetConnector { connector_id: 1, ..Default::default() };
+        query(&mut proc, &mut host, &mut buf, request).unwrap();
+        let response: WpkDrmModeGetConnector = unsafe {
+            core::ptr::read_unaligned(buf.as_ptr() as *const _)
+        };
+        assert!(response.count_modes > 1);
+        assert!(host.proc_write_calls.is_empty());
+
+        // An insufficient list is left untouched, and the actual count is
+        // returned so libdrm can allocate and retry without a partial list.
+        query(&mut proc, &mut host, &mut buf, WpkDrmModeGetConnector {
+            modes_ptr: 4096, count_modes: 1, ..request
+        }).unwrap();
+        assert!(host.proc_write_calls.is_empty());
+        let full_request = WpkDrmModeGetConnector {
+            modes_ptr: 4096, count_modes: response.count_modes,
+            encoders_ptr: 8192, count_encoders: 1, ..request
+        };
+        query(&mut proc, &mut host, &mut buf, full_request).unwrap();
+        let bytes = &host.proc_write_calls[0].2;
+        assert_eq!(bytes.len(), response.count_modes as usize * 68);
+        assert!(bytes.chunks_exact(68).any(|mode| {
+            u16::from_le_bytes(mode[4..6].try_into().unwrap()) == 1920
+                && u16::from_le_bytes(mode[14..16].try_into().unwrap()) == 1080
+        }));
+        host.proc_write_calls.clear();
+        assert_eq!(query(&mut proc, &mut host, &mut buf, WpkDrmModeGetConnector {
+            encoders_ptr: u64::MAX, ..full_request
+        }), Err(Errno::EFAULT));
+        assert!(host.proc_write_calls.is_empty());
+        // Checking just one mode's range would let the full copy run past
+        // the end of process memory.
+        let near_end = host.proc_memory.len() as u64 - 68;
+        assert_eq!(query(&mut proc, &mut host, &mut buf, WpkDrmModeGetConnector {
+            modes_ptr: near_end, ..full_request
+        }), Err(Errno::EFAULT));
         assert!(host.proc_write_calls.is_empty());
     }
 
@@ -48001,6 +50811,148 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn kms_cursor_gates_requests_and_retains_bo_until_hidden_or_closed() {
+        use wasm_posix_shared::dri::*;
+        let _master = crate::dri::master::lock_for_test();
+        let _registry = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for cleanup in ["hide", "drop", "close"] {
+            crate::dri::bo::reset_registry();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            host.cursor_supported = true;
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+            let mut request = [0u8; 36];
+            let fill = |buf: &mut [u8], words: [u32; 9]| {
+                for (chunk, word) in buf.chunks_exact_mut(4).zip(words) {
+                    chunk.copy_from_slice(&word.to_le_bytes());
+                }
+            };
+            fill(&mut request, [1, 1, 0, 0, 64, 64, 1, 0, 0]);
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    DRM_IOCTL_MODE_CURSOR2,
+                    &mut request
+                ),
+                Err(Errno::EACCES)
+            );
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut []).unwrap();
+            let mut create = [0u8; 32];
+            create[4..8].copy_from_slice(&64u32.to_le_bytes());
+            create[0..4].copy_from_slice(&64u32.to_le_bytes());
+            create[8..12].copy_from_slice(&32u32.to_le_bytes());
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_CREATE_DUMB,
+                &mut create,
+            )
+            .unwrap();
+            let handle = u32::from_le_bytes(create[16..20].try_into().unwrap());
+            // An old host has no cursor transport: report no capability and
+            // reject before retaining the otherwise valid image buffer.
+            host.cursor_supported = false;
+            let mut cap = [0u8; 16];
+            cap[..8].copy_from_slice(&8u64.to_le_bytes());
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GET_CAP, &mut cap).unwrap();
+            assert_eq!(u64::from_le_bytes(cap[8..].try_into().unwrap()), 0);
+            fill(&mut request, [3, 1, 30, 40, 64, 64, handle, u32::MAX, 1]);
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CURSOR2, &mut request),
+                Err(Errno::ENOTSUP));
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            assert_eq!(proc.ofd_table.get(ofd).unwrap().kms().unwrap().cursor_bo, None);
+            host.cursor_supported = true;
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GET_CAP, &mut cap).unwrap();
+            assert_eq!(u64::from_le_bytes(cap[8..].try_into().unwrap()), 64);
+
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_CURSOR2,
+                &mut request,
+            )
+            .unwrap();
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            let bo = proc
+                .ofd_table
+                .get(ofd)
+                .unwrap()
+                .kms()
+                .unwrap()
+                .cursor_bo
+                .unwrap();
+            assert_eq!(
+                crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
+                2
+            );
+            fill(&mut request, [1, 1, 0, 0, 65, 64, handle, 0, 0]);
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    DRM_IOCTL_MODE_CURSOR2,
+                    &mut request
+                ),
+                Err(Errno::EINVAL)
+            );
+            assert_eq!(
+                proc.ofd_table.get(ofd).unwrap().kms().unwrap().cursor_bo,
+                Some(bo)
+            );
+            // Closing the application's GEM handle must not destroy a visible cursor.
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_DESTROY_DUMB,
+                &mut handle.to_le_bytes(),
+            )
+            .unwrap();
+            assert_eq!(
+                crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
+                1
+            );
+            fill(&mut request, [2, 1, u32::MAX, 10, 0, 0, 0, 0, 0]);
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_CURSOR,
+                &mut request[..28],
+            )
+            .unwrap();
+            match cleanup {
+                "hide" => {
+                    fill(&mut request, [1, 1, 0, 0, 0, 0, 0, 0, 0]);
+                    sys_ioctl(
+                        &mut proc,
+                        &mut host,
+                        fd,
+                        DRM_IOCTL_MODE_CURSOR2,
+                        &mut request,
+                    )
+                    .unwrap();
+                    sys_close(&mut proc, &mut host, fd).unwrap();
+                }
+                "drop" => {
+                    sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
+                    sys_close(&mut proc, &mut host, fd).unwrap();
+                }
+                "close" => sys_close(&mut proc, &mut host, fd).unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
+        }
+    }
+
+    #[test]
     fn kms_addfb_then_setcrtc_then_page_flip_happy_path() {
         use wasm_posix_shared::dri::*;
         let _g_master = crate::dri::master::lock_for_test();
@@ -48011,6 +50963,7 @@ impl HostIO for RelSymlinkMock {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
 
         // Acquire master.
         let mut master_buf = [0u8; 16];
@@ -48034,6 +50987,19 @@ impl HostIO for RelSymlinkMock {
         unsafe {
             core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create)
         };
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let handle_node = prepare_dri_handle(&mut proc, ofd_idx).unwrap();
+        let handle_bytes = crate::io_buffer::IO_MEMORY.usage().0 - baseline;
+        drop(handle_node);
+        for allowance in [0, handle_bytes] {
+            let _limit = crate::io_buffer::test_budget(baseline + allowance);
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut cbuf), Err(Errno::ENOMEM));
+            assert_eq!(crate::dri::bo::next_id_for_test(), 1);
+            let dri = proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap();
+            assert_eq!(dri.next_handle, 1);
+            assert!(dri.handles.is_empty());
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
         sys_ioctl(
             &mut proc,
             &mut host,
@@ -48056,6 +51022,14 @@ impl HostIO for RelSymlinkMock {
         fb_req.pitches[0] = created.pitch;
         let mut fbuf = [0u8; core::mem::size_of::<WpkDrmModeFbCmd2>()];
         unsafe { core::ptr::write_unaligned(fbuf.as_mut_ptr() as *mut WpkDrmModeFbCmd2, fb_req) };
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, &mut fbuf), Err(Errno::ENOMEM));
+            let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
+            assert!(kms.fbs.is_empty());
+            assert_eq!(kms.next_fb_id, 0);
+            assert_eq!(crate::dri::with_registry(|registry| registry.get(1).unwrap().refcount), 1);
+        }
         sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, &mut fbuf).unwrap();
         let fb_out: WpkDrmModeFbCmd2 =
             unsafe { core::ptr::read_unaligned(fbuf.as_ptr() as *const WpkDrmModeFbCmd2) };
@@ -48093,6 +51067,17 @@ impl HostIO for RelSymlinkMock {
         unsafe {
             core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip)
         };
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let host_latches = host.kms_set_fb_calls.len();
+        for allowance in [0, 2 * core::mem::size_of::<crate::ofd::PendingFlip>()] {
+            let _limit = crate::io_buffer::test_budget(baseline + allowance);
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flipbuf), Err(Errno::ENOMEM));
+            assert_eq!(host.kms_set_fb_calls.len(), host_latches);
+            assert_eq!(crate::dri::kms_commit_count(1), commits_before);
+            let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
+            assert!(kms.pending_flips.is_empty());
+            assert!(kms.event_ring.is_empty());
+        }
         sys_ioctl(
             &mut proc,
             &mut host,
@@ -48138,7 +51123,12 @@ impl HostIO for RelSymlinkMock {
         );
 
         // One vblank tick retires the queued flip into event_ring.
-        crate::dri::drain_pending_flips_for_process(&mut proc, 9, 1, 2);
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            crate::dri::drain_pending_flips_for_process(&mut proc, 9, 1, 2);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
         let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
         assert!(kms.pending_flips.is_empty());
         assert_eq!(kms.event_ring.len(), 32);
@@ -48500,6 +51490,16 @@ impl HostIO for RelSymlinkMock {
         // skew.
         let aligned_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
 
+        {
+            let before = proc.memory.mappings().len();
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(sys_mmap(&mut proc, &mut host, 0, aligned_len, PROT_READ | PROT_WRITE,
+                MAP_SHARED, fd, offset as i64), Err(Errno::ENOMEM));
+            assert_eq!(proc.memory.mappings().len(), before);
+            assert!(proc.dri_bindings.is_empty());
+            assert!(host.gbm_bo_bind_calls.is_empty());
+        }
+
         let addr = sys_mmap(
             &mut proc,
             &mut host,
@@ -48526,6 +51526,14 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(proc.dri_bindings[0].addr, addr);
         assert_eq!(proc.dri_bindings[0].len, aligned_len);
         assert_eq!(proc.dri_bindings[0].bo_id, bo_id);
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            sys_munmap(&mut proc, &mut host, addr, aligned_len).unwrap();
+            assert!(proc.dri_bindings.is_empty());
+            assert!(proc.memory.mappings().iter().all(|mapping| mapping.addr != addr));
+            assert_eq!(host.gbm_bo_unbind_calls, vec![(proc.pid as i32, bo_id, addr, aligned_len)]);
+        }
+        sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]
@@ -49836,6 +52844,51 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn a_parked_lock_re_execution_acts_on_the_pinned_file_not_a_reused_number() {
+        use crate::wait_retry::RetryOp;
+        use wasm_posix_shared::flock_op::{LOCK_EX, LOCK_NB};
+
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let mut holder = Process::new(30);
+        let held = sys_open(&mut holder, &mut host, b"/pinned", O_RDWR, 0).unwrap();
+        sys_flock(&mut holder, &mut locks, held, LOCK_EX, &mut host).unwrap();
+
+        let mut proc = Process::new(31);
+        let tid = proc.pid;
+        let fd = sys_open(&mut proc, &mut host, b"/pinned", O_RDWR, 0).unwrap();
+        let token = ensure_blocking_retry_ofd_binding(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            tid,
+            wasm_posix_shared::abi::extended_syscalls::SYS_FLOCK,
+            fd,
+            None,
+        )
+        .unwrap();
+        let op = RetryOp::Flock { fd, operation: LOCK_EX, token };
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+        let reused = sys_open(&mut proc, &mut host, b"/elsewhere", O_RDONLY, 0).unwrap();
+        assert_eq!(reused, fd);
+
+        // Still conflicts on the pinned file, although the number now names
+        // an unlocked one.
+        assert_eq!(op.attempt(&mut proc, &mut locks, &mut host, tid), Err(Errno::EAGAIN));
+        assert_eq!(
+            sys_flock(&mut proc, &mut locks, reused, LOCK_EX | LOCK_NB, &mut host),
+            Ok(()),
+            "the reused number names a different, unlocked file",
+        );
+
+        // Once the holder lets go, the same re-execution takes the lock on
+        // the pinned file.
+        let _ = held;
+        sys_exit_with_locks(&mut holder, &mut locks, &mut host, 0);
+        assert_eq!(op.attempt(&mut proc, &mut locks, &mut host, tid), Ok(0));
+    }
+
+    #[test]
     fn blocked_advisory_lock_seek_end_does_not_follow_reused_descriptor_numbers() {
         use wasm_posix_shared::fcntl_cmd::F_OFD_SETLKW;
 
@@ -50187,7 +53240,7 @@ impl HostIO for RelSymlinkMock {
             tid,
             137,
             carrier,
-            Some(vec![snapshot]),
+            Some(AncillaryFds::try_adopt(vec![snapshot]).unwrap()),
         )
         .unwrap();
 
@@ -50200,6 +53253,13 @@ impl HostIO for RelSymlinkMock {
         proc.blocked_retries
             .activate(tid, token, BlockingRetryOperation::Sendmsg)
             .unwrap();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert!(matches!(clone_active_sendmsg_ancillary(&proc, tid), Err(Errno::ENOMEM)));
+            assert!(crate::ofd::has_in_flight_ofd(carried_id));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
         let cloned = clone_active_sendmsg_ancillary(&proc, tid)
             .unwrap()
             .expect("retry binding must carry an immutable rights template");
@@ -50401,6 +53461,328 @@ impl HostIO for RelSymlinkMock {
         0x05, 0x03, 0x01, 0x00, 0x00, //
     ];
 
+    fn prepare_test_exec_with_bytes(
+        proc: &mut Process,
+        locks: &mut AdvisoryLockManager,
+        host: &mut MockHostIO,
+        path: &[u8],
+        bytes: &[u8],
+    ) -> u32 {
+        host.stat_size = bytes.len() as u64;
+        host.prepared_exec_bytes = Some(bytes.to_vec());
+        host.set_file_with_owner(path, 0, 0, S_IFREG | 0o755, bytes);
+        crate::exec_target::prepare(
+            proc,
+            locks,
+            host,
+            crate::exec_target::PreparedExecOwner::Process {
+                pid: proc.pid,
+                caller_tid: proc.pid,
+                generation: proc.exec_generation,
+            },
+            AT_FDCWD,
+            path,
+            0,
+        )
+        .unwrap()
+    }
+
+    /// Prepare `bytes` as an exec target and observe all of them, which is
+    /// what the host does before it may commit: the artifact-policy gate
+    /// already refuses to judge a target that is not fully read.
+    fn prepare_and_observe(
+        proc: &mut Process,
+        locks: &mut AdvisoryLockManager,
+        host: &mut MockHostIO,
+        path: &[u8],
+        bytes: &[u8],
+    ) -> u32 {
+        let pid = proc.pid;
+        let token = prepare_test_exec_with_bytes(proc, locks, host, path, bytes);
+        let mut image = alloc::vec![0u8; bytes.len()];
+        crate::exec_target::read(proc, host, pid, token, 0, &mut image).unwrap();
+        assert_eq!(image.as_slice(), bytes);
+        token
+    }
+
+    #[test]
+    fn exec_replaces_the_registered_pointer_width_when_the_image_changes_it() {
+        // An exec replaces the address space, and the replacement may have a
+        // different data model than the image that called it. The width must
+        // be replaced at the commit and nowhere else: before it, the outgoing
+        // image is still the one running; after it, the guest may already be
+        // executing under the new one.
+        let mut proc = Process::new(77);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        assert_eq!(proc.pointer_width, 4);
+
+        let token = prepare_and_observe(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/wide",
+            WASM64_IMAGE,
+        );
+        // Preparing and reading the target does not touch the running image's
+        // width. Only the commit does.
+        assert_eq!(proc.pointer_width, 4);
+
+        crate::exec_target::commit_process(
+            &mut proc, &mut locks, &mut host, pid, pid, token,
+        )
+        .unwrap();
+
+        assert_eq!(proc.exec_generation, 1);
+        assert_eq!(proc.pointer_width, 8);
+
+        // And back again: a wasm64 image exec'ing a wasm32 one is the same
+        // transition in the other direction, not a one-way widening.
+        let narrow = prepare_and_observe(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/narrow",
+            WASM32_IMAGE,
+        );
+        assert_eq!(proc.pointer_width, 8);
+        crate::exec_target::commit_process(
+            &mut proc, &mut locks, &mut host, pid, pid, narrow,
+        )
+        .unwrap();
+        assert_eq!(proc.pointer_width, 4);
+    }
+
+    #[test]
+    fn a_failed_exec_leaves_the_running_image_pointer_width_alone() {
+        // A commit that is refused must not have moved the width: the image
+        // that is still running is the one whose data model applies.
+        let mut proc = Process::new(78);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        proc.pointer_width = 8;
+
+        let token = prepare_and_observe(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/narrow",
+            WASM32_IMAGE,
+        );
+        // A stale generation is exactly the race the owner check exists for.
+        proc.exec_generation += 1;
+
+        assert!(
+            crate::exec_target::commit_process(
+                &mut proc, &mut locks, &mut host, pid, pid, token,
+            )
+            .is_err()
+        );
+        assert_eq!(proc.pointer_width, 8);
+    }
+
+    #[test]
+    fn exec_target_artifact_bytes_are_only_the_completely_observed_target() {
+        // The artifact policy is judged over the bytes the target committed
+        // to, so a target the host has not finished reading has none to judge.
+        let mut proc = Process::new(80);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        let token = prepare_test_exec_with_bytes(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/program",
+            WASM32_IMAGE,
+        );
+        assert_eq!(
+            crate::exec_target::artifact_bytes(&proc, pid, token),
+            Err(Errno::EINVAL),
+        );
+        let mut image = alloc::vec![0u8; WASM32_IMAGE.len()];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut image).unwrap();
+        assert_eq!(
+            crate::exec_target::artifact_bytes(&proc, pid, token),
+            Ok(WASM32_IMAGE),
+        );
+        assert!(crate::exec_target::artifact_bytes(&proc, pid + 1, token).is_err());
+    }
+
+    /// A host-mount file the spawn probe can open, executable unless `mode`
+    /// says otherwise, holding `bytes`.
+    fn probe_file(host: &mut MockHostIO, path: &[u8], mode: u32, bytes: &[u8]) {
+        host.set_file_with_owner(path, 0, 0, S_IFREG | mode, bytes);
+        host.path_exec_bytes.insert(path.to_vec(), bytes.to_vec());
+    }
+
+    fn probe_host() -> MockHostIO {
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        host.stat_size = 64;
+        host
+    }
+
+    #[test]
+    fn spawn_probe_admits_a_program_and_a_one_level_script_retaining_nothing() {
+        let mut proc = Process::new(161);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = probe_host();
+        probe_file(&mut host, b"/bin/prog", 0o755, WASM32_IMAGE);
+        probe_file(&mut host, b"/bin/script", 0o755, b"#!/bin/prog -x\n");
+        for path in [&b"/bin/prog"[..], b"/bin/script"] {
+            assert_eq!(
+                crate::exec_target::probe_spawn_target(&mut proc, &mut locks, &mut host, path),
+                Ok(())
+            );
+        }
+        // Every handle the probe opened was released again.
+        assert_eq!(host.closed_handles.len(), 3);
+        assert!(proc.prepared_exec_targets.is_empty());
+    }
+
+    #[test]
+    fn spawn_probe_refuses_what_a_launch_could_not_run() {
+        let mut proc = Process::new(162);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = probe_host();
+        host.missing_paths.insert(b"/bin/missing".to_vec());
+        probe_file(&mut host, b"/bin/text", 0o755, b"echo hi\n");
+        probe_file(&mut host, b"/bin/noexec", 0o644, WASM32_IMAGE);
+        probe_file(&mut host, b"/bin/orphan", 0o755, b"#!/bin/missing\n");
+        probe_file(&mut host, b"/bin/inner", 0o755, b"#!/bin/prog\n");
+        probe_file(&mut host, b"/bin/nested", 0o755, b"#!/bin/inner\n");
+        let mut probe = |path: &[u8]| {
+            crate::exec_target::probe_spawn_target(&mut proc, &mut locks, &mut host, path)
+        };
+        assert_eq!(probe(b"/bin/missing"), Err(Errno::ENOENT));
+        assert_eq!(probe(b"/bin/text"), Err(Errno::ENOEXEC));
+        assert_eq!(probe(b"/bin/noexec"), Err(Errno::EACCES));
+        assert_eq!(probe(b"/bin/orphan"), Err(Errno::ENOENT));
+        assert_eq!(probe(b"/bin/nested"), Err(Errno::ENOEXEC));
+    }
+
+    #[test]
+    fn spawn_request_is_read_from_the_caller_and_bounded_like_startup() {
+        fn blob(argv: &[&[u8]]) -> Vec<u8> {
+            let mut strings = Vec::new();
+            let mut offsets = Vec::new();
+            for arg in argv {
+                offsets.push(strings.len() as u32);
+                strings.extend_from_slice(arg);
+                strings.push(0);
+            }
+            let mut out = Vec::new();
+            out.extend_from_slice(&(argv.len() as u32).to_le_bytes());
+            out.extend_from_slice(&[0; 4]); // envc
+            out.extend_from_slice(&[0; 4]); // actions
+            out.extend_from_slice(&[0; 4]); // attr flags
+            out.extend_from_slice(&[0; 4]); // pgrp
+            out.extend_from_slice(&[0; 4]); // pad
+            out.extend_from_slice(&[0; 16]); // sigdef + sigmask
+            for offset in offsets {
+                out.extend_from_slice(&offset.to_le_bytes());
+            }
+            out.extend_from_slice(&strings);
+            out
+        }
+        let mut host = MockHostIO::new();
+        host.proc_memory = alloc::vec![0u8; 0x20000];
+        host.proc_memory[0x100..0x10a].copy_from_slice(b"/bin/prog\0");
+        let small = blob(&[b"prog", b"arg"]);
+        host.proc_memory[0x200..0x200 + small.len()].copy_from_slice(&small);
+        let (path, parsed) =
+            crate::spawn::read_request(&mut host, 7, 4, 0x100, 10, 0x200, small.len()).unwrap();
+        assert_eq!(path, b"/bin/prog");
+        assert_eq!(parsed.argv, alloc::vec![b"prog".to_vec(), b"arg".to_vec()]);
+
+        // Outside the caller's memory is EFAULT, not a kernel fault.
+        assert_eq!(
+            crate::spawn::read_request(&mut host, 7, 4, 0x100, 10, 0x1ffff, small.len()).err(),
+            Some(Errno::EFAULT)
+        );
+        // One entry above the per-entry transport limit is E2BIG.
+        let long = alloc::vec![b'a'; wasm_posix_shared::platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES + 1];
+        let big = blob(&[b"prog", &long]);
+        host.proc_memory.resize(0x200 + big.len(), 0);
+        host.proc_memory[0x200..0x200 + big.len()].copy_from_slice(&big);
+        assert_eq!(
+            crate::spawn::read_request(&mut host, 7, 4, 0x100, 10, 0x200, big.len()).err(),
+            Some(Errno::E2BIG)
+        );
+        assert_eq!(
+            crate::spawn::read_request(&mut host, 7, 4, 0x100, 4096, 0x200, small.len()).err(),
+            Some(Errno::ENAMETOOLONG)
+        );
+
+        // ARG_MAX counts one pointer per entry at the caller's width: 4,096
+        // entries of 1,016 bytes fit a wasm32 caller and not a wasm64 one.
+        let entry = alloc::vec![b'e'; 1016];
+        let many: Vec<&[u8]> = (0..4096).map(|_| entry.as_slice()).collect();
+        let wide = blob(&many);
+        host.proc_memory.resize(0x200 + wide.len(), 0);
+        host.proc_memory[0x200..0x200 + wide.len()].copy_from_slice(&wide);
+        assert!(crate::spawn::read_request(&mut host, 7, 4, 0x100, 10, 0x200, wide.len()).is_ok());
+        assert_eq!(
+            crate::spawn::read_request(&mut host, 7, 8, 0x100, 10, 0x200, wide.len()).err(),
+            Some(Errno::E2BIG)
+        );
+    }
+
+    #[test]
+    fn exec_admission_names_a_script_a_program_or_the_refusal() {
+        let mut proc = Process::new(163);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        let admit = |proc: &Process, token| {
+            crate::exec_target::admit(proc, pid, token, wasm_posix_shared::ABI_VERSION)
+        };
+        let observe = |proc: &mut Process, host: &mut MockHostIO, token, len| {
+            let mut bytes = alloc::vec![0u8; len];
+            crate::exec_target::read(proc, host, pid, token, 0, &mut bytes).unwrap();
+        };
+
+        let script = prepare_test_exec_with_bytes(
+            &mut proc, &mut locks, &mut host, b"/bin/s", b"#!/bin/sh -e\n",
+        );
+        // Decided only from the bytes the target committed to, so not before
+        // the host has read them.
+        assert!(admit(&proc, script).is_err());
+        observe(&mut proc, &mut host, script, 13);
+        match admit(&proc, script).unwrap() {
+            crate::exec_target::Admission::Script(s) => {
+                assert_eq!(s.interpreter, "/bin/sh");
+                assert_eq!(s.argument.as_deref(), Some("-e"));
+            }
+            _ => panic!("a #! target is a script"),
+        }
+
+        let program = prepare_test_exec_with_bytes(
+            &mut proc, &mut locks, &mut host, b"/bin/p", WASM32_IMAGE,
+        );
+        observe(&mut proc, &mut host, program, WASM32_IMAGE.len());
+        assert!(matches!(
+            admit(&proc, program).unwrap(),
+            crate::exec_target::Admission::Program
+        ));
+
+        let text = prepare_test_exec_with_bytes(
+            &mut proc, &mut locks, &mut host, b"/bin/t", b"plain text",
+        );
+        observe(&mut proc, &mut host, text, 10);
+        assert!(matches!(
+            admit(&proc, text).unwrap(),
+            crate::exec_target::Admission::Refused(reasons) if !reasons.is_empty()
+        ));
+    }
+
     #[test]
     fn exec_target_pathname_execveat_resolves_relative_to_live_dirfd() {
         let mut proc = Process::new(101);
@@ -50490,7 +53872,180 @@ impl HostIO for RelSymlinkMock {
         )
         .unwrap();
         assert_eq!(proc.exec_generation, 1);
-        assert_eq!(host.closed_handles, vec![100]);
+        // The image keeps the object it executed even though its path was
+        // renamed away, unlinked and replaced: `/proc/self/exe` names it by
+        // the path it was executed through, not by what that path names now.
+        assert!(host.closed_handles.is_empty());
+        let mut link = [0u8; 64];
+        let n = crate::procfs::procfs_readlink(
+            &proc,
+            &crate::procfs::ProcfsEntry::Exe(pid),
+            &mut link,
+        )
+        .unwrap();
+        assert_eq!(&link[..n], b"/bin/original");
+        // Exit releases it.
+        sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+        assert!(proc.exe.is_none());
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![100]);
+    }
+
+    /// `/proc/self/exe` names and opens the file the image was executed
+    /// through. It used to be `argv[0]` -- the caller's choice, here `sh` --
+    /// which named a different file or none.
+    #[test]
+    fn proc_self_exe_is_the_executed_file_not_argv0() {
+        let mut proc = Process::new(186);
+        let pid = proc.pid;
+        proc.argv = crate::process::ProcessStrings::copy_from(&[b"sh".as_slice()]).unwrap();
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        let mut link = [0u8; 64];
+
+        // No executable attached yet: the truthful answer is ENOENT, not argv.
+        assert_eq!(
+            sys_readlink(&mut proc, &mut host, b"/proc/self/exe", &mut link),
+            Err(Errno::ENOENT),
+        );
+
+        let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/real-shell");
+        let mut image = [0u8; 5];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut image).unwrap();
+        crate::exec_target::commit_process(&mut proc, &mut locks, &mut host, pid, pid, token)
+            .unwrap();
+        let n = sys_readlink(&mut proc, &mut host, b"/proc/self/exe", &mut link).unwrap();
+        assert_eq!(&link[..n], b"/bin/real-shell");
+
+        // Replace the file the path names; the image still reads its own.
+        host.set_file_with_owner(b"/bin/real-shell", 0, 0, S_IFREG | 0o755, b"world");
+        host.prepared_exec_bytes = Some(b"world".to_vec());
+        let fd = sys_open(&mut proc, &mut host, b"/proc/self/exe", O_RDONLY, 0).unwrap();
+        let mut bytes = [0u8; 5];
+        assert_eq!(sys_pread(&mut proc, &mut host, fd, &mut bytes, 0), Ok(5));
+        assert_eq!(&bytes, b"hello");
+        assert_eq!(sys_fstat(&proc, &mut host, fd).unwrap().st_size, 5);
+        assert_eq!(sys_stat(&mut proc, &mut host, b"/proc/self/exe").unwrap().st_size, 5);
+        // Writing to a running executable is ETXTBSY, as on Linux.
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/proc/self/exe", O_RDWR, 0),
+            Err(Errno::ETXTBSY),
+        );
+
+        // The opened description is its own owner of the backing: closing it
+        // leaves the image's, and exit releases the last.
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(host.closed_handles.is_empty());
+        sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+        // Exit also closes the process's stdio handles; the executable's
+        // backing (handle 100) is released exactly once.
+        assert_eq!(host.closed_handles.iter().filter(|&&h| h == 100).count(), 1);
+    }
+
+    /// A fork child runs its parent's image, so it inherits the executable:
+    /// one more owner of the same description, released by its own exit.
+    #[test]
+    fn fork_child_inherits_the_executable() {
+        let mut proc = Process::new(187);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/forker");
+        let mut image = [0u8; 5];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut image).unwrap();
+        crate::exec_target::commit_process(&mut proc, &mut locks, &mut host, pid, pid, token)
+            .unwrap();
+        let exe = proc.exe.unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = crate::fork::serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = crate::fork::deserialize_fork_state(&buf[..written], 188).unwrap();
+        assert_eq!(child.exe, Some(exe));
+        let inherited = child.ofd_table.get(exe.0).unwrap();
+        assert_eq!(inherited.ref_count, 1);
+        assert_eq!(inherited.path, b"/bin/forker");
+    }
+
+    /// A host-supplied program is a host handle onto the host's own bytes: it
+    /// has no name in the namespace, so its link carries ` (deleted)` from the
+    /// start, and the kernel owns the handle -- closing it when the image ends,
+    /// or at once when it refuses it.
+    #[test]
+    fn host_supplied_executable_is_a_handle_the_kernel_releases() {
+        let mut proc = Process::new(189);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/host/program", 0, 0, S_IFREG | 0o755, b"hello");
+        let handle = crate::hostdir::open(&mut host, b"/host/program", O_RDONLY, 0).unwrap();
+
+        crate::exec_target::attach_exe_host_handle(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            handle,
+            b"hello.wasm",
+        )
+        .unwrap();
+        let mut link = [0u8; 64];
+        let n = sys_readlink(&mut proc, &mut host, b"/proc/self/exe", &mut link).unwrap();
+        assert_eq!(&link[..n], b"hello.wasm (deleted)");
+        assert!(host.closed_handles.is_empty());
+        sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![handle]);
+
+        // A refused handle is closed by the refusal.
+        let mut other = Process::new(190);
+        let refused = crate::hostdir::open(&mut host, b"/host/program", O_RDONLY, 0).unwrap();
+        assert_eq!(
+            crate::exec_target::attach_exe_host_handle(
+                &mut other,
+                &mut locks,
+                &mut host,
+                refused,
+                b"",
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![handle, refused]);
+        assert!(other.exe.is_none());
+    }
+
+    #[test]
+    fn host_executable_admission_refusal_closes_only_the_new_handle() {
+        let mut proc = Process::new(191);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/host/program", 0, 0, S_IFREG | 0o755, b"hello");
+        let original = crate::hostdir::open(&mut host, b"/host/program", O_RDONLY, 0).unwrap();
+        crate::exec_target::attach_exe_host_handle(
+            &mut proc, &mut locks, &mut host, original, b"original.wasm",
+        ).unwrap();
+        let executable = proc.exe;
+        let name = b"replacement.wasm";
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let path_credit = {
+            let path = crate::IoBuffer::<u8>::try_with_capacity(
+                name.len() + crate::procfs::EXE_DELETED_SUFFIX.len(),
+            ).unwrap();
+            let credit = crate::io_buffer::IO_MEMORY.usage().0 - baseline;
+            drop(path);
+            credit
+        };
+        for available in [0, path_credit] {
+            let replacement = crate::hostdir::open(&mut host, b"/host/program", O_RDONLY, 0).unwrap();
+            {
+                let _limit = crate::io_buffer::test_budget(baseline + available);
+                assert_eq!(crate::exec_target::attach_exe_host_handle(
+                    &mut proc, &mut locks, &mut host, replacement, name,
+                ), Err(Errno::ENOMEM));
+            }
+            assert_eq!(proc.exe, executable);
+            assert_eq!(host.closed_handles.iter().filter(|&&handle| handle == replacement).count(), 1);
+            assert!(!host.closed_handles.contains(&original));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+        assert_eq!(host.closed_handles.iter().filter(|&&handle| handle == original).count(), 1);
     }
 
     #[test]
@@ -50522,7 +54077,7 @@ impl HostIO for RelSymlinkMock {
             ),
             Err(Errno::EINVAL),
         );
-        assert_eq!(host.closed_handles, vec![100]);
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![100]);
 
         let stale_generation =
             prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/generation");
@@ -50547,7 +54102,7 @@ impl HostIO for RelSymlinkMock {
             ),
             Err(Errno::EINVAL),
         );
-        assert_eq!(host.closed_handles, vec![100, 101]);
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![100, 101]);
 
         proc.exec_generation = 0;
         let wrong_process =
@@ -50563,7 +54118,7 @@ impl HostIO for RelSymlinkMock {
             ),
             Err(Errno::ESRCH),
         );
-        assert_eq!(host.closed_handles, vec![100, 101, 102]);
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![100, 101, 102]);
         assert_eq!(proc.exec_generation, 0);
     }
 
@@ -50642,7 +54197,18 @@ impl HostIO for RelSymlinkMock {
                 assert!(proc.fd_table.get(cloexec_fd).is_err());
                 assert_eq!(proc.exec_generation, 1);
             }
-            assert_eq!(host.closed_handles, vec![100]);
+            // A refused commit gives its lease up; a committed image keeps
+            // the one it was executed through (`Process::exe`).
+            if make_stale {
+                assert_eq!(host.closed_handles, vec![100]);
+                assert!(proc.exe.is_none());
+            } else {
+                assert!(host.closed_handles.is_empty());
+                assert_eq!(
+                    proc.ofd_table.get(proc.exe.unwrap().0).unwrap().host_handle,
+                    100,
+                );
+            }
             assert_eq!(
                 crate::exec_target::commit_spawn(
                     &mut proc,
@@ -50654,7 +54220,9 @@ impl HostIO for RelSymlinkMock {
                 ),
                 Err(Errno::EINVAL),
             );
-            assert_eq!(host.closed_handles, vec![100]);
+            // A repeated commit releases nothing more.
+            let expected: &[i64] = if make_stale { &[100] } else { &[] };
+            assert_eq!(host.closed_handles, expected);
         }
     }
 
@@ -51112,7 +54680,10 @@ impl HostIO for RelSymlinkMock {
             assert!(proc.has_exec);
             assert!(proc.threads.is_empty());
             assert!(proc.prepared_exec_targets.is_empty());
-            assert_eq!(host.closed_handles.len(), 2);
+            // The loser's lease is released; the winner's is the image's
+            // executable now (`Process::exe`).
+            assert_eq!(host.closed_handles.len(), 1);
+            assert!(proc.exe.is_some());
 
             assert_eq!(
                 crate::exec_target::commit_process(
@@ -51126,7 +54697,7 @@ impl HostIO for RelSymlinkMock {
                 Err(Errno::EINVAL),
             );
             assert_eq!(proc.exec_generation, 1);
-            assert_eq!(host.closed_handles.len(), 2);
+            assert_eq!(host.closed_handles.len(), 1);
         }
     }
 
@@ -51380,7 +54951,10 @@ impl HostIO for RelSymlinkMock {
             crate::exec_target::cancel(&mut proc, &mut locks, &mut host, pid, second),
             Err(Errno::EINVAL),
         );
-        assert_eq!(host.closed_handles, vec![101, 100]);
+        // The competitor is released at the commit; the winner stays held as
+        // the image's executable (`Process::exe`).
+        assert_eq!(host.closed_handles, vec![101]);
+        assert!(proc.exe.is_some());
     }
 
     #[test]
@@ -51791,6 +55365,26 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn evioc_gabs_reports_device_position_before_and_after_open() {
+        use wasm_posix_shared::input::{ABS_X, ABS_Y, EVIOCGABS_NR_BASE, WpkInputAbsinfo};
+
+        crate::input::dispatch::push_event(1, 3, ABS_X, 317, 0, 0);
+        let (mut proc, mut host, fd) = open_evdev(618, b"/dev/input/event1");
+        crate::input::dispatch::push_event(1, 3, ABS_Y, 219, 0, 0);
+        // Keyboard/unsupported-axis events must not modify pointer state.
+        crate::input::dispatch::push_event(0, 3, ABS_X, 999, 0, 0);
+        for (axis, value) in [(ABS_X, 317), (ABS_Y, 219)] {
+            let mut buf = [0u8; core::mem::size_of::<WpkInputAbsinfo>()];
+            let req = evioc(2, EVIOCGABS_NR_BASE + axis as u32, buf.len() as u32);
+            sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+            let abs: WpkInputAbsinfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            assert_eq!(abs.value, value);
+        }
+        crate::input::note_absolute_event(1, ABS_X, 0);
+        crate::input::note_absolute_event(1, ABS_Y, 0);
+    }
+
+    #[test]
     fn evioc_grab_is_rejected_with_enotty() {
         // EVIOCGRAB (exclusive grab) is intentionally unsupported: v1 fans
         // every record out to all readers, so honoring it would report
@@ -52164,5 +55758,762 @@ impl HostIO for RelSymlinkMock {
         let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
         assert_eq!(n, 0);
         assert_eq!(pollfd.revents & POLLOUT, 0);
+    }
+
+    // -- Extended attributes: no filesystem supports them yet --------------
+
+    mod xattr_unsupported {
+        use super::*;
+        use crate::xattr::{
+            sys_getxattr, sys_listxattr, sys_removexattr, sys_setxattr, XattrTarget,
+        };
+
+        fn path(path: &[u8]) -> XattrTarget<'_> {
+            XattrTarget::Path { path, follow: true }
+        }
+
+        #[test]
+        fn get_set_and_remove_report_enotsup_on_an_existing_file() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let target = path(b"/tmp/file");
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, target, b"user.a", &mut []),
+                Err(Errno::ENOTSUP)
+            );
+            assert_eq!(
+                sys_setxattr(&mut proc, &mut host, path(b"/tmp/file"), b"user.a", &alloc::vec![0u8; 1], 0),
+                Err(Errno::ENOTSUP)
+            );
+            assert_eq!(
+                sys_removexattr(&mut proc, &mut host, path(b"/tmp/file"), b"user.a"),
+                Err(Errno::ENOTSUP)
+            );
+        }
+
+        #[test]
+        fn list_reports_an_empty_list_on_an_existing_file() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            assert_eq!(sys_listxattr(&mut proc, &mut host, path(b"/tmp/file"), &mut []), Ok(0));
+        }
+
+        #[test]
+        fn a_missing_path_is_reported_before_lack_of_support() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            host.set_missing_path(b"/tmp/missing");
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/missing"), b"user.a", &mut []),
+                Err(Errno::ENOENT)
+            );
+            assert_eq!(
+                sys_setxattr(&mut proc, &mut host, path(b"/tmp/missing"), b"user.a", &alloc::vec![0u8; 1], 0),
+                Err(Errno::ENOENT)
+            );
+            assert_eq!(
+                sys_listxattr(&mut proc, &mut host, path(b"/tmp/missing"), &mut []),
+                Err(Errno::ENOENT)
+            );
+            assert_eq!(
+                sys_removexattr(&mut proc, &mut host, path(b"/tmp/missing"), b"user.a"),
+                Err(Errno::ENOENT)
+            );
+        }
+
+        #[test]
+        fn the_l_variants_do_not_follow_a_dangling_symlink() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            host.set_symlink(b"/tmp/dangling", b"/tmp/nowhere");
+            host.set_missing_path(b"/tmp/nowhere");
+            let no_follow = XattrTarget::Path {
+                path: b"/tmp/dangling",
+                follow: false,
+            };
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, no_follow, b"user.a", &mut []),
+                Err(Errno::ENOTSUP)
+            );
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/dangling"), b"user.a", &mut []),
+                Err(Errno::ENOENT)
+            );
+        }
+
+        #[test]
+        fn names_must_be_one_to_255_bytes() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let long = [b'a'; 256];
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/file"), b"", &mut []),
+                Err(Errno::ERANGE)
+            );
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/file"), &long, &mut []),
+                Err(Errno::ERANGE)
+            );
+            assert_eq!(
+                sys_removexattr(&mut proc, &mut host, path(b"/tmp/file"), b""),
+                Err(Errno::ERANGE)
+            );
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/file"), &long[..255], &mut []),
+                Err(Errno::ENOTSUP)
+            );
+        }
+
+        #[test]
+        fn set_validates_flags_name_and_size_before_the_path() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            host.set_missing_path(b"/tmp/missing");
+            let missing = || path(b"/tmp/missing");
+            assert_eq!(
+                sys_setxattr(&mut proc, &mut host, missing(), b"user.a", &alloc::vec![0u8; 1], 4),
+                Err(Errno::EINVAL)
+            );
+            assert_eq!(
+                sys_setxattr(&mut proc, &mut host, missing(), b"", &alloc::vec![0u8; 1], 0),
+                Err(Errno::ERANGE)
+            );
+            assert_eq!(
+                sys_setxattr(&mut proc, &mut host, missing(), b"user.a", &alloc::vec![0u8; 65_537], 0),
+                Err(Errno::E2BIG)
+            );
+            for flags in [0, 1, 2, 3] {
+                assert_eq!(
+                    sys_setxattr(&mut proc, &mut host, path(b"/tmp/file"), b"user.a", &alloc::vec![0u8; 65_536], flags),
+                    Err(Errno::ENOTSUP)
+                );
+            }
+        }
+
+        #[test]
+        fn descriptor_variants_reject_closed_and_path_only_descriptors() {
+            let mut proc = Process::new(81_100);
+            let mut host = MockHostIO::new();
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, XattrTarget::Fd(99), b"user.a", &mut []),
+                Err(Errno::EBADF)
+            );
+            assert_eq!(
+                sys_listxattr(&mut proc, &mut host, XattrTarget::Fd(99), &mut []),
+                Err(Errno::EBADF)
+            );
+            let path_only = sys_open(&mut proc, &mut host, b"/tmp/path-only", O_PATH, 0).unwrap();
+            assert_eq!(
+                sys_setxattr(&mut proc, &mut host, XattrTarget::Fd(path_only), b"user.a", &alloc::vec![0u8; 1], 0),
+                Err(Errno::EBADF)
+            );
+            let fd = sys_open(&mut proc, &mut host, b"/tmp/file", O_RDWR | O_CREAT, 0o644).unwrap();
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, XattrTarget::Fd(fd), b"user.a", &mut []),
+                Err(Errno::ENOTSUP)
+            );
+            assert_eq!(sys_listxattr(&mut proc, &mut host, XattrTarget::Fd(fd), &mut []), Ok(0));
+            assert_eq!(
+                sys_removexattr(&mut proc, &mut host, XattrTarget::Fd(fd), b"user.a"),
+                Err(Errno::ENOTSUP)
+            );
+        }
+    }
+
+    mod exchange_devices {
+        use super::*;
+        use crate::exchange::device::tests::TestGuard as ExchangeGuard;
+        use crate::exchange::EXCHANGE_GID;
+
+        const EVENTS: &[u8] = b"/run/kandelo/exchange/events";
+        const XATTR_CREATE_FLAG: u32 = crate::xattr::XATTR_CREATE;
+        const XATTR_REPLACE_FLAG: u32 = crate::xattr::XATTR_REPLACE;
+        const CLONE: &[u8] = b"/run/kandelo/exchange/work/clone";
+
+        fn read_text(proc: &mut Process, host: &mut MockHostIO, fd: i32) -> Result<Vec<u8>, Errno> {
+            let mut buf = [0u8; 64];
+            let n = sys_read(proc, host, fd, &mut buf)?;
+            Ok(buf[..n].to_vec())
+        }
+
+        #[test]
+        fn events_has_one_consumer_and_speaks_lines() {
+            let _exchange = ExchangeGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            assert_eq!(sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0), Err(Errno::EBUSY));
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"outputs none\n");
+            assert_eq!(read_text(&mut proc, &mut host, fd), Err(Errno::EAGAIN));
+
+            let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
+            poll_check(&mut proc, &mut host, core::slice::from_mut(&mut pollfd));
+            assert_eq!(pollfd.revents & POLLIN, 0, "nothing to read yet");
+            crate::exchange::device::push_line(b"batch x\n".to_vec());
+            poll_check(&mut proc, &mut host, core::slice::from_mut(&mut pollfd));
+            assert_ne!(pollfd.revents & POLLIN, 0);
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"batch x\n");
+
+            let st = sys_fstat(&proc, &mut host, fd).unwrap();
+            assert_eq!(st.st_mode, S_IFCHR | 0o440);
+            assert_eq!((st.st_uid, st.st_gid), (0, EXCHANGE_GID));
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET), Err(Errno::ESPIPE));
+            assert_eq!(sys_write(&mut proc, &mut host, fd, b"x"), Err(Errno::EBADF));
+
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert!(!crate::exchange::device::consumer_present());
+            let again = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            sys_close(&mut proc, &mut host, again).unwrap();
+        }
+
+        #[test]
+        fn epoll_wakes_on_each_new_events_line() {
+            // An agent may wait on `events` with epoll as well as poll. Each
+            // queued line is a readiness edge for it, including the line
+            // that announces whether outputs are accepted.
+            use wasm_posix_shared::epoll::{EPOLLET, EPOLLIN};
+            let _exchange = ExchangeGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY | O_NONBLOCK, 0).unwrap();
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"outputs none\n");
+            let ep = sys_epoll_create1(&mut proc, 0).unwrap();
+            sys_epoll_ctl(&mut proc, ep, 1, fd, EPOLLIN | EPOLLET, 7).unwrap();
+            let wait = |proc: &mut Process, host: &mut MockHostIO| {
+                sys_epoll_pwait(proc, host, ep, 4, 0, None).unwrap().1
+            };
+            assert!(wait(&mut proc, &mut host).is_empty());
+            crate::exchange::device::push_line(b"batch x\n".to_vec());
+            assert_eq!(wait(&mut proc, &mut host), [(EPOLLIN, 7)]);
+            assert!(wait(&mut proc, &mut host).is_empty(), "one edge per line");
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"batch x\n");
+            crate::exchange::device::set_outputs_accepting(true);
+            assert_eq!(wait(&mut proc, &mut host), [(EPOLLIN, 7)]);
+            sys_close(&mut proc, &mut host, ep).unwrap();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+
+        #[test]
+        fn the_nodes_are_read_only_even_for_root() {
+            let _exchange = ExchangeGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            for node in [EVENTS, CLONE] {
+                assert_eq!(sys_open(&mut proc, &mut host, node, O_RDWR, 0), Err(Errno::EPERM));
+                assert_eq!(sys_open(&mut proc, &mut host, node, O_WRONLY, 0), Err(Errno::EPERM));
+                assert_eq!(
+                    sys_open(&mut proc, &mut host, node, O_RDONLY | O_CREAT | O_EXCL, 0o600),
+                    Err(Errno::EEXIST)
+                );
+            }
+        }
+
+        #[test]
+        fn opening_needs_the_exchange_group() {
+            let _exchange = ExchangeGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            let mut host = MockHostIO::new();
+            let mut outsider = Process::new(2);
+            set_test_credentials(&mut outsider, 1000, 1000, 1000, 1000, &[]);
+            assert_eq!(sys_open(&mut outsider, &mut host, EVENTS, O_RDONLY, 0), Err(Errno::EACCES));
+            assert_eq!(sys_open(&mut outsider, &mut host, CLONE, O_RDONLY, 0), Err(Errno::EACCES));
+            let mut member = Process::new(3);
+            set_test_credentials(&mut member, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let fd = sys_open(&mut member, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            sys_close(&mut member, &mut host, fd).unwrap();
+        }
+
+        #[test]
+        fn the_consumer_acknowledges_a_batch_by_removing_it() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification, Outcome};
+            let mut proc = Process::new(5);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let events = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            let batch = batches::begin(b"drop", 1).unwrap();
+            batches::add_entry(&batch, batches::tests::file(&[b"notes.txt"], 9, 4), 1).unwrap();
+            batches::commit(&batch).unwrap();
+            let dir = batches::batch_path(&batch);
+            let mut file = dir.clone();
+            file.extend_from_slice(b"/notes.txt");
+
+            // The consumer may not change an entry, but may remove it.
+            assert_eq!(sys_open(&mut proc, &mut host, &file, O_RDWR, 0), Err(Errno::EACCES));
+            sys_unlink(&mut proc, &mut host, &file).unwrap();
+            sys_rmdir(&mut proc, &mut host, &dir).unwrap();
+            let notes = batches::take_notifications();
+            assert!(notes.contains(&Notification::Settled {
+                batch,
+                outcome: Outcome::Removed,
+                status: Vec::new(),
+            }));
+            assert!(notes.contains(&Notification::SourceReleased { source: 9 }));
+            sys_close(&mut proc, &mut host, events).unwrap();
+        }
+
+        #[test]
+        fn exchange_files_carry_user_attributes_under_the_exchange_rules() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification};
+            use crate::exchange::ids;
+            use crate::xattr::{sys_getxattr, sys_listxattr, sys_removexattr, sys_setxattr, XattrTarget};
+            let mut proc = Process::new(6);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let events = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            let batch = batches::begin(b"drop", 1).unwrap();
+            let mut entry = batches::tests::file(&[b"photo.jpg"], 11, 2);
+            entry.mime_type = Some(b"image/jpeg".to_vec());
+            let entry_id = batches::add_entry(&batch, entry, 1).unwrap();
+            batches::commit(&batch).unwrap();
+            let dir = batches::batch_path(&batch);
+            let mut photo = dir.clone();
+            photo.extend_from_slice(b"/photo.jpg");
+            fn at(path: &[u8]) -> XattrTarget<'_> {
+                XattrTarget::Path { path, follow: true }
+            }
+
+            // Reading inputs' metadata.
+            let mut buf = [0u8; 64];
+            let n = sys_getxattr(&mut proc, &mut host, at(&photo), b"user.mime_type", &mut buf).unwrap();
+            assert_eq!(&buf[..n], b"image/jpeg");
+            assert_eq!(sys_getxattr(&mut proc, &mut host, at(&photo), b"user.kandelo.id", &mut []), Ok(36));
+            let n = sys_getxattr(&mut proc, &mut host, at(&photo), b"user.kandelo.id", &mut buf).unwrap();
+            assert_eq!(&buf[..n], ids::format(&entry_id));
+            assert_eq!(sys_getxattr(&mut proc, &mut host, at(&photo), b"user.kandelo.id", &mut [0u8; 8]), Err(Errno::ERANGE));
+            assert_eq!(sys_getxattr(&mut proc, &mut host, at(&photo), b"user.other", &mut buf), Err(Errno::ENODATA));
+            assert_eq!(sys_getxattr(&mut proc, &mut host, at(&photo), b"trusted.a", &mut buf), Err(Errno::ENOTSUP));
+            let n = sys_listxattr(&mut proc, &mut host, at(&photo), &mut buf).unwrap();
+            assert_eq!(&buf[..n], b"user.kandelo.id\0user.mime_type\0");
+
+            // Inputs are read-only; the batch's status is the consumer's to set.
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&photo), b"user.mime_type", b"x", 0), Err(Errno::EACCES));
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&dir), b"user.kandelo.status", b"saving", 0), Ok(()));
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&dir), b"user.kandelo.source", b"x", 0), Err(Errno::EPERM));
+            assert!(batches::take_notifications().contains(&Notification::Status { batch, status: b"saving".to_vec() }));
+
+            // Session files take metadata and provenance.
+            let session = sys_open(&mut proc, &mut host, CLONE, O_RDONLY, 0).unwrap();
+            let number = read_text(&mut proc, &mut host, session).unwrap();
+            let mut out = b"/run/kandelo/exchange/work/".to_vec();
+            out.extend_from_slice(&number[..number.len() - 1]);
+            out.extend_from_slice(b"/sheet.pdf");
+            let fd = sys_open(&mut proc, &mut host, &out, O_WRONLY | O_CREAT, 0o644).unwrap();
+            assert_eq!(sys_setxattr(&mut proc, &mut host, XattrTarget::Fd(fd), b"user.mime_type", b"application/pdf", 0), Ok(()));
+            let mut provenance = ids::format(&entry_id).to_vec();
+            provenance.push(b'\n');
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&out), b"user.kandelo.derived_from", &provenance, XATTR_CREATE_FLAG), Ok(()));
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&out), b"user.kandelo.derived_from", &provenance, XATTR_CREATE_FLAG), Err(Errno::EEXIST));
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&out), b"user.kandelo.derived_from", b"nonsense", 0), Err(Errno::EINVAL));
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&out), b"user.kandelo.id", b"x", 0), Err(Errno::EPERM));
+            assert_eq!(sys_removexattr(&mut proc, &mut host, at(&out), b"user.mime_type"), Ok(()));
+            assert_eq!(sys_removexattr(&mut proc, &mut host, at(&out), b"user.mime_type"), Err(Errno::ENODATA));
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&out), b"user.x", b"1", XATTR_REPLACE_FLAG), Err(Errno::ENODATA));
+
+            // Devices hold no attributes.
+            assert_eq!(sys_getxattr(&mut proc, &mut host, at(EVENTS), b"user.a", &mut buf), Err(Errno::ENODATA));
+            assert_eq!(sys_listxattr(&mut proc, &mut host, at(EVENTS), &mut buf), Ok(0));
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            sys_close(&mut proc, &mut host, session).unwrap();
+            sys_close(&mut proc, &mut host, events).unwrap();
+        }
+
+        fn open_session(proc: &mut Process, host: &mut MockHostIO) -> (i32, Vec<u8>) {
+            let fd = sys_open(proc, host, CLONE, O_RDONLY, 0).unwrap();
+            let number = read_text(proc, host, fd).unwrap();
+            let mut dir = b"/run/kandelo/exchange/work/".to_vec();
+            dir.extend_from_slice(&number[..number.len() - 1]);
+            (fd, dir)
+        }
+
+        fn join(dir: &[u8], name: &[u8]) -> Vec<u8> {
+            let mut path = dir.to_vec();
+            path.push(b'/');
+            path.extend_from_slice(name);
+            path
+        }
+
+        #[test]
+        fn publishing_is_a_rename_from_a_session_that_freezes_the_output() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification};
+            let mut proc = Process::new(7);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let (session, dir) = open_session(&mut proc, &mut host);
+            let staged = join(&dir, b"sheet.pdf");
+            let fd = sys_open(&mut proc, &mut host, &staged, O_WRONLY | O_CREAT, 0o644).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, fd, b"%PDF").unwrap(), 4);
+            crate::xattr::sys_setxattr(
+                &mut proc, &mut host, crate::xattr::XattrTarget::Fd(fd), b"user.mime_type", b"application/pdf", 0,
+            )
+            .unwrap();
+            let published = b"/run/kandelo/exchange/outbox/sheet.pdf";
+            assert_eq!(sys_rename(&mut proc, &mut host, &staged, published), Err(Errno::ENXIO), "no listener");
+            crate::exchange::device::set_outputs_accepting(true);
+            assert_eq!(sys_rename(&mut proc, &mut host, &staged, published), Err(Errno::EBUSY), "still open");
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            // A second name would let the same file be published twice.
+            let alias = join(&dir, b"alias.pdf");
+            sys_link(&mut proc, &mut host, &staged, &alias).unwrap();
+            assert_eq!(sys_rename(&mut proc, &mut host, &staged, published), Err(Errno::EBUSY), "linked twice");
+            sys_unlink(&mut proc, &mut host, &alias).unwrap();
+            sys_rename(&mut proc, &mut host, &staged, published).unwrap();
+            let notes = batches::take_notifications();
+            let Some(Notification::OutputPublished { output, name, size, mime_type, derived_from, .. }) = notes.last().cloned() else {
+                panic!("no publication in {notes:?}");
+            };
+            assert_eq!((name.as_slice(), size, mime_type.as_deref()), (&b"sheet.pdf"[..], 4, Some(&b"application/pdf"[..])));
+            assert!(derived_from.is_empty());
+
+            // Frozen: no write, no change of metadata, no rename; unlink withdraws.
+            assert_eq!(sys_open(&mut proc, &mut host, published, O_RDWR, 0), Err(Errno::EPERM));
+            assert_eq!(sys_chmod(&mut proc, &mut host, published, 0o600), Err(Errno::EPERM));
+            assert_eq!(
+                sys_rename(&mut proc, &mut host, published, b"/run/kandelo/exchange/outbox/other.pdf"),
+                Err(Errno::EPERM)
+            );
+            let again = join(&dir, b"sheet.pdf");
+            let fd = sys_open(&mut proc, &mut host, &again, O_WRONLY | O_CREAT, 0o644).unwrap();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert_eq!(sys_rename(&mut proc, &mut host, &again, published), Err(Errno::EEXIST));
+            sys_unlink(&mut proc, &mut host, published).unwrap();
+            assert!(batches::take_notifications().contains(&Notification::OutputWithdrawn { output }));
+            sys_close(&mut proc, &mut host, session).unwrap();
+        }
+
+        #[test]
+        fn a_host_stream_input_is_a_fifo_the_host_writes() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification};
+            use crate::exchange::streams;
+            let mut proc = Process::new(9);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let events = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            let batch = batches::begin(b"api", 1).unwrap();
+            batches::add_entry(&batch, batches::tests::stream(&[b"feed"], 31), 1).unwrap();
+            batches::add_entry(&batch, batches::tests::stream(&[b"broken"], 32), 1).unwrap();
+            batches::commit(&batch).unwrap();
+            let dir = batches::batch_path(&batch);
+            let feed = join(&dir, b"feed");
+            let broken = join(&dir, b"broken");
+            let st = sys_stat(&mut proc, &mut host, &feed).unwrap();
+            assert_eq!((st.st_mode, st.st_size), (S_IFIFO | 0o440, 0));
+            assert!(batches::take_notifications().contains(&Notification::StreamDemand { source: 31, free: 65536 }));
+
+            // The host is the writer, so opening for read does not block, and
+            // an empty read waits for the host.
+            let fd = sys_open(&mut proc, &mut host, &feed, O_RDONLY | O_NONBLOCK, 0).unwrap();
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET), Err(Errno::ESPIPE));
+            assert_eq!(read_text(&mut proc, &mut host, fd), Err(Errno::EAGAIN));
+            assert_eq!(streams::push_input(31, b"hello "), Ok(6));
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"hello ");
+            assert!(batches::take_notifications().contains(&Notification::StreamDemand { source: 31, free: 65536 }));
+            // Backpressure: the host writes only what fits.
+            let big = alloc::vec![b'x'; 70_000];
+            assert_eq!(streams::push_input(31, &big), Ok(65536));
+            assert_eq!(streams::push_input(31, b"more"), Ok(0));
+            let mut drain = alloc::vec![0u8; 65536];
+            assert_eq!(sys_read(&mut proc, &mut host, fd, &mut drain), Ok(65536));
+            // A clean end is end-of-file.
+            streams::end_input(31, false).unwrap();
+            assert_eq!(streams::push_input(31, b"late"), Err(Errno::EPIPE));
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"");
+
+            // A failed host stream is EIO after what was buffered: never EOF.
+            let bad = sys_open(&mut proc, &mut host, &broken, O_RDONLY | O_NONBLOCK, 0).unwrap();
+            streams::push_input(32, b"part").unwrap();
+            streams::end_input(32, true).unwrap();
+            assert_eq!(read_text(&mut proc, &mut host, bad).unwrap(), b"part");
+            assert_eq!(read_text(&mut proc, &mut host, bad), Err(Errno::EIO));
+
+            // Inputs stay read-only, even to root.
+            assert_eq!(sys_open(&mut proc, &mut host, &feed, O_WRONLY | O_NONBLOCK, 0), Err(Errno::EPERM));
+            let mut root = Process::new(13);
+            assert_eq!(sys_open(&mut root, &mut host, &feed, O_RDWR | O_NONBLOCK, 0), Err(Errno::EPERM));
+
+            // Once no name and no reader remain, the sources are released.
+            batches::take_notifications();
+            sys_unlink(&mut proc, &mut host, &feed).unwrap();
+            assert!(!batches::take_notifications().contains(&Notification::SourceReleased { source: 31 }), "still open");
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert!(batches::take_notifications().contains(&Notification::SourceReleased { source: 31 }));
+            sys_close(&mut proc, &mut host, bad).unwrap();
+            sys_unlink(&mut proc, &mut host, &broken).unwrap();
+            sys_rmdir(&mut proc, &mut host, &dir).unwrap();
+            assert!(batches::take_notifications().contains(&Notification::SourceReleased { source: 32 }));
+            assert_eq!(streams::push_input(31, b"x"), Err(Errno::ENOENT));
+            sys_close(&mut proc, &mut host, events).unwrap();
+        }
+
+        #[test]
+        fn a_stream_that_ended_before_anyone_opened_it_still_reads_to_eof() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches;
+            use crate::exchange::streams;
+            let mut proc = Process::new(14);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let events = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            let batch = batches::begin(b"api", 1).unwrap();
+            batches::add_entry(&batch, batches::tests::stream(&[b"short"], 51), 1).unwrap();
+            batches::commit(&batch).unwrap();
+            let short = join(&batches::batch_path(&batch), b"short");
+            // Bytes flow only while a reader exists: that is the backpressure.
+            assert_eq!(streams::push_input(51, b"early"), Ok(0));
+            // A first reader takes everything; then the stream ends.
+            let first = sys_open(&mut proc, &mut host, &short, O_RDONLY | O_NONBLOCK, 0).unwrap();
+            assert_eq!(streams::push_input(51, b"all of it"), Ok(9));
+            assert_eq!(read_text(&mut proc, &mut host, first).unwrap(), b"all of it");
+            sys_close(&mut proc, &mut host, first).unwrap();
+            streams::end_input(51, false).unwrap();
+            // A later blocking open does not wait for a writer that will never
+            // write again (the host keeps its endpoint), and reads end-of-file.
+            let fd = sys_open(&mut proc, &mut host, &short, O_RDONLY, 0).unwrap();
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"", "end-of-file, not EAGAIN");
+            let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
+            poll_check(&mut proc, &mut host, core::slice::from_mut(&mut pollfd));
+            assert_ne!(pollfd.revents & POLLHUP, 0, "a finished stream hangs up");
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            sys_close(&mut proc, &mut host, events).unwrap();
+        }
+
+        #[test]
+        fn a_discarded_batch_takes_its_stream_names_with_it() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification};
+            let mut proc = Process::new(10);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let events = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            let batch = batches::begin(b"api", 1).unwrap();
+            batches::add_entry(&batch, batches::tests::stream(&[b"feed"], 41), 1).unwrap();
+            batches::commit(&batch).unwrap();
+            let feed = join(&batches::batch_path(&batch), b"feed");
+            batches::cancel(&batch).unwrap();
+            assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(&feed), None);
+            assert!(batches::take_notifications().contains(&Notification::SourceReleased { source: 41 }));
+            sys_close(&mut proc, &mut host, events).unwrap();
+        }
+
+        #[test]
+        fn a_published_fifo_is_a_streamed_output_the_host_reads() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification};
+            use crate::exchange::outputs;
+            use crate::exchange::streams::{self, OutputRead};
+            use crate::xattr::{sys_setxattr, XattrTarget};
+            let mut proc = Process::new(11);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            crate::exchange::device::set_outputs_accepting(true);
+            let (session, dir) = open_session(&mut proc, &mut host);
+            let staged = join(&dir, b"capture.webm");
+            sys_mkfifo(&mut proc, &mut host, &staged, 0o600).unwrap();
+            let published: &[u8] = b"/run/kandelo/exchange/outbox/capture.webm";
+            // Its writer opens only after publishing.
+            let early = sys_open(&mut proc, &mut host, &staged, O_RDWR, 0).unwrap();
+            assert_eq!(sys_rename(&mut proc, &mut host, &staged, published), Err(Errno::EBUSY));
+            sys_close(&mut proc, &mut host, early).unwrap();
+            sys_rename(&mut proc, &mut host, &staged, published).unwrap();
+            let notes = batches::take_notifications();
+            let Some(Notification::OutputPublished { output, stream, size, .. }) = notes.last().cloned() else {
+                panic!("no publication in {notes:?}");
+            };
+            assert_eq!((stream, size), (true, 0));
+
+            // No reader until the host starts: a non-blocking writer's open is ENXIO.
+            assert_eq!(sys_open(&mut proc, &mut host, published, O_WRONLY | O_NONBLOCK, 0), Err(Errno::ENXIO));
+            let mut buf = [0u8; 16];
+            assert_eq!(streams::read_output(&output, &mut buf), Err(Errno::EINVAL), "not started");
+            streams::start_output(&output).unwrap();
+            assert_eq!(streams::read_output(&output, &mut buf), Ok(OutputRead::Wait), "no writer yet");
+            let writer = sys_open(&mut proc, &mut host, published, O_WRONLY | O_NONBLOCK, 0).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, writer, b"frame"), Ok(5));
+            assert!(batches::take_notifications().contains(&Notification::StreamReadable { output }));
+            assert_eq!(streams::read_output(&output, &mut buf), Ok(OutputRead::Bytes(5)));
+            assert_eq!(&buf[..5], b"frame");
+
+            // The end is declared before closing, once, and seals the stream.
+            let at = XattrTarget::Path { path: published, follow: true };
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at, b"user.kandelo.end", b"finished", 0), Err(Errno::EINVAL));
+            sys_setxattr(&mut proc, &mut host, XattrTarget::Fd(writer), b"user.kandelo.end", b"complete", 0).unwrap();
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at, b"user.kandelo.end", b"aborted no", 0), Err(Errno::EPERM));
+            assert_eq!(sys_write(&mut proc, &mut host, writer, b"more"), Err(Errno::EPERM));
+            assert_eq!(streams::read_output(&output, &mut buf), Ok(OutputRead::Wait), "the writer is open");
+            sys_close(&mut proc, &mut host, writer).unwrap();
+            assert_eq!(streams::read_output(&output, &mut buf), Ok(OutputRead::End));
+            assert_eq!(outputs::end_state(&output), Ok(Some(b"complete".to_vec())));
+            outputs::release_output(&output).unwrap();
+            assert!(sys_lstat(&mut proc, &mut host, published).is_err());
+            assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(published), None);
+            sys_close(&mut proc, &mut host, session).unwrap();
+        }
+
+        #[test]
+        fn releasing_an_unread_stream_frees_a_writer_waiting_in_open() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+            set_test_current_tid(0);
+            use crate::exchange::batches::{self, Notification};
+            use crate::exchange::outputs;
+            let mut proc = Process::new(15);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            crate::exchange::device::set_outputs_accepting(true);
+            let (session, dir) = open_session(&mut proc, &mut host);
+            let staged = join(&dir, b"never-read");
+            sys_mkfifo(&mut proc, &mut host, &staged, 0o600).unwrap();
+            let published: &[u8] = b"/run/kandelo/exchange/outbox/never-read";
+            sys_rename(&mut proc, &mut host, &staged, published).unwrap();
+            let Some(Notification::OutputPublished { output, .. }) = batches::take_notifications().last().cloned() else {
+                panic!("no publication");
+            };
+            // The writer blocks in open: the host has not started reading.
+            assert_eq!(sys_open(&mut proc, &mut host, published, O_WRONLY, 0), Err(Errno::EAGAIN));
+            // The host's lease ends without reading. The open completes, and
+            // the writer's pipe is broken rather than waiting forever.
+            outputs::release_output(&output).unwrap();
+            let writer = sys_open(&mut proc, &mut host, published, O_WRONLY, 0).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, writer, b"x"), Err(Errno::EPIPE));
+            sys_close(&mut proc, &mut host, writer).unwrap();
+            sys_close(&mut proc, &mut host, session).unwrap();
+        }
+
+        #[test]
+        fn ending_a_stream_lease_early_breaks_the_writers_pipe() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification};
+            use crate::exchange::{outputs, streams};
+            let mut proc = Process::new(12);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            crate::exchange::device::set_outputs_accepting(true);
+            let (session, dir) = open_session(&mut proc, &mut host);
+            let staged = join(&dir, b"log");
+            sys_mkfifo(&mut proc, &mut host, &staged, 0o600).unwrap();
+            let published: &[u8] = b"/run/kandelo/exchange/outbox/log";
+            sys_rename(&mut proc, &mut host, &staged, published).unwrap();
+            let Some(Notification::OutputPublished { output, .. }) = batches::take_notifications().last().cloned() else {
+                panic!("no publication");
+            };
+            streams::start_output(&output).unwrap();
+            let writer = sys_open(&mut proc, &mut host, published, O_WRONLY | O_NONBLOCK, 0).unwrap();
+            outputs::release_output(&output).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, writer, b"x"), Err(Errno::EPIPE));
+            assert!(proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE));
+            sys_close(&mut proc, &mut host, writer).unwrap();
+
+            // At most 8 unfinished streams await the host.
+            for n in 0..streams::MAX_UNFINISHED_OUTPUTS {
+                let name = alloc::format!("s{n}");
+                let staged = join(&dir, name.as_bytes());
+                sys_mkfifo(&mut proc, &mut host, &staged, 0o600).unwrap();
+                let published = join(b"/run/kandelo/exchange/outbox", name.as_bytes());
+                sys_rename(&mut proc, &mut host, &staged, &published).unwrap();
+            }
+            let staged = join(&dir, b"one-more");
+            sys_mkfifo(&mut proc, &mut host, &staged, 0o600).unwrap();
+            assert_eq!(
+                sys_rename(&mut proc, &mut host, &staged, b"/run/kandelo/exchange/outbox/one-more"),
+                Err(Errno::ENOSPC)
+            );
+            sys_close(&mut proc, &mut host, session).unwrap();
+            assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(&staged), None, "the session took its FIFO");
+        }
+
+        #[test]
+        fn names_appear_only_in_sessions_and_never_change_owners() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches;
+            let mut proc = Process::new(8);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let events = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            let batch = batches::begin(b"drop", 1).unwrap();
+            batches::add_entry(&batch, batches::tests::file(&[b"in.txt"], 21, 1), 1).unwrap();
+            batches::commit(&batch).unwrap();
+            let batch_dir = batches::batch_path(&batch);
+            let input = join(&batch_dir, b"in.txt");
+            let (session, dir) = open_session(&mut proc, &mut host);
+
+            assert_eq!(sys_open(&mut proc, &mut host, b"/run/kandelo/exchange/outbox/x", O_WRONLY | O_CREAT, 0o644), Err(Errno::EPERM));
+            assert_eq!(sys_mkdir(&mut proc, &mut host, b"/run/kandelo/exchange/inbox/x", 0o755), Err(Errno::EPERM));
+            assert_eq!(sys_open(&mut proc, &mut host, &join(&batch_dir, b"new"), O_WRONLY | O_CREAT, 0o644), Err(Errno::EPERM));
+            assert_eq!(sys_rename(&mut proc, &mut host, &input, &join(&dir, b"in.txt")), Err(Errno::EPERM));
+            assert_eq!(sys_link(&mut proc, &mut host, &input, &join(&dir, b"in.txt")), Err(Errno::EPERM));
+            let elsewhere = sys_open(&mut proc, &mut host, b"/tmp/exchange_elsewhere", O_WRONLY | O_CREAT, 0o644).unwrap();
+            sys_close(&mut proc, &mut host, elsewhere).unwrap();
+            assert_eq!(sys_rename(&mut proc, &mut host, b"/tmp/exchange_elsewhere", &join(&dir, b"x")), Err(Errno::EXDEV));
+
+            // Inside a session everything ordinary works.
+            let a = join(&dir, b"a");
+            let fd = sys_open(&mut proc, &mut host, &a, O_WRONLY | O_CREAT, 0o644).unwrap();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            sys_mkdir(&mut proc, &mut host, &join(&dir, b"sub"), 0o755).unwrap();
+            sys_link(&mut proc, &mut host, &a, &join(&dir, b"sub/a")).unwrap();
+            sys_symlink(&mut proc, &mut host, b"a", &join(&dir, b"link")).unwrap();
+            sys_rename(&mut proc, &mut host, &a, &join(&dir, b"b")).unwrap();
+            crate::exchange::device::set_outputs_accepting(true);
+            assert_eq!(
+                sys_rename(&mut proc, &mut host, &join(&dir, b"link"), b"/run/kandelo/exchange/outbox/link"),
+                Err(Errno::EPERM),
+                "symbolic links cannot be published"
+            );
+
+            // Root is bound by the same rules.
+            let mut root = Process::new(9);
+            assert_eq!(sys_unlink(&mut root, &mut host, EVENTS), Err(Errno::EPERM));
+            assert_eq!(sys_rmdir(&mut root, &mut host, &dir), Err(Errno::EPERM));
+            assert_eq!(sys_open(&mut root, &mut host, b"/run/kandelo/exchange/x", O_WRONLY | O_CREAT, 0o644), Err(Errno::EPERM));
+            sys_close(&mut proc, &mut host, session).unwrap();
+            sys_close(&mut proc, &mut host, events).unwrap();
+        }
+
+        #[test]
+        fn a_work_session_lives_exactly_as_long_as_its_description() {
+            let _exchange = ExchangeGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            let mut proc = Process::new(4);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, CLONE, O_RDONLY, 0).unwrap();
+            let number = read_text(&mut proc, &mut host, fd).unwrap();
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"", "then end-of-file");
+            assert_eq!(number.last(), Some(&b'\n'));
+            let mut dir = b"/run/kandelo/exchange/work/".to_vec();
+            dir.extend_from_slice(&number[..number.len() - 1]);
+            let st = crate::tmpfs::lstat(&dir).unwrap();
+            assert_eq!(st.st_mode, S_IFDIR | 0o700);
+            assert_eq!((st.st_uid, st.st_gid), (1000, 1000));
+
+            // A second process inheriting the description (fork) keeps the
+            // session alive past the first close.
+            let handle = crate::exchange::device::ExchangeDevice::from_host_handle(
+                proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap().host_handle,
+            )
+            .unwrap()
+            .host_handle();
+            assert_eq!(crate::descriptor_backing::add_ref_for_ofd(FileType::CharDevice, handle), Ok(true));
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert!(crate::tmpfs::lstat(&dir).is_ok(), "the inherited reference keeps it");
+            assert!(crate::descriptor_backing::release_for_ofd(FileType::CharDevice, handle));
+            assert_eq!(crate::tmpfs::lstat(&dir).unwrap_err(), Errno::ENOENT);
+        }
     }
 }

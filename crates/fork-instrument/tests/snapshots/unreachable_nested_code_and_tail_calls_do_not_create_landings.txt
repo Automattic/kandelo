@@ -1,0 +1,18 @@
+=== references 0080d3fd9716 ===
+[
+    ReferenceAnalysis {
+        function: 0,
+        locals: {},
+        landings: [],
+    },
+    ReferenceAnalysis {
+        function: 1,
+        locals: {},
+        landings: [],
+    },
+    ReferenceAnalysis {
+        function: 2,
+        locals: {},
+        landings: [],
+    },
+]

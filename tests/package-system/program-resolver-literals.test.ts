@@ -169,6 +169,10 @@ function staleFlatPackagePaths(
 }
 
 function sourceFilesUnder(relPath: string): string[] {
+  // WHY: recorded failures and parser fixtures quote historical source and
+  // diagnostics. They are evidence, so treating those quotes as live resolver
+  // calls would make committing a known failure create a new audit failure.
+  if (relPath === "tests/baselines") return [];
   if (ignoredSourcePaths.has(relPath)) return [];
   const absolute = join(repoRoot, relPath);
   if (!existsSync(absolute)) return [];
@@ -276,6 +280,14 @@ function staleLiteralFailures(
 }
 
 describe("program resolver source literals", () => {
+  it("separates historical evidence from authored source without losing tooling", () => {
+    expect(sourceFilesUnder("tests/baselines")).toEqual([]);
+    expect(sourceFilesUnder("tools/xtask/src")).toContain(
+      "tools/xtask/src/test_failures.rs",
+    );
+    expect(auditedSourceFiles()).toContain("README.md");
+  });
+
   it("keeps direct program fixtures outside package directory policy", () => {
     const inventory = readJson<FixtureInventory>(fixtureInventoryPath);
     const legitimatePaths = legitimateFlatResolverPaths(inventory);

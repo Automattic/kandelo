@@ -50,6 +50,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <pthread.h>
 
 /* WPK GPU-tier bo allocator (mirrors wasm_posix_shared::dri). A GPU-tier
  * bo is backed by a host WebGLTexture (+FBO) on the compositor's shared
@@ -96,7 +97,28 @@ struct gbm_surface {
     struct gbm_bo *bos[WPK_GBM_SURFACE_BO_COUNT];
     int in_use[WPK_GBM_SURFACE_BO_COUNT];
     int next;                /* round-robin cursor for lock_front_buffer */
+    struct gbm_surface *live_next;
 };
+
+/* EGL native windows are opaque. Look up our own live handles rather than
+ * interpreting another backend's pointer using the GBM structure layout. */
+static pthread_mutex_t surface_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct gbm_surface *live_surfaces;
+
+int _wpk_gbm_surface_dimensions(const void *window, uint32_t *width, uint32_t *height) {
+    int found = 0;
+    pthread_mutex_lock(&surface_mutex);
+    for (struct gbm_surface *s = live_surfaces; s; s = s->live_next) {
+        if (s == window) {
+            *width = s->width;
+            *height = s->height;
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&surface_mutex);
+    return found;
+}
 
 static uint32_t format_bpp(uint32_t fourcc) {
     /* v1: only the 32-bpp ARGB/XRGB/ABGR/XBGR variants are
@@ -491,6 +513,10 @@ struct gbm_surface *gbm_surface_create(struct gbm_device *gbm,
             return NULL;
         }
     }
+    pthread_mutex_lock(&surface_mutex);
+    s->live_next = live_surfaces;
+    live_surfaces = s;
+    pthread_mutex_unlock(&surface_mutex);
     return s;
 }
 
@@ -564,6 +590,11 @@ int gbm_surface_has_free_buffers(struct gbm_surface *surface) {
 
 void gbm_surface_destroy(struct gbm_surface *surface) {
     if (!surface) return;
+    pthread_mutex_lock(&surface_mutex);
+    struct gbm_surface **link = &live_surfaces;
+    while (*link && *link != surface) link = &(*link)->live_next;
+    if (*link) *link = surface->live_next;
+    pthread_mutex_unlock(&surface_mutex);
     for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++) {
         if (surface->bos[i]) {
             surface->bos[i]->surface = NULL;

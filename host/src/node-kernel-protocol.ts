@@ -1,3 +1,10 @@
+import type {
+  ExchangeNotificationsMessage,
+  ExchangeRangeMessage,
+  ExchangeRangeRequestMessage,
+  ExchangeRequestMessage,
+} from "./exchange-host";
+import type { RemoteSegmentInit } from "./networking/remote-segment-port";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
@@ -5,8 +12,8 @@ export type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
-  GetSpawnScratchCapacityRequestMessage,
   EnumProcsRequestMessage,
   ReadProcMapsRequestMessage,
   SetSyscallTraceMessage,
@@ -38,14 +45,20 @@ export type {
   WakeBlockedWritersMessage,
   HttpRequestMessage,
   WriteVfsFileMessage,
+  ReadVfsFileRangeMessage,
   ProcEventMessage,
+  AttachRemotePeerMessage,
+  RemoteNetworkSnapshotMessage,
+  RemoteNetworkHostMessage,
+  RemoteNetworkJoinMessage,
+  RemoteNetworkLeaveMessage,
 } from "./kernel-protocol-shared";
 import type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
-  GetSpawnScratchCapacityRequestMessage,
   EnumProcsRequestMessage,
   ReadProcMapsRequestMessage,
   SetSyscallTraceMessage,
@@ -77,7 +90,13 @@ import type {
   WakeBlockedWritersMessage,
   HttpRequestMessage,
   WriteVfsFileMessage,
+  ReadVfsFileRangeMessage,
   ProcEventMessage,
+  AttachRemotePeerMessage,
+  RemoteNetworkSnapshotMessage,
+  RemoteNetworkHostMessage,
+  RemoteNetworkJoinMessage,
+  RemoteNetworkLeaveMessage,
 } from "./kernel-protocol-shared";
 
 /**
@@ -112,10 +131,15 @@ export type { HostDiagnostic } from "./host-diagnostic";
 
 export interface InitMessage {
   type: "init";
+  /** Native port ownership passes to this kernel worker during init. */
+  remoteNetwork?: RemoteSegmentInit;
   kernelWasmBytes: ArrayBuffer;
   config: {
     maxWorkers: number;
     maxPages?: number;
+    kernelMaxPages?: number;
+    rootfsMetadataBytes?: number;
+    maxVfsFileReadBytes?: number;
     /**
      * Sampled live-allocation admission budget. Unmediated memory.grow can
      * cross it until the next allocation observes current byte lengths.
@@ -127,29 +151,28 @@ export interface InitMessage {
     useSharedMemory?: boolean;
     /** See `NodeKernelHostOptions.imageBuildDeterminism`. */
     imageBuildDeterminism?: ImageBuildDeterminism;
+    /** Bytes Kandelo exchange's `work/` and `outbox/` may hold. */
+    exchangeByteLimit?: number;
+    exchangeActivation?: "on-demand" | "off";
   };
   /**
-   * Virtual path → immutable host file for spawn-only preflight. Exec never
-   * consults this map and uses only a retained kernel VFS target.
-   */
-  execPrograms?: Record<string, string>;
-  /**
-   * Virtual path → worker-owned bytes for spawn-only preflight through Task
-   * 12. Exec never consults this map.
-   */
-  execProgramBytes?: Record<string, ArrayBuffer>;
-  /**
-   * Bytes of `host/wasm/rootfs.vfs.zst`, read on the main thread and forwarded
-   * to the worker. When present, the worker materialises the default mount
-   * spec (rootfs at `/`, scratch dirs at `/tmp` etc.) and constructs a
-   * `VirtualPlatformIO`. Absent → worker falls back to `NodePlatformIO`
-   * (custom-io / legacy path).
+   * Decoded image bytes forwarded to the worker. Either this or
+   * `rootfsImageFile` selects the kernel-owned rootfs and its mount spec.
+   * With neither source, the worker falls back to `NodePlatformIO`.
    */
   rootfsImage?: ArrayBuffer;
+  rootfsImageFile?: string;
+  rootfsImageIntegrity?: import("./vfs/opfs-image-reader").OpfsImageIntegrity;
+  rootfsPersistentImageBinding?: import("./vfs/image-integrity").PersistentImageReadBinding;
+  experimentalFixedPersistencePath?: string;
+  experimentalResizablePersistencePath?: string;
+  requireExistingRootfsPersistence?: boolean;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
   /** Base used to resolve relative lazy URLs embedded in rootfsImage. */
   rootfsLazyUrlBase?: string;
+  /** Where package members are served; image-owned addresses resolve under it. */
+  rootfsLazyAssetDirectory?: string;
   /** Exhaustive exact-byte lazy transport for this rootfs; no network fallback. */
   rootfsLazyAssets?: ClosedLazyAsset[];
   /** Exhaustive verified sources fetched only on first use of their exact URL. */
@@ -170,6 +193,9 @@ export interface InitMessage {
   /** Attach a real-TCP backend (TcpNetworkBackend) to the worker's PlatformIO
    *  so wasm programs can dial external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
+  /** Attach the egress link with nothing behind its gateway
+   *  (OfflineEgressBackend). Exclusive with `enableTcpNetwork`. */
+  offlineEgressLink?: boolean;
 }
 
 /** Read, cancel or release one worker-owned command family. */
@@ -229,12 +255,6 @@ export interface StatVfsPathMessage {
   type: "stat_vfs_path";
   requestId: number;
   path: string;
-}
-
-export interface ResolveExecResponseMessage {
-  type: "resolve_exec_response";
-  requestId: number;
-  programBytes: ArrayBuffer | null;
 }
 
 /** Report the display size (device pixels) of a CRTC's canvas element.
@@ -311,8 +331,21 @@ export interface ClipboardGuestWaitMessage {
   timeoutMs?: number;
 }
 
+export interface ExportRootfsImageToFileMessage {
+  type: "export_rootfs_image_to_file";
+  requestId: number;
+  path: string;
+}
+
 export type MainToKernelMessage =
   | InitMessage
+  | ExchangeRequestMessage
+  | ExchangeRangeMessage
+  | AttachRemotePeerMessage
+  | RemoteNetworkSnapshotMessage
+  | RemoteNetworkHostMessage
+  | RemoteNetworkJoinMessage
+  | RemoteNetworkLeaveMessage
   | SpawnMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
@@ -330,19 +363,20 @@ export type MainToKernelMessage =
   | TerminateProcessMessage
   | DestroyMessage
   | ExportRootfsImageMessage
+  | ExportRootfsImageToFileMessage
   | ClipboardOfferMessage
   | ClipboardGuestWaitMessage
   | ReadVfsFileMessage
+  | ReadVfsFileRangeMessage
   | ReadVfsDirMessage
   | StatVfsPathMessage
   | WriteVfsFileMessage
   | OwnedJobMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetStorageMetadataMemoryUsageRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
-  | GetSpawnScratchCapacityRequestMessage
   | SignalProcessMessage
-  | ResolveExecResponseMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
@@ -366,12 +400,6 @@ export interface ExitMessage {
   type: "exit";
   pid: number;
   status: number;
-}
-
-export interface ResolveExecRequestMessage {
-  type: "resolve_exec";
-  requestId: number;
-  path: string;
 }
 
 /** Which teardown step `performDestroy` is in. */
@@ -398,6 +426,8 @@ export interface DestroyProgressMessage {
 
 export type KernelToMainMessage =
   | ReadyMessage
+  | ExchangeRangeRequestMessage
+  | ExchangeNotificationsMessage
   | InitErrorMessage
   | KernelFatalMessage
   | ResponseMessage
@@ -406,7 +436,6 @@ export type KernelToMainMessage =
   | StderrMessage
   | HostDiagnosticMessage
   | PtyOutputMessage
-  | ResolveExecRequestMessage
   | ProcEventMessage
   | LazyDownloadMessage
   | DestroyProgressMessage

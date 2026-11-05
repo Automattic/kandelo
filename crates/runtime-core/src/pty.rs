@@ -19,6 +19,7 @@ const PTY_BUF_CAPACITY: usize = 4096;
 ///   master write → line discipline → slave read  (input: keyboard → program)
 ///   slave write  → output processing → master read (output: program → screen)
 pub struct PtyPair {
+    pub index: u32,
     /// Persistent devpts metadata initialized from the creator's effective
     /// credentials. In the absence of a separately configured tty group, the
     /// creator's effective GID is the authoritative tty-group source.
@@ -42,6 +43,7 @@ pub struct PtyPair {
 impl PtyPair {
     fn new(owner_uid: u32, owner_gid: u32) -> Self {
         PtyPair {
+            index: u32::MAX,
             owner_uid,
             owner_gid,
             mode: DEFAULT_SLAVE_MODE,
@@ -79,13 +81,18 @@ impl PtyPair {
     /// Returns an optional signal number if ISIG matched a signal character.
     /// Echo bytes are appended to the output buffer (master read side).
     pub fn process_master_input(&mut self, byte: u8) -> Option<u32> {
+        let byte = self.terminal.translate_input_byte(byte)?;
+        let old_input = self.input_buf.len() + self.terminal.cooked_buffer.len();
+        let old_eof = self.terminal.eof_pending();
+        let old_output = self.output_buf.len();
         let was_readable = self.slave_has_data();
         let had_output = self.master_has_data();
         let opost = self.terminal.c_oflag & crate::terminal::OPOST != 0;
         let onlcr = self.terminal.c_oflag & crate::terminal::ONLCR != 0;
 
-        // process_input_byte handles both ISIG (in any mode) and ICANON line editing
-        let (echo, signal) = self.terminal.process_input_byte(byte);
+        // Translate once, then use that same byte for signals, canonical
+        // editing, noncanonical delivery, and echo.
+        let (echo, signal) = self.terminal.process_translated_input_byte(byte);
 
         // If a signal was generated, flush input_buf too (unless NOFLSH)
         if signal.is_some() && self.terminal.c_lflag & crate::terminal::NOFLSH == 0 {
@@ -109,7 +116,7 @@ impl PtyPair {
         }
 
         // In raw mode (non-canonical), pass byte directly to slave input.
-        // process_input_byte only handles ISIG in raw mode, not regular input.
+        // process_translated_input_byte only handles ISIG in raw mode.
         if !self.terminal.is_canonical() {
             self.input_buf.push_back(byte);
             if self.terminal.c_lflag & crate::terminal::ECHO != 0 {
@@ -120,6 +127,15 @@ impl PtyPair {
                     self.output_buf.push_back(byte);
                 }
             }
+        }
+
+        if self.input_buf.len() + self.terminal.cooked_buffer.len() > old_input
+            || !old_eof && self.terminal.eof_pending()
+        {
+            crate::epoll::notify(crate::epoll::Source::Pty(self.index, false), 0x41);
+        }
+        if self.output_buf.len() > old_output {
+            crate::epoll::notify(crate::epoll::Source::Pty(self.index, true), 0x41);
         }
 
         if (!was_readable && self.slave_has_data()) || (!had_output && self.master_has_data()) {
@@ -154,6 +170,7 @@ impl PtyPair {
             }
         }
         if was_canonical != will_be_canonical {
+            crate::epoll::notify(crate::epoll::Source::Pty(self.index, false), 0x41);
             crate::wakeup::push_pty_readiness();
         }
     }
@@ -205,6 +222,9 @@ impl PtyPair {
     /// Write from the slave side. Does output processing (OPOST) and puts
     /// data into the output buffer for the master to read.
     pub fn slave_write(&mut self, data: &[u8]) -> usize {
+        if !data.is_empty() {
+            crate::epoll::notify(crate::epoll::Source::Pty(self.index, true), 0x41);
+        }
         if !data.is_empty() && !self.master_has_data() {
             crate::wakeup::push_pty_readiness();
         }
@@ -260,7 +280,9 @@ pub fn alloc_pty(owner_uid: u32, owner_gid: u32) -> Option<usize> {
     let table = get_table();
     for (i, slot) in table.iter_mut().enumerate() {
         if slot.is_none() {
-            *slot = Some(PtyPair::new(owner_uid, owner_gid));
+            let mut pair = PtyPair::new(owner_uid, owner_gid);
+            pair.index = i as u32;
+            *slot = Some(pair);
             return Some(i);
         }
     }
@@ -304,6 +326,69 @@ fn reset_table() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_mappings_apply_in_both_terminal_modes() {
+        use crate::terminal::{ECHO, ICANON, ICRNL, IGNCR, INLCR, VEOL};
+
+        let cases: &[(u32, &[u8])] = &[
+            (0, b"0\r\nx!"),
+            (ICRNL, b"0\n\nx!"),
+            (INLCR, b"0\r\rx!"),
+            (ICRNL | INLCR, b"0\n\rx!"),
+            (IGNCR, b"0\nx!"),
+            (IGNCR | ICRNL, b"0\nx!"),
+            (IGNCR | INLCR, b"0\rx!"),
+            (IGNCR | ICRNL | INLCR, b"0\rx!"),
+        ];
+        for canonical in [false, true] {
+            for &(flags, expected) in cases {
+                let mut pty = PtyPair::new(0, 0);
+                pty.terminal.c_iflag = flags;
+                pty.terminal.c_lflag &= !ECHO;
+                if !canonical {
+                    pty.terminal.c_lflag &= !ICANON;
+                }
+                pty.terminal.c_cc[VEOL] = b'!';
+                for &byte in b"0\r\nx!" {
+                    assert_eq!(pty.process_master_input(byte), None);
+                }
+                let mut bytes = [0; 16];
+                let n = pty.slave_read(&mut bytes);
+                assert_eq!(
+                    &bytes[..n],
+                    expected,
+                    "canonical={canonical}, flags={flags:o}"
+                );
+                assert_eq!(pty.slave_read(&mut bytes), 0);
+                assert!(!pty.master_has_data(), "echo remains disabled");
+            }
+        }
+    }
+
+    #[test]
+    fn noncanonical_echo_uses_the_translated_input_byte() {
+        use crate::terminal::{ICANON, ICRNL, IGNCR};
+
+        let mut pty = PtyPair::new(0, 0);
+        pty.terminal.c_lflag &= !ICANON;
+        pty.terminal.c_iflag = ICRNL;
+        pty.process_master_input(b'\r');
+        let mut bytes = [0; 8];
+        assert_eq!(pty.slave_read(&mut bytes), 1);
+        assert_eq!(bytes[0], b'\n');
+        let n = pty.master_read(&mut bytes);
+        assert_eq!(
+            &bytes[..n],
+            b"\r\n",
+            "echo applies output processing after input mapping"
+        );
+
+        pty.terminal.c_iflag |= IGNCR;
+        pty.process_master_input(b'\r');
+        assert!(!pty.slave_has_data());
+        assert!(!pty.master_has_data());
+    }
 
     #[test]
     fn readiness_notifications_follow_input_output_and_mode_transitions() {

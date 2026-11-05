@@ -30,6 +30,7 @@
 import type { InputSource, InputEvent } from "./input-source.js";
 import { INPUT_CODES } from "../generated/abi.js";
 import { charToKey, codeToKey } from "./key-code-table.js";
+import { pointerButtons } from "./pointer-buttons.js";
 import type { ClipboardOfferFailure, ClipboardOfferResult } from "../clipboard.js";
 
 const {
@@ -200,6 +201,11 @@ export class BrowserInputSource implements InputSource {
   // removes the key here; if it arrives after Meta's, the guest sees a
   // second release, which evdev consumers ignore.
   private heldKeys = new Map<string, number>();
+  // Track what was delivered, separately from keys queued behind a paste.
+  // Losing capture must release real presses without delivering a cancelled
+  // paste chord or manufacturing releases for presses the guest never saw.
+  private deliveredDown = [new Set<number>(), new Set<number>()] as const;
+  private pointerActive = false;
   private keysPressedUnderMeta = new Set<string>();
   // The paste gesture (opts.paste). While a paste is pending, keyboard
   // records queue here instead of reaching the guest.
@@ -233,8 +239,9 @@ export class BrowserInputSource implements InputSource {
    * @param opts.copy  Copy-out: on a copy chord over the desktop, the
    *   guest's next selection is written to the host clipboard.
    * @param opts.shouldCapture  Consulted at the top of every handler. When
-   *   it returns `false` the event is left entirely to the browser — no
-   *   `preventDefault`, no evdev emission — so the surrounding app chrome
+   *   it returns `false` new presses stay with the browser. Releases of
+   *   guest-owned keys/buttons still reach evdev without `preventDefault`,
+   *   so focus changes cannot leave them stuck. The surrounding app chrome
    *   (the "New" menu, dialogs, scrollable panels) stays usable while a
    *   demo runs. Bind to `window` for global reach, then scope capture to
    *   the demo stage here (see `demoSurfaceCaptureGate`). Defaults to
@@ -272,12 +279,18 @@ export class BrowserInputSource implements InputSource {
     // decides whether this demo wants it.
     this.bind("keydown", this.onKeyDown, { capture: true });
     this.bind("keyup", this.onKeyUp, { capture: true });
+    // Window blur releases ownership; element blur does not bubble here.
+    this.bind("blur", this.releaseInput);
+    // Reconcile keyboard modifiers before the display's own pointer handler
+    // runs, including when this source does not own pointer coordinates.
+    this.bind("pointerdown", this.onPointerModifiers, { capture: true });
     if (this.opts.paste) this.bind("paste", this.onPaste, { capture: true });
     if (this.opts.pointer !== false) {
       this.bind("pointermove", this.onPointerMove);
       this.bind("pointerdown", this.onPointerDown);
       this.bind("pointerup", this.onPointerUp);
       this.bind("pointerleave", this.onPointerLeave);
+      this.bind("pointercancel", this.onPointerCancel);
     }
     if (this.opts.onResize) this.bind("resize", this.onWindowResize);
     // `wheel` listeners default to passive on window/document, which makes
@@ -295,6 +308,7 @@ export class BrowserInputSource implements InputSource {
   }
 
   stop(): void {
+    this.releaseInput();
     // `removeEventListener` matches on the capture flag as well as the
     // callback, so the options a binding was registered with have to come
     // back with it or a capture-phase listener outlives stop().
@@ -332,7 +346,47 @@ export class BrowserInputSource implements InputSource {
       this.pendingPaste.queue.push({ device, ev_type, code, value });
       return;
     }
-    this.dispatch({ device, ev_type, code, value });
+    this.deliver({ device, ev_type, code, value });
+  }
+
+  private deliver(ev: InputEvent): void {
+    if (ev.ev_type === EV_KEY) {
+      if (ev.value === 1) this.deliveredDown[ev.device].add(ev.code);
+      else if (ev.value === 0) this.deliveredDown[ev.device].delete(ev.code);
+    }
+    this.dispatch?.(ev);
+  }
+
+  private releaseInput(): void {
+    if (this.pendingPaste) clearTimeout(this.pendingPaste.timer);
+    this.pendingPaste = null;
+    this.releaseDevice(0);
+    this.releaseDevice(1);
+    this.pointerActive = false;
+    this.heldKeys.clear();
+    this.heldModifiers.clear();
+    this.keysPressedUnderMeta.clear();
+    this.lastAbsX = null;
+    this.lastAbsY = null;
+  }
+
+  private releaseDevice(device: 0 | 1): void {
+    const keys = [...this.deliveredDown[device]];
+    // Release ordinary keys before their modifiers to preserve chord order.
+    keys.sort((a, b) => Number(MODIFIER_KEY_CODES.has(a)) - Number(MODIFIER_KEY_CODES.has(b)));
+    for (const key of keys) this.emit(device, EV_KEY, key, 0);
+    if (keys.length) this.frame(device);
+  }
+
+  private onPointerCancel(): void {
+    this.releaseDevice(1);
+    this.pointerActive = false;
+    this.lastAbsX = null;
+    this.lastAbsY = null;
+  }
+
+  private onPointerModifiers(e: PointerEvent): void {
+    if (this.shouldCapture(e) && this.syncModifiers(e)) this.frame(0);
   }
 
   private frame(device: 0 | 1): void {
@@ -376,7 +430,7 @@ export class BrowserInputSource implements InputSource {
       && e.getModifierState("CapsLock") === false) {
       return;
     }
-    const key = charToKey(e.key) ?? codeToKey(e.code);
+    const key = this.heldKeys.get(e.code) ?? charToKey(e.key) ?? codeToKey(e.code);
     if (key === null) return;
     if (this.opts.copy && !this.pendingPaste && isCopyChordCandidate(e)) {
       // Before the chord's keys go out, so the wait samples the guest's
@@ -396,31 +450,34 @@ export class BrowserInputSource implements InputSource {
       e.preventDefault();
     }
     this.syncModifiers(e);
-    this.emit(0, EV_KEY, key, e.repeat ? 2 : 1);
+    this.emit(0, EV_KEY, key, e.repeat && this.heldKeys.has(e.code) ? 2 : 1);
     this.heldKeys.set(e.code, key);
     if (this.heldModifiers.has("Meta")) this.keysPressedUnderMeta.add(e.code);
     this.frame(0);
   }
 
   private onKeyUp(e: KeyboardEvent): void {
-    if (!this.shouldCapture(e)) return;
+    const captured = this.shouldCapture(e);
     const modifier = modifierKeyOf(e);
     if (modifier !== null) {
-      e.preventDefault();
+      if (!captured && !this.heldModifiers.has(modifier.kind)) return;
+      if (captured) e.preventDefault();
       if (modifier.kind === "Meta") this.releaseKeysPressedUnderMeta();
       this.emit(0, EV_KEY, this.heldModifiers.get(modifier.kind) ?? modifier.key, 0);
       this.heldModifiers.delete(modifier.kind);
       this.frame(0);
       return;
     }
-    const key = charToKey(e.key) ?? codeToKey(e.code);
+    const held = this.heldKeys.get(e.code);
+    if (!captured && held === undefined) return;
+    // The key value/layout can change while held. Release the exact evdev
+    // code that went down, even if focus moved to another UI control.
+    const key = held ?? charToKey(e.key) ?? codeToKey(e.code);
     if (key === null) return;
-    e.preventDefault();
-    // Forget the key before syncing modifiers: a Meta release synced here
-    // would otherwise release it once on Meta's behalf and once below.
+    if (captured) e.preventDefault();
     this.heldKeys.delete(e.code);
     this.keysPressedUnderMeta.delete(e.code);
-    this.syncModifiers(e);
+    if (captured) this.syncModifiers(e);
     this.emit(0, EV_KEY, key, 0);
     this.frame(0);
   }
@@ -484,7 +541,7 @@ export class BrowserInputSource implements InputSource {
     clearTimeout(pending.timer);
     this.pendingPaste = null;
     if (!failure) {
-      for (const ev of pending.queue) this.dispatch(ev);
+      for (const ev of pending.queue) this.deliver(ev);
       return;
     }
     const dropped = new Set<number>();
@@ -498,7 +555,7 @@ export class BrowserInputSource implements InputSource {
         }
         if (dropped.has(ev.code)) continue;   // repeat or release of a dropped press
       }
-      this.dispatch(ev);
+      this.deliver(ev);
     }
     // The guest never saw those presses; forget them here too.
     for (const [code, key] of this.heldKeys) {
@@ -529,7 +586,8 @@ export class BrowserInputSource implements InputSource {
    * modifier released while the page did not have focus. An event without
    * boolean flags (a synthetic one) leaves the state alone.
    */
-  private syncModifiers(e: KeyboardEvent): void {
+  private syncModifiers(e: Pick<KeyboardEvent, "ctrlKey" | "shiftKey" | "altKey" | "metaKey">): boolean {
+    let changed = false;
     for (const kind of MODIFIER_KINDS) {
       const flag = (e as unknown as Record<string, unknown>)[MODIFIER_FLAG[kind]];
       if (typeof flag !== "boolean") continue;
@@ -538,16 +596,20 @@ export class BrowserInputSource implements InputSource {
         const key = MODIFIER_LEFT_KEY[kind];
         this.emit(0, EV_KEY, key, 1);
         this.heldModifiers.set(kind, key);
+        changed = true;
       } else if (!flag && held !== undefined) {
         if (kind === "Meta") this.releaseKeysPressedUnderMeta();
         this.emit(0, EV_KEY, held, 0);
         this.heldModifiers.delete(kind);
+        changed = true;
       }
     }
+    return changed;
   }
 
   private onPointerMove(e: PointerEvent): void {
     if (!this.shouldCapture(e)) {
+      if (e.buttons === 0 && this.syncPointerButtons(e, "move", false)) this.frame(1);
       // Drop the absolute baseline so re-entering the stage re-derives it
       // from the first in-stage move rather than reporting a phantom jump
       // across the region the pointer traversed off-stage.
@@ -575,22 +637,37 @@ export class BrowserInputSource implements InputSource {
       this.lastAbsY = y;
     }
     this.frame(1);
+    if (this.syncPointerButtons(e, "move", this.pointerActive)) this.frame(1);
   }
 
   private onPointerDown(e: PointerEvent): void {
     if (!this.shouldCapture(e)) return;
-    const btn = pointerButton(e);
-    if (btn === null) return;
-    this.emit(1, EV_KEY, btn, 1);
-    this.frame(1);
+    // Even an unsupported side button can start a gesture whose later
+    // supported-button changes arrive only through pointermove.
+    this.pointerActive = true;
+    if (this.syncPointerButtons(e, "down", true)) this.frame(1);
   }
 
   private onPointerUp(e: PointerEvent): void {
-    if (!this.shouldCapture(e)) return;
-    const btn = pointerButton(e);
-    if (btn === null) return;
-    this.emit(1, EV_KEY, btn, 0);
-    this.frame(1);
+    if (this.syncPointerButtons(e, "up", false)) this.frame(1);
+    this.pointerActive = false;
+  }
+
+  private syncPointerButtons(e: PointerEvent, phase: "down" | "move" | "up", allowPresses: boolean): boolean {
+    const mapping = [[1, BTN_LEFT], [2, BTN_RIGHT], [4, BTN_MIDDLE]] as const;
+    const current = mapping.reduce<number>((mask, [bit, key]) =>
+      mask | (this.deliveredDown[1].has(key) ? bit : 0), 0);
+    const next = pointerButtons(current, e, phase, allowPresses);
+    // Recover releases before new presses when a snapshot repairs both.
+    for (const value of [0, 1]) {
+      for (const [bit, key] of mapping) {
+        if (((current ^ next) & bit) && Number(Boolean(next & bit)) === value) {
+          this.emit(1, EV_KEY, key, value);
+        }
+      }
+    }
+    if (e.buttons === 0) this.pointerActive = false;
+    return current !== next;
   }
 
   private onWheel(e: WheelEvent): void {
@@ -612,18 +689,5 @@ export class BrowserInputSource implements InputSource {
     if (ticks_y !== 0) this.emit(1, EV_REL, REL_WHEEL, ticks_y);
     if (ticks_x !== 0) this.emit(1, EV_REL, REL_HWHEEL, ticks_x);
     if (ticks_y !== 0 || ticks_x !== 0) this.frame(1);
-  }
-}
-
-function pointerButton(e: PointerEvent): number | null {
-  switch (e.button) {
-    case 0:
-      return BTN_LEFT;
-    case 1:
-      return BTN_MIDDLE;
-    case 2:
-      return BTN_RIGHT;
-    default:
-      return null;
   }
 }

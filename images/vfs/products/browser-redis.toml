@@ -1,7 +1,7 @@
 schema = 1
 id = "browser-redis"
 architecture = "wasm32"
-output = "redis.vfs.zst"
+output = "redis-vfs.vfs.zst"
 builder = "images/vfs/scripts/build-redis-vfs-image.sh"
 
 [[composition.repository]]
@@ -12,8 +12,21 @@ materialization = "embedded"
 
 [[software.package]]
 name = "redis"
-outputs = ["redis-server"]
+outputs = ["redis-server", "redis-cli"]
 source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "php"
+outputs = ["php"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[composition.repository]]
+id = "redis-board"
+paths = ["packages/registry/redis-vfs/app"]
 role = "runtime"
 materialization = "embedded"
 
@@ -38,7 +51,7 @@ gid = 0
 ephemeral = true
 
 [boot]
-argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "redis"]
+argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "redis-board"]
 cwd = "/root"
 uid = 0
 gid = 0

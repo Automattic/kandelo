@@ -3,6 +3,16 @@ import { FetchNetworkBackend, EagainError } from "../src/networking/fetch-backen
 import { TlsNetworkBackend, type TlsMitmConnection } from "../src/networking/tls-network-backend";
 import { NET_READINESS } from "../src/generated/abi";
 
+// These tests observe the guest's header occurrences as the backends project
+// them: each append, in order and case, which no merged Headers object can
+// show. The proxy session transport copies the projected headers to add its
+// own credential, so here it passes requests straight through; its own tests
+// (cors-proxy-session.test.ts) check that the copy forwards every header.
+vi.mock("../src/networking/cors-proxy-session", () => ({
+  fetchWithProxySession: (url: string, init: RequestInit, send: (url: string, init: RequestInit) => Promise<Response>) =>
+    send(url, init),
+}));
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const MSG_PEEK = 0x0002;
@@ -190,7 +200,17 @@ describe("FetchNetworkBackend", () => {
       const backend = new FetchNetworkBackend();
       const addr = backend.getaddrinfo("example.com");
       expect(addr.length).toBe(4);
-      expect(addr[0]).toBe(10); // 10.x.x.x range
+      // 198.18.0.0/15: never routed on the internet, and clear of a
+      // session's 10.89.0.0/24 and every virtual link's subnet.
+      expect(addr[0]).toBe(198);
+      expect(addr[1] & 0xfe).toBe(18);
+    });
+
+    it("never gives two names the same address", () => {
+      const backend = new FetchNetworkBackend();
+      const seen = new Set<string>();
+      for (let i = 0; i < 2000; i++) seen.add(Array.from(backend.getaddrinfo(`host-${i}.example`)).join("."));
+      expect(seen.size).toBe(2000);
     });
 
     it("returns deterministic results for same hostname", () => {
@@ -412,9 +432,10 @@ describe("FetchNetworkBackend", () => {
       ["X-Blocked", "direct-only"],
     ]);
     expect(fetchMock.mock.calls[1][0]).toBe("https://proxy.example/?http://example.com/fallback");
-    expectAppendCalls((fetchMock.mock.calls[1][1] as RequestInit).headers as Headers, [
-      ["X-Repeat", "first"],
-      ["x-repeat", "second"],
+    // The session transport clones Headers before Fetch. Inspect the fields
+    // sent over that boundary: cloning preserves values, not append history.
+    expect(Array.from((fetchMock.mock.calls[1][1] as RequestInit).headers as Headers)).toEqual([
+      ["x-repeat", "first, second"],
     ]);
   });
 });
@@ -686,9 +707,8 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe("https://proxy.example/?http://example.com/proxy");
     for (const call of fetchMock.mock.calls) {
-      expectAppendCalls((call[1] as RequestInit).headers as Headers, [
-        ["X-Allowed", "one"],
-        ["x-allowed", "two"],
+      expect(Array.from((call[1] as RequestInit).headers as Headers)).toEqual([
+        ["x-allowed", "one, two"],
       ]);
     }
     expect(onCorsProxyDiagnostic).toHaveBeenCalledTimes(1);
@@ -921,9 +941,8 @@ describe("TlsNetworkBackend TLS MITM path", () => {
     await waitForReadable(backend, 3);
 
     expect(fetchMock.mock.calls[0][0]).toBe("https://proxy.example/?https://example.com/secure");
-    expectAppendCalls((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers, [
-      ["X-Allowed", "first"],
-      ["x-allowed", "second"],
+    expect(Array.from((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers)).toEqual([
+      ["x-allowed", "first, second"],
     ]);
   });
 });

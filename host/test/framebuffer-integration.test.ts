@@ -80,6 +80,9 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
     const exitPromise = new Promise<number>((resolve) => {
       resolveExit = resolve;
     });
+    // Host-visible binding at the moment the exit is published, before the
+    // process is unregistered (reaped). "unset" means onExit never ran.
+    let bindingAtExit: unknown = "unset";
 
     const kernel = new CentralizedKernelWorker(
       {
@@ -92,14 +95,20 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       {
         onExit: (exitPid, exitStatus) => {
           if (exitPid === pid) {
-            referenceOwners.release(exitPid);
-            kernel.unregisterProcess(exitPid);
-            const w = workers.get(exitPid);
-            if (w) {
-              w.terminate().catch(() => {});
-              workers.delete(exitPid);
-            }
-            resolveExit(exitStatus);
+            bindingAtExit = kernel.framebuffers.get(exitPid);
+            // WHY: lifecycle publication still runs inside the kernel entry
+            // gate. Retire the process from a fresh host turn so cleanup
+            // cannot reenter the export that published this exit.
+            queueMicrotask(() => {
+              referenceOwners.release(exitPid);
+              kernel.unregisterProcess(exitPid);
+              const w = workers.get(exitPid);
+              if (w) {
+                w.terminate().catch(() => {});
+                workers.delete(exitPid);
+              }
+              resolveExit(exitStatus);
+            });
           }
         },
       },
@@ -209,11 +218,17 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       expect(sample(255, 255)).toBe(expected(255, 255));
       expect(sample(399, 639)).toBe(expected(399, 639));
 
-      // Note: unbind on process exit / munmap is exercised by the
-      // cargo unit tests (`munmap_of_fb_region_clears_binding_and_unbinds_host`,
-      // `execve_releases_fb_binding_and_unbinds`). Verifying it here
-      // would need an exit signal we can't trivially deliver from the
-      // test harness in main-thread mode.
+      // Exit, like Linux do_exit, discards the mapping before the process
+      // becomes a zombie: the host binding must already be gone when the
+      // exit is published, not only once the process is reaped.
+      expect(kernel.signalProcess(pid, 15 /* SIGTERM */)).toBe(true);
+      await Promise.race([
+        exitPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("fbtest did not exit in 10s")), 10_000),
+        ),
+      ]);
+      expect(bindingAtExit).toBeUndefined();
     } finally {
       for (const [, w] of workers) await w.terminate().catch(() => {});
       referenceOwners.close();

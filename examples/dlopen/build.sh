@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # WHY: the SDK resolves the sysroot and glue dir by walking up from the
-# current directory (findProjectRoot in sdk/src/lib/toolchain.ts), not from
+# current directory (find_project_root in crates/kandelo-cc/src/toolchain.rs), not from
 # this script's location. Invoked with a cwd inside a different Kandelo
 # checkout it would link against THAT checkout's sysroot while the check
 # below validated this one. Pin the cwd so both agree.
@@ -34,8 +34,8 @@ find_llvm_bin() {
 
 LLVM_BIN="$(find_llvm_bin)"
 
-# The SDK owns both link contracts this example needs: linkFlags() for the
-# executable and SHARED_LINK_FLAGS for the side module (sdk/src/lib/flags.ts).
+# The SDK owns both link contracts this example needs: link_flags() for the
+# executable and shared_link_flags() for the side module (crates/kandelo-cc/src/flags.rs).
 # This script used to carry its own copy of each, kept in step by hand (the
 # 8 MiB stack reservation had to be added here separately when the SDK
 # adopted it). An example is the first thing a reader copies, so it must show
@@ -60,7 +60,7 @@ echo "=== Building dlopen example ==="
 #
 # `-shared -fPIC` selects the SDK's side-module link: it supplies -nostdlib,
 # --experimental-pic, --shared, --shared-memory, --export-all and
-# --allow-undefined (SHARED_LINK_FLAGS), so no separate wasm-ld step and no
+# --allow-undefined (shared_link_flags()), so no separate wasm-ld step and no
 # intermediate object are needed.
 echo "  Compiling hello-lib.so..."
 "$WASM32_CC" -shared -fPIC -O2 \
@@ -69,8 +69,8 @@ echo "  Compiling hello-lib.so..."
 # 2. Build main program (main.wasm) with dlopen support
 #
 # `-ldl` is how the SDK spells the dlopen glue this program needs; the driver
-# adds libc/glue/dlopen.c to the link for it (parseArgs/linkDl,
-# sdk/src/bin/cc.ts). Everything else the old LINK_FLAGS listed -- the syscall
+# adds libc/glue/dlopen.c to the link for it (parse_args/link_dl,
+# crates/kandelo-cc/src/driver.rs). Everything else the old LINK_FLAGS listed -- the syscall
 # glue, compiler_rt.c, crt1.o, libc.a, -nostdlib and every -Wl, flag -- the
 # driver supplies too, along with the target, the sysroot and the codegen
 # flags. -O2 is the only compile choice left here.

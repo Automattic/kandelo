@@ -1,11 +1,9 @@
+import { setInternalsOpen } from "./support/dock";
 import { expect, test, type Page } from "@playwright/test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 async function openInternals(page: Page) {
-  const internals = page.getByRole("button", { name: "Internals" });
-  if ((await internals.getAttribute("aria-pressed")) !== "true") {
-    await internals.click();
-  }
+  await setInternalsOpen(page, true);
 }
 
 async function syslogText(page: Page): Promise<string> {
@@ -107,10 +105,15 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
     ).toBeGreaterThan(3_000);
   }
 
-  /* ESC is the only exit path. Click body to take focus off the
-   * canvas, then dispatch Escape to BrowserInputSource → SDL_evdev. */
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  /* ESC exits through the ordinary keyboard source. */
+  await canvas.focus();
   await page.keyboard.press("Escape");
+
+  await expect(page.getByRole("button", { name: "Terminal", exact: true }))
+    .toHaveAttribute("aria-current", "true", { timeout: 30_000 });
+  await expect(canvas).toBeHidden();
+  await expect.poll(() => page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea")))
+    .toBe(true);
 
   await openInternals(page);
   await expect
@@ -119,10 +122,8 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
   expect(await syslogText(page), "sdl2 reported failure")
     .not.toMatch(/sdl2 failed/);
 
-  /* The dock shows one computer view at a time and this demo boots into
-   * "Demo" (the Modeset framebuffer pane), which leaves the shell's xterm
-   * unmounted. Switch to "Terminal" before reading the breadcrumb sdl2
-   * printed on the way out, or `.xterm-rows` is simply not in the DOM. */
+  /* Return from the explicit Internals inspection above. The automatic
+   * handoff was already checked before that manual navigation. */
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 30_000,
@@ -130,4 +131,44 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
   await expect
     .poll(() => terminalText(page), { timeout: 30_000 })
     .toMatch(/sdl2: OK frames=\d+ elapsed=\d+ ms exit=esc/);
+});
+
+test("SDL's default cursor uses the shared KMS cursor plane", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "cursor plane acceptance targets Chromium");
+  test.setTimeout(180_000);
+  await gotoMachineOrSkip(page, "sdl2");
+  const canvas = page.locator(".kmodeset-canvas").first();
+  await expect(canvas).toBeVisible({ timeout: 90_000 });
+  await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 90_000 });
+  const worker = page.workers().find(worker => /browser-kernel-worker-entry/.test(worker.url()));
+  expect(worker).toBeTruthy();
+  await worker!.evaluate(() => {
+    const proto = OffscreenCanvasRenderingContext2D.prototype;
+    const put = proto.putImageData;
+    proto.putImageData = function (...args: Parameters<typeof put>) {
+      const image = args[0];
+      if (image.width <= 64 && image.height <= 64) {
+        let opaque = 0;
+        for (let i = 3; i < image.data.length; i += 4) if (image.data[i]) opaque++;
+        (globalThis as any).__kmsCursorProbe = { x: args[1], y: args[2], opaque };
+      }
+      return put.apply(this, args);
+    };
+  });
+  const box = (await canvas.boundingBox())!;
+  await expect.poll(() => page.getByText(/\d+×\d+ · \d+ flips/).innerText())
+    .toMatch(/webgl2-gl/i);
+  const status = await page.getByText(/\d+×\d+ · \d+ flips/).innerText();
+  const [, width, height] = status.match(/(\d+)×(\d+)/)!;
+  for (const point of [{ x: 180, y: 90 }, { x: 320, y: 160 }]) {
+    await page.mouse.move(box.x + point.x, box.y + point.y);
+    const expected = { x: point.x * Number(width) / box.width,
+      y: point.y * Number(height) / box.height };
+    await expect.poll(async () => {
+      const cursor = await worker!.evaluate(() => (globalThis as any).__kmsCursorProbe);
+      return cursor && Math.abs(cursor.x - expected.x) <= 1 && Math.abs(cursor.y - expected.y) <= 1;
+    }).toBe(true);
+    expect((await worker!.evaluate(() => (globalThis as any).__kmsCursorProbe)).opaque).toBeGreaterThan(20);
+  }
+  await page.screenshot({ path: "../../.context/sdl-shared-kms-cursor.png", scale: "css", clip: box });
 });

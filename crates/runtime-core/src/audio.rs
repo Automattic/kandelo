@@ -319,6 +319,18 @@ fn enter_stopped_generation() {
     TRANSPORT.control.generation.fetch_add(1, Ordering::AcqRel);
 }
 
+/// Actual playback/configuration notifications for edge-triggered polling.
+/// Reading the shared clock history preserves consume/refill activity even
+/// when the stream is writable at both epoll waits.
+pub fn readiness_generation() -> (u64, u32) {
+    let c = &TRANSPORT.control;
+    (
+        effective_consumer(),
+        c.generation.load(Ordering::Acquire).wrapping_mul(2)
+            | u32::from(c.flags.load(Ordering::Acquire) & pcm::PCM_FLAG_FATAL_ERROR != 0),
+    )
+}
+
 pub fn has_fatal_error(handle: i64) -> Result<bool, Errno> {
     with_stream(handle, |_| {
         TRANSPORT.control.flags.load(Ordering::Acquire) & pcm::PCM_FLAG_FATAL_ERROR != 0
@@ -354,7 +366,7 @@ pub fn open_stream() -> Result<i64, Errno> {
         return Err(Errno::EBUSY);
     }
     let stream = PcmStream::new();
-    let idx = crate::descriptor_backing::with_pcm_streams(|table| table.alloc(stream));
+    let idx = crate::descriptor_backing::with_pcm_streams(|table| table.try_alloc(stream))?;
     if ACTIVE_STREAM
         .compare_exchange(-1, idx as i32, Ordering::AcqRel, Ordering::Acquire)
         .is_err()

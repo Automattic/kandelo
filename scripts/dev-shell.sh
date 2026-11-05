@@ -44,6 +44,9 @@
 # `build-deps install-local-artifact`; dropped, an install routed through
 # this shell silently installs nothing. `WASM_POSIX_LOCAL_BUILD_JOBS` caps
 # local-build concurrency and is likewise inert unless it crosses here.
+# `KANDELO_AGENT_JOB` and `KANDELO_AGENT_JOBS_DIR` name the scripts/agent-job
+# job a command runs under and its registry; dropped, the Vitest reporter's
+# load line counts the run's own job as other work on the machine.
 # PATH is intentionally NOT kept — Nix
 # rebuilds it from the flake so anything that needs to leak from
 # the host raises a "command not found" instead of building wrong.
@@ -140,6 +143,8 @@ nix_develop=(
     --keep WASM_POSIX_BINARY_CACHE_ROOT \
     --keep KANDELO_CACHE_GC_AUTO \
     --keep KANDELO_PLAYWRIGHT_PORT \
+    --keep KANDELO_AGENT_JOB \
+    --keep KANDELO_AGENT_JOBS_DIR \
     --keep WASM_POSIX_RESOLUTION_POLICY \
     --keep WASM_POSIX_SOURCE_ONLY_BINARY_ROOT \
     --keep SYNTH_BASE_SHA \

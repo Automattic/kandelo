@@ -19,21 +19,57 @@ const symlinkTargetDecoder = new TextDecoder("utf-8", {
 });
 const textEncoder = new TextEncoder();
 
+/**
+ * The address an image records for a lazy archive: its package-mirror path in
+ * the `kandelo-lazy:` grammar the shell's lazy files use. Deployments resolve
+ * it to the member by rule (`normalizeImageOwnedLazyReference`), so nothing
+ * keeps a list of archive names.
+ */
+export function shellLazyArchiveAddress(resolverPath: string): string {
+  return `kandelo-lazy:${resolverPath}`;
+}
+
+/** Shared guest paths whose trust roots are published by ca-certificates. */
+export const SHELL_CA_BUNDLE = {
+  uri: shellLazyArchiveAddress("programs/ca-certificates.zip"),
+  guestPaths: ["/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt"],
+} as const;
+
 export interface ShellLazyArchiveSpec {
   id: string;
   dependency: string;
   resolverPath: string;
+  /** Derived from `resolverPath` by `shellLazyArchiveAddress`. */
   archiveUrl: string;
-  mountPrefix: "/usr/";
+  mountPrefix: "/" | `/${string}/`;
   requiredMember: string;
 }
 
-export const SHELL_LAZY_ARCHIVE_SPECS = [
+function withArchiveAddresses<const T extends readonly Omit<ShellLazyArchiveSpec, "archiveUrl">[]>(
+  specs: T,
+): readonly (T[number] & { archiveUrl: string })[] {
+  return specs.map((spec) => ({ ...spec, archiveUrl: shellLazyArchiveAddress(spec.resolverPath) }));
+}
+
+export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
+  {
+    id: "composer",
+    dependency: "composer",
+    resolverPath: "programs/wasm32/composer.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/composer",
+  },
+  {
+    id: "freeciv",
+    dependency: "freeciv-browser-bundle",
+    resolverPath: "programs/wasm32/freeciv-browser-bundle/freeciv.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/freeciv-play",
+  },
   {
     id: "love-examples",
     dependency: "love",
     resolverPath: "programs/love/share/love-examples.zip",
-    archiveUrl: "love-examples.zip",
     mountPrefix: "/usr/",
     requiredMember: "share/love/examples/main.lua",
   },
@@ -41,7 +77,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "vim",
     dependency: "vim-browser-bundle",
     resolverPath: "programs/wasm32/vim.zip",
-    archiveUrl: "vim.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/vim",
   },
@@ -49,7 +84,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "nethack",
     dependency: "nethack-browser-bundle",
     resolverPath: "programs/wasm32/nethack.zip",
-    archiveUrl: "nethack.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/nethack",
   },
@@ -57,15 +91,13 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "ruby",
     dependency: "ruby-browser-bundle",
     resolverPath: "programs/wasm32/ruby.zip",
-    archiveUrl: "ruby.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/ruby",
   },
   {
     id: "python",
     dependency: "python-browser-bundle",
-    resolverPath: "programs/wasm32/python.zip",
-    archiveUrl: "python.zip",
+    resolverPath: "programs/wasm32/python-browser-bundle/python.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/python3",
   },
@@ -73,7 +105,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "node",
     dependency: "node-browser-bundle",
     resolverPath: "programs/wasm32/node.zip",
-    archiveUrl: "node.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/node",
   },
@@ -81,7 +112,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "perl",
     dependency: "perl-browser-bundle",
     resolverPath: "programs/wasm32/perl.zip",
-    archiveUrl: "perl.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/perl",
   },
@@ -89,7 +119,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "man",
     dependency: "mandoc-browser-bundle",
     resolverPath: "programs/wasm32/man.zip",
-    archiveUrl: "man.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/mandoc",
   },
@@ -97,7 +126,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "coreutils-docs",
     dependency: "coreutils-docs",
     resolverPath: "programs/wasm32/coreutils-docs.zip",
-    archiveUrl: "coreutils-docs.zip",
     mountPrefix: "/usr/",
     requiredMember: "share/man/man1/ls.1",
   },
@@ -105,7 +133,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "lsof-docs",
     dependency: "lsof-docs",
     resolverPath: "programs/wasm32/lsof-docs.zip",
-    archiveUrl: "lsof-docs.zip",
     mountPrefix: "/usr/",
     requiredMember: "share/man/man8/lsof.8",
   },
@@ -113,11 +140,39 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "kandelo-sdk",
     dependency: "kandelo-sdk-browser-bundle",
     resolverPath: "programs/wasm32/kandelo-sdk.zip",
-    archiveUrl: "kandelo-sdk.zip",
     mountPrefix: "/usr/",
-    requiredMember: "bin/wasm32posix-cc",
+    // A regular file: the SDK tool names are symlinks to the driver.
+    requiredMember: "bin/kandelo-cc",
   },
-] as const satisfies readonly ShellLazyArchiveSpec[];
+] as const);
+
+/** Data the canonical shell can load on first use: trust roots, speech and desktops.
+ * Kept separate from the shared tool archives: service-image builders do not
+ * declare espeak-ng or wayland-demo and must not acquire those dependencies.
+ */
+export const SHELL_LAZY_DATA_ARCHIVE_SPECS = withArchiveAddresses([
+  {
+    id: "ca-certificates",
+    dependency: "ca-certificates",
+    resolverPath: "programs/ca-certificates.zip",
+    mountPrefix: "/",
+    requiredMember: "etc/ssl/cert.pem",
+  },
+  {
+    id: "espeak-ng-data",
+    dependency: "espeak-ng",
+    resolverPath: "programs/espeak-ng/espeak-ng-data.zip",
+    mountPrefix: "/usr/share/espeak-ng-data/",
+    requiredMember: "phondata",
+  },
+  {
+    id: "desktop-data",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/kandelo-desktop-data.zip",
+    mountPrefix: "/usr/share/kandelo/",
+    requiredMember: "themes/tokyo-night/theme.conf",
+  },
+] as const);
 
 /**
  * Every `/etc/profile.d` script the shell image ships, in one call.
@@ -436,6 +491,83 @@ export function registerDeclaredShellLazyArchive(
     integrity,
   });
   return archive;
+}
+
+// ── NetHack's shared game state ────────────────────────────────────
+//
+// NetHack keeps saves, scores, bones and its lock file in one directory shared
+// by every player (its compiled-in VAR_PLAYGROUND). Distributions make that
+// work for any user without letting users touch each other's games: the
+// directory and its files belong to group `games`, players cannot write them,
+// and the game binary is set-group-ID `games`. This is the layout Debian's
+// nethack-common/nethack-console tmpfiles.d entries and Fedora's spec install,
+// and it is upstream's own `make install`, which creates `save/` — the step
+// whose absence made every save fail with "Cannot open save file.".
+//
+// Applied after the archive is registered because `/usr/bin/nethack` is one of
+// its members. Its set-group-ID bit is honoured because the archive declares a
+// digest the kernel checks before serving any member.
+
+/** Must match NETHACK_VAR_PLAYGROUND in packages/registry/nethack/build-nethack.sh. */
+export const NETHACK_PLAYGROUND = "/var/games/nethack";
+const NETHACK_BINARY = "/usr/bin/nethack";
+
+/** Install NetHack's playground and binary ownership into the shell image. */
+export function installNethackGames(fs: VfsImageFilesystem): void {
+  if (!fs.isPathDeferred(NETHACK_BINARY)) {
+    throw new Error(`${NETHACK_BINARY} must be registered before its game state`);
+  }
+  const games = groupId(fs, "games");
+
+  ensureDirRecursive(fs, "/var/games");
+  for (const dir of [NETHACK_PLAYGROUND, `${NETHACK_PLAYGROUND}/save`]) {
+    ensureDirRecursive(fs, dir);
+    fs.chown(dir, 0, games);
+    fs.chmod(dir, 0o2775);
+  }
+  // `perm` must exist: NetHack locks by hard-linking to it. The others are
+  // pre-created as Debian does so a fresh image already shows their owner.
+  for (const name of ["perm", "record", "logfile", "xlogfile"]) {
+    const file = `${NETHACK_PLAYGROUND}/${name}`;
+    writeVfsFile(fs, file, "", 0o664);
+    fs.chown(file, 0, games);
+    fs.chmod(file, 0o664);
+  }
+  // chown before chmod: a chown may clear set-ID, and the chmod restates it.
+  fs.chown(NETHACK_BINARY, 0, games);
+  fs.chmod(NETHACK_BINARY, 0o2755);
+}
+
+function groupId(fs: VfsImageFilesystem, name: string): number {
+  let content: string;
+  try {
+    content = readVfsText(fs, "/etc/group");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`cannot read /etc/group for group ${name}: ${message}`);
+  }
+  for (const line of content.split("\n")) {
+    const [group, , gid] = line.split(":");
+    if (group === name && /^[0-9]+$/.test(gid ?? "")) return Number(gid);
+  }
+  throw new Error(`/etc/group has no ${name} group`);
+}
+
+function readVfsText(fs: VfsImageFilesystem, path: string): string {
+  const size = fs.stat(path).size;
+  const fd = fs.open(path, 0, 0);
+  try {
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = fs.read(fd, bytes.subarray(offset), null, bytes.length - offset);
+      if (count <= 0) break;
+      offset += count;
+    }
+    return new TextDecoder().decode(bytes.subarray(0, offset));
+  } finally {
+    fs.close(fd);
+  }
 }
 
 // ── Shared runtime terminfo database ───────────────────────────────

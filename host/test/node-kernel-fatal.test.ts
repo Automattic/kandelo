@@ -139,6 +139,8 @@ describe("NodeKernelHost fatal worker lifecycle", () => {
 
   it("rejects pending, process-exit, and future work after kernel_fatal", async () => {
     const { host, worker } = await initializedHost();
+    const owner = host.getOwnedJobLifetime();
+    expect(owner.closed).toBe(false);
     const { exit: processExit } = await runningProcess(host, worker);
     const pendingRequest = host.getKernelMemoryPages();
     const fatalMessage = "reserved transfer execution trapped";
@@ -157,6 +159,9 @@ describe("NodeKernelHost fatal worker lifecycle", () => {
 
     await Promise.all([pendingRejection, exitRejection]);
     expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(owner.closed).toBe(false);
+    worker.emit("exit", 1);
+    expect(owner.closed).toBe(true);
     await expect(host.getKernelMemoryPages()).rejects.toThrow(
       `Kernel worker failed: ${fatalMessage}`,
     );

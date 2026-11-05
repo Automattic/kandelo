@@ -156,6 +156,13 @@ export class HttpBridgeHost {
     });
   }
 
+  close(): void {
+    this.handler = null;
+    this.port.onmessage = null;
+    this.port.close();
+    this.swPort.close();
+  }
+
   /**
    * Detach and return the host-side port for transfer to the kernel worker.
    * After calling this, the HttpBridgeHost can no longer be used for direct

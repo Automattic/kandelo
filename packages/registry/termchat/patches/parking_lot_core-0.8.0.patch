@@ -1,0 +1,20 @@
+# Assign timespec fields after zero-initialization, supporting private
+# padding in 32-bit musl time64. Same portability fix as librsvg 0.9.12.
+--- a/src/thread_parker/unix.rs
++++ b/src/thread_parker/unix.rs
+@@ -238,9 +238,12 @@
+         sec = sec.and_then(|sec| sec.checked_add(1));
+     }
+ 
+-    sec.map(|sec| libc::timespec {
+-        tv_nsec: nsec,
+-        tv_sec: sec,
++    sec.map(|sec| {
++        // musl time64 on 32-bit targets has private timespec padding.
++        let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
++        ts.tv_sec = sec;
++        ts.tv_nsec = nsec;
++        ts
+     })
+ }
+ 

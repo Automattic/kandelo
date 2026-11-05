@@ -4,6 +4,7 @@
 # `.wasm64.wasm`. Keep this list sorted. Browser specs, build-programs,
 # run.sh readiness, and prepared CI workspace packing are contract-checked
 # against this file so browser-only jobs cannot depend on ambient artifacts.
+examples/epoll_semantics_test.c
 examples/kernel_scratch_browser_test.c
 examples/process_native_layout_test.c
 examples/putenv_test.c

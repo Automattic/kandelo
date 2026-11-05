@@ -24,6 +24,7 @@ Real, unmodified software compiled to WebAssembly:
 | Vim | 9.1 | Full editor with ncurses terminal UI |
 | NetHack | 3.6.7 | Classic roguelike with curses UI |
 | fbDOOM | (maximevince) | id Software's DOOM via the kernel's `/dev/fb0` Linux fbdev surface |
+| [Freeciv](docs/freeciv.md) | 3.2.6 | Native SDL2 client and dedicated server; single player and TCP multiplayer through browser network sessions |
 | espeak-ng | 1.52 | Speech synthesis; plays through upstream pcaudiolib's OSS backend on `/dev/dsp` |
 | Perl | 5.40 | Interpreter with core modules |
 | Ruby | 3.3 | Interpreter with core stdlib |
@@ -138,7 +139,7 @@ that is all you need:
 
 | Command | What it does |
 |---|---|
-| `./run.sh setup` | One command to get a working repo: provisions the musl sysroot/SDK and builds the fork-instrument tool, every package, the rootfs image, and the TypeScript host. Run this first, and again after pulling upstream changes. |
+| `./run.sh setup` | One command to get a working repo: provisions the musl sysroot/SDK and builds the fork-instrument tool, the packages the VFS products and browser app demand, the rootfs image, and the TypeScript host. Add `--all` to build every supported package, which the test suites need. Run this first, and again after pulling upstream changes. |
 | `./run.sh build <target>` | Build one thing: the kernel, the host, the rootfs, a package (e.g. `php`), or a VFS product (e.g. `shell-vfs`). |
 | `./run.sh rebuild <target>` | Force a rebuild of one target, bypassing the cache. |
 | `./run.sh clean <target>` | Remove a target's build outputs, plus any products that embed it. |
@@ -266,6 +267,37 @@ npx tsx examples/run-example.ts hello
 
 ### 4. Try Kandelo in the browser
 
+The dock's **Library** opens saved computers; its **New computer** button
+chooses an image, boot profile, name and storage type. Temporary is the default.
+Library also reopens, renames, keeps, and deletes local computers. Reloading a
+`?computer=<UUID>` URL reopens the same filesystem automatically. **Temporary**
+computers also use OPFS disk storage, but become eligible for cleanup after
+24 hours without opening them. Checkpoints are optional, and browser storage
+is not a backup. See [computer retention](docs/browser-support.md#computer-library-and-retention).
+
+> **Experimental persistence — not upgradeable:** saved computers from this
+> release will not work in the next release. Export important files before
+> updating Kandelo. Transactional software upgrades are not implemented yet.
+
+**Activities** starts installed applications on the running computer without
+rebooting it. Independent activities coexist; conflicting display owners or
+managed web-service ports are stopped before their replacement starts. Graphics
+devices are available from the ordinary shell, including for newly compiled
+programs, without selecting a graphics boot profile.
+
+Separate **Web** and **Graphics** dock buttons select the website preview and
+the computer's graphical display. Switching views keeps both mounted; it does
+not reload the website or restart its programs. **Activities** stays to the
+right of **Terminal**. In Web Stack and WordPress computers, `kandelo-service
+list` shows managed service state separately from next-boot preferences.
+
+The image-family prototype offers **Base Shell**, **Web Stack**, and
+**WordPress** in the computer Library. Web Stack includes static nginx,
+PHP/Adminer, Python Notes, Ruby Todo, and the Redis voting board as live service
+activities. WordPress offers SQLite or MariaDB when creating a computer; an
+existing site's database backend cannot be silently changed. **Apps & tools**
+and **Group activities** are separate activity lists.
+
 ```bash
 # Build/reuse the local SourceOnly products, then start the dev server
 ./run.sh browser
@@ -278,6 +310,14 @@ unchanged nodes.
 
 Open `http://127.0.0.1:5401` to use the Kandelo UI. The network lab at `http://127.0.0.1:5401/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
 
+The network button creates an invitation in one step, with an optional
+package-declared activity such as termchat, Doom, Quake or Freeciv. Keep or replace an
+existing room, or leave it from the same panel. Doom and Quake offer known
+shareware/free data or a local file; required data can travel over WebRTC or be
+supplied through acquisition hints and matching-file choices. Websites and
+databases can invite a separate client computer to their running service. See
+[package-declared sessions](docs/package-sessions.md).
+
 To build the deployable static site, run:
 
 ```bash
@@ -289,6 +329,17 @@ It runs the local build, produces the authenticated VFS asset group, runs the
 production Vite build, and checks the result. Upload the contents of the
 output directory (default `apps/browser-demos/dist/`) so it is served at
 exactly the chosen base.
+
+WP Cloud can keep serving this static build with the portable PHP signalling
+endpoint (`--signalling-url /signalling/piplet.php`) and its chosen CORS proxy.
+Spacefast is an optional host: package the static build with its Functions
+proxy and database-backed signalling. An experimental separate-proxy layout
+uses an exact approved-Referer list. Either host can select that proxy
+with `--cors-proxy "${SPACEFAST_PROXY_ORIGIN}/?url="`, after setting
+`SPACEFAST_PROXY_ORIGIN` to its canonical origin. See the
+[Spacefast quickstart](#5-deploy-to-spacefast-optional) and
+[deployment recipes](apps/spacefast-cors-proxy/README.md#combined-kandelo-site)
+for both layouts, access requirements and the rate-limit policy.
 
 Production output is bound to the absolute prefix selected at build time. The
 equivalent manual steps, here building separate distributions for `/a/` and
@@ -347,6 +398,37 @@ browser requests and Node.js-host networking are not filtered by this profile.
 Browser Kandelo supports local loopback and virtual machine-to-machine UDP/TCP. External raw TCP/UDP sockets are still constrained by the browser sandbox and require fetch, service-worker, proxy, or future WebRTC-backed transports behind the POSIX socket layer.
 
 The browser UI uses pre-built **VFS images** - binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
+
+### 5. Deploy to Spacefast (optional)
+
+The normal build remains suitable for WP Cloud. The reusable
+[`scripts/deploy-spacefast.mjs`](scripts/deploy-spacefast.mjs) script can
+build and host the app, CORS proxy and signalling together on Spacefast.
+Use Node 24 and the normal build prerequisites. For publication, separately
+install the [official Spacefast CLI](https://spacefast.com/docs/cli/),
+sign in with `sf auth login`, and choose an existing Space. See the
+[full deployment guide](apps/spacefast-cors-proxy/README.md#combined-kandelo-site)
+for first-Space setup.
+
+Run from the repository root:
+
+```bash
+# Set KANDELO_SPACE_URL to your selected Space's HTTPS origin, with no
+# trailing slash or path. The target is required; saved selections are ignored.
+node scripts/deploy-spacefast.mjs --space "$KANDELO_SPACE_URL" --publish
+```
+
+Omit `--publish` to prepare a bundle and print its exact publish command.
+Use `--dry-run` instead for the CLI's local checks without upload. These are
+alternative modes; each builds a fresh bundle. The script never installs
+tools, signs in, creates a Space or changes access settings.
+
+Publication updates that Space's live version and preserves its
+access settings. Both clients must have access to a private Space. The
+Space's database is supplied automatically; the services create their tables
+on first use. Reload existing tabs after deploying the new proxy protocol.
+See the full deployment guide for custom approved origins, platform limits
+and the experimental separate proxy.
 
 ## Porting Software
 

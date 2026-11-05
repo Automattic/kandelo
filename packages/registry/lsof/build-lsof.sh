@@ -32,7 +32,7 @@ fi
 # compiler selection and link flags (find_llvm_bin/CC/CFLAGS/LINK_FLAGS
 # below). scripts/build-programs.sh used to carry a matching copy and now
 # builds through sdk/bin/wasm32posix-cc instead, so this one has drifted
-# from sdk/src/lib/flags.ts: lsof.wasm is linked without
+# from crates/kandelo-cc/src/flags.rs: lsof.wasm is linked without
 # --export=__heap_base and --global-base, so the host falls back to a
 # guessed brk base for it (PROCESS_MEMORY_FALLBACK_BRK_BASE).
 #

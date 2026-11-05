@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+export ICU_DATA=/usr/share/icu
+export FREECIV_DATA_PATH=/usr/share/freeciv
+exec /usr/libexec/freeciv/server.wasm --Announce none "$@"

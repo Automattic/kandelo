@@ -19,7 +19,7 @@ const udpServerPath = tryResolveBinary("programs/virtual-udp-echo-server.wasm");
 const udpClientPath = tryResolveBinary("programs/virtual-udp-echo-client.wasm");
 const tcpServerPath = tryResolveBinary("programs/virtual-tcp-echo-server.wasm");
 const tcpClientPath = tryResolveBinary("programs/virtual-tcp-echo-client.wasm");
-const ncPath = tryResolveBinary("programs/nc.wasm");
+const ncPath = tryResolveBinary("programs/netcat/nc.wasm");
 
 function machineIO(network: LocalVirtualNetwork, id: string, address: [number, number, number, number]): PlatformIO {
   const io = new NodePlatformIO() as NodePlatformIO & PlatformIO;
@@ -197,7 +197,7 @@ async function sendAfterPeerFin(
 
 describe.skipIf(!udpServerPath || !udpClientPath)("virtual network guest socket integration", () => {
   it("routes POSIX UDP sendto/recvfrom between two Kandelo machines", async () => {
-    const network = new LocalVirtualNetwork();
+    const network = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const serverIO = machineIO(network, "server", [10, 88, 0, 2]);
     const clientIO = machineIO(network, "client", [10, 88, 0, 3]);
     const events: string[] = [];
@@ -255,7 +255,7 @@ describe.skipIf(!udpServerPath || !udpClientPath)("virtual network guest socket 
 
 describe.skipIf(!tcpServerPath || !tcpClientPath)("virtual network TCP guest socket integration", () => {
   it("routes POSIX TCP connect/accept/read/write between two Kandelo machines", async () => {
-    const network = new LocalVirtualNetwork();
+    const network = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const serverIO = machineIO(network, "server", [10, 88, 0, 2]);
     const clientIO = machineIO(network, "client", [10, 88, 0, 3]);
     const port = 24124;
@@ -413,7 +413,7 @@ describe.skipIf(!tcpServerPath)("Node TCP guest socket integration", () => {
 
 describe.skipIf(!ncPath)("virtual network nc integration", () => {
   it("uses the packaged nc over the local virtual TCP network", async () => {
-    const network = new LocalVirtualNetwork();
+    const network = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const serverIO = machineIO(network, "server", [10, 88, 0, 2]);
     const clientIO = machineIO(network, "client", [10, 88, 0, 3]);
     const port = 24125;
@@ -421,7 +421,7 @@ describe.skipIf(!ncPath)("virtual network nc integration", () => {
     const serverBound = whenServerBound(serverIO, "tcp", port);
 
     const serverRun = runCentralizedProgram({
-      programPath: resolveBinary("programs/nc.wasm"),
+      programPath: resolveBinary("programs/netcat/nc.wasm"),
       // No -w: in listen mode GNU netcat's -w only bounds the wait for the
       // client, and the client's own launch can take longer than any short
       // bound on a loaded machine. The guest timeout below bounds a client
@@ -433,7 +433,7 @@ describe.skipIf(!ncPath)("virtual network nc integration", () => {
     });
     await Promise.race([serverBound, serverRun]);
     const clientRun = runCentralizedProgram({
-      programPath: resolveBinary("programs/nc.wasm"),
+      programPath: resolveBinary("programs/netcat/nc.wasm"),
       argv: ["nc", "-n", "-c", "10.88.0.2", String(port)],
       io: clientIO,
       stdin: "from-nc\n",
@@ -454,7 +454,7 @@ describe.skipIf(!ncPath)("virtual network nc integration", () => {
   }, 15_000);
 
   it("uses the packaged nc over the local virtual UDP network", async () => {
-    const network = new LocalVirtualNetwork();
+    const network = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const serverIO = machineIO(network, "server", [10, 88, 0, 2]);
     const clientIO = machineIO(network, "client", [10, 88, 0, 3]);
     const port = 24126;
@@ -462,7 +462,7 @@ describe.skipIf(!ncPath)("virtual network nc integration", () => {
     const serverBound = whenServerBound(serverIO, "udp", port);
 
     const serverRun = runCentralizedProgram({
-      programPath: resolveBinary("programs/nc.wasm"),
+      programPath: resolveBinary("programs/netcat/nc.wasm"),
       // No -w: in listen mode GNU netcat's -w only bounds the wait for the
       // client, and the client's own launch can take longer than any short
       // bound on a loaded machine. The guest timeout below bounds a client
@@ -474,7 +474,7 @@ describe.skipIf(!ncPath)("virtual network nc integration", () => {
     });
     await Promise.race([serverBound, serverRun]);
     const clientRun = runCentralizedProgram({
-      programPath: resolveBinary("programs/nc.wasm"),
+      programPath: resolveBinary("programs/netcat/nc.wasm"),
       argv: ["nc", "-n", "-u", "-c", "10.88.0.2", String(port)],
       io: clientIO,
       stdin: "from-nc-udp\n",
