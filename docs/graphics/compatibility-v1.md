@@ -160,6 +160,36 @@ All frozen input/product hashes pass. This is a failed admission, not a
 new published preview or completed B1. The laterd0cb host correction must
 also be included through a normal host build before publication.
 
+## Known rejected host repair stays exact inside guest prediction, 2026-11-05
+
+A source control rejects a host change while a guest batch is active,
+then makes the live renderer refuse its inverse. Previously the recovery
+path predicted that inverse's success because its error owner matched
+the batch. The final sample reset the guest, but no fatal restoration
+failure was reported. A known rejection cannot use guest acceptance
+prediction as proof that shared native state was restored.
+
+Pending native repair now enters the existing exact host-bookkeeping
+scope before attempting inverses. Refused live restoration retains its
+fatal policy; physical loss still drops obsolete state. This scope runs
+only when repair is pending, with no new work on the common successful
+guest-acceptance path. Older logical guest flags remain unchanged.
+
+R369 causal control fails1/passes22 before the correction. Its frozen
+candidate passes the full graphics2191 tests/88 files and Node18/6 gate
+in41s. R370 `graphics-rejected-repair-gpu-r370-1105-103807-20f2` checks
+144 native inverse/image/retirement cases on all three engines:129 pass
+and15 fail in2m47s. The15 failure titles are identical to R363, not new
+or waived; all96 pre-exit native-owner retirement and12 image-reset
+controls pass. Input/source/kernel hashes match after execution. These
+are scoped correctness checks; the full342-case run belongs to the
+preceding source, and current full conformance, shader, compiler,
+memory and performance acceptance remain separately required. No wire,
+snapshot or version changes are made; family56/3/17/21 is preserved.
+Exact commands and original results are retained in
+`.context/graphics-rejected-repair-r369/` and
+`.context/graphics-rejected-repair-gpu-r370/`.
+
 ## Automatic application-driver admission prototype, 2026-11-05
 
 Ordinary applications now enter the B1 program journal at their first

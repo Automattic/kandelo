@@ -1,3 +1,4 @@
+import {withNativeBatch} from "../src/webgl/native-batch.js";
 /*
  * A native GL deletion or state restoration that the host's own bookkeeping
  * depends on, refused by a live renderer, is a fatal host fault: nothing
@@ -292,4 +293,21 @@ it("preserves an actual kernel-export failure raised by the fatal reporter throu
   expect((first as Error).cause).toBe(rawTrap);
   expect(thrown).toBe(first);
   expect(isKernelExportFailure(thrown)).toBe(true);
+});
+
+it("keeps a known-rejected bookkeeping repair exact inside a predicted guest batch",()=>{
+  const r=renderer(),reported:Error[]=[];
+  const owner={...r.owner,pid:7,sessionId:11};owner.errors.push(0x501);
+  setReporter(fault=>reported.push(fault));
+  const fault=caught(()=>withNativeBatch(owner,"known rejected host change",()=>
+    applyNativeChanges(owner,[{
+      // This is an already rejected change, not guest API acceptance. Its
+      // inverse must be proved before this live shared renderer can proceed.
+      apply:()=>{r.refuse(true);return false;},
+      restore:nativeInverse(owner,[["bindTexture",0x0de1,null]]),
+    }])?0:-5));
+  expect(fault?.name).toBe("NativeGlFault");
+  expect(fault!.message).toMatch(/refused to restore native state/);
+  expect(reported).toEqual([fault]);
+  expect(owner.errors).toEqual([0x501]);
 });

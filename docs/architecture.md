@@ -6537,6 +6537,13 @@ Its shared inverse survives submitter retirement; retiring a native container
 prunes that target instead of reviving it. Context-local plans retire with their
 owner. Neither path destroys shared peer objects.
 
+Once a change is known to be rejected, its pending native inverse is exact
+host recovery even if it shares the active guest batch's error owner.
+Prediction cannot establish that restoration completed. A live renderer
+refusing that recovery remains fatal; real renderer loss drops obsolete
+native state. This scope runs on pending recovery, while ordinary successful
+guest acceptance keeps its batch prediction and native sampling policy.
+
 Native candidate and retired-view ownership is reserved before allocation or
 publication. Cleanup receipts retain handles across failed deletion, clear each
 accepted delete independently and retry the remainder without repeating accepted

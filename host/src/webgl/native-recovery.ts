@@ -346,8 +346,15 @@ export function repairNativeState(gl: WebGL2RenderingContext): boolean {
       if (!rendererGone(gl, repair.epoch)) {
         let restored = true;
         try {
-          for (let i = repair.attempted - 1; i >= 0; i--) restored = restoreInverse(repair.restores[i]) && restored;
-          if (repair.finalizer) restored = restoreInverse(repair.finalizer) && restored;
+          // The change is already rejected. Its inverse is host-owned
+          // recovery, even when its error owner is the active guest batch.
+          // Predicting that recovery could release a live shared renderer
+          // whose native state was never actually restored.
+          withNativeBookkeeping(() => {
+            for (let i = repair.attempted - 1; i >= 0; i--) restored = restoreInverse(repair.restores[i]) && restored;
+            if (repair.finalizer) restored = restoreInverse(repair.finalizer) && restored;
+            return restored;
+          });
         } catch (error) {
           // A reset discovered while restoring is not permission to leave a
           // live shared renderer corrupted. Physical loss drops its objects.

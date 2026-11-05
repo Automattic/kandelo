@@ -262,6 +262,9 @@ container retargeting also retains exact checks before generation publication;
 a submitting-context reset cannot leave a healthy peer attached to a different
 generation from the one sampling observes. Moving validation
 into the guest must preserve this host storage-validity contract.
+Pending repair after a known host rejection also retains exact native
+restoration checks independently of the active guest batch's predictor.
+The complete remaining native/image audit still needs closure.
 
 The initial B1 source increments preserve local error knowledge across
 scalar and argument-validated setters, retaining the ordinary host command
