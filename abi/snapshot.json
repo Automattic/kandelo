@@ -33,6 +33,7 @@
       "gl_program_journal",
       "gl_program_journal_barrier",
       "gl_program_mutation",
+      "gl_program_uniform_signature",
       "gl_readback_capture",
       "gl_server_wait",
       "gl_shader_program_creation",
@@ -1870,6 +1871,48 @@
     "reply_magic": 1196510259,
     "request_prefix": "u32 command_opcode",
     "requires_current_context": true
+  },
+  "gl_program_uniform_signature": {
+    "action": 8,
+    "authority": "own-current-context-tid-and-journal; immutable-owned-generation-only",
+    "effects": "read-only; no-selection-error-drain-upload-interruption-or-mutation-receipt-change",
+    "flags": {
+      "array": 1,
+      "native_location_null": 4,
+      "native_location_present": 2
+    },
+    "invalid_location": "available-with-zero-type-elements-and-flags",
+    "opcode": 59,
+    "query_dependencies": "metadata-only-no-buffer-sync",
+    "reply_bytes": 48,
+    "reply_fields": [
+      "status",
+      "zero",
+      "action",
+      "journal",
+      "generation",
+      "location",
+      "type",
+      "remaining_array_elements",
+      "flags",
+      "zero",
+      "zero",
+      "magic"
+    ],
+    "reply_magic": 1196510259,
+    "request_bytes": 16,
+    "request_fields": [
+      "action",
+      "own_journal",
+      "generation_token_or_installed_root_zero",
+      "signed_location"
+    ],
+    "status": {
+      "available": 0,
+      "unavailable": 1
+    },
+    "unavailable": "zero-type-elements-and-flags; ordinary-validation-required",
+    "unresolved_native_location": "neither-present-nor-null; positive-count-needs-ordinary-validation"
   },
   "gl_readback_capture": {
     "actions": {

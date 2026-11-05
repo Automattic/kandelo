@@ -36,6 +36,23 @@ function fixture(capacity=4,installed=false) {
   return {b,p,q,gl,group:b.objects,registry,muxer,execution,capture,captureQ,journal,token,tokenQ,selected,deleted,live,bind,dispose,
     refuseSelect:(value:boolean)=>{refuseSelect=value;},refuseDelete:(value:boolean)=>{refuseDelete=value;}};
 }
+it("reflects the installed root and keeps an uncached generation proof while logical/execution references own it",()=>{
+ const f=fixture(4,true);
+ Object.assign(f.gl,{
+  getProgramParameter:(_p:object,pname:number)=>pname===0x8b86?1:true,
+  getActiveUniform:()=>({name:"matrix",type:0x8b5c,size:1}),getUniformLocation:()=>({}),
+ });
+ const words=new Uint32Array(12);
+ expect(f.journal.uniformSignature(0,0,words)).toBe(true);expect([...words.slice(6,9)]).toEqual([0x8b5c,1,2]);
+ expect(f.journal.publish(f.b,0,1,1,20,f.token)).toBe(true);
+ expect(f.journal.releaseCapture(f.token)).toBe(true);
+ expect(f.journal.uniformSignature(f.token,0,new Uint32Array(12))).toBe(true);
+ expect(f.journal.execute(0,1)).toBe(true);
+ expect(f.journal.publish(f.b,1,2,2,0,0)).toBe(true);
+ expect(f.journal.uniformSignature(f.token,0,new Uint32Array(12))).toBe(true);
+ expect(f.journal.execute(1,2)).toBe(true);
+ expect(f.journal.uniformSignature(f.token,0,new Uint32Array(12))).toBe(false);f.dispose();
+});
 it("publishes public current names without installing native executables",()=>{
   const f=fixture();expect(f.journal.publish(f.b,0,1,1,20,f.token)).toBe(true);
   expect(publicCurrentProgramName(f.b)).toBe(20);expect(currentProgramName(f.b)).toBe(0);expect(f.selected).toEqual([]);

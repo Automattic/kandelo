@@ -35,6 +35,54 @@ function fixture(){
   execution.release();registry.unbind(1);expect(native.size).toBe(0);};
  return {b,gl,program,registry,muxer,execution,capture,selected,native,bind,query,emit,setup,dispose};
 }
+it("reads immutable uniform signatures without selecting or changing the mutation receipt or errors",()=>{
+ const f=fixture();f.setup();
+ Object.assign(f.gl,{
+  getProgramParameter:(_p:object,pname:number)=>pname===0x8b86?2:true,
+  getActiveUniform:(_p:object,index:number)=>index===0?{name:"matrices[0]",type:0x8b5c,size:3}:{name:"scalar",type:0x1406,size:1},
+  getUniformLocation:()=>({}),
+ });
+ const receipt=f.query([6]).words;f.b.errors.push(0x500,0x501);
+ expect(f.query([8,1,1,1]).words).toEqual([0,0,8,1,1,1,0x8b5c,2,3,0,0,magic]);
+ expect(f.query([8,1,1,3]).words).toEqual([0,0,8,1,1,3,0x1406,1,2,0,0,magic]);
+ expect(f.query([8,1,1,400]).words).toEqual([0,0,8,1,1,400,0,0,0,0,0,magic]);
+ expect(f.query([8,1,1,0xffff_fffe]).words).toEqual([0,0,8,1,1,0xffff_fffe,0,0,0,0,0,magic]);
+ expect(f.query([6]).words).toEqual(receipt);expect(f.b.errors).toEqual([0x500,0x501]);expect(f.selected).toEqual([]);
+ const reflection=vi.spyOn(f.gl,"getActiveUniform");f.query([8,1,1,1]);expect(reflection).not.toHaveBeenCalled();reflection.mockRestore();f.dispose();
+});
+it("distinguishes absent native locations from deferred long names without resolving them",()=>{
+ const f=fixture();f.setup();const long="u".repeat(257),lookups:string[]=[];
+ Object.assign(f.gl,{
+  getProgramParameter:(_p:object,pname:number)=>pname===0x8b86?2:true,
+  getActiveUniform:(_p:object,index:number)=>({name:index?long:"absent",type:0x8b5a,size:1}),
+  getUniformLocation:(_p:object,name:string)=>{lookups.push(name);return null;},
+ });
+ expect(f.query([8,1,1,0]).words.slice(6,9)).toEqual([0x8b5a,1,4]);
+ expect(f.query([8,1,1,1]).words.slice(6,9)).toEqual([0x8b5a,1,0]);
+ expect(lookups).toEqual(["absent"]);f.dispose();
+});
+it("refuses foreign or collected generation proofs and denies signature reads through the lifecycle barrier",()=>{
+ const f=fixture();f.setup();
+ for(const [id,token] of [[2,1],[1,99],[1,0]])expect(f.query([8,id,token,0]).words).toEqual([1,0,8,id,token,0,0,0,0,0,0,magic]);
+ const out=new Uint8Array(48).fill(0xa5);
+ expect(runGlQuery(f.b,QOP_PROGRAM_JOURNAL_BARRIER,new Uint8Array(new Uint32Array([8,1,1,0]).buffer),out)).toBe(-22);
+ expect([...out]).toEqual(Array(48).fill(0xa5));
+ expect(f.b.programJournal!.releaseCapture(1)).toBe(true);
+ expect(f.query([8,1,1,0]).words[0]).toBe(1);f.dispose();
+});
+it("keeps the old executable signature after its public name points at a different link",()=>{
+ const f=fixture();f.setup();const newer={};f.native.add(newer);
+ Object.assign(f.gl,{
+  getProgramParameter:(_p:object,pname:number)=>pname===0x8b86?1:true,
+  getActiveUniform:(p:object)=>({name:"matrix",type:p===f.program?0x8b5c:0x1406,size:1}),
+  getUniformLocation:()=>({}),
+ });
+ f.b.programs.set(20,newer);
+ expect(f.query([8,1,1,0]).words.slice(6,9)).toEqual([0x8b5c,1,2]);
+ const handle=captureContextGlProgram(f.execution,20);expect(f.query([2,3,handle]).words[4]).toBe(2);
+ expect(f.query([8,1,2,0]).words.slice(6,9)).toEqual([0x1406,1,2]);
+ expect(f.selected).toEqual([]);f.dispose();
+});
 it("reserves, registers and publishes a batch before selecting its exact native generation",()=>{
  const f=fixture();f.setup();
  const accepted=f.query([3,3,2,1,0,1,0,1,0,20,1,1,1,2,0,2,0,0,0]);

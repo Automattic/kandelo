@@ -42,6 +42,81 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Matrix validation against installed generations, 2026-11-05
+
+The explicitly admitted B1 driver now validates small matrix2/3/4
+updates using a bounded signature cache keyed by its exact journal
+generation and dense uniform location. A public program name is
+insufficient: a peer can relink it while this context keeps its older
+installed executable. Successful selections update the current token
+even when the public name is unchanged; rejected selections retain the
+predecessor. Admission pins the initial installed executable as root
+token zero. Journal closure clears every numeric signature cell.
+
+Optional journal action8 takes16 bytes `[8, own_journal,
+generation_token, signed_location]` and returns48 bytes `[status, zero,
+action, journal, generation, location, type, remaining_elements, flags,
+zero, zero, magic]`. Status0 means available; status1 means unavailable
+and the three signature fields are zero. Invalid locations are available
+with zero signature fields. Flags are array1, native-location-present2
+and native-location-null4; neither native flag means unresolved. The
+query requires the caller's current thread/context and its own journal,
+and the lifecycle barrier refuses it. It leaves sealed mutation receipts
+unchanged and does not select the queried executable, drain guest flags,
+interrupt uploads, synchronize buffers or resolve deferred long names.
+Existing actions and replies are unchanged. The additive Program
+snapshot section changes artifact digests, with versions still program56
+/ unpublished host3 / GL17 / fork21.
+
+C reserves32 numeric signature cells and query receivers with the cold
+journal. On a miss it publishes shared metadata and submits only its own
+prefix, then reads the exact owned pin's signature. It never submits a
+peer's mutable encoder. Original matrix records still reach the
+independent host validator and fatal error-observation audit. C checks
+type, nonarray count, array tails, zero counts and known native-location
+presence; unresolved positive-count locations, ordinary/uncertain state
+and large uniform uploads retain ordinary observation. Inactive
+location-1 calls can now extend the proof using an admitted journal's
+known logical program presence, without reading ignored caller data.
+These changes do not activate journals for ordinary applications or
+complete B1/B4.
+
+| Evidence / command | Result | Scope |
+| --- | --- | --- |
+| R261 `graphics-matrix-focused-r261-1105-001942-c389`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-matrix-focused-r261/check.sh` | PASS31s |487 existing native C/UBSan controls; graphics2180 tests/88 files, including five new source-only signature/custody cases. The native double retains ordinary-path coverage; admitted C proof is exercised on real browser renderers |
+| R262 `graphics-matrix-build-r262-1105-002158-d902`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-matrix-build-r262/build.sh` | PASS3m28 | One normal producer: ABI regeneration, release xtask, sequential SDK32/64, bootstrap kernel, image writer, ABI classification against1b8e487ad1 and evidence709. Sources/products frozen and checked; no full application/image preview build |
+| R263 `graphics-matrix-browser-r263-1105-002458-5ec4`, port6065; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-matrix-browser-r263/run.sh` | PASS1m46 | Graphics2180/88, Node18/6files, two strict helpers and24 GPU cases on Chromium/Firefox/WebKit, wasm32/64, ordinary/admitted and production/fatal. Full host tsc still reports the exact39 retained diagnostics, not a type-check pass |
+| R264 `graphics-matrix-regression-r264-1105-002725-2d40`, port6066 | RUNNING at this checkpoint | Full xtask844+8 and selected Rust libraries13/2870/96 pass; ABI/evidence and six strict helpers pass. Shader harness has266/263/266 passes, with the retained Firefox1 inconclusive and2 native defect controls. The combined852-case browser regression, explicit cold setup metrics and final source/product checks are not yet complete |
+
+| Per20 matrix calls after setup | R258 normal1b8 SDK | R263 candidate | Scope |
+| --- | --- | --- | --- |
+| Explicitly admitted journal |20 device requests |0 device requests | Local type/count/error proof after cold acquisition |
+| Ordinary context |20 device requests |20 device requests | Automatic application admission remains off |
+| Other13 recorded API families | Recorded R258 counts | Every complete count record identical | Includes binds, draws, attributes and large uploads; no hidden broader improvement |
+
+The24 comparisons use the same engine versions: Chromium153.0.8010.12,
+Firefox155.0 and WebKit26.6. Each candidate GPU case additionally
+checks19 matrix scenarios, including installed root zero,
+failed/successful peer relinks, rejected reselect, deleted current
+program, no program, wrong type, array tails and ignored invalid
+pointers. Rendered pixels, native program/shader cleanup and memory-
+boundary checks pass. The table reports warm requests; cold signature
+acquisition submits the caller prefix and performs a metadata query
+before the normal observation, and its explicit setup counts are being
+validated separately. Request counts do not establish latency, FPS,
+application benefit, main performance or native feel.
+
+Normal kernel SHA256 is
+`386b220c459b61e898a93cdecedcae4d8407d393e98a05c5b5c1d4747ce10b8a`;
+snapshot SHA256 is
+`663f74a1e8340715edbc522d1a5aa258c21fac8e019083108eb49c95bc7c4348`. The
+public preview remains the older normal R30+051 build and excludes this
+source. Full B1 required hot families, ownership audit closure, ordinary
+admission, stage conformance/desktop/memory/application and Node/browser
+benchmark gates, complete normal preview and every original final
+acceptance requirement remain open. No new boundary, deferral or reduced
+bar is introduced.
+
 ## Fresh large-array upload proof and failure handling, 2026-11-04
 
 Large `glBufferData` now emits its storage definition directly, then

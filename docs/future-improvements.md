@@ -1174,6 +1174,20 @@ ordinary activation, complete stage validation and ScummVM's round-trip
 target still need closure before a complete normal-built B1 preview.
 B2–B6 and C1–C3 remain required in their recorded order.
 
+The admitted B1 prototype now predicts small matrix2/3/4 errors from a
+bounded exact-generation signature cache. The installed executable stays
+independent of mutable public names across peer relinks, rejected
+selections and deletion. Original records retain independent host
+validation. In24 same-engine-version SDK/GPU comparisons, warmed matrix
+calls change20 to0 device requests for admitted contexts; ordinary
+contexts remain20 and the other13 API-family records are identical. Cold
+signature acquisition remains explicit work. This is a prototype
+operation-count result against intermediate1b8, not application latency,
+main or native-feel acceptance. Ordinary activation, remaining required
+hot families, full stage gates and the complete normal-built preview
+remain required; B4's once-per-link public interface cache is still
+separate work.
+
 C publication must also precede EGL lifetime mutations made without a current
 GL binding. The optional0x3c lifecycle barrier now supplies checked metadata-only
 authority through a live owned public context; ordinary0x3b current-thread

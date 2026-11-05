@@ -355,6 +355,11 @@ struct wpk_program_generation {
     uint64_t link_epoch;
     uint32_t token, capture;
 };
+struct wpk_uniform_signature {
+    uint32_t token, type, remaining, flags;
+    GLint location;
+    int valid;
+};
 struct wpk_program_intent {
     struct wpk_program_stream *owner;
     struct wpk_program_intent *next;
@@ -367,9 +372,11 @@ struct wpk_program_stream {
     struct wpk_program_stream *next;
     int fd, active, blocked;
     void *reset_owner;
-    uint32_t id, transaction, cache_cursor;
+    uint32_t id, transaction, cache_cursor, current_token, signature_cursor;
     uint64_t ticket;
     struct wpk_program_generation generations[WPK_PROGRAM_CACHE];
+    struct wpk_uniform_signature signatures[WPK_PROGRAM_CACHE];
+    uint32_t signature_request[4], signature_reply[12];
     struct wpk_program_intent slots[WPK_PROGRAM_SLOTS];
     uint32_t request[3+8*WPK_PROGRAM_SLOTS], reply[12], recovery[12], read_request[2];
 };
@@ -2510,7 +2517,8 @@ static int disable_program_stream(struct wpk_gles_context *state) {
     if (program_stream_mutate(stream,5,2,QOP_PROGRAM_JOURNAL)!=1) {
         raise_client_error(GL_INVALID_OPERATION);return 0;
     }
-    stream->active=0;stream->id=0;stream->ticket=0;
+    stream->active=0;stream->id=0;stream->ticket=0;stream->current_token=0;
+    memset(stream->signatures,0,sizeof stream->signatures);stream->signature_cursor=0;
     for (unsigned i=0;i<WPK_PROGRAM_CACHE;i++) {
         struct wpk_program_generation *g=&stream->generations[i];
         g->token=0; // The acknowledged journal closure retired every token.
@@ -2646,6 +2654,7 @@ static int try_program_stream_use(struct wpk_gles_context *state,GLuint name) {
     w_u16(&cursor,OP_USE_PROGRAM_JOURNAL);w_u16(&cursor,16);
     w_u32(&cursor,stream->id);w_u32(&cursor,slot->index);
     w_u32(&cursor,(uint32_t)slot->ticket);w_u32(&cursor,(uint32_t)(slot->ticket>>32));
+    if (!error) stream->current_token=token;
     if (!error && record!=state->current_program) {
         struct wpk_program_record *previous=state->current_program;
         if (record) record->references++;
@@ -3841,16 +3850,66 @@ static int uniform_location_accepted(GLint location) {
     }
     /* All signatures ignore inactive data but still require a current
      * executable. An existing scalar record carries that identical check
-     * without reading caller data. The host owns accepted use/link/delete
-     * state and deduplicated errors; an optimistic C cache or a local error
-     * derived from a state query would split that authority. Count/transpose
-     * validation happens before this helper for vector/matrix signatures. */
+     * without reading caller data. An admitted journal's logical current
+     * state proves presence; ordinary/uncertain contexts keep host error
+     * observation. Count/transpose validation happens before this helper. */
     uint8_t *record = reserve(12);
     if (!record) return 0;
+    uint8_t *start=record;
     w_u16(&record, OP_UNIFORM1F); w_u16(&record, 8);
     w_i32(&record, -1); w_f32(&record, 0);
-    g_cursor = record;
+    struct wpk_gles_context *state=_wpk_gl_current_encoder();
+    struct wpk_program_stream *stream=state->program_stream;
+    if(stream && stream->active && !stream->blocked &&
+        atomic_load_explicit(&state->objects->program_records_known,memory_order_acquire))
+        finish_predicted_command(start,record,state->current_program?GL_NO_ERROR:GL_INVALID_OPERATION);
+    else g_cursor = record;
     return 0;
+}
+
+/* A public name can acquire a different link while this context keeps its
+ * old installed executable. Only the journal's exact-generation pin can
+ * justify a signature. Ordinary contexts retain the host observation path. */
+static int matrix_error_prediction(GLint location,GLsizei count,uint32_t type,GLenum *error) {
+    struct wpk_gles_context *state=_wpk_gl_current_encoder();
+    struct wpk_program_stream *stream=state->program_stream;
+    if(!stream || !stream->active)return 0;
+    struct wpk_gl_name_scope guard __attribute__((cleanup(_wpk_gl_end_name_scope)))=begin_dispatch_scope(state);
+    if(!guard.group)return -1;
+    if(stream->blocked){raise_client_error(GL_INVALID_OPERATION);return -1;}
+    if(!atomic_load_explicit(&state->objects->program_records_known,memory_order_relaxed))return 0;
+    *error=GL_INVALID_OPERATION;
+    if(!state->current_program)return 1;
+    struct wpk_uniform_signature *meta=NULL;
+    for(unsigned i=0;i<WPK_PROGRAM_CACHE;i++){
+        struct wpk_uniform_signature *s=&stream->signatures[i];
+        if(s->valid && s->token==stream->current_token && s->location==location){meta=s;break;}
+    }
+    if(!meta){
+        // Submit only this caller's prefix. Metadata publication may carry
+        // peer selectors, but must never execute a peer's mutable encoder.
+        if(!publish_program_intents_from_encoder(state,1) || flush_commands()!=0)return -1;
+        uint32_t *request=stream->signature_request,*reply=stream->signature_reply;
+        request[0]=8;request[1]=stream->id;request[2]=stream->current_token;request[3]=(uint32_t)location;
+        if(!program_stream_io(stream,QOP_PROGRAM_JOURNAL,request,4,reply) ||
+            reply[0]>1 || reply[1] || reply[2]!=8 || reply[3]!=stream->id ||
+            reply[4]!=stream->current_token || reply[5]!=(uint32_t)location || reply[9] || reply[10] ||
+            (reply[8]&~7u) || (reply[8]&6u)==6u ||
+            (!reply[6] && (reply[7] || reply[8])) ||
+            (reply[6] && (!reply[7] || (!(reply[8]&1u) && reply[7]!=1))) ||
+            (reply[0] && (reply[6] || reply[7] || reply[8]))){
+            raise_client_error(GL_INVALID_OPERATION);return -1;
+        }
+        if(_wpk_gl_context_reset())return -1;
+        if(reply[0])return 0;
+        meta=&stream->signatures[stream->signature_cursor++%WPK_PROGRAM_CACHE];
+        *meta=(struct wpk_uniform_signature){.token=stream->current_token,.location=location,
+            .type=reply[6],.remaining=reply[7],.flags=reply[8],.valid=1};
+    }
+    if(meta->type!=type || (!(meta->flags&1u) && count>1))return 1;
+    if(count && !(meta->flags&6u))return 0; // Long native name remains unresolved.
+    *error=count && (meta->flags&4u)?GL_INVALID_OPERATION:GL_NO_ERROR;
+    return 1;
 }
 
 void glUniform1i(GLint location, GLint v) {
@@ -5116,13 +5175,18 @@ static void emit_uniform_matrix(uint16_t op, GLint location, GLsizei count,
     if ((uint64_t)(uint32_t)count*components > (WPK_GL_MAX_TLV_PAYLOAD-12u)/4u) {
         emit_large_uniform(op,location,count,transpose,value,components); return;
     }
+    GLenum predicted=GL_NO_ERROR;
+    int exact=matrix_error_prediction(location,count,components==4?0x8b5au:components==9?0x8b5bu:0x8b5cu,&predicted);
+    if(exact<0)return;
     uint32_t n = (uint32_t)count * components;
     EMIT_BEGIN(op, 12u + n * 4u)
+    uint8_t *start=_c-4;
     w_i32(&_c, location);
     w_u32(&_c, (uint32_t)count);
     w_u32(&_c, transpose ? 1u : 0u);
     for (uint32_t i = 0; i < n; i++) w_f32(&_c, value[i]);
-    EMIT_END()
+    if(exact)finish_predicted_command(start,_c,predicted);
+    else g_cursor=_c;
 }
 
 void glUniform1fv(GLint location, GLsizei count, const GLfloat *value) {

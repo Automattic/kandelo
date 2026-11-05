@@ -8,6 +8,7 @@ import { nativeGlFault, rethrowNativeGlFault } from "./native-recovery.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { recordGlError } from "./errors.js";
 import type { GlObjectGroup } from "./object-group.js";
+import { uniformLayout } from "./uniform-layout.js";
 
 type Generation = { token: number; pin: GlProgramQueryPin | null; cache: boolean; references: number };
 type Slot = { phase: "free" | "published" | "executing" | "failed"; ticket: number;
@@ -171,6 +172,24 @@ export class GlProgramJournal {
   get publishedTicket(): number {return this.published;}
   get executedTicket(): number {return this.executed;}
   get flags(): number {return (this.ready&&!this.closed?1:0)|(this.closed?2:0)|(this.poisoned?4:0);}
+
+  /** Cold driver proof for this journal's immutable executable, never the
+   * public name's latest link. Pending/current references keep evicted tokens
+   * alive. Reflection neither selects it nor resolves deferred long names. */
+  uniformSignature(token: number, location: number, words: Uint32Array): boolean {
+    if(!this.ready || this.closed || this.poisoned)return false;
+    const pin=this.generations.get(token)?.pin;
+    if(!pin)return false;
+    const layout=uniformLayout(this.binding,pin.program);
+    if(!layout || !layout.current)return false;
+    const meta=location>=0?layout.slots[location]:undefined;
+    if(meta){
+      const native=layout.resolvedNative(location);
+      words[6]=meta.type;words[7]=meta.location+meta.size-location;
+      words[8]=(meta.array?1:0)|(native===undefined?0:native===null?4:2);
+    }
+    return true;
+  }
 
   /** Execute at the original command/error-observation position, inside the
    * caller's ordinary muxer/native-batch scope. Errors computed during logical

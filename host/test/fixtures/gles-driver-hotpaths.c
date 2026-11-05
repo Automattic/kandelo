@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
 #include "../../../libc/glue/gl_abi.h"
 /* Internal core VAO symbols, as exercised by the native encoder controls.
  * OES VAOs are not advertised by this GLES2 surface. */
@@ -13,8 +14,82 @@ void glGenVertexArrays(GLsizei,GLuint *);
 void glBindVertexArray(GLuint);
 void glDeleteVertexArrays(GLsizei,const GLuint *);
 static GLuint shader(GLenum type,const char *text){GLuint s=glCreateShader(type);assert(s);glShaderSource(s,1,&text,NULL);glCompileShader(s);GLint ok=0;glGetShaderiv(s,GL_COMPILE_STATUS,&ok);assert(ok);return s;}
+static void linked(GLuint program){GLint ok=0;glLinkProgram(program);glGetProgramiv(program,GL_LINK_STATUS,&ok);assert(ok);}
+static const GLfloat identity2[]={1,0,0,1},identity3[]={1,0,0,0,1,0,0,0,1},identity4[]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+struct matrix_peer {EGLDisplay display;EGLConfig config;EGLContext source;GLuint program,vertex;int fail;};
+static void *matrix_relink(void *opaque){
+ struct matrix_peer *p=opaque;const EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
+ EGLContext ctx=eglCreateContext(p->display,p->config,p->source,attrs);assert(ctx!=EGL_NO_CONTEXT);
+ assert(eglMakeCurrent(p->display,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));
+ const char *source=p->fail?"invalid shader on purpose":"attribute vec2 p;uniform mat2 u;void main(){gl_Position=vec4(u*p,0.,1.);}";
+ glShaderSource(p->vertex,1,&source,NULL);glCompileShader(p->vertex);GLint ok=0;
+ glGetShaderiv(p->vertex,GL_COMPILE_STATUS,&ok);assert(ok==!p->fail);
+ glLinkProgram(p->program);glGetProgramiv(p->program,GL_LINK_STATUS,&ok);assert(ok==!p->fail);
+ glFinish();assert(glGetError()==GL_NO_ERROR);
+ assert(eglMakeCurrent(p->display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
+ assert(eglDestroyContext(p->display,ctx)&&eglReleaseThread());return NULL;
+}
+/* First call is cold; subsequent calls must retain exact host error ordering
+ * without another device request when the journal proves the signature. */
+#define MATRIX_CHECK(error,...) do { \
+ __VA_ARGS__;assert(glGetError()==(error));assert(glGetError()==GL_NO_ERROR); \
+ uint64_t before=_wpk_gl_device_requests(); \
+ for(unsigned check=0;check<4;check++){__VA_ARGS__;assert(glGetError()==(error));assert(glGetError()==GL_NO_ERROR);} \
+ if(admitted)assert(_wpk_gl_device_requests()==before);matrix_checks++; \
+} while(0)
+static void matrix_proofs(EGLDisplay d,EGLConfig config,EGLContext context,GLuint restore,int admitted){
+ unsigned matrix_checks=0;
+ GLuint v=shader(GL_VERTEX_SHADER,"attribute vec2 p;uniform mat2 a;uniform mat3 b[3];uniform mat4 c;void main(){vec3 q=b[0]*b[1]*b[2]*vec3(a*p,1.);gl_Position=c*vec4(q.xy,0.,1.);}"),
+  f=shader(GL_FRAGMENT_SHADER,"precision mediump float;void main(){gl_FragColor=vec4(.2,.6,.8,1.);}"),program=glCreateProgram();
+ glAttachShader(program,v);glAttachShader(program,f);glBindAttribLocation(program,0,"p");linked(program);glUseProgram(program);
+ GLint a=glGetUniformLocation(program,"a"),b=glGetUniformLocation(program,"b[0]"),c=glGetUniformLocation(program,"c");assert(a>=0&&b>=0&&c>=0);
+ if(admitted)assert(_wpk_gl_enable_program_journal()); // Own installed-root generation zero.
+ assert(glGetError()==GL_NO_ERROR);
+ MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix2fv(a,1,GL_FALSE,identity2));
+ MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix3fv(b,1,GL_FALSE,identity3));
+ MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix4fv(c,1,GL_FALSE,identity4));
+ MATRIX_CHECK(GL_INVALID_OPERATION,glUniformMatrix4fv(a,0,GL_FALSE,NULL));
+ MATRIX_CHECK(GL_INVALID_OPERATION,glUniformMatrix3fv(c,1,GL_FALSE,identity3));
+ GLfloat pairs[32];for(unsigned i=0;i<8;i++)memcpy(pairs+4*i,identity2,sizeof identity2);
+ MATRIX_CHECK(GL_INVALID_OPERATION,glUniformMatrix2fv(a,2,GL_FALSE,pairs));
+ GLfloat triples[36];for(unsigned i=0;i<4;i++)memcpy(triples+9*i,identity3,sizeof identity3);
+ MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix3fv(b+1,3,GL_FALSE,triples)); // Excess array tail is ignored.
+ MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix3fv(b,0,GL_FALSE,NULL));
+ MATRIX_CHECK(GL_INVALID_OPERATION,glUniformMatrix4fv(1000000,0,GL_FALSE,NULL));
+ MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix4fv(-1,1,GL_FALSE,(const GLfloat *)(uintptr_t)1));
+ glClear(GL_COLOR_BUFFER_BIT);glDrawArrays(GL_TRIANGLES,0,3);unsigned char pixel[4];glReadPixels(8,8,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
+ assert(pixel[0]==51&&pixel[1]==153&&pixel[2]==204&&pixel[3]==255&&glGetError()==GL_NO_ERROR);
+ // Peer failed/successful relinks replace public metadata, not our installed
+ // executable. A rejected reselect must preserve its exact-generation proof.
+ GLuint generation=glCreateProgram(),gv=shader(GL_VERTEX_SHADER,"attribute vec2 p;uniform mat4 u;void main(){gl_Position=u*vec4(p,0.,1.);}");
+ glAttachShader(generation,gv);glAttachShader(generation,f);glBindAttribLocation(generation,0,"p");linked(generation);glUseProgram(generation);
+ GLint u=glGetUniformLocation(generation,"u");assert(u==0);
+ if(admitted)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);
+ MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix4fv(u,1,GL_FALSE,identity4));
+ struct matrix_peer peer={d,config,context,generation,gv,1};pthread_t thread;
+ assert(!pthread_create(&thread,NULL,matrix_relink,&peer)&&!pthread_join(thread,NULL));
+ MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix4fv(u,1,GL_FALSE,identity4));
+ glUseProgram(generation);assert(glGetError()==GL_INVALID_OPERATION);assert(glGetError()==GL_NO_ERROR);
+ MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix4fv(u,1,GL_FALSE,identity4));
+ peer.fail=0;assert(!pthread_create(&thread,NULL,matrix_relink,&peer)&&!pthread_join(thread,NULL));
+ MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix4fv(u,1,GL_FALSE,identity4));
+ glUseProgram(generation);assert(glGetError()==GL_NO_ERROR);
+ MATRIX_CHECK(GL_INVALID_OPERATION,glUniformMatrix4fv(u,1,GL_FALSE,identity4));
+ MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix2fv(u,1,GL_FALSE,identity2));
+ glDeleteProgram(generation);assert(glGetError()==GL_NO_ERROR);
+ MATRIX_CHECK(GL_NO_ERROR,glUniformMatrix2fv(u,1,GL_FALSE,identity2));
+ glClear(GL_COLOR_BUFFER_BIT);glDrawArrays(GL_TRIANGLES,0,3);glReadPixels(8,8,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
+ assert(pixel[0]==51&&pixel[1]==153&&pixel[2]==204&&pixel[3]==255&&glGetError()==GL_NO_ERROR);
+ glUseProgram(0);assert(glGetError()==GL_NO_ERROR);
+ MATRIX_CHECK(GL_INVALID_OPERATION,glUniformMatrix4fv(-1,1,GL_FALSE,(const GLfloat *)(uintptr_t)1));
+ MATRIX_CHECK(GL_INVALID_OPERATION,glUniformMatrix4fv(u,0,GL_FALSE,NULL));
+ glDeleteShader(gv);glDeleteProgram(program);glDeleteShader(v);glDeleteShader(f);glUseProgram(restore);assert(glGetError()==GL_NO_ERROR);
+ printf("MATRIX_PROOFS %u\n",matrix_checks);
+}
 #define MEASURE(label,...) do { \
+ uint64_t setup_before=_wpk_gl_device_requests(); \
  __VA_ARGS__;assert(glGetError()==GL_NO_ERROR); \
+ printf("SETUP {\"operation\":\"%s\",\"deviceRequests\":%llu}\n",label,(unsigned long long)(_wpk_gl_device_requests()-setup_before)); \
  uint64_t sum=0,min=UINT64_MAX,max=0; \
  for(unsigned i=0;i<20;i++){assert(glGetError()==GL_NO_ERROR);uint64_t start=_wpk_gl_device_requests(); \
  __VA_ARGS__;assert(glGetError()==GL_NO_ERROR);uint64_t n=_wpk_gl_device_requests()-start; \
@@ -67,6 +142,7 @@ int main(int argc,char **argv){
  glBindVertexArray(0);assert(glGetError()==GL_NO_ERROR);
  MEASURE("attribute-restored-default",glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL));
  glClear(GL_COLOR_BUFFER_BIT);glDrawArrays(GL_TRIANGLES,0,3);unsigned char result[4];glReadPixels(8,8,1,1,GL_RGBA,GL_UNSIGNED_BYTE,result);assert(result[0]==51&&result[1]==153&&result[2]==204&&result[3]==255);assert(glGetError()==GL_NO_ERROR);
+ matrix_proofs(d,config,ctx,program,!strcmp(argv[1],"admitted"));
  glBindVertexArray(0);glDeleteVertexArrays(1,&vao);glUseProgram(0);glDeleteProgram(program);glDeleteShader(v);glDeleteShader(f);glDeleteBuffers(3,buffers);glDeleteTextures(1,&texture);assert(glGetError()==GL_NO_ERROR);
  assert(eglMakeCurrent(d,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT)&&eglDestroyContext(d,ctx)&&eglDestroySurface(d,surface)&&eglTerminate(d)&&eglReleaseThread());
  puts("PASS hotpath request attribution");return 0;

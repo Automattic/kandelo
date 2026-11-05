@@ -6262,6 +6262,31 @@ bindings still do not establish local error knowledge. Native controls
 verify complete bytes, held errors, standalone fallback, rollover
 revocation, refused-prefix stop and actual binding recovery.
 
+Explicitly admitted program journals also support exact matrix error
+prediction. Each cold journal owns32 numeric signature cells keyed by
+its current generation token and dense uniform location. Token zero
+identifies the executable installed at admission; successful same-name
+selections still update the token, rejected selections keep their
+predecessor, and closure clears the cache. Public names cannot prove a
+signature because a peer relink leaves this context's older executable
+installed.
+
+Optional journal action8 reads the owned immutable pin's uniform type,
+remaining array elements and already-known native-location state. It
+requires own-current-thread/context/journal authority, cannot run
+through the lifecycle barrier, leaves sealed mutation receipts intact
+and neither selects the queried program nor drains errors, interrupts
+uploads, resolves deferred long names or synchronizes buffers. A cold C
+miss publishes metadata and submits only the caller's prefix. Small
+matrix updates then retain the exact error proof for
+signature/count/presence checks while their original records reach the
+independent host oracle. Inactive location-1 updates use known logical
+executable presence without reading data. Unresolved positive-count
+locations, ordinary/uncertain state and large uniform uploads keep
+ordinary observation. Journals remain explicitly admitted; this is
+partial B1, not ordinary application activation or B4's complete once-
+per-link interface cache.
+
 Ordinary vertex-layout updates can reuse an existing host attribute slot
 inside an authoritative guest batch. Aligned BYTE/UNSIGNED_BYTE/SHORT/
 UNSIGNED_SHORT/FLOAT layouts with stride at most 255 need neither a shadow

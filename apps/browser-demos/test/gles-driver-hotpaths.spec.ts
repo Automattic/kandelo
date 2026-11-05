@@ -52,7 +52,8 @@ for(const mode of ["ordinary","admitted"] as const) for(const arch of ["wasm32",
     writeFileSync(test.info().outputPath("guest-result.json"),JSON.stringify(evidence,null,2));
     const lines=result.stdout.trim().split("\n");
     const counts=lines.filter((line:string)=>line.startsWith("COUNT ")).map((line:string)=>JSON.parse(line.slice(6)));
-    writeFileSync(test.info().outputPath("guest-result.json"),JSON.stringify({...evidence,counts},null,2));
+    const setup=lines.filter((line:string)=>line.startsWith("SETUP ")).map((line:string)=>JSON.parse(line.slice(6)));
+    writeFileSync(test.info().outputPath("guest-result.json"),JSON.stringify({...evidence,counts,setup},null,2));
     expect(counts).toHaveLength(14);
     const byName=new Map(counts.map((c:any)=>[c.operation,c]));
     expect(byName.size).toBe(14);
@@ -60,6 +61,10 @@ for(const mode of ["ordinary","admitted"] as const) for(const arch of ["wasm32",
     for(const name of ["array-definition-small","attribute-default","clear-default"])
       expect((byName.get(name) as any).total).toBe(0);
     expect((byName.get("program-pair") as any).total).toBe(mode==="admitted"?0:40);
+    expect((byName.get("matrix4") as any).total).toBe(mode==="admitted"?0:20);
+    expect(setup).toHaveLength(14);
+    expect(setup.find((row:any)=>row.operation==="matrix4").deviceRequests).toBe(mode==="admitted"?3:1);
+    expect(lines).toContain("MATRIX_PROOFS 19");
     // Permit future improvements, while rejecting one drain for every large
     // definition. Rollover still revokes the exact prefix and needs recovery.
     expect((byName.get("array-definition-large") as any).total).toBeLessThanOrEqual(4);

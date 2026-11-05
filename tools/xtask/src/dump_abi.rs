@@ -4505,6 +4505,21 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "query_dependencies":"metadata-only-no-buffer-sync",
         "reads":"available-after-reset; no-native-replay-error-drain-or-upload-interruption",
     }));
+    s.add(Program, "gl_program_uniform_signature", json!({
+        "opcode":shared::gl::QOP_PROGRAM_JOURNAL,"action":8,"request_bytes":16,
+        "request_fields":["action","own_journal","generation_token_or_installed_root_zero","signed_location"],
+        "reply_bytes":48,"reply_fields":["status","zero","action","journal","generation","location",
+            "type","remaining_array_elements","flags","zero","zero","magic"],
+        "reply_magic":shared::gl::QUERY_REPLY_MAGIC,
+        "status":{"available":0,"unavailable":1},
+        "flags":{"array":1,"native_location_present":2,"native_location_null":4},
+        "invalid_location":"available-with-zero-type-elements-and-flags",
+        "unavailable":"zero-type-elements-and-flags; ordinary-validation-required",
+        "unresolved_native_location":"neither-present-nor-null; positive-count-needs-ordinary-validation",
+        "authority":"own-current-context-tid-and-journal; immutable-owned-generation-only",
+        "effects":"read-only; no-selection-error-drain-upload-interruption-or-mutation-receipt-change",
+        "query_dependencies":"metadata-only-no-buffer-sync",
+    }));
     s.add(Program, "gl_error_drain_receipt", json!({
         "query":shared::gl::QOP_GET_ERROR,
         "request_mode":shared::gl::error_drain_receipt::REQUEST,
@@ -8619,7 +8634,7 @@ fn additive_top_level_section(section: &str) -> bool {
         // additive: those are classified by
         // `classify_removal_only_array_by_module_name`, under which an
         // added import is breaking.
-        // A new query on an unused GL17 opcode cannot alter any old request.
+        // A new query on an unused GL17 opcode/action cannot alter old requests.
         // Existing receipt fields remain exact-match and therefore breaking
         // if changed; only adding this section is compatible.
         "gl_context_reset_scope"
@@ -8630,6 +8645,7 @@ fn additive_top_level_section(section: &str) -> bool {
             | "gl_program_journal_barrier"
             | "gl_transport_error_observation"
             | "gl_error_drain_receipt"
+            | "gl_program_uniform_signature"
             | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
@@ -10329,6 +10345,22 @@ mod tests {
             let mut changed=new.clone();changed["gl_error_drain_receipt"][field]=json!("different");
             assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
             changed["gl_error_drain_receipt"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn uniform_signature_is_additive_but_existing_generation_authority_is_exact() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["gl_program_uniform_signature"]=json!({"opcode":0x3b,"action":8,
+            "request_bytes":16,"reply_bytes":48,"authority":"own-immutable-generation",
+            "effects":"read-only; no-error-drain-or-mutation-receipt-change"});
+        assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());
+        for field in new["gl_program_uniform_signature"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_program_uniform_signature"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_program_uniform_signature"].as_object_mut().unwrap().remove(field);
             assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
         }
         assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
