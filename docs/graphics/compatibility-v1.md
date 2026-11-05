@@ -169,6 +169,44 @@ no failure is retried and no wire, snapshot or ABI version changes.
 | R295 `graphics-readonly-candidate-r295-1105-043847-59e2`; `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-readonly-candidate-r295/run.sh` | PASS7m06 |487 native controls, sequential normal SDK32/64 builds, ABI, graphics2180/88, Node10/5files and108 GPU cases. All36 hot-path cases retain14 original family records/19 matrix proofs and add12 numeric getter proofs each: integer/float/boolean, major/minor, standalone/accepted-prefix. Automatic/admitted warm pairs0 requests; checked40. Errors, untouched outputs, pixels and native cleanup retained |
 | R296 `graphics-readonly-ownership-r296-1105-044350-eb52`; `.context/graphics-readonly-ownership-r296/run.sh` | PASS2m26 including prerequisite wait |18 Node controls/6files for journal/loss/creation/sharing/targets. Documented Node no-renderer refusal remains explicit; this is not Node GPU execution. Frozen runtime/test/config and normal product hashes pass |
 
+The complete R298 regression also passes: `graphics-readonly-regression-r298-1105-044835-07fe`,
+`scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-readonly-regression-r298/run.sh`,
+PASS16m44 with864 GPU cases on all3 engines/both widths/production+fatal.
+All792 routed kernel identities match386b220c;612 successful cases retain
+nativeLive0,96 retirement cases sample public/execution/binding/native owners0
+before process exit,60 error-receipt and24 intentional fatal controls retain
+their checks. All36 hot-path cases retain the14 family counts and19 matrix
+proofs and pass the new12 numeric getter proofs. Evidence classes, six strict
+helpers, runtime/test/config hashes and normal product hashes pass. This is
+component regression evidence, not application or final goal acceptance.
+
+R303 `graphics-bind-inventory-r303-1105-045809-1e04` passes3 further normal
+ScummVM inventories in1m55 on Chromium/Firefox/WebKit. In338/339/263 complete
+client-front intervals, respectively, the13 ARRAY_BUFFER queries always select
+`4,5,6,0,4,5,0,4,5,0,4,5,0`. Each changes its preceding numeric selector;
+no redundant-bind optimization was implemented. These old-b45 diagnostic inputs
+identify required binding work but do not prove the new driver's application
+budget or latency. R299 is the one live normal producer at frozen17d1b52e8a;
+R304 queues normal app/four-client admission, and R305 queues checked/automatic
+application request inventories with actual fetched-kernel SHA checks. Prototype
+availability will remain separate from validation and acceptance.
+
+R291 `graphics-b1-desktop-r291-1105-043003-bd45` on frozenb45 completes in30m47
+and remains FAILED: Node Foot/GTK3/Qt3 pass, but Mako's file fails to load because
+the default-product projection lacks its package. Browser result is36 passed,
+2 failed and4 skipped. Firefox Cage retains the223-pixel cursor difference;
+Firefox Sway times out awaiting its startup syslog, with the rendered desktop
+visible but Internals closed in the failure screenshot. The4 existing host-
+clipboard skips are Firefox/WebKit cases and provide no clipboard coverage.
+The assertions and skips were not weakened. R299 explicitly resolves Mako
+through the normal recipe before its subsequent smoke. R300's instrumented
+Cage observation passes with one earlier cursor upload and stable pixels;
+it does not reproduce or close the original failure. R307's actual App control
+passes on all3 engines with the original Internals helper. The button exposes
+both aria-pressed and aria-expanded; the attribute-mismatch hypothesis is
+rejected, and no helper or runtime fix was made on that basis. R306's earlier
+attempt failed on missing image projection before reaching the component.
+
 The preview on5693/6075 remains the immutable b45 automatic prototype and
 excludes this later numeric-query fix. Normal application rebuild, matched
 application/benchmark measurements, full B1 audit/conformance and every

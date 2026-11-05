@@ -1217,4 +1217,10 @@ across both widths, three engines and production/fatal modes. Application impact
 needs a normally rebuilt application and new measurements; B1's <=10 target and
 full stage acceptance remain open. Remaining binds and draw/attribute authority
 must follow the measured path rather than inferred uniform costs: decimal query
-43 is QOP_BIND_BUFFER (0x2b), not a uniform setter.
+43 is QOP_BIND_BUFFER (0x2b), not a uniform setter. The full864-case R298 component
+regression passes, including pre-exit ownership and all new getter proofs.
+Further application tracing shows13 changing ARRAY_BUFFER selectors per front
+interval, so redundant binding elimination does not address that measured path.
+The next normal producer is frozen17d1b52e8a; its application budget and physical
+latency remain unmeasured. Desktop R291 remains36 pass/2 fail/4 existing skips,
+with Firefox Cage cursor readiness and Sway's missing startup syslog still open.
