@@ -4485,3 +4485,34 @@ heading (1.9m); and authenticated post publish/read/update/read/delete
 (1.7m). These are Firefox runs of the same image and test assertions used
 in Chromium. The Caddy profile and WebKit app flows are still unverified
 on this current projection.
+
+**2026-11-05 — WebKit WordPress isolation on the current image.** The first
+visible WebKit classic run failed before machine setup with an OPFS
+`UnknownError`: Playwright's ephemeral WebKit context has no persistent
+backing store, as existing OPFS tests document. The WordPress app spec now
+uses the shared persistent-page fixture; no runtime/package fallback was
+added. With that fixture the actual site-editor template Save/reload case
+passed in 1.5m and authenticated post edits passed in 1.4m. These show
+working WordPress PHP writes through the full WebKit app path, but the
+separate editor-health case remains intermittent. One run rendered blocks
+then aborted a follow-up PHP fetch after 30 seconds, with several editor
+AJAX/REST requests reporting access-control failures; another failed to
+show the editor iframe within 60 seconds. The guest boot log in those runs
+reached `frankenphp-classic listening` and `HTTP preview ready`, while
+the VFS inspector remained at `Loading...` during failure capture. A
+preview-frame health request and bounded browser-state attachments are
+now used for more faithful diagnosis; they do not turn those failures green.
+
+The direct WebKit `BrowserKernel.fetchInKernel` WordPress test passed with
+no extra traffic (12.9s), one editor burst (13.2s), 20 editor bursts
+(31.6s), and 40 additional PHP requests (27.9s). A combined run with
+20 bursts and 40 requests lost its page evaluation context after about
+one minute; an immediate repeat passed in 54.1s. The combined result is
+intermittent, not a stable pass. System-wide `memory_pressure -Q` reported
+76–77% free around these runs, which does not rule out a per-WebKit-process
+limit. No Go compiler, PHP, package, or runtime workaround is inferred
+from this evidence. The remaining WebKit work is to capture the failing
+request/process state and isolate the guest/bridge or engine boundary.
+The same persistent-profile app fixture passed the classic editor-health
+case in Chromium (1.8m) and Firefox (2.5m), so this fixture change has
+been rechecked in the two previously passing engines.

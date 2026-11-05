@@ -1,6 +1,10 @@
-import { expect, test } from "@playwright/test";
+import { expect } from "@playwright/test";
 import { gotoInPreview, gotoMachine, machineAppPrefix } from "./support/kandelo-machine";
 import { clickDockTool } from "./support/dock";
+import { test } from "./support/persistent-page";
+
+// WordPress uses OPFS; Playwright's ephemeral WebKit context has no
+// backing store. Use the same persistent profile fixture as OPFS tests.
 
 const soakSeconds = Number(process.env.KANDELO_FRANKENPHP_SOAK_SECONDS ?? "20");
 
@@ -15,6 +19,9 @@ for (const demo of [
     context.on("console", (message) => browserDiagnostics.push(`console ${message.type()}: ${message.text()}`));
     page.on("pageerror", (error) => browserDiagnostics.push(`pageerror: ${error.message}`));
     page.on("crash", () => browserDiagnostics.push("page crashed"));
+    page.on("requestfailed", (request) => {
+      browserDiagnostics.push(`requestfailed: ${request.method()} ${request.url()} ${request.failure()?.errorText ?? "unknown"}`);
+    });
     await gotoMachine(page, demo.profile);
     if (browserDiagnostics.some((diagnostic) => diagnostic.startsWith("pageerror:"))) {
       throw new Error(`WordPress page failed to load: ${browserDiagnostics.join("\n")}`);
@@ -32,6 +39,12 @@ for (const demo of [
           }),
         page.locator("vite-error-overlay").waitFor({ state: "attached", timeout: 240_000 })
           .then(() => { throw new Error("Vite error overlay appeared"); }),
+        page.getByText("LiveKernelHost setup failed", { exact: true })
+          .waitFor({ state: "visible", timeout: 240_000 })
+          .then(async () => {
+            const detail = await page.getByRole("alert").textContent();
+            throw new Error(`WordPress machine setup failed: ${detail}`);
+          }),
       ]);
     } catch (error) {
       throw new Error(`WordPress page failed at ${page.url()}: ${String(error)}\n${browserDiagnostics.slice(-30).join("\n")}`);
@@ -66,7 +79,8 @@ for (const demo of [
     const samples: string[] = [];
     for (let elapsed = 0; editorLoaded && elapsed < soakSeconds; elapsed += 10) {
       await page.waitForTimeout(10_000);
-      editorResult = await page.evaluate(async (prefix) => {
+      // Probe from the same preview client that issues WordPress AJAX requests.
+      editorResult = await frame.locator("body").evaluate(async (_body, prefix) => {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 30_000);
         try {
@@ -76,6 +90,8 @@ for (const demo of [
           });
           const body = await response.text();
           return { status: response.status, body: body.slice(-5000) };
+        } catch (error) {
+          return { status: 0, body: `Editor health fetch failed: ${String(error)}` };
         } finally {
           clearTimeout(timeout);
         }
@@ -86,6 +102,7 @@ for (const demo of [
     let serviceLog = "";
     let visibleSyslog = "";
     let processes = "";
+    let vfsState = "";
     try {
       await clickDockTool(page, "Internals", { timeout: 5_000 });
       const inspector = page.getByRole("dialog", { name: "Internals" });
@@ -93,17 +110,26 @@ for (const demo of [
       await inspector.getByRole("tab", { name: "Procs" }).click({ timeout: 5_000 });
       processes = (await inspector.locator(".ktable").allTextContents()).join("\n");
       await inspector.getByRole("tab", { name: "VFS" }).click({ timeout: 5_000 });
+      vfsState = (await inspector.locator(".kinternals-surface").textContent() ?? "").slice(0, 10_000);
       for (const segment of ["var", "log"]) {
         await inspector.locator(".ktable tr", { has: page.locator("td", { hasText: new RegExp(`^${segment}/$`) }) }).click({ timeout: 5_000 });
       }
       await inspector.locator(".ktable tr", { has: page.locator("td", { hasText: demo.serviceLog }) }).click({ timeout: 5_000 });
       serviceLog = await inspector.locator(".kinternals-surface pre").last().textContent() ?? "";
     } catch (error) {
-      serviceLog = `Service-log inspection unavailable: ${String(error)}`;
+      serviceLog = `Service-log inspection unavailable: ${String(error)}\nVFS: ${vfsState}`;
     }
     const dockStatus = (await page.locator(".kdock-status-text").allTextContents()).join("\n");
     if (!editorLoaded || editorResult.status !== 200) {
       await test.info().attach("guest-service-log", { body: serviceLog, contentType: "text/plain" });
+      await test.info().attach("browser-state", {
+        body: JSON.stringify({
+          frames: page.frames().map((item) => item.url()),
+          body: (await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "unavailable")).slice(-64_000),
+          diagnostics: browserDiagnostics.slice(-100),
+        }),
+        contentType: "application/json",
+      });
     }
     expect(editorLoaded, `url=${page.url()}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(0, 10000)}`).toBe(true);
     expect(editorResult.status, `url=${page.url()} samples=${samples.join(",")} dock=${dockStatus}\n${editorResult.body}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(0, 10000)}\n${browserDiagnostics.slice(-100).join("\n")}`).toBe(200);

@@ -62,7 +62,6 @@ const artifactTest = test.extend<{ artifactUrls: { imageUrl: string; kernelUrl: 
 for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
   artifactTest(`WordPress on ${serviceName} serves PHP in the browser kernel host`, async ({ page, baseURL, browserName, artifactUrls }) => {
     test.setTimeout(serviceName === "frankenphp-caddy" ? 300_000 : 240_000);
-    test.skip(serviceName === "frankenphp-classic" && browserName === "webkit", "Classic browser-host gate uses Chromium and Firefox");
     test.skip(!imagePath, "Build the WordPress image and set KANDELO_WORDPRESS_FRANKENPHP_VFS");
     expect(baseURL).toBeTruthy();
     const { imageUrl, kernelUrl } = artifactUrls;
