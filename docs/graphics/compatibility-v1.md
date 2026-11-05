@@ -51,6 +51,89 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Guest sampler kinds and current validation, 2026-11-05
+
+Optional journal action9 reports both the immutable owned executable's native
+setter type and its guest reflection type. The native type alone erases the
+external-versus-ordinary2D distinction and changes for translated cube maps.
+Action8 remains byte-for-byte unchanged, including reserved word9. The new
+48-byte response puts the guest type in word9, retains current-thread/context/
+journal authority and cannot pass through the lifecycle barrier. It neither
+consumes errors nor changes a mutation receipt or buffer dependency. The Rust
+ioctl validator enforces the same16-byte shape for actions8/9; malformed,
+foreign-owner and lifecycle requests retain their existing refusals.
+
+The bounded guest cache upgrades a native-only signature cell when a draw
+needs its guest kind. Selected inline draws can retain their error proof for
+multiple samplers, including arrays, of one known guest kind. Mixed or unknown
+kinds retain observation. Ordinary uniform setters continue using action8;
+no guest-kind query is added to those setters or to buffer-backed draws.
+Original records still execute under the independent host validator and audit.
+The new Program snapshot section changes the contract digest, so coherent
+SDK/kernel/program/image products must be normally rebuilt. Reserved versions
+remain program56, unpublished host3, GL17 and fork21. No stale artifact shim
+is introduced.
+
+The first actual-GPU candidate caught a missing Rust dispatch update that
+source-only host tests could not expose. R410 is retained as FAILED6m57:
+24 admitted/automatic browser cases abort on the first inline metadata query,
+12 ordinary cases pass, and the full compiler still has the identical24
+diagnostics. Its845 xtask unit tests plus8 integration tests, graphics2196/88,
+Node18/6 and ABI checks pass. R413's stronger Rust control fails before the
+validator correction, then four focused journal controls and all3645 workspace
+Rust tests pass. Its normal kernel/image-writer graph and ABI check pass.
+The initial failed kernel and source versions are retained; the failed run is
+not presented as successful coverage.
+
+R403 independently completes the preceding a61 combined graphics gate:
+graphics2193/88, Node18/6,1146 browser cases on Chromium/Firefox/WebKit,
+ABI and evidence checks pass. The shader harness has266 passes on Chromium,
+263 on Firefox and266 on WebKit with zero failures; Firefox retains one
+inconclusive result and two existing engine-defect controls tied to the
+[confirmed standalone Firefox reproduction](../../tests/runtime-workarounds/FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM/entry.md).
+This is a61 evidence, not validation of the later optional query or full B1 acceptance.
+R404's normal a61 CTS package build succeeds5m57. R406 is running full fatal-
+audit GLES2 then EGL on all three engines from its frozen normal products.
+The partial Chromium run has two shader-preprocessor `basic_2` failures also
+seen in all three historical R2 engines; they remain failures to investigate,
+not allowances or a complete per-case regression conclusion.
+
+| Exact supervised command / job | Result and scope |
+| --- | --- |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-sampler-controls-r412/baseline.sh`; `graphics-sampler-controls-before-r412-1105-135147-2826`, port6173 | Three expected new request-expectation failures in28s. All10 guest correctness scenarios finish with exit0 on each normal a61 SDK engine, including the external/plain unit conflict and same-kind array |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-sampler-kernel-r413/before.sh`; `graphics-sampler-kernel-before-r413-1105-135125-b10c` | FAIL23s: valid new query rejected with EINVAL before reaching host dispatch |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-sampler-kernel-r413/build.sh`; `graphics-sampler-kernel-build-r413-1105-135226-db5f` | PASS3m58: four focused journal controls,3645 workspace Rust tests, normal kernel/image-writer graph and ABI check. Earlier R408 normal SDK32/64 build passes with488 native controls; xtask845 unit/8 integration controls pass in R410 |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-sampler-final-r414/validate.sh`; `graphics-sampler-final-r414-1105-135657-fbec`, port6174 | Overall FAILED2m08 solely identical24 full compiler diagnostics. Graphics2196/88, Node18/6, all36 three-engine/both-width/ordinary-admitted-automatic/production-fatal browser modes, ABI and evidence checks pass. Frozen source/product hashes match before/after; each GPU cohort checks10 inline,40 uniform,19 matrix and12 query scenarios, values/pixels, native-live0 and no audit divergence |
+
+Matched admitted wasm32 production cohorts use the same10-scenario fixture
+and engine versions on each side. Each side uses its own coherent normal
+kernel/program contract; the optional Program addition changes that digest.
+Original14 family records and complete40 uniform cold/warm records match in
+all three paired cohorts. The operation-count comparison is:
+
+| Browser probe, each engine | a61 baseline | Candidate |
+| --- | ---: | ---: |
+| Same-kind two-sampler warm requests, four draws | 4 | 0 |
+| Same-kind sampler-array warm requests, four draws | 4 | 0 |
+| Complete10-scenario warm requests | 28 | 20 |
+| Complete10-scenario cold requests | 18 | 21 |
+| Each mixed-buffer, mixed-kind, external/plain conflict or uncertain-framebuffer warm control | 4 | 4 |
+
+These are browser device-request counts against intermediate a61, not Node
+performance, application latency, comparison with main or native-feel evidence.
+The final compiler output matches R400 after normalizing checkout paths; it
+is still a failed gate. Exact records, source versions, source/product hashes,
+commands and comparison are retained in R408/R412/R413/R414 evidence roots.
+
+B1 still requires buffer-storage and offscreen-framebuffer draw authority,
+remaining hot paths, full conformance/application/latency gates and a coherent
+normal-built preview. R407's read-only actual ScummVM observer confirms VBO
+draws with one or two ordinary2D samplers and both default and nondefault
+framebuffers. It used older c635 normal application products and establishes
+neither current-SDK behavior nor timing. The sampler query is a prerequisite
+for those paths, not their implementation. The maintainer wants all B1 changes
+before a new preview notification;5693 remains the pinned partial c635 build.
+
 ## Owned inline-draw proof and rejected pointer changes, 2026-11-05
 
 B1's selected inline client-array path now preserves its exact error prefix

@@ -1983,7 +1983,7 @@ fn valid_program_journal_input(input: &[u8]) -> bool {
         2=>n==12 && word(8)!=0,
         4=>n==16 && word(8)!=0 && word(12)!=0,
         5=>n==8,
-        8=>n==16,
+        8|9=>n==16,
         3=>{
             if n<12 {return false;}
             let count=word(8) as usize;
@@ -61095,6 +61095,7 @@ impl HostIO for RelSymlinkMock {
             for words in [vec![0],vec![1,0,2],vec![1,1,0],vec![1,1,257],vec![2,1,0],
                 vec![3,1,0],vec![3,1,1],vec![4,1,0,1],vec![5,1,1],vec![6,1],vec![7,0],
                 vec![8,0,0,0],vec![8,1,0],vec![8,1,0,0,0],
+                vec![9,0,0,0],vec![9,1,0],vec![9,1,0,0,0],
                 vec![3,1,1,1,256,1,0,1,0,20,1],vec![3,1,1,1,0,1,0x20_0000,1,0,20,1]] {
                 let input=words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
                 host.proc_memory[128..128+input.len()].copy_from_slice(&input);
@@ -61105,25 +61106,28 @@ impl HostIO for RelSymlinkMock {
             for len in [0,3,6,8208] {assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(len,48)),Err(Errno::EINVAL));}
             for len in [0,16,44,52] {assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(4,len)),Err(Errno::EINVAL));}
             assert!(host.gl_query_inputs.is_empty());assert!(host.proc_write_calls.is_empty());
-            for (i,word) in [8u32,1,0,0].into_iter().enumerate() {
-                host.proc_memory[128+i*4..132+i*4].copy_from_slice(&word.to_le_bytes());
+            for action in [8u32,9] {
+                for (i,word) in [action,1,0,0].into_iter().enumerate() {
+                    host.proc_memory[128+i*4..132+i*4].copy_from_slice(&word.to_le_bytes());
+                }
+                let ofd=proc.fd_table.get(fd).unwrap().ofd_ref.0;
+                dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid=2;
+                assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(16,48)),Err(Errno::EACCES));
+                dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid=1;
+                dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().owner_pid=2;
+                assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(16,48)),Err(Errno::EACCES));
+                dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().owner_pid=1;
+                assert!(host.gl_query_inputs.is_empty());
             }
-            let ofd=proc.fd_table.get(fd).unwrap().ofd_ref.0;
-            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid=2;
-            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(16,48)),Err(Errno::EACCES));
-            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid=1;
-            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().owner_pid=2;
-            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(16,48)),Err(Errno::EACCES));
-            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().owner_pid=1;
-            assert!(host.gl_query_inputs.is_empty());
             for words in [vec![1u32,1,2],vec![2,2,1],vec![3,3,1,1,0,1,0,1,0,20,1],
-                vec![4,4,1,1],vec![5,5],vec![6],vec![7,1],vec![8,1,0,u32::MAX],vec![8,1,9,0]] {
+                vec![4,4,1,1],vec![5,5],vec![6],vec![7,1],vec![8,1,0,u32::MAX],vec![8,1,9,0],
+                vec![9,1,0,u32::MAX],vec![9,1,9,0]] {
                 let input=words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
                 host.proc_memory[128..128+input.len()].copy_from_slice(&input);
                 sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(input.len() as u32,48)).unwrap();
                 assert_eq!(host.gl_query_inputs.last(),Some(&(gl::QOP_PROGRAM_JOURNAL,input,48)));
             }
-            assert_eq!(host.gl_query_inputs.len(),9);
+            assert_eq!(host.gl_query_inputs.len(),11);
         }
     }
 
@@ -61186,7 +61190,7 @@ impl HostIO for RelSymlinkMock {
         };
         let ofd=proc.fd_table.get(fd).unwrap().ofd_ref.0;
         dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current=None;
-        for words in [vec![1u32,1,4],vec![2,1,1],vec![4,1,1,1],vec![5,1],vec![6,1],vec![7,0],vec![8,1,0,0],vec![3,1,0],vec![3,1,1]] {
+        for words in [vec![1u32,1,4],vec![2,1,1],vec![4,1,1,1],vec![5,1],vec![6,1],vec![7,0],vec![8,1,0,0],vec![9,1,0,0],vec![3,1,0],vec![3,1,1]] {
             let input=words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
             host.proc_memory[128..128+input.len()].copy_from_slice(&input);
             assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(input.len() as u32,48)),Err(Errno::EINVAL));

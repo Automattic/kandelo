@@ -6320,11 +6320,12 @@ Small inline client-array draws can also retain the error proof when all
 enabled attributes have known client definitions and packed source spans,
 the default VAO/framebuffer have never been displaced and EGL has a live draw
 surface. A cold bounded scan of the owned executable's uniform signatures
-proves zero or one active sampler; numeric per-token cells, with a last-cell
-hint, retain that immutable fact until journal closure. It does not infer a
-signature from a mutable public program name. Original draw records still
+proves that every active sampler has the same guest type (or that there are
+none); numeric per-token cells, with a last-cell hint, retain that immutable
+fact until journal closure. It does not infer a signature from a mutable public
+program name. Original draw records still
 reach the independent host validator and error audit. Mixed client/VBO rows,
-multiple samplers, unresolved metadata and framebuffer/VAO uncertainty retain
+mixed sampler types, unresolved metadata and framebuffer/VAO uncertainty retain
 the existing error observation. Buffer-backed draw/storage authority remains
 separate required B1 work; this selected proof does not complete the stage.
 No additional scan runs when the draw has no inline client arrays.
@@ -6348,8 +6349,23 @@ check only the accepted array prefix, ignoring excessive tails. They use an
 already learned immutable texture-unit limit, or accept only units0–7 under
 the ES2 guaranteed minimum; other values keep host observation until the
 existing explicit active-texture path learns the actual limit. Ordinary
-setters add no limit query. This cache is not B4's public program interface. Inactive location-1 updates use known logical
-executable presence without reading data. Unresolved positive-count
+setters add no limit query.
+
+Optional action9 uses the same request and reply lengths to add the guest type
+in reply word9. Action8 retains its exact layout, including zero in word9.
+The guest type comes from the owned executable's existing translation metadata:
+ordinary and external2D samplers have the same native setter type but different
+guest types, while translated cubes have a different native type. Draw proof
+requests action9, upgrades an existing numeric signature cell in place and
+refuses unknown or mixed guest kinds. Same-kind sampler arrays are permitted;
+same-kind samplers cannot conflict solely because they share a texture unit.
+Ordinary uniform
+setters keep action8 and add no guest-type query. Both queries preserve the
+same current-thread/context/journal authority and immutable-generation lifetime.
+This cache is not B4's public program interface.
+
+Inactive location-1 updates use known logical executable presence without
+reading data. Unresolved positive-count
 locations, ordinary/uncertain state and large uniform uploads keep
 ordinary observation. Journals now admit ordinary applications at their
 first eligible program selection. A failed standalone numeric getter revokes

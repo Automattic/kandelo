@@ -20,7 +20,7 @@ export function validProgramJournalRequest(input:Uint8Array,outputBytes:number):
   if(action===6)return n===4;
   if(action===7)return n===8 && v.getUint32(4,true)!==0;
   if(n<8 || !v.getUint32(4,true))return false;
-  if(action===8)return n===16;
+  if(action===8 || action===9)return n===16;
   if(action===1)return n===12 && v.getUint32(8,true)>0 && v.getUint32(8,true)<=256;
   if(action===2)return n===12 && v.getUint32(8,true)!==0;
   if(action===4)return n===16 && v.getUint32(8,true)!==0 && v.getUint32(12,true)!==0;
@@ -58,15 +58,15 @@ export function runProgramJournalQuery(b:GlBinding,input:Uint8Array,out:Uint8Arr
     words.fill(0);words[2]=7;words[3]=id;words[4]=journal?.flags??0;snapshot(words,b,journal);
     out.set(control.snapshotBytes);return 48;
   }
-  if(action===8){
+  if(action===8 || action===9){
     // The caller owns this context, not a peer journal's native reflection.
     // Reserve/zero the complete result before reflection and leave the sealed
     // mutation receipt untouched: a lost read may safely be retried.
     const id=v.getUint32(4,true),token=v.getUint32(8,true),words=control.snapshot;
-    words.fill(0);words[0]=1;words[2]=8;words[3]=id;words[4]=token;
+    words.fill(0);words[0]=1;words[2]=action;words[3]=id;words[4]=token;
     words[5]=v.getUint32(12,true);words[11]=MAGIC;
     const journal=b.programJournal;
-    if(journal?.id===id && journal.uniformSignature(token,v.getInt32(12,true),words))words[0]=0;
+    if(journal?.id===id && journal.uniformSignature(token,v.getInt32(12,true),words,action===9))words[0]=0;
     out.set(control.snapshotBytes);return 48;
   }
   const tx=v.getUint32(4,true),words=control.receipt;

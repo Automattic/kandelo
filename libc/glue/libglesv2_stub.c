@@ -356,9 +356,9 @@ struct wpk_program_generation {
     uint32_t token, capture;
 };
 struct wpk_uniform_signature {
-    uint32_t token, type, remaining, flags;
+    uint32_t token, type, remaining, flags, guest_type;
     GLint location;
-    int valid;
+    int valid, guest_known;
 };
 struct wpk_draw_signature { uint32_t token; int known, simple; };
 struct wpk_program_intent {
@@ -3935,33 +3935,36 @@ static int uniform_location_accepted(GLint location) {
  * old installed executable. Only the journal's exact-generation pin can
  * justify a signature. Ordinary contexts retain the host observation path. */
 static int uniform_signature(struct wpk_gles_context *state,GLint location,
-                             struct wpk_uniform_signature **result) {
+                             struct wpk_uniform_signature **result,int guest) {
     struct wpk_program_stream *stream=state->program_stream;
     struct wpk_uniform_signature *meta=NULL;
     for(unsigned i=0;i<WPK_PROGRAM_CACHE;i++){
         struct wpk_uniform_signature *s=&stream->signatures[i];
         if(s->valid && s->token==stream->current_token && s->location==location){meta=s;break;}
     }
-    if(!meta){
+    if(!meta || (guest && !meta->guest_known)){
         // Submit only this caller's prefix. Metadata publication may carry
         // peer selectors, but must never execute a peer's mutable encoder.
         if(!publish_program_intents_from_encoder(state,1) || flush_commands()!=0)return -1;
         uint32_t *request=stream->signature_request,*reply=stream->signature_reply;
-        request[0]=8;request[1]=stream->id;request[2]=stream->current_token;request[3]=(uint32_t)location;
+        const uint32_t action=guest?9:8;
+        request[0]=action;request[1]=stream->id;request[2]=stream->current_token;request[3]=(uint32_t)location;
         if(!program_stream_io(stream,QOP_PROGRAM_JOURNAL,request,4,reply) ||
-            reply[0]>1 || reply[1] || reply[2]!=8 || reply[3]!=stream->id ||
-            reply[4]!=stream->current_token || reply[5]!=(uint32_t)location || reply[9] || reply[10] ||
+            reply[0]>1 || reply[1] || reply[2]!=action || reply[3]!=stream->id ||
+            reply[4]!=stream->current_token || reply[5]!=(uint32_t)location || reply[10] ||
+            (!guest && reply[9]) || (!reply[6] && reply[9]) ||
+            (guest && reply[6] && !reply[9]) ||
             (reply[8]&~7u) || (reply[8]&6u)==6u ||
             (!reply[6] && (reply[7] || reply[8])) ||
             (reply[6] && (!reply[7] || (!(reply[8]&1u) && reply[7]!=1))) ||
-            (reply[0] && (reply[6] || reply[7] || reply[8]))){
+            (reply[0] && (reply[6] || reply[7] || reply[8] || reply[9]))){
             raise_client_error(GL_INVALID_OPERATION);return -1;
         }
         if(_wpk_gl_context_reset())return -1;
         if(reply[0])return 0;
-        meta=&stream->signatures[stream->signature_cursor++%WPK_PROGRAM_CACHE];
+        if(!meta)meta=&stream->signatures[stream->signature_cursor++%WPK_PROGRAM_CACHE];
         *meta=(struct wpk_uniform_signature){.token=stream->current_token,.location=location,
-            .type=reply[6],.remaining=reply[7],.flags=reply[8],.valid=1};
+            .type=reply[6],.remaining=reply[7],.flags=reply[8],.guest_type=reply[9],.valid=1,.guest_known=guest};
     }
     *result=meta;return 1;
 }
@@ -3978,7 +3981,7 @@ static int uniform_error_prediction(GLint location,GLsizei count,uint32_t type,
     *error=GL_INVALID_OPERATION;
     if(!state->current_program)return 1;
     struct wpk_uniform_signature *meta=NULL;
-    int available=uniform_signature(state,location,&meta);
+    int available=uniform_signature(state,location,&meta,0);
     if(available<=0)return available;
     const int sampler=type==GL_INT &&
         (meta->type==GL_SAMPLER_2D || meta->type==GL_SAMPLER_CUBE || meta->type==0x8dc1u);
@@ -4007,8 +4010,9 @@ static int uniform_error_prediction(GLint location,GLsizei count,uint32_t type,
  * spans were packed locally, every enabled row is a known client definition,
  * and the untouched EGL default framebuffer has a live draw surface. Native
  * imported-image sampling views are separate textures, not default attachments.
- * Zero/one active sampler cannot have a mixed-sampler unit conflict regardless
- * of shared uniform writes. Multi-sampler/unknown programs keep observation.
+ * Samplers of one guest kind cannot have a mixed-sampler unit conflict regardless
+ * of shared uniform writes. Mixed/unknown guest kinds keep observation; native
+ * types alone cannot distinguish external and ordinary 2D samplers.
  * Reflection is cold and bounded; subsequent draws read a numeric token cell. */
 static int inline_client_error_prediction(void) {
     struct wpk_gles_context *state=_wpk_gl_current_encoder();
@@ -4024,16 +4028,17 @@ static int inline_client_error_prediction(void) {
         saved=&stream->draw_signatures[i];
         if(saved->known && saved->token==stream->current_token){stream->draw_slot=i;return saved->simple;}
     }
-    GLint location=0;unsigned samplers=0;int simple=0;
+    GLint location=0;GLenum sampler_kind=0;int simple=0;
     for(unsigned i=0;i<WPK_PROGRAM_CACHE;i++){
         struct wpk_uniform_signature *meta=NULL;
-        int available=uniform_signature(state,location,&meta);
+        int available=uniform_signature(state,location,&meta,1);
         if(available<=0)return available;
         if(!meta->type){simple=1;break;}
         switch(meta->type){
         case GL_SAMPLER_2D:case GL_SAMPLER_CUBE:case 0x8dc1u:
-            if(meta->remaining!=1 || samplers++)goto complete;
-            break;
+            if(meta->guest_type!=GL_SAMPLER_2D && meta->guest_type!=GL_SAMPLER_CUBE && meta->guest_type!=0x8d66u)goto complete;
+            if(sampler_kind && sampler_kind!=meta->guest_type)goto complete;
+            sampler_kind=meta->guest_type;break;
         case GL_FLOAT:case GL_FLOAT_VEC2:case GL_FLOAT_VEC3:case GL_FLOAT_VEC4:
         case GL_INT:case GL_INT_VEC2:case GL_INT_VEC3:case GL_INT_VEC4:
         case GL_BOOL:case GL_BOOL_VEC2:case GL_BOOL_VEC3:case GL_BOOL_VEC4:

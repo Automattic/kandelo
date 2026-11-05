@@ -237,12 +237,32 @@ static void inline_proofs(EGLDisplay d,EGLConfig config,EGLContext parent,EGLSur
  INLINE_CHECK("old-link",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(white);
  glUseProgram(sp);assert(glGetError()==GL_NO_ERROR);
  INLINE_CHECK("new-link-multi-sampler",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(white);
+ GLuint mf=shader(GL_FRAGMENT_SHADER,"precision mediump float;uniform sampler2D t;uniform samplerCube c;void main(){gl_FragColor=(texture2D(t,vec2(.5))+textureCube(c,vec3(1.,0.,0.)))/2.;}"),mp=glCreateProgram();
+ glAttachShader(mp,v);glAttachShader(mp,mf);glBindAttribLocation(mp,0,"p");linked(mp);glUseProgram(mp);
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());
+ GLint cube_location=glGetUniformLocation(mp,"c");assert(cube_location>=0);glUniform1i(cube_location,1);
+ GLuint cube;glGenTextures(1,&cube);glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_CUBE_MAP,cube);
+ for(unsigned face=0;face<6;face++)glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X+face,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,white);
+ glActiveTexture(GL_TEXTURE0);assert(glGetError()==GL_NO_ERROR);
+ INLINE_CHECK("mixed-sampler-kinds",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(white);
+
+ // External and ordinary2D samplers share a native setter type, but using
+ // both guest kinds on unit0 must still report the draw error synchronously.
+ GLuint ef=shader(GL_FRAGMENT_SHADER,"#extension GL_OES_EGL_image_external : require\nprecision mediump float;uniform sampler2D t;uniform samplerExternalOES e;void main(){gl_FragColor=(texture2D(t,vec2(.5))+texture2D(e,vec2(.5)))/2.;}"),ep=glCreateProgram();
+ glAttachShader(ep,v);glAttachShader(ep,ef);glBindAttribLocation(ep,0,"p");linked(ep);glUseProgram(ep);
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);
+ INLINE_CHECK("external-plain-unit-conflict",GL_INVALID_OPERATION,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(white);
+ GLuint af=shader(GL_FRAGMENT_SHADER,"precision mediump float;uniform sampler2D t[2];void main(){gl_FragColor=(texture2D(t[0],vec2(.5))+texture2D(t[1],vec2(.5)))/2.;}"),ap=glCreateProgram();
+ glAttachShader(ap,v);glAttachShader(ap,af);glBindAttribLocation(ap,0,"p");linked(ap);glUseProgram(ap);
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);
+ INLINE_CHECK("same-kind-sampler-array",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(white);
+
  glUseProgram(program);assert(glGetError()==GL_NO_ERROR);
  GLuint fbo;glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);assert(glGetError()==GL_NO_ERROR);
  INLINE_CHECK("incomplete-framebuffer",GL_INVALID_FRAMEBUFFER_OPERATION,glDrawArrays(GL_TRIANGLES,0,3));
  glBindFramebuffer(GL_FRAMEBUFFER,0);glDeleteFramebuffers(1,&fbo);assert(glGetError()==GL_NO_ERROR);
  INLINE_CHECK("restored-framebuffer",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(blue);
- glUseProgram(0);glDeleteProgram(program);glDeleteProgram(sp);glDeleteShader(v);glDeleteShader(f);glDeleteShader(sf);glDeleteTextures(1,&texture);assert(glGetError()==GL_NO_ERROR);
+ glUseProgram(0);glDeleteProgram(program);glDeleteProgram(sp);glDeleteProgram(mp);glDeleteProgram(ep);glDeleteProgram(ap);glDeleteShader(mf);glDeleteShader(ef);glDeleteShader(af);glDeleteShader(v);glDeleteShader(f);glDeleteShader(sf);glDeleteTextures(1,&texture);glDeleteTextures(1,&cube);assert(glGetError()==GL_NO_ERROR);
  assert(eglMakeCurrent(d,parent_surface,parent_surface,parent)&&eglDestroyContext(d,ctx)&&eglDestroySurface(d,surface));
  printf("INLINE_PROOFS %u\n",inline_checks);fflush(stdout);
 }

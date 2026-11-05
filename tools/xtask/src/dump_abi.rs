@@ -4520,6 +4520,22 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "effects":"read-only; no-selection-error-drain-upload-interruption-or-mutation-receipt-change",
         "query_dependencies":"metadata-only-no-buffer-sync",
     }));
+    s.add(Program, "gl_program_uniform_guest_signature", json!({
+        "opcode":shared::gl::QOP_PROGRAM_JOURNAL,"action":9,"request_bytes":16,
+        "request_fields":["action","own_journal","generation_token_or_installed_root_zero","signed_location"],
+        "reply_bytes":48,"reply_fields":["status","zero","action","journal","generation","location",
+            "native_type","remaining_array_elements","flags","guest_type","zero","magic"],
+        "reply_magic":shared::gl::QUERY_REPLY_MAGIC,
+        "status":{"available":0,"unavailable":1},
+        "flags":{"array":1,"native_location_present":2,"native_location_null":4},
+        "invalid_location":"available-with-zero-types-elements-and-flags",
+        "unavailable":"zero-types-elements-and-flags; ordinary-validation-required",
+        "unresolved_native_location":"neither-present-nor-null; positive-count-needs-ordinary-validation",
+        "authority":"own-current-context-tid-and-journal; immutable-owned-generation-only",
+        "effects":"read-only; no-selection-error-drain-upload-interruption-or-mutation-receipt-change",
+        "query_dependencies":"metadata-only-no-buffer-sync",
+        "legacy":"action8-unchanged; reserved-word9-stays-zero",
+    }));
     s.add(Program, "gl_error_drain_receipt", json!({
         "query":shared::gl::QOP_GET_ERROR,
         "request_mode":shared::gl::error_drain_receipt::REQUEST,
@@ -8646,6 +8662,7 @@ fn additive_top_level_section(section: &str) -> bool {
             | "gl_transport_error_observation"
             | "gl_error_drain_receipt"
             | "gl_program_uniform_signature"
+            | "gl_program_uniform_guest_signature"
             | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
@@ -10363,6 +10380,26 @@ mod tests {
             changed["gl_program_uniform_signature"].as_object_mut().unwrap().remove(field);
             assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
         }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn guest_uniform_signature_is_additive_and_does_not_relax_the_legacy_action() {
+        let mut old=base_snapshot();
+        old["gl_program_uniform_signature"]=json!({"action":8,"reserved_word9":0});
+        let mut new=old.clone();
+        new["gl_program_uniform_guest_signature"]=json!({"opcode":0x3b,"action":9,
+            "request_bytes":16,"reply_bytes":48,"guest_type_word":9,
+            "authority":"own-immutable-generation","effects":"read-only","legacy":"action8-unchanged"});
+        assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());
+        for field in new["gl_program_uniform_guest_signature"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_program_uniform_guest_signature"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_program_uniform_guest_signature"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        let mut changed=new.clone();changed["gl_program_uniform_signature"]["reserved_word9"]=json!(1);
+        assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty());
         assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
     }
 

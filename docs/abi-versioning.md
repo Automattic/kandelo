@@ -2881,6 +2881,14 @@ combined graphics effort keeps its reserved program 56 / host 3 / GL table 17 /
 fork 21 numbers across increments at the user's request; that does not permit
 artifacts with an older contract digest to run against a newer candidate.
 
+The optional `gl_program_uniform_guest_signature` program section adds journal
+action9 without changing action8's request, reply, reserved words or authority.
+The new action preserves the48-byte reply and reports both native setter and
+guest reflection types, so external2D and ordinary2D samplers are distinguishable.
+Its Program classification changes the contract digest and requires coherent
+SDK, kernel, program and image rebuilds even though the reserved56/3/17/21
+version family is unchanged. Existing action8 bytes do not gain a new meaning.
+
 The sections under `abi_surfaces.kernel_host` are not in it: kernel
 exports, kernel imports (`env.host_*`), host-adapter metadata, the
 export filter policy, and the wire formats only the kernel and host

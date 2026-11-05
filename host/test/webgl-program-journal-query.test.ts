@@ -1,3 +1,5 @@
+import {recordCompiledExternalSamplers,recordLinkedExternalSamplers} from "../src/webgl/external-texture.js";
+import {recordShaderLanguage} from "../src/webgl/essl3-translation.js";
 import {afterEach,expect,it,vi} from "vitest";
 import {GlContextRegistry} from "../src/webgl/registry.js";
 import {GlMuxer} from "../src/webgl/muxer.js";
@@ -266,4 +268,40 @@ it.each([0x502,0x505])("keeps refused shader cleanup0x%s fatal with its exact de
  expect(f.b.shaders.size).toBe(0);expect(f.b.objects.retiredShaders!.shader).toBe(f.shaderB);
  f.gl.deleteShader=(shader:WebGLShader)=>{f.deleted.push(shader);};
  retireShaderObjects(f.b);expect(f.deleted).toEqual([f.shaderB,f.a]);f.dispose();
+});
+
+it("reads owned guest uniform types while preserving the legacy signature bytes and receipt",()=>{
+ const f=fixture();f.setup();const shader={} as WebGLShader;
+ recordCompiledExternalSamplers(shader,["external"]);recordLinkedExternalSamplers(f.program,true,[shader]);
+ Object.assign(f.gl,{getProgramParameter:(_p:object,pname:number)=>pname===0x8b86?2:true,
+  getActiveUniform:(_p:object,index:number)=>({name:index?"plain":"external",type:0x8b5e,size:1}),getUniformLocation:()=>({})});
+ try{
+  const receipt=f.query([6]).words;f.b.errors.push(0x500,0x501);
+  const legacy=f.query([8,1,1,0]).words;
+  expect(f.query([9,1,1,0]).words).toEqual([0,0,9,1,1,0,0x8b5e,1,2,0x8d66,0,magic]);
+  expect(f.query([9,1,1,1]).words).toEqual([0,0,9,1,1,1,0x8b5e,1,2,0x8b5e,0,magic]);
+  expect(f.query([8,1,1,0]).words).toEqual(legacy);expect(legacy[9]).toBe(0);
+  expect(f.query([6]).words).toEqual(receipt);expect(f.b.errors).toEqual([0x500,0x501]);expect(f.selected).toEqual([]);
+ }finally{f.dispose();}
+});
+it("reports a translated cube's guest type from its immutable owned generation",()=>{
+ const f=fixture();f.setup();const shader={} as WebGLShader;
+ recordShaderLanguage(shader,"essl300","uniform samplerCube cube;void main(){gl_Position=textureCube(cube,vec3(1.,0.,0.));}",false);
+ recordLinkedExternalSamplers(f.program,true,[shader]);
+ Object.assign(f.gl,{getProgramParameter:(_p:object,pname:number)=>pname===0x8b86?1:true,
+  getActiveUniform:()=>({name:"cube",type:0x8dc1,size:1}),getUniformLocation:()=>({})});
+ try{
+  expect(f.query([9,1,1,0]).words).toEqual([0,0,9,1,1,0,0x8dc1,1,2,0x8b60,0,magic]);
+  expect(f.query([8,1,1,0]).words).toEqual([0,0,8,1,1,0,0x8dc1,1,2,0,0,magic]);
+ }finally{f.dispose();}
+});
+it("denies guest-type reflection through foreign, retired and lifecycle authority",()=>{
+ const f=fixture();f.setup();
+ try{
+  for(const [id,token] of [[2,1],[1,99],[1,0]])expect(f.query([9,id,token,0]).words).toEqual([1,0,9,id,token,0,0,0,0,0,0,magic]);
+  const out=new Uint8Array(48).fill(0xa5);
+  expect(runGlQuery(f.b,QOP_PROGRAM_JOURNAL_BARRIER,new Uint8Array(new Uint32Array([9,1,1,0]).buffer),out)).toBe(-22);
+  expect([...out]).toEqual(Array(48).fill(0xa5));expect(f.b.programJournal!.releaseCapture(1)).toBe(true);
+  expect(f.query([9,1,1,0]).words).toEqual([1,0,9,1,1,0,0,0,0,0,0,magic]);
+ }finally{f.dispose();}
 });

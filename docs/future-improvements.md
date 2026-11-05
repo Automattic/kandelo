@@ -1262,6 +1262,23 @@ open. See `.context/graphics-inline-proof-r398/` and
 `.context/graphics-pointer-reservation-r400/`; no complete B1 preview is
 announced. The maintainer wants to wait for all B1 changes.
 
+The optional guest-kind signature now distinguishes external and ordinary2D
+samplers despite their identical native setter type, and preserves translated
+cube kinds. Same-kind multi-sampler and array proofs remain scoped to selected
+inline draws; mixed kinds keep observation. Legacy action8 is unchanged;
+action9 is an additive Program contract requiring coherent normal rebuilds
+under the reserved56/3/17/21 family. The Rust entry shape and authority are
+checked independently from host reflection. Required VBO storage and offscreen
+framebuffer authority, actual application/native-feel measurements and full
+B1 acceptance remain unfinished. R414's36 GPU modes, graphics2196/88,
+Node18/6 and ABI/evidence controls pass; the overall command remains failed
+on the identical24 compiler diagnostics. R413 passes3645 workspace Rust
+checks and its normal kernel build. The matched10-scenario browser request
+comparison (warm28→20, cold18→21 on each engine) is operation attribution,
+not application or native-feel evidence; complete records are retained in
+`.context/graphics-sampler-final-r414/`. The full B1 preview notification waits
+for all B1 changes at the maintainer's request.
+
 C publication must also precede EGL lifetime mutations made without a current
 GL binding. The optional0x3c lifecycle barrier now supplies checked metadata-only
 authority through a live owned public context; ordinary0x3b current-thread

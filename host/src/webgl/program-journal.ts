@@ -176,7 +176,7 @@ export class GlProgramJournal {
   /** Cold driver proof for this journal's immutable executable, never the
    * public name's latest link. Pending/current references keep evicted tokens
    * alive. Reflection neither selects it nor resolves deferred long names. */
-  uniformSignature(token: number, location: number, words: Uint32Array): boolean {
+  uniformSignature(token: number, location: number, words: Uint32Array, guestType=false): boolean {
     if(!this.ready || this.closed || this.poisoned)return false;
     const pin=this.generations.get(token)?.pin;
     if(!pin)return false;
@@ -187,6 +187,7 @@ export class GlProgramJournal {
       const native=layout.resolvedNative(location);
       words[6]=meta.type;words[7]=meta.location+meta.size-location;
       words[8]=(meta.array?1:0)|(native===undefined?0:native===null?4:2);
+      if(guestType)words[9]=meta.guestType;
     }
     return true;
   }
