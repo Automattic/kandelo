@@ -4476,3 +4476,12 @@ requested once and not requested during recovery. This verifies browser
 process recovery for posts and media on the classic profile. It does not
 separately verify that the edited site template survives a browser crash, or
 establish durability if browser storage is cleared.
+
+The current projected revision-31 classic profile also passed its visible
+Firefox app gates under the declared dev shell: homepage, Shortcuts login,
+rendered site-editor blocks and a 20-second HTTP health check (2.3m);
+template heading edit, Save and fresh editor navigation with the saved
+heading (1.9m); and authenticated post publish/read/update/read/delete
+(1.7m). These are Firefox runs of the same image and test assertions used
+in Chromium. The Caddy profile and WebKit app flows are still unverified
+on this current projection.
