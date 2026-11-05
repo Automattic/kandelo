@@ -21,7 +21,9 @@ async function availablePort(): Promise<number> {
 
 const imagePath = process.env.KANDELO_WORDPRESS_FRANKENPHP_IMAGE;
 
-it.skipIf(!imagePath)("boots WordPress through the image service controller in Node", async () => {
+const serviceTest = it.skipIf(!imagePath).each(["frankenphp-classic", "frankenphp-caddy"]);
+
+serviceTest("boots WordPress through the %s image service controller in Node", async service => {
   const port = await availablePort();
   const fs = KandeloImageFs.create();
   fs.loadImage(new Uint8Array(readFileSync(imagePath!)), { maxDecompressedBytes: 1024 * 1024 * 1024 });
@@ -31,6 +33,7 @@ it.skipIf(!imagePath)("boots WordPress through the image service controller in N
     ...SERVICE_DEMO_ENV,
     "WP_APP_PATH=/", "WP_PROTO=http", "FRANKENPHP_NUM_THREADS=6",
     `FRANKENPHP_LISTEN=:${port}`,
+    `FRANKENPHP_PORT=${port}`,
   ];
   let logs = "";
   const diagnostics: unknown[] = [];
@@ -50,7 +53,7 @@ it.skipIf(!imagePath)("boots WordPress through the image service controller in N
   host.subscribeDestroyProgress(event => shutdown.push(event));
   try {
     await host.init();
-    const init = await host.spawnFromVfs("/bin/sh", ["sh", "/sbin/kandelo-init", "frankenphp-classic"], {
+    const init = await host.spawnFromVfs("/bin/sh", ["sh", "/sbin/kandelo-init", service], {
       uid: 0, gid: 0, cwd: "/root", env,
     });
     let initExit: number | undefined;
@@ -58,7 +61,7 @@ it.skipIf(!imagePath)("boots WordPress through the image service controller in N
     try {
       await waitForHttp(`http://127.0.0.1:${port}/`, 180_000, () => initExit !== undefined);
     } catch (error) {
-      const paths = ["/var/log/frankenphp-classic.log", "/var/log/wp-config-init.log", "/etc/kandelo/enabled-service"];
+      const paths = [`/var/log/${service}.log`, "/var/log/wp-config-init.log", "/etc/kandelo/enabled-service"];
       const files = await Promise.all(paths.map(async path => {
         const bytes = await host.readFileFromVfs(path);
         return `${path}: ${bytes ? new TextDecoder().decode(bytes).slice(-3000) : "missing"}`;
@@ -80,9 +83,10 @@ it.skipIf(!imagePath)("boots WordPress through the image service controller in N
     await host.releaseOwnedJob(id);
     expect(exitCode, `${output}\n${logs}`).toBe(0);
     expect(report.terminationObserved).toBe(true);
-    expect(output).toContain("frankenphp-classic\trunning\tenabled");
-    expect(output).toContain("nginx\tnot-loaded\tdisabled");
-    expect(output).toContain("frankenphp-caddy\tnot-loaded\tdisabled");
+    expect(output).toContain(`${service}\trunning\tenabled`);
+    for (const inactive of ["nginx", "frankenphp-classic", "frankenphp-caddy"].filter(target => target !== service)) {
+      expect(output).toContain(`${inactive}\tnot-loaded\tdisabled`);
+    }
 
     const response = await fetch(`http://127.0.0.1:${port}/`);
     expect(response.status).toBe(200);

@@ -67,6 +67,13 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     expect(baseURL).toBeTruthy();
     const { imageUrl, kernelUrl } = artifactUrls;
     const browserKernelUrl = new URL(`/@fs/${resolve(repoRoot, "host/src/browser-kernel-host.ts")}`, baseURL!).href;
+    const lifecycle: string[] = [];
+    page.on("crash", () => lifecycle.push("page crashed"));
+    page.on("close", () => lifecycle.push("page closed"));
+    page.on("framenavigated", frame => {
+      if (frame === page.mainFrame()) lifecycle.push(`main frame: ${frame.url()}`);
+    });
+    page.on("pageerror", error => lifecycle.push(`page error: ${error.message}`));
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
     const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName }) => {
@@ -80,6 +87,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
       let stdout = "";
       let stderr = "";
       const diagnostics: unknown[] = [];
+      const shutdown: { phase: string; completed: number; total: number }[] = [];
       let serviceReady: (() => void) | undefined;
       const serviceReadiness = new Promise<void>((resolveReady) => { serviceReady = resolveReady; });
       let dinitPid = 0;
@@ -95,6 +103,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
         onStderr: (data: Uint8Array) => { stderr += decoder.decode(data); },
         onHostDiagnostic: (diagnostic: unknown) => diagnostics.push(diagnostic),
       });
+      kernel.subscribeDestroyProgress((event: { phase: string; completed: number; total: number }) => shutdown.push(event));
       try {
         await kernel.initFromImage({ kernelWasm, vfsImage: new Uint8Array(imageBytes) });
         const template = await kernel.readFileFromVfs("/etc/wp-config-template.php");
@@ -279,6 +288,7 @@ echo json_encode([
           restarted,
           serviceLog: decoder.decode(serviceLog),
           diagnostics,
+          shutdown,
           stderr,
         };
       } catch (error) {
@@ -295,7 +305,12 @@ echo json_encode([
         ]);
         await kernel.destroy();
       }
-    }, { imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName });
+    }, { imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName }).catch(async error => {
+      await test.info().attach("browser-page-lifecycle", {
+        body: JSON.stringify({ url: page.url(), lifecycle }), contentType: "application/json",
+      });
+      throw error;
+    });
 
     expect(result.opcacheStatus, `${result.opcacheBody}\n${result.serviceLog.slice(-3000)}`).toBe(200);
     expect(JSON.parse(result.opcacheBody)).toEqual({
@@ -314,6 +329,11 @@ echo json_encode([
     if (serviceName === "frankenphp-caddy") expect(result.restarted).toBe(true);
     expect(result.serviceLog).toContain(serviceName === "frankenphp-caddy" ? '"num_threads":6' : "num_threads=6");
     expect(result.diagnostics).toEqual([]);
+    const drained = result.shutdown.filter(event => event.phase === "draining").at(-1);
+    expect(drained, JSON.stringify(result.shutdown)).toBeDefined();
+    expect(drained!.completed, JSON.stringify(result.shutdown)).toBe(drained!.total);
+    expect(result.shutdown.filter(event => event.phase === "terminating").at(-1)?.total)
+      .toBe(drained!.total);
     expect(result.stderr).not.toContain("panic");
   });
 }

@@ -421,11 +421,17 @@ multi-client throughput comparison, not a statistically powered superiority
 test. Node and Chromium medians describe different
 request paths and must not be pooled. The existing full benchmark suite is
 still required for broad platform performance claims.
-The Caddy comparison is user-facing stack behavior, not an isolated PHP
-runtime comparison: the nginx/PHP-FPM image uses prewarmed OPcache, while
-the current FrankenPHP ZTS embed has no equivalent OPcache. The Caddy
-profile also requires a 1 GiB Wasm memory ceiling, versus 256 MiB for the
-nginx/PHP-FPM profile.
+The comparison measures each complete HTTP stack, including its PHP
+execution mode. Both profiles use PHP 8.5 with file-cache-only OPcache;
+FrankenPHP embeds the thread-safe build and nginx uses PHP-FPM processes.
+The image prewarms the FPM file cache at build time. FrankenPHP builds its
+own compatible cache during requests, so cold-start and warm-request
+results must remain separate. Verify actual OPcache activation and warm
+both workloads before interpreting warm timings. Neither profile includes
+a full-page cache: these results cannot establish the performance of a
+cache-enabled visitor experience. The Caddy profile also requests a 1 GiB
+Wasm memory ceiling, versus 256 MiB for the nginx/PHP-FPM profile; this is
+an address-space ceiling, not a measurement of host physical memory.
 
 #### mariadb
 

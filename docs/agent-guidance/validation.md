@@ -13,6 +13,14 @@ Use precise language:
 
 ## Test fixtures must observe the actual contract
 
+Stream large browser fixtures over test-owned HTTP rather than passing
+numeric byte arrays to `page.evaluate` or large bodies to `route.fulfill`.
+The latter base64-encodes bytes on the debugging protocol: the 104 MB Caddy
+fixture exceeded Chromium's 100 MiB pipe buffer and closed its connection
+before guest execution. An external resolver-cache path can also be
+intentionally forbidden by Vite. Serve only the explicitly selected fixture
+files, keep their ABI/content checks, and close the server after the test.
+
 For editors that compose several stored entities, prove which entity owns
 the changed content. WordPress's site editor can edit a post title or insert
 a block into post content inside a Query Loop without changing the template.

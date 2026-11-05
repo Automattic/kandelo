@@ -1,4 +1,5 @@
-import { expect, test } from "@playwright/test";
+import { expect } from "@playwright/test";
+import { test } from "./support/streamed-artifacts";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +10,7 @@ import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 const programPath = process.env.KANDELO_CADDY_WASM;
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
-test("Caddy serves a VFS file over HTTP", async ({ page, baseURL }) => {
+test("Caddy serves a VFS file over HTTP", async ({ page, baseURL, serveArtifacts }) => {
   test.setTimeout(120_000);
   test.skip(!programPath, "Build the caddy package and set KANDELO_CADDY_WASM");
   expect(baseURL).toBeTruthy();
@@ -29,21 +30,26 @@ test("Caddy serves a VFS file over HTTP", async ({ page, baseURL }) => {
   }
   image.createFileWithOwner("/var/www/html/index.html", 0o644, 0, 0,
     new TextEncoder().encode("Kandelo Caddy static response\n"));
+  const imageBytes = await image.saveImage();
 
-  const programUrl = new URL(`/@fs/${programPath}`, baseURL!).href;
-  const kernelUrl = new URL("/__caddy_kernel__.wasm", baseURL!).href;
+  const { program: programUrl, kernel: kernelUrl, image: imageUrl } = await serveArtifacts({
+    program: { path: programPath!, contentType: "application/wasm" },
+    kernel: { bytes: kernelBytes, contentType: "application/wasm" },
+    image: { bytes: imageBytes, contentType: "application/octet-stream" },
+  });
   const browserKernelUrl = new URL(`/@fs/${resolve(repoRoot, "host/src/browser-kernel-host.ts")}`, baseURL!).href;
-  await page.route(kernelUrl, (route) => route.fulfill({
-    status: 200, contentType: "application/wasm", body: kernelBytes,
-  }));
   await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-  const result = await page.evaluate(async ({ programUrl, kernelUrl, browserKernelUrl, imageBytes }) => {
+  const result = await page.evaluate(async ({ programUrl, kernelUrl, imageUrl, browserKernelUrl }) => {
     const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
-    const [programResponse, kernelResponse] = await Promise.all([fetch(programUrl), fetch(kernelUrl)]);
-    if (!programResponse.ok || !kernelResponse.ok) throw new Error("Caddy artifacts failed to load");
-    const [program, kernelWasm] = await Promise.all([
-      programResponse.arrayBuffer(), kernelResponse.arrayBuffer(),
+    const [programResponse, kernelResponse, imageResponse] = await Promise.all([
+      fetch(programUrl), fetch(kernelUrl), fetch(imageUrl),
+    ]);
+    if (!programResponse.ok || !kernelResponse.ok || !imageResponse.ok) {
+      throw new Error(`Caddy artifacts failed to load: program=${programResponse.status}, kernel=${kernelResponse.status}, image=${imageResponse.status}`);
+    }
+    const [program, kernelWasm, imageBytes] = await Promise.all([
+      programResponse.arrayBuffer(), kernelResponse.arrayBuffer(), imageResponse.arrayBuffer(),
     ]);
     const decoder = new TextDecoder();
     let stderr = "";
@@ -80,7 +86,7 @@ test("Caddy serves a VFS file over HTTP", async ({ page, baseURL }) => {
       if (serverPid !== 0) await kernel.signalProcess(serverPid, 15).catch(() => {});
       await kernel.destroy();
     }
-  }, { programUrl, kernelUrl, browserKernelUrl, imageBytes: Array.from(await image.saveImage()) });
+  }, { programUrl, kernelUrl, imageUrl, browserKernelUrl });
 
   expect(result.status, JSON.stringify(result)).toBe(200);
   expect(result.body).toBe("Kandelo Caddy static response\n");

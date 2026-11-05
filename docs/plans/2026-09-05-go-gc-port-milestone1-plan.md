@@ -1,5 +1,35 @@
 # Go `GOOS=kandelo` Port — Milestone 1 Implementation Plan
 
+## Current checkpoint — 2026-11-05
+
+The work now extends beyond the original hello-world milestone below.
+The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
+on ABI 55, with Go fork `c925e9c9ca8c63c549053fd07d3fe0799473d4e0`.
+
+- The revision-32 WordPress image runs actual embedded PHP through both
+  FrankenPHP classic and Caddy. Six visible Chromium cases prove
+  homepage/admin/editor behavior, post writes, and real template saves.
+  On revision 31, the classic profile's post, upload,
+  and homepage-template edits survive a browser-process crash in both
+  persistent storage modes with the original image source disabled.
+- The new Go runtime retirement fix passes plain-Go/cgo shutdown probes
+  in Node and all three browsers. The full image-backed Node `os` run
+  passes 215 cases with 21 skips. Broader browser coverage has 144 passes;
+  its three stale anonymous-executable expectations were corrected and
+  the six relevant byte/VFS launch cases pass on targeted rerun.
+- The serial source build refreshed all 178 nodes and 11 products and
+  passed its consumer check in 14m14s. The revision-32 image passed both
+  Node service and shutdown checks; its stronger browser-host run passed
+  five of six cases (WebKit classic lost its page context).
+- Next: repeat Caddy's visible Firefox flow and current-image crash
+  durability, isolate the WebKit kernel-worker stall and context loss, then
+  establish sustained traffic/memory behavior and current paired stack
+  comparisons. General Go signal notification, child credentials,
+  host-backed path limits, and broader conformance remain separate gaps.
+
+The dated entries below retain the evidence and failures behind this
+checkpoint. They must not be read as current production-readiness claims.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task.
 
@@ -4835,3 +4865,77 @@ of 178 nodes and estimates roughly 35 minutes for the refreshed Go consumers
 and revision-32 WordPress products. Builds will run serially to limit memory
 pressure. Standalone Caddy is excluded from the ordinary local-supported
 set and requires its separate package build.
+
+**2026-11-05 — Publish the retirement-aware server image.** The serial
+source build passed all 178 nodes and 11 products, then the published
+consumer check, in 14m14s (`go-retirement-source-products-1105-163218-ba42`).
+It rebuilt both FrankenPHP packages and published revision-32 WordPress
+with SHA-256 `9dbe6dc206daf91f6831c21e4b3908cc7ad859d7a67f64a98308b8515e1fe88b`.
+Finalization took 151.1s and its consumer check 5.1s. The strengthened Node
+service-controller test now covers classic and Caddy separately, and the
+browser-host request/restart gate also records cooperative drain progress.
+Those runtime gates are running or pending; source publication alone is
+not their validation.
+
+The prior revision-31 image is preserved locally as
+`.context/wordpress-retirement-before.vfs.zst`, SHA-256
+`90c30ae558b3c12c97b622639c9319577ec3ee0e30286c604cf186fd4b03edbe`.
+It is a recorded baseline artifact, not a substitute for current resolver
+output. No performance measurement of the retirement change has been made.
+The profiling reference now describes current ZTS OPcache support and the
+distinction between FPM's prewarmed cache, warm requests, and cold startup;
+it no longer incorrectly says FrankenPHP has no OPcache.
+
+The new Node service gate passes both real stacks on revision 32
+(`wordpress-retirement-node-services-1105-164641-fdf5`, 56s total).
+Classic took 12.8s and Caddy 18.7s within the test runner. Each boot used
+the image-owned `/sbin/kandelo-init`, verified the selected service running
+and alternatives disabled, fetched the WordPress homepage, and completed
+all worker retirement during the cooperative drain. No forced-drain warning
+or host diagnostic was emitted. This validates this shutdown operation;
+it does not establish application-level completion of in-flight requests
+on SIGTERM or explain the earlier intermittent readiness failure.
+
+The heavier browser-host run passed five of six cases in 5m12s
+(`wordpress-retirement-browser-hosts-1105-164813-5118`). Both stacks pass
+in Chromium and Firefox, and Caddy passes in WebKit. The passing cases
+verify real OPcache file-cache artifacts, login/editor HTTP, 40 churn
+iterations, 20 editor-burst rounds, ten parallel editor requests, cooperative
+worker retirement, and Caddy's supervised SIGKILL recovery. WebKit classic
+lost its page execution context after about one minute; this run did not
+identify a navigation or native crash responsible. It is not a pass and
+must not be concealed by the passing Caddy case. Visible Chromium app
+cases for both stacks and the separate standalone Caddy package rebuild
+are now running.
+
+**2026-11-05 — Validate current Chromium editing and standalone Caddy.**
+All six visible Chromium cases pass on revision 32
+(`wordpress-retirement-ui-chromium-1105-165337-1c73`, 5m57s): both stacks
+serve the installed site, log in through Shortcuts, render the editor's
+blocks, answer editor health requests, persist authenticated post writes,
+and insert/save/reload an actual template-owned Heading block. The older
+revision-31 crash-durability evidence is not relabeled as a current-image
+run; that rerun and Caddy's visible Firefox flow remain next.
+
+The separate normal resolver build of standalone Caddy revision 4 passed
+in 2m35s (`caddy-retirement-package-1105-165345-1ece`). Node serves its
+expected VFS file with HTTP 200 and no host diagnostic. The first browser
+attempts could not fetch the external resolver cache path: Vite correctly
+returned `403 Forbidden resolver-cache path`. Serving the fixture through
+`route.fulfill` then closed Chromium's debugging connection, consistently
+even in isolation. A native browser log identified a 104,857,600-byte
+DevTools pipe capacity error. The program file is 104,394,638 bytes, which
+expands beyond that cap when base64-encoded for `route.fulfill`; an initial
+image-array diagnosis was incomplete. Changing the image transfer alone
+did not fix it. These were fixture transport failures before guest execution,
+not a Caddy or compiler defect.
+
+The new shared `support/streamed-artifacts.ts` fixture serves only declared
+files/bytes on a test-owned loopback HTTP server and closes it afterward.
+The Caddy probe retains its ABI digest check, fetches raw image/program
+bytes, and does not change Vite's resolver-cache boundary. It now passes
+3/3 across Chromium, Firefox, and WebKit in 14s
+(`caddy-streamed-browser-fixture-1105-170326-c5d4`). This also closes the
+previously unverified standalone-Caddy WebKit artifact gate. No browser
+workaround, compiler/package patch, or runtime-defect registry entry is
+needed for this test-transport correction.

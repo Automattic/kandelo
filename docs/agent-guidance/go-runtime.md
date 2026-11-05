@@ -81,7 +81,8 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   expose that existing behavior; do not claim full POSIX memory-lock
   semantics or use the bbolt smoke test as proof of durability.
 - The source-built Caddy v2.10.2 package pins six direct forks and
-  serves static HTTP from the VFS on Node, Chromium, and Firefox.
+  serves static HTTP from the VFS on Node, Chromium, Firefox, and WebKit
+  with recipe revision 4 and Go fork `c925e9c`.
   The earlier WebKit build failed before listener readiness with a native
   Wasm call-stack overflow in `regexp_syntax.__compiler_.compile`. Do not
   silently skip that engine or patch Caddy's dependency to make it appear
