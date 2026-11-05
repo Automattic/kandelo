@@ -232,6 +232,16 @@ Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a p
 
 ## Graphics
 
+Private client-array savepoints and widened/padded index selectors now retain
+exact restoration checks inside predicted guest batches. The earlier promoted
+index regression used a zero index and never exercised promotion; its corrected
+valid maximum-byte-index draw proves one native widened draw and an actual
+refused restoration on all three engines. The focused capture/promotion gate
+passes six cases. Broader current-tree validation and performance measurements
+remain required; these private-path checks are not a performance claim or B1
+completion. Guest acceptance remains predicted, and the direct index path gains
+no restoration check.
+
 The guest-driver migration and GPU worker below are now required work in
 the GLES 2.0, EGL 1.5, GBM and single-display KMS baseline (draft PR #1594),
 following the maintainer's 2026-11-03 revision of D-54. They remain

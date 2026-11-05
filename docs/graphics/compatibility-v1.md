@@ -149,9 +149,9 @@ binding is enabled in a preview. Evidence:
 `.context/graphics-b2-shared-order-r365/` and
 `.context/graphics-b2-current-r366-runs/`.
 
-R360's frozen2a8 normal application products pass setup1630s, SourceOnly
-Mako44s, ABI22s and freshness3s; its test-program stage continues
-sequentially. R367 admits an immutable313-file snapshot on three engines
+R360's frozen2a8 normal build completes successfully in59m59s: setup1630s,
+SourceOnly Mako44s, ABI22s, freshness3s, test programs1801s and final ABI/
+freshness checks all pass. This producer excludes subsequent host fixes. R367 admits an immutable313-file snapshot on three engines
 with five passes and one Firefox ScummVM-on-Sway exit failure. Cage passes
 on all three. The Firefox failure occurs after ScummVM's window closes,
 when the typed Sway exit command does not release compositor ownership.
@@ -197,6 +197,41 @@ before its synchronous callback removes those four; the remaining complete
 All23 focused native-fault controls pass on that typed correction, and the
 prepared normal-kernel ABI check exits0. This remains a failed full compiler
 gate, not a type-check pass or a new full342-case browser result.
+
+## Private selector completion retains its native inverse, 2026-11-05
+
+A private client-array END or promoted-index finalizer previously predicted
+restoration inside a guest batch and discarded its inverse. A refused
+restoration then reached the final batch sample as a context reset, after
+the host had already published private completion. Those savepoints now
+use explicit exact bookkeeping inverses. A reset unwinds before the
+inverse can be discarded; a live renderer that refuses recovery is fatal.
+Guest command acceptance remains predicted. Widened/padded index paths
+use this check; direct index draws acquire no additional restoration.
+
+The old promotion fixture used a zero index and took the direct path.
+Its replacement supplies all256 vertices and draws GLES byte index255,
+which must become a native short index because255 is WebGL's fixed
+restart marker. R374 proves one widened native draw and an actual refused
+ELEMENT restoration on every engine; all three cases fail with returned
+ENODEV instead of the required fatal restoration policy. R375 subsequently
+passes all six capture/promotion cases across Chromium, Firefox and
+WebKit with unchanged fatal assertions and memory-boundary checks.
+
+The source control also keeps a pre-existing logical INVALID_VALUE flag
+and proves the accepted draw executes once while refused private recovery
+reports one fatal fault. R376 finishes FAILED after3m28s: graphics2192/88 and Node18/6 pass;
+the144-case three-engine inverse/image/retirement selection passes135 and
+fails9. Its failure-title comparison to R370 resolves all six capture/
+promotion cases with no new failures. The remaining default positive,
+pointer and repair cases still fail on all three engines and are not
+waived. ABI/evidence and all frozen source/configuration/kernel hashes
+pass. Full host type checking still fails the same complete24-diagnostic
+stream. This subset does not replace the final full browser/shader gate. No application performance, native feel, completed A3/B1
+or new preview is claimed. ABI family56/3/17/21 is unchanged. Commands:
+`.context/graphics-valid-promotion-r374/run.sh`,
+`.context/graphics-private-savepoint-r375/run.sh` and
+`.context/graphics-private-savepoint-regression-r376/run.sh`.
 
 ## Automatic application-driver admission prototype, 2026-11-05
 

@@ -311,3 +311,20 @@ it("keeps a known-rejected bookkeeping repair exact inside a predicted guest bat
   expect(reported).toEqual([fault]);
   expect(owner.errors).toEqual([0x501]);
 });
+
+it("keeps an accepted draw's private savepoint exact before discarding its inverse",()=>{
+  const r=renderer(),reported:Error[]=[];
+  const owner={...r.owner,pid:7,sessionId:11};owner.errors.push(0x501);
+  let draws=0;
+  setReporter(fault=>reported.push(fault));
+  const fault=caught(()=>withNativeBatch(owner,"private draw savepoint",()=>
+    applyNativeChanges(owner,[{
+      apply:()=>{draws++;r.refuse(true);return true;},
+      restore:nativeInverse(owner),
+    }],{finalizer:R.bookkeepingNativeInverse(owner,[["bindTexture",0x0de1,null]])})?0:-5));
+  expect(fault?.name).toBe("NativeGlFault");
+  expect(fault!.message).toMatch(/refused to restore native state/);
+  expect(reported).toEqual([fault]);
+  expect(draws).toBe(1);
+  expect(owner.errors).toEqual([0x501]);
+});

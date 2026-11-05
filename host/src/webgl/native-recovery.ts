@@ -107,7 +107,9 @@ export type NativeInverse = { owner: CheckedGlOwner; groups: NativeCall[][];
   /** Each group is checked once after its last call instead of after every
    * call: for calls that cannot fail on valid arguments, where one check
    * still detects a failed restoration (a NativeGlFault on a live renderer). */
-  batched?: boolean };
+  batched?: boolean;
+  /** A private savepoint must be restored before publishing completion. */
+  bookkeeping?: boolean };
 export type NativeChange = { apply(): boolean; restore: NativeInverse };
 export type NativeCompletion = {submitted: boolean; complete: boolean};
 type Repair = {
@@ -144,6 +146,8 @@ export function invokeNativeCall(gl: WebGL2RenderingContext, call: NativeCall): 
  * is the next call's clean entry; failure revokes it before the next group.
  * No clean-entry evidence survives this invocation. */
 function restoreInverse(inverse: NativeInverse): boolean {
+  if (inverse.bookkeeping && predictsNativeCalls(inverse.owner))
+    return withNativeBookkeeping(() => restoreInverse(inverse));
   if (predictsNativeCalls(inverse.owner)) {
     return predictedNativeCalls(inverse.groups.flatMap(group => group.map(call => () => { invokeNativeCall(inverse.owner.gl!, call); })));
   }
@@ -464,6 +468,12 @@ export function nativeOwner(b: CheckedGlOwner): CheckedGlOwner {
 }
 export function nativeInverse(owner: CheckedGlOwner, ...groups: NativeCall[][]): NativeInverse {
   return {owner:nativeOwner(owner),groups};
+}
+/** A temporary host selector/savepoint is not guest API acceptance. Check
+ * its restoration before publishing completion, including inside a predicted
+ * guest batch; a late sample cannot recover a discarded inverse. */
+export function bookkeepingNativeInverse(owner: CheckedGlOwner, ...groups: NativeCall[][]): NativeInverse {
+  return {owner:nativeOwner(owner),groups,batched:true,bookkeeping:true};
 }
 /** An inverse whose groups are each checked once (NativeInverse.batched). */
 export function batchedNativeInverse(owner: CheckedGlOwner, ...groups: NativeCall[][]): NativeInverse {

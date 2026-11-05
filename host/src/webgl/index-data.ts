@@ -1,5 +1,5 @@
 import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
-import { applyNativeChanges, batchedNativeInverse, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
+import { applyNativeChanges, bookkeepingNativeInverse, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 import { activeVertexArray } from "./buffer-references.js";
 import { allocateNativeBuffer, BUFFER_TRANSFER_BYTES, prepareBufferDraw, withBufferTransfer, type GlBufferStore } from "./buffer-storage.js";
@@ -78,7 +78,7 @@ function indexForm(b: GlBinding, store: GlBufferStore, type: number, phase: numb
       }
       return true;
     });
-  },restore:nativeInverse(b)}],{finalizer:nativeInverse(b,[["bindBuffer",ELEMENT,previous]])});
+  },restore:nativeInverse(b)}],{finalizer:bookkeepingNativeInverse(b,[["bindBuffer",ELEMENT,previous]])});
   if (!accepted) return null;
   entry.direct = false; entry.valid = true;
   return entry;
@@ -153,7 +153,7 @@ function drawPaddedElements(b: GlBinding, mode: number, count: number, type: num
       gl.bindBuffer(ELEMENT,temporary); gl.bufferData(ELEMENT,indices,0x88e0);
     }) && issueGlesDraw(b,{mode,cleanEntry:true,maxVertex:rangeMax(range,first,count),
       issue:() => gl.drawElements(mode,count,type === BYTE ? SHORT : INT,0),vertices:() => indices}),
-    restore:nativeInverse(b)}],{finalizer:batchedNativeInverse(b,[["bindBuffer",ELEMENT,previous]])});
+    restore:nativeInverse(b)}],{finalizer:bookkeepingNativeInverse(b,[["bindBuffer",ELEMENT,previous]])});
   } finally { retireNativeRetirement(retirement); }
 }
 
@@ -204,5 +204,5 @@ export function drawGlesElements(b: GlBinding, mode: number, count: number, type
         gl.getBufferSubData(ELEMENT,at,promoted);
         return promoted;
       }}),
-  restore:nativeInverse(b)}],{finalizer:batchedNativeInverse(b,[["bindBuffer",ELEMENT,previous]])});
+  restore:nativeInverse(b)}],{finalizer:bookkeepingNativeInverse(b,[["bindBuffer",ELEMENT,previous]])});
 }

@@ -5533,10 +5533,12 @@ pointer/name/serial directly and keeps any pending capture encoder-owned.
 The host saves the actual native ARRAY view in a context-local slot across
 submit boundaries; buffer collection includes that pin across group
 members, including separate index/vertex views. Empty BEGIN/END commands
-restore identity independently of public names. Failed native restoration
-keeps the pin and rejects dependent draws until a successful END retry;
-context destruction releases it. Full indeterminate-submit recovery and
-interrupted temporary-name cleanup remain open.
+restore identity independently of public names. The private ARRAY savepoint
+uses exact host-bookkeeping restoration before publishing END completion.
+A logical reset unwinds its native inverse; refusal by a live renderer is
+fatal rather than a later END retry. Context destruction releases its pin.
+Full indeterminate-submit recovery and interrupted temporary-name cleanup
+remain open.
 Name reservation is separate from GPU realization for buffers, textures
 and renderbuffers. Their Gen records do not allocate or mutate host object
 maps; the first accepted Bind publishes the native object. Delayed shared
@@ -6075,7 +6077,7 @@ Guest execution now uses host GLES validation as the acceptance authority
 (`webgl/native-batch.ts`). Each submitted frame, result-bearing query and
 present runs in one synchronous native batch, including muxer replay and
 CPU-image preparation/publication. Checked calls on that guest's error owner
-execute without native `getError`; temporary inverses use the same policy.
+execute without native `getError`; guest-owned inverses use the same policy.
 Native flags are sampled at batch completion before another logical context
 can acquire the shared renderer. A clean submitted batch takes one error
 sample. A `glGetError` query that only reads host-owned flags issues no
@@ -6100,6 +6102,13 @@ native changes and retires unpublished buffers before another context can
 acquire the renderer. Refused restoration on a live renderer remains fatal;
 physical renderer loss drops the obsolete native state. These checks do not
 change guest-command acceptance or consume previously recorded guest flags.
+Private ARRAY savepoints and widened/padded index draws also check their
+selector finalizers before discarding the inverse. Guest draw acceptance
+remains predicted. A private restoration cannot claim completion merely
+because the active guest owns the same error queue; if its final sample
+were deferred, the batch could reset after losing the inverse needed to
+restore shared native state. These checks run on those private paths;
+direct index draws do not acquire a new restoration check.
 Private image allocation and preservation copies also require native success
 before a sibling view is published. Refreshing an image view leaves its sync
 count stale until the private copy succeeds, so a healthy peer cannot skip a

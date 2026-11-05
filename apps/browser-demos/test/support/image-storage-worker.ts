@@ -477,15 +477,32 @@ self.onmessage = ({ data }) => {
     if (scenario === "promotion") {
       // Restoring ELEMENT after an accepted promoted draw is a native
       // inverse. The refusal is fatal, and the draw is never repeated.
+      // 255 is an ordinary GLES byte index but WebGL's restart index.
+      // Supply its actual vertex, so promotion is required by a valid draw.
+      // The old zero-index fixture took the direct path and never attempted
+      // the restoration it claimed to refuse.
+      mutate(O.QOP_BIND_BUFFER,[0x8892,200]);
+      send(O.OP_BUFFER_DATA,[0x8892,256*24,0x88e4],new Uint8Array(),12);
+      const vertex = new Uint8Array(new Float32Array([0,0,0,0,1,1]).buffer);
+      send(O.OP_BUFFER_SUB_DATA,[0x8892,255*24,vertex.length],vertex,12);
+      mutate(O.QOP_BIND_BUFFER,[0x8893,212]);
+      send(O.OP_BUFFER_DATA,[0x8893,1,0x88e4],new Uint8Array(),12);
+      send(O.OP_BUFFER_SUB_DATA,[0x8893,0,1],new Uint8Array([255]),12);
+      require(error(12)===0,"maximum-index promotion setup");
       const promotionElement = gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING);
       const promotionBind = gl.bindBuffer.bind(gl), promotionDraw = gl.drawElements.bind(gl);
-      let promotionDraws = 0;
-      gl.drawElements = (...args) => { promotionDraws++; promotionDraw(...args); };
-      gl.bindBuffer = (target,buffer) => { if(promotionDraws && target===0x8893 && buffer===promotionElement) promotionBind(0xdead,buffer); else promotionBind(target,buffer); };
+      let promotionDraws = 0, promotionRefused = false;
+      const promotionTypes: number[] = [];
+      gl.drawElements = (...args) => { promotionDraws++; promotionTypes.push(args[2]); promotionDraw(...args); };
+      gl.bindBuffer = (target,buffer) => {
+        if(promotionDraws && target===0x8893 && buffer===promotionElement) {
+          promotionRefused = true; promotionBind(0xdead,buffer);
+        } else promotionBind(target,buffer);
+      };
       let outcome: ReturnType<typeof refusal>;
-      try { outcome = refusal(() => submitWords(O.OP_DRAW_ELEMENTS,[0,1,0x1403,24])); }
+      try { outcome = refusal(() => submitWords(O.OP_DRAW_ELEMENTS,[0,1,0x1401,0])); }
       finally { gl.bindBuffer = promotionBind; gl.drawElements = promotionDraw; }
-      return finish(outcome, { draws: promotionDraws });
+      return finish(outcome, { draws: promotionDraws, types: promotionTypes, refused: promotionRefused });
     }
     if (scenario === "pointer") {
       // A valid converted pointer is partially installed before a native

@@ -1602,7 +1602,7 @@ test("logical image views preserve sibling parameters, pixels and retained ident
 for (const [fault,message,detail] of [
   ["deleteBuffer",refusedDeletion("deleteBuffer"),{refused:true,logicalDeleted:true}],
   ["capture",REFUSED_RESTORE,{}],
-  ["promotion",REFUSED_RESTORE,{draws:1}],
+  ["promotion",REFUSED_RESTORE,{draws:1,types:[0x1403],refused:true}],
   ["pointer",REFUSED_RESTORE,{precondition:{error:0,selected:true,installed:true},dirty:true}],
   ["repair",REFUSED_RESTORE,{rejected:true,dirty:true}],
   ["storage",REFUSED_RESTORE,{rejected:true,dirty:true}],
