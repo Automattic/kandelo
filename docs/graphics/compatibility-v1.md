@@ -105,6 +105,23 @@ normalizing checkout roots; it remains a failed final gate. Full stage and
 final conformance, desktop, browser-memory, POSIX, benchmark and manual checks
 remain required. No acceptance criterion or stage order changes.
 
+R430 then refreshes the pushed integration runtime through its own release
+xtask and normal SourceOnly SDK32/64 and kernel/image-writer graph. Exact command
+`scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-buffer-integration-r430/build.sh`,
+job `graphics-buffer-integration-r430-1105-170434-091f`, passes4m56 with ABI and
+evidence checks. All nine recorded snapshot/SDK/kernel/image-writer products
+are byte-identical to R427, and all14 runtime/test source files match the
+validated candidate. The tracked tree remains clean after the build. This is
+a targeted product refresh, not the required full application rebuild or new
+preview. Exact comparisons and commands are retained under R430.
+
+After the private runs finish, open-file checks find no users of R422's native
+debug/test intermediates. Removing only those two directories increases
+observed free space1.07GiB; bound source/product/release-tool hashes remain
+unchanged. Native reruns rebuild those intermediates. Canonical cache-gc
+respects an active build lock and removes nothing. Later filesystem-wide free
+space rises independently; it is not attributed to this cleanup.
+
 ## Owned buffer-copy backend, 2026-11-05 (R420)
 
 The journal now owns an optional cold-prepared bank of private native buffer
