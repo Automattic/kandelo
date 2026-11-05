@@ -9,6 +9,13 @@ description: Use when porting a program or library to Kandelo, adding or changin
 
 A port is a package built through the normal path: SDK, sysroot, resolver, cache. Build failures are platform feedback first (CLAUDE.md "Package And Build Contract"; `docs/agent-guidance/packages-and-builds.md`). This skill routes you to the authoritative sections and to current-contract reference packages so you do not have to reverse-engineer conventions from the registry.
 
+Resolve repository paths and run commands from the active Kandelo checkout
+or worktree root. A client's printed skill base directory may point to a
+different checkout; use the active worktree's files and scripts.
+Within each checkout, `.agents/skills/porting-software-to-kandelo` is a
+symlink to `.claude/skills/porting-software-to-kandelo`, so both paths
+refer to the same skill and bundled build helper.
+
 ## Start from a current-contract reference, not a nearby package
 
 Many registry scripts predate the resolver contract (e.g. `bzip2` writes into its package directory and the sysroot). Copy the shape of one of these instead:
