@@ -4364,3 +4364,19 @@ invalid entry and names the embedded service activity control program. The
 source-only plan validates with 178 nodes to run and estimates about 128
 minutes on the current empty source-only cache. The browser app gate remains
 pending until that projection is materialized.
+
+The revision-31 image has now also passed a Node runtime probe through the
+new image-owned `/sbin/kandelo-init frankenphp-classic` path: the guest
+`kandelo-service inspect` reported `frankenphp-classic` running and enabled,
+with nginx and Caddy not loaded, and the WordPress homepage returned HTTP
+200. A first ad hoc probe bound host port 8080, which was already occupied by
+an SSH listener; it timed out at HTTP readiness. The same probe passed on
+localhost:3129. A repeatable opt-in Node test now selects an available port,
+loads the built image, boots via the service controller, checks its guest
+status, and fetches the homepage. It passed 1/1 under the declared dev shell.
+An earlier test attempt exited before HTTP readiness on an OS-assigned high
+port but did not capture guest logs; the test now includes those logs on
+failure and the immediate rerun passed. That transient failure remains
+unexplained, and teardown still reports a forced drain for live guest
+processes. Neither observation is claimed resolved. The full source-only
+projection remains in progress, so the visible Chromium app gate is pending.
