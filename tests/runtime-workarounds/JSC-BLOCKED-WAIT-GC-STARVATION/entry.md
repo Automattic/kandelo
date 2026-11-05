@@ -54,6 +54,23 @@ glue's wait loop is more complex. The import's declaration in
 `crates/shared/src/lib.rs` (`HEAP_SAFEPOINT_PROCESS_IMPORT`) is a further
 site; it is described by the ABI version comment there but carries no tag.
 
+### Go producer integration (2026-11-05)
+
+Go's internal syscall channel originally waited without this checkpoint,
+including in cgo builds whose public syscalls already went through libc.
+The [Go target runtime](https://github.com/kandelo-dev/go/blob/930124371e660e1a2cac92cd7f78771a7716bc31/src/runtime/channel_kandelo.go)
+now uses the same initial 100 ms bound and existing host import, keeping
+the original syscall pending across each checkpoint. Its code site carries
+this entry's tag in the external fork. Check that producer as well when
+retiring the workaround; the Kandelo repository scanner does not scan the
+adjacent Go checkout.
+
+The Go fixture requires the import and completes a pipe read across a
+400 ms wait on Node and browser hosts. This is producer-integration and
+syscall-completion evidence. It does not establish that the suspected engine
+behavior caused a particular FrankenPHP editor failure, and it does not
+change this entry's suspected status or self-judging reproduction gap.
+
 ## Evidence
 
 All on Playwright WebKit webkit-2359 (reported as `26.6`), macOS 27.0.1.

@@ -50,7 +50,10 @@ The separate signal fixtures cover `Notify`, `Ignore`, a real default
 `SIGQUIT` goroutine dump with exit 2, default `SIGTERM`
 after `Reset`/`Stop`, C-pthread delivery, C handlers with signal info and
 alternate stacks, mask restoration, 64-bit seek results, and graceful Go
-HTTP shutdown. The cgo restart case waits for the actual blocked read,
+HTTP shutdown. The blocked-wait case requires the existing host heap
+safepoint import and preserves a pipe read across a 400 ms wait. This tests
+producer integration and syscall completion, not a standalone GC diagnosis.
+The cgo restart case waits for the actual blocked read,
 sends a signal, and requires a second read dispatch before success.
 The upstream `os/signal` binary also runs ten selected tests in each
 browser/mode. This does not establish inherited blocked-mask management,

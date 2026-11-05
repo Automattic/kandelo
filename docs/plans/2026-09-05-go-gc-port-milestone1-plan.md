@@ -6,9 +6,9 @@ The work now extends beyond the original hello-world milestone below.
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
 on ABI 55, with Go fork `c925e9c9ca8c63c549053fd07d3fe0799473d4e0`.
 
-The next source pin is `f4353693610e62ad9d7c4f3a4151710fdcb75034`, which
-adds cooperative Go signals, fatal Go tracebacks, and shared libc cgo
-syscall dispatch. The revision-34 WordPress rebuild and actual Caddy/PHP shutdown validation are
+The next source pin is `930124371e660e1a2cac92cd7f78771a7716bc31`, which
+adds cooperative Go signals, fatal Go tracebacks, shared libc cgo syscall
+dispatch, and the existing host heap-safepoint integration. The revision-35 WordPress rebuild and actual Caddy/PHP shutdown validation are
 pending; the revision-32 app evidence below remains tied to `c925e9c`.
 
 - The revision-32 WordPress image runs actual embedded PHP through both
@@ -5092,3 +5092,34 @@ KANDELO_GO_IMAGE_TMP=1 KANDELO_GO_TEST_TIMEOUT_MS=180000 \
 
 The shared PHP/Caddy drain probe type-checks in strict mode; its real Node
 and browser execution still awaits the rebuilt image.
+
+
+**2026-11-05 — Adopt the existing heap-safepoint contract in Go waits.**
+Go's internal channel wait was still unbounded, even though the C SDK had
+already adopted `kernel.kernel_heap_safepoint` for the suspected JSC blocked
+wait/GC interaction. The cgo public-syscall bridge alone did not cover
+internal Go futex waits. Fork commit
+`930124371e660e1a2cac92cd7f78771a7716bc31` adds the same 100 ms first bound,
+existing host import, and atomic retention of the host's next bound. It
+keeps the original syscall pending and preserves its completion. Node and
+non-JSC browsers disable the bound after the first host answer. The
+registered runtime cause remains suspected; this does not establish the
+cause of the classic WordPress stalls.
+
+Both Node blocked-read probes pass. The expanded browser suite passes
+45/45 in 1m43s (`go-safepoint-browser-async-module-check-1105-183529-3f1c`),
+including both modes' import-presence and 400 ms blocked-read checks. The
+first run had 43 passes and two Chromium fixture errors: the import check
+synchronously compiled a module above the browser's 8 MB main-thread cap.
+Using the supported asynchronous compile API fixes those checks. The
+standard-library compile matrix, unchanged ABI-55 digest/snapshot check,
+and runtime-workaround registry check all pass. The existing registry entry
+now links the tagged external Go site for future retirement.
+
+The source build using the preceding pin was stopped after 13m39s, just
+after completing ncurses, to advance the Go producer pin before the large
+consumer rebuild. Completed dependency nodes remain cached. Recipes now
+select go-hello 23, classic 30, FrankenPHP+Caddy 9, standalone Caddy 7, and
+WordPress 35. Actual PHP/Caddy drain, current-image browser workflows,
+longer uptime/memory checks, and incremental benchmarks still follow the
+source-product rebuild.

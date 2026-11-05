@@ -122,6 +122,16 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   `src/runtime/channel_kandelo.go` captures it into the M before syscalls.
   Channel layout comes from `crates/shared/src/lib.rs`, not a Go-local
   convention. Keep the Go heap above the channel/control region.
+- Internal Go syscall waits must honor the same heap-safepoint contract as
+  libc, even when cgo public syscalls already use libc. Start with a 100 ms
+  atomic-wait bound; after a timeout call the existing
+  `kernel.kernel_heap_safepoint` import and retain its next bound. JSC keeps
+  bounded waits; V8 and SpiderMonkey return a negative, unbounded wait.
+  Keep waiting on the original request and preserve its result and errno.
+  The external-runtime explanation remains suspected under
+  `JSC-BLOCKED-WAIT-GC-STARVATION`; adding the missing Go producer hook does
+  not prove that it caused a particular WordPress stall. Reuse that registry
+  entry and mark the fork's code site instead of claiming a new engine bug.
 - Test a declared slot count with distinct live locked Ms, not only many
   sequential starts. The 48-live-M/64-slot probe exposed browser teardown
   latency after the guest had exited: a per-thread 250 ms settlement was

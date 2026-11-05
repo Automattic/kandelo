@@ -20,6 +20,9 @@ fixture exceeded Chromium's 100 MiB pipe buffer and closed its connection
 before guest execution. An external resolver-cache path can also be
 intentionally forbidden by Vite. Serve only the explicitly selected fixture
 files, keep their ABI/content checks, and close the server after the test.
+Inspect large browser modules with asynchronous `WebAssembly.compile` too:
+the synchronous main-thread constructor rejects fixtures above 8 MB in
+Chromium. Use the ordinary supported API rather than changing browser flags.
 
 For editors that compose several stored entities, prove which entity owns
 the changed content. WordPress's site editor can edit a post title or insert

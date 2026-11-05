@@ -21,3 +21,9 @@ log SHA-256 is `7d501ebbc8f589f92fb18c7d5e7bc556ae45fa3ee8cc6b62f294e17959e26d1a
 The subsequent three-test selection passes in both Go modes, including all
 seven WaitInterrupt subcases. The source command is recorded in the
 implementation log.
+
+`go-browser-sync-compile.log` records two Chromium fixture errors from
+the first 45-case safepoint run. The metadata assertion used synchronous
+main-thread compilation above 8 MB. Its asynchronous-compilation correction
+passes the full 45-case rerun. Source-log SHA-256:
+`48e0bf792626ce540d7d8d321a51f50d985cfb614460a22696e33f52ab94c10f`.

@@ -33,6 +33,10 @@ func main() {
 		return
 	}
 	runtime.LockOSThread()
+	if len(os.Args) > 1 && os.Args[1] == "blocked-wait" {
+		blockedWait()
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "quit" {
 		fmt.Println("GO SIGNAL QUIT READY")
 		if err := syscall.Kill(os.Getpid(), syscall.SIGQUIT); err != nil {
@@ -116,6 +120,26 @@ func main() {
 	signal.Stop(signals)
 	checkWideSeek()
 	fmt.Println("GO SIGNAL PASS")
+}
+
+func blockedWait() {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		if _, err := writer.Write([]byte("s")); err != nil {
+			panic(err)
+		}
+	}()
+	var value [1]byte
+	if n, err := reader.Read(value[:]); n != 1 || err != nil || value[0] != 's' {
+		panic(fmt.Sprintf("bounded wait returned before syscall completion: %d %q %v", n, value, err))
+	}
+	fmt.Println("GO SAFEPOINT WAIT PASS")
 }
 
 func restartRead() {

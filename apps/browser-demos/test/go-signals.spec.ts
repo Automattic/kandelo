@@ -59,7 +59,7 @@ for (const mode of ["pure", "cgo"]) {
       expect(result.diagnostics).toEqual([]);
     });
   }
-  for (const disposition of ["notify", "reset", "stop", "upstream", "quit"]) {
+  for (const disposition of ["notify", "reset", "stop", "upstream", "quit", "blocked-wait"]) {
     test(`Go ${mode} signal ${disposition}`, async ({ page, baseURL, serveArtifacts }) => {
       test.skip(process.env.KANDELO_GO_SIGNAL_TESTS !== "1", "Build tests/go/signal-basic and set KANDELO_GO_SIGNAL_TESTS=1");
       const urls = await serveArtifacts({
@@ -75,6 +75,12 @@ for (const mode of ["pure", "cgo"]) {
           if (!response.ok) throw new Error(`signal fixture fetch failed: ${name}: ${response.status}`);
           return response.arrayBuffer();
         }));
+        if (disposition === "blocked-wait") {
+          const imports = WebAssembly.Module.imports(await WebAssembly.compile(program));
+          if (!imports.some(entry => entry.module === "kernel" && entry.name === "kernel_heap_safepoint")) {
+            throw new Error("Go runtime omitted the host heap-safepoint import");
+          }
+        }
         let stdout = "";
         let stderr = "";
         const diagnostics: unknown[] = [];
@@ -101,8 +107,8 @@ for (const mode of ["pure", "cgo"]) {
           } finally { clearTimeout(timer); }
         } finally { await kernel.destroy(); }
       }, { urls, disposition, browserKernelUrl: new URL(`/@fs${resolve("../../host/src/browser-kernel-host.ts")}`, baseURL).href });
-      expect(result.exitCode, JSON.stringify(result)).toBe(disposition === "quit" ? 2 : disposition === "notify" || disposition === "upstream" ? 0 : 143);
-      expect(result.stdout).toContain(disposition === "quit" ? "GO SIGNAL QUIT READY" : disposition === "upstream" ? "PASS\n" : disposition === "notify" ? "GO SIGNAL PASS" : "GO SIGNAL NOTIFY PASS");
+      expect(result.exitCode, JSON.stringify(result)).toBe(disposition === "quit" ? 2 : ["notify", "upstream", "blocked-wait"].includes(disposition) ? 0 : 143);
+      expect(result.stdout).toContain(disposition === "blocked-wait" ? "GO SAFEPOINT WAIT PASS" : disposition === "quit" ? "GO SIGNAL QUIT READY" : disposition === "upstream" ? "PASS\n" : disposition === "notify" ? "GO SIGNAL PASS" : "GO SIGNAL NOTIFY PASS");
       if (disposition === "upstream") {
         expect(result.stdout).toContain("--- PASS: TestSignal");
         expect(result.stdout).toContain("--- PASS: TestStress");
