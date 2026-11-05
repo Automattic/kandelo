@@ -6307,8 +6307,8 @@ bindings still do not establish local error knowledge. Native controls
 verify complete bytes, held errors, standalone fallback, rollover
 revocation, refused-prefix stop and actual binding recovery.
 
-Explicitly admitted program journals also support exact matrix error
-prediction. Each cold journal owns32 numeric signature cells keyed by
+Admitted program journals also support exact scalar, vector and matrix
+uniform error prediction. Each cold journal owns32 numeric signature cells keyed by
 its current generation token and dense uniform location. Token zero
 identifies the executable installed at admission; successful same-name
 selections still update the token, rejected selections keep their
@@ -6323,9 +6323,14 @@ through the lifecycle barrier, leaves sealed mutation receipts intact
 and neither selects the queried program nor drains errors, interrupts
 uploads, resolves deferred long names or synchronizes buffers. A cold C
 miss publishes metadata and submits only the caller's prefix. Small
-matrix updates then retain the exact error proof for
-signature/count/presence checks while their original records reach the
-independent host oracle. Inactive location-1 updates use known logical
+scalar, vector and matrix updates retain the exact error proof for type,
+boolean conversion, count and native-location presence checks while their
+original records reach the independent host oracle. Sampler integer setters
+check only the accepted array prefix, ignoring excessive tails. They use an
+already learned immutable texture-unit limit, or accept only units0–7 under
+the ES2 guaranteed minimum; other values keep host observation until the
+existing explicit active-texture path learns the actual limit. Ordinary
+setters add no limit query. This cache is not B4's public program interface. Inactive location-1 updates use known logical
 executable presence without reading data. Unresolved positive-count
 locations, ordinary/uncertain state and large uniform uploads keep
 ordinary observation. Journals now admit ordinary applications at their

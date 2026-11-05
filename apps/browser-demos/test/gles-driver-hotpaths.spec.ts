@@ -66,6 +66,11 @@ for(const mode of ["ordinary","admitted","automatic"] as const) for(const arch o
     expect(setup.find((row:any)=>row.operation==="matrix4").deviceRequests).toBe(mode==="admitted"?3:mode==="automatic"?0:1);
     expect(lines).toContain(`INITIAL_MATRIX ${mode==="automatic"?2:1}`);
     expect(lines).toContain("MATRIX_PROOFS 19");
+    expect(lines).toContain("UNIFORM_PROOFS 40");
+    const uniformCounts=lines.filter((line:string)=>line.startsWith("UNIFORM_COUNT ")).map((line:string)=>JSON.parse(line.slice(14)));
+    expect(uniformCounts).toHaveLength(40);
+    expect(new Set(uniformCounts.map((row:any)=>row.operation)).size).toBe(40);
+    if(mode!=="ordinary")expect(uniformCounts.every((row:any)=>row.requests===0)).toBe(true);
     expect(lines).toContain("READONLY_QUERY_PROOFS 12");
     // Permit future improvements, while rejecting one drain for every large
     // definition. Rollover still revokes the exact prefix and needs recovery.

@@ -3905,7 +3905,8 @@ static int uniform_location_accepted(GLint location) {
 /* A public name can acquire a different link while this context keeps its
  * old installed executable. Only the journal's exact-generation pin can
  * justify a signature. Ordinary contexts retain the host observation path. */
-static int matrix_error_prediction(GLint location,GLsizei count,uint32_t type,GLenum *error) {
+static int uniform_error_prediction(GLint location,GLsizei count,uint32_t type,
+                                    uint32_t boolean_type,const GLint *integers,GLenum *error) {
     struct wpk_gles_context *state=_wpk_gl_current_encoder();
     struct wpk_program_stream *stream=state->program_stream;
     if(!stream || !stream->active)return 0;
@@ -3941,7 +3942,23 @@ static int matrix_error_prediction(GLint location,GLsizei count,uint32_t type,GL
         *meta=(struct wpk_uniform_signature){.token=stream->current_token,.location=location,
             .type=reply[6],.remaining=reply[7],.flags=reply[8],.valid=1};
     }
-    if(meta->type!=type || (!(meta->flags&1u) && count>1))return 1;
+    const int sampler=type==GL_INT &&
+        (meta->type==GL_SAMPLER_2D || meta->type==GL_SAMPLER_CUBE || meta->type==0x8dc1u);
+    if((meta->type!=type && (!boolean_type || meta->type!=boolean_type) && !sampler) ||
+        (!(meta->flags&1u) && count>1))return 1;
+    if(sampler && count){
+        const uint32_t accepted=(uint32_t)count<meta->remaining?(uint32_t)count:meta->remaining;
+        const uint32_t limit=state->texture_unit_limit;
+        for(uint32_t i=0;i<accepted;i++){
+            const GLint unit=integers[i];
+            // Use an already learned immutable limit, or the ES2 guaranteed
+            // minimum. Do not add a device query to ordinary setters. Values
+            // outside that minimum remain unknown until the explicit active-
+            // texture path learns the real limit. Ignore excessive array tails.
+            if(!limit){if(unit<0 || unit>=8)return 0;}
+            else if(unit<0 || (uint32_t)unit>=limit){*error=GL_INVALID_VALUE;return 1;}
+        }
+    }
     if(count && !(meta->flags&6u))return 0; // Long native name remains unresolved.
     *error=count && (meta->flags&4u)?GL_INVALID_OPERATION:GL_NO_ERROR;
     return 1;
@@ -3950,42 +3967,67 @@ static int matrix_error_prediction(GLint location,GLsizei count,uint32_t type,GL
 void glUniform1i(GLint location, GLint v) {
     if (!_wpk_gl_command_encoder()) return;
     if (!uniform_location_accepted(location)) return;
+    GLenum predicted=GL_NO_ERROR;
+    int exact=uniform_error_prediction(location,1,GL_INT,GL_BOOL,&v,&predicted);
+    if(exact<0)return;
     EMIT_BEGIN(OP_UNIFORM1I, 8)
+    uint8_t *start=_c-4;
     w_i32(&_c, location);
     w_i32(&_c, v);
-    EMIT_END()
+    if(exact)finish_predicted_command(start,_c,predicted);
+    else g_cursor=_c;
 }
 void glUniform1f(GLint location, GLfloat v) {
     if (!_wpk_gl_command_encoder()) return;
     if (!uniform_location_accepted(location)) return;
+    GLenum predicted=GL_NO_ERROR;
+    int exact=uniform_error_prediction(location,1,GL_FLOAT,GL_BOOL,NULL,&predicted);
+    if(exact<0)return;
     EMIT_BEGIN(OP_UNIFORM1F, 8)
+    uint8_t *start=_c-4;
     w_i32(&_c, location);
     w_f32(&_c, v);
-    EMIT_END()
+    if(exact)finish_predicted_command(start,_c,predicted);
+    else g_cursor=_c;
 }
 void glUniform2f(GLint location, GLfloat x, GLfloat y) {
     if (!_wpk_gl_command_encoder()) return;
     if (!uniform_location_accepted(location)) return;
+    GLenum predicted=GL_NO_ERROR;
+    int exact=uniform_error_prediction(location,1,GL_FLOAT_VEC2,GL_BOOL_VEC2,NULL,&predicted);
+    if(exact<0)return;
     EMIT_BEGIN(OP_UNIFORM2F, 12)
+    uint8_t *start=_c-4;
     w_i32(&_c, location);
     w_f32(&_c, x); w_f32(&_c, y);
-    EMIT_END()
+    if(exact)finish_predicted_command(start,_c,predicted);
+    else g_cursor=_c;
 }
 void glUniform3f(GLint location, GLfloat x, GLfloat y, GLfloat z) {
     if (!_wpk_gl_command_encoder()) return;
     if (!uniform_location_accepted(location)) return;
+    GLenum predicted=GL_NO_ERROR;
+    int exact=uniform_error_prediction(location,1,GL_FLOAT_VEC3,GL_BOOL_VEC3,NULL,&predicted);
+    if(exact<0)return;
     EMIT_BEGIN(OP_UNIFORM3F, 16)
+    uint8_t *start=_c-4;
     w_i32(&_c, location);
     w_f32(&_c, x); w_f32(&_c, y); w_f32(&_c, z);
-    EMIT_END()
+    if(exact)finish_predicted_command(start,_c,predicted);
+    else g_cursor=_c;
 }
 void glUniform4f(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
     if (!_wpk_gl_command_encoder()) return;
     if (!uniform_location_accepted(location)) return;
+    GLenum predicted=GL_NO_ERROR;
+    int exact=uniform_error_prediction(location,1,GL_FLOAT_VEC4,GL_BOOL_VEC4,NULL,&predicted);
+    if(exact<0)return;
     EMIT_BEGIN(OP_UNIFORM4F, 20)
+    uint8_t *start=_c-4;
     w_i32(&_c, location);
     w_f32(&_c, x); w_f32(&_c, y); w_f32(&_c, z); w_f32(&_c, w);
-    EMIT_END()
+    if(exact)finish_predicted_command(start,_c,predicted);
+    else g_cursor=_c;
 }
 
 /* ----- framebuffers ------------------------------------------------- */
@@ -5171,11 +5213,18 @@ static void emit_uniform_fv(uint16_t op, GLint location, GLsizei count,
     if (n > (WPK_GL_MAX_TLV_PAYLOAD-8u)/4u) {
         emit_large_uniform(op,location,count,GL_FALSE,value,components); return;
     }
+    static const GLenum types[]={ GL_FLOAT,GL_FLOAT_VEC2,GL_FLOAT_VEC3,GL_FLOAT_VEC4 };
+    static const GLenum booleans[]={ GL_BOOL,GL_BOOL_VEC2,GL_BOOL_VEC3,GL_BOOL_VEC4 };
+    GLenum predicted=GL_NO_ERROR;
+    int exact=uniform_error_prediction(location,count,types[components-1],booleans[components-1],NULL,&predicted);
+    if(exact<0)return;
     EMIT_BEGIN(op, 8u + (uint32_t)n * 4u)
+    uint8_t *start=_c-4;
     w_i32(&_c, location);
     w_u32(&_c, (uint32_t)count);
     for (uint32_t i = 0; i < n; i++) w_f32(&_c, value[i]);
-    EMIT_END()
+    if(exact)finish_predicted_command(start,_c,predicted);
+    else g_cursor=_c;
 }
 
 static void emit_uniform_iv(uint16_t op, GLint location, GLsizei count,
@@ -5185,11 +5234,18 @@ static void emit_uniform_iv(uint16_t op, GLint location, GLsizei count,
     if (n > (WPK_GL_MAX_TLV_PAYLOAD-8u)/4u) {
         emit_large_uniform(op,location,count,GL_FALSE,value,components); return;
     }
+    static const GLenum types[]={ GL_INT,GL_INT_VEC2,GL_INT_VEC3,GL_INT_VEC4 };
+    static const GLenum booleans[]={ GL_BOOL,GL_BOOL_VEC2,GL_BOOL_VEC3,GL_BOOL_VEC4 };
+    GLenum predicted=GL_NO_ERROR;
+    int exact=uniform_error_prediction(location,count,types[components-1],booleans[components-1],value,&predicted);
+    if(exact<0)return;
     EMIT_BEGIN(op, 8u + (uint32_t)n * 4u)
+    uint8_t *start=_c-4;
     w_i32(&_c, location);
     w_u32(&_c, (uint32_t)count);
     for (uint32_t i = 0; i < n; i++) w_i32(&_c, value[i]);
-    EMIT_END()
+    if(exact)finish_predicted_command(start,_c,predicted);
+    else g_cursor=_c;
 }
 
 /* ES2 requires non-transposed matrices. Check the complete source span before
@@ -5211,7 +5267,7 @@ static void emit_uniform_matrix(uint16_t op, GLint location, GLsizei count,
         emit_large_uniform(op,location,count,transpose,value,components); return;
     }
     GLenum predicted=GL_NO_ERROR;
-    int exact=matrix_error_prediction(location,count,components==4?0x8b5au:components==9?0x8b5bu:0x8b5cu,&predicted);
+    int exact=uniform_error_prediction(location,count,components==4?0x8b5au:components==9?0x8b5bu:0x8b5cu,0,NULL,&predicted);
     if(exact<0)return;
     uint32_t n = (uint32_t)count * components;
     EMIT_BEGIN(op, 12u + n * 4u)

@@ -87,6 +87,107 @@ static void matrix_proofs(EGLDisplay d,EGLConfig config,EGLContext context,GLuin
  glDeleteShader(gv);glDeleteProgram(program);glDeleteShader(v);glDeleteShader(f);glUseProgram(restore);assert(glGetError()==GL_NO_ERROR);
  printf("MATRIX_PROOFS %u\n",matrix_checks);
 }
+/* The original setter remains in the stream: local acceptance must agree
+ * with the independent host oracle, including ignored array tails and the
+ * installed executable surviving a peer's relink. Count cold/warm requests
+ * separately; these are not input-to-display measurements. */
+#define UNIFORM_CHECK(label,error,...) do { \
+ uint64_t cold_before=_wpk_gl_device_requests(); \
+ __VA_ARGS__;assert(glGetError()==(error));assert(glGetError()==GL_NO_ERROR); \
+ uint64_t before=_wpk_gl_device_requests(),cold=before-cold_before; \
+ for(unsigned check=0;check<4;check++){__VA_ARGS__;assert(glGetError()==(error));assert(glGetError()==GL_NO_ERROR);} \
+ uint64_t requests=_wpk_gl_device_requests()-before; \
+ printf("UNIFORM_COUNT {\"operation\":\"%s\",\"cold\":%llu,\"requests\":%llu}\n",label,(unsigned long long)cold,(unsigned long long)requests); \
+ uniform_checks++; \
+} while(0)
+static void uniform_proofs(EGLDisplay d,EGLConfig config,EGLContext context,GLuint restore,int admitted,int automatic){
+ unsigned uniform_checks=0;
+ GLuint v=shader(GL_VERTEX_SHADER,
+  "attribute vec2 p;uniform float f[3];uniform vec2 f2;uniform vec3 f3;uniform vec4 f4;"
+  "uniform int i[3];uniform ivec2 i2;uniform ivec3 i3;uniform ivec4 i4;"
+  "uniform bool b;uniform bvec2 b2;uniform bvec3 b3;uniform bvec4 b4;"
+  "void main(){float q=f[0]+f[1]+f[2]+dot(f2,vec2(1.))+dot(f3,vec3(1.))+dot(f4,vec4(1.))"
+  "+float(i[0]+i[1]+i[2])+dot(vec2(i2),vec2(1.))+dot(vec3(i3),vec3(1.))+dot(vec4(i4),vec4(1.))"
+  "+float(b)+float(any(b2))+float(any(b3))+float(any(b4));gl_Position=vec4(p,q*.001,1.);}"),
+ fshader=shader(GL_FRAGMENT_SHADER,"precision mediump float;void main(){gl_FragColor=vec4(.2,.6,.8,1.);}"),program=glCreateProgram();
+ glAttachShader(program,v);glAttachShader(program,fshader);glBindAttribLocation(program,0,"p");linked(program);glUseProgram(program);
+ const char *names[]={"f[0]","f2","f3","f4","i[0]","i2","i3","i4","b","b2","b3","b4"};GLint loc[12];
+ for(unsigned n=0;n<12;n++){loc[n]=glGetUniformLocation(program,names[n]);assert(loc[n]>=0);}
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);
+ const GLfloat fv[]={.25f,.5f,.75f,1.f};const GLint iv[]={1,2,3,4};
+ UNIFORM_CHECK("float-scalar",GL_NO_ERROR,glUniform1f(loc[0],.25f));
+ UNIFORM_CHECK("float2-scalar",GL_NO_ERROR,glUniform2f(loc[1],.25f,.5f));
+ UNIFORM_CHECK("float3-scalar",GL_NO_ERROR,glUniform3f(loc[2],.25f,.5f,.75f));
+ UNIFORM_CHECK("float4-scalar",GL_NO_ERROR,glUniform4f(loc[3],.25f,.5f,.75f,1.f));
+ UNIFORM_CHECK("float-array",GL_NO_ERROR,glUniform1fv(loc[0],3,fv));
+ UNIFORM_CHECK("float2-vector",GL_NO_ERROR,glUniform2fv(loc[1],1,fv));
+ UNIFORM_CHECK("float3-vector",GL_NO_ERROR,glUniform3fv(loc[2],1,fv));
+ UNIFORM_CHECK("float4-vector",GL_NO_ERROR,glUniform4fv(loc[3],1,fv));
+ UNIFORM_CHECK("int-scalar",GL_NO_ERROR,glUniform1i(loc[4],1));
+ UNIFORM_CHECK("int2-scalar",GL_NO_ERROR,glUniform2i(loc[5],1,2));
+ UNIFORM_CHECK("int3-scalar",GL_NO_ERROR,glUniform3i(loc[6],1,2,3));
+ UNIFORM_CHECK("int4-scalar",GL_NO_ERROR,glUniform4i(loc[7],1,2,3,4));
+ UNIFORM_CHECK("int-array",GL_NO_ERROR,glUniform1iv(loc[4],3,iv));
+ UNIFORM_CHECK("int2-vector",GL_NO_ERROR,glUniform2iv(loc[5],1,iv));
+ UNIFORM_CHECK("int3-vector",GL_NO_ERROR,glUniform3iv(loc[6],1,iv));
+ UNIFORM_CHECK("int4-vector",GL_NO_ERROR,glUniform4iv(loc[7],1,iv));
+ UNIFORM_CHECK("bool-float",GL_NO_ERROR,glUniform1f(loc[8],.25f));
+ UNIFORM_CHECK("bool2-float",GL_NO_ERROR,glUniform2fv(loc[9],1,fv));
+ UNIFORM_CHECK("bool3-int",GL_NO_ERROR,glUniform3iv(loc[10],1,iv));
+ UNIFORM_CHECK("bool4-int",GL_NO_ERROR,glUniform4i(loc[11],1,0,3,0));
+ UNIFORM_CHECK("wrong-scalar-type",GL_INVALID_OPERATION,glUniform1i(loc[0],1));
+ UNIFORM_CHECK("wrong-vector-zero-count",GL_INVALID_OPERATION,glUniform2iv(loc[1],0,NULL));
+ UNIFORM_CHECK("nonarray-zero-count",GL_NO_ERROR,glUniform2fv(loc[1],0,NULL));
+ UNIFORM_CHECK("nonarray-excess",GL_INVALID_OPERATION,glUniform2fv(loc[1],2,fv));
+ UNIFORM_CHECK("float-array-tail",GL_NO_ERROR,glUniform1fv(loc[0]+2,4,fv));
+ UNIFORM_CHECK("int-array-tail",GL_NO_ERROR,glUniform1iv(loc[4]+2,4,iv));
+ UNIFORM_CHECK("missing-zero-count",GL_INVALID_OPERATION,glUniform4iv(1000000,0,NULL));
+ UNIFORM_CHECK("ignored-pointer",GL_NO_ERROR,glUniform4iv(-1,1,(const GLint *)(uintptr_t)1));
+ GLfloat floats[4]={0};GLint ints[4]={0};glGetUniformfv(program,loc[3],floats);assert(!memcmp(floats,fv,sizeof fv));
+ glGetUniformiv(program,loc[7],ints);assert(!memcmp(ints,iv,sizeof iv));
+ glGetUniformiv(program,loc[11],ints);assert(ints[0]==1&&ints[1]==0&&ints[2]==1&&ints[3]==0);
+ glGetUniformfv(program,loc[0]+2,floats);assert(floats[0]==.25f);
+ glGetUniformiv(program,loc[4]+2,ints);assert(ints[0]==1&&glGetError()==GL_NO_ERROR);
+ glClear(GL_COLOR_BUFFER_BIT);glDrawArrays(GL_TRIANGLES,0,3);unsigned char pixel[4];glReadPixels(8,8,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
+ assert(pixel[0]==51&&pixel[1]==153&&pixel[2]==204&&pixel[3]==255&&glGetError()==GL_NO_ERROR);
+ GLuint sv=shader(GL_VERTEX_SHADER,"attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}"),
+ sf=shader(GL_FRAGMENT_SHADER,"precision mediump float;uniform sampler2D t[3];void main(){gl_FragColor=(texture2D(t[0],vec2(.5))+texture2D(t[1],vec2(.5))+texture2D(t[2],vec2(.5)))/3.;}"),sp=glCreateProgram();
+ glAttachShader(sp,sv);glAttachShader(sp,sf);glBindAttribLocation(sp,0,"p");linked(sp);glUseProgram(sp);GLint t=glGetUniformLocation(sp,"t[0]");assert(t>=0);
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);
+ UNIFORM_CHECK("sampler-scalar-minimum",GL_NO_ERROR,glUniform1i(t,7));
+ const GLint units[]={0,0,0,1000000};
+ UNIFORM_CHECK("sampler-array-tail",GL_NO_ERROR,glUniform1iv(t,4,units));
+ UNIFORM_CHECK("sampler-wrong-type",GL_INVALID_OPERATION,glUniform1f(t,0));
+ // Eight is outside the guaranteed ES2 minimum until the existing explicit
+ // active-texture path has learned the actual renderer limit. Keep the
+ // unknown-limit path honest rather than guessing or querying per setter.
+ uint64_t before=_wpk_gl_device_requests();glUniform1i(t,8);assert(glGetError()==GL_NO_ERROR);
+ if(admitted)assert(_wpk_gl_device_requests()>before);
+ glActiveTexture(GL_TEXTURE0);GLint limit=0;glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,&limit);assert(limit>8&&glGetError()==GL_NO_ERROR);
+ UNIFORM_CHECK("sampler-known-high-unit",GL_NO_ERROR,glUniform1i(t,8));
+ UNIFORM_CHECK("sampler-known-negative",GL_INVALID_VALUE,glUniform1i(t,-1));
+ UNIFORM_CHECK("sampler-known-limit",GL_INVALID_VALUE,glUniform1i(t,limit));
+ const GLint rejected[]={0,limit,0};
+ UNIFORM_CHECK("sampler-array-invalid",GL_INVALID_VALUE,glUniform1iv(t,3,rejected));
+ glGetUniformiv(sp,t,ints);assert(ints[0]==8&&glGetError()==GL_NO_ERROR); // Rejection changed no prefix.
+ glUniform1iv(t,3,units);glClear(GL_COLOR_BUFFER_BIT);glDrawArrays(GL_TRIANGLES,0,3);glReadPixels(8,8,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
+ assert(pixel[0]==255&&pixel[1]==255&&pixel[2]==255&&pixel[3]==255&&glGetError()==GL_NO_ERROR);
+ GLuint generation=glCreateProgram(),gv=shader(GL_VERTEX_SHADER,"attribute vec2 p;uniform float u;void main(){gl_Position=vec4(p,u,1.);}");
+ glAttachShader(generation,gv);glAttachShader(generation,fshader);glBindAttribLocation(generation,0,"p");linked(generation);glUseProgram(generation);GLint u=glGetUniformLocation(generation,"u");assert(u==0);
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);
+ UNIFORM_CHECK("float-old-generation",GL_NO_ERROR,glUniform1f(u,.25f));
+ struct matrix_peer peer={d,config,context,generation,gv,0};pthread_t thread;assert(!pthread_create(&thread,NULL,matrix_relink,&peer)&&!pthread_join(thread,NULL));
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);
+ UNIFORM_CHECK("float-peer-relink",GL_NO_ERROR,glUniform1f(u,.25f));
+ glUseProgram(generation);assert(glGetError()==GL_NO_ERROR);
+ UNIFORM_CHECK("float-new-generation-mismatch",GL_INVALID_OPERATION,glUniform1f(u,.25f));
+ glUseProgram(0);assert(glGetError()==GL_NO_ERROR);
+ UNIFORM_CHECK("float-no-program",GL_INVALID_OPERATION,glUniform1f(u,.25f));
+ UNIFORM_CHECK("ignored-no-program",GL_INVALID_OPERATION,glUniform1i(-1,7));
+ glDeleteProgram(generation);glDeleteShader(gv);glDeleteProgram(sp);glDeleteShader(sv);glDeleteShader(sf);glDeleteProgram(program);glDeleteShader(v);glDeleteShader(fshader);glUseProgram(restore);
+ if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);
+ printf("UNIFORM_PROOFS %u\n",uniform_checks);fflush(stdout);
+}
 /* Read-only rejection cannot revoke independently owned program names.
  * Both standalone requests and accepted-prefix/query-rejection receipts keep
  * exact errors and untouched outputs. Checked mode remains the control. */
@@ -169,6 +270,7 @@ int main(int argc,char **argv){
  MEASURE("attribute-restored-default",glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL));
  glClear(GL_COLOR_BUFFER_BIT);glDrawArrays(GL_TRIANGLES,0,3);unsigned char result[4];glReadPixels(8,8,1,1,GL_RGBA,GL_UNSIGNED_BYTE,result);assert(result[0]==51&&result[1]==153&&result[2]==204&&result[3]==255);assert(glGetError()==GL_NO_ERROR);
  matrix_proofs(d,config,ctx,program,automatic||!strcmp(argv[1],"admitted"),automatic);
+ uniform_proofs(d,config,ctx,program,automatic||!strcmp(argv[1],"admitted"),automatic);
  readonly_query_proofs(program,automatic||!strcmp(argv[1],"admitted"));
  glBindVertexArray(0);glDeleteVertexArrays(1,&vao);glUseProgram(0);glDeleteProgram(program);glDeleteShader(v);glDeleteShader(f);glDeleteBuffers(3,buffers);glDeleteTextures(1,&texture);assert(glGetError()==GL_NO_ERROR);
  assert(eglMakeCurrent(d,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT)&&eglDestroyContext(d,ctx)&&eglDestroySurface(d,surface)&&eglTerminate(d)&&eglReleaseThread());

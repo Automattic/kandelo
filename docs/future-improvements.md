@@ -1233,6 +1233,21 @@ hot families, full stage gates and the complete normal-built preview
 remain required; B4's once-per-link public interface cache is still
 separate work.
 
+R395 extends that exact-generation proof to small scalar/vector/boolean
+and sampler setters. All36 GPU modes pass on three engines and both widths,
+including production and fatal audit, with40 correctness/request scenarios
+per mode. Matched old/new admitted wasm32 production controls keep the same
+engine/kernel and original14 family records:38 scenarios change four warmed
+requests to zero and two already-local cases remain zero. The complete
+40-scenario cold totals increase39 to50 requests on each engine; cold work
+is not hidden. Existing native487, graphics2193/88, Node18/6, ABI and evidence709
+checks pass. The full host compiler still fails the identical24 diagnostics.
+This is an SDK operation-count result against intermediate d099, not current
+application or native-feel evidence; remaining B1 draw/attribute authority,
+conformance, matched measurements and complete-preview acceptance remain open.
+Exact scripts, frozen sources, cold/warm records and comparisons are in
+`.context/graphics-uniform-proof-r395/`.
+
 C publication must also precede EGL lifetime mutations made without a current
 GL binding. The optional0x3c lifecycle barrier now supplies checked metadata-only
 authority through a live owned public context; ordinary0x3b current-thread

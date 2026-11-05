@@ -51,6 +51,63 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Scalar/vector uniform proof and selected conformance, 2026-11-05
+
+B1 now uses its existing immutable-generation signature cache for small
+scalar/vector/boolean and sampler setters as well as matrices. Original
+commands still reach the independent host oracle and ordered error audit.
+Types, boolean-compatible setters, nonarray counts, zero counts, array tails,
+missing locations and installed-generation authority are checked locally.
+Sampler validation reads only the accepted array prefix. It uses an already
+learned texture-unit limit, or proves only units0–7 from the ES2 minimum;
+unknown-limit values outside that range retain host observation without
+adding a query to setters. Large staged uploads and other unproved state
+retain honest drains. This adds no wire/snapshot/version change, does not
+complete B4's public interface cache, and does not establish complete B1.
+
+R395's corrected before control completes all40 value/error/render scenarios
+on each engine but fails the warmed-zero expectation:38 scenarios each need
+four requests for four warmed updates, while two ignored-location cases are
+already local. The original14 hot-family records and all19 matrix/12 rejected
+query controls remain. The first two probe revisions retained fixture defects
+(early request assertion and failure to restore explicit journal admission)
+and are not the matched before evidence. The corrected R3 control admits
+the intended installed generation and exits the guest successfully on all
+engines; only the new browser request expectation fails.
+
+| Exact supervised command / job | Result and scope |
+| --- | --- |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-uniform-proof-r395/before-r3.sh`; `graphics-uniform-before-r395-r3-1105-121929-920f`, port6156 | Three expected browser failures against the old SDK; all40 guest correctness scenarios complete on all three engines, native owners retire and warm counts are recorded |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-uniform-proof-r395/build.sh`; `graphics-uniform-build-r395-1105-122050-c18c` | PASS1m57:487 existing native C/UBSan controls, normal SDK32/64 rebuild, ABI and evidence709 checks. One producer; disk checked first |
+| `scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-uniform-proof-r395/after.sh`; `graphics-uniform-after-r395-1105-122408-66ef`, port6157 | Overall FAILED2m26 solely identical24 full compiler diagnostics. Graphics2193/88, Node18/6 and all36 browser modes pass: three engines, both widths, checked/admitted/automatic and production/fatal audit. Each has40 uniform,19 matrix and12 query scenarios, returned values, pixels, native-live0 and no audit divergence. Inputs/products remain frozen |
+
+For each matched admitted wasm32 production cohort, complete warm totals for
+four calls per scenario change152 to0 device requests. The complete
+40-scenario cold totals increase39 to50; first use remains visible. The
+original14 family records and engine/kernel identities match. All24 admitted/
+automatic candidate cohorts have zero warmed requests in these40 scenarios.
+These are operation counts against intermediate d099, not application
+latency, frame pacing, main comparison or native-feel acceptance. Full B1
+hot-family/draw work, actual application measurements and all stage/final
+gates remain. Frozen sources, products and exact records are retained under
+`.context/graphics-uniform-proof-r395/`.
+
+Separately, normal CTS provisioning R393 succeeds6m39 after R392's strict
+SourceOnly refusal executes no cases. Frozen runtime c635's R394 succeeds
+18m19: each engine has633 Pass/9 NotSupported for642 GLES2 negative-API/state-
+query cases and1400 Pass/124 NotSupported for1524 EGL negative-API/sharing/image
+cases. All6498 planned outcomes are accounted with zero Fail/Crash/Timeout/
+Missing. Per-case comparison against historical source0cc0fa3c5b has no Pass
+regressions: Chromium/WebKit GLES2 statuses match, two Firefox failures now
+pass, and each EGL engine has4 old NotSupported,7 Fail and111 Missing results
+now passing. WebKit's historical TSV is reconstructed through canonical
+accounting from retained partial-run records; its old full job is not claimed
+complete. These changes span many intermediate fixes and are not attributed
+solely to the latest one. R394 predates R395 and is not new-uniform, full-suite
+or fatal-audit evidence. Exact commands, source/product hashes, case TSVs and
+comparison are under `.context/graphics-cts-current-r394-runs/` and
+`.context/graphics-cts-package-r393/`.
+
 ## Desktop boot-input readiness and combined-source check, 2026-11-05
 
 Desktop fixtures now wait for the machine's actual Running state and the
