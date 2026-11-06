@@ -214,6 +214,52 @@ normal image assembly; coherent final publication is still pending.
 No speed, physical-memory plateau, WebKit kill fix, complete Go/POSIX
 conformance, or production-readiness claim follows from these checks.
 
+### Declared-tool cohort published — 2026-11-06
+
+The retry `frankenphp-isolated-python-cohort-1106-104015-9736` succeeds
+in 20m36s: all 184 nodes, all 11 products, 172 cached nodes, 12 newly
+published nodes, and normal consumer admission. No compiler or upstream
+package dependency patch was needed. Result:
+`.context/frankenphp-declared-rss-cohort-result.json`.
+
+The rebuilt WordPress image remains revision 37 and is 79,342,248 bytes,
+SHA-256 `389ec37e63422e400b7c683031eb803ffb1c975d8242606f4aff49c1bbdeeff5`.
+Its kernel SHA-256 is
+`bfdf6ce58bbf9a93e769d0262d38d77ebfefb733ba1c4b2cf9ae9ea59029f1cf`.
+These identities belong to the new declared-tool cohort; the existing
+port-5417 preview still pins the preceding `79c47b29` image. Full rebuilt
+app checks and a new preview remain pending.
+
+The post-terminal-wake sample job
+`terminal-wake-go-package-all-hosts-1106-110055-f9fe` passes in 44 seconds:
+normal kernel/Go-25 publication, C VFS launcher on Node, and all three
+browser launch cases. Node records expected output, zero exit, empty stderr
+and diagnostics, and fork count zero. Its narrow browser fixture retains
+the known unrelated app pre-bundle warning. Evidence:
+`.context/go-package-final-AC4WWv/`.
+
+The complete required gate `./run.sh test browser-memory` is running as
+`frankenphp-terminal-wake-browser-memory-1106-110233-6159`, owning port
+5447. A separate normal cached benchmark projection preserves the full
+candidate cohort without relying on the default browser demand's subset.
+Neither pending job is a performance result.
+
+### Memory diagnostic controls prepared — 2026-11-06
+
+The standalone candidate benchmark projection completes through normal cache
+admission in 9m38s (`go-candidate-benchmark-cached-projection-1106-110429-e338`).
+Both baseline and candidate artifact cohorts are available; the alternating
+nine-suite Node/Chromium measurements are still unrun.
+
+The browser-host diagnostic accepts `KANDELO_FRANKENPHP_NUM_THREADS` while
+retaining six by default. It configures the real Caddyfile or classic dinit
+environment and requires actual Caddy startup logs to report the requested
+pool size. This supports a controlled native-memory investigation; it does
+not change the shipped defaults or establish a memory fix. The new pool
+control awaits a browser run after the required lifecycle gate. Native
+sampling will retain the owned browser process tree outside the page, with
+guest `/proc` thread counts and module/linear-memory snapshots alongside it.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task.
 

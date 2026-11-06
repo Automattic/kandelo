@@ -12,6 +12,10 @@ const churnRequests = Number(process.env.KANDELO_FRANKENPHP_CHURN_REQUESTS ?? "0
 const editorBurstRounds = Number(process.env.KANDELO_FRANKENPHP_EDITOR_BURST_ROUNDS ?? "0");
 const parallelEditorRequests = process.env.KANDELO_FRANKENPHP_PARALLEL_EDITOR_REQUESTS === "1";
 const memoryDiagnostics = process.env.KANDELO_FRANKENPHP_MEMORY_DIAGNOSTICS === "1";
+const numThreads = Number(process.env.KANDELO_FRANKENPHP_NUM_THREADS ?? "6");
+if (!Number.isSafeInteger(numThreads) || numThreads < 1 || numThreads > 32) {
+  throw new Error("KANDELO_FRANKENPHP_NUM_THREADS must be an integer from 1 to 32");
+}
 const soakSeconds = Number(process.env.KANDELO_FRANKENPHP_SOAK_SECONDS ?? "0");
 if (!Number.isSafeInteger(soakSeconds) || soakSeconds < 0 || soakSeconds > 600) {
   throw new Error("KANDELO_FRANKENPHP_SOAK_SECONDS must be an integer from 0 to 600");
@@ -90,11 +94,11 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     await page.exposeFunction("recordFrankenPhpStage", (stage: string, memory?: unknown) => {
       record(`stage: ${stage}`);
       if (memory !== undefined) appendFileSync(memoryEvidencePath,
-        JSON.stringify({ recordedAt: new Date().toISOString(), stage, memory }) + "\n");
+        JSON.stringify({ recordedAt: new Date().toISOString(), stage, configuredPhpThreads: numThreads, memory }) + "\n");
     });
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds }) => {
+    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, numThreads }) => {
       let readMemory: (() => Promise<unknown>) | undefined;
       const stage = async (message: string) => {
         let snapshot: unknown;
@@ -156,6 +160,19 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
           return { kernelBytes: kernelPages * 65536, processes, statuses, modules };
         };
         await stage("kernel initialized");
+        if (numThreads !== 6) {
+          // Measure PHP pool cost through ordinary service configuration.
+          // Caddy owns its pool in the Caddyfile, classic in dinit's env file.
+          const path = serviceName === "frankenphp-caddy"
+            ? "/etc/caddy/Caddyfile" : "/etc/dinit.d/env-frankenphp";
+          const bytes = await kernel.readFileFromVfs(path);
+          if (!bytes) throw new Error(`Missing service pool configuration: ${path}`);
+          const config = decoder.decode(bytes);
+          const setting = serviceName === "frankenphp-caddy" ? /\bnum_threads 6\b/ : /\bFRANKENPHP_NUM_THREADS=6\b/;
+          if (!setting.test(config)) throw new Error(`Unexpected service pool configuration: ${path}`);
+          await kernel.writeFileToVfs(path, new TextEncoder().encode(config.replace(setting,
+            serviceName === "frankenphp-caddy" ? `num_threads ${numThreads}` : `FRANKENPHP_NUM_THREADS=${numThreads}`)));
+        }
         const template = await kernel.readFileFromVfs("/etc/wp-config-template.php");
         if (!template) throw new Error("WordPress config template missing");
         await kernel.writeFileToVfs("/var/www/html/wp-config.php", new TextEncoder().encode(
@@ -180,7 +197,7 @@ echo json_encode([
           env: [
             "HOME=/root", "TMPDIR=/tmp", "TERM=xterm-256color",
             "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
-            "WP_APP_PATH=/", "WP_PROTO=http", "FRANKENPHP_NUM_THREADS=6", "FRANKENPHP_LISTEN=:8080",
+            "WP_APP_PATH=/", "WP_PROTO=http", `FRANKENPHP_NUM_THREADS=${numThreads}`, "FRANKENPHP_LISTEN=:8080",
           ],
           cwd: "/",
         });
@@ -389,7 +406,7 @@ echo json_encode([
       }
     }, {
       imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName,
-      memoryDiagnostics, soakSeconds,
+      memoryDiagnostics, soakSeconds, numThreads,
       gracefulProbeUrl: new URL(`/@fs/${resolve(repoRoot, "host/test/support/frankenphp-graceful.ts")}`, baseURL!).href,
       runtimeUrlsModuleUrl: new URL("/lib/init/image-owned-runtime-urls.ts", baseURL!).href,
     }).catch(async error => {
@@ -426,6 +443,14 @@ echo json_encode([
     if (soakSeconds > 0) expect(result.soakRequests).toBeGreaterThan(0);
     if (serviceName === "frankenphp-caddy") {
       expect(result.restarted).toBe(true);
+      const startups = result.serviceLog.split("\n").flatMap((line: string) => {
+        try {
+          const event = JSON.parse(line);
+          return event.logger === "frankenphp" && typeof event.num_threads === "number" ? [event] : [];
+        } catch { return []; }
+      });
+      expect(startups.length).toBeGreaterThan(0);
+      expect(startups.every(event => event.num_threads === numThreads)).toBe(true);
     }
     expect(result.graceful).toMatchObject({ listenerClosed: true, status: 200, serverExit: 0, stopExit: 0 });
     expect(result.serviceLog).toContain(serviceName === "frankenphp-caddy" ? '"num_threads":6' : "num_threads=6");
