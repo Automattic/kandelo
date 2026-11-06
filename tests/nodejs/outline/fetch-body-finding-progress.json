@@ -1,0 +1,80 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/web.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "web",
+      "streams",
+      "values"
+    ],
+    "scope": "Response Body/MIME/multipart consumption slice only; public Request/Fetch and dependent runtime obligations remain open"
+  },
+  "sourceImplemented": [
+    "Pinned Body consumption/mixin, real multipart and URL-encoded FormData/File parsing and MIME/charset handling",
+    "Live private Response body/header-list state, genuine textStream/decoder pipeline and pinned method/brand/error policy",
+    "Nine whole pinned source files/seven unchanged sections, additive normal input/assembly/bootstrap over current CJS/SQLite/Locks"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-body156-source-r1/report.json",
+    "sha256": "3e1a17d74922ef8ec184c15c6be33d1870cbf0ff9bd5a620d03325099f58b984",
+    "guardedInputs": 729,
+    "scope": "Current combined pinned Response Body/MIME/multipart algorithms;14fresh native component groups with unchanged case assertions and explicit native stream/encoding dependencies. No native binding/product build or guest/four-host acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-body156-affected-r1.json",
+    "sha256": "68c756f3e5269bca5ce89c14529ab87b66d4849b8e84ba17ece50d4ab97ff282",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package-source checks within46test run;32web components separate"
+  },
+  "nativeDifferential": {
+    "report": ".context/node26-body156-controls-r1/report.json",
+    "sha256": "7d04b103645af8e30e93b46c64014a296a4337517c191239cef15f931368f6c1",
+    "passed": 14,
+    "failed": 0,
+    "scope": "Native Web Streams/UTF8/clone-policy plus actual candidate File/FormData/Headers/Body owners; not guest backend conformance"
+  },
+  "affectedWebComponents": {
+    "report": ".context/node26-body156-affected-r1.json",
+    "sha256": "68c756f3e5269bca5ce89c14529ab87b66d4849b8e84ba17ece50d4ab97ff282",
+    "passed": 32,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing Response/File/FormData/Headers tests over explicit current source/native dependencies; assertions unchanged"
+  },
+  "compositionReview": {
+    "report": ".context/body-x509-integration-153/report.json",
+    "sha256": "be3c3e125a0c063f6e85960a1ebe7dc34b4ce680194607c223eea921d19aa629",
+    "reused": true,
+    "scope": "Prior additive current153 Body/X509 source/staging review; current156Body source checked separately, no original compile defect claimed"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/fetch-body-owner-agent/component/runs.json",
+      "sha256": "3172a163372313044ae80396d57caaad5b25a7d8a49120a1adf3f5cb72dbeea5",
+      "kind": "historical-missing-formData",
+      "reason": "Before candidate fails actual missing method; unchanged assertions preserved"
+    },
+    {
+      "report": ".context/fetch-body-owner-agent/patch-check-initial.log",
+      "sha256": "3a3ebd7ae2d16c6746cccf75b5941ed4579e5235da1c25081f7dd3d21d3e68a5",
+      "kind": "initial-source-composition",
+      "reason": "Additive source/shared composition failures retained before corrected metadata wiring"
+    }
+  ],
+  "remaining": [
+    "Request/extractBody/FormData BodyInit, Response factories, full Fetch transport/policy and remaining Body/stream/WebIDL/global behavior",
+    "Complete encoding repertoire, clone/transfer, actual guest stream/decoder and network/crypto dependencies",
+    "Actual identified-artifact four-host conformance; no exported/imported algorithm counts as passing compatibility"
+  ],
+  "at": "2026-11-06T18:49:29.858659+00:00",
+  "recipeRevision": 156,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

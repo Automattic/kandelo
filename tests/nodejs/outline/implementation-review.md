@@ -1,5 +1,10 @@
 # Broad implementation review
 
+Source156 integrates actual Response Body consumption/MIME/multipart owners.
+Fourteen native comparison groups,32 existing web tests and14 package-source
+checks pass. Request/Fetch/backend and current four-host gaps remain open.
+See [Body integration scope](fetch-body-integration.md).
+
 Source155 integrates actual deferred Locks execution ownership. Three focused
 native/component controls and fourteen package-source checks pass. Native
 termination/query-order differences and current four-host obligations remain

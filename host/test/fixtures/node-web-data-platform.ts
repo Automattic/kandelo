@@ -34,7 +34,7 @@ export function createWebDataPlatform() {
   const formdata = factories.formdata({ Blob: body.Blob, File: file.File,
     ReadableStream: streams.ReadableStream, URL, URLSearchParams, AbortSignal, MessagePort,
     values, assert, util, crypto, clone });
-  return { Blob: body.Blob, File: file.File, FormData: formdata.FormData, Headers: formdata.headers.Headers, headerInternals: formdata.headers, cloneOwner: clone, modes,
+  return { Blob: body.Blob, File: file.File, FormData: formdata.FormData, Headers: formdata.headers.Headers, headerInternals: formdata.headers, formDataInternals: formdata, cloneOwner: clone, modes,
     clonePayload(value: any) {
       const payload = value[clone.protocol.kClone]();
       const copy = structuredClone(payload.data);

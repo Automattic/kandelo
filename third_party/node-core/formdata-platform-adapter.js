@@ -36,5 +36,5 @@ function _createNodeFormDataPlatform(platform) {
         catch (error) { modules.delete(id); throw error; }
         return module.exports;
     }
-    return { ...require('formdata'), headers: require('headers'), get messageEvents() { return require('websocketEvents'); } };
+    return { ...require('formdata'), headers: require('headers'), webidl: require('webidl').webidl, get messageEvents() { return require('websocketEvents'); } };
 }

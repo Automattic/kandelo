@@ -1,0 +1,95 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "body": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/web/fetch/body.js",
+      "upstreamPath": "deps/undici/src/lib/web/fetch/body.js",
+      "sha256": "d14c9cf426f78a0ef5f9ea07e896e777da55d545b032120fd81f5e2ed06b9352"
+    },
+    "multipart": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/web/fetch/formdata-parser.js",
+      "upstreamPath": "deps/undici/src/lib/web/fetch/formdata-parser.js",
+      "sha256": "51c6f86a8389d0db242c8d6f82f70c1f7b5c35373044ecaff69d9ab5331f22a0"
+    },
+    "dataURL": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/web/fetch/data-url.js",
+      "upstreamPath": "deps/undici/src/lib/web/fetch/data-url.js",
+      "sha256": "9f820a24256840c477d8f0630f9fae813f826e7644355933bb8ab66a59058a34"
+    },
+    "infra": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/web/infra/index.js",
+      "upstreamPath": "deps/undici/src/lib/web/infra/index.js",
+      "sha256": "ea89dc494e2c8cce88882ec7e9514d8df2883dca71e54f42f9ca45ad8db12d52"
+    },
+    "encoding": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/encoding/index.js",
+      "upstreamPath": "deps/undici/src/lib/encoding/index.js",
+      "sha256": "7ea8fe81ff3c9d054f3ef8bb67bfe260b2e930c51d5d5563ca2ef19a218a5909"
+    },
+    "utilSource": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/web/fetch/util.js",
+      "upstreamPath": "deps/undici/src/lib/web/fetch/util.js",
+      "sha256": "54b66da9dcf0e52fe761700bc5008b4bd2cb7ffe4490f6634c59ce7208505b44"
+    },
+    "coreUtilSource": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/core/util.js",
+      "upstreamPath": "deps/undici/src/lib/core/util.js",
+      "sha256": "f66443ee69b3ae34ea7ebfab4df71a0b87ac990769aaf76b278739dee8aedb7c"
+    },
+    "tree": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/core/tree.js",
+      "upstreamPath": "deps/undici/src/lib/core/tree.js",
+      "sha256": "c9fc9938718f33d77a6ed1abac5e564531ac9f9436cde2867243d50cd6c0b4e8"
+    },
+    "coreConstants": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/core/constants.js",
+      "upstreamPath": "deps/undici/src/lib/core/constants.js",
+      "sha256": "7a27b3232c6157c58942adad922bc2af060e49201ee49d205a829973dec92063"
+    }
+  },
+  "sections": {
+    "bodyMixin": {
+      "source": "body",
+      "start": "function bodyMixinMethods (",
+      "length": 8167,
+      "sha256": "e4db9fdbea923407ddd70250f5522f68a60c065b820943d28cf9d9fc69eb3878"
+    },
+    "fullyReadBody": {
+      "source": "utilSource",
+      "start": "function fullyReadBody (",
+      "length": 884,
+      "sha256": "9f7e3e41b55d30b765f5a97bae6398ff7fd1c3a11afa0530ba43132ad04bce94"
+    },
+    "readAllBytes": {
+      "source": "utilSource",
+      "start": "async function readAllBytes (",
+      "length": 863,
+      "sha256": "8d8c78acdef9db3728d80021ef89a3c16f66fba033b4573bd1eb2550c89b74a2"
+    },
+    "extractMimeType": {
+      "source": "utilSource",
+      "start": "function extractMimeType (",
+      "length": 1827,
+      "sha256": "b2c5a072d28d268418d7f5d4339cf38ef0d0b75f085d7d5ed94b9376c8415c94"
+    },
+    "gettingDecodingSplitting": {
+      "source": "utilSource",
+      "start": "function gettingDecodingSplitting (",
+      "length": 2094,
+      "sha256": "a096bafe54fcc8e66f4f72e22c1e64a247118e89a1676bdad8f5d040e2bfe01a"
+    },
+    "getDecodeSplit": {
+      "source": "utilSource",
+      "start": "function getDecodeSplit (",
+      "length": 338,
+      "sha256": "987b789fc43e7464c9a44adda3fb99cd7f3e4e8ec65775d9163b4d743fd52392"
+    },
+    "bufferToLowerCasedHeaderName": {
+      "source": "coreUtilSource",
+      "start": "function bufferToLowerCasedHeaderName (",
+      "length": 121,
+      "sha256": "583c6be8f5c70851d1bd6aa0064f3668c986114472ac9b2ae04a1f9bf830d004"
+    }
+  }
+}

@@ -37990,7 +37990,7 @@ module.exports = { iteratorMixin, isValidHeaderName, isValidHeaderValue, setHead
         catch (error) { modules.delete(id); throw error; }
         return module.exports;
     }
-    return { ...require('formdata'), headers: require('headers'), get messageEvents() { return require('websocketEvents'); } };
+    return { ...require('formdata'), headers: require('headers'), webidl: require('webidl').webidl, get messageEvents() { return require('websocketEvents'); } };
 }
 
 // Pinned filesystem utilities and Stats over the guest's actual stat record.
@@ -109383,4 +109383,2291 @@ function unwatchFile(filename, listener) {
 }
 
     return { watchFile, unwatchFile, watchers };
+}
+// Pinned Undici Body consumers over the existing actual stream, header-list,
+// FormData and File owners. Extraction/transport remain separate consumers.
+function _createNodeFetchBodyPlatform(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { SafeMap, ObjectPrototypeHasOwnProperty, Error } = primordials;
+    const { Buffer, Blob, File, URLSearchParams, TextEncoder, TextDecoder, TextDecoderStream } = platform;
+    const { ReadableStream } = platform.stream.web;
+    const factories = {
+        __proto__: null,
+        "multipart": function(module, exports, require) {
+'use strict'
+
+const { bufferToLowerCasedHeaderName } = require('../../core/util')
+const { HTTP_TOKEN_CODEPOINTS } = require('./data-url')
+const { makeEntry } = require('./formdata')
+const { webidl } = require('../webidl')
+const assert = require('node:assert')
+const { isomorphicDecode } = require('../infra')
+
+const dd = Buffer.from('--')
+const decoder = new TextDecoder()
+const decoderIgnoreBOM = new TextDecoder('utf-8', { ignoreBOM: true })
+
+/**
+ * @param {string} chars
+ */
+function isAsciiString (chars) {
+  for (let i = 0; i < chars.length; ++i) {
+    if ((chars.charCodeAt(i) & ~0x7F) !== 0) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * @see https://andreubotella.github.io/multipart-form-data/#multipart-form-data-boundary
+ * @param {string} boundary
+ */
+function validateBoundary (boundary) {
+  const length = boundary.length
+
+  // - its length is greater or equal to 27 and lesser or equal to 70, and
+  if (length < 27 || length > 70) {
+    return false
+  }
+
+  // - it is composed by bytes in the ranges 0x30 to 0x39, 0x41 to 0x5A, or
+  //   0x61 to 0x7A, inclusive (ASCII alphanumeric), or which are 0x27 ('),
+  //   0x2D (-) or 0x5F (_).
+  for (let i = 0; i < length; ++i) {
+    const cp = boundary.charCodeAt(i)
+
+    if (!(
+      (cp >= 0x30 && cp <= 0x39) ||
+      (cp >= 0x41 && cp <= 0x5a) ||
+      (cp >= 0x61 && cp <= 0x7a) ||
+      cp === 0x27 ||
+      cp === 0x2d ||
+      cp === 0x5f
+    )) {
+      return false
+    }
+  }
+
+  return true
+}
+
+/**
+ * @see https://andreubotella.github.io/multipart-form-data/#multipart-form-data-parser
+ * @param {Buffer} input
+ * @param {ReturnType<import('./data-url')['parseMIMEType']>} mimeType
+ */
+function multipartFormDataParser (input, mimeType) {
+  // 1. Assert: mimeType’s essence is "multipart/form-data".
+  assert(mimeType !== 'failure' && mimeType.essence === 'multipart/form-data')
+
+  const boundaryString = mimeType.parameters.get('boundary')
+
+  // 2. If mimeType’s parameters["boundary"] does not exist, return failure.
+  //    Otherwise, let boundary be the result of UTF-8 decoding mimeType’s
+  //    parameters["boundary"].
+  if (boundaryString === undefined) {
+    throw parsingError('missing boundary in content-type header')
+  }
+
+  const boundary = Buffer.from(`--${boundaryString}`, 'utf8')
+
+  // 3. Let entry list be an empty entry list.
+  const entryList = []
+
+  // 4. Let position be a pointer to a byte in input, initially pointing at
+  //    the first byte.
+  const position = { position: 0 }
+
+  // Note: Per RFC 2046 Section 5.1.1, we must ignore anything before the
+  // first boundary delimiter line (preamble). Search for the first boundary.
+  const firstBoundaryIndex = input.indexOf(boundary)
+
+  if (firstBoundaryIndex === -1) {
+    throw parsingError('no boundary found in multipart body')
+  }
+
+  // Start parsing from the first boundary, ignoring any preamble
+  position.position = firstBoundaryIndex
+
+  // 5. While true:
+  while (true) {
+    // 5.1. If position points to a sequence of bytes starting with 0x2D 0x2D
+    //      (`--`) followed by boundary, advance position by 2 + the length of
+    //      boundary. Otherwise, return failure.
+    // Note: boundary is padded with 2 dashes already, no need to add 2.
+    if (input.subarray(position.position, position.position + boundary.length).equals(boundary)) {
+      position.position += boundary.length
+    } else {
+      throw parsingError('expected a value starting with -- and the boundary')
+    }
+
+    // 5.2. If position points to the sequence of bytes 0x2D 0x2D 0x0D 0x0A
+    //      (`--` followed by CR LF) followed by the end of input, return entry list.
+    // Note: Per RFC 2046 Section 5.1.1, we must ignore anything after the
+    // final boundary delimiter (epilogue). Check for -- or --CRLF and return
+    // regardless of what follows.
+    if (bufferStartsWith(input, dd, position)) {
+      // Found closing boundary delimiter (--), ignore any epilogue
+      return entryList
+    }
+
+    // 5.3. If position does not point to a sequence of bytes starting with 0x0D
+    //      0x0A (CR LF), return failure.
+    if (input[position.position] !== 0x0d || input[position.position + 1] !== 0x0a) {
+      throw parsingError('expected CRLF')
+    }
+
+    // 5.4. Advance position by 2. (This skips past the newline.)
+    position.position += 2
+
+    // 5.5. Let name, filename and contentType be the result of parsing
+    //      multipart/form-data headers on input and position, if the result
+    //      is not failure. Otherwise, return failure.
+    const result = parseMultipartFormDataHeaders(input, position)
+
+    let { name, filename, contentType, encoding } = result
+
+    // 5.6. Advance position by 2. (This skips past the empty line that marks
+    //      the end of the headers.)
+    position.position += 2
+
+    // 5.7. Let body be the empty byte sequence.
+    let body
+
+    // 5.8. Body loop: While position is not past the end of input:
+    // TODO: the steps here are completely wrong
+    {
+      const boundaryIndex = input.indexOf(boundary.subarray(2), position.position)
+
+      if (boundaryIndex === -1) {
+        throw parsingError('expected boundary after body')
+      }
+
+      body = input.subarray(position.position, boundaryIndex - 4)
+
+      position.position += body.length
+
+      // Note: position must be advanced by the body's length before being
+      // decoded, otherwise the parsing will fail.
+      if (encoding === 'base64') {
+        body = Buffer.from(body.toString(), 'base64')
+      }
+    }
+
+    // 5.9. If position does not point to a sequence of bytes starting with
+    //      0x0D 0x0A (CR LF), return failure. Otherwise, advance position by 2.
+    if (input[position.position] !== 0x0d || input[position.position + 1] !== 0x0a) {
+      throw parsingError('expected CRLF')
+    } else {
+      position.position += 2
+    }
+
+    // 5.10. If filename is not null:
+    let value
+
+    if (filename !== null) {
+      // 5.10.1. If contentType is null, set contentType to "text/plain".
+      contentType ??= 'text/plain'
+
+      // 5.10.2. If contentType is not an ASCII string, set contentType to the empty string.
+
+      // Note: `buffer.isAscii` can be used at zero-cost, but converting a string to a buffer is a high overhead.
+      // Content-Type is a relatively small string, so it is faster to use `String#charCodeAt`.
+      if (!isAsciiString(contentType)) {
+        contentType = ''
+      }
+
+      // 5.10.3. Let value be a new File object with name filename, type contentType, and body body.
+      value = new File([body], filename, { type: contentType })
+    } else {
+      // 5.11. Otherwise:
+
+      // 5.11.1. Let value be the UTF-8 decoding without BOM of body.
+      value = decoderIgnoreBOM.decode(Buffer.from(body))
+    }
+
+    // 5.12. Assert: name is a scalar value string and value is either a scalar value string or a File object.
+    assert(webidl.is.USVString(name))
+    assert((typeof value === 'string' && webidl.is.USVString(value)) || webidl.is.File(value))
+
+    // 5.13. Create an entry with name and value, and append it to entry list.
+    entryList.push(makeEntry(name, value, filename))
+  }
+}
+
+/**
+ * Parses content-disposition attributes (e.g., name="value" or filename*=utf-8''encoded)
+ * @param {Buffer} input
+ * @param {{ position: number }} position
+ * @returns {{ name: string, value: string, extended: boolean } | null}
+ */
+function parseContentDispositionAttribute (input, position) {
+  // Skip leading semicolon and whitespace
+  if (input[position.position] === 0x3b /* ; */) {
+    position.position++
+  }
+
+  // Skip whitespace
+  collectASequenceOfBytes(
+    (char) => char === 0x20 || char === 0x09,
+    input,
+    position
+  )
+
+  // Collect attribute name (token characters)
+  const attributeName = collectASequenceOfBytes(
+    (char) => isToken(char) && char !== 0x3d && char !== 0x2a, // not = or *
+    input,
+    position
+  )
+
+  if (attributeName.length === 0) {
+    return null
+  }
+
+  const attrNameStr = attributeName.toString('ascii').toLowerCase()
+
+  // Check for extended notation (attribute*)
+  const isExtended = input[position.position] === 0x2a /* * */
+  if (isExtended) {
+    position.position++ // skip *
+  }
+
+  // Expect = sign
+  if (input[position.position] !== 0x3d /* = */) {
+    return null
+  }
+  position.position++ // skip =
+
+  // Skip whitespace
+  collectASequenceOfBytes(
+    (char) => char === 0x20 || char === 0x09,
+    input,
+    position
+  )
+
+  let value
+
+  if (isExtended) {
+    // Extended attribute format: charset'language'encoded-value
+    const headerValue = collectASequenceOfBytes(
+      (char) => char !== 0x20 && char !== 0x0d && char !== 0x0a && char !== 0x3b, // not space, CRLF, or ;
+      input,
+      position
+    )
+
+    const charsetSeparator = headerValue.indexOf(0x27)
+    const languageSeparator = charsetSeparator === -1
+      ? -1
+      : headerValue.indexOf(0x27, charsetSeparator + 1)
+
+    if (charsetSeparator === -1 || languageSeparator === -1) {
+      throw parsingError('expected charset and language separators in extended value')
+    }
+
+    if (
+      charsetSeparator !== 5 ||
+      (headerValue[0] !== 0x75 && headerValue[0] !== 0x55) || // u or U
+      (headerValue[1] !== 0x74 && headerValue[1] !== 0x54) || // t or T
+      (headerValue[2] !== 0x66 && headerValue[2] !== 0x46) || // f or F
+      headerValue[3] !== 0x2d || // -
+      headerValue[4] !== 0x38 // 8
+    ) {
+      throw parsingError('unknown charset, expected utf-8')
+    }
+
+    value = decodeURIComponent(decoder.decode(headerValue.subarray(languageSeparator + 1)))
+  } else if (input[position.position] === 0x22 /* " */) {
+    // Quoted string
+    position.position++ // skip opening quote
+
+    const quotedValue = collectASequenceOfBytes(
+      (char) => char !== 0x0a && char !== 0x0d && char !== 0x22, // not LF, CR, or "
+      input,
+      position
+    )
+
+    if (input[position.position] !== 0x22) {
+      throw parsingError('Closing quote not found')
+    }
+    position.position++ // skip closing quote
+
+    value = decoder.decode(quotedValue)
+      .replace(/%0A/ig, '\n')
+      .replace(/%0D/ig, '\r')
+      .replace(/%22/g, '"')
+  } else {
+    // Token value (no quotes)
+    const tokenValue = collectASequenceOfBytes(
+      (char) => isToken(char) && char !== 0x3b, // not ;
+      input,
+      position
+    )
+
+    value = decoder.decode(tokenValue)
+  }
+
+  return { name: attrNameStr, value, extended: isExtended }
+}
+
+/**
+ * @see https://andreubotella.github.io/multipart-form-data/#parse-multipart-form-data-headers
+ * @param {Buffer} input
+ * @param {{ position: number }} position
+ */
+function parseMultipartFormDataHeaders (input, position) {
+  // 1. Let name, filename and contentType be null.
+  let name = null
+  let filename = null
+  let contentType = null
+  let encoding = null
+
+  // 2. While true:
+  while (true) {
+    // 2.1. If position points to a sequence of bytes starting with 0x0D 0x0A (CR LF):
+    if (input[position.position] === 0x0d && input[position.position + 1] === 0x0a) {
+      // 2.1.1. If name is null, return failure.
+      if (name === null) {
+        throw parsingError('header name is null')
+      }
+
+      // 2.1.2. Return name, filename and contentType.
+      return { name, filename, contentType, encoding }
+    }
+
+    // 2.2. Let header name be the result of collecting a sequence of bytes that are
+    //      not 0x0A (LF), 0x0D (CR) or 0x3A (:), given position.
+    let headerName = collectASequenceOfBytes(
+      (char) => char !== 0x0a && char !== 0x0d && char !== 0x3a,
+      input,
+      position
+    )
+
+    // 2.3. Remove any HTTP tab or space bytes from the start or end of header name.
+    headerName = removeChars(headerName, true, true, (char) => char === 0x9 || char === 0x20)
+
+    // 2.4. If header name does not match the field-name token production, return failure.
+    if (!HTTP_TOKEN_CODEPOINTS.test(headerName.toString())) {
+      throw parsingError('header name does not match the field-name token production')
+    }
+
+    // 2.5. If the byte at position is not 0x3A (:), return failure.
+    if (input[position.position] !== 0x3a) {
+      throw parsingError('expected :')
+    }
+
+    // 2.6. Advance position by 1.
+    position.position++
+
+    // 2.7. Collect a sequence of bytes that are HTTP tab or space bytes given position.
+    //      (Do nothing with those bytes.)
+    collectASequenceOfBytes(
+      (char) => char === 0x20 || char === 0x09,
+      input,
+      position
+    )
+
+    // 2.8. Byte-lowercase header name and switch on the result:
+    switch (bufferToLowerCasedHeaderName(headerName)) {
+      case 'content-disposition': {
+        name = filename = null
+        // Track whether filename was set from the extended (RFC 5987) form so
+        // a subsequent legacy `filename` attribute does not override it.
+        let filenameIsExtended = false
+
+        // Collect the disposition type (should be "form-data")
+        const dispositionType = collectASequenceOfBytes(
+          (char) => isToken(char),
+          input,
+          position
+        )
+
+        if (dispositionType.toString('ascii').toLowerCase() !== 'form-data') {
+          throw parsingError('expected form-data for content-disposition header')
+        }
+
+        // Parse attributes recursively until CRLF
+        while (
+          position.position < input.length &&
+          (input[position.position] !== 0x0d ||
+          input[position.position + 1] !== 0x0a)
+        ) {
+          const attribute = parseContentDispositionAttribute(input, position)
+
+          if (!attribute) {
+            break
+          }
+
+          if (attribute.name === 'name') {
+            name = attribute.value
+          } else if (attribute.name === 'filename') {
+            // Per RFC 5987 §4.1, when both legacy and extended forms of the
+            // same parameter are present, the extended (filename*) form takes
+            // precedence regardless of the order they appear in.
+            if (attribute.extended) {
+              filename = attribute.value
+              filenameIsExtended = true
+            } else if (!filenameIsExtended) {
+              filename = attribute.value
+            }
+          }
+        }
+
+        if (name === null) {
+          throw parsingError('name attribute is required in content-disposition header')
+        }
+
+        break
+      }
+      case 'content-type': {
+        // 1. Let header value be the result of collecting a sequence of bytes that are
+        //    not 0x0A (LF) or 0x0D (CR), given position.
+        let headerValue = collectASequenceOfBytes(
+          (char) => char !== 0x0a && char !== 0x0d,
+          input,
+          position
+        )
+
+        // 2. Remove any HTTP tab or space bytes from the end of header value.
+        headerValue = removeChars(headerValue, false, true, (char) => char === 0x9 || char === 0x20)
+
+        // 3. Set contentType to the isomorphic decoding of header value.
+        contentType = isomorphicDecode(headerValue)
+
+        break
+      }
+      case 'content-transfer-encoding': {
+        let headerValue = collectASequenceOfBytes(
+          (char) => char !== 0x0a && char !== 0x0d,
+          input,
+          position
+        )
+
+        headerValue = removeChars(headerValue, false, true, (char) => char === 0x9 || char === 0x20)
+
+        encoding = isomorphicDecode(headerValue)
+
+        break
+      }
+      default: {
+        // Collect a sequence of bytes that are not 0x0A (LF) or 0x0D (CR), given position.
+        // (Do nothing with those bytes.)
+        collectASequenceOfBytes(
+          (char) => char !== 0x0a && char !== 0x0d,
+          input,
+          position
+        )
+      }
+    }
+
+    // 2.9. If position does not point to a sequence of bytes starting with 0x0D 0x0A
+    //      (CR LF), return failure. Otherwise, advance position by 2 (past the newline).
+    if (input[position.position] !== 0x0d || input[position.position + 1] !== 0x0a) {
+      throw parsingError('expected CRLF')
+    } else {
+      position.position += 2
+    }
+  }
+}
+
+/**
+ * @param {(char: number) => boolean} condition
+ * @param {Buffer} input
+ * @param {{ position: number }} position
+ */
+function collectASequenceOfBytes (condition, input, position) {
+  let start = position.position
+
+  while (start < input.length && condition(input[start])) {
+    ++start
+  }
+
+  return input.subarray(position.position, (position.position = start))
+}
+
+/**
+ * @param {Buffer} buf
+ * @param {boolean} leading
+ * @param {boolean} trailing
+ * @param {(charCode: number) => boolean} predicate
+ * @returns {Buffer}
+ */
+function removeChars (buf, leading, trailing, predicate) {
+  let lead = 0
+  let trail = buf.length - 1
+
+  if (leading) {
+    while (lead < buf.length && predicate(buf[lead])) lead++
+  }
+
+  if (trailing) {
+    while (trail > 0 && predicate(buf[trail])) trail--
+  }
+
+  return lead === 0 && trail === buf.length - 1 ? buf : buf.subarray(lead, trail + 1)
+}
+
+/**
+ * Checks if {@param buffer} starts with {@param start}
+ * @param {Buffer} buffer
+ * @param {Buffer} start
+ * @param {{ position: number }} position
+ */
+function bufferStartsWith (buffer, start, position) {
+  if (buffer.length < start.length) {
+    return false
+  }
+
+  for (let i = 0; i < start.length; i++) {
+    if (start[i] !== buffer[position.position + i]) {
+      return false
+    }
+  }
+
+  return true
+}
+
+function parsingError (cause) {
+  return new TypeError('Failed to parse body as FormData.', { cause: new TypeError(cause) })
+}
+
+/**
+ * CTL            = <any US-ASCII control character
+ *                  (octets 0 - 31) and DEL (127)>
+ * @param {number} char
+ */
+function isCTL (char) {
+  return char <= 0x1f || char === 0x7f
+}
+
+/**
+ * tspecials :=  "(" / ")" / "<" / ">" / "@" /
+ *                "," / ";" / ":" / "\" / <">
+ *                "/" / "[" / "]" / "?" / "="
+ *                ; Must be in quoted-string,
+ *                ; to use within parameter values
+ * @param {number} char
+ */
+function isTSpecial (char) {
+  return (
+    char === 0x28 || // (
+    char === 0x29 || // )
+    char === 0x3c || // <
+    char === 0x3e || // >
+    char === 0x40 || // @
+    char === 0x2c || // ,
+    char === 0x3b || // ;
+    char === 0x3a || // :
+    char === 0x5c || // \
+    char === 0x22 || // "
+    char === 0x2f || // /
+    char === 0x5b || // [
+    char === 0x5d || // ]
+    char === 0x3f || // ?
+    char === 0x3d    // +
+  )
+}
+
+/**
+ * token := 1*<any (US-ASCII) CHAR except SPACE, CTLs,
+ *          or tspecials>
+ * @param {number} char
+ */
+function isToken (char) {
+  return (
+    char <= 0x7f &&  // ascii
+    char !== 0x20 && // space
+    char !== 0x09 &&
+    !isCTL(char) &&
+    !isTSpecial(char)
+  )
+}
+
+module.exports = {
+  multipartFormDataParser,
+  validateBoundary
+}
+
+},
+"dataURL": function(module, exports, require) {
+'use strict'
+
+const assert = require('node:assert')
+const { asciiLowercase, forgivingBase64, collectASequenceOfCodePoints, collectASequenceOfCodePointsFast, isomorphicDecode, removeASCIIWhitespace, removeChars } = require('../infra')
+
+const encoder = new TextEncoder()
+
+/**
+ * @see https://mimesniff.spec.whatwg.org/#http-token-code-point
+ */
+const HTTP_TOKEN_CODEPOINTS = /^[-!#$%&'*+.^_`|~A-Za-z0-9]+$/u
+const HTTP_WHITESPACE_REGEX = /[\u000A\u000D\u0009\u0020]/u // eslint-disable-line
+
+/**
+ * @see https://mimesniff.spec.whatwg.org/#http-quoted-string-token-code-point
+ */
+const HTTP_QUOTED_STRING_TOKENS = /^[\u0009\u0020-\u007E\u0080-\u00FF]+$/u // eslint-disable-line
+
+// https://fetch.spec.whatwg.org/#data-url-processor
+/** @param {URL} dataURL */
+function dataURLProcessor (dataURL) {
+  // 1. Assert: dataURL’s scheme is "data".
+  assert(dataURL.protocol === 'data:')
+
+  // 2. Let input be the result of running the URL
+  // serializer on dataURL with exclude fragment
+  // set to true.
+  let input = URLSerializer(dataURL, true)
+
+  // 3. Remove the leading "data:" string from input.
+  input = input.slice(5)
+
+  // 4. Let position point at the start of input.
+  const position = { position: 0 }
+
+  // 5. Let mimeType be the result of collecting a
+  // sequence of code points that are not equal
+  // to U+002C (,), given position.
+  let mimeType = collectASequenceOfCodePointsFast(
+    ',',
+    input,
+    position
+  )
+
+  // 6. Strip leading and trailing ASCII whitespace
+  // from mimeType.
+  // Undici implementation note: we need to store the
+  // length because if the mimetype has spaces removed,
+  // the wrong amount will be sliced from the input in
+  // step #9
+  const mimeTypeLength = mimeType.length
+  mimeType = removeASCIIWhitespace(mimeType, true, true)
+
+  // 7. If position is past the end of input, then
+  // return failure
+  if (position.position >= input.length) {
+    return 'failure'
+  }
+
+  // 8. Advance position by 1.
+  position.position++
+
+  // 9. Let encodedBody be the remainder of input.
+  const encodedBody = input.slice(mimeTypeLength + 1)
+
+  // 10. Let body be the percent-decoding of encodedBody.
+  let body = stringPercentDecode(encodedBody)
+
+  // 11. If mimeType ends with U+003B (;), followed by
+  // zero or more U+0020 SPACE, followed by an ASCII
+  // case-insensitive match for "base64", then:
+  if (/;\u0020*[Bb][Aa][Ss][Ee]64$/u.test(mimeType)) {
+    // 1. Let stringBody be the isomorphic decode of body.
+    const stringBody = isomorphicDecode(body)
+
+    // 2. Set body to the forgiving-base64 decode of
+    // stringBody.
+    body = forgivingBase64(stringBody)
+
+    // 3. If body is failure, then return failure.
+    if (body === 'failure') {
+      return 'failure'
+    }
+
+    // 4. Remove the last 6 code points from mimeType.
+    mimeType = mimeType.slice(0, -6)
+
+    // 5. Remove trailing U+0020 SPACE code points from mimeType,
+    // if any.
+    mimeType = mimeType.replace(/(\u0020+)$/u, '')
+
+    // 6. Remove the last U+003B (;) code point from mimeType.
+    mimeType = mimeType.slice(0, -1)
+  }
+
+  // 12. If mimeType starts with U+003B (;), then prepend
+  // "text/plain" to mimeType.
+  if (mimeType.startsWith(';')) {
+    mimeType = 'text/plain' + mimeType
+  }
+
+  // 13. Let mimeTypeRecord be the result of parsing
+  // mimeType.
+  let mimeTypeRecord = parseMIMEType(mimeType)
+
+  // 14. If mimeTypeRecord is failure, then set
+  // mimeTypeRecord to text/plain;charset=US-ASCII.
+  if (mimeTypeRecord === 'failure') {
+    mimeTypeRecord = parseMIMEType('text/plain;charset=US-ASCII')
+  }
+
+  // 15. Return a new data: URL struct whose MIME
+  // type is mimeTypeRecord and body is body.
+  // https://fetch.spec.whatwg.org/#data-url-struct
+  return { mimeType: mimeTypeRecord, body }
+}
+
+// https://url.spec.whatwg.org/#concept-url-serializer
+/**
+ * @param {URL} url
+ * @param {boolean} excludeFragment
+ */
+function URLSerializer (url, excludeFragment = false) {
+  if (!excludeFragment) {
+    return url.href
+  }
+
+  const href = url.href
+  const hashLength = url.hash.length
+
+  const serialized = hashLength === 0 ? href : href.substring(0, href.length - hashLength)
+
+  if (!hashLength && href.endsWith('#')) {
+    return serialized.slice(0, -1)
+  }
+
+  return serialized
+}
+
+// https://url.spec.whatwg.org/#string-percent-decode
+/** @param {string} input */
+function stringPercentDecode (input) {
+  // 1. Let bytes be the UTF-8 encoding of input.
+  const bytes = encoder.encode(input)
+
+  // 2. Return the percent-decoding of bytes.
+  return percentDecode(bytes)
+}
+
+/**
+ * @param {number} byte
+ */
+function isHexCharByte (byte) {
+  // 0-9 A-F a-f
+  return (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x46) || (byte >= 0x61 && byte <= 0x66)
+}
+
+/**
+ * @param {number} byte
+ */
+function hexByteToNumber (byte) {
+  return (
+    // 0-9
+    byte >= 0x30 && byte <= 0x39
+      ? (byte - 48)
+    // Convert to uppercase
+    // ((byte & 0xDF) - 65) + 10
+      : ((byte & 0xDF) - 55)
+  )
+}
+
+// https://url.spec.whatwg.org/#percent-decode
+/** @param {Uint8Array} input */
+function percentDecode (input) {
+  const length = input.length
+  // 1. Let output be an empty byte sequence.
+  /** @type {Uint8Array} */
+  const output = new Uint8Array(length)
+  let j = 0
+  let i = 0
+  // 2. For each byte byte in input:
+  while (i < length) {
+    const byte = input[i]
+
+    // 1. If byte is not 0x25 (%), then append byte to output.
+    if (byte !== 0x25) {
+      output[j++] = byte
+
+    // 2. Otherwise, if byte is 0x25 (%) and the next two bytes
+    // after byte in input are not in the ranges
+    // 0x30 (0) to 0x39 (9), 0x41 (A) to 0x46 (F),
+    // and 0x61 (a) to 0x66 (f), all inclusive, append byte
+    // to output.
+    } else if (
+      byte === 0x25 &&
+      !(isHexCharByte(input[i + 1]) && isHexCharByte(input[i + 2]))
+    ) {
+      output[j++] = 0x25
+
+    // 3. Otherwise:
+    } else {
+      // 1. Let bytePoint be the two bytes after byte in input,
+      // decoded, and then interpreted as hexadecimal number.
+      // 2. Append a byte whose value is bytePoint to output.
+      output[j++] = (hexByteToNumber(input[i + 1]) << 4) | hexByteToNumber(input[i + 2])
+
+      // 3. Skip the next two bytes in input.
+      i += 2
+    }
+    ++i
+  }
+
+  // 3. Return output.
+  return length === j ? output : output.subarray(0, j)
+}
+
+// https://mimesniff.spec.whatwg.org/#parse-a-mime-type
+/** @param {string} input */
+function parseMIMEType (input) {
+  // 1. Remove any leading and trailing HTTP whitespace
+  // from input.
+  input = removeHTTPWhitespace(input, true, true)
+
+  // 2. Let position be a position variable for input,
+  // initially pointing at the start of input.
+  const position = { position: 0 }
+
+  // 3. Let type be the result of collecting a sequence
+  // of code points that are not U+002F (/) from
+  // input, given position.
+  const type = collectASequenceOfCodePointsFast(
+    '/',
+    input,
+    position
+  )
+
+  // 4. If type is the empty string or does not solely
+  // contain HTTP token code points, then return failure.
+  // https://mimesniff.spec.whatwg.org/#http-token-code-point
+  if (type.length === 0 || !HTTP_TOKEN_CODEPOINTS.test(type)) {
+    return 'failure'
+  }
+
+  // 5. If position is past the end of input, then return
+  // failure
+  if (position.position >= input.length) {
+    return 'failure'
+  }
+
+  // 6. Advance position by 1. (This skips past U+002F (/).)
+  position.position++
+
+  // 7. Let subtype be the result of collecting a sequence of
+  // code points that are not U+003B (;) from input, given
+  // position.
+  let subtype = collectASequenceOfCodePointsFast(
+    ';',
+    input,
+    position
+  )
+
+  // 8. Remove any trailing HTTP whitespace from subtype.
+  subtype = removeHTTPWhitespace(subtype, false, true)
+
+  // 9. If subtype is the empty string or does not solely
+  // contain HTTP token code points, then return failure.
+  if (subtype.length === 0 || !HTTP_TOKEN_CODEPOINTS.test(subtype)) {
+    return 'failure'
+  }
+
+  const typeLowercase = asciiLowercase(type)
+  const subtypeLowercase = asciiLowercase(subtype)
+
+  // 10. Let mimeType be a new MIME type record whose type
+  // is type, in ASCII lowercase, and subtype is subtype,
+  // in ASCII lowercase.
+  // https://mimesniff.spec.whatwg.org/#mime-type
+  const mimeType = {
+    type: typeLowercase,
+    subtype: subtypeLowercase,
+    /** @type {Map<string, string>} */
+    parameters: new Map(),
+    // https://mimesniff.spec.whatwg.org/#mime-type-essence
+    essence: `${typeLowercase}/${subtypeLowercase}`
+  }
+
+  // 11. While position is not past the end of input:
+  while (position.position < input.length) {
+    // 1. Advance position by 1. (This skips past U+003B (;).)
+    position.position++
+
+    // 2. Collect a sequence of code points that are HTTP
+    // whitespace from input given position.
+    collectASequenceOfCodePoints(
+      // https://fetch.spec.whatwg.org/#http-whitespace
+      char => HTTP_WHITESPACE_REGEX.test(char),
+      input,
+      position
+    )
+
+    // 3. Let parameterName be the result of collecting a
+    // sequence of code points that are not U+003B (;)
+    // or U+003D (=) from input, given position.
+    let parameterName = collectASequenceOfCodePoints(
+      (char) => char !== ';' && char !== '=',
+      input,
+      position
+    )
+
+    // 4. Set parameterName to parameterName, in ASCII
+    // lowercase.
+    parameterName = asciiLowercase(parameterName)
+
+    // 5. If position is not past the end of input, then:
+    if (position.position < input.length) {
+      // 1. If the code point at position within input is
+      // U+003B (;), then continue.
+      if (input[position.position] === ';') {
+        continue
+      }
+
+      // 2. Advance position by 1. (This skips past U+003D (=).)
+      position.position++
+    }
+
+    // 6. If position is past the end of input, then break.
+    if (position.position >= input.length) {
+      break
+    }
+
+    // 7. Let parameterValue be null.
+    let parameterValue = null
+
+    // 8. If the code point at position within input is
+    // U+0022 ("), then:
+    if (input[position.position] === '"') {
+      // 1. Set parameterValue to the result of collecting
+      // an HTTP quoted string from input, given position
+      // and the extract-value flag.
+      parameterValue = collectAnHTTPQuotedString(input, position, true)
+
+      // 2. Collect a sequence of code points that are not
+      // U+003B (;) from input, given position.
+      collectASequenceOfCodePointsFast(
+        ';',
+        input,
+        position
+      )
+
+    // 9. Otherwise:
+    } else {
+      // 1. Set parameterValue to the result of collecting
+      // a sequence of code points that are not U+003B (;)
+      // from input, given position.
+      parameterValue = collectASequenceOfCodePointsFast(
+        ';',
+        input,
+        position
+      )
+
+      // 2. Remove any trailing HTTP whitespace from parameterValue.
+      parameterValue = removeHTTPWhitespace(parameterValue, false, true)
+
+      // 3. If parameterValue is the empty string, then continue.
+      if (parameterValue.length === 0) {
+        continue
+      }
+    }
+
+    // 10. If all of the following are true
+    // - parameterName is not the empty string
+    // - parameterName solely contains HTTP token code points
+    // - parameterValue solely contains HTTP quoted-string token code points
+    // - mimeType’s parameters[parameterName] does not exist
+    // then set mimeType’s parameters[parameterName] to parameterValue.
+    if (
+      parameterName.length !== 0 &&
+      HTTP_TOKEN_CODEPOINTS.test(parameterName) &&
+      (parameterValue.length === 0 || HTTP_QUOTED_STRING_TOKENS.test(parameterValue)) &&
+      !mimeType.parameters.has(parameterName)
+    ) {
+      mimeType.parameters.set(parameterName, parameterValue)
+    }
+  }
+
+  // 12. Return mimeType.
+  return mimeType
+}
+
+// https://fetch.spec.whatwg.org/#collect-an-http-quoted-string
+// tests: https://fetch.spec.whatwg.org/#example-http-quoted-string
+/**
+ * @param {string} input
+ * @param {{ position: number }} position
+ * @param {boolean} [extractValue=false]
+ */
+function collectAnHTTPQuotedString (input, position, extractValue = false) {
+  // 1. Let positionStart be position.
+  const positionStart = position.position
+
+  // 2. Let value be the empty string.
+  let value = ''
+
+  // 3. Assert: the code point at position within input
+  // is U+0022 (").
+  assert(input[position.position] === '"')
+
+  // 4. Advance position by 1.
+  position.position++
+
+  // 5. While true:
+  while (true) {
+    // 1. Append the result of collecting a sequence of code points
+    // that are not U+0022 (") or U+005C (\) from input, given
+    // position, to value.
+    value += collectASequenceOfCodePoints(
+      (char) => char !== '"' && char !== '\\',
+      input,
+      position
+    )
+
+    // 2. If position is past the end of input, then break.
+    if (position.position >= input.length) {
+      break
+    }
+
+    // 3. Let quoteOrBackslash be the code point at position within
+    // input.
+    const quoteOrBackslash = input[position.position]
+
+    // 4. Advance position by 1.
+    position.position++
+
+    // 5. If quoteOrBackslash is U+005C (\), then:
+    if (quoteOrBackslash === '\\') {
+      // 1. If position is past the end of input, then append
+      // U+005C (\) to value and break.
+      if (position.position >= input.length) {
+        value += '\\'
+        break
+      }
+
+      // 2. Append the code point at position within input to value.
+      value += input[position.position]
+
+      // 3. Advance position by 1.
+      position.position++
+
+    // 6. Otherwise:
+    } else {
+      // 1. Assert: quoteOrBackslash is U+0022 (").
+      assert(quoteOrBackslash === '"')
+
+      // 2. Break.
+      break
+    }
+  }
+
+  // 6. If the extract-value flag is set, then return value.
+  if (extractValue) {
+    return value
+  }
+
+  // 7. Return the code points from positionStart to position,
+  // inclusive, within input.
+  return input.slice(positionStart, position.position)
+}
+
+/**
+ * @see https://mimesniff.spec.whatwg.org/#serialize-a-mime-type
+ */
+function serializeAMimeType (mimeType) {
+  assert(mimeType !== 'failure')
+  const { parameters, essence } = mimeType
+
+  // 1. Let serialization be the concatenation of mimeType’s
+  //    type, U+002F (/), and mimeType’s subtype.
+  let serialization = essence
+
+  // 2. For each name → value of mimeType’s parameters:
+  for (let [name, value] of parameters.entries()) {
+    // 1. Append U+003B (;) to serialization.
+    serialization += ';'
+
+    // 2. Append name to serialization.
+    serialization += name
+
+    // 3. Append U+003D (=) to serialization.
+    serialization += '='
+
+    // 4. If value does not solely contain HTTP token code
+    //    points or value is the empty string, then:
+    if (!HTTP_TOKEN_CODEPOINTS.test(value)) {
+      // 1. Precede each occurrence of U+0022 (") or
+      //    U+005C (\) in value with U+005C (\).
+      value = value.replace(/[\\"]/ug, '\\$&')
+
+      // 2. Prepend U+0022 (") to value.
+      value = '"' + value
+
+      // 3. Append U+0022 (") to value.
+      value += '"'
+    }
+
+    // 5. Append value to serialization.
+    serialization += value
+  }
+
+  // 3. Return serialization.
+  return serialization
+}
+
+/**
+ * @see https://fetch.spec.whatwg.org/#http-whitespace
+ * @param {number} char
+ */
+function isHTTPWhiteSpace (char) {
+  // "\r\n\t "
+  return char === 0x00d || char === 0x00a || char === 0x009 || char === 0x020
+}
+
+/**
+ * @see https://fetch.spec.whatwg.org/#http-whitespace
+ * @param {string} str
+ * @param {boolean} [leading=true]
+ * @param {boolean} [trailing=true]
+ */
+function removeHTTPWhitespace (str, leading = true, trailing = true) {
+  return removeChars(str, leading, trailing, isHTTPWhiteSpace)
+}
+
+/**
+ * @see https://mimesniff.spec.whatwg.org/#minimize-a-supported-mime-type
+ * @param {Exclude<ReturnType<typeof parseMIMEType>, 'failure'>} mimeType
+ */
+function minimizeSupportedMimeType (mimeType) {
+  switch (mimeType.essence) {
+    case 'application/ecmascript':
+    case 'application/javascript':
+    case 'application/x-ecmascript':
+    case 'application/x-javascript':
+    case 'text/ecmascript':
+    case 'text/javascript':
+    case 'text/javascript1.0':
+    case 'text/javascript1.1':
+    case 'text/javascript1.2':
+    case 'text/javascript1.3':
+    case 'text/javascript1.4':
+    case 'text/javascript1.5':
+    case 'text/jscript':
+    case 'text/livescript':
+    case 'text/x-ecmascript':
+    case 'text/x-javascript':
+      // 1. If mimeType is a JavaScript MIME type, then return "text/javascript".
+      return 'text/javascript'
+    case 'application/json':
+    case 'text/json':
+      // 2. If mimeType is a JSON MIME type, then return "application/json".
+      return 'application/json'
+    case 'image/svg+xml':
+      // 3. If mimeType’s essence is "image/svg+xml", then return "image/svg+xml".
+      return 'image/svg+xml'
+    case 'text/xml':
+    case 'application/xml':
+      // 4. If mimeType is an XML MIME type, then return "application/xml".
+      return 'application/xml'
+  }
+
+  // 2. If mimeType is a JSON MIME type, then return "application/json".
+  if (mimeType.subtype.endsWith('+json')) {
+    return 'application/json'
+  }
+
+  // 4. If mimeType is an XML MIME type, then return "application/xml".
+  if (mimeType.subtype.endsWith('+xml')) {
+    return 'application/xml'
+  }
+
+  // 5. If mimeType is supported by the user agent, then return mimeType’s essence.
+  // Technically, node doesn't support any mimetypes.
+
+  // 6. Return the empty string.
+  return ''
+}
+
+module.exports = {
+  dataURLProcessor,
+  URLSerializer,
+  stringPercentDecode,
+  parseMIMEType,
+  collectAnHTTPQuotedString,
+  serializeAMimeType,
+  removeHTTPWhitespace,
+  minimizeSupportedMimeType,
+  HTTP_TOKEN_CODEPOINTS
+}
+
+},
+"infra": function(module, exports, require) {
+'use strict'
+
+const assert = require('node:assert')
+const { utf8DecodeBytes } = require('../../encoding')
+
+/**
+ * @param {(char: string) => boolean} condition
+ * @param {string} input
+ * @param {{ position: number }} position
+ * @returns {string}
+ *
+ * @see https://infra.spec.whatwg.org/#collect-a-sequence-of-code-points
+ */
+function collectASequenceOfCodePoints (condition, input, position) {
+  // 1. Let result be the empty string.
+  let result = ''
+
+  // 2. While position doesn’t point past the end of input and the
+  // code point at position within input meets the condition condition:
+  while (position.position < input.length && condition(input[position.position])) {
+    // 1. Append that code point to the end of result.
+    result += input[position.position]
+
+    // 2. Advance position by 1.
+    position.position++
+  }
+
+  // 3. Return result.
+  return result
+}
+
+/**
+ * A faster collectASequenceOfCodePoints that only works when comparing a single character.
+ * @param {string} char
+ * @param {string} input
+ * @param {{ position: number }} position
+ * @returns {string}
+ *
+ * @see https://infra.spec.whatwg.org/#collect-a-sequence-of-code-points
+ */
+function collectASequenceOfCodePointsFast (char, input, position) {
+  const idx = input.indexOf(char, position.position)
+  const start = position.position
+
+  if (idx === -1) {
+    position.position = input.length
+    return input.slice(start)
+  }
+
+  position.position = idx
+  return input.slice(start, position.position)
+}
+
+const ASCII_WHITESPACE_REPLACE_REGEX = /[\u0009\u000A\u000C\u000D\u0020]/g // eslint-disable-line no-control-regex
+
+/**
+ * @param {string} data
+ * @returns {Uint8Array | 'failure'}
+ *
+ * @see https://infra.spec.whatwg.org/#forgiving-base64-decode
+ */
+function forgivingBase64 (data) {
+  // 1. Remove all ASCII whitespace from data.
+  data = data.replace(ASCII_WHITESPACE_REPLACE_REGEX, '')
+
+  let dataLength = data.length
+  // 2. If data’s code point length divides by 4 leaving
+  // no remainder, then:
+  if (dataLength % 4 === 0) {
+    // 1. If data ends with one or two U+003D (=) code points,
+    // then remove them from data.
+    if (data.charCodeAt(dataLength - 1) === 0x003D) {
+      --dataLength
+      if (data.charCodeAt(dataLength - 1) === 0x003D) {
+        --dataLength
+      }
+    }
+  }
+
+  // 3. If data’s code point length divides by 4 leaving
+  // a remainder of 1, then return failure.
+  if (dataLength % 4 === 1) {
+    return 'failure'
+  }
+
+  // 4. If data contains a code point that is not one of
+  //  U+002B (+)
+  //  U+002F (/)
+  //  ASCII alphanumeric
+  // then return failure.
+  if (/[^+/0-9A-Za-z]/.test(data.length === dataLength ? data : data.substring(0, dataLength))) {
+    return 'failure'
+  }
+
+  const buffer = Buffer.from(data, 'base64')
+  return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+}
+
+/**
+ * @param {number} char
+ * @returns {boolean}
+ *
+ * @see https://infra.spec.whatwg.org/#ascii-whitespace
+ */
+function isASCIIWhitespace (char) {
+  return (
+    char === 0x09 || // \t
+    char === 0x0a || // \n
+    char === 0x0c || // \f
+    char === 0x0d || // \r
+    char === 0x20    // space
+  )
+}
+
+/**
+ * @param {Uint8Array} input
+ * @returns {string}
+ *
+ * @see https://infra.spec.whatwg.org/#isomorphic-decode
+ */
+function isomorphicDecode (input) {
+  // 1. To isomorphic decode a byte sequence input, return a string whose code point
+  //    length is equal to input’s length and whose code points have the same values
+  //    as the values of input’s bytes, in the same order.
+  const length = input.length
+  if ((2 << 15) - 1 > length) {
+    return String.fromCharCode.apply(null, input)
+  }
+  let result = ''
+  let i = 0
+  let addition = (2 << 15) - 1
+  while (i < length) {
+    if (i + addition > length) {
+      addition = length - i
+    }
+    result += String.fromCharCode.apply(null, input.subarray(i, i += addition))
+  }
+  return result
+}
+
+const invalidIsomorphicEncodeValueRegex = /[^\x00-\xFF]/ // eslint-disable-line no-control-regex
+
+/**
+ * @param {string} input
+ * @returns {string}
+ *
+ * @see https://infra.spec.whatwg.org/#isomorphic-encode
+ */
+function isomorphicEncode (input) {
+  // 1. Assert: input contains no code points greater than U+00FF.
+  assert(!invalidIsomorphicEncodeValueRegex.test(input))
+
+  // 2. Return a byte sequence whose length is equal to input’s code
+  //    point length and whose bytes have the same values as the
+  //    values of input’s code points, in the same order
+  return input
+}
+
+const nonASCIIRegex = /[^\x00-\x7F]/ // eslint-disable-line no-control-regex
+
+/**
+ * @param {string} str
+ * @returns {string}
+ *
+ * @see https://infra.spec.whatwg.org/#ascii-lowercase
+ */
+function asciiLowercase (str) {
+  return nonASCIIRegex.test(str)
+    ? str.replace(/[A-Z]+/g, (upper) => upper.toLowerCase())
+    : str.toLowerCase()
+}
+
+/**
+ * @see https://infra.spec.whatwg.org/#parse-json-bytes-to-a-javascript-value
+ * @param {Uint8Array} bytes
+ */
+function parseJSONFromBytes (bytes) {
+  return JSON.parse(utf8DecodeBytes(bytes))
+}
+
+/**
+ * @param {string} str
+ * @param {boolean} [leading=true]
+ * @param {boolean} [trailing=true]
+ * @returns {string}
+ *
+ * @see https://infra.spec.whatwg.org/#strip-leading-and-trailing-ascii-whitespace
+ */
+function removeASCIIWhitespace (str, leading = true, trailing = true) {
+  return removeChars(str, leading, trailing, isASCIIWhitespace)
+}
+
+/**
+ * @param {string} str
+ * @param {boolean} leading
+ * @param {boolean} trailing
+ * @param {(charCode: number) => boolean} predicate
+ * @returns {string}
+ */
+function removeChars (str, leading, trailing, predicate) {
+  let lead = 0
+  let trail = str.length - 1
+
+  if (leading) {
+    while (lead < str.length && predicate(str.charCodeAt(lead))) lead++
+  }
+
+  if (trailing) {
+    while (trail >= lead && predicate(str.charCodeAt(trail))) trail--
+  }
+
+  return lead === 0 && trail === str.length - 1 ? str : str.slice(lead, trail + 1)
+}
+
+// https://infra.spec.whatwg.org/#serialize-a-javascript-value-to-a-json-string
+function serializeJavascriptValueToJSONString (value) {
+  // 1. Let result be ? Call(%JSON.stringify%, undefined, « value »).
+  const result = JSON.stringify(value)
+
+  // 2. If result is undefined, then throw a TypeError.
+  if (result === undefined) {
+    throw new TypeError('Value is not JSON serializable')
+  }
+
+  // 3. Assert: result is a string.
+  assert(typeof result === 'string')
+
+  // 4. Return result.
+  return result
+}
+
+module.exports = {
+  asciiLowercase,
+  collectASequenceOfCodePoints,
+  collectASequenceOfCodePointsFast,
+  forgivingBase64,
+  isASCIIWhitespace,
+  isomorphicDecode,
+  isomorphicEncode,
+  parseJSONFromBytes,
+  removeASCIIWhitespace,
+  removeChars,
+  serializeJavascriptValueToJSONString
+}
+
+},
+"encoding": function(module, exports, require) {
+'use strict'
+
+const textDecoder = new TextDecoder()
+
+/**
+ * @see https://encoding.spec.whatwg.org/#utf-8-decode
+ * @param {Uint8Array} buffer
+ */
+function utf8DecodeBytes (buffer) {
+  if (buffer.length === 0) {
+    return ''
+  }
+
+  // 1. Let buffer be the result of peeking three bytes from
+  //    ioQueue, converted to a byte sequence.
+
+  // 2. If buffer is 0xEF 0xBB 0xBF, then read three
+  //    bytes from ioQueue. (Do nothing with those bytes.)
+  if (buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF) {
+    buffer = buffer.subarray(3)
+  }
+
+  // 3. Process a queue with an instance of UTF-8’s
+  //    decoder, ioQueue, output, and "replacement".
+  const output = textDecoder.decode(buffer)
+
+  // 4. Return output.
+  return output
+}
+
+module.exports = {
+  utf8DecodeBytes
+}
+
+},
+"tree": function(module, exports, require) {
+'use strict'
+
+const {
+  wellknownHeaderNames,
+  headerNameLowerCasedRecord
+} = require('./constants')
+
+class TstNode {
+  /** @type {any} */
+  value = null
+  /** @type {null | TstNode} */
+  left = null
+  /** @type {null | TstNode} */
+  middle = null
+  /** @type {null | TstNode} */
+  right = null
+  /** @type {number} */
+  code
+  /**
+   * @param {string} key
+   * @param {any} value
+   * @param {number} index
+   */
+  constructor (key, value, index) {
+    if (index === undefined || index >= key.length) {
+      throw new TypeError('Unreachable')
+    }
+    const code = this.code = key.charCodeAt(index)
+    // check code is ascii string
+    if (code > 0x7F) {
+      throw new TypeError('key must be ascii string')
+    }
+    if (key.length !== ++index) {
+      this.middle = new TstNode(key, value, index)
+    } else {
+      this.value = value
+    }
+  }
+
+  /**
+   * @param {string} key
+   * @param {any} value
+   * @returns {void}
+   */
+  add (key, value) {
+    const length = key.length
+    if (length === 0) {
+      throw new TypeError('Unreachable')
+    }
+    let index = 0
+    /**
+     * @type {TstNode}
+     */
+    let node = this
+    while (true) {
+      const code = key.charCodeAt(index)
+      // check code is ascii string
+      if (code > 0x7F) {
+        throw new TypeError('key must be ascii string')
+      }
+      if (node.code === code) {
+        if (length === ++index) {
+          node.value = value
+          break
+        } else if (node.middle !== null) {
+          node = node.middle
+        } else {
+          node.middle = new TstNode(key, value, index)
+          break
+        }
+      } else if (node.code < code) {
+        if (node.left !== null) {
+          node = node.left
+        } else {
+          node.left = new TstNode(key, value, index)
+          break
+        }
+      } else if (node.right !== null) {
+        node = node.right
+      } else {
+        node.right = new TstNode(key, value, index)
+        break
+      }
+    }
+  }
+
+  /**
+   * @param {Uint8Array} key
+   * @returns {TstNode | null}
+   */
+  search (key) {
+    const keylength = key.length
+    let index = 0
+    /**
+     * @type {TstNode|null}
+     */
+    let node = this
+    while (node !== null && index < keylength) {
+      let code = key[index]
+      // A-Z
+      // First check if it is bigger than 0x5a.
+      // Lowercase letters have higher char codes than uppercase ones.
+      // Also we assume that headers will mostly contain lowercase characters.
+      if (code <= 0x5a && code >= 0x41) {
+        // Lowercase for uppercase.
+        code |= 32
+      }
+      while (node !== null) {
+        if (code === node.code) {
+          if (keylength === ++index) {
+            // Returns Node since it is the last key.
+            return node
+          }
+          node = node.middle
+          break
+        }
+        node = node.code < code ? node.left : node.right
+      }
+    }
+    return null
+  }
+}
+
+class TernarySearchTree {
+  /** @type {TstNode | null} */
+  node = null
+
+  /**
+   * @param {string} key
+   * @param {any} value
+   * @returns {void}
+   * */
+  insert (key, value) {
+    if (this.node === null) {
+      this.node = new TstNode(key, value, 0)
+    } else {
+      this.node.add(key, value)
+    }
+  }
+
+  /**
+   * @param {Uint8Array} key
+   * @returns {any}
+   */
+  lookup (key) {
+    return this.node?.search(key)?.value ?? null
+  }
+}
+
+const tree = new TernarySearchTree()
+
+for (let i = 0; i < wellknownHeaderNames.length; ++i) {
+  const key = headerNameLowerCasedRecord[wellknownHeaderNames[i]]
+  tree.insert(key, key)
+}
+
+module.exports = {
+  TernarySearchTree,
+  tree
+}
+
+},
+"coreConstants": function(module, exports, require) {
+'use strict'
+
+/**
+ * @see https://developer.mozilla.org/docs/Web/HTTP/Headers
+ */
+const wellknownHeaderNames = /** @type {const} */ ([
+  'Accept',
+  'Accept-Encoding',
+  'Accept-Language',
+  'Accept-Ranges',
+  'Access-Control-Allow-Credentials',
+  'Access-Control-Allow-Headers',
+  'Access-Control-Allow-Methods',
+  'Access-Control-Allow-Origin',
+  'Access-Control-Expose-Headers',
+  'Access-Control-Max-Age',
+  'Access-Control-Request-Headers',
+  'Access-Control-Request-Method',
+  'Age',
+  'Allow',
+  'Alt-Svc',
+  'Alt-Used',
+  'Authorization',
+  'Cache-Control',
+  'Clear-Site-Data',
+  'Connection',
+  'Content-Disposition',
+  'Content-Encoding',
+  'Content-Language',
+  'Content-Length',
+  'Content-Location',
+  'Content-Range',
+  'Content-Security-Policy',
+  'Content-Security-Policy-Report-Only',
+  'Content-Type',
+  'Cookie',
+  'Cross-Origin-Embedder-Policy',
+  'Cross-Origin-Opener-Policy',
+  'Cross-Origin-Resource-Policy',
+  'Date',
+  'Device-Memory',
+  'Downlink',
+  'ECT',
+  'ETag',
+  'Expect',
+  'Expect-CT',
+  'Expires',
+  'Forwarded',
+  'From',
+  'Host',
+  'If-Match',
+  'If-Modified-Since',
+  'If-None-Match',
+  'If-Range',
+  'If-Unmodified-Since',
+  'Keep-Alive',
+  'Last-Modified',
+  'Link',
+  'Location',
+  'Max-Forwards',
+  'Origin',
+  'Permissions-Policy',
+  'Pragma',
+  'Proxy-Authenticate',
+  'Proxy-Authorization',
+  'RTT',
+  'Range',
+  'Referer',
+  'Referrer-Policy',
+  'Refresh',
+  'Retry-After',
+  'Sec-WebSocket-Accept',
+  'Sec-WebSocket-Extensions',
+  'Sec-WebSocket-Key',
+  'Sec-WebSocket-Protocol',
+  'Sec-WebSocket-Version',
+  'Server',
+  'Server-Timing',
+  'Service-Worker-Allowed',
+  'Service-Worker-Navigation-Preload',
+  'Set-Cookie',
+  'SourceMap',
+  'Strict-Transport-Security',
+  'Supports-Loading-Mode',
+  'TE',
+  'Timing-Allow-Origin',
+  'Trailer',
+  'Transfer-Encoding',
+  'Upgrade',
+  'Upgrade-Insecure-Requests',
+  'User-Agent',
+  'Vary',
+  'Via',
+  'WWW-Authenticate',
+  'X-Content-Type-Options',
+  'X-DNS-Prefetch-Control',
+  'X-Frame-Options',
+  'X-Permitted-Cross-Domain-Policies',
+  'X-Powered-By',
+  'X-Requested-With',
+  'X-XSS-Protection'
+])
+
+/** @type {Record<typeof wellknownHeaderNames[number]|Lowercase<typeof wellknownHeaderNames[number]>, string>} */
+const headerNameLowerCasedRecord = {}
+
+// Note: object prototypes should not be able to be referenced. e.g. `Object#hasOwnProperty`.
+Object.setPrototypeOf(headerNameLowerCasedRecord, null)
+
+for (let i = 0; i < wellknownHeaderNames.length; ++i) {
+  const key = wellknownHeaderNames[i]
+  const lowerCasedKey = key.toLowerCase()
+  headerNameLowerCasedRecord[key] = headerNameLowerCasedRecord[lowerCasedKey] =
+    lowerCasedKey
+}
+
+/**
+ * Default WebSocket receive limits (see `webSocket` in Client.md). Used by
+ * DispatcherBase#webSocketOptions and by the WebSocket parser when the
+ * dispatcher doesn't provide a value, so a dispatcher without
+ * `webSocketOptions` (a custom one, or a wrapper) doesn't remove the limits.
+ */
+const defaultWebSocketMaxFragments = 131072
+const defaultWebSocketMaxPayloadSize = 128 * 1024 * 1024 // 128 MB
+
+module.exports = {
+  wellknownHeaderNames,
+  headerNameLowerCasedRecord,
+  defaultWebSocketMaxFragments,
+  defaultWebSocketMaxPayloadSize
+}
+
+},
+"util": function(module, exports, require) {
+const assert = require('node:assert');
+const { isUint8Array } = require('node:util/types');
+const { parseMIMEType, collectAnHTTPQuotedString } = require('./data-url');
+const { collectASequenceOfCodePoints, removeChars } = require('../infra');
+function fullyReadBody (body, processBody, processBodyError) {
+  // 1. If taskDestination is null, then set taskDestination to
+  //    the result of starting a new parallel queue.
+
+  // 2. Let successSteps given a byte sequence bytes be to queue a
+  //    fetch task to run processBody given bytes, with taskDestination.
+  const successSteps = processBody
+
+  // 3. Let errorSteps be to queue a fetch task to run processBodyError,
+  //    with taskDestination.
+  const errorSteps = processBodyError
+
+  try {
+  // 4. Let reader be the result of getting a reader for body’s stream.
+  //    If that threw an exception, then run errorSteps with that
+  //    exception and return.
+    const reader = body.stream.getReader()
+
+    // 5. Read all bytes from reader, given successSteps and errorSteps.
+    readAllBytes(reader, successSteps, errorSteps)
+  } catch (e) {
+    errorSteps(e)
+  }
+}
+
+
+async function readAllBytes (reader, successSteps, failureSteps) {
+  try {
+    const bytes = []
+    let byteLength = 0
+
+    do {
+      const { done, value: chunk } = await reader.read()
+
+      if (done) {
+        // 1. Call successSteps with bytes.
+        successSteps(Buffer.concat(bytes, byteLength))
+        return
+      }
+
+      // 1. If chunk is not a Uint8Array object, call failureSteps
+      //    with a TypeError and abort these steps.
+      if (!isUint8Array(chunk)) {
+        failureSteps(new TypeError('Received non-Uint8Array chunk'))
+        return
+      }
+
+      // 2. Append the bytes represented by chunk to bytes.
+      bytes.push(chunk)
+      byteLength += chunk.length
+
+    // 3. Read-loop given reader, bytes, successSteps, and failureSteps.
+    } while (true)
+  } catch (e) {
+    // 1. Call failureSteps with e.
+    failureSteps(e)
+  }
+}
+
+
+function extractMimeType (headers) {
+  // 1. Let charset be null.
+  let charset = null
+
+  // 2. Let essence be null.
+  let essence = null
+
+  // 3. Let mimeType be null.
+  let mimeType = null
+
+  // 4. Let values be the result of getting, decoding, and splitting `Content-Type` from headers.
+  const values = getDecodeSplit('content-type', headers)
+
+  // 5. If values is null, then return failure.
+  if (values === null) {
+    return 'failure'
+  }
+
+  // 6. For each value of values:
+  for (const value of values) {
+    // 6.1. Let temporaryMimeType be the result of parsing value.
+    const temporaryMimeType = parseMIMEType(value)
+
+    // 6.2. If temporaryMimeType is failure or its essence is "*/*", then continue.
+    if (temporaryMimeType === 'failure' || temporaryMimeType.essence === '*/*') {
+      continue
+    }
+
+    // 6.3. Set mimeType to temporaryMimeType.
+    mimeType = temporaryMimeType
+
+    // 6.4. If mimeType’s essence is not essence, then:
+    if (mimeType.essence !== essence) {
+      // 6.4.1. Set charset to null.
+      charset = null
+
+      // 6.4.2. If mimeType’s parameters["charset"] exists, then set charset to
+      //        mimeType’s parameters["charset"].
+      if (mimeType.parameters.has('charset')) {
+        charset = mimeType.parameters.get('charset')
+      }
+
+      // 6.4.3. Set essence to mimeType’s essence.
+      essence = mimeType.essence
+    } else if (!mimeType.parameters.has('charset') && charset !== null) {
+      // 6.5. Otherwise, if mimeType’s parameters["charset"] does not exist, and
+      //      charset is non-null, set mimeType’s parameters["charset"] to charset.
+      mimeType.parameters.set('charset', charset)
+    }
+  }
+
+  // 7. If mimeType is null, then return failure.
+  if (mimeType == null) {
+    return 'failure'
+  }
+
+  // 8. Return mimeType.
+  return mimeType
+}
+
+
+function gettingDecodingSplitting (value) {
+  // 1. Let input be the result of isomorphic decoding value.
+  const input = value
+
+  // 2. Let position be a position variable for input, initially pointing at the start of input.
+  const position = { position: 0 }
+
+  // 3. Let values be a list of strings, initially empty.
+  const values = []
+
+  // 4. Let temporaryValue be the empty string.
+  let temporaryValue = ''
+
+  // 5. While position is not past the end of input:
+  while (position.position < input.length) {
+    // 5.1. Append the result of collecting a sequence of code points that are not U+0022 (")
+    //      or U+002C (,) from input, given position, to temporaryValue.
+    temporaryValue += collectASequenceOfCodePoints(
+      (char) => char !== '"' && char !== ',',
+      input,
+      position
+    )
+
+    // 5.2. If position is not past the end of input, then:
+    if (position.position < input.length) {
+      // 5.2.1. If the code point at position within input is U+0022 ("), then:
+      if (input.charCodeAt(position.position) === 0x22) {
+        // 5.2.1.1. Append the result of collecting an HTTP quoted string from input, given position, to temporaryValue.
+        temporaryValue += collectAnHTTPQuotedString(
+          input,
+          position
+        )
+
+        // 5.2.1.2. If position is not past the end of input, then continue.
+        if (position.position < input.length) {
+          continue
+        }
+      } else {
+        // 5.2.2. Otherwise:
+
+        // 5.2.2.1. Assert: the code point at position within input is U+002C (,).
+        assert(input.charCodeAt(position.position) === 0x2C)
+
+        // 5.2.2.2. Advance position by 1.
+        position.position++
+      }
+    }
+
+    // 5.3. Remove all HTTP tab or space from the start and end of temporaryValue.
+    temporaryValue = removeChars(temporaryValue, true, true, (char) => char === 0x9 || char === 0x20)
+
+    // 5.4. Append temporaryValue to values.
+    values.push(temporaryValue)
+
+    // 5.6. Set temporaryValue to the empty string.
+    temporaryValue = ''
+  }
+
+  // 6. Return values.
+  return values
+}
+
+
+function getDecodeSplit (name, list) {
+  // 1. Let value be the result of getting name from list.
+  const value = list.get(name, true)
+
+  // 2. If value is null, then return null.
+  if (value === null) {
+    return null
+  }
+
+  // 3. Return the result of getting, decoding, and splitting value.
+  return gettingDecodingSplitting(value)
+}
+
+
+module.exports = { fullyReadBody, extractMimeType };
+
+},
+"corePrimitive": function(module, exports, require) {
+const { tree } = require('./tree');
+function bufferToLowerCasedHeaderName (value) {
+  return tree.lookup(value) ?? value.toString('latin1').toLowerCase()
+}
+
+
+module.exports = { bufferToLowerCasedHeaderName };
+
+},
+"body": function(module, exports, require) {
+const util = require('../../core/util');
+const { fullyReadBody, extractMimeType } = require('./util');
+const { FormData, setFormDataState } = require('./formdata');
+const { webidl } = require('../webidl');
+const { serializeAMimeType } = require('./data-url');
+const { multipartFormDataParser } = require('./formdata-parser');
+const { parseJSONFromBytes } = require('../infra');
+const { utf8DecodeBytes } = require('../../encoding');
+function bodyMixinMethods (brandCheck, getInternalState) {
+  const methods = {
+    blob () {
+      // The blob() method steps are to return the result of
+      // running consume body with this and the following step
+      // given a byte sequence bytes: return a Blob whose
+      // contents are bytes and whose type attribute is this’s
+      // MIME type.
+      return consumeBody(this, (bytes) => {
+        let mimeType = bodyMimeType(getInternalState(this))
+
+        if (mimeType === null) {
+          mimeType = ''
+        } else if (mimeType) {
+          mimeType = serializeAMimeType(mimeType)
+        }
+
+        // Return a Blob whose contents are bytes and type attribute
+        // is mimeType.
+        return new Blob([bytes], { type: mimeType })
+      }, brandCheck, getInternalState)
+    },
+
+    arrayBuffer () {
+      // The arrayBuffer() method steps are to return the result
+      // of running consume body with this and the following step
+      // given a byte sequence bytes: return a new ArrayBuffer
+      // whose contents are bytes.
+      return consumeBody(this, (bytes) => {
+        return new Uint8Array(bytes).buffer
+      }, brandCheck, getInternalState)
+    },
+
+    text () {
+      // The text() method steps are to return the result of running
+      // consume body with this and UTF-8 decode.
+      return consumeBody(this, utf8DecodeBytes, brandCheck, getInternalState)
+    },
+
+    json () {
+      // The json() method steps are to return the result of running
+      // consume body with this and parse JSON from bytes.
+      return consumeBody(this, parseJSONFromBytes, brandCheck, getInternalState)
+    },
+
+    formData () {
+      // The formData() method steps are to return the result of running
+      // consume body with this and the following step given a byte sequence bytes:
+      return consumeBody(this, (value) => {
+        // 1. Let mimeType be the result of get the MIME type with this.
+        const mimeType = bodyMimeType(getInternalState(this))
+
+        // 2. If mimeType is non-null, then switch on mimeType’s essence and run
+        //    the corresponding steps:
+        if (mimeType !== null) {
+          switch (mimeType.essence) {
+            case 'multipart/form-data': {
+              // 1. ... [long step]
+              // 2. If that fails for some reason, then throw a TypeError.
+              const parsed = multipartFormDataParser(value, mimeType)
+
+              // 3. Return a new FormData object, appending each entry,
+              //    resulting from the parsing operation, to its entry list.
+              const fd = new FormData()
+              setFormDataState(fd, parsed)
+
+              return fd
+            }
+            case 'application/x-www-form-urlencoded': {
+              // 1. Let entries be the result of parsing bytes.
+              const entries = new URLSearchParams(value.toString())
+
+              // 2. If entries is failure, then throw a TypeError.
+
+              // 3. Return a new FormData object whose entry list is entries.
+              const fd = new FormData()
+
+              for (const [name, value] of entries) {
+                fd.append(name, value)
+              }
+
+              return fd
+            }
+          }
+        }
+
+        // 3. Throw a TypeError.
+        throw new TypeError(
+          'Content-Type was not one of "multipart/form-data" or "application/x-www-form-urlencoded".'
+        )
+      }, brandCheck, getInternalState)
+    },
+
+    bytes () {
+      // The bytes() method steps are to return the result of running consume body
+      // with this and the following step given a byte sequence bytes: return the
+      // result of creating a Uint8Array from bytes in this’s relevant realm.
+      return consumeBody(this, (bytes) => {
+        return new Uint8Array(bytes)
+      }, brandCheck, getInternalState)
+    },
+
+    textStream () {
+      const this_ = getInternalState(this)
+
+      // 1. If this is unusable, then throw a TypeError.
+      if (bodyUnusable(this_)) {
+        throw new TypeError('Body is unusable: Body has already been read')
+      }
+
+      // 2. If this’s body is null:
+      if (this_.body == null) {
+        // 2.1. Let emptyStream be a new ReadableStream in this’s relevant realm.
+        // 2.2. Set up emptyStream.
+        /** @type {ReadableStreamDefaultController<any>} */
+        let controller
+        const emptyStream = new ReadableStream({
+          start: (c) => {
+            controller = c
+          },
+          pull: () => Promise.resolve(),
+          cancel: () => Promise.resolve()
+        }, {
+          size: () => 1
+        })
+
+        // 2.3. Close emptyStream.
+        controller.close()
+
+        // 2.4. Return emptyStream.
+        return emptyStream
+      }
+
+      // 3. Let stream be this’s body’s stream.
+      /** @type {ReadableStream} */
+      const stream = this_.body.stream
+
+      // 4. Let decoder be a new TextDecoderStream object in this’s relevant realm.
+      // 5. Set up decoder with UTF-8.
+      const decoder = new TextDecoderStream('UTF-8')
+
+      // 6. Return the result of stream, piped through decoder.
+      return stream.pipeThrough(decoder)
+    }
+  }
+
+  return methods
+}
+
+function mixinBody (prototype, getInternalState, brandCheck) {
+  Object.assign(prototype.prototype, bodyMixinMethods(brandCheck, getInternalState))
+}
+
+/**
+ * @see https://fetch.spec.whatwg.org/#concept-body-consume-body
+ * @param {any} object internal state
+ * @param {(value: unknown) => unknown} convertBytesToJSValue
+ * @param {import('../../../types/webidl').WebidlIsFunction} brandCheck
+ * @param {(target: any) => any} getInternalState
+ */
+function consumeBody (object, convertBytesToJSValue, brandCheck, getInternalState) {
+  try {
+    webidl.brandCheck(object, brandCheck)
+  } catch (e) {
+    return Promise.reject(e)
+  }
+
+  object = getInternalState(object)
+
+  // 1. If object is unusable, then return a promise rejected
+  //    with a TypeError.
+  if (bodyUnusable(object)) {
+    return Promise.reject(new TypeError('Body is unusable: Body has already been read'))
+  }
+
+  // 2. Let promise be a new promise.
+  const promise = Promise.withResolvers()
+
+  // 3. Let errorSteps given error be to reject promise with error.
+  const errorSteps = promise.reject
+
+  // 4. Let successSteps given a byte sequence data be to resolve
+  //    promise with the result of running convertBytesToJSValue
+  //    with data. If that threw an exception, then run errorSteps
+  //    with that exception.
+  const successSteps = (data) => {
+    try {
+      promise.resolve(convertBytesToJSValue(data))
+    } catch (e) {
+      errorSteps(e)
+    }
+  }
+
+  // 5. If object’s body is null, then run successSteps with an
+  //    empty byte sequence.
+  if (object.body == null) {
+    successSteps(Buffer.allocUnsafe(0))
+    return promise.promise
+  }
+
+  // 6. Otherwise, fully read object’s body given successSteps,
+  //    errorSteps, and object’s relevant global object.
+  fullyReadBody(object.body, successSteps, errorSteps)
+
+  // 7. Return promise.
+  return promise.promise
+}
+
+/**
+ * @see https://fetch.spec.whatwg.org/#body-unusable
+ * @param {any} object internal state
+ */
+function bodyUnusable (object) {
+  const body = object.body
+
+  // An object including the Body interface mixin is
+  // said to be unusable if its body is non-null and
+  // its body’s stream is disturbed or locked.
+  return body != null && (body.stream.locked || util.isDisturbed(body.stream))
+}
+
+/**
+ * @see https://fetch.spec.whatwg.org/#concept-body-mime-type
+ * @param {any} requestOrResponse internal state
+ */
+function bodyMimeType (requestOrResponse) {
+  // 1. Let headers be null.
+  // 2. If requestOrResponse is a Request object, then set headers to requestOrResponse’s request’s header list.
+  // 3. Otherwise, set headers to requestOrResponse’s response’s header list.
+  /** @type {import('./headers').HeadersList} */
+  const headers = requestOrResponse.headersList
+
+  // 4. Let mimeType be the result of extracting a MIME type from headers.
+  const mimeType = extractMimeType(headers)
+
+  // 5. If mimeType is failure, then return null.
+  if (mimeType === 'failure') {
+    return null
+  }
+
+  // 6. Return mimeType.
+  return mimeType
+}
+
+
+module.exports = { mixinBody };
+
+}
+    };
+    const modules = new SafeMap();
+    function require(name) {
+        if (name === 'node:assert') return platform.assert;
+        if (name === 'node:util/types') return platform.types;
+        if (name === './formdata') return platform.formData;
+        if (name === '../webidl') return { webidl: platform.formData.webidl };
+        if (name === '../../core/util') return {
+            isDisturbed: platform.stream.api.isDisturbed,
+            bufferToLowerCasedHeaderName: require('corePrimitive').bufferToLowerCasedHeaderName,
+        };
+        const id = name === './data-url' ? 'dataURL' : name === '../infra' ? 'infra' :
+            name === './formdata-parser' ? 'multipart' : name === './util' ? 'util' :
+            name === '../../encoding' ? 'encoding' : name === './tree' ? 'tree' :
+            name === './constants' ? 'coreConstants' : name;
+        if (modules.has(id)) return modules.get(id).exports;
+        if (!ObjectPrototypeHasOwnProperty(factories, id)) {
+            const error = new Error('Unsupported Fetch Body dependency: ' + name);
+            error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
+        }
+        const module = { exports: {} };
+        modules.set(id, module);
+        try { factories[id](module, module.exports, require); }
+        catch (error) { modules.delete(id); throw error; }
+        return module.exports;
+    }
+    return { mixinBody: require('body').mixinBody };
 }

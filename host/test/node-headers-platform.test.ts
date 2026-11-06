@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
+import assert from 'node:assert';
+import * as util from 'node:util';
 import { inspect } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { createWebDataPlatform } from './fixtures/node-web-data-platform';
@@ -20,9 +22,13 @@ function fetchControl() {
    const response=new EventEmitter() as any;response.statusCode=204;response.statusMessage='No Content';
    response.headers={'Set-Cookie':['a=1','b=2'],'X-Response':'value'};response.destroy=()=>{};callback(response);
   };return req;}};
+ const core=readFileSync(new URL('../../third_party/node-core/node-core.js',import.meta.url),'utf8');
+ const bodyFactory=Function(core+';return _createNodeFetchBodyPlatform;')();
  const api=Function('_nodeWebPlatform','_nodeBodyData','_nodeNative','_nodeFormDataPlatform','_nodeClonePlatform','http','https',
+  '_createNodeFetchBodyPlatform','_nodeStreamPlatform','assert','util',
   section('    const FetchHeaders =','    globalThis.fetch = fetch;')+';return {Headers:FetchHeaders,Request:FetchRequest,Response:FetchResponse,fetch};')(
-   web,body,{cloneValue:structuredClone},{headers:owner.headerInternals},owner.cloneOwner,http,http);
+   web,body,{cloneValue:structuredClone},owner.formDataInternals,owner.cloneOwner,http,http,
+   bodyFactory,{api:{isDisturbed:web.streamState.isDisturbed},web:web.streams},assert,util);
  return {...api,headerInternals:owner.headerInternals,get requestOptions(){return requestOptions;}};
 }
 describe.skipIf(process.versions.node!==target.version)('pinned Headers shared WebIDL and Fetch ownership',()=>{

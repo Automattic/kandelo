@@ -1899,6 +1899,36 @@ bundle += locks_adapter.replace('/* NODE_LOCKS_MODULE */', locks_source) + '\n'
 
 bundle += (root / 'adapter.js').read_text().replace('/* UPSTREAM_MODULES */', ',\n'.join(entries))
 bundle += '\n' + runpy.run_path(str(root / 'generate-stat-watcher.py'))['assemble']().rstrip('\n') + '\n'
+fetch_body = manifest['fetchBody']
+if fetch_body['version'] != manifest['version'] or fetch_body['commit'] != manifest['commit']:
+    raise ValueError('Fetch Body must retain the audited Node target')
+fetch_body_sources = {}
+for name, item in fetch_body['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Fetch Body source identity mismatch: ' + name)
+    fetch_body_sources[name] = raw.decode('utf-8')
+fetch_body_sections = {}
+for name, selector in fetch_body['sections'].items():
+    source = fetch_body_sources[selector['source']]
+    if source.count(selector['start']) != 1:
+        raise ValueError('Review Fetch Body source section: ' + name)
+    start = source.index(selector['start'])
+    section = source[start:start + selector['length']]
+    if hashlib.sha256(section.encode()).hexdigest() != selector['sha256']:
+        raise ValueError('Fetch Body section identity mismatch: ' + name)
+    fetch_body_sections[name] = section
+fetch_body_util = "const assert = require('node:assert');\nconst { isUint8Array } = require('node:util/types');\nconst { parseMIMEType, collectAnHTTPQuotedString } = require('./data-url');\nconst { collectASequenceOfCodePoints, removeChars } = require('../infra');\n" + '\n'.join(fetch_body_sections[name] for name in ['fullyReadBody', 'readAllBytes', 'extractMimeType', 'gettingDecodingSplitting', 'getDecodeSplit']) + '\nmodule.exports = { fullyReadBody, extractMimeType };\n'
+fetch_body_core = "const { tree } = require('./tree');\n" + fetch_body_sections['bufferToLowerCasedHeaderName'] + '\nmodule.exports = { bufferToLowerCasedHeaderName };\n'
+fetch_body_mixin = "const util = require('../../core/util');\nconst { fullyReadBody, extractMimeType } = require('./util');\nconst { FormData, setFormDataState } = require('./formdata');\nconst { webidl } = require('../webidl');\nconst { serializeAMimeType } = require('./data-url');\nconst { multipartFormDataParser } = require('./formdata-parser');\nconst { parseJSONFromBytes } = require('../infra');\nconst { utf8DecodeBytes } = require('../../encoding');\n" + fetch_body_sections['bodyMixin'] + '\nmodule.exports = { mixinBody };\n'
+fetch_body_factories = []
+for name, source in [*[(key, fetch_body_sources[key]) for key in ['multipart', 'dataURL', 'infra', 'encoding', 'tree', 'coreConstants']], ('util', fetch_body_util), ('corePrimitive', fetch_body_core), ('body', fetch_body_mixin)]:
+    fetch_body_factories.append(json.dumps(name) + ': function(module, exports, require) {\n' + source + '\n}')
+fetch_body_adapter = (root / 'fetch-body-platform-adapter.js').read_text()
+if fetch_body_adapter.count('/* NODE_FETCH_BODY_MODULES */') != 1:
+    raise ValueError('Review Fetch Body module marker')
+bundle += fetch_body_adapter.replace('/* NODE_FETCH_BODY_MODULES */', ',\n'.join(fetch_body_factories)).rstrip('\n') + '\n'
+
 dest = root / 'node-core.js'
 if '--check' in sys.argv:
     if dest.read_text() != bundle:

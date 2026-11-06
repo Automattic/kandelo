@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
+import assert from 'node:assert';
+import * as util from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { createWebDataPlatform } from './fixtures/node-web-data-platform';
 
@@ -13,10 +15,14 @@ function section(start: string, end: string) {
 const web = Function(`${vendor};return _createNodeWebPlatform();`)();
 const headerOwner = createWebDataPlatform();
 const data = Function('_nodeWebPlatform', '_nodeClonePlatform', section('const _nodeBodyData =', "if (typeof globalThis.Blob === 'undefined')") + ';return _nodeBodyData;')(web, headerOwner.cloneOwner);
+const core = readFileSync(new URL('../../third_party/node-core/node-core.js', import.meta.url), 'utf8');
+const bodyFactory = Function(`${core};return _createNodeFetchBodyPlatform;`)();
 const subject = Function('_nodeWebPlatform', '_nodeBodyData', '_nodeNative', '_nodeFormDataPlatform', '_nodeClonePlatform',
+  '_createNodeFetchBodyPlatform', '_nodeStreamPlatform', 'assert', 'util',
   section('    const FetchHeaders =', '    class FetchRequest {') +
   ';return {Response:FetchResponse,Headers:FetchHeaders,ReadableStream:WebReadableStream,Blob:_nodeBodyData.Blob,URLSearchParams:_nodeWebPlatform.URLSearchParams};')
-  (web, data, { cloneValue: structuredClone }, { headers: headerOwner.headerInternals }, headerOwner.cloneOwner);
+  (web, data, { cloneValue: structuredClone }, headerOwner.formDataInternals, headerOwner.cloneOwner,
+    bodyFactory, { api: { isDisturbed: web.streamState.isDisturbed }, web: web.streams }, assert, util);
 const native = { Response, Headers, ReadableStream, Blob, URLSearchParams };
 const target = JSON.parse(readFileSync(new URL('../../packages/registry/node-compat/target.json', import.meta.url), 'utf8'));
 const state = (response: any) => [response.bodyUsed, response.body?.locked ?? null];

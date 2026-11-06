@@ -6092,25 +6092,6 @@ globalThis.exports = globalThis.module.exports;
     function unusable(stream) {
         return stream !== null && (streamState.isLocked(stream) || streamState.isDisturbed(stream));
     }
-    async function consume(response) {
-        const stream = responseBody(response);
-        if (unusable(stream)) throw new TypeError('Body is unusable');
-        if (stream === null) return new Uint8Array(0);
-        const reader = getReader(stream);
-        const parts = [];
-        let total = 0;
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            const bytes = _nodeBodyData.byteChunk(value);
-            parts.push(bytes);
-            total += bytes.byteLength;
-        }
-        const bytes = new Uint8Array(total);
-        let offset = 0;
-        for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
-        return bytes;
-    }
     class FetchResponse {
         constructor(body = null, init = {}) {
             _nodeClonePlatform.protocol.markTransferMode(this, false, false);
@@ -6171,18 +6152,6 @@ globalThis.exports = globalThis.module.exports;
             return stream !== null && streamState.isDisturbed(stream);
         }
         get body() { return responseBody(this); }
-        async arrayBuffer() { return (await consume(this)).buffer; }
-        async bytes() { return consume(this); }
-        async text() { return new TextDecoder('utf-8').decode(await consume(this)); }
-        async json() { return JSON.parse(new TextDecoder('utf-8').decode(await consume(this))); }
-        async blob() {
-            const bytes = await consume(this);
-            // Full MIME parsing remains separate from body ownership. Reject
-            // a missing/invalid media type instead of inventing a Blob type.
-            let type = responseState(this).headers.get('content-type') || '';
-            if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+(?:\s*;[^\r\n]*)?$/.test(type)) type = '';
-            return new _nodeBodyData.Blob([bytes], { type });
-        }
         clone() {
             const body = responseBody(this);
             if (unusable(body)) throw new TypeError('Body is unusable');
@@ -6201,6 +6170,20 @@ globalThis.exports = globalThis.module.exports;
         }
         get [Symbol.toStringTag]() { return 'Response'; }
     }
+    const bodyPlatform = _createNodeFetchBodyPlatform({
+        Buffer, Blob: _nodeBodyData.Blob, File: globalThis.File,
+        URLSearchParams: _nodeWebPlatform.URLSearchParams,
+        TextEncoder, TextDecoder, TextDecoderStream: _nodeWebPlatform.streams.TextDecoderStream,
+        stream: _nodeStreamPlatform, formData: _nodeFormDataPlatform,
+        assert, types: util.types,
+    });
+    // This is a live projection of the existing private stream/header owners,
+    // not a copied payload or an independently fabricated body state.
+    bodyPlatform.mixinBody(FetchResponse, response => {
+        const state = responseState(response);
+        return { body: state.body === null ? null : { stream: state.body },
+            headersList: _nodeFormDataPlatform.headers.getHeadersList(state.headers) };
+    }, value => responseStates.has(value));
     Object.defineProperty(FetchResponse, 'name', { value: 'Response', configurable: true });
     Object.defineProperty(FetchResponse.prototype, Symbol.toStringTag, { value: 'Response', configurable: true });
     for (const name of ['body', 'bodyUsed', 'status', 'statusText', 'ok', 'headers', 'url', 'redirected', 'type',
