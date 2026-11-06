@@ -34,3 +34,8 @@ wasm = "kandelo-publish.wasm"
 [[outputs]]
 name = "exchange-save"
 wasm = "exchange-save.wasm"
+
+# Publishes an http, https or mailto link as a text/uri-list output.
+[[outputs]]
+name = "xdg-open"
+wasm = "xdg-open.wasm"

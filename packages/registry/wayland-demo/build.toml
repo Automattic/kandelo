@@ -20,6 +20,7 @@ inputs = [
   "examples/libs/libkwl/include/kwl.h",
   "packages/registry/wayland-protocols/xml/xdg-shell.xml",
   "programs/klauncher.c",
+  "programs/zenity.c",
   "programs/notify-send.c",
   "programs/kclipd.c",
   "libc/musl-overlay/include/kandelo/clipboard.h",

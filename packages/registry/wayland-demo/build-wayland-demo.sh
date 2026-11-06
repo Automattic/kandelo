@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build the Wayland desktop: wlcompositor (server) plus the wlclock,
-# wlpaint, wlterm and klauncher clients, notify-send, and stage the
+# wlpaint, wlterm, klauncher and zenity clients, notify-send, and stage the
 # wldesktop launcher.
 #
 # The in-tree libraries these link (libwpkdraw, libkwl) have no upstream
@@ -22,7 +22,7 @@ WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 
 for f in programs/wlcompositor/wlcompositor.c programs/wlterm/wlterm.c \
          programs/wlterm/vt100.c programs/wlclock.c programs/wlpaint.c \
-         programs/klauncher.c programs/notify-send.c programs/kclipd.c \
+         programs/klauncher.c programs/zenity.c programs/notify-send.c programs/kclipd.c \
          examples/libs/wpkdraw/src/wpkdraw.c examples/libs/wpkdraw/src/wpkfont.c \
          examples/libs/libkwl/src/kwl.c; do
     if [ ! -f "$SOURCE_ROOT/$f" ] || [ -L "$SOURCE_ROOT/$f" ]; then
@@ -182,6 +182,7 @@ build_kwl_client wlpaint "$SOURCE_ROOT/programs/wlpaint.c"
 build_kwl_client wlterm  "$SOURCE_ROOT/programs/wlterm/wlterm.c" \
                          "$SOURCE_ROOT/programs/wlterm/vt100.c"
 build_kwl_client klauncher "$SOURCE_ROOT/programs/klauncher.c"
+build_kwl_client zenity "$SOURCE_ROOT/programs/zenity.c"
 
 # --- kclipd -----------------------------------------------------------
 # The host-clipboard agent: /dev/kandelo/clipboard → the Wayland selection
@@ -243,7 +244,7 @@ PY
 
 cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-for prog in wlcompositor wlterm wlclock wlpaint klauncher notify-send kclipd; do
+for prog in wlcompositor wlterm wlclock wlpaint klauncher zenity notify-send kclipd; do
     install_local_binary wayland-demo "$WORK_DIR/$prog.wasm" "$prog.wasm"
 done
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then

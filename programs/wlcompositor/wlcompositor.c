@@ -71,7 +71,9 @@
  * `wlcompositor PROGRAM [ARG...]` runs PROGRAM as the whole session, as
  * cage does: it is spawned once the socket is bound, with WAYLAND_DISPLAY
  * and XDG_RUNTIME_DIR set, its windows are kiosk-maximized, and the
- * compositor exits with PROGRAM's status when PROGRAM exits.
+ * compositor exits with PROGRAM's status when PROGRAM exits. A dialog (a
+ * toplevel whose minimum size equals its maximum size) is not maximized: it
+ * opens centered at its own size, above the other windows.
  */
 #include <dirent.h>
 #include <errno.h>
@@ -276,6 +278,7 @@ struct surface {
                                          * _FULLSCREEN; 0 = floating */
     int32_t restore_x, restore_y;       /* the floating geometry wm_state */
     int32_t restore_w, restore_h;       /* replaced, back on unset */
+    int32_t min_w, min_h, max_w, max_h; /* xdg_toplevel size limits, 0 = none */
     struct wl_resource *frame_cbs[MAX_FRAME_CB];
     int n_frame_cbs;
     /* wp_presentation_feedback resources awaiting the next flip. */
@@ -737,6 +740,13 @@ static void place_surface(struct surface *s) {
     s->placed = 1;
 }
 
+/* A dialog is a toplevel whose minimum size equals its maximum size, as cage
+ * defines it: it cannot take the size kiosk mode gives every other window. */
+static int surface_is_dialog(struct surface *s) {
+    return s->min_w > 0 && s->min_h > 0 &&
+           s->min_w == s->max_w && s->min_h == s->max_h;
+}
+
 /* ---- wlr-layer-shell arrangement ---------------------------------------- */
 
 /* Layer surfaces are shell components (bar, launcher, wallpaper), not windows:
@@ -1083,6 +1093,22 @@ static void surface_committed_size(struct surface *s, struct shm_buffer *b,
     *h = b->height / s->buffer_scale;
 }
 
+static void toplevel_send_wm_state(struct surface *s, int32_t w, int32_t h);
+/* Kiosk mode maximized the toplevel when the client created it, before the
+ * client could set its size limits. At map they are known: a dialog keeps
+ * its own size, centered on the work area. */
+static void kiosk_place_dialog(struct surface *s) {
+    s->wm_state = 0;
+    s->x = g.usable.x + (g.usable.w - s->w) / 2;
+    s->y = g.usable.y + (g.usable.h - s->h) / 2;
+    if (s->x < g.usable.x) s->x = g.usable.x;
+    if (s->y < g.usable.y) s->y = g.usable.y;
+    s->placed = 1;
+    printf("DIALOG \"%s\" x=%d y=%d w=%d h=%d\n", s->app_id, s->x, s->y,
+           s->w, s->h);
+    fflush(stdout);
+    toplevel_send_wm_state(s, 0, 0);
+}
 static void surface_commit(struct wl_client *c, struct wl_resource *r) {
     struct surface *s = wl_resource_get_user_data(r);
     /* A layer surface's shell state — size, anchor, margins, exclusive zone —
@@ -1254,6 +1280,8 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         /* Tiling dictates geometry for every window in retile(); only the
          * floating desktop places individually by app_id. */
         if (g.layout == LAYOUT_FLOATING && !s->placed) place_surface(s);
+        if (g.kiosk && g.layout == LAYOUT_FLOATING && surface_is_dialog(s))
+            kiosk_place_dialog(s);
         zorder_raise(s);
         /* Hyprland's order: the workspace exists, the window opens, then it
          * takes focus. Quickshell's IPC module creates an untitled toplevel
@@ -1973,9 +2001,19 @@ static void toplevel_resize(struct wl_client *c, struct wl_resource *r,
                             struct wl_resource *seat, uint32_t serial,
                             uint32_t edges) {}
 static void toplevel_set_max_size(struct wl_client *c, struct wl_resource *r,
-                                  int32_t w, int32_t h) {}
+                                  int32_t w, int32_t h) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s) return;
+    s->max_w = w;
+    s->max_h = h;
+}
 static void toplevel_set_min_size(struct wl_client *c, struct wl_resource *r,
-                                  int32_t w, int32_t h) {}
+                                  int32_t w, int32_t h) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s) return;
+    s->min_w = w;
+    s->min_h = h;
+}
 /* xdg-shell answers every maximize and fullscreen request with a configure.
  * A floating window takes the usable area (maximized) or the whole output
  * (fullscreen); a tiled window keeps the tile the layout gives it. */

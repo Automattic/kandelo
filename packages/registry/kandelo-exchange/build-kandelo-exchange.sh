@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Kandelo exchange userland: the agent (kxchgd), the helpers
-# (kandelo-exchange, kandelo-publish) and the catch-all handler
-# (exchange-save). Sources: programs/kandelo-exchange/.
+# (kandelo-exchange, kandelo-publish), the catch-all handler (exchange-save)
+# and xdg-open. Sources: programs/kandelo-exchange/.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,7 +12,7 @@ kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 kandelo_package_select_source_root "$REPO_ROOT"
 
 SOURCE_DIR="$KANDELO_PACKAGE_SOURCE_ROOT/programs/kandelo-exchange"
-PROGRAMS=(kxchgd kandelo-exchange kandelo-publish exchange-save)
+PROGRAMS=(kxchgd kandelo-exchange kandelo-publish exchange-save xdg-open)
 for program in "${PROGRAMS[@]}"; do
     if [ ! -f "$SOURCE_DIR/$program.c" ] || [ -L "$SOURCE_DIR/$program.c" ]; then
         echo "ERROR: kandelo-exchange source must be a regular file: $SOURCE_DIR/$program.c" >&2

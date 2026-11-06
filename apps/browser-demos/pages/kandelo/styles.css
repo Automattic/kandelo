@@ -1432,6 +1432,11 @@
 .kexchange-toast-failed .kdownload-toast-detail {
   color: var(--kdemo-error, #e5484d);
 }
+.kexchange-link-uri {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--k-text);
+}
 .kexchange-output-actions {
   display: flex;
   gap: 8px;

@@ -7,6 +7,7 @@ inputs = [
   "programs/kandelo-exchange/kx-rules.h",
   "programs/kandelo-exchange/kx-util.h",
   "programs/kandelo-exchange/kxchgd.c",
+  "programs/kandelo-exchange/xdg-open.c",
   "libc/musl-overlay/include/kandelo/exchange.h",
   "scripts/install-local-binary.sh",
   "scripts/package-build-roots.sh",
