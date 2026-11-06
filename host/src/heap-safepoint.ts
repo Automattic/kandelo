@@ -49,9 +49,14 @@ export function engineHoldsHeapAccessWhileWaiting(
     && !/Chrome|Chromium|Android|Firefox/.test(userAgent);
 }
 
-// Keep the newest allocation reachable so an optimizing compiler cannot
-// remove it; it is replaced at the next safepoint.
-let safepointAllocation: ArrayBuffer | undefined;
+// [RUNTIME-WORKAROUND: JSC-BLOCKED-WAIT-GC-STARVATION] Keep one ordinary
+// buffer on this worker's global object. A module-local assignment is dead
+// once production tree shaking removes its test-only reader; the allocation
+// must remain externally observable even when no caller reads it.
+const safepointAllocationKey = Symbol("kandelo.heap-safepoint-allocation");
+const safepointAllocationRoot = globalThis as typeof globalThis & {
+  [safepointAllocationKey]?: ArrayBuffer;
+};
 
 /**
  * Build the `kernel_heap_safepoint` import for one process or thread image.
@@ -64,12 +69,12 @@ export function createHeapSafepointImport(
     ? HEAP_SAFEPOINT_INTERVAL_NS
     : HEAP_SAFEPOINT_UNBOUNDED;
   return () => {
-    safepointAllocation = new ArrayBuffer(8);
+    safepointAllocationRoot[safepointAllocationKey] = new ArrayBuffer(8);
     return bound;
   };
 }
 
 /** @internal The newest safepoint allocation, for tests. */
 export function lastHeapSafepointAllocationForTest(): ArrayBuffer | undefined {
-  return safepointAllocation;
+  return safepointAllocationRoot[safepointAllocationKey];
 }

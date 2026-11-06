@@ -174,6 +174,12 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   of Go allocation. The private-symbol sleep fixture verifies the policy and
   minimum duration in plain Go/cgo; upstream sync, scheduler and deadline
   cases exercise real wake behavior. Neither proves the suspected GC cause.
+  Validate the production host bundle too: a module-local allocation whose
+  only reader is a test export can disappear during tree shaking. The host
+  retains only the newest eight-byte ordinary buffer on its disposable
+  worker global; do not replace that observable root with a test-only
+  reference. `heap-safepoint-production.spec.ts` checks actual allocations
+  after Vite/Terser bundles only the runtime entry, across all three engines.
 - Test a declared slot count with distinct live locked Ms, not only many
   sequential starts. The 48-live-M/64-slot probe exposed browser teardown
   latency after the guest had exited: a per-thread 250 ms settlement was

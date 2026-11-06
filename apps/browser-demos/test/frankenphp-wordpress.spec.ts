@@ -115,7 +115,13 @@ for (const demo of [
     await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first())
       .toBeVisible({ timeout: 120_000 });
 
-    await page.getByRole("button", { name: "Close shortcuts", exact: true }).click();
+    // The login action can dismiss the dock popup when it selects the web
+    // view. Close it if it remains open, then require the unobstructed view.
+    const shortcuts = page.getByRole("dialog", { name: "Shortcuts", exact: true });
+    if (await shortcuts.isVisible()) {
+      await shortcuts.getByRole("button", { name: "Close shortcuts", exact: true }).click();
+    }
+    await expect(shortcuts).toBeHidden();
     const appPrefix = await machineAppPrefix(page, demo.title);
     await gotoInPreviewViaDock(page, "/wp-admin/site-editor.php");
     const editorLoaded = await Promise.race([
@@ -348,7 +354,11 @@ for (const demo of [
     await page.getByRole("button", { name: "Shortcuts", exact: true }).click();
     await page.getByRole("dialog", { name: "Shortcuts", exact: true }).getByRole("button", { name: /^Log in as admin\b/ }).click();
     await expect(frame.locator("body.wp-admin")).toBeVisible({ timeout: 120_000 });
-    await page.getByRole("button", { name: "Close shortcuts", exact: true }).click();
+    const shortcuts = page.getByRole("dialog", { name: "Shortcuts", exact: true });
+    if (await shortcuts.isVisible()) {
+      await shortcuts.getByRole("button", { name: "Close shortcuts", exact: true }).click();
+    }
+    await expect(shortcuts).toBeHidden();
     record(`before editor ${JSON.stringify(await frame.locator("body").evaluate(() => ({
       url: location.href,
       controller: navigator.serviceWorker.controller?.scriptURL ?? null,

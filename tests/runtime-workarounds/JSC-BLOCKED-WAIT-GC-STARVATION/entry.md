@@ -48,6 +48,18 @@ keeps waiting on the same request. The syscall's result, blocking and errno
 semantics do not change. V8 and SpiderMonkey get a negative bound on the
 first timeout and wait without a timeout from then on.
 
+Production bundling must preserve the allocation. On November 6 the
+production worker's checkpoint returned only its wait bound: tree shaking
+removed the module-local buffer because its only reader was a test export.
+That is a Kandelo implementation defect, not evidence of a minifier defect
+or confirmation of the suspected JSC cause. Keep the newest eight-byte
+ordinary buffer on the worker's global object under a private symbol. Each
+checkpoint replaces that one buffer; it retains no guest memory. The
+production regression bundles only the runtime entry with Vite/Terser and
+counts actual allocations in all three engines, without exporting the
+test reader. Before the correction, three calls allocate zero buffers;
+afterwards each allocates a distinct eight-byte buffer.
+
 Cost: one wakeup per blocked thread per 100 ms on JSC; a new required
 process import, so an ABI bump (51) and a rebuild of every program; the
 glue's wait loop is more complex. The import's declaration in

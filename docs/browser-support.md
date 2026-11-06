@@ -4243,6 +4243,14 @@ timeout with an unbounded wait and the process waits exactly as before. The
 host import lives in `host/src/heap-safepoint.ts`; the bounded wait is in
 `libc/glue/channel_syscall.c`.
 
+The newest eight-byte buffer is retained on the disposable worker's global
+object under a private symbol, replacing the previous one at each call.
+A module-local assignment with only a test reader was eliminated from the
+production bundle. A Vite/Terser browser regression now checks actual
+allocations without that reader; development-server results alone do not
+validate the shipped checkpoint. This implementation correction does not
+confirm the suspected engine explanation.
+
 The cost on JavaScriptCore is one wakeup per blocked thread per 100 ms. A
 standalone reproduction (24 workers that start a collection and then block)
 left all six helpers pinned and seven to eleven collections unfinished; with

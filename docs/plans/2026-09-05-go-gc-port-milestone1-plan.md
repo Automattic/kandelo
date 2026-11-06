@@ -47,10 +47,19 @@ recovery/draining cases also pass in 4m44s. The gallery's separate FPM image
 returns HTTP 500 during a WebKit post save; that failed control is retained,
 and the same-image control now passes after the generic preview fix.
 The strict persistence rerun passes ten cases; two Firefox welcome-dialog
-selection failures then pass a targeted correction. The new production
-frontend build and image identity checks pass. Its full UI and strengthened
-upload-rendering/persistence gates are running; sustained comparisons and
-quiet nine-suite measurements remain open.
+selection failures then pass a targeted correction. The production
+frontend build and image identity checks pass, but its UI batch finishes
+26/27 (36m16s): WebKit Caddy reaches the authenticated dashboard, then
+the fixture waits for an already-dismissed Shortcuts popup. Strengthened
+upload-rendering/persistence finishes 11/12 (24m22s); WebKit Caddy/library
+returns a response-pump error after reload, after the actual uploaded PNG
+and saves had succeeded. Neither failure is accepted as a passing gate.
+Inspecting the shipped worker reveals a production-only defect: tree
+shaking removes the checkpoint's module-local allocation and leaves only
+the returned wait bound. A regression and bounded per-worker allocation
+root now pass all three engines; causation of the reload failure remains
+unproven, and the rebuilt production cohort is pending.
+Sustained comparisons and quiet nine-suite measurements remain open.
 The target supports cooperative
 signals, fatal Go tracebacks, shared libc cgo syscall dispatch, callbacks,
 worker retirement, and host heap safepoints. The latest eight-line runtime
@@ -70,6 +79,41 @@ upstream Go test suite.
 The dated entries below retain the evidence and failures behind this
 checkpoint. These results do not establish complete Go/POSIX conformance,
 production readiness, a physical-memory plateau, or superiority over PHP-FPM.
+
+### Production checkpoint allocation correction — 2026-11-06
+
+The immutable production worker built at `840b49970` contains a checkpoint
+function that returns only `100000000n` on JSC. Vite/Terser correctly
+eliminates an unread module-local assignment when the test-only getter is
+absent. Unrelated eight-byte allocations elsewhere in the bundle initially
+confounded a text search; inspecting the actual import establishes the
+missing allocation.
+
+The host now roots only the newest eight-byte ordinary buffer on the
+worker global under a private symbol. It replaces the previous buffer on
+each call and retains no guest address space. No Go compiler, collector,
+ABI, wait bound, or guest dependency changes are needed. The new browser
+regression bundles only the actual runtime entry, omitting the test reader:
+three calls allocate zero buffers before the fix, versus three distinct
+eight-byte buffers after it in Chromium, Firefox and WebKit (3/3, 8.9s).
+The four existing safepoint tests pass on both Node and Bun, including
+real blocking I/O.
+ABI checking reports the program digest unchanged. The workaround registry
+remains consistent (ten entries, 37 tagged sites); its engine explanation
+remains suspected.
+
+The old production persistence batch passes 11/12, including actual PNG
+rendering in the editor before leaving it. The failed WebKit Caddy/library
+reload subsequently passes a targeted native-observed rerun on the same
+old bundle in 2m50s (`7899`, `.context/frankenphp-production-recovery-diagnostic-M6col2/`).
+Its native category sum peaks at 8.67 GiB; this is not whole-process physical
+footprint, and the observer can perturb timing. The earlier response-pump
+failure remains unexplained; it is not proven to result from the missing
+checkpoint allocation. The 26/27 production UI result is separately traced
+to a fixture awaiting an already-dismissed Shortcuts popup after successful
+login. The fixture now accepts that normal dismissal and requires the
+unobstructed view before continuing. A final coherent rebuilt cohort and
+full production repetitions remain required.
 
 ### Remaining release gates
 
@@ -687,6 +731,20 @@ fork-template identity, and legacy channel TLS detection. A future generic
 metadata handoff could remove the redundant byte copies while preserving
 those checks. No such change is made or measured here; this source finding
 does not quantify its share of the native bucket or establish a leak.
+
+### Final admitted module inventory — 2026-11-06
+
+A read-only structural scan of the normally resolved FrankenPHP+Caddy
+package finds 206,036,641 bytes, SHA-256
+`57b55a90bce97096b46849de48053f921b3c91a8aff8eda9b121cbda0e27c105`.
+It declares 188,168 functions, 61 import entries, six local tables, 3,761
+globals and 100,000 data segments. Its 676 exports comprise only 38
+functions, 633 globals and five tables; the large function count must not
+be mistaken for that many exported JavaScript wrappers. These are binary
+structure counts, not native allocation measurements or proof about which
+references the engine retains per instance. No compiler, table layout,
+export policy or collector change follows from this scan. Evidence:
+`.context/frankenphp-final-wasm-shape.json`.
 
 ### Measured service budget and common pool setting — 2026-11-06
 

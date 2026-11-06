@@ -7,6 +7,7 @@ import { startPersistentImageSource, type PersistentImageSource } from "./suppor
 import { loginToWordPress } from "./support/wordpress-login";
 import { expectWordPressEditor, publishWordPressPost, saveWordPressTemplateHeading } from "./support/wordpress-editor";
 import { observeImageWorkerMemory, imageWorkerMemory } from "./support/image-worker-memory";
+import { clickDockTool } from "./support/dock";
 import {
   gotoInPreview,
   gotoInPreviewViaDock,
@@ -140,19 +141,38 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
         }
         const media = JSON.parse(body) as { id?: number; source_url?: string };
         if (!media.id || !media.source_url) throw new Error(`WordPress upload has no file identity: ${body.slice(0, 500)}`);
-        return { sourceUrl: media.source_url, bytes: Array.from(bytes) };
+        return { sourceUrl: media.source_url, mediaId: media.id, bytes: Array.from(bytes) };
       }, { appPrefix, nonce });
       const uploadedPath = new URL(uploaded.sourceUrl).pathname;
       expect(uploadedPath.startsWith(appPrefix)).toBe(true);
       const uploadedRelativePath = uploadedPath.slice(appPrefix.length);
-      await page.evaluate(async ({ appPrefix, nonce, postId, sourceUrl }) => {
+      await page.evaluate(async ({ appPrefix, nonce, postId, sourceUrl, mediaId }) => {
         const response = await fetch(`${appPrefix}index.php?rest_route=/wp/v2/posts/${postId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-WP-Nonce": nonce },
-          body: JSON.stringify({ content: `<figure class="wp-block-image"><img src="${sourceUrl}" alt="Persistent uploaded image"></figure>` }),
+          body: JSON.stringify({ content:
+            `<!-- wp:image ${JSON.stringify({ id: mediaId, sizeSlug: "full", linkDestination: "none" })} -->` +
+            `<figure class="wp-block-image size-full"><img src="${sourceUrl}" alt="Persistent uploaded image" class="wp-image-${mediaId}"/></figure>` +
+            "<!-- /wp:image -->",
+          }),
         });
         if (!response.ok) throw new Error(`Embedding uploaded media failed: ${response.status} ${await response.text()}`);
-      }, { appPrefix, nonce, postId, sourceUrl: uploaded.sourceUrl });
+      }, { appPrefix, nonce, postId, sourceUrl: uploaded.sourceUrl, mediaId: uploaded.mediaId });
+
+      // Reopen the saved block, as a user does, and require the uploaded PNG
+      // to render before navigating away. Byte persistence alone does not
+      // establish that the editor can display the attachment.
+      await gotoInPreviewViaDock(page, `/wp-admin/post.php?post=${postId}&action=edit`);
+      await expectWordPressEditor(frame);
+      await expect.poll(() => frame.frameLocator('iframe[name="editor-canvas"]').locator("img")
+        .evaluateAll((images, sourceUrl) => {
+          const expected = new URL(sourceUrl).pathname;
+          const image = (images as HTMLImageElement[]).find(image =>
+            new URL(image.currentSrc || image.src, document.baseURI).pathname === expected);
+          return image ? { complete: image.complete, width: image.naturalWidth, height: image.naturalHeight } : null;
+        }, uploaded.sourceUrl), {
+        timeout: 120_000, message: "The uploaded PNG must render in the WordPress block editor",
+      }).toEqual({ complete: true, width: 2, height: 2 });
 
       const templateHeading = savesTemplates
         ? `Kandelo durable template ${crypto.randomUUID()}` : undefined;
@@ -247,6 +267,39 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
           }),
         });
         await observationPage.screenshot({ path: testInfo.outputPath("persistent-computer-failure.png") }).catch(() => {});
+        try {
+          await clickDockTool(observationPage, "Internals", { timeout: 2_000 });
+          const inspector = observationPage.getByRole("dialog", { name: "Internals", exact: true });
+          await inspector.getByRole("tab", { name: "Syslog", exact: true }).click({ timeout: 2_000 });
+          await testInfo.attach("persistent-computer-syslog", {
+            body: JSON.stringify(await inspector.locator(".ksys-line").allTextContents()),
+            contentType: "application/json",
+          });
+          await inspector.getByRole("tab", { name: "Procs", exact: true }).click({ timeout: 2_000 });
+          await testInfo.attach("persistent-computer-processes", {
+            body: await inspector.locator(".ktable").first().innerText({ timeout: 2_000 }),
+            contentType: "text/plain",
+          });
+          await inspector.getByRole("tab", { name: "VFS", exact: true }).click({ timeout: 2_000 });
+          for (const segment of ["var", "log"]) {
+            await inspector.locator(".ktable tr", {
+              has: observationPage.locator("td", { hasText: new RegExp(`^${segment}/$`) }),
+            }).click({ timeout: 2_000 });
+          }
+          const serviceLog = profile === "wordpress-frankenphp-caddy" ? "frankenphp-caddy.log"
+            : profile === "wordpress-frankenphp" ? "frankenphp-classic.log" : "nginx.log";
+          await inspector.locator(".ktable tr", {
+            has: observationPage.locator("td", { hasText: serviceLog }),
+          }).click({ timeout: 2_000 });
+          await testInfo.attach(serviceLog, {
+            body: await inspector.locator(".kinternals-surface pre").last().innerText({ timeout: 2_000 }),
+            contentType: "text/plain",
+          });
+        } catch (inspectionError) {
+          await testInfo.attach("persistent-computer-inspection-error", {
+            body: String(inspectionError), contentType: "text/plain",
+          });
+        }
       }
       throw error;
     } finally {
