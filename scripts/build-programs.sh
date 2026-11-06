@@ -1122,6 +1122,16 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     wayland-scanner private-code  "$SHORTCUTS_XML" "$WLC_GEN/hyprland-global-shortcuts-v1-protocol.c"
     wayland-scanner server-header "$SHORTCUTS_XML" "$WLC_GEN/hyprland-global-shortcuts-v1-server-protocol.h"
     wayland-scanner client-header "$SHORTCUTS_XML" "$WLC_GEN/hyprland-global-shortcuts-v1-client-protocol.h"
+    # Same for wp_cursor_shape_manager_v1: the pointer shapes the host shows.
+    # Its glue references the tablet tool interface, so tablet-v2 comes too.
+    CURSOR_SHAPE_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/cursor-shape-v1.xml"
+    wayland-scanner private-code  "$CURSOR_SHAPE_XML" "$WLC_GEN/cursor-shape-v1-protocol.c"
+    wayland-scanner server-header "$CURSOR_SHAPE_XML" "$WLC_GEN/cursor-shape-v1-server-protocol.h"
+    wayland-scanner client-header "$CURSOR_SHAPE_XML" "$WLC_GEN/cursor-shape-v1-client-protocol.h"
+    TABLET_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/tablet-unstable-v2.xml"
+    wayland-scanner private-code  "$TABLET_XML" "$WLC_GEN/tablet-v2-protocol.c"
+    wayland-scanner server-header "$TABLET_XML" "$WLC_GEN/tablet-v2-server-protocol.h"
+    wayland-scanner client-header "$TABLET_XML" "$WLC_GEN/tablet-v2-client-protocol.h"
 
     # libwayland-egl (step 12a): the wl_egl_window shim that SDL2's upstream
     # Wayland+GLES backend uses as its EGLNativeWindowType (see
@@ -1159,6 +1169,8 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
             "$WLC_GEN/ext-session-lock-v1-protocol.c" \
             "$WLC_GEN/ext-idle-notify-v1-protocol.c" \
             "$WLC_GEN/hyprland-global-shortcuts-v1-protocol.c" \
+            "$WLC_GEN/cursor-shape-v1-protocol.c" \
+            "$WLC_GEN/tablet-v2-protocol.c" \
             "$SYSROOT/lib/libwayland-server.a" \
             "$SYSROOT/lib/libwpkdraw.a" \
             "$SYSROOT/lib/libxkbcommon.a" \
@@ -1189,6 +1201,8 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         "$WLC_GEN/ext-session-lock-v1-protocol.c" \
         "$WLC_GEN/ext-idle-notify-v1-protocol.c" \
         "$WLC_GEN/hyprland-global-shortcuts-v1-protocol.c" \
+        "$WLC_GEN/cursor-shape-v1-protocol.c" \
+        "$WLC_GEN/tablet-v2-protocol.c" \
         "$SYSROOT/lib/libwayland-client.a" \
         "$SYSROOT/lib/libxkbcommon.a" \
         "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \

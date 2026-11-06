@@ -472,6 +472,7 @@ host/test/webmcp-launch.test.ts	source-only
 host/test/webmcp-observations.test.ts	source-only
 host/test/webmcp-preview.test.ts	source-only
 host/test/wlcompositor-clipboard-smoke.test.ts	prepared-product
+host/test/wlcompositor-cursor-shape-smoke.test.ts	prepared-product
 host/test/wlcompositor-decoration-smoke.test.ts	prepared-product
 host/test/wlcompositor-dmabuf-smoke.test.ts	prepared-product
 host/test/wlcompositor-keybind-smoke.test.ts	prepared-product

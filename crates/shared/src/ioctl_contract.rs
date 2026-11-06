@@ -367,6 +367,7 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::oss::SNDCTL_DSP_SETTRIGGER, In, 4),
     pointer!(TIOCSPTLCK, In, 4),
     pointer!(crate::dri::DRM_IOCTL_GEM_CLOSE, In, 8),
+    pointer!(crate::dri::DRM_IOCTL_WPK_CURSOR_SHAPE, In, 8),
     pointer!(crate::input::EVIOCGVERSION, Out, 4),
     pointer!(crate::oss::SOUND_PCM_READ_RATE, Out, 4),
     pointer!(crate::oss::SOUND_PCM_READ_BITS, Out, 4),

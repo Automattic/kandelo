@@ -70,10 +70,11 @@ gallery currently uses that direct-display path.
 Wayland can centralize window focus, keyboard mapping, pointer routing,
 cursor ownership, and output scale behind the same protocols used by other
 desktop applications. Freeciv has not yet been acceptance-tested through
-that path. In particular, Kandelo's current `wlcompositor` ignores client
-cursor surfaces and relies on the browser pointer. Client cursors need a
-shared compositor implementation before this can preserve Freeciv's
-contextual cursors. Switching backends alone does not establish correct
+that path. In particular, Kandelo's current `wlcompositor` does not draw
+client cursor surfaces and relies on the browser pointer. It passes
+`wp_cursor_shape_v1` shapes to the browser pointer, and hides it for a
+client that draws its own cursor, but Freeciv's contextual cursors are
+images, so they need a compositor that draws cursor surfaces. Switching backends alone does not establish correct
 bitmap UI scaling or fix Freeciv widget defects.
 
 ## Audio

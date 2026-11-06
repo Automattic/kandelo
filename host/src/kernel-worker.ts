@@ -3336,7 +3336,8 @@ export class CentralizedKernelWorker {
    *  count, timestamp, width, height, blit µs); slots [5,6] populated
    *  from kernel-side `kernel_kms_commit_count` / `kernel_kms_last_frame_us`;
    *  slot 7 = active presenter (1 = 2d, 2 = pump webgl2-scanout,
-   *  3 = program-owned WebGL2, 0 = none). */
+   *  3 = program-owned WebGL2, 0 = none); slot 8 = DRM master pid;
+   *  slot 9 = the master's `WPK_CURSOR_SHAPE_*` for the host pointer. */
   private kmsStatsViews = new Map<number, Int32Array>();
   /** Cached per-CRTC scratch for both presenters (putImageData /
    *  texImage2D) so the pump doesn't allocate 8 MB/frame at 1080p.
@@ -31126,15 +31127,17 @@ export class CentralizedKernelWorker {
         // this entry, and the presenter receives only owned pixel copies.
         if (typeof entry.instance.exports.kernel_kms_cursor_read === "function") {
           this.#requireMainScratchRegion().withLease(lease => {
-            const pointer = lease.exportPointer(0, 32);
+            const length = this.#kernel.kms.cursorRecordLength;
+            const pointer = lease.exportPointer(0, length);
             const count = this.#invokeEntryScratchExport(
-              entry, lease, "kernel_kms_cursor_read", [pointer, 32],
+              entry, lease, "kernel_kms_cursor_read", [pointer, length],
             );
-            if (count === 32) this.#kernel.kms.applyCursorRecord(lease.copyOut(0, 32));
+            if (count === length) this.#kernel.kms.applyCursorRecord(lease.copyOut(0, length));
             else if (count !== 0) throw new Error(`Invalid KMS cursor record length: ${count}`);
           });
         }
         const cursor = this.#kernel.kms.cursorSnapshot();
+        const cursorShape = this.#kernel.kms.cursorShape;
         const cursorPlanes = Array.from(this.kmsCursorPlanes, ([crtcId, plane]) => {
           const fb = this.#kernel.kms.currentFb(crtcId);
           const size = fb ?? connectorModeSize(this.kmsDisplaySizes.get(crtcId));
@@ -31204,6 +31207,9 @@ export class CentralizedKernelWorker {
             // even without a framebuffer so consumers can observe release.
             if (snapshot.stats.length > 8) {
               Atomics.store(snapshot.stats, 8, snapshot.ownerPid);
+            }
+            if (snapshot.stats.length > 9) {
+              Atomics.store(snapshot.stats, 9, cursorShape);
             }
             if (snapshot.width !== null && snapshot.height !== null) {
               Atomics.store(snapshot.stats, 2, snapshot.width);

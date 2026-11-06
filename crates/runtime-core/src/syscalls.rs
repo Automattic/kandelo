@@ -2080,6 +2080,27 @@ fn handle_dri_card_ioctl(
             host.kms_cursor(pid, crtc, flags, bo_id, width, height, x, y, hot_x, hot_y);
             Ok(())
         }
+        DRM_IOCTL_WPK_CURSOR_SHAPE => {
+            if buf.len() < core::mem::size_of::<WpkDrmCursorShape>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmCursorShape =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.shape > WPK_CURSOR_SHAPE_MAX {
+                return Err(Errno::EINVAL);
+            }
+            if req.crtc_id != 1 {
+                return Err(Errno::ENOENT);
+            }
+            if !kms_state(proc, ofd_idx)?.holds_master {
+                return Err(Errno::EACCES);
+            }
+            if !host.kms_cursor_shapes_supported() {
+                return Err(Errno::ENOTSUP);
+            }
+            host.kms_cursor_shape(pid, req.crtc_id, req.shape);
+            Ok(())
+        }
         DRM_IOCTL_MODE_SETCRTC => {
             if buf.len() < core::mem::size_of::<WpkDrmModeGetCrtc>() {
                 return Err(Errno::EINVAL);
@@ -23127,6 +23148,9 @@ mod tests {
         gl_unbind_calls: Vec<i32>,
         proc_write_calls: Vec<(i32, u64, Vec<u8>)>,
         cursor_supported: bool,
+        cursor_shapes_supported: bool,
+        /// Recorded `(pid, crtc_id, shape)` for every `kms_cursor_shape` call.
+        cursor_shape_calls: Vec<(i32, u32, u32)>,
         /// Simulated guest linear memory for `proc_read_bytes` /
         /// `proc_write_bytes`. Without it every cross-memory call fails with
         /// the trait's `-ENOSYS` default, which would make a test that means
@@ -23280,6 +23304,8 @@ mod tests {
                 gl_unbind_calls: Vec::new(),
                 proc_write_calls: Vec::new(),
                 cursor_supported: false,
+                cursor_shapes_supported: false,
+                cursor_shape_calls: Vec::new(),
                 // 64 KiB — one wasm page, enough for every address these
                 // tests use and small enough that a deliberately-high
                 // address is out of range.
@@ -23716,6 +23742,10 @@ mod tests {
 
     impl HostIO for MockHostIO {
         fn kms_cursor_supported(&mut self) -> bool { self.cursor_supported }
+        fn kms_cursor_shapes_supported(&mut self) -> bool { self.cursor_shapes_supported }
+        fn kms_cursor_shape(&mut self, pid: i32, crtc_id: u32, shape: u32) {
+            self.cursor_shape_calls.push((pid, crtc_id, shape));
+        }
 
         fn host_udp_source_address(&mut self, _dst: &[u8; 4]) -> Result<[u8; 4], Errno> {
             self.udp_source_result
@@ -50518,6 +50548,36 @@ impl HostIO for RelSymlinkMock {
             }
             assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
         }
+    }
+
+    #[test]
+    fn kms_cursor_shape_requires_master_protocol_2_and_a_known_shape() {
+        use wasm_posix_shared::dri::*;
+        let _master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let shape = |proc: &mut Process, host: &mut MockHostIO, crtc: u32, shape: u32| {
+            let mut request = [0u8; 8];
+            request[..4].copy_from_slice(&crtc.to_le_bytes());
+            request[4..].copy_from_slice(&shape.to_le_bytes());
+            sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_CURSOR_SHAPE, &mut request)
+        };
+        host.cursor_shapes_supported = true;
+        assert_eq!(shape(&mut proc, &mut host, 1, WPK_CURSOR_SHAPE_HIDDEN), Err(Errno::EACCES));
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut []).unwrap();
+        assert_eq!(shape(&mut proc, &mut host, 1, WPK_CURSOR_SHAPE_MAX + 1), Err(Errno::EINVAL));
+        assert_eq!(shape(&mut proc, &mut host, 2, WPK_CURSOR_SHAPE_DEFAULT), Err(Errno::ENOENT));
+        host.cursor_shapes_supported = false;
+        assert_eq!(shape(&mut proc, &mut host, 1, WPK_CURSOR_SHAPE_HIDDEN), Err(Errno::ENOTSUP));
+        host.cursor_shapes_supported = true;
+        shape(&mut proc, &mut host, 1, WPK_CURSOR_SHAPE_HIDDEN).unwrap();
+        shape(&mut proc, &mut host, 1, WPK_CURSOR_SHAPE_MAX).unwrap();
+        assert_eq!(
+            host.cursor_shape_calls,
+            vec![(1, 1, WPK_CURSOR_SHAPE_HIDDEN), (1, 1, WPK_CURSOR_SHAPE_MAX)]
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]

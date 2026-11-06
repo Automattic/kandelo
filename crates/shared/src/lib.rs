@@ -4531,6 +4531,29 @@ pub mod dri {
                             //          (also writable as a sampler binding)
     }
 
+    /// `_IOW('d', 0xE2, WpkDrmCursorShape)` — name the pointer shape the
+    /// host draws over the CRTC. A guest that draws its own cursor in its
+    /// frame names `WPK_CURSOR_SHAPE_HIDDEN`. Requires DRM master and a
+    /// host that negotiated cursor protocol 2.
+    pub const DRM_IOCTL_WPK_CURSOR_SHAPE: u32 = 0x4008_64e2;
+
+    /// No host pointer: the guest draws its own cursor.
+    pub const WPK_CURSOR_SHAPE_HIDDEN: u32 = 0;
+    /// The host's default pointer, `wp_cursor_shape_device_v1.shape.default`.
+    pub const WPK_CURSOR_SHAPE_DEFAULT: u32 = 1;
+    /// The last `wp_cursor_shape_device_v1` version 1 shape, `zoom_out`.
+    /// Values 1 through this one are that protocol's shape values.
+    pub const WPK_CURSOR_SHAPE_MAX: u32 = 34;
+
+    /// `CURSOR_SHAPE` argument. 8 bytes (2 × u32).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmCursorShape {
+        pub crtc_id: u32, // 0   in
+        pub shape: u32,   // 4   in    WPK_CURSOR_SHAPE_*
+                          // total: 8
+    }
+
     // --- KMS ioctls ('d' magic, Linux UAPI) -------------------------------
 
     /// `_IO('d', 0x1e)` — request DRM_MASTER.
@@ -5395,6 +5418,7 @@ mod dri_tests {
     fn wpk_extension_sizes_match_wasm32() {
         assert_eq!(size_of::<WpkDrmGpuBoCreate>(), 16);
         assert_eq!(size_of::<WpkDrmBindForeignTexture>(), 16);
+        assert_eq!(size_of::<WpkDrmCursorShape>(), 8);
     }
 
     #[test]
@@ -5416,6 +5440,15 @@ mod dri_tests {
                 'd' as u32,
                 0xE1,
                 size_of::<WpkDrmBindForeignTexture>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_WPK_CURSOR_SHAPE,
+            ioc(
+                IOC_WRITE,
+                'd' as u32,
+                0xE2,
+                size_of::<WpkDrmCursorShape>() as u32
             )
         );
     }

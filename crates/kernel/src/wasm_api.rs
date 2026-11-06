@@ -1247,6 +1247,14 @@ impl HostIO for WasmHostIO {
             pid, flags, bo_id, width, height, x, y, hot_x, hot_y,
         );
     }
+
+    fn kms_cursor_shapes_supported(&mut self) -> bool {
+        CURSOR_TRANSPORT.lock().shapes_supported()
+    }
+
+    fn kms_cursor_shape(&mut self, pid: i32, _crtc_id: u32, shape: u32) {
+        CURSOR_TRANSPORT.lock().set_shape(pid, shape);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -17133,26 +17141,30 @@ pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
 static CURSOR_TRANSPORT: spin::Mutex<crate::dri::cursor::CursorTransport> =
     spin::Mutex::new(crate::dri::cursor::CursorTransport::new());
 
-/// Negotiate cursor protocol 1. Older hosts never call this and cursor
-/// capability remains disabled. No new host import is needed under ABI 50.
+/// Negotiate cursor protocol 1 or 2 and return the accepted version. Older
+/// hosts never call this and cursor capability remains disabled. No new host
+/// import is needed under ABI 50.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kms_cursor_configure(version: u32) -> i32 {
     CURSOR_TRANSPORT.lock().configure(version)
 }
 
-/// Read the latest complete cursor state, coalescing image and motion updates.
-/// Protocol 1: eight little-endian words (pid, BO, width, height, x, y, hot_x,
-/// hot_y). Returns 32 after copying, 0 when unchanged, or negative errno.
+/// Read the latest complete cursor state, coalescing image, motion and shape
+/// updates. Protocol 1: eight little-endian words (pid, BO, width, height, x,
+/// y, hot_x, hot_y). Protocol 2 appends the `WPK_CURSOR_SHAPE_*` word.
+/// Returns the record length after copying, 0 when unchanged, or negative
+/// errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kms_cursor_read(out_ptr: *mut u8, out_len: u32) -> i32 {
-    if out_ptr.is_null() || out_len < 32 { return -(Errno::EINVAL as i32); }
     let mut transport = CURSOR_TRANSPORT.lock();
+    let len = transport.record_len();
+    if out_ptr.is_null() || (out_len as usize) < len { return -(Errno::EINVAL as i32); }
     let Some(words) = transport.take() else { return 0 };
-    let out = unsafe { slice::from_raw_parts_mut(out_ptr, 32) };
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, len) };
     for (chunk, word) in out.chunks_exact_mut(4).zip(words) {
         chunk.copy_from_slice(&word.to_le_bytes());
     }
-    32
+    len as i32
 }
 
 /// Number of successful page-flip commits on the given crtc.

@@ -94,6 +94,11 @@ export class KmsRegistry {
   private cursorBo = 0;
   private cursorBytes: Uint8Array | null = null;
 
+  /** 32 for cursor protocol 1, 36 once the kernel accepts protocol 2. */
+  cursorRecordLength = 32;
+  /** The guest's `WPK_CURSOR_SHAPE_*` for the host pointer; 1 is default. */
+  cursorShape = 1;
+
   /** Called under the kernel entry before deferred canvas presentation.
    * Cursor mappings remain live, just like scanout; only changed pixels
    * allocate a new owned snapshot for the detached observer phase. */
@@ -140,9 +145,9 @@ export class KmsRegistry {
     this.cursorSnapshot();
   }
 
-  /** Protocol 1 carries the complete latest state, never a dangling delta. */
+  /** A record carries the complete latest state, never a dangling delta. */
   applyCursorRecord(bytes: Uint8Array): void {
-    if (bytes.byteLength !== 32) throw new Error("Invalid KMS cursor record");
+    if (bytes.byteLength !== this.cursorRecordLength) throw new Error("Invalid KMS cursor record");
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const pid = view.getInt32(0, true);
     // Forced process cleanup can retire host views before a queued update
@@ -156,6 +161,7 @@ export class KmsRegistry {
     if (bo && (!width || !height || width > 64 || height > 64)) {
       throw new Error("Invalid KMS cursor image geometry");
     }
+    if (bytes.byteLength === 36) this.cursorShape = view.getUint32(32, true);
     const imageChanged = bo !== this.cursorBo || width !== this.cursor.width
       || height !== this.cursor.height || hotX !== this.cursor.hotX || hotY !== this.cursor.hotY;
     this.setCursor(pid, imageChanged ? 3 : 2, bo, width, height, x, y, hotX, hotY);

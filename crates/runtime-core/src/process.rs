@@ -654,6 +654,14 @@ pub trait HostIO {
         hot_y: i32,
     ) {
     }
+
+    /// True only after the host has negotiated cursor protocol 2.
+    fn kms_cursor_shapes_supported(&mut self) -> bool {
+        false
+    }
+
+    #[allow(unused_variables)]
+    fn kms_cursor_shape(&mut self, pid: i32, crtc_id: u32, shape: u32) {}
 }
 
 /// Process lifecycle state.

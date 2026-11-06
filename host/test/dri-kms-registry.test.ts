@@ -270,3 +270,26 @@ it("consumes full cursor records without recopying motion images or resurrecting
   kms.applyCursorRecord(record([0, 0, 0, 0, 0, 0, 0, 0]));
   expect(kms.cursorSnapshot().pixels).toBeNull();
 });
+
+it("reads the pointer shape from protocol 2 records and ignores a retired owner's shape", () => {
+  const kms = new KmsRegistry(new GbmBoRegistry());
+  const record = (words: number[]) => {
+    const bytes = new Uint8Array(words.length * 4);
+    const view = new DataView(bytes.buffer);
+    words.forEach((word, i) => view.setUint32(i * 4, word, true));
+    return bytes;
+  };
+  expect(kms.cursorShape).toBe(1);
+  kms.cursorRecordLength = 36;
+  expect(() => kms.applyCursorRecord(record([7, 0, 0, 0, 0, 0, 0, 0]))).toThrow("Invalid KMS cursor record");
+  kms.setMasterPid(7);
+  kms.applyCursorRecord(record([7, 0, 0, 0, 0, 0, 0, 0, 0]));
+  expect(kms.cursorShape).toBe(0);
+  kms.applyCursorRecord(record([7, 0, 0, 0, 0, 0, 0, 0, 8]));
+  expect(kms.cursorShape).toBe(8);
+  kms.dropMaster();
+  kms.applyCursorRecord(record([7, 0, 0, 0, 0, 0, 0, 0, 0]));
+  expect(kms.cursorShape).toBe(8);
+  kms.applyCursorRecord(record([0, 0, 0, 0, 0, 0, 0, 0, 1]));
+  expect(kms.cursorShape).toBe(1);
+});

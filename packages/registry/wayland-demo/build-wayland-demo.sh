@@ -94,6 +94,8 @@ PROTOCOL_LIST=(
     "ext-data-control-v1:ext-data-control-v1"
     "ext-session-lock-v1:ext-session-lock-v1"
     "ext-idle-notify-v1:ext-idle-notify-v1"
+    "cursor-shape-v1:cursor-shape-v1"
+    "tablet-v2:tablet-unstable-v2"
 )
 echo "==> Generating Wayland protocol glue from $XML_DIR..."
 for entry in "${PROTOCOL_LIST[@]}"; do
@@ -148,6 +150,8 @@ wasm32posix-cc "${CFLAGS[@]}" -I"$GEN" -I"$LIBINPUT/include" $PKG_CFLAGS \
     "$GEN/ext-session-lock-v1-protocol.c" \
     "$GEN/ext-idle-notify-v1-protocol.c" \
     "$GEN/hyprland-global-shortcuts-v1-protocol.c" \
+    "$GEN/cursor-shape-v1-protocol.c" \
+    "$GEN/tablet-v2-protocol.c" \
     "$SYSROOT/lib/libwayland-server.a" \
     "$SYSROOT/lib/libwpkdraw.a" \
     "$SYSROOT/lib/libxkbcommon.a" \

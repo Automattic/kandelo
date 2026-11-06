@@ -682,6 +682,8 @@ export type MachineAudioState =
  *      3 = a GL program claimed the canvas and paints it directly;
  *      0 = nothing painting)
  *   8: current DRM master PID (0 = no display owner)
+ *   9: the master's pointer shape: 0 hides the host pointer, 1-34 are
+ *      `wp_cursor_shape_device_v1` shapes (1 = default). Starts at 1.
  */
 export interface KmsDisplayHandle {
   /** CRTC the canvas is bound to (matches what the wasm process passes
@@ -3237,6 +3239,7 @@ export class LiveKernelHost implements KernelHost {
     // Reserve 64 bytes for bounded display counters and ownership metadata.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
+    Atomics.store(stats, 9, 1);
     const mode = attachOpts.mode ?? this.kmsDisplayModeDefault ?? "webgl2";
     const offscreen = canvas.transferControlToOffscreen();
     this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, {
