@@ -6509,8 +6509,10 @@ The shared Node candidate now reads protocol, cipher, session reuse, peer
 verification and local/peer Finished data from the actual SSL object owned
 by its existing native TLS handle. Returned bytes are independent copies.
 Authorization no longer mirrors the caller's rejectUnauthorized policy.
-Allowed-error connections continue certificate verification and retain its
-final result; default rejecting connections keep OpenSSL's aborting callback.
+The current source candidate finishes certificate verification with the pinned
+continuing callback and captures rejectUnauthorized before TCP startup. A
+rejecting connection checks the real verification result before publishing a
+TLS handle or plaintext; allowed-error mode retains that result.
 The guest TLS metadata describes that connection, including a browser's
 local TLS bridge, rather than the separate upstream Fetch TLS session.
 
@@ -6520,6 +6522,18 @@ four-host runtime validation remains pending. This does not complete SecureConte
 objects/identity callbacks, socket inheritance, sessions, cancellation,
 servers or public metadata/function descriptors. See
 [tls-state dependencies](../tests/nodejs/outline/tls-state-implementation-dependencies.md).
+
+The later trust-context source captures custom CA arrays and sized string/view
+bytes in an actual SSL_CTX before TCP startup. Handshakes claim independent
+native references. Explicit empty stores and partial-chain flags retain their
+pinned selections. Production completion enters the rooted Promise realm and
+admits TLS watches only on their owning context. Synchronous native context
+exceptions retire the actual socket and queued writes without replacing the
+exception with a generic Promise failure. This source remains uncompiled for
+the current candidate. Default trust uses configured guest OpenSSL paths;
+bundled/system/extra CA APIs, public SecureContext, hostname policy, fatal
+allocation behavior, cancellation and context shutdown remain open. See the
+[trust-context scope](../tests/nodejs/outline/tls-context-trust-implementation-dependencies.md).
 
 ### Public Buffer constructor and pooled storage source candidate
 

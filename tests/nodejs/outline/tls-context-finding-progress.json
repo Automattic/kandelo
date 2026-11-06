@@ -1,0 +1,139 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/secure-network-contracts.md",
+    "findingIds": [
+      "S-002",
+      "S-003",
+      "S-011"
+    ],
+    "relatedFamilies": [
+      "secure-network",
+      "http",
+      "values"
+    ],
+    "scope": "Partial custom-CA trust/completion verification and source ownership;not secure-network/default-store/TLS identity closure"
+  },
+  "sourceImplemented": [
+    "Unchanged pinned CA selections feed actual eager SSL_CTX with independent native ref claims",
+    "Captured verification policy enforced after real verification before handle/plaintext publication",
+    "TLS result allocation enters rooted Promise realm;watch admission filters owning cx",
+    "Actual Error code ordinary Set/reason owner;root context exception and real JS socket failure cleanup correction",
+    "Current source staging/unity and0113patch preserve VM/ELD/backing/HTTP/target source"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tls-context-source-r1/report.json",
+    "sha256": "b93899ab9e0f696dbee643478229b58dab825c06e07a332bd5e715380e24d3e5",
+    "guardedInputs": 692,
+    "wholeNodeReferences": 5,
+    "scope": "Actual current source141additive trust/verification/realm integration. Exact5whole Node references and zero-fuzz canonical engine composition;normal source staging/unity only. No JSAPI compilation or current four-host/runtime acceptance."
+  },
+  "nativeDependencyControls": {
+    "report": ".context/node26-tls-context-controls-r1/runner-report.json",
+    "sha256": "8059317e77aad24b993f3bc7a6a08d813c47ca8e7c1fb4fd07ec3ea7423b6fc1",
+    "passed": 25,
+    "failed": 0,
+    "skipped": 0,
+    "TCPComparisons": 32,
+    "validationCases": 11,
+    "defaultCustomEmptyBranches": 10,
+    "actualSSLNewAllocationFailures": 13,
+    "ordinaryOrUnreachedControls": 4,
+    "hostHelperCompiles": 2,
+    "scope": "Pinned CA source; real selected OpenSSL3.3.2 via NAPI fixture, TCP and allocator controls; not production JSAPI/GC/watch execution"
+  },
+  "attachLifecycleControls": {
+    "report": ".context/node26-tls-attach-after-r1.log",
+    "sha256": "6c8482f8bfd2103bd13a1b2fe25f25c17626534d1233604eb40389aa5ed2357a",
+    "passed": 2,
+    "scope": "Actual bootstrap TLSSocket JS/native Duplex dependency synchronous/rejected failure and queued callback identity;not native guest transport/JSAPI"
+  },
+  "affectedControls": {
+    "report": ".context/node26-tls-context-affected-r1.json",
+    "sha256": "3b7c2c56420980d81878410692c01e48154593634115678fe3347b5703156c7d",
+    "passed": 27,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing TLS identity/HTTP headers plus14package source checks,no global setup;native dependencies"
+  },
+  "packageChecks": {
+    "report": ".context/node26-tls-context-affected-r1.json",
+    "sha256": "3b7c2c56420980d81878410692c01e48154593634115678fe3347b5703156c7d",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package checks within affected aggregate,not extra passes"
+  },
+  "privateHandoff": {
+    "report": ".context/tls-context-agent/handoff/identities.json",
+    "sha256": "b9f50b9127b28e82874f4bb10031c15b3c1240ad301a0714137a8b2e6bbc889a",
+    "sealSha256": "afd5b5f103fdbb25cfd32e02493563c3b000253c4cdc9e4c4bc3e17f147ec496",
+    "hostComponentBuildAttempts": 6,
+    "scope": "Immutable proposal,source135preimages/136shell;root additively reconciles current141. Six historical component compiles separate from root2,zero engine/package builds."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-tls-context-source-initial-nonpass.log",
+      "sha256": "fba9e8ba09daca3e06cc378acab0d07b81536c8753b604b93f19710eb87479e6",
+      "kind": "root-source-check-expectation",
+      "reason": "Root checker expected a shortened header alias;actual declared generator preserves shell/kandelo-node prefix. Correct checker to actual staged header;production unchanged."
+    },
+    {
+      "report": ".context/node26-tls-context-integration-r1.log",
+      "sha256": "f5b0f43f14af900882ffb80ffad92eb4608a59711d2c759a0769027eb0de83e9",
+      "kind": "source-patch-rebase",
+      "reason": "Old shared build/native generator contexts conflict with newer HTTP/ELD/backing owners;explicit additive rebase preserves them"
+    },
+    {
+      "report": ".context/node26-tls-attach-before-r1.log",
+      "sha256": "eed33c2d07e14fc093f3b3de23a3231b34eb2d18d4e508414ab0531c10e2c0b3",
+      "kind": "synchronous-native-attach",
+      "reason": "Identical actual-bootstrap assertion catches unwanted synchronous throw;real socket/queued callbacks now retire with original error"
+    },
+    {
+      "report": ".context/node26-tls-context-identity-before-r1.json",
+      "sha256": "1169035927d486cce152aef3bd53733958263367c588e499ec00bce66fd9eb6f",
+      "kind": "local-URL-extraction-harness",
+      "passed": 6,
+      "failed": 1,
+      "reason": "Duplicate url parameter/const SyntaxError before assertions;local dependency extraction fixed without assertion changes"
+    },
+    {
+      "report": ".context/tls-context-agent/handoff/controls-r1-report.json",
+      "sha256": "5e1fb91fdeec8bb99f1a217645f92f6665ada4fa50269664ed09cdca21d49eb4",
+      "kind": "original-TLS-comparison",
+      "reason": "Initial hostname and rejecting metadata mismatches preserved;later CA-only peers disable identity on both sides,not hostname parity"
+    },
+    {
+      "report": ".context/tls-context-agent/handoff/allocation-controls.log",
+      "sha256": "9281764d234c7795b4d18ee96b682f76e50f4f926254c5ebd5fc86539a1ade0a",
+      "kind": "original-allocation-fixture",
+      "reason": "First harness wrongly expected16reached sites;13actualSSL_newfaultsites and3unreached indices recorded separately"
+    },
+    {
+      "report": ".context/tls-context-agent/handoff/ownership-ledger.json",
+      "sha256": "00419547abff1c82d79d54709c0696d1f7053095d03ca5937775db60c092db2d",
+      "kind": "CA-store-fatal-source-gap",
+      "reason": "NodeCHECK_EQfatal vs currentnativefailure remains open;no accepted exclusion or runtime proof"
+    }
+  ],
+  "remaining": [
+    "public SecureContext and key/cert/PFX/CRL/cipher/protocol/session/server owners",
+    "default/bundled/system/extra CA APIs and CLI store choices",
+    "hostname/IP/SNI/custom identity/certificate/error-schema parity",
+    "option/getter/overload ordering",
+    "prompt handshake cancellation/ref/deadlines and asynchronous shutdown",
+    "production realm/JSAPI/GC/fatal/OOM/pressure/Promise/worker/teardown execution",
+    "global SocketWatch/TLS-handle context/thread isolation and context retirement",
+    "four-host conformance",
+    "All19families remain partial;no individualAPIclosure or currentfour-hostacceptance"
+  ],
+  "at": "2026-11-06T06:27:27.946414+00:00",
+  "recipeRevision": 142,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

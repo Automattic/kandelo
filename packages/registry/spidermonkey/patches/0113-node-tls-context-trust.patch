@@ -1,0 +1,208 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -620,6 +620,7 @@
+   SSL_CTX* tlsCtx = nullptr;
+   int tlsHandle = -1;
+   bool closeFdOnCleanup = false;
++  bool tlsRejectUnauthorized = true;
+   bool referenced = true;
+   kandelo::child_wait::State childWait;
+   KandeloSocketWatch* next = nullptr;
+@@ -661,7 +662,10 @@
+
+ static bool KandeloSocketHasWatches(JSContext* cx) {
+   for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
+-    if (watch->kind == KandeloSocketWatchKind::Child && watch->cx != cx) continue;
++    if ((watch->kind == KandeloSocketWatchKind::Child ||
++         watch->kind == KandeloSocketWatchKind::TlsConnect ||
++         watch->kind == KandeloSocketWatchKind::TlsRead ||
++         watch->kind == KandeloSocketWatchKind::TlsWrite) && watch->cx != cx) continue;
+     if (watch->referenced) return true;
+   }
+   return false;
+@@ -1024,6 +1028,10 @@
+     } else if (watch->kind == KandeloSocketWatchKind::TlsConnect ||
+                watch->kind == KandeloSocketWatchKind::TlsRead ||
+                watch->kind == KandeloSocketWatchKind::TlsWrite) {
++      if (watch->cx != cx) {
++        watch = next;
++        continue;
++      }
+       done = KandeloDispatchTlsWatch(watch);
+     } else if (watch->kind == KandeloSocketWatchKind::Read) {
+       ssize_t n = read(watch->fd, watch->buffer.data(), watch->buffer.size());
+@@ -2283,6 +2291,10 @@
+ }
+
+ static bool KandeloDispatchTlsWatch(KandeloSocketWatch* watch) {
++  // The rooted operation Promise is the actual completion-realm owner.
++  // All TLS result objects/errors are constructed here, not in the polling
++  // caller's realm; no raw realm pointer or foreign-thread root is retained.
++  JSAutoRealm realm(watch->cx, watch->promise.get());
+   SSL* ssl = watch->tlsSsl;
+   if (watch->kind != KandeloSocketWatchKind::TlsConnect) {
+     KandeloTlsHandle* h = KandeloGetTlsHandle(watch->tlsHandle);
+@@ -2297,6 +2309,14 @@
+   if (watch->kind == KandeloSocketWatchKind::TlsConnect) {
+     int result = SSL_connect(ssl);
+     if (result == 1) {
++      // Verification state belongs to this real SSL connection. A missing
++      // certificate is an error except for the pinned authenticated PSK/
++      // resumed-session cases handled by VerifyPeer.
++      const long verify = kandelo::tls::VerifyPeer(ssl);
++      if (watch->tlsRejectUnauthorized && verify != X509_V_OK) {
++        KandeloTlsRejectVerification(watch->cx, watch->promise, verify);
++        return true;
++      }
+       int handle =
+           KandeloAllocTlsHandle(watch->fd, watch->tlsSsl, watch->tlsCtx);
+       if (handle < 0) {
+@@ -2306,7 +2326,8 @@
+         watch->tlsSsl = nullptr;
+         watch->tlsCtx = nullptr;
+         watch->closeFdOnCleanup = false;
+-        KandeloResolvePromiseWithInt(watch->cx, watch->promise, handle);
++        if (!KandeloResolvePromiseWithInt(watch->cx, watch->promise, handle))
++          KandeloCloseTlsHandle(handle);
+       }
+       return true;
+     }
+@@ -2360,50 +2381,7 @@
+ }
+
+ static SSL_CTX* KandeloMakeTlsContext(JSContext* cx, HandleValue optionsValue) {
+-  SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
+-  if (!ctx) return nullptr;
+-  SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+-  bool rejectUnauthorized = true;
+-  RootedValue caValue(cx);
+-  if (optionsValue.isObject()) {
+-    RootedObject opts(cx, &optionsValue.toObject());
+-    RootedValue rejectValue(cx);
+-    if (JS_GetProperty(cx, opts, "rejectUnauthorized", &rejectValue) &&
+-        rejectValue.isBoolean()) {
+-      rejectUnauthorized = rejectValue.toBoolean();
+-    }
+-    JS_GetProperty(cx, opts, "ca", &caValue);
+-  }
+-  if (!caValue.isUndefined() && !caValue.isNull()) {
+-    UniqueChars ca;
+-    if (!KandeloGetString(cx, caValue, &ca)) {
+-      SSL_CTX_free(ctx);
+-      return nullptr;
+-    }
+-    BIO* bio = BIO_new_mem_buf(ca.get(), -1);
+-    if (!bio) {
+-      SSL_CTX_free(ctx);
+-      return nullptr;
+-    }
+-    X509_STORE* store = SSL_CTX_get_cert_store(ctx);
+-    X509* cert = nullptr;
+-    int count = 0;
+-    while ((cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr))) {
+-      if (X509_STORE_add_cert(store, cert)) count++;
+-      X509_free(cert);
+-    }
+-    BIO_free(bio);
+-    ERR_clear_error();
+-    if (count == 0) {
+-      SSL_CTX_free(ctx);
+-      return nullptr;
+-    }
+-  } else {
+-    SSL_CTX_set_default_verify_paths(ctx);
+-  }
+-  SSL_CTX_set_verify(ctx, rejectUnauthorized ? SSL_VERIFY_PEER : SSL_VERIFY_NONE,
+-                     rejectUnauthorized ? nullptr : kandelo::tls::ContinueVerification);
+-  return ctx;
++  return KandeloTlsClaimContext(cx, optionsValue);
+ }
+
+ static bool KandeloNativeTlsConnect(JSContext* cx, unsigned argc, Value* vp) {
+@@ -2415,12 +2393,19 @@
+   RootedValue options(cx, args.length() >= 3 ? args[2] : UndefinedValue());
+   SSL_CTX* ctx = KandeloMakeTlsContext(cx, options);
+   if (!ctx) {
++    // The prepared-context owner reports the original JS exception. Do not
++    // allocate or settle a different Promise with that exception pending.
+     close(fd);
+-    RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS context failed"));
+-    if (!promise) return false;
+-    args.rval().setObject(*promise);
+-    return true;
+-  }
++    return false;
++  }
++  RootedValue rejectValue(cx);
++  RootedObject preparedOptions(cx, &options.toObject());
++  if (!JS_GetProperty(cx, preparedOptions, "rejectUnauthorized", &rejectValue)) {
++    SSL_CTX_free(ctx);
++    close(fd);
++    return false;
++  }
++  const bool rejectUnauthorized = !rejectValue.isFalse();
+   SSL* ssl = SSL_new(ctx);
+   if (!ssl) {
+     SSL_CTX_free(ctx);
+@@ -2430,9 +2415,20 @@
+     args.rval().setObject(*promise);
+     return true;
+   }
+-  SSL_set_fd(ssl, fd);
+-  SSL_set_tlsext_host_name(ssl, servername.get());
+-  SSL_set1_host(ssl, servername.get());
++  // Pinned client mode completes verification, then enforces rejection at
++  // the actual handshake completion fence before publishing a TLS handle.
++  SSL_set_verify(ssl, SSL_VERIFY_NONE, kandelo::tls::ContinueVerification);
++  if (SSL_set_fd(ssl, fd) != 1 ||
++      SSL_set_tlsext_host_name(ssl, servername.get()) != 1 ||
++      SSL_set1_host(ssl, servername.get()) != 1) {
++    SSL_free(ssl);
++    SSL_CTX_free(ctx);
++    close(fd);
++    RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS connection setup failed"));
++    if (!promise) return false;
++    args.rval().setObject(*promise);
++    return true;
++  }
+   RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
+   if (!promise) {
+     SSL_free(ssl);
+@@ -2450,6 +2446,7 @@
+     JS_ReportOutOfMemory(cx);
+     return false;
+   }
++  watch->tlsRejectUnauthorized = rejectUnauthorized;
+   watch->tlsSsl = ssl;
+   watch->tlsCtx = ctx;
+   watch->closeFdOnCleanup = true;
+@@ -2587,19 +2584,7 @@
+           args.rval().setNull();
+           return true;
+         }
+-        RootedObject object(cx, JS_NewPlainObject(cx));
+-        if (!object)
+-          return false;
+-        RootedValue code(cx), message(cx);
+-        if (!text(kandelo::tls::VerificationErrorCode(int32_t(result)),
+-                  &code) ||
+-            !text(X509_verify_cert_error_string(result), &message) ||
+-            !JS_DefineProperty(cx, object, "code", code, JSPROP_ENUMERATE) ||
+-            !JS_DefineProperty(
+-              cx, object, "message", message, JSPROP_ENUMERATE))
+-          return false;
+-        args.rval().setObject(*object);
+-        return true;
++        return KandeloTlsVerificationError(cx, result, args.rval());
+       }
+       case 5:
+       case 6: {
+@@ -4095,6 +4080,7 @@
+       JS_FN("socketWrite", KandeloNativeSocketWrite, 2, 0),
+       JS_FN("socketWriteQueueSize", KandeloNativeSocketWriteQueueSize, 1, 0),
+       JS_FN("socketClose", KandeloNativeSocketClose, 1, 0),
++      JS_FN("__kandeloTlsContextOperation", KandeloNativeTlsContextOperation, 1, 0),
+       JS_FN("tlsConnect", KandeloNativeTlsConnect, 3, 0),
+       JS_FN("tlsRead", KandeloNativeTlsRead, 2, 0),
+       JS_FN("tlsWrite", KandeloNativeTlsWrite, 2, 0),

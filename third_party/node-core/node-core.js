@@ -29846,6 +29846,55 @@ module.exports = {
         install(target) { exposeNamespace(target, 'console', api); } };
 }
 
+// Pinned custom-CA validation/configuration over an actual private SSL_CTX.
+function _createNodeTlsContextTrust(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { ArrayIsArray, ArrayPrototypeForEach } = primordials;
+    const { ERR_INVALID_ARG_TYPE } = platform.values.errors.codes;
+    const { isArrayBufferView } = platform.types;
+    function validateKeyOrCertOption(name, value) {
+  if (typeof value !== 'string' && !isArrayBufferView(value)) {
+    throw new ERR_INVALID_ARG_TYPE(
+      name,
+      [
+        'string',
+        'Buffer',
+        'TypedArray',
+        'DataView',
+      ],
+      value,
+    );
+  }
+}
+    function addCACerts(context, certs, name) {
+  ArrayPrototypeForEach(certs, (cert) => {
+    validateKeyOrCertOption(name, cert);
+    context.addCACert(cert);
+  });
+}
+    function create(options) {
+        const owner = platform.native.tlsContext('create');
+        const context = {
+            addCACert(cert) { platform.native.tlsContext('addCA', owner, cert); },
+            addRootCerts() { platform.native.tlsContext('addDefault', owner); },
+            setAllowPartialTrustChain() { platform.native.tlsContext('partial', owner); },
+        };
+        const { allowPartialTrustChain, ca } = options;
+        const name = 'options';
+          if (ca) {
+    addCACerts(context, ArrayIsArray(ca) ? ca : [ca], `${name}.ca`);
+  } else {
+    context.addRootCerts();
+  }
+          if (allowPartialTrustChain) {
+    context.setAllowPartialTrustChain();
+  }
+        return owner;
+    }
+    return { create };
+}
+
 // Complete pinned OutgoingMessage owns real HTTP byte queues and socket writes.
 // No host HTTP transport, replacement Writable, or fake completion is supplied.
 function _createNodeHttpOutgoing(platform) {

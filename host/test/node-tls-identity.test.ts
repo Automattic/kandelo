@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
+import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { constants } from 'node:os';
 import * as util from 'node:util';
@@ -14,7 +15,8 @@ const webBundle = readFileSync(new URL('../../third_party/node-web-platform/node
 const bootstrap = readFileSync(new URL('../../packages/registry/node-compat/bootstrap.js', import.meta.url), 'utf8');
 const target = JSON.parse(readFileSync(new URL('../../packages/registry/node-compat/target.json', import.meta.url), 'utf8'));
 const factories = Function(`${bundle};${webBundle};return { ip:_createNodeNetworkIP, domain:_createNodeDomainHelpers,
-  tls:_createNodeTlsIdentity, values:_createNodeValuesPlatform, web:_createNodeWebPlatform };`)();
+  tls:_createNodeTlsIdentity, values:_createNodeValuesPlatform, web:_createNodeWebPlatform,
+  urlPath:_createNodeURLPathPlatform };`)();
 function subject() {
   const values = factories.values({ process, Buffer, util, inspection: util, os: {},
     signals: constants.signals, getDOMException: () => DOMException });
@@ -135,9 +137,11 @@ describe.skipIf(process.versions.node !== target.version)('pinned TLS identity a
     const api = subject();
     const a = bootstrap.indexOf('const _nodeDomainHelpers =');
     const b = bootstrap.indexOf('// ============================================================', a);
-    const publicURL = Function('_createNodeDomainHelpers', '_nodeValues', '_nodeWebPlatform', 'url',
+    const publicURL = Function('_createNodeDomainHelpers', '_nodeValues', '_nodeWebPlatform',
+      '_createNodeURLPathPlatform', 'process', 'path', 'Buffer',
       bootstrap.slice(a, b) + ';return url;')(factories.domain,
-        factories.values({ process, Buffer, util, inspection: util, os: {}, signals: constants.signals }), factories.web(), {});
+        factories.values({ process, Buffer, util, inspection: util, os: {}, signals: constants.signals }),
+        factories.web(), factories.urlPath, process, path, Buffer);
     expect(publicURL.domainToASCII('BÜCHER.example')).toBe(url.domainToASCII('BÜCHER.example'));
     expect(publicURL.domainToUnicode('xn--bcher-kva.example')).toBe(url.domainToUnicode('xn--bcher-kva.example'));
     const start = bootstrap.indexOf('tls.checkServerIdentity =');

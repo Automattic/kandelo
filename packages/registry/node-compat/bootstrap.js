@@ -4154,6 +4154,10 @@ net.Stream = net.Socket;
 // tls module — TLSSocket via libssl in the wasm sysroot
 // ============================================================
 
+const _nodeTlsContextTrust = _createNodeTlsContextTrust({
+    native: _nodeNative, values: _nodeValues, types: util.types,
+});
+
 const tls = (() => {
     const nat = _nodeNative;
     const toU8 = (b) => {
@@ -4180,12 +4184,17 @@ const tls = (() => {
         }
 
         _attach(fd, servername, opts) {
-            const ca = typeof opts?.ca === 'string'
-                ? opts.ca
-                : (Buffer.isBuffer?.(opts?.ca) ? opts.ca.toString('utf8') : undefined);
-            const rejectUnauthorized = opts?.rejectUnauthorized !== false;
             this.servername = servername;
-            nat.tlsConnect(fd, servername, { ca, rejectUnauthorized }).then(
+            let handshake;
+            try { handshake = nat.tlsConnect(fd, servername, opts); }
+            catch (error) {
+                // A native context/setup exception owns the same socket failure
+                // path as a rejected handshake; retire queued writes as well.
+                this._handshakePending = false;
+                this.destroy(error);
+                return;
+            }
+            handshake.then(
                 (handle) => {
                     if (this._tlsDestroyed) { nat.tlsClose(handle); return; }
                     this._tlsHandle = handle;
@@ -4286,6 +4295,10 @@ const tls = (() => {
             options = Object.assign({ host, port }, o2);
             if (cb2) cb = cb2;
         }
+        // Capture trust material and verification policy before TCP startup.
+        // The native handshake claims its own SSL_CTX reference.
+        const context = _nodeTlsContextTrust.create(options || {});
+        const nativeOptions = { context, rejectUnauthorized: options?.rejectUnauthorized !== false };
         const sock = new TLSSocket(options);
         if (cb) sock.once('secureConnect', cb);
         const servername = options.servername || options.host || 'localhost';
@@ -4295,7 +4308,7 @@ const tls = (() => {
             ({ fd }) => {
                 sock._connectOperation = null;
                 if (sock._tlsDestroyed) { nat.socketClose(fd); return; }
-                sock._attach(fd, servername, options);
+                sock._attach(fd, servername, nativeOptions);
             },
             (err) => { if (!sock._tlsDestroyed) sock.destroy(err); },
         );
@@ -4307,8 +4320,8 @@ const tls = (() => {
     return { connect, TLSSocket };
 })();
 
-// No bundled CA store or pluggable SecureContext surface — tlsConnect
-// (libssl in the wasm sysroot) manages certificate verification itself.
+// Trust still comes from configured guest OpenSSL paths unless explicit CA
+// material replaces it. Public default-store and SecureContext APIs remain open.
 tls.rootCertificates = [];
 tls.checkServerIdentity = _createNodeTlsIdentity({
     values: _nodeValues, net, domainToASCII: _nodeDomainHelpers.domainToASCII,

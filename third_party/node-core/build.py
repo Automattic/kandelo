@@ -613,6 +613,7 @@ for marker, replacement in [('/* NODE_CONSOLE_MODULES */', ',\n'.join(console_fa
         raise ValueError('Review Console source marker: ' + marker)
     console_adapter = console_adapter.replace(marker, replacement)
 bundle += console_adapter + '\n'
+bundle += runpy.run_path(str(root / 'generate-tls-context.py'))['generate'](root) + '\n'
 bundle += runpy.run_path(str(root / 'generate-http-outgoing.py'))['generate'](root) + '\n'
 http_item = manifest['httpHeaders']
 http_sources = {}

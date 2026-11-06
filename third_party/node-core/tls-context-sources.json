@@ -1,0 +1,58 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/internal/tls/secure-context.js": {
+      "path": "upstream/tls-context/lib/internal/tls/secure-context.js",
+      "sha256": "1c2863b2a8c9703d3ac0d5aac708d626d8ac24aef305df148b9af3e65d66dd08"
+    },
+    "src/crypto/crypto_tls_certificates.cc": {
+      "path": "upstream/tls-context/src/crypto/crypto_tls_certificates.cc",
+      "sha256": "8fb7576f93ac8c3e2e88e68228232b6c93a3ed966a4dff03d1f77d6746d38b71"
+    },
+    "src/crypto/crypto_context.cc": {
+      "path": "upstream/tls-context/src/crypto/crypto_context.cc",
+      "sha256": "a21a5d88feba3ce99c0723acdd076c2a373b19dc4bb36cc97a77ca9a141dc606"
+    },
+    "src/crypto/crypto_util.cc": {
+      "path": "upstream/tls-context/src/crypto/crypto_util.cc",
+      "sha256": "78f87b6979b666fb49d74698333e79c40aef549dfa362e3a040caeebf8edde3c"
+    },
+    "src/crypto/crypto_common.cc": {
+      "path": "upstream/tls-context/src/crypto/crypto_common.cc",
+      "sha256": "7ba47367625b9d3c96bdfec2a968f1161e3785212c1d1a375183b8bc7f54eadc"
+    }
+  },
+  "selections": {
+    "validation": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "function validateKeyOrCertOption(",
+      "length": 280,
+      "sha256": "27e4aa5e42e4470ada6bede1af3b0d515d52a7a95b2e3d3cbdfcf35f46e1d20b"
+    },
+    "addCA": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "function addCACerts(",
+      "length": 164,
+      "sha256": "b8cb3d313dc21f1ca92a5213795c7e5da4ae2ab7cc9e7db5974e6b2dc2ad3f2a"
+    },
+    "configureCA": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "  if (ca) {",
+      "length": 123,
+      "sha256": "fd7592cb4db2c850e6cf83d8d9416406ea81e610fc339586ddc5c5edeb8623b1"
+    },
+    "partial": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "  if (allowPartialTrustChain)",
+      "length": 76,
+      "sha256": "a788ae7c624b6a2e9003d20e710d4e7d8e0e1897dd2ec97175f028db5034ee19"
+    }
+  },
+  "errorReason": {
+    "source": "src/crypto/crypto_common.cc",
+    "start": "MaybeLocal<Value> GetValidationErrorReason(",
+    "length": 717,
+    "sha256": "fc0448a8bce7fa0200c805032e53e6ec19c599f214a168680274bf2ea4702965"
+  }
+}

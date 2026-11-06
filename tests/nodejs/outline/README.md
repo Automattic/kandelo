@@ -1,5 +1,11 @@
 # Node 26 core implementation outline
 
+Source142 adds actual eager TLS trust-context ownership, completion-time
+verification and Promise-realm admission over current141. Focused OpenSSL/TCP
+and affected source controls pass; production JSAPI and current four-host
+conformance remain open. See [TLS integration](tls-context-integration.md).
+
+
 Source checkpoint141 fixes the shared own-property helper's stored-value
 return. First-read Number/BigInt Stats dates and37 affected/package checks pass
 with native dependencies. Guest metadata and four-host conformance remain open.

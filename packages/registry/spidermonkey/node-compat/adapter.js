@@ -666,6 +666,7 @@
         __kandeloWaitPid(pid) { return native.__kandeloWaitPid(pid); },
         credentials() { return native.credentials(); },
         __kandeloKill(pid, sig) { return native.__kandeloKill(pid, sig); },
+        tlsContext(...args) { return native.__kandeloTlsContextOperation(...args); },
         tlsConnect(fd, servername, options) { return native.tlsConnect(fd, servername, options); },
         tlsInfo(handle, operation) { return native.tlsInfo(handle, operation); },
         tlsRead(handle, length) { return native.tlsRead(handle, length); },

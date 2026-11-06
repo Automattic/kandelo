@@ -179,6 +179,12 @@ inputs = [
   "third_party/node-core/native-dir.cpp",
   "third_party/node-core/native-package.cpp",
   "third_party/node-core/package-config.h",
+  "third_party/node-core/tls-context-trust.h",
+  "third_party/node-core/native-tls-context.cpp",
+  "third_party/node-core/tls-context-adapter.js",
+  "third_party/node-core/tls-context-sources.json",
+  "third_party/node-core/generate-tls-context.py",
+  "third_party/node-core/upstream/tls-context",
   "third_party/node-core/tls-state.h",
   "third_party/node-core/generate-tls-state.py",
   "third_party/node-core/upstream/tls-state",
@@ -544,4 +550,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 141
+revision = 142

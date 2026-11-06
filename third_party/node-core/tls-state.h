@@ -5,9 +5,9 @@
 #include <openssl/ssl.h>
 #include <vector>
 namespace kandelo::tls {
-// When the caller allows verification errors, finish verification exactly as
-// Node's VerifyCallback does, retaining the last actual error. The default
-// rejecting context keeps OpenSSL's aborting callback.
+// Node's VerifyCallback finishes certificate verification and retains its
+// actual final error. The client completion owner must enforce a captured
+// rejectUnauthorized policy before publishing any TLS handle/plaintext.
 inline int ContinueVerification(int, X509_STORE_CTX*) { return 1; }
 
 // Node's ncrypto SSLPointer::verifyPeerCertificate distinguishes a missing

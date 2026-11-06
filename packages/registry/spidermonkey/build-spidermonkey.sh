@@ -390,6 +390,8 @@ python3 "$REPO_ROOT/third_party/node-core/generate-fs-constants.py" \
 cp "$REPO_ROOT/third_party/node-core/readdir-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-readdir-operations.h"
 cp "$REPO_ROOT/third_party/node-core/dir-cursor.h" "$SRC_DIR/js/src/shell/kandelo-node-dir-cursor.h"
 cp "$REPO_ROOT/third_party/node-core/package-config.h" "$SRC_DIR/js/src/shell/kandelo-node-package-config.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-tls-context.py" \
+    --header "$SRC_DIR/js/src/shell/kandelo-node-tls-context-trust.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-tls-state.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-tls-state.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-package-parser.py" \
