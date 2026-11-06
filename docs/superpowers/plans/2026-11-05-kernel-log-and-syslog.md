@@ -737,6 +737,35 @@ Three sections moved when `SYS_SYSLOG` was routed: `syscalls`, `syscall_arg_desc
 
 ---
 
+### Task 19: Two dishonest syscall stubs
+
+**Runs after Task 8**, at the end of the kernel half, before the packages.
+
+**Files:**
+- Modify: `crates/kernel/src/wasm_api.rs:7579` (`323` `sync_file_range`) and `:7544` (`287` `personality`)
+- Modify: `docs/posix-status.md`
+- Test: inline tests beside each
+
+**Why:** deleting Task 3's `304 => 0` fake-success stub prompted a check for siblings. Five remain, and they are not equivalent. `229` `sched_yield` and `307` `fadvise64` returning 0 are **correct** — POSIX lets advice be ignored and yielding is legitimately a no-op here, so leave them (a comment recording why is welcome). `257` `membarrier` claims "single-threaded per process in Wasm", which may be stale given pthread support — verify the premise and report rather than guessing. The other two are being fixed here:
+
+- **`323` `sync_file_range` → "advisory, no-op".** Unlike `fadvise`, this carries durability semantics: a caller receiving 0 believes its data reached storage. That became consequential when persistence shipped — saved computers now have a real rootfs journal behind `/var/log` and homes. Either flush what the call names, or return the honest failure. Do not keep claiming success.
+- **`287` `personality` → "return 0 (current personality, PER_LINUX)".** Kandelo explicitly disavows being a Linux target and intends no Linux compatibility, so answering `PER_LINUX` is both a fabricated value and a compatibility claim the project rejects. Return the honest answer for a system that has no personality concept.
+
+A broader audit of every dishonest return is deliberately **not** in this task; its prompt is handed off separately at `.context/syscall-honesty-audit-prompt.md`.
+
+- [ ] **Step 1: Write the failing tests** — one per syscall, asserting the honest behavior rather than the current constant.
+- [ ] **Step 2: Run them to verify they fail.**
+- [ ] **Step 3: Implement both, and verify `membarrier`'s single-threaded premise against real pthread support — report the finding without changing it.**
+- [ ] **Step 4: Run the tests plus the runtime-core lib suite.**
+- [ ] **Step 5: Record every verdict in `docs/posix-status.md`** — including that `sched_yield` and `fadvise64` are correct as-is, so a later reader does not re-litigate them.
+- [ ] **Step 6: Commit**
+
+```bash
+git commit -m "POSIX: Stop claiming success for sync_file_range and personality"
+```
+
+---
+
 ### Task 18: Documentation and full validation
 
 **Files:**
