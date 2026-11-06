@@ -1,5 +1,14 @@
 # Node 26 core implementation outline
 
+Source125 installs the pinned public AsyncHook class with actual symbol/count
+registry semantics,ordinary public functions and a stable ordinary root resource.
+Eleven new and23 affected frontend controls,12 package checks and four runs of
+two unchanged upstream files pass in explicit native-dependency scopes. The
+initial regression exposed a fixture floating-point grouping error; its failure
+and preimage remain retained. Guest117–125source remains uncompiled;accepted116
+is stale. All19families remain partial;overall suites/full rebuild remain deferred.
+See [AsyncHook ownership](async-hook-registration-implementation-dependencies.md).
+
 Source124 adds actual per-context loop-start/idle measurements and the full
 pinned event-loop-utilization calculation. Six new and seven existing frontend
 controls, six portable clock-owner checks and12 package checks pass in their

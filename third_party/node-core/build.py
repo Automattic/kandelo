@@ -89,7 +89,29 @@ item = manifest['asyncResource']
 raw = (root / item['path']).read_bytes()
 if hashlib.sha256(raw).hexdigest() != item['sha256']:
     raise ValueError('Node AsyncResource source hash mismatch')
-for marker, replacement in [('/* NODE_ASYNC_MODULES */', ',\n'.join(async_factories)), ('/* NODE_ASYNC_RESOURCE */', raw.decode('utf-8'))]:
+hook_item = manifest['asyncHookPublic']
+hook_sources = {}
+for name, entry in hook_item['sources'].items():
+    hook_raw = (root / entry['path']).read_bytes()
+    if hashlib.sha256(hook_raw).hexdigest() != entry['sha256']:
+        raise ValueError('AsyncHook complete source identity mismatch: ' + name)
+    hook_sources[name] = hook_raw.decode('utf-8')
+hook_selection = hook_item['selection']
+hook_full = hook_sources[hook_selection['source']]
+if hook_full.count(hook_selection['start']) != 1:
+    raise ValueError('Review AsyncHook selection start')
+hook_start = hook_full.index(hook_selection['start'])
+hook_source = hook_full[hook_start:hook_start + hook_selection['length']]
+if hashlib.sha256(hook_source.encode()).hexdigest() != hook_selection['sha256']:
+    raise ValueError('AsyncHook public selection mismatch')
+# Node writes aliased native uint32 counts; this embedding uses an explicit
+# native destroy-tracking setter. Preserve the public algorithms, publishing
+# each completed count mutation (including trackPromises=false hooks).
+for anchor in ['      updatePromiseHookMode();\n    }', '      disableHooks();\n    }']:
+    if hook_source.count(anchor) != 1:
+        raise ValueError('Review AsyncHook native count publication boundary')
+    hook_source = hook_source.replace(anchor, anchor + '\n\n    syncDestroyTracking();')
+for marker, replacement in [('/* NODE_ASYNC_MODULES */', ',\n'.join(async_factories)), ('/* NODE_ASYNC_RESOURCE */', raw.decode('utf-8')), ('/* NODE_ASYNC_HOOK */', hook_source)]:
     if async_platform.count(marker) != 1:
         raise ValueError('Missing or ambiguous async platform marker: ' + marker)
     async_platform = async_platform.replace(marker, replacement)

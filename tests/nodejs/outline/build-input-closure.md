@@ -1,5 +1,9 @@
 # Shared Node core build inputs
 
+Source125 adds two complete AsyncHook/internal registry references under the
+declared async directory. Current guard:617inputs;12package-contract checks pass.
+This source coverage does not establish implementation or runtime conformance.
+
 Source124 adds one complete pinned ELU reference under the declared performance
 directory. The current source guard covers615 inputs;12 fresh package-contract
 checks pass. This is source coverage,not runtime conformance.

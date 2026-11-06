@@ -1,0 +1,148 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/async-context-contracts.md",
+    "findingIds": [
+      "A-024",
+      "A-025"
+    ],
+    "retainedRows": [
+      {
+        "rowIndex": 181,
+        "id": "async_hooks.createHook"
+      },
+      {
+        "rowIndex": 182,
+        "id": "async_hooks.AsyncHook.prototype.enable"
+      },
+      {
+        "rowIndex": 183,
+        "id": "async_hooks.AsyncHook.prototype.disable"
+      },
+      {
+        "rowIndex": 184,
+        "id": "async_hooks.executionAsyncId"
+      },
+      {
+        "rowIndex": 185,
+        "id": "async_hooks.triggerAsyncId"
+      },
+      {
+        "rowIndex": 186,
+        "id": "async_hooks.executionAsyncResource"
+      },
+      {
+        "rowIndex": 206,
+        "id": "async_hooks.asyncResource.triggerAsyncId"
+      },
+      {
+        "rowIndex": 2442,
+        "id": "events.EventEmitterAsyncResource.prototype.triggerAsyncId"
+      },
+      {
+        "rowIndex": 2558,
+        "id": "async_hooks.createHook.prototype"
+      },
+      {
+        "rowIndex": 2559,
+        "id": "async_hooks.executionAsyncId.prototype"
+      },
+      {
+        "rowIndex": 2560,
+        "id": "async_hooks.triggerAsyncId.prototype"
+      },
+      {
+        "rowIndex": 2561,
+        "id": "async_hooks.executionAsyncResource.prototype"
+      },
+      {
+        "rowIndex": 2566,
+        "id": "async_hooks.AsyncResource.prototype.triggerAsyncId"
+      }
+    ],
+    "relatedFamilies": [
+      "async",
+      "streams",
+      "workers",
+      "observability"
+    ],
+    "scope": "Public registration/metadata and root identity partial findings;not native activation/provider/lifecycle or family closure"
+  },
+  "sourceImplemented": [
+    "Complete pinned public AsyncHook/createHook algorithm with real symbol/array/count registration and deferred nested mutations",
+    "Two explicit native destroy-count setter publications and outermost restore synchronization;actual native IDs/frames/resources retained,Promise activation not fabricated",
+    "Ordinary public namespace functions/getter/order,stable mutable ordinary root resource and positive-ID destroy filtering",
+    "Full generated-adapter fixture checks candidate assembly and real native resource dispatch,with unchanged strict provider and validation assertions"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-async-hooks-source-r1/report.json",
+    "sha256": "bc974ceb7bcfe445dbbb1c87e3b41528e9cb9e76728092a1f85cdffc21c8072a",
+    "selectedIdentities": 10,
+    "completeReferences": 2,
+    "guardedInputs": 617,
+    "scope": "10selected identities,2complete archive references and exact selection,617declared inputs,generation/bootstrap syntax and agent source integration;not guest/native engine activation/GC/fatal/worker/four-host conformance."
+  },
+  "frontendAndAffected": {
+    "report": ".context/node26-async-hooks-frontend-r2.json",
+    "sha256": "9635e670d3e06843a009b0f0b1ce6e0d6d49b934db504d5e91d77e4ea2c1fa1f",
+    "newPassed": 11,
+    "affectedPassed": 23,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "21full async controls (11new/10existing) plus13performance/ELU regressions;real native ID/context/resource/clock boundaries,not guest lifecycle"
+  },
+  "packageChecks": {
+    "report": ".context/node26-async-hooks-package-r1.json",
+    "sha256": "dba1cc9a50dd346eb24e5c08cfde606ccfd9caaeee3ca657b84cc9dda8afe456",
+    "passed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "617input declaration source controls,not runtime API conformance"
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-async-hooks-upstream-r1/report.json",
+    "sha256": "d26ff65ff8326bc7c232bb87ea8e39ff8f758ea1f7cdb5b484585105184c1aeb",
+    "files": 2,
+    "candidatePassed": 2,
+    "nativePassed": 2,
+    "failed": 0,
+    "scope": "Two complete unchanged constructor files,candidate/native modes. Candidate full pinned public classes/registration over explicit real native ID/context owner;not guest engine activation/destroy/GC/fatal/worker or four-host conformance."
+  },
+  "privateAgentEvidence": {
+    "report": ".context/async-hooks-agent/native-controls-verified.log",
+    "sha256": "9fce53871a242332d98bc4f7365cb0f918d751359cdd62a6d8029c9677eb3cb8",
+    "passed": 21,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Private generated-candidate evidence before combined root integration;not extra root denominator"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-async-hooks-frontend-r1.json",
+      "sha256": "af4e732a40e2e038b30c58e77d58d71169c0251ab5f3cab6426d08de26b2b01e",
+      "passed": 33,
+      "failed": 1,
+      "kind": "fixture-expectation-error",
+      "reason": "ELU expected denominator grouped floating-point operations differently from pinned target;replaced with exact native differential,original preimage retained"
+    },
+    {
+      "report": ".context/async-hooks-agent/report.txt",
+      "sha256": "4ac7265c20140d5b6fe90af089c2a46fc4054ebedce643b3e23a86dfa3433215",
+      "kind": "agent-source-and-harness-history",
+      "reason": "Original configuration/source-assembly/slicer and contaminated native-count controls retained with corrections and strict assertions;not API passes"
+    }
+  ],
+  "remaining": [
+    "Compile combined117\u2013125through normal resolver;accepted116notcurrent and all earlier guest nonpasses remain open",
+    "Native Promise activation/ALS CLI and actual per-provider/default-trigger/resource mapping;GC/destroy/fatal/rejection/worker/realm/loop/ref/cancellation integration",
+    "Identified-artifact four-host conformance and all other public API/family obligations;no accepted blanket platform exclusions"
+  ],
+  "at": "2026-11-06T00:16:21.764455+00:00",
+  "recipeRevision": 125,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

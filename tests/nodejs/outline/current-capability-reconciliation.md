@@ -1,5 +1,14 @@
 # Current public-contract reconciliation
 
+Source125 installs the pinned public AsyncHook class with actual symbol/count
+registry semantics,ordinary public functions and a stable ordinary root resource.
+Eleven new and23 affected frontend controls,12 package checks and four runs of
+two unchanged upstream files pass in explicit native-dependency scopes. The
+initial regression exposed a fixture floating-point grouping error; its failure
+and preimage remain retained. Guest117–125source remains uncompiled;accepted116
+is stale. All19families remain partial;overall suites/full rebuild remain deferred.
+See [AsyncHook ownership](async-hook-registration-implementation-dependencies.md).
+
 Source124 adds actual per-context loop-start/idle measurements and the full
 pinned event-loop-utilization calculation. Six new and seven existing frontend
 controls, six portable clock-owner checks and12 package checks pass in their
@@ -180,7 +189,7 @@ of the APIs, overloads, inherited members, symbols and open questions.
 | Family | Current shared source routes | Remaining owner requirements |
 |---|---|---|
 | Values | pinned URL/path/byte-path/HTTP-option helpers over shared parser and platform owners; generic native Error location policy; pinned AssertionError/Myers diff and shared validator/error/color/primordial owners; values/util/UV/dotenv/MIME/Buffer/path owners and full querystring/punycode algorithms with saved-frame load-origin source; pinned util/StringDecoder owners and callable Buffer/shared aligned pool/permanent storage/zero-fill source | Private worker marks have a source owner and focused environment evidence; remaining Buffer/backing-store/realm/CLI/error/descriptor edges, remaining util/URL/IDNA/encoding, complete errors/brands/descriptors and guest byte/origin/loader/warning conformance |
-| Async | async/event adapters, hook validation/full declared provider-ID map, target listener-removal helper, canceled Timeout slot cleanup, shared native callback policy/JSAPI scope and tick/job entry guards | Complete rejection/fatal/GC/realm/worker and loop phases, actual provider/cancellation/ref ownership; guest scope/lifecycle behavior unvalidated |
+| Async | Pinned public AsyncHook/createHook algorithms over real symbol/array/count registry,nested mutation publication and native destroy tracking;ordinary public metadata/root resource;existing frame/ID/resource/tick/job callback owners | Promise activation/removal and ALS CLI path,full native resource/provider/default-trigger mapping,GC/destroy/rejection/fatal/worker/realm/loop/cancellation/ref integration and guest/four-host conformance remain open |
 | Streams | stream/fd-stream platform adapters and shared pinned StringDecoder public/byte-state owner | Socket/TTY/file subclasses, backing-store transfer, fd reuse/retirement, pipeline/adapter lifecycle/errors and guest decoder integration |
 | Filesystem | Real hard-link,temporary-directory,logical/native realpath/readlink and full glob owners now join pinned file jobs/handles,Dir/readdir/Dirent,metadata,removal and sync/callback/promise byte algorithms | Guest cursor/GC/ref/OOM/realm and fd/byte-path/backend integration;complete watchers/VFS/metadata/permissions,timestamp precision and actual statfs capacity;FS-022 raw host paths remain open |
 | Processes | bootstrap process/ChildProcess, process-clock/state/usage validation and explicit absent numeric providers, dotenv/child-wait, pinned OS frontend with native POSIX state, unchanged weak finalization/lazy descriptor and Refable dispatch; actual linked dependency versions with read-only/configurable version descriptors; native live environment virtual Object/property hooks and inherited-receiver policy | Complete environment prototype/constructor/keys/warnings/GC/JIT/clone and worker/TZ/CLI behavior, fatal/rejection/GC/exit/worker/resource reference integration, signal/IPC and exceptional wait/close policy, measurements, permissions and OS metadata; guest lifecycle/mask/parent/env conformance pending |

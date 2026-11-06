@@ -5107,5 +5107,26 @@
       "upstreamFileSha256": "4aa900feab2a6cdb84060c0358c569578d31b6f0831224792868ece9b8899951",
       "excerpt": "unchanged pure matching/initializer functions; filesystem traversal is not included"
     }
+  },
+  "asyncHookPublic": {
+    "sources": {
+      "lib/async_hooks.js": {
+        "path": "upstream/async/lib/async_hooks.js",
+        "upstreamPath": "lib/async_hooks.js",
+        "sha256": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550"
+      },
+      "lib/internal/async_hooks.js": {
+        "path": "upstream/async/lib/internal/async_hooks.js",
+        "upstreamPath": "lib/internal/async_hooks.js",
+        "sha256": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533"
+      }
+    },
+    "selection": {
+      "source": "lib/async_hooks.js",
+      "start": "class AsyncHook {",
+      "length": 3485,
+      "sha256": "da1eba007093155b36577d2154fc1783237c75d5181cd84bdfe0dd4d39884c6f"
+    },
+    "nativeBoundary": "Publish native destroy tracking after completed enable/disable count mutations; actual Promise activation/GC/native callback integration remains separate."
   }
 }

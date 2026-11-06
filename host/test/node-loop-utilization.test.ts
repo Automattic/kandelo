@@ -61,8 +61,7 @@ describe.skipIf(process.versions.node !== target.version)('event loop utilizatio
     expect(measured.utilization).toBe(measured.active/(measured.idle+measured.active));
     expect(api.performance.nodeTiming.idleTime).toBe(measured.idle);
     const delta = api.eventLoopUtilization(measured,before);
-    expect(delta).toEqual({idle:measured.idle-before.idle,active:measured.active-before.active,
-      utilization:(measured.active-before.active)/(measured.idle-before.idle+measured.active-before.active)});
+    expect(delta).toEqual(native.eventLoopUtilization(measured,before));
   });
   it('reads the worker loop from its actual independent native owner', async () => {
     const fixture = require.resolve('./fixtures/node-performance-platform.cjs');

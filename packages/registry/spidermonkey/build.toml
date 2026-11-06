@@ -172,6 +172,7 @@ inputs = [
   "third_party/node-core/licenses/uv-inet.txt",
   "third_party/node-core/address-rules-adapter.js",
   "third_party/node-core/async-platform-adapter.js",
+  "third_party/node-core/upstream/async",
   "third_party/node-core/buffer-bytes-adapter.js",
   "third_party/node-core/buffer-codecs-adapter.js",
   "third_party/node-core/buffer-numeric-adapter.js",
@@ -491,4 +492,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 124
+revision = 125

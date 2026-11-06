@@ -8103,16 +8103,29 @@ function _createNodeAsyncPlatform(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
     const {
-        ArrayFrom, ArrayPrototypePush, ArrayPrototypePop, Error, NumberIsSafeInteger,
+        ArrayFrom, ArrayPrototypeIncludes, ArrayPrototypeIndexOf, ArrayPrototypePush,
+        ArrayPrototypePop, ArrayPrototypeSlice, ArrayPrototypeSplice, Error, NumberIsSafeInteger,
         ObjectAssign, ObjectCreate, ObjectDefineProperty, ObjectFreeze,
         ObjectPrototypeHasOwnProperty, ReflectApply, SafeFinalizationRegistry,
-        SafeMap, SafeSet, Symbol, TypeError, RangeError,
+        SafeMap, Symbol, TypeError, RangeError, Uint32Array,
     } = primordials;
     const kEmptyObject = ObjectFreeze(ObjectCreate(null));
-    const root = ObjectFreeze({ __proto__: null, frame: undefined, id: 0, triggerId: 0, resource: ObjectCreate(null) });
+    const root = ObjectFreeze({ __proto__: null, frame: undefined, id: 0, triggerId: 0, resource: {} });
     let scopeDepth = 0;
     const stack = [];
-    let hooks = new SafeSet(), pendingHooks, dispatchDepth = 0, hooksFatal = false;
+    // The pinned public AsyncHook mutates these callback counts and arrays.
+    // Only resource IDs/context and destroy delivery cross the native boundary.
+    const kInit = 0, kBefore = 1, kAfter = 2, kDestroy = 3,
+        kPromiseResolve = 4, kTotals = 5;
+    const async_hook_fields = new Uint32Array(6);
+    const active_hooks = { array: [], call_depth: 0, tmp_array: null, tmp_fields: null };
+    const init_symbol = Symbol('init');
+    const before_symbol = Symbol('before');
+    const after_symbol = Symbol('after');
+    const destroy_symbol = Symbol('destroy');
+    const promise_resolve_symbol = Symbol('promiseResolve');
+    const kNoPromiseHook = Symbol('kNoPromiseHook');
+    let hooksFatal = false;
     const state = () => platform.native.getAsyncContext() ?? root;
     const setState = value => platform.native.setAsyncContext(value);
     const frame = () => state().frame;
@@ -8126,59 +8139,171 @@ function _createNodeAsyncPlatform(platform) {
         }
         return state();
     }
-    const callbacks = new primordials.SafeWeakMap();
+    function getHookArrays() {
+        if (active_hooks.call_depth === 0) return [active_hooks.array, async_hook_fields];
+        if (active_hooks.tmp_array === null) {
+            active_hooks.tmp_array = ArrayPrototypeSlice(active_hooks.array);
+            active_hooks.tmp_fields = [];
+            copyHooks(active_hooks.tmp_fields, async_hook_fields);
+        }
+        return [active_hooks.tmp_array, active_hooks.tmp_fields];
+    }
+    function copyHooks(destination, source) {
+        destination[kInit] = source[kInit];
+        destination[kBefore] = source[kBefore];
+        destination[kAfter] = source[kAfter];
+        destination[kDestroy] = source[kDestroy];
+        destination[kPromiseResolve] = source[kPromiseResolve];
+    }
+    function syncDestroyTracking() {
+        platform.native.setAsyncDestroyTracking(hookExists('destroy'));
+    }
+    // Promise mode installation/removal is an engine integration gap. These
+    // entry points preserve public registry transitions without manufacturing
+    // an activation state the actual engine does not implement.
+    function enableHooks() { syncDestroyTracking(); }
+    function disableHooks() { syncDestroyTracking(); }
+    function updatePromiseHookMode() { syncDestroyTracking(); }
     function emit(kind, args, isPromise = false) {
-        if (hooksFatal) return;
-        dispatchDepth++;
+        if (hooksFatal || !hookExists(kind)) return;
+        const symbol = kind === 'init' ? init_symbol : kind === 'before' ? before_symbol :
+            kind === 'after' ? after_symbol : kind === 'destroy' ? destroy_symbol : promise_resolve_symbol;
+        active_hooks.call_depth++;
         try {
-            for (const hook of hooks) {
-                const selected = callbacks.get(hook);
-                if (isPromise && !selected.trackPromises) continue;
-                const callback = selected[kind];
-                if (callback !== undefined) {
-                    try { ReflectApply(callback, hook, args); }
-                    catch (error) { hooksFatal = true; platform.native.asyncHookFatal(error); }
+            for (let i = 0; i < active_hooks.array.length; i++) {
+                const hook = active_hooks.array[i];
+                if (typeof hook[symbol] === 'function') {
+                    if (isPromise && hook[kNoPromiseHook]) continue;
+                    ReflectApply(hook[symbol], hook, args);
                 }
             }
+        } catch (error) {
+            hooksFatal = true;
+            platform.native.asyncHookFatal(error);
         } finally {
-            if (--dispatchDepth === 0 && pendingHooks !== undefined) {
-                hooks = pendingHooks; pendingHooks = undefined;
-                platform.native.setAsyncDestroyTracking(hookExists('destroy'));
-            }
+            active_hooks.call_depth--;
+        }
+        if (active_hooks.call_depth === 0 && active_hooks.tmp_array !== null) {
+            active_hooks.array = active_hooks.tmp_array;
+            copyHooks(async_hook_fields, active_hooks.tmp_fields);
+            active_hooks.tmp_array = null;
+            active_hooks.tmp_fields = null;
+            syncDestroyTracking();
         }
     }
     function hookExists(kind) {
-        for (const hook of hooks) if (callbacks.get(hook)[kind] !== undefined) return true;
-        return false;
+        const index = kind === 'init' ? kInit : kind === 'before' ? kBefore :
+            kind === 'after' ? kAfter : kind === 'destroy' ? kDestroy : kPromiseResolve;
+        return async_hook_fields[index] > 0;
     }
-    function enabledHooksExist() {
-        return hookExists('init') || hookExists('before') || hookExists('after') || hookExists('destroy') || hookExists('promiseResolve');
-    }
-    function modifyHook(hook, enable) {
-        if (dispatchDepth && pendingHooks === undefined) pendingHooks = new SafeSet(hooks);
-        const selected = pendingHooks ?? hooks;
-        if (enable) selected.add(hook); else selected.delete(hook);
-        if (!dispatchDepth) platform.native.setAsyncDestroyTracking(hookExists('destroy'));
-    }
+    function enabledHooksExist() { return active_hooks.array.length > 0; }
     const { codes } = platform.values.errors;
+    const { ERR_ASYNC_CALLBACK, ERR_INVALID_ARG_VALUE } = codes;
+    const validateBoolean = platform.values.validators.validateBoolean;
     class AsyncHook {
-        constructor({ init, before, after, destroy, promiseResolve, trackPromises = true }) {
-            const selected = { init, before, after, destroy, promiseResolve, trackPromises };
-            for (const key of ['init', 'before', 'after', 'destroy', 'promiseResolve']) {
-                if (selected[key] !== undefined && typeof selected[key] !== 'function') throw new codes.ERR_ASYNC_CALLBACK('hook.' + key);
-            }
-            platform.values.validators.validateBoolean(trackPromises, 'trackPromises');
-            if (trackPromises === false && promiseResolve) {
-                throw new codes.ERR_INVALID_ARG_VALUE('trackPromises', trackPromises,
-                    'must not be false when promiseResolve is enabled');
-            }
-            callbacks.set(this, selected);
-        }
-        enable() {
-            modifyHook(this, true); return this;
-        }
-        disable() { modifyHook(this, false); return this; }
+  constructor({ init, before, after, destroy, promiseResolve, trackPromises }) {
+    if (init !== undefined && typeof init !== 'function')
+      throw new ERR_ASYNC_CALLBACK('hook.init');
+    if (before !== undefined && typeof before !== 'function')
+      throw new ERR_ASYNC_CALLBACK('hook.before');
+    if (after !== undefined && typeof after !== 'function')
+      throw new ERR_ASYNC_CALLBACK('hook.after');
+    if (destroy !== undefined && typeof destroy !== 'function')
+      throw new ERR_ASYNC_CALLBACK('hook.destroy');
+    if (promiseResolve !== undefined && typeof promiseResolve !== 'function')
+      throw new ERR_ASYNC_CALLBACK('hook.promiseResolve');
+    if (trackPromises !== undefined) {
+      validateBoolean(trackPromises, 'trackPromises');
     }
+
+    this[init_symbol] = init;
+    this[before_symbol] = before;
+    this[after_symbol] = after;
+    this[destroy_symbol] = destroy;
+    this[promise_resolve_symbol] = promiseResolve;
+    if (trackPromises === false) {
+      if (promiseResolve) {
+        throw new ERR_INVALID_ARG_VALUE('trackPromises',
+                                        trackPromises, 'must not be false when promiseResolve is enabled');
+      }
+      this[kNoPromiseHook] = true;
+    } else {
+      // Default to tracking promises for now.
+      this[kNoPromiseHook] = false;
+    }
+  }
+
+  enable() {
+    // The set of callbacks for a hook should be the same regardless of whether
+    // enable()/disable() are run during their execution. The following
+    // references are reassigned to the tmp arrays if a hook is currently being
+    // processed.
+    const { 0: hooks_array, 1: hook_fields } = getHookArrays();
+
+    // Each hook is only allowed to be added once.
+    if (ArrayPrototypeIncludes(hooks_array, this))
+      return this;
+
+    const prev_kTotals = hook_fields[kTotals];
+
+    // createHook() has already enforced that the callbacks are all functions,
+    // so here simply increment the count of whether each callbacks exists or
+    // not.
+    hook_fields[kTotals] = hook_fields[kInit] += +!!this[init_symbol];
+    hook_fields[kTotals] += hook_fields[kBefore] += +!!this[before_symbol];
+    hook_fields[kTotals] += hook_fields[kAfter] += +!!this[after_symbol];
+    hook_fields[kTotals] += hook_fields[kDestroy] += +!!this[destroy_symbol];
+    hook_fields[kTotals] +=
+        hook_fields[kPromiseResolve] += +!!this[promise_resolve_symbol];
+    ArrayPrototypePush(hooks_array, this);
+
+    if (prev_kTotals === 0 && hook_fields[kTotals] > 0) {
+      enableHooks();
+    }
+
+    if (!this[kNoPromiseHook]) {
+      updatePromiseHookMode();
+    }
+
+    syncDestroyTracking();
+
+    return this;
+  }
+
+  disable() {
+    const { 0: hooks_array, 1: hook_fields } = getHookArrays();
+
+    const index = ArrayPrototypeIndexOf(hooks_array, this);
+    if (index === -1)
+      return this;
+
+    const prev_kTotals = hook_fields[kTotals];
+
+    hook_fields[kTotals] = hook_fields[kInit] -= +!!this[init_symbol];
+    hook_fields[kTotals] += hook_fields[kBefore] -= +!!this[before_symbol];
+    hook_fields[kTotals] += hook_fields[kAfter] -= +!!this[after_symbol];
+    hook_fields[kTotals] += hook_fields[kDestroy] -= +!!this[destroy_symbol];
+    hook_fields[kTotals] +=
+        hook_fields[kPromiseResolve] -= +!!this[promise_resolve_symbol];
+    ArrayPrototypeSplice(hooks_array, index, 1);
+
+    if (prev_kTotals > 0 && hook_fields[kTotals] === 0) {
+      disableHooks();
+    }
+
+    syncDestroyTracking();
+
+    return this;
+  }
+}
+
+
+function createHook(fns) {
+  return new AsyncHook(fns);
+}
+
+
+
     const async_id_symbol = Symbol('async_id_symbol');
     const trigger_async_id_symbol = Symbol('trigger_async_id_symbol');
     const async_context_frame = Symbol('async_context_frame');
@@ -8193,7 +8318,7 @@ function _createNodeAsyncPlatform(platform) {
         if (!destroyed.destroyed) emitDestroy(asyncId, isPromise);
     });
     function emitDestroy(asyncId, isPromise = false) {
-        if (!hookExists('destroy')) return;
+        if (!hookExists('destroy') || !(asyncId > 0)) return;
         // Native lifecycle notifications do not allocate a TickObject or a
         // Promise merely to deliver their own destroy event.
         // One owning native queue preserves enqueue order across native GC,
@@ -8686,12 +8811,17 @@ class AsyncResource {
     }
     platform.native.setAsyncLifecycle(lifecycle);
     platform.native.setAsyncDestroyTracking(false);
+    function executionAsyncId() { return executionState().id; }
+    function triggerAsyncId() { return executionState().triggerId; }
+    function executionAsyncResource() { return executionState().resource; }
     const api = {
-        AsyncResource,
-        createHook: callbacks => new AsyncHook(callbacks),
-        executionAsyncId: () => executionState().id,
-        triggerAsyncId: () => executionState().triggerId,
-        executionAsyncResource: () => executionState().resource,
+        get AsyncLocalStorage() {
+            return require('internal/async_local_storage/async_context_frame');
+        },
+        createHook,
+        executionAsyncId,
+        triggerAsyncId,
+        executionAsyncResource,
         // This is the declared provider-ID enumeration, not a claim that every
         // corresponding resource owner is implemented or can be instantiated.
         asyncWrapProviders: ObjectFreeze(ObjectAssign(ObjectCreate(null), {
@@ -8765,12 +8895,9 @@ SIGNREQUEST: 66,
 TLSWRAP: 67,
 VERIFYREQUEST: 68
         })),
+        AsyncResource,
     };
     modules.set('async_hooks', api);
-    ObjectDefineProperty(api, 'AsyncLocalStorage', {
-        configurable: true, enumerable: true,
-        get: () => require('internal/async_local_storage/async_context_frame'),
-    });
     return { api, validators, frame: AsyncContextFrame, enabledHooksExist,
         symbols: { owner_symbol, async_id_symbol, trigger_async_id_symbol },
         createTask, runTask, retireTask, enqueueTick, drainTicks, drainDestroys, runInternalImmediate,
