@@ -5494,3 +5494,13 @@ source passes formatting inspection. The normal final build also includes
 standalone Caddy, MariaDB64, and both dormant MariaDB VFS images for the
 remaining validation scope, without changing shipped product exposure.
 Actual final-image build and application evidence remain pending.
+
+The first final-build command stops before compiling in 15 seconds
+(`go-final-php-drain-products-1105-231020-f233`): the planner correctly
+rejects mixing its exclusive `demanded` alias with extra filters. The
+validation runner is corrected to read the normal supported set's 11 active
+product IDs, obtain normal host binary demands from the existing supply
+checker, and add the four validation-only filters. The resulting 52 explicit
+filters form one normal source-build union. The existing published-consumer
+checker runs after publication too. No planner or integrity rule changes.
+The corrected job is `go-final-php-drain-union-1105-231210-da9d`.
