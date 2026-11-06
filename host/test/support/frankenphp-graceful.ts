@@ -102,8 +102,8 @@ echo ${JSON.stringify(body)};
       response.then(result => { throw new Error(`PHP request finished before SIGTERM: ${result.status}`); }),
     ]);
     stage = "waiting for service SIGTERM";
-    const stop = await Promise.race([host.spawnFromVfs("/sbin/dinitctl", [
-      "dinitctl", "-p", "/tmp/dinitctl", "stop", service,
+    const stop = await Promise.race([host.spawnFromVfs("/usr/local/bin/kandelo-service", [
+      "kandelo-service", "stop", service,
     ]), timeout]);
     await Promise.race([
       signalSent, timeout,
@@ -124,7 +124,7 @@ echo ${JSON.stringify(body)};
     if (result.status !== 200 || responseBody !== body || serverExit !== 0 || stopExit !== 0) {
       throw new Error(JSON.stringify({ status: result.status, responseBody, serverExit, stopExit }));
     }
-    return { listenerClosed: true, status: result.status, responseBody, serverExit, stopExit };
+    return { serverPid: listener.pid, listenerClosed: true, status: result.status, responseBody, serverExit, stopExit };
   } finally {
     clearTimeout(timer);
     unwatch();

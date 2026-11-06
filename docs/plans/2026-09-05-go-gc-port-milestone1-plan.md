@@ -1,6 +1,6 @@
 # Go `GOOS=kandelo` Port — Milestone 1 Implementation Plan
 
-## Current checkpoint — 2026-11-05
+## Current checkpoint — 2026-11-06
 
 The work now extends beyond the original hello-world milestone below.
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
@@ -10,9 +10,11 @@ The package source pin is `29e21182116f32de46a7792402860a88ccb1178c`,
 including cooperative Go signals, fatal Go tracebacks, shared libc cgo
 syscall dispatch, host heap-safepoint integration, and the tested callback
 system-stack correction. WordPress revision 36 adds classic HTTP graceful
-shutdown and aligned HTTP/service stop deadlines. Its normal image rebuild
-and actual PHP shutdown validation are pending; the revision-32 app evidence
-below remains tied to Go fork `c925e9c`.
+shutdown and aligned HTTP/service stop deadlines. The normal final build
+passes all 183 nodes and 11 products plus consumer admission. Node proves
+held-PHP request draining in both profiles. Browser draining and final-image
+editor/recovery checks remain pending; the revision-32 app evidence below
+remains tied to Go fork `c925e9c`.
 
 - The revision-32 WordPress image runs actual embedded PHP through both
   FrankenPHP classic and Caddy. Six visible Chromium cases prove
@@ -46,8 +48,17 @@ below remains tied to Go fork `c925e9c`.
   Chromium, with two existing skips on each host and no failures or
   timeouts. Both runs use identical admitted kernel/rootfs bytes and host
   sources; the browser fixture's executable dependencies are included.
-- Next: finish the consumer rebuild and validate actual PHP shutdown,
-  isolate the classic WebKit failures, then establish sustained
+- The final `go-hello` revision-24 package passes normal source publication,
+  Node C-to-Go VFS spawning with a zero fork count, and all three browser
+  VFS-launch cases. The two-package fixture is not a full app check.
+- Both final FrankenPHP profiles complete a real held PHP request after
+  SIGTERM closes the listener, then exit zero in Node. Classic's full test
+  passes. Caddy's first full test has a separate forced worker retirement
+  during machine destruction; its targeted rerun passes, so that failure
+  remains intermittent and under investigation.
+- Next: correct regular-file polling and require clean Caddy startup,
+  validate browser PHP shutdown, isolate the classic WebKit failures,
+  then establish sustained
   traffic/memory behavior and current paired stack comparisons. Child
   credentials, host-backed path limits, and broader conformance remain gaps.
 
@@ -56,11 +67,13 @@ checkpoint. They must not be read as current production-readiness claims.
 
 ### Remaining release gates
 
-1. Finish the normal final-image build with Go `29e2118`, WordPress revision
-   36, classic HTTP/PHP graceful shutdown, and aligned service deadlines.
+1. Fix Go regular-file poll registration: Caddy can panic with EPERM during
+   certificate-file reads and recover through supervisor restart. Also
+   resolve the observed machine-retirement failure and retain forced
+   worker containment evidence.
 2. Prove that each real FrankenPHP service completes an in-flight PHP
    request after SIGTERM and exits normally. The shared Node/browser probe
-   is prepared but has not executed against the rebuilt image.
+   passes in Node; repeat it in browsers against the rebuilt image.
 3. Repeat visible login, Appearance → Editor, post/template saves, and
    crash recovery on the final image. Resolve the intermittent classic
    WebKit health/navigation and page-context failures; their cause remains
@@ -5533,3 +5546,53 @@ the targeted C signal/I/O gate; it establishes neither full POSIX/Go
 conformance nor FrankenPHP application shutdown. The WordPress revision-36
 build has advanced through MariaDB64 into the new classic executable; the
 baseline build remains separate.
+
+**2026-11-06 — Publish the final image and exercise actual service shutdown.**
+The final normal source union succeeds in 47m28s: 183/183 nodes, all 11
+products, 159 cached dispositions, and 24 published dispositions. The
+published-consumer checker also exits zero. WordPress revision 36 is
+79,346,339 bytes with SHA-256 `784804ed…`; Go consumers use `29e2118`.
+
+The optional `go-hello` sample is not selected by the default demand graph.
+A separate normal kernel/sample projection builds revision 24 and passes
+the existing C `posix_spawn` launcher in Node and Chromium/Firefox/WebKit
+(three browser passes). ABI digests match; Node has both markers, no stderr
+or host diagnostics, and fork count zero. Vite skips general app pre-bundling
+because that two-package fixture omits rootfs. The selected probes have no
+runtime errors; this is not evidence for the complete app.
+
+An attempt to publish WordPress early overlaps the main image producer.
+The cache correctly rejects the second image's differing bytes and preserves
+the first winner. No cache entry is overwritten or integrity check relaxed.
+The cached retry publishes normally, then both Node tests reach real PHP.
+They fail before SIGTERM because the prepared probe assumes `/tmp/dinitctl`,
+while the current image controller uses `/run/kandelo-services/dinitctl`.
+The shared probe now invokes the public `kandelo-service stop` command;
+the browser-host fixture also boots through `/sbin/kandelo-init`.
+
+With that test correction, both profiles close their listeners, finish the
+held PHP response, and return zero server/controller exits. Classic passes
+the full Node case. Caddy subsequently fails cooperative machine destruction
+with a forced-retirement warning (four of five woken processes drained).
+A Caddy-only rerun passes; bounded fresh-process repetitions stop at the
+first failure and retain process-lifecycle evidence. No Go or host runtime
+fix is claimed for that intermittent condition. The helper's strict type
+check passes. The first failed attempts remain under `.context/`.
+
+The bounded repetition reproduces the teardown failure on its first run.
+Its lifecycle also exposes an earlier Caddy exit with status 2 followed by
+supervisor restart; the replacement's PHP drain still succeeds. Capturing
+the service log before destruction identifies `runtime: epoll_ctl arm failed
+with 1` / `fatal error: runtime: netpollarm failed` while
+`crypto/x509.loadSystemRoots` reads the certificate file. A later test that
+otherwise passes contains that fatal trace too. Node and browser-host cases
+now reject Go panic/fatal headers in the service log, so restart cannot hide
+the original failure.
+
+Read-only tracing locates the boundary: Kandelo correctly rejects regular
+files from epoll with EPERM, but the Go target's `netpollopen` returns success
+without registration. Go therefore leaves the file nonblocking and later
+tries to arm epoll when a deferred VFS read returns EAGAIN. The next step is
+a deterministic regular-file deadline regression and a target-runtime
+registration correction, preserving the ordinary blocking-file fallback.
+No compiler, library, or kernel patch has yet been applied for this failure.

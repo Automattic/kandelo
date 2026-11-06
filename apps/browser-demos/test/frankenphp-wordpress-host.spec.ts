@@ -127,8 +127,8 @@ echo json_encode([
     'cacheFilePresent' => count(glob('/var/cache/opcache/*' . $target . '.bin')) > 0,
 ], JSON_THROW_ON_ERROR);
 `));
-        const { pid, exit } = await kernel.spawnFromVfs("/sbin/dinit", [
-          "/sbin/dinit", "--container", "-p", "/tmp/dinitctl", serviceName,
+        const { pid, exit } = await kernel.spawnFromVfs("/bin/sh", [
+          "sh", "/sbin/kandelo-init", serviceName,
         ], {
           env: [
             "HOME=/root", "TMPDIR=/tmp", "TERM=xterm-256color",
@@ -273,11 +273,11 @@ echo json_encode([
           }
           if (!restarted) throw new Error("FrankenPHP did not recover after SIGKILL");
         }
-        const serviceLog = await kernel.readFileFromVfs(`/var/log/${serviceName}.log`);
-        if (!serviceLog) throw new Error("FrankenPHP service log missing");
         const graceful = await verifyFrankenPhpGracefulShutdown(
           kernel, 8080, processExits.waitForExit, serviceName,
         );
+        const serviceLog = await kernel.readFileFromVfs(`/var/log/${serviceName}.log`);
+        if (!serviceLog) throw new Error("FrankenPHP service log missing");
         return {
           graceful,
           opcacheStatus: opcacheResponse.status,
@@ -341,6 +341,7 @@ echo json_encode([
     }
     expect(result.graceful).toMatchObject({ listenerClosed: true, status: 200, serverExit: 0, stopExit: 0 });
     expect(result.serviceLog).toContain(serviceName === "frankenphp-caddy" ? '"num_threads":6' : "num_threads=6");
+    expect(result.serviceLog).not.toMatch(/^(?:panic:|fatal error:)/m);
     expect(result.diagnostics).toEqual([]);
     const drained = result.shutdown.filter(event => event.phase === "draining").at(-1);
     expect(drained, JSON.stringify(result.shutdown)).toBeDefined();

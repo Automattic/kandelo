@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { expect, it } from "vitest";
@@ -39,6 +40,7 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
   let logs = "";
   const diagnostics: unknown[] = [];
   const shutdown: DestroyProgressEvent[] = [];
+  const lifecycle: { kind: string; pid: number; ppid?: number; exitStatus?: number }[] = [];
   const processExits = observeProcessExits();
   const append = (_pid: number, data: Uint8Array) => {
     logs = (logs + new TextDecoder().decode(data)).slice(-100_000);
@@ -51,7 +53,10 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
     onStdout: append,
     onStderr: append,
     onHostDiagnostic: diagnostic => diagnostics.push(diagnostic),
-    onProcessEvent: processExits.onEvent,
+    onProcessEvent: event => {
+      lifecycle.push(event);
+      processExits.onEvent(event);
+    },
   });
   host.subscribeDestroyProgress(event => shutdown.push(event));
   try {
@@ -94,8 +99,9 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
     const response = await fetch(`http://127.0.0.1:${port}/`);
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("WordPress on Kandelo");
+    let graceful: unknown;
     try {
-      const graceful = await verifyFrankenPhpGracefulShutdown(host, port, processExits.waitForExit, service);
+      graceful = await verifyFrankenPhpGracefulShutdown(host, port, processExits.waitForExit, service);
       expect(graceful).toMatchObject({ listenerClosed: true, status: 200, serverExit: 0, stopExit: 0 });
     } catch (error) {
       const listener = await host.pickListenerTarget(port).catch(() => null);
@@ -107,11 +113,20 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
       }));
       throw new Error(`${String(error)}\n${reports.join("\n")}\n${logs.slice(-4000)}`, { cause: error });
     }
+    const serviceLogBytes = await host.readFileFromVfs(`/var/log/${service}.log`);
+    const serviceLog = serviceLogBytes ? new TextDecoder().decode(serviceLogBytes) : "missing";
+    if (process.env.KANDELO_TEST_REPORT_DIR && serviceLogBytes) {
+      writeFileSync(join(process.env.KANDELO_TEST_REPORT_DIR, `${service}-service.log`), serviceLogBytes);
+    }
     await host.destroy();
     const drained = shutdown.filter(event => event.phase === "draining").at(-1);
-    expect(drained, JSON.stringify(shutdown)).toBeDefined();
+    const teardownEvidence = JSON.stringify({ shutdown, graceful, lifecycle, logs: logs.slice(-4000),
+      serviceLog: serviceLog.slice(0, 12_000) + (serviceLog.length > 20_000 ? "\n...\n" + serviceLog.slice(-8000) : serviceLog.slice(12_000)),
+    });
+    expect(serviceLog, teardownEvidence).not.toMatch(/^(?:panic:|fatal error:)/m);
+    expect(drained, teardownEvidence).toBeDefined();
     expect(drained!.total).toBeGreaterThan(0);
-    expect(drained!.completed, JSON.stringify(shutdown)).toBe(drained!.total);
+    expect(drained!.completed, teardownEvidence).toBe(drained!.total);
     expect(diagnostics).toEqual([]);
   } finally {
     await host.destroy();
