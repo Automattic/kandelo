@@ -23,7 +23,7 @@ function _createNodeCryptoKeys(platform) {
         constructor() { return call('newHandle', new.target.prototype); }
         init(...args) {
             if (args[2] === binding.kKeyFormatJWK)
-                return call('initJwk', this, args[0], args[1], platform.codecs.fromString);
+                return call('initJwk', this, args[0], args[1]);
             return call('init', this, ...args);
         }
         getKeyType() { return call('type', this); }
@@ -36,7 +36,7 @@ function _createNodeCryptoKeys(platform) {
             return typeof value === 'string' ? value : platform.codecs.copyBytes(value);
         }
         exportJwk(target, handleRsaPss) {
-            return call('exportJwk', this, target, handleRsaPss, platform.codecs.decodeBytes);
+            return call('exportJwk', this, target, handleRsaPss);
         }
         rawPublicKey() { return platform.codecs.copyBytes(call('rawPublic', this)); }
         rawPrivateKey() { return platform.codecs.copyBytes(call('rawPrivate', this)); }

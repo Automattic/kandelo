@@ -1,6 +1,9 @@
 /* Real immutable key material owns ncrypto/OpenSSL objects. Engine-only
  * reserved-slot edges share that material across independent public wrappers. */
 #include "kandelo-node-key-operations.h"
+#include "js/Exception.h"
+#include "js/Realm.h"
+#include "js/String.h"
 namespace {
 static void KandeloKeyMaterialFinalize(JS::GCContext*, JSObject* object) {
   const auto value = JS::GetReservedSlot(object, 0);
@@ -43,6 +46,10 @@ static bool KandeloKeyBytes(JSContext* cx, const ncrypto::DataPointer& data, Mut
 }
 static bool KandeloKeyOwn(JSContext* cx, HandleObject handle, int role,
                           std::unique_ptr<kandelo::crypto::KeyMaterial> material) {
+  // The dispatcher accepts checked-unwrapped foreign handles. Allocate and
+  // account the owner in the destination realm, never store a raw cross-zone
+  // object in the foreign handle's reserved slot.
+  JSAutoRealm realm(cx, handle);
   RootedObject owner(cx, JS_NewObject(cx, &KandeloKeyMaterialClass));
   if (!owner) return false;
   JS::AddAssociatedMemory(owner, material->AccountedBytes(), JS::MemoryUse::Embedding3);
@@ -118,43 +125,55 @@ static bool KandeloKeyDetails(JSContext* cx, kandelo::crypto::KeyMaterial& mater
   }
   result.setObject(*object); return true;
 }
-// The codec callbacks are private Buffer primitives, captured by the adapter.
-// Get each JWK property once and in pinned source order; getters are observable.
-static bool KandeloJwkDecode(JSContext* cx, HandleValue decoder, HandleValue value,
+// JWK string decoding never enters JavaScript or public Buffer allocation.
+// Borrow immutable rooted string characters only within the no-GC scope.
+static bool KandeloJwkDecode(JSContext* cx, HandleValue value,
                               kandelo::crypto::Bytes* bytes) {
-  JS::RootedValueArray<2> arguments(cx);
-  arguments[0].set(value);
-  RootedString encoding(cx, JS_NewStringCopyZ(cx, "base64"));
-  if (!encoding) return false;
-  arguments[1].setString(encoding);
-  RootedValue decoded(cx);
-  return JS_CallFunctionValue(cx, nullptr, decoder, arguments, &decoded) &&
-      KandeloKeyCopy(cx, decoded, bytes);
+  if (!value.isString()) { JS_ReportErrorASCII(cx, "JWK component requires a string"); return false; }
+  RootedString text(cx, value.toString());
+  JSLinearString* linear = JS_EnsureLinearString(cx, text);
+  if (!linear) return false;
+  JS::AutoCheckCannotGC nogc;
+  const size_t length = JS::GetLinearStringLength(linear);
+  if (JS::LinearStringHasLatin1Chars(linear)) {
+    const auto* chars = JS::GetLatin1LinearStringChars(nogc, linear);
+    auto decoded = kandelo::crypto::jwk_codec::Decode(chars, length);
+    bytes->value.swap(decoded.value);
+  } else {
+    const auto* chars = JS::GetTwoByteLinearStringChars(nogc, linear);
+    auto decoded = kandelo::crypto::jwk_codec::Decode(chars, length);
+    bytes->value.swap(decoded.value);
+  }
+  return true;
 }
-[[noreturn]] static void KandeloJwkInvalid(JSContext* cx, const char* kind) {
-  // RSA/secret and the first EC/kty getter deliberately replace getter errors
-  // in pinned crypto_{rsa,ec,keys}.cc; later EC/OKP getters propagate them.
-  JS_ClearPendingException(cx);
+[[noreturn]] static void KandeloJwkInvalid(const char* kind) {
   kandelo::crypto::KeyMaterial::InvalidJwk(kind);
 }
+static bool KandeloJwkMaskGetterFailure(JSContext* cx, const char* message) {
+  // Preserve OOM and exception-free interrupt/forced-return failures. Only
+  // ordinary getter exceptions get the pinned invalid-JWK replacement.
+  if (JS_IsThrowingOutOfMemory(cx) || !JS_IsExceptionPending(cx)) return false;
+  JS_ClearPendingException(cx);
+  throw kandelo::crypto::KeyError(message, "ERR_CRYPTO_INVALID_JWK");
+}
+static bool KandeloJwkGetMasked(JSContext* cx, HandleObject object, const char* name,
+                                MutableHandleValue value, const char* message) {
+  return JS_GetProperty(cx, object, name, value) || KandeloJwkMaskGetterFailure(cx, message);
+}
 static bool KandeloKeyImportJwk(JSContext* cx, HandleObject handle, int requestedRole,
-                                HandleObject jwk, HandleValue decoder, MutableHandleValue output) {
+                                HandleObject jwk, MutableHandleValue output) {
   using Material = kandelo::crypto::KeyMaterial;
   using Bytes = kandelo::crypto::Bytes;
   if (requestedRole == 0) {
     RootedValue k(cx);
-    if (!JS_GetProperty(cx, jwk, "k", &k) || !k.isString()) {
-      JS_ClearPendingException(cx);
-      throw kandelo::crypto::KeyError("Invalid JWK secret key format", "ERR_CRYPTO_INVALID_JWK");
-    }
-    Bytes bytes; if (!KandeloJwkDecode(cx, decoder, k, &bytes)) return false;
+    if (!KandeloJwkGetMasked(cx, jwk, "k", &k, "Invalid JWK secret key format")) return false;
+    if (!k.isString()) throw kandelo::crypto::KeyError("Invalid JWK secret key format", "ERR_CRYPTO_INVALID_JWK");
+    Bytes bytes; if (!KandeloJwkDecode(cx, k, &bytes)) return false;
     return KandeloKeyOwn(cx, handle, 0, Material::Secret(bytes));
   }
   RootedValue kty(cx);
-  if (!JS_GetProperty(cx, jwk, "kty", &kty) || !kty.isString()) {
-    JS_ClearPendingException(cx);
-    throw kandelo::crypto::KeyError("Invalid JWK format", "ERR_CRYPTO_INVALID_JWK");
-  }
+  if (!KandeloJwkGetMasked(cx, jwk, "kty", &kty, "Invalid JWK format")) return false;
+  if (!kty.isString()) throw kandelo::crypto::KeyError("Invalid JWK format", "ERR_CRYPTO_INVALID_JWK");
   std::string kind; if (!KandeloKeyString(cx, kty, &kind)) return false;
   std::unique_ptr<Material> material;
   int importedRole = 1;
@@ -163,62 +182,69 @@ static bool KandeloKeyImportJwk(JSContext* cx, HandleObject handle, int requeste
   kind = std::string(kind.c_str());
   if (kind == "RSA") {
     RootedValue n(cx), e(cx), d(cx), oth(cx);
-    if (!JS_GetProperty(cx, jwk, "n", &n) || !JS_GetProperty(cx, jwk, "e", &e) ||
-        !JS_GetProperty(cx, jwk, "d", &d) || !JS_GetProperty(cx, jwk, "oth", &oth) ||
-        !n.isString() || !e.isString() || (!d.isUndefined() && !d.isString()) ||
-        (d.isUndefined() && !oth.isUndefined())) KandeloJwkInvalid(cx, "RSA");
+    if (!KandeloJwkGetMasked(cx, jwk, "n", &n, "Invalid JWK RSA key") || !KandeloJwkGetMasked(cx, jwk, "e", &e, "Invalid JWK RSA key") ||
+        !KandeloJwkGetMasked(cx, jwk, "d", &d, "Invalid JWK RSA key") || !KandeloJwkGetMasked(cx, jwk, "oth", &oth, "Invalid JWK RSA key")) return false;
+    if (!n.isString() || !e.isString() || (!d.isUndefined() && !d.isString()) ||
+        (d.isUndefined() && !oth.isUndefined())) KandeloJwkInvalid("RSA");
     importedRole = d.isString() ? 2 : 1;
     ncrypto::Rsa rsa;
     Bytes nb, eb;
-    if (!KandeloJwkDecode(cx, decoder, n, &nb) || !KandeloJwkDecode(cx, decoder, e, &eb)) return false;
-    if (!rsa.setPublicKey(Material::JwkBN(nb), Material::JwkBN(eb))) KandeloJwkInvalid(cx, "RSA");
+    if (!KandeloJwkDecode(cx, n, &nb) || !KandeloJwkDecode(cx, e, &eb)) return false;
+    if (!rsa.setPublicKey(Material::JwkBN(nb), Material::JwkBN(eb))) KandeloJwkInvalid("RSA");
     if (importedRole == 2) {
       RootedValue p(cx), q(cx), dp(cx), dq(cx), qi(cx);
-      if (!JS_GetProperty(cx, jwk, "p", &p) || !JS_GetProperty(cx, jwk, "q", &q) ||
-          !JS_GetProperty(cx, jwk, "dp", &dp) || !JS_GetProperty(cx, jwk, "dq", &dq) ||
-          !JS_GetProperty(cx, jwk, "qi", &qi) || !p.isString() || !q.isString() ||
-          !dp.isString() || !dq.isString() || !qi.isString()) KandeloJwkInvalid(cx, "RSA");
+      if (!KandeloJwkGetMasked(cx, jwk, "p", &p, "Invalid JWK RSA key") || !KandeloJwkGetMasked(cx, jwk, "q", &q, "Invalid JWK RSA key") ||
+          !KandeloJwkGetMasked(cx, jwk, "dp", &dp, "Invalid JWK RSA key") || !KandeloJwkGetMasked(cx, jwk, "dq", &dq, "Invalid JWK RSA key") ||
+          !KandeloJwkGetMasked(cx, jwk, "qi", &qi, "Invalid JWK RSA key")) return false;
+      if (!p.isString() || !q.isString() ||
+          !dp.isString() || !dq.isString() || !qi.isString()) KandeloJwkInvalid("RSA");
       Bytes db, qb, pb, dpb, dqb, qib;
-      if (!KandeloJwkDecode(cx, decoder, d, &db) || !KandeloJwkDecode(cx, decoder, q, &qb) ||
-          !KandeloJwkDecode(cx, decoder, p, &pb) || !KandeloJwkDecode(cx, decoder, dp, &dpb) ||
-          !KandeloJwkDecode(cx, decoder, dq, &dqb) || !KandeloJwkDecode(cx, decoder, qi, &qib)) return false;
+      if (!KandeloJwkDecode(cx, d, &db) || !KandeloJwkDecode(cx, q, &qb) ||
+          !KandeloJwkDecode(cx, p, &pb) || !KandeloJwkDecode(cx, dp, &dpb) ||
+          !KandeloJwkDecode(cx, dq, &dqb) || !KandeloJwkDecode(cx, qi, &qib)) return false;
       ncrypto::Rsa::OtherPrimeInfoPointers other;
       if (!oth.isUndefined()) {
         bool array = false;
-        if (!oth.isObject() || !JS::IsArrayObject(cx, oth, &array) || !array) KandeloJwkInvalid(cx, "RSA");
+        if (!oth.isObject()) KandeloJwkInvalid("RSA");
+        if (!JS::IsArrayObject(cx, oth, &array)) return KandeloJwkMaskGetterFailure(cx, "Invalid JWK RSA key");
+        if (!array) KandeloJwkInvalid("RSA");
         RootedObject list(cx, &oth.toObject()); uint32_t length;
-        if (!JS::GetArrayLength(cx, list, &length) || length == 0 || length > 8) KandeloJwkInvalid(cx, "RSA");
+        if (!JS::GetArrayLength(cx, list, &length)) return KandeloJwkMaskGetterFailure(cx, "Invalid JWK RSA key");
+        if (length == 0 || length > 8) KandeloJwkInvalid("RSA");
         other.reserve(length);
         for (uint32_t i = 0; i < length; i++) {
           RootedValue item(cx), r(cx), od(cx), t(cx);
-          if (!JS_GetElement(cx, list, i, &item) || !item.isObject()) KandeloJwkInvalid(cx, "RSA");
+          if (!JS_GetElement(cx, list, i, &item)) return KandeloJwkMaskGetterFailure(cx, "Invalid JWK RSA key");
+          if (!item.isObject()) KandeloJwkInvalid("RSA");
           RootedObject entry(cx, &item.toObject());
-          if (!JS_GetProperty(cx, entry, "r", &r) || !JS_GetProperty(cx, entry, "d", &od) ||
-              !JS_GetProperty(cx, entry, "t", &t) || !r.isString() || !od.isString() || !t.isString())
-            KandeloJwkInvalid(cx, "RSA");
+          if (!KandeloJwkGetMasked(cx, entry, "r", &r, "Invalid JWK RSA key") || !KandeloJwkGetMasked(cx, entry, "d", &od, "Invalid JWK RSA key") ||
+              !KandeloJwkGetMasked(cx, entry, "t", &t, "Invalid JWK RSA key")) return false;
+          if (!r.isString() || !od.isString() || !t.isString())
+            KandeloJwkInvalid("RSA");
           Bytes rb, odb, tb;
-          if (!KandeloJwkDecode(cx, decoder, r, &rb) || !KandeloJwkDecode(cx, decoder, od, &odb) ||
-              !KandeloJwkDecode(cx, decoder, t, &tb)) return false;
+          if (!KandeloJwkDecode(cx, r, &rb) || !KandeloJwkDecode(cx, od, &odb) ||
+              !KandeloJwkDecode(cx, t, &tb)) return false;
           other.emplace_back(Material::JwkBN(rb), Material::JwkBN(odb), Material::JwkBN(tb));
         }
       }
       if (!rsa.setPrivateKey(Material::JwkBN(db), Material::JwkBN(qb), Material::JwkBN(pb),
             Material::JwkBN(dpb), Material::JwkBN(dqb), Material::JwkBN(qib), std::move(other)) ||
-          !rsa.checkPrimeProduct()) KandeloJwkInvalid(cx, "RSA");
+          !rsa.checkPrimeProduct()) KandeloJwkInvalid("RSA");
     }
     material = Material::JwkRsa(rsa);
   } else if (kind == "EC") {
     RootedValue crv(cx), x(cx), y(cx), d(cx);
-    if (!JS_GetProperty(cx, jwk, "crv", &crv) || !crv.isString()) KandeloJwkInvalid(cx, "EC");
+    if (!KandeloJwkGetMasked(cx, jwk, "crv", &crv, "Invalid JWK EC key")) return false;
+    if (!crv.isString()) KandeloJwkInvalid("EC");
     std::string curve; if (!KandeloKeyString(cx, crv, &curve)) return false;
     const int nid = Material::JwkCurve(curve);
     if (!JS_GetProperty(cx, jwk, "x", &x) || !JS_GetProperty(cx, jwk, "y", &y) ||
         !JS_GetProperty(cx, jwk, "d", &d)) return false;
-    if (!x.isString() || !y.isString() || (!d.isUndefined() && !d.isString())) KandeloJwkInvalid(cx, "EC");
+    if (!x.isString() || !y.isString() || (!d.isUndefined() && !d.isString())) KandeloJwkInvalid("EC");
     importedRole = d.isString() ? 2 : 1;
     Bytes xb, yb, db;
-    if (!KandeloJwkDecode(cx, decoder, x, &xb) || !KandeloJwkDecode(cx, decoder, y, &yb) ||
-        (importedRole == 2 && !KandeloJwkDecode(cx, decoder, d, &db))) return false;
+    if (!KandeloJwkDecode(cx, x, &xb) || !KandeloJwkDecode(cx, y, &yb) ||
+        (importedRole == 2 && !KandeloJwkDecode(cx, d, &db))) return false;
     material = Material::JwkEc(nid, xb, yb, importedRole == 2 ? &db : nullptr);
   } else if (kind == "OKP" || kind == "AKP") {
     const bool akp = kind == "AKP";
@@ -227,15 +253,15 @@ static bool KandeloKeyImportJwk(JSContext* cx, HandleObject handle, int requeste
         !JS_GetProperty(cx, jwk, akp ? "pub" : "x", &pub) ||
         !JS_GetProperty(cx, jwk, akp ? "priv" : "d", &priv)) return false;
     const bool valid = pub.isString() && (priv.isUndefined() || priv.isString());
-    if (!akp && (!name.isString() || !valid)) KandeloJwkInvalid(cx, "OKP");
+    if (!akp && (!name.isString() || !valid)) KandeloJwkInvalid("OKP");
     std::string algorithmName;
     if (name.isString() && !KandeloKeyString(cx, name, &algorithmName)) return false;
     const auto* algorithm = Material::JwkAlgorithm(algorithmName, akp);
-    if (!valid) KandeloJwkInvalid(cx, "AKP");
+    if (!valid) KandeloJwkInvalid("AKP");
     importedRole = priv.isString() ? 2 : 1;
     Bytes publicBytes, privateBytes;
-    if ((importedRole == 2 && !KandeloJwkDecode(cx, decoder, priv, &privateBytes)) ||
-        !KandeloJwkDecode(cx, decoder, pub, &publicBytes)) return false;
+    if ((importedRole == 2 && !KandeloJwkDecode(cx, priv, &privateBytes)) ||
+        !KandeloJwkDecode(cx, pub, &publicBytes)) return false;
     material = Material::JwkRaw(*algorithm, publicBytes, importedRole == 2 ? &privateBytes : nullptr);
   } else {
     const auto message = std::string(kind.c_str()) + " is not a supported JWK key type";
@@ -256,10 +282,12 @@ static bool KandeloJwkDefine(JSContext* cx, HandleObject target, const char* nam
   // V8 DefineOwnProperty reports an ordinary refusal without throwing. Keep
   // that distinction so ExportJWK supplies its own operation-failed error,
   // while exceptions thrown by a target proxy keep their original identity.
-  return JS_DefinePropertyById(cx, target, id, descriptor, result) && result.ok();
+  if (!JS_DefinePropertyById(cx, target, id, descriptor, result)) return false;
+  if (!result.ok()) throw kandelo::crypto::KeyError("Failed to export JWK", "ERR_CRYPTO_OPERATION_FAILED");
+  return true;
 }
 static bool KandeloKeyExportJwk(JSContext* cx, const kandelo::crypto::KeyMaterial& material, int role,
-                                HandleObject target, bool rsaPss, HandleValue encoder) {
+                                HandleObject target, bool rsaPss) {
   using Material = kandelo::crypto::KeyMaterial;
   auto text = [&](const char* name, const char* value) {
     RootedString string(cx, JS_NewStringCopyZ(cx, value));
@@ -268,12 +296,10 @@ static bool KandeloKeyExportJwk(JSContext* cx, const kandelo::crypto::KeyMateria
     return KandeloJwkDefine(cx, target, name, propertyValue);
   };
   auto encode = [&](const ncrypto::DataPointer& data, MutableHandleValue encoded) {
-    RootedValue value(cx);
-    if (!KandeloKeyBytes(cx, data, &value)) return false;
-    JS::RootedValueArray<2> arguments(cx); arguments[0].set(value);
-    RootedString encoding(cx, JS_NewStringCopyZ(cx, "base64url")); if (!encoding) return false;
-    arguments[1].setString(encoding);
-    return JS_CallFunctionValue(cx, nullptr, encoder, arguments, encoded);
+    const auto text = kandelo::crypto::jwk_codec::Encode(data.get(), data.size());
+    RootedString string(cx, JS_NewStringCopyN(cx, text.data(), text.size()));
+    if (!string) return false;
+    encoded.setString(string); return true;
   };
   auto bytes = [&](HandleObject object, const char* name, const ncrypto::DataPointer& data) {
     RootedValue encoded(cx);
@@ -289,7 +315,9 @@ static bool KandeloKeyExportJwk(JSContext* cx, const kandelo::crypto::KeyMateria
   const auto& key = material.asymmetric;
   const auto* algorithm = key.getAlgorithm();
   if (algorithm == &ncrypto::KeyAlgorithm::RSA || (rsaPss && algorithm == &ncrypto::KeyAlgorithm::RSA_PSS)) {
-    ncrypto::Rsa rsa(key.get()); if (!rsa || !text("kty", "RSA")) return false;
+    ncrypto::Rsa rsa(key.get());
+    if (!rsa) throw kandelo::crypto::KeyError("Failed to export JWK", "ERR_CRYPTO_OPERATION_FAILED");
+    if (!text("kty", "RSA")) return false;
     const auto pub = rsa.getPublicKey();
     if (!bn(target, "n", pub.n) || !bn(target, "e", pub.e)) return false;
     if (role == 2) {
@@ -316,7 +344,8 @@ static bool KandeloKeyExportJwk(JSContext* cx, const kandelo::crypto::KeyMateria
   }
   if (algorithm == &ncrypto::KeyAlgorithm::EC) {
     ncrypto::BignumPointer x, y, d; int bits;
-    if (!ncrypto::Ec::GetKeyComponents(key, &x, &y, role == 2 ? &d : nullptr, &bits)) return false;
+    if (!ncrypto::Ec::GetKeyComponents(key, &x, &y, role == 2 ? &d : nullptr, &bits))
+      throw kandelo::crypto::KeyError("Failed to export JWK", "ERR_CRYPTO_OPERATION_FAILED");
     const size_t size = (bits + 7) / CHAR_BIT;
     if (!text("kty", "EC") || !bn(target, "x", x.get(), size) || !bn(target, "y", y.get(), size)) return false;
     const int nid = ncrypto::Ec::GetCurveId(key); const char* curve;
@@ -385,7 +414,11 @@ static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandl
     if (!JS_WrapValue(cx, &material)) return false;
     JS::SetReservedSlot(object, 0, material);
     JS::SetReservedSlot(object, 1, JS::GetReservedSlot(handle, 1));
-    RootedObject handlePrototype(cx); if (!JS_GetPrototype(cx, handle, &handlePrototype)) return false;
+    RootedObject handlePrototype(cx);
+    {
+      JSAutoRealm realm(cx, handle);
+      if (!JS_GetPrototype(cx, handle, &handlePrototype)) return false;
+    }
     if (!JS_WrapObject(cx, &handlePrototype)) return false;
     JS::SetReservedSlot(object, 2, ObjectValue(*handlePrototype));
     if (name == "newCryptoKey") {
@@ -430,7 +463,7 @@ static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandl
     int64_t role; if (!KandeloFsInteger(cx, args.get(2), 0, 2, &role)) return false;
     if (!args.get(3).isObject()) { JS_ReportErrorASCII(cx, "JWK import requires an object"); return false; }
     RootedObject jwk(cx, &args[3].toObject());
-    return KandeloKeyImportJwk(cx, handle, int(role), jwk, args.get(4), output);
+    return KandeloKeyImportJwk(cx, handle, int(role), jwk, output);
   }
   if (name == "init") {
     int64_t role; if (!KandeloFsInteger(cx, args.get(2), 0, 2, &role)) return false;
@@ -445,6 +478,7 @@ static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandl
         throw kandelo::crypto::KeyError("Invalid key object type", "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE");
       }
       RootedValue material(cx, JS::GetReservedSlot(original, 0));
+      JSAutoRealm realm(cx, handle);
       if (!JS_WrapValue(cx, &material)) return false;
       JS::SetReservedSlot(handle, 0, material); JS::SetReservedSlot(handle, 1, Int32Value(int(role))); return true;
     }
@@ -470,6 +504,10 @@ static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandl
     auto config = kandelo::crypto::KeyMaterial::Configuration(int(format), int(encoding), hasPassphrase ? &passphrase : nullptr);
     return KandeloKeyOwn(cx, handle, int(role), kandelo::crypto::KeyMaterial::Parse(role == 2, bytes, std::move(config)));
   }
+  // A proxy target can reinitialize this handle during export/detail. Pin
+  // the material edge independently so replacing slot0 and GC cannot retire
+  // the snapshot still borrowed by native code after that callback returns.
+  RootedValue materialOwner(cx, JS::GetReservedSlot(handle, 0));
   auto* material = KandeloKeyMaterial(handle); if (!material) { JS_ReportErrorASCII(cx, "Key handle is not initialized"); return false; }
   const int role = KandeloKeyRole(handle);
   if (name == "type") { output.setInt32(role); return true; }
@@ -493,10 +531,7 @@ static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandl
   if (name == "exportJwk") {
     if (!args.get(2).isObject()) { JS_ReportErrorASCII(cx, "JWK export requires an object"); return false; }
     RootedObject target(cx, &args[2].toObject());
-    if (!KandeloKeyExportJwk(cx, *material, role, target, args.get(3).isTrue(), args.get(4))) {
-      if (JS_IsExceptionPending(cx)) return false;
-      throw kandelo::crypto::KeyError("Failed to export JWK", "ERR_CRYPTO_OPERATION_FAILED");
-    }
+    if (!KandeloKeyExportJwk(cx, *material, role, target, args.get(3).isTrue())) return false;
     output.setObject(*target); return true;
   }
   if (name == "export") {

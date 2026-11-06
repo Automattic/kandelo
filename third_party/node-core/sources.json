@@ -4612,6 +4612,16 @@
         "path": "upstream/keys/src/crypto/crypto_rsa.h",
         "upstreamPath": "src/crypto/crypto_rsa.h",
         "sha256": "78209001efaf631ed6e9b22a227c680cb59b42ac77eaa8543ef29f42ba366843"
+      },
+      "deps/nbytes/include/nbytes.h": {
+        "path": "upstream/keys/deps/nbytes/include/nbytes.h",
+        "upstreamPath": "deps/nbytes/include/nbytes.h",
+        "sha256": "52c5253e3a3675faf8319af36066326f27dfd7ee2a9d6b5a49348007cb6ff12e"
+      },
+      "deps/nbytes/src/nbytes.cpp": {
+        "path": "upstream/keys/deps/nbytes/src/nbytes.cpp",
+        "upstreamPath": "deps/nbytes/src/nbytes.cpp",
+        "sha256": "b49555787f8fe74f5e3915485a268dded486a6afd496cf2f68f4d3c3147cb504"
       }
     },
     "bigInt": {

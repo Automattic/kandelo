@@ -51,7 +51,7 @@
     "third_party/node-core/incremental-crypto-adapter.js": "1666d1666a748ce01b1a14321ed975af70d279b068193eed648b3edb063747ab",
     "third_party/node-core/inspection-adapter.js": "c090c337276d93d5dc4762c932666ed18232400904d331bb3444a3b28a9b6eb7",
     "third_party/node-core/kdf-platform-adapter.js": "74cafdd780cce9587d5fb2169f28ce0b4fa74ecffb6727e6ead640c2642716d4",
-    "third_party/node-core/keys-platform-adapter.js": "a378f5e4289e5d2faf95408e3fe6f25e714e6e8ccb2b20e9d809e7d676efdafd",
+    "third_party/node-core/keys-platform-adapter.js": "e072c809e76b93aa36bf43de667d018c23250df8528bbdb14de6d2d93bb432ac",
     "third_party/node-core/locks-platform-adapter.js": "fd2eae30b25806eb7e3338fdbdf58caf1b3446f0b6dcf8067b0c764e5e1c0dc5",
     "third_party/node-core/module-record-platform-adapter.js": "0b81a87fca2f64de278f21dc26ff1e67416ba7dc9704875f03d4982c1398d154",
     "third_party/node-core/module-syntax-platform-adapter.js": "814bc3e41ca6381a86c897d2fe7f12d6eec88d5c8a2a08236ecfc8681e27b62a",

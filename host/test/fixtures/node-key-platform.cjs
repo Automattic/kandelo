@@ -11,7 +11,7 @@ const nativeKeyMethods = Object.fromEntries(Object.getOwnPropertyNames(raw.KeyOb
 const source = fs.readFileSync(path.resolve(__dirname, '../../../third_party/node-core/node-core.js'), 'utf8');
 const factories = Function(source + ';return { values:_createNodeValuesPlatform, digest:_createNodeCryptoDigest,' +
   ' keys:_createNodeCryptoKeys, inspection:_createNodeInspection, core:_createNodeCore };')();
-exports.create = function create() {
+exports.create = function create(options = {}) {
   const storage = require('./node-buffer-codecs.cjs').create();
   const inspection = factories.inspection({ Buffer: storage.Buffer,
     native: { ...internalBinding('util'), ...util.types, hasObjectKind(value, kind) {
@@ -34,6 +34,8 @@ exports.create = function create() {
     return Reflect.construct(Base, args, Target);
   }
   const native = { keyOperation(operation, ...args) {
+    if (options.forbidJwkCodecCallbacks && (operation === 'initJwk' || operation === 'exportJwk') && args.length !== 3)
+      throw new Error('JWK native operation received a JavaScript codec callback');
     try {
       let value;
       if (operation === 'constants') {
@@ -76,7 +78,13 @@ exports.create = function create() {
   } };
   const url = require('internal/url');
   const keys = factories.keys({ values, Buffer: storage.Buffer, types: util.types,
-    native, codecs: storage.codecs, inspection, digestHelpers: helpers, url });
+    native, codecs: options.forbidJwkCodecCallbacks ? new Proxy(storage.codecs, {
+      get(target, key) {
+        if (key === 'fromString' || key === 'decodeBytes')
+          throw new Error('JWK reached mutable JavaScript codec: ' + key);
+        return Reflect.get(target, key);
+      },
+    }) : storage.codecs, inspection, digestHelpers: helpers, url });
   // HMAC control consumes the actual native handle directly. Native public JS
   // keys have a different class's private fields and are separate controls.
   const core = factories.core({ process, getValues: () => values,

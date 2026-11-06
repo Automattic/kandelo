@@ -1,5 +1,16 @@
 # Shared Node core build inputs
 
+Source130 removes public Buffer allocation/JavaScript callbacks from native
+JWK byte ownership,preserves OOM/control failures,and roots material across
+reentrant getters and foreign-handle realm access.20root key checks(including
+one new callback-forbidding group) and12package checks pass. Source-identical
+private evidence contains12,308codec and226material passes;those were verified
+by source/dependency/binary identities,not rerun. Four unchanged files retain
+6passes/2consumer nonpasses. Combined117–130engine/JSAPI remains uncompiled;
+all19families partial. Overall suites/full product rebuild remain deferred.
+See [JWK review fixes](jwk-review-fixes.md).
+
+
 Source129 adds a real shared worker-lock manager,receiver-local waiting and
 released Promises,transactional grant/steal delivery and fair native-provider
 dispatch.17public groups match exact native26;2fixture failure groups,
