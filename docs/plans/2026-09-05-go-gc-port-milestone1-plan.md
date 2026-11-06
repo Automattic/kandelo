@@ -6,8 +6,10 @@ The work now extends beyond the original hello-world milestone below.
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
 on ABI 55 and main `21cfba152` (last fetched November 5).
 
-All four Go consumer recipes pin
-`1b0cf58011c425efe571b67dc134513b0760ad83`. The target supports cooperative
+All four Go consumer recipes now pin validated source
+`5834adc306dddf6784c20e402deeabf643ad9c37`; its normal artifact rebuild is
+next. The published revision-37 preview still uses `1b0cf580`.
+The target supports cooperative
 signals, fatal Go tracebacks, shared libc cgo syscall dispatch, callbacks,
 worker retirement, and host heap safepoints. The latest eight-line runtime
 correction validates descriptor pollability at open, allowing Go's unchanged
@@ -38,9 +40,11 @@ server pins the earlier `79c47b29` image. Full app validation remains open.
   publication now wakes every waiter on that exact retiring channel. All
   28 related host checks pass, followed by eight actual service drain and
   cooperative-retirement cases across four fresh Node runs. The broader
-  Node/Bun/browser lifecycle gate remains pending. Its source-only memory
-  selection now passes 239/239 after explicit review of six standalone
-  Go/C linker-probe allocations; none holds a live kernel memory.
+  Full Node/Bun/browser lifecycle validation now passes in 19m15s: 18
+  browser cases, source boundary 7/7, ownership 239/239, Node teardown 3/3
+  and Bun teardown 7/7. Six reviewed standalone Go/C linker-probe
+  allocations hold no live kernel memory. The next Go-pinned image rebuild
+  still needs its final artifact checks.
 - The visible Caddy UI case passes in Chromium and Firefox: homepage,
   Shortcuts admin login, Appearance/site editor, template canvas blocks,
   and 20 seconds of editor HTTP health. The real service log contains no
@@ -85,13 +89,12 @@ production readiness, a physical-memory plateau, or superiority over PHP-FPM.
 
 ### Remaining release gates
 
-1. Repair the browser fixture's Vite dependency-cache mismatch and rerun
-   the full memory/lifecycle browser phase. The required gate passes its
-   prepared cohort, source, host, and Node/Bun phases, then is stopped after
-   pre-boot React module failures. This does not establish browser teardown.
-   Continue validation of the terminal-channel wake fix. The focused regression fails before and
-   passes afterward; real service repetitions pass. The exact waiter order
-   behind the original intermittent dinit retirement was not captured.
+1. Rebuild the demo with validated Go source `5834adc` and repeat the
+   final artifact checks. Vite cache isolation and the complete current
+   memory/lifecycle gate now pass, including all 18 three-engine cases.
+   The terminal-channel wake fix has a fail-before/pass-after regression
+   and real service repetitions. The exact waiter order behind the
+   original intermittent dinit retirement was not captured.
 2. Complete browser PHP draining and retirement for Caddy on WebKit.
    Reduce or explain the workload memory use behind the observed native
    content-process kill; a same-URL reload is distinct from a Go exit.
@@ -356,8 +359,15 @@ The first rerun (`frankenphp-cache-isolated-browser-memory-1106-123943-2fad`)
 fails before browser launch because the intentionally aborted earlier run
 left its Vite process group listening on 5447. Exact process ownership,
 creation time, working directory and original job records identify that
-orphan; only that owned group is retired. The new full gate is
-`frankenphp-cache-and-port-browser-memory-1106-125850-da11`, still running.
+orphan; only that owned group is retired. The new full gate,
+`frankenphp-cache-and-port-browser-memory-1106-125850-da11`, passes in
+19m15s: source boundary 7/7, host ownership 239/239, Node teardown 3/3,
+Bun teardown 7/7, and all 18 browser cases with no skips or failures. Each
+engine completes four constrained-budget switches among Doom, Quake,
+Freeciv, LOVE, tmux and WordPress in the same page/audio realm. No forced
+GC, per-cycle fresh context, or reload masks retention. This validates the
+current host, cache fix and `389ec37e` cohort; the next Go-pinned demo
+rebuild is still pending.
 The ordinary rebuilt preview on 5451 passes image size/hash checks and
 Chromium/Firefox login/site-editor cases (2/2, 2m48s). Evidence:
 `.context/frankenphp-current-preview-ui/`.
@@ -390,6 +400,66 @@ This closes a producer-integration gap; it does not establish that missing
 checkpoints caused the WebKit footprint kill. The existing blocked-wait GC
 workaround remains suspected, and synchronized native measurements remain
 necessary.
+
+### WebKit pool control and observer correction — 2026-11-06
+
+On the published Go-`1b0cf580` image, both one-thread and six-thread Caddy
+controls fail with native content-process kills: 19,041 MB and 21,029 MB
+against the 16,384 MB threshold. Both complete login/editor and the editor
+burst first. Reducing the PHP pool alone does not resolve the failure.
+Evidence: job `frankenphp-webkit-aligned-pool-controls-1106-131752-1660`,
+`.context/frankenphp-webkit-host-t3x7In/` (one thread), and
+`.context/frankenphp-webkit-host-mRYAMq/` (six threads).
+
+The initial read-only native-category observer records only the initial
+blank-page target. Real navigation replaces the WebKit inspector target;
+keeping the old connection loses subsequent samples. These native samples
+are not synchronized workload attribution. A corrected diagnostic observes
+existing target-commit events, reattaches read-only tracking and worker
+lifecycle listeners, and makes no driver-method or engine change. A real
+localhost navigation control passes with four samples on the replacement
+target. The corrected workload repetition is running; no native-category
+root cause is claimed yet. Diagnostics run under concurrent lifecycle-suite
+load and are not performance measurements.
+
+The [protocol category definitions](https://github.com/WebKit/WebKit/blob/main/Source/JavaScriptCore/inspector/protocol/Memory.json)
+and [reference Cocoa collector](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/page/cocoa/ResourceUsageThreadCocoa.mm)
+also limit interpretation: the JavaScript heap counters come from the
+observed VM, while native allocation buckets use process memory tags.
+Do not add these into an asserted complete sum of every worker's GC heap,
+RSS or the process-kill footprint. Preserve UTC pairing skew and missing
+samples explicitly.
+
+### Synchronized native measurements and next artifact build — 2026-11-06
+
+The corrected repetition (`frankenphp-webkit-navigation-aligned-poo-1106-132205-a9d9`)
+finishes with two failures and useful synchronized samples. The one-thread
+case records 121 native samples, then a 17,635 MB native kill. At the end
+of the editor burst, guest/kernel linear memory is 446,300,160 bytes while
+the native `page` allocation bucket is about 14.1 GiB; the main observed
+JavaScript category is about 0.47 GiB and JIT about 0.05 GiB. Paired receipt
+times differ by at most 0.21s across its four recorded stages. The guest
+Caddy process reports seven threads. The inspector's one direct page-worker
+counter sees the kernel worker, not its nested guest workers.
+
+The six-thread case records 351 native samples without a native kill. It
+completes editor traffic, 40-request churn, a 90-second soak (182 requests),
+intentional Caddy SIGKILL/restart and held PHP draining, but fails the
+strict initial homepage assertion (504 instead of 200). It is not a passing
+application run. Guest linear memory reaches about 799 MiB, while the
+native allocation bucket varies around 8.4–10.6 GiB during the soak.
+All recorded stage pairings are within 0.24s. These buckets locate a large
+cost outside guest linear memory but do not identify its retaining objects
+or prove an engine defect. Evidence: `.context/frankenphp-webkit-host-KWtdRZ/`
+and `.context/frankenphp-webkit-host-ONzy4Y/`, each with `aligned-memory.json`.
+
+With the original-cohort measurements retained, validated Go source
+`5834adc` is pinned in all four consumers. Revisions become Go sample 26,
+standalone Caddy 10, FrankenPHP classic 33, FrankenPHP+Caddy 12 and WordPress
+38. The normal serialized cohort build must finish before final-artifact
+claims or comparisons. The old preview remains identified as revision 37.
+The new target-OS waits pass 159/159 browser cases and four standard-library
+builds without compiler or collector edits.
 
 ### Allocation, scavenging and reuse — 2026-11-06
 
