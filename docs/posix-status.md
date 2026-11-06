@@ -113,7 +113,7 @@ metadata do not yet have this aggregate-memory admission.
 | `faccessat()` | Full | AT_FDCWD delegates to access(). Absolute paths and real dirfd supported. |
 | `fchmodat()` | Full | AT_FDCWD delegates to chmod(). AT_SYMLINK_NOFOLLOW accepted. Real dirfd supported. |
 | `fchownat()` | Partial | AT_FDCWD and real dirfds are supported, including unchanged-ID sentinels and the same root/owner/group authorization as `chown()`. The final symlink is followed by default and changed directly with `AT_SYMLINK_NOFOLLOW`. Unsupported flags, including `AT_EMPTY_PATH`, return EINVAL. |
-| `linkat()` | Partial | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). Node/macOS host-filesystem scratch mounts use `fs.linkSync`, which follows source symlinks even for `linkat` without AT_SYMLINK_FOLLOW; SharedFS does not follow them. Dirfds also inherit remembered-path rather than stable-directory identity. |
+| `linkat()` | Partial | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). SharedFS preserves a source symlink inode without AT_SYMLINK_FOLLOW. Node/macOS host-filesystem mounts use a native no-follow helper for source symlinks because `fs.linkSync` follows them; the helper compiles lazily with the host C compiler and reports ENOSYS if unavailable. Packaged helper distribution remains open. Dirfds also inherit remembered-path rather than stable-directory identity. |
 | `symlinkat()` | Full | Target stored as-is. Linkpath resolved via dirfd. Real dirfd supported. |
 | `readlinkat()` | Full | AT_FDCWD delegates to readlink(). Real dirfd supported. |
 

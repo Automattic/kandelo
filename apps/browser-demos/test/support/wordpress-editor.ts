@@ -18,7 +18,9 @@ export async function saveWordPressTemplateHeading(frame: FrameLocator, heading:
     // A Query Loop's editable post title belongs to a post, not the template.
     // Select the template's Blog heading first: WordPress can retain a post
     // content insertion point from an earlier editing session.
-    await canvas.locator('[data-type="core/heading"][contenteditable="true"]').first()
+    // The welcome dialog can leave rich text inactive. Target the real
+    // heading block so actionability checks can dismiss that dialog first.
+    await canvas.locator('[data-type="core/heading"]').first()
       .click({ timeout: 30_000 });
     await frame.getByRole("button", { name: "Block Inserter", exact: true }).click({ timeout: 30_000 });
     await frame.getByRole("searchbox").fill("Heading", { timeout: 30_000 });

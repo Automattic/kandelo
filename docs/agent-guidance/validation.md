@@ -45,6 +45,16 @@ finish later under full-suite load; a spawn assertion should observe the
 channel completion before checking its result. Keep a timeout so a missing
 completion remains a visible failure.
 
+Freeze Vite-watched application and fixture sources during browser lifecycle
+and persistence runs. Editing a fixture imported by another test page can
+broadcast a full reload to the real app, resetting page-local observations
+while persisted guest content recovers. Different ports and dependency-cache
+directories do not isolate source-file watchers. Use a separate checkout for
+concurrent browser development, or finish the active run before editing.
+Retain the dev-server reload log and page lifecycle events when diagnosing
+missing observations; do not relax an ownership assertion to accept a run
+invalidated by source edits. Save observations before asserting on them.
+
 Select the intended terminal and observe its visible repaint before reading
 rendered output. A hidden xterm can parse new output while its DOM still
 shows old rows. For graphical Quit checks, verify automatic terminal

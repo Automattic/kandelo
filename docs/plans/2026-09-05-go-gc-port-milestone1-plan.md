@@ -41,12 +41,16 @@ use is bounded. The detailed controls below preserve measurement scope.
 The required memory/lifecycle gate passes on revision 39 in 20m20s: all
 18 browser cases, 239 ownership checks, seven boundary checks, three Node
 and seven Bun teardown cases, with no skipped/failed cases. The full
-revision-39 embedded-PHP UI passes all 18 cases. The six all-engine service
+revision-39 full UI passes all 27 cases across three engines and three
+profiles in 30m44s, including the same-image FPM control. The six all-engine service
 recovery/draining cases also pass in 4m44s. The gallery's separate FPM image
 returns HTTP 500 during a WebKit post save; that failed control is retained,
-and a same-image FPM control plus guest-log diagnostic are running. Final
-crash persistence, sustained comparisons and quiet nine-suite measurements
-remain open.
+and the same-image control now passes after the generic preview fix.
+The strict persistence rerun passes ten cases; two Firefox welcome-dialog
+selection failures then pass a targeted correction. The new production
+frontend build and image identity checks pass. Its full UI and strengthened
+upload-rendering/persistence gates are running; sustained comparisons and
+quiet nine-suite measurements remain open.
 The target supports cooperative
 signals, fatal Go tracebacks, shared libc cgo syscall dispatch, callbacks,
 worker retirement, and host heap safepoints. The latest eight-line runtime
@@ -610,6 +614,60 @@ with fifteen-second traffic intervals in 3m52s
 paths return actual values, and service/startup/log checks pass. It ran
 under concurrent functional testing and supports no latency or throughput
 comparison. Raw evidence: `.context/wordpress-current-stack-I65rGh/`.
+
+### Frozen-source UI and persistence rerun — 2026-11-06
+
+`frankenphp-rev39-frozen-full-ui-1106-155216-eeed` passes all 27 cases in
+30m44s: classic, real Caddy and the same image's FPM control, in Chromium,
+Firefox and WebKit. Each covers demo login, Appearance Editor/canvas and
+health, authenticated post writes and genuine template saves. Evidence:
+`.context/frankenphp-final-visible-ui-FVHCWF/`.
+
+The companion strict persistence command finishes at ten passed / two
+failed in 21m15s. All Chromium and WebKit cases pass, including the last
+WebKit/library case invalidated by HMR in the prior run. Both Firefox
+experimental cases fail while the site-editor welcome dialog remains open:
+the save helper requires a heading already to be contenteditable before
+the actionability handler can dismiss the dialog. Selecting the actual
+heading block instead preserves all template-entity/save assertions and
+passes both failed workflows in 4m21s
+(`frankenphp-rev39-firefox-template-persis-1106-162454-efc9`). These are
+scoped reruns, not a single twelve-case passing command. Evidence:
+`.context/frankenphp-final-persistence-FbjIIS/` and
+`.context/frankenphp-firefox-template-persistence/`.
+
+Firefox diagnostics also record canceled requests and editor image-policy
+warnings. A standalone controlled-srcdoc/synthetic-PNG test passes Chromium
+153, Firefox 155 and WebKit 26.6, so it does not reproduce an engine defect.
+The first standalone launch omits the repository's existing macOS Firefox
+home workaround and fails before that browser starts; the configured run
+uses the normal project launch options. A live Caddy/Firefox probe creates
+a real media attachment and valid Gutenberg image block: both the actual
+editor image and a separate canvas-context Image decode to 2x2, and direct
+HTTP returns the same 105-byte PNG with normal same-origin policy headers.
+No service-worker/header or dependency patch is made. Two earlier probes
+time out looking for an image element and do not establish a policy cause.
+Evidence: `.context/srcdoc-corp-configured-probe.log`,
+`.context/wordpress-canvas-image-9TgwdB/`. The persistence fixture now writes
+a valid image block and requires its real editor image to finish decoding
+before navigation; that stronger gate remains under validation.
+
+### Production frontend artifact — 2026-11-06
+
+The documented authenticated asset-group and production Vite build pass in
+27s (`frankenphp-final-production-browser-1106-162751-078c`), using the
+already normally published/admitted default cohort. The complete output,
+including signalling, is `.context/frankenphp-final-browser-build-6wEXQO/site`;
+the private product map is absent from it. Public HTTP checks on port 5455
+verify the exact 79,417,372-byte WordPress image `b5d9a032` and the
+27,926-byte group manifest with SHA-256
+`15aee1bdd4be03e8548ec853de54769272171d744a5dc9c5d0e25a73d8e12496`.
+This is a local static preview, with no HMR and no hosted publication.
+Its browser UI verification remains pending. URLs/identities:
+`.context/frankenphp-production-preview-artifacts.json`. The verified
+development preview on 5454 remains available while the production UI and
+stronger persistence selections run. The same production image supplies
+both embedded-PHP profiles and the FPM control.
 
 ### Standalone Caddy and byte ownership review — 2026-11-06
 
