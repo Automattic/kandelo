@@ -154,6 +154,7 @@ host/test/fork-static-root-catalog.test.ts	source-only
 host/test/fork-unwind-transport.test.ts	source-only
 host/test/fork-worker-import-exceptions.test.ts	source-only
 host/test/framebuffer-browser-controls.test.ts	source-only
+host/test/framebuffer-canvas-renderer.test.ts	source-only
 host/test/framebuffer-integration.test.ts	prepared-product
 host/test/framebuffer-registry.test.ts	source-only
 host/test/fstatat-empty-path.test.ts	prepared-product

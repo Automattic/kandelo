@@ -3293,7 +3293,14 @@ maximum spends reservation capacity even when most pages are unused. A clone
 in the persistent UI realm can keep the entire process address space charged
 after its Worker terminates, until that realm's collector runs. Independent
 pixel storage costs only the framebuffer's actual length and cannot retain a
-retired guest address space. Memory growth requires no UI rebind: the worker
+retired guest address space. `attachCanvas(canvas, registry, pid)` consumes
+only this independent storage. It checks existing and newly published
+bindings and refuses a missing mirror with a diagnostic, retiring its own
+animation callback and registry subscription. It never recovers a guest
+memory from the browser proxy. An explicit memory accessor remains available
+to a renderer inside the owning realm; browser consumers use the independent
+pixel path. Stopping either attachment retires its animation and ownership
+subscription. Memory growth requires no UI rebind: the worker
 reads the current guest buffer for each copy. Node has no separate browser UI
 realm and retains its direct-mapping presentation path.
 

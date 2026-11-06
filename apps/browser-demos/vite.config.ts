@@ -1,3 +1,4 @@
+import { assertTerminalWorkerEntries } from "./vite/worker-entry-exports";
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
@@ -472,51 +473,7 @@ function dropWorkerEntryExports(): Plugin {
       return { code: stripped, map: null };
     },
     generateBundle(_options, bundle) {
-      const strippedEntries = new Set<string>();
-      const emittedEntryByFacade = new Map<string, string>();
-      for (const output of Object.values(bundle)) {
-        if (
-          output.type !== "chunk" || !output.isEntry ||
-          output.facadeModuleId === null ||
-          !strippedEntryFacades.has(output.facadeModuleId)
-        ) continue;
-        const prior = emittedEntryByFacade.get(output.facadeModuleId);
-        if (prior !== undefined && prior !== output.fileName) {
-          this.error(
-            `stripped worker entry ${output.facadeModuleId} resolves to multiple emitted chunks: ${prior}, ${output.fileName}`,
-          );
-        }
-        emittedEntryByFacade.set(output.facadeModuleId, output.fileName);
-        strippedEntries.add(output.fileName);
-      }
-      for (const facade of strippedEntryFacades) {
-        if (!emittedEntryByFacade.has(facade)) {
-          this.error(
-            `stripped worker entry ${facade} has no emitted entry chunk`,
-          );
-        }
-      }
-      for (const output of Object.values(bundle)) {
-        if (output.type !== "chunk") continue;
-        for (const imported of output.dynamicImports) {
-          if (strippedEntries.has(imported)) {
-            this.error(
-              `worker chunk ${output.fileName} imports worker entry ${imported} whose exports are stripped`,
-            );
-          }
-        }
-        for (const imported of output.imports) {
-          if (!strippedEntries.has(imported)) continue;
-          if (output.importedBindings === undefined) {
-            this.error(
-              `worker chunk ${output.fileName} does not report imported bindings for stripped worker entry ${imported}`,
-            );
-          }
-          this.error(
-            `worker chunk ${output.fileName} imports worker entry ${imported} whose exports are stripped`,
-          );
-        }
-      }
+      assertTerminalWorkerEntries(strippedEntryFacades, bundle, message => this.error(message));
     },
   };
 }

@@ -2370,7 +2370,10 @@ export class LiveKernelHost implements KernelHost {
     }
 
     const policy = this.terminalSessions;
-    if (policy.afterExit === undefined) return;
+    const afterExit = policy.afterExit;
+    if (afterExit === undefined) return;
+    // WHY: this restart owns the program selected at process exit. The timer
+    // and PTY lock must not re-read an optional policy after an async handoff.
     const runtimeMs = Math.max(0, nowMs() - session.startedAt);
     const delayMs = runtimeMs >= policy.shortRunThresholdMs
       ? policy.initialRestartDelayMs
@@ -2405,7 +2408,7 @@ export class LiveKernelHost implements KernelHost {
             sessionKey,
             session,
             kernel,
-            policy.afterExit,
+            afterExit,
           );
         } catch (error) {
           this.reportPtyStartFailure(sessionKey, session, error);
@@ -2943,8 +2946,6 @@ export class LiveKernelHost implements KernelHost {
     // Browser registries carry independent pixel storage. Hosts that present
     // guest mappings directly can still provide their own memory accessor.
     const getProcessMemoryImpl = kernel.getProcessMemory?.bind(kernel);
-    const getMemory = (pid: number): WebAssembly.Memory | undefined =>
-      getProcessMemoryImpl?.(pid);
 
     let stop: (() => void) | null = null;
     let attachedPid: number | null = null;
@@ -2981,9 +2982,11 @@ export class LiveKernelHost implements KernelHost {
       // bundles that do not render framebuffers.
       void import("../../../host/src/framebuffer/canvas-renderer.js").then(({ attachCanvas }) => {
         if (attachedPid !== pid) return; // raced with unbind
-        stop = attachCanvas(canvas, registry as unknown as Parameters<typeof attachCanvas>[1], pid, {
-          getProcessMemory: getMemory,
-        });
+        // WHY: an undefined owning accessor means independent browser pixels,
+        // not a callback that silently returns no guest memory. Passing a dummy
+        // accessor would bypass the renderer's independent-storage validation.
+        stop = attachCanvas(canvas, registry as unknown as Parameters<typeof attachCanvas>[1], pid,
+          getProcessMemoryImpl === undefined ? undefined : { getProcessMemory: getProcessMemoryImpl });
       });
     };
 

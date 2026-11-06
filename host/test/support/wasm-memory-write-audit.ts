@@ -1166,8 +1166,10 @@ function parameterPropertySymbol(
 
 function hasBody(
   declaration: ts.Node | undefined,
-): declaration is ts.FunctionLikeDeclaration {
-  return Boolean(declaration && "body" in declaration && declaration.body);
+): declaration is ts.FunctionLikeDeclaration & { body: ts.ConciseBody } {
+  // Signatures may be callable without a body; only this checked body owns
+  // expressions the audit can follow through a transparent wrapper.
+  return Boolean(declaration && ts.isFunctionLike(declaration) && "body" in declaration && declaration.body);
 }
 
 function callbackDeclarations(
@@ -2287,10 +2289,11 @@ function capturedOwnershipGetter(
     return null;
   }
   const constructor = unwrapExpression(prototype.expression);
+  const owner = ts.isPropertyAccessExpression(constructor)
+    ? unwrapExpression(constructor.expression) : null;
   if (
     !ts.isPropertyAccessExpression(constructor) ||
-    !ts.isIdentifier(unwrapExpression(constructor.expression)) ||
-    unwrapExpression(constructor.expression).text !== "WebAssembly" ||
+    owner === null || !ts.isIdentifier(owner) || owner.text !== "WebAssembly" ||
     !symbolAtExpression(checker, constructor)?.declarations?.some(
       isIntrinsicLibDeclaration,
     )
@@ -4452,14 +4455,14 @@ export function auditWasmMemoryWrites(options: AuditOptions): AuditResult {
       const name = propertyNameText(boundary.parent.name);
       return name?.startsWith("host_") === true;
     }
+    const boundaryCall = boundary && ts.isCallExpression(boundary.parent) ? boundary.parent : null;
+    const callee = boundaryCall ? unwrapExpression(boundaryCall.expression) : null;
     if (
       boundary &&
       (ts.isArrowFunction(boundary) || ts.isFunctionExpression(boundary)) &&
-      ts.isCallExpression(boundary.parent) &&
-      boundary.parent.arguments[1] === boundary &&
-      ts.isIdentifier(unwrapExpression(boundary.parent.expression)) &&
-      unwrapExpression(boundary.parent.expression).text === "defineMethod" &&
-      ts.isStringLiteralLike(boundary.parent.arguments[0])
+      boundaryCall !== null && boundaryCall.arguments[1] === boundary &&
+      callee !== null && ts.isIdentifier(callee) && callee.text === "defineMethod" &&
+      ts.isStringLiteralLike(boundaryCall.arguments[0])
     ) {
       // `#createTestAuthority` supplies only frozen module-secret white-box
       // closures through this local helper. Exact call-site allowances still

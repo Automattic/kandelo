@@ -1365,6 +1365,10 @@ unresolved errors survive remount/CSS expiry and new attempts have distinct
 acknowledgement identity. Actual Node and three-engine SW/native integrity
 and verified-reload controls pass. The original Brave/r8 tofu report is still
 an unverified historical cache hypothesis; final normal desktop/font/profile
-and manual verification remain required. R459's browser-app compiler gate
-still fails126 existing diagnostics, with no additions against the clean
-baseline; this is separate from its passing source/runtime checks.
+and manual verification remain required. R459's historical browser-app compiler
+gate fails126 existing diagnostics, with no additions against its clean baseline.
+R482 closes the compiler gate with complete browser/Node context inventories,
+213 Node tests,176 focused source checks and nine three-engine browser controls.
+The complete host ownership audit still needs its propagation failure fixed and
+validated; baseline and candidate both exhaust the worker heap. No source
+inventory, watchdog or acceptance requirement is reduced.

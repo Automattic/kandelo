@@ -11,11 +11,27 @@
     "noEmit": true,
     "isolatedModules": true,
     "resolveJsonModule": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["vite/client"],
+    "lib": [
+      "ES2024",
+      "ES2024.SharedMemory",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node",
+      "vite/client"
+    ],
     "paths": {
-      "@host/*": ["../../host/src/*"]
+      "@host/*": [
+        "../../host/src/*"
+      ]
     }
   },
-  "include": ["lib", "pages"]
+  "include": [
+    "lib",
+    "pages"
+  ],
+  "exclude": [
+    "**/*.test.ts"
+  ]
 }

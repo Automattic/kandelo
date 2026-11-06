@@ -461,6 +461,41 @@ pacing even when no physical Node audio device is attached.
 
 Located in `apps/browser-demos/pages/`:
 
+Run `npm run typecheck` in `apps/browser-demos` to check the application and
+its Node unit tests. The production compiler retains every `lib/` and
+`pages/` source root; `tsconfig.node-tests.json` checks every `*.test.ts`
+file selected by the Node unit runner, including tests outside those two
+roots. The aggregate checker rejects missing roots, overlapping contexts,
+and production files assigned to the test context. `npm run build` uses
+this same preflight before Vite.
+
+These contexts grant different runtime capabilities. Shared host imports
+contain genuine Node branches, so the compiler needs the declared Node
+library types as well as browser types. That does not authorize Node APIs
+in browser application code: the checker audits all transitive app-authored
+modules and rejects Node runtime imports and values, including Node-only
+methods on otherwise shared APIs. Local names and real DOM APIs remain
+valid. Node test declarations never replace the production source check.
+The TypeScript JavaScript API parses that inventory and resolves capability
+symbols; the declared `tsc` command performs both complete strict compiler
+checks without filtering diagnostics.
+
+The app imports the generated VFS product catalog. In a fresh worktree,
+initialize the pinned submodules, then use its normal metadata producer:
+
+```bash
+host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+cargo run --locked -p xtask --target "$host_target" -- vfs products generate \
+  --source images/vfs/products --out images/vfs/products/generated/catalog.json
+cargo run --locked -p xtask --target "$host_target" -- vfs products check \
+  --source images/vfs/products --generated images/vfs/products/generated/catalog.json
+```
+
+Run these commands through `scripts/dev-shell.sh` from the repository root.
+Catalog generation reads the declared product and license sources; it does
+not build the SDK or packages. Normal browser builds still prepare their
+kernel, image writer, images, and package artifacts through `run.sh`.
+
 | Demo | Software | Boot pattern | Features |
 |------|----------|--------------|----------|
 | simple | C programs | legacy spawn | Basic file I/O, printf |

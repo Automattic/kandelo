@@ -1837,6 +1837,19 @@ describe("LiveKernelHost: supervised terminal sessions", () => {
     expect(harness.maximumActiveProcesses()).toBe(1);
   });
 
+  it("retains the post-exit program chosen before the restart timer waits", async () => {
+    vi.useFakeTimers();
+    const harness = terminalSessionHarness();
+    await harness.host.attachPty("/dev/pts/0");
+    harness.exit(1);
+    await settleTerminalSessionWork();
+    harness.host.setTerminalSessionPolicy({ ...LOGIN_SESSION_POLICY,
+      afterExit: { programPath: "/bin/new-login", argv: ["new-login"] } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(harness.spawns.at(-1)?.argv).toEqual(["login", "-p"]);
+    expect(harness.spawns.at(-1)?.programPath).toBe("/usr/bin/login");
+  });
+
   it("resets restart delay after a process survives for two seconds", async () => {
     vi.useFakeTimers();
     const harness = terminalSessionHarness();

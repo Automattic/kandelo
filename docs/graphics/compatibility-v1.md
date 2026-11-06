@@ -115,6 +115,29 @@ executable/sampling authority, selected-path decoding, full B1 application
 checks and the complete preview are still open. No native-feel or full final
 validation claim follows, and no acceptance requirement is reduced.
 
+## Browser compiler and independent pixels, 2026-11-05 (R458/R482)
+
+Browser application and Node unit roots now have separate strict compiler
+contexts and an independent complete inventory. Real Node declarations support
+shared-host branches; symbol-based checks still refuse Node runtime values in
+browser-authored modules. The normal browser build uses both checks. Production
+framebuffer consumers use independent pixels and loudly retire their renderer
+if a binding lacks its mirror; no browser guest-memory accessor is restored.
+Terminal restart retains the program selected before its asynchronous wait.
+
+Integration job `graphics-browser-integration-r482-1105-232550-2305` passes1m27:
+both strict compilers have zero diagnostics, with112 browser and24 Node test
+roots;213 Node app tests,176 focused source tests, full host compiler0, nine
+actual browser cases across three engines, evidence registry712 and frozen
+inputs pass. The frozen R458-v2 comparison fails three original-consumer cases
+at the expected missing ownership diagnostic; its candidate passes all nine.
+
+These controls close the compiler gate, not the full host ownership audit.
+The complete repository audit exhausted its worker heap on both the original
+688 baseline and the compiler candidate; propagation analysis remains open
+without inventory cuts or allowances. Final browser-memory, normal desktop,
+peer-network, conformance and performance validation remain required.
+
 ## Lazy asset failure visibility, 2026-11-05 (R454/R459)
 
 Native VFS already rejects lazy bytes with the wrong declared length/digest
@@ -134,7 +157,8 @@ and CSS. Integration job
 FAILED after1m10 solely on126 existing browser-app compiler diagnostics.
 Compared with clean c4c's128 findings, there are zero additions; the normal
 generated catalog present in integration removes two missing-catalog findings.
-This compiler gate remains open, without suppressions or allowances.
+That failed run remains recorded; the later R482 compiler check above passes
+without suppressions or allowances.
 
 The same run passes115 source checks/seven files, full host compiler0,
 12 production hook/toast/style cases, two actual Node native-VFS controls,
