@@ -66,7 +66,7 @@
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "518db011b1e5e3514141f4a37402ff9b617384d20aca63fc2b0aef434e0a6204"
+        "packages/registry/spidermonkey/build.toml": "935798b9abe1986eb4d3e458d40386b00e7da04a3484bd00f8dca612a0cf55f5"
       },
       "sourceRoute": "pinned URL/path/byte-path/HTTP-option helpers over shared parser and platform owners; generic native Error location policy; pinned AssertionError/Myers diff and shared validator/error/color/primordial owners; values/util/UV/dotenv/MIME/Buffer/path owners and full querystring/punycode algorithms with saved-frame load-origin source; pinned util/StringDecoder owners and callable Buffer/shared aligned pool/permanent storage/zero-fill source ; source140/146 actual retained-allocation capability and USER_OWNED commit source",
       "remainingDependencies": "Original allocation foundation and selected FS/codec routing are source-only; actual engine/GC/realm/transfer and remaining Buffer/util/URL/IDNA/error/descriptor/CLI/loader/warning behavior and four-host conformance remain open",
@@ -370,7 +370,7 @@
         "packages/registry/php/package.toml": "3ae9d7bc075a1e187e0262e276f16d63b02aacd9e213f1f4f440ac52bee6cbba",
         "packages/registry/php/build.toml": "ad4e35904e40a9027b646dd25f342b0335a0afcd025edaee68354d656bc05ab4",
         "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
-        "packages/registry/spidermonkey/build.toml": "518db011b1e5e3514141f4a37402ff9b617384d20aca63fc2b0aef434e0a6204",
+        "packages/registry/spidermonkey/build.toml": "935798b9abe1986eb4d3e458d40386b00e7da04a3484bd00f8dca612a0cf55f5",
         "packages/registry/wget/package.toml": "252e2ea144b723a24617f78911bf44ff9ec5ff61d2f0c12a6947c7c170e97b2e",
         "packages/registry/wget/build.toml": "ad538e1d004b0ab32732563826a33c6230ff627d855b0f14de3627d2d508569e"
       },
@@ -450,7 +450,7 @@
         "packages/registry/php/package.toml": "3ae9d7bc075a1e187e0262e276f16d63b02aacd9e213f1f4f440ac52bee6cbba",
         "packages/registry/php/build.toml": "ad4e35904e40a9027b646dd25f342b0335a0afcd025edaee68354d656bc05ab4",
         "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
-        "packages/registry/spidermonkey/build.toml": "518db011b1e5e3514141f4a37402ff9b617384d20aca63fc2b0aef434e0a6204",
+        "packages/registry/spidermonkey/build.toml": "935798b9abe1986eb4d3e458d40386b00e7da04a3484bd00f8dca612a0cf55f5",
         "packages/registry/wget/package.toml": "252e2ea144b723a24617f78911bf44ff9ec5ff61d2f0c12a6947c7c170e97b2e",
         "packages/registry/wget/build.toml": "ad538e1d004b0ab32732563826a33c6230ff627d855b0f14de3627d2d508569e",
         "packages/registry/node-ncrypto/package.toml": "aa361891e88e356114e223dd009c63de934a8d7a01986da92ea2f927c4d8716f",
@@ -614,7 +614,7 @@
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "518db011b1e5e3514141f4a37402ff9b617384d20aca63fc2b0aef434e0a6204",
+        "packages/registry/spidermonkey/build.toml": "935798b9abe1986eb4d3e458d40386b00e7da04a3484bd00f8dca612a0cf55f5",
         "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
         "third_party/node-core/performance-clock.h": "b1bc2198b8718731d043282eb67738b900f5855860a5d4bd735d48175aa91f39"
       },
@@ -644,7 +644,7 @@
         "third_party/node-core/native-work.cpp": "25a2c44fbb5d12fb3b908c6448b8f582ee66e334e6d6784b35abcc7f24296dc0",
         "third_party/node-core/generate-codec-contexts.py": "6f61278030201514033f6fabd0aefc63a2d0e4c23294e2f6113242f98ce760e5",
         "packages/registry/node-compat/bootstrap.js": "98fb5f72cf80eed43402a9ccfeb4632ab42b56118765431f07af9f0aa34bd820",
-        "packages/registry/spidermonkey/build.toml": "518db011b1e5e3514141f4a37402ff9b617384d20aca63fc2b0aef434e0a6204"
+        "packages/registry/spidermonkey/build.toml": "935798b9abe1986eb4d3e458d40386b00e7da04a3484bd00f8dca612a0cf55f5"
       },
       "sourceRoute": "Pinned codec/archive/iterable JS and native contexts; historical112 limited shared/growable queue controls; source146 replaces queue pins with actual original allocation spans, native write-state ownership and retained params spans",
       "remainingDependencies": "Combined117\u2013146 engine uncompiled. Actual JSAPI/GC/realm/detach/resize/shared-codec races and public modes/options/iterators/files/cleanup/cancellation/accounting remain open; historical gzip OS-byte mismatches retained; current four-host conformance unestablished",
@@ -709,7 +709,7 @@
         "third_party/node-core/native-vm-modules.cpp": "d3a740eb6800e0ec65ffdd2b5bedf89eab4889a803ab9d51cdc13803b3956658",
         "packages/registry/node-compat/bootstrap.js": "98fb5f72cf80eed43402a9ccfeb4632ab42b56118765431f07af9f0aa34bd820",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "518db011b1e5e3514141f4a37402ff9b617384d20aca63fc2b0aef434e0a6204"
+        "packages/registry/spidermonkey/build.toml": "935798b9abe1986eb4d3e458d40386b00e7da04a3484bd00f8dca612a0cf55f5"
       },
       "sourceRoute": "Generic Error location policy and actual VM/context/compiler owners; source 136 adds pinned public module classes over actual source/synthetic records, live environments, graph/link/evaluation/namespace hooks and native experimental CLI state; source151 actual realm/rooted-array/shared-buffer API compilation corrections",
       "remainingDependencies": "No accepted current combined engine; actual150production compile failed and151corrections await retry; actual graph/GC/realm/dynamic Promise execution and all four hosts unvalidated. Arbitrary attributes, source/defer phases, negative offsets, cache/deadline scopes, sandbox exotic properties, heap/inspector and broader context/worker gaps remain open",
@@ -761,20 +761,20 @@
         "equals": "native-integration"
       },
       "selectedCurrentSourceIdentities": {
-        "third_party/node-core/sqlite-platform-adapter.js": "4b16d3b0859716f5a5817595bf40463650b4f73d80066764f55516cb6e7e6632",
-        "third_party/node-core/sqlite-store.h": "9164ba33f98f730a58d1046630a3244470bc6b4cf13a374ab25741fdc1cc5769",
+        "third_party/node-core/sqlite-platform-adapter.js": "8a6cc0327250f62f9d094e00dec585cb6ce59fc9415b7dcdd85cf8b08ef8633c",
+        "third_party/node-core/sqlite-store.h": "738c9de42036b04098c854aebc233f1bff2c870c05e692aeafe3674cbcb7aef1",
         "third_party/node-core/sqlite-limit-names.h": "3d4652883207644cda088b1b837bc520fd18611b61bf247ac0dcf0d5516bda3c",
-        "third_party/node-core/native-sqlite.cpp": "3a7ad672fdec71a83ba6f26e26916250ab4baa84359b233542b0682cc2395c74",
+        "third_party/node-core/native-sqlite.cpp": "824a254be4fe5ea0947c5405cb5de35a4309de7149e7df0f685f2225b8bff77f",
         "third_party/node-core/upstream/sqlite/node_sqlite.h": "0557fe1f3bffe92091b77515c15098119d5a7bff71b5e221cb92f38ff3880ad4",
         "third_party/node-core/upstream/sqlite/node_sqlite.cc": "04842a02b6a6d10d14d56549e992a6f8bf9658fc5be66345b2ee0dd9fe4df327",
         "packages/registry/node-compat/bootstrap.js": "98fb5f72cf80eed43402a9ccfeb4632ab42b56118765431f07af9f0aa34bd820"
       },
-      "sourceRoute": "SQLite scalar/aggregate/window registrations and GC-traced native callback/parent/accumulator owners compiled in113; real SQLite statement/iterator/column/limit/defensive/session/change-set and rooted synchronous callback owners, native virtual limits and actual activation",
-      "remainingDependencies": "Statement close/dispose/serialization; complete scalar/aggregate/window error/reentry/GC policy, authorizer/virtual-table callbacks; complete limits/reflection/storage/GC/realm/accounting, tag cache/backup/extensions, FFI/WASI/SEA/addons/embedding and ABI/loader",
+      "sourceRoute": "SQLite scalar/aggregate/window registrations and GC-traced native callback/parent/accumulator owners compiled in113; real SQLite statement/iterator/column/limit/defensive/session/change-set and rooted synchronous callback owners, native virtual limits and actual activation; source154 actual statement close/dispose, executing-VM guards and reentrant-safe native retirement",
+      "remainingDependencies": "Database disposal suppression/serialization and remaining Statement receiver/reset/iterator semantics; complete scalar/aggregate/window error/reentry/GC policy, authorizer/virtual-table callbacks; complete limits/reflection/storage/GC/realm/accounting, tag cache/backup/extensions, FFI/WASI/SEA/addons/embedding and ABI/loader",
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
-        "node": "Actual SDKnativecomponent13checks pass,baseline6crashes retained;validfocusedhostIR/facts unchanged. NormalSDK/musl freshness and currentguest/Wasm/four-hostacceptance pending.",
+        "node": "154actual SQLite lifecycle owner/frontend:12native groups and6selected upstream tests per subject pass; actual JSAPI/GC/VFS/current guest/fourhost pending.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -790,7 +790,7 @@
         "equals": "documentation"
       },
       "selectedCurrentSourceIdentities": {
-        "tests/nodejs/outline/current-capability-reconciliation.md": "7e6d169ec84d9143f017c0feaa8f0296666b0c3c2877908b03419428f6143e3e"
+        "tests/nodejs/outline/current-capability-reconciliation.md": "d0def219dc685621c58e5e5771bcdd1476809a7eb6a26965796763be410c4715"
       },
       "sourceRoute": "This reconciliation and original requirements",
       "remainingDependencies": "Actual warning/origin/CLI/environment/activation behavior and unresolved target prose/source questions",

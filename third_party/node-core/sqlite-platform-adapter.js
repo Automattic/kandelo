@@ -302,8 +302,18 @@ function _createNodeSqlitePlatform(platform) {
             finally { owner.active = false; }
         }
     }
+    function closeStatement(object, dispose) {
+        const owner = statements.get(object);
+        if (!owner) throw new P.TypeError('Illegal invocation');
+        // Idempotent disposal wins even inside a callback after the native
+        // pointer has already retired. Binding getters are also executing.
+        if (owner.active && !native('isStatementFinalized', owner.handle))
+            fail('ERR_INVALID_STATE', 'statement is already being executed');
+        native('closeStatement', owner.handle, dispose);
+    }
     class Statement {
         constructor() { fail('ERR_ILLEGAL_CONSTRUCTOR', 'Illegal constructor', P.TypeError); }
+        close() { closeStatement(this, false); }
         all(...args) { return execute(this, 'all', args); }
         get(...args) { return execute(this, 'get', args); }
         run(...args) { return execute(this, 'run', args); }
@@ -335,6 +345,11 @@ function _createNodeSqlitePlatform(platform) {
             return result;
         }
     }
+    ObjectDefineProperty(Statement.prototype, 'close', { enumerable: true });
+    const disposeStatement = function() { closeStatement(this, true); };
+    ObjectDefineProperty(disposeStatement, 'name', { value: '' });
+    ObjectDefineProperty(Statement.prototype, SymbolDispose, { configurable: true, writable: true,
+        enumerable: true, value: disposeStatement });
     function iterator(object) {
         const value = iterators.get(object);
         if (!value) fail('ERR_INVALID_THIS', 'Invalid StatementIterator receiver', P.TypeError);

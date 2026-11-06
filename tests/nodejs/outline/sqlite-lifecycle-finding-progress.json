@@ -1,0 +1,83 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-002"
+    ],
+    "relatedFamilies": [
+      "native-integration",
+      "engine"
+    ],
+    "scope": "SQLite statement lifecycle slice; remaining database/statement/native integration obligations open"
+  },
+  "sourceImplemented": [
+    "Actual Statement.close/idempotent disposal over native state, with active VM/binding guard and correct invalid/finalized receiver behavior",
+    "Retire sqlite3_stmt before finalizer reentry and safely drain weak statement observer batches during database close",
+    "Preserve actual pending JS exceptions on native close/finalize; regenerate combined current bundle without replacing CJS hooks"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-sqlite154-source-r1/report.json",
+    "sha256": "5878e7bfec9a7b7bf85d464743c570f5af4ef7f2b09ff159e95aa34a9922b897",
+    "guardedInputs": 718,
+    "scope": "Current integrated SQLite frontend and exact native-owner source over identified native SQLite/metadata dependencies;12fresh groups plus6selected unchanged upstream tests per subject.89tests/20suites unrun. No new helper/guest compile or four-host conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-sqlite154-affected-r1.json",
+    "sha256": "0e64f8c5d66788c755c99b73dfc8c3aeaff7d2ac0ad9bf015141a5e813729731",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Unchanged package-source tests; not runtime conformance"
+  },
+  "nativeDifferential": {
+    "report": ".context/node26-sqlite154-controls-r1/report.json",
+    "sha256": "eec46ea21868b029c612bfc2dc43f501e9764205353b106acb4b57137d6979de",
+    "passed": 12,
+    "failed": 0,
+    "scope": "Actual candidate frontend over explicit pinned native SQLite, encoding and process dependencies; prepare-only exact SQLite helper metadata. Not native guest binding, JSAPI/GC/VFS or four-host conformance."
+  },
+  "upstreamSelected": {
+    "report": ".context/node26-sqlite154-source-r1/report.json",
+    "sha256": "5878e7bfec9a7b7bf85d464743c570f5af4ef7f2b09ff159e95aa34a9922b897",
+    "runtimePerSubject": {
+      "tests": 6,
+      "suites": 2,
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0
+    },
+    "excludedNotRun": {
+      "tests": 89,
+      "suites": 20
+    },
+    "scope": "Whole unchanged95test/22suite source, CLI-filtered close/dispose suites over native test/VM/SQLite dependencies"
+  },
+  "portableOwner": {
+    "report": ".context/sqlite-lifecycle-agent/owner-comparison.json",
+    "sha256": "a28ab32e566b54e990be811eedfe28255bfaf7a3e56585fe5339e8cc52b6cde5",
+    "reused": true,
+    "scope": "Actual native owner invariants; raw SQLite finalizer trace is explicitly different from public Node window cleanup and not a public conformance pass"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/sqlite-lifecycle-agent/HANDOFF.md",
+      "sha256": "ff912d500eeb5fff1ebbc8b7af92378e801c2a09eca17892928669ef161cecef",
+      "kind": "prior-owner-frontend-fixture-and-semantic-nonpasses",
+      "reason": "Missing real aggregate context, metadata reset validation, receiver/descriptors and distinct raw/public finalizer comparison are retained with exact sources/logs in sealed capsule"
+    }
+  ],
+  "remaining": [
+    "Compile actual JSAPI close/finalize/exception and GC/realm teardown path; current accepted engine116 is stale",
+    "Database disposal suppression, serialize/deserialize, authorizer/busy/trace/virtual tables, remaining method/reset/iterator/binding behavior, tag-store/backup/extensions and accounting",
+    "Complete all nineteen families and identified-artifact four-host evidence; unchanged filtered/unrun tests remain unrun"
+  ],
+  "at": "2026-11-06T18:22:49.869224+00:00",
+  "recipeRevision": 154,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

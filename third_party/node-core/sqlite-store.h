@@ -184,6 +184,17 @@ class Connection : public std::enable_shared_from_this<Connection> {
 class Statement {
   std::shared_ptr<Connection> owner_;
   sqlite3_stmt* stmt_;
+  bool executing_ = false;
+  class ExecutionScope {
+    Statement& statement_;
+   public:
+    explicit ExecutionScope(Statement& statement) : statement_(statement) {
+      if (statement_.executing_) StateError("statement is already being executed");
+      statement_.executing_ = true;
+    }
+    ~ExecutionScope() { statement_.executing_ = false; }
+    ExecutionScope(const ExecutionScope&) = delete;
+  };
  public:
   Statement(std::shared_ptr<Connection> owner, sqlite3_stmt* statement)
       : owner_(std::move(owner)), stmt_(statement) {}
@@ -195,11 +206,24 @@ class Statement {
     owner_->Require();
     return stmt_;
   }
+  bool IsFinalized() const { return stmt_ == nullptr; }
+  void Close(bool dispose = false) {
+    if (!stmt_) {
+      if (!dispose) StateError("statement has been finalized");
+      return;
+    }
+    if (executing_) StateError("statement is already being executed");
+    Finalize();
+  }
   void Finalize() {
-    if (stmt_) { sqlite3_finalize(stmt_); stmt_ = nullptr; }
+    // sqlite3_finalize may invoke aggregate finalizers and reenter JavaScript.
+    // Retire the owning pointer first, as the target unique_ptr reset does.
+    sqlite3_stmt* statement = std::exchange(stmt_, nullptr);
+    if (statement) sqlite3_finalize(statement);
   }
   void Reset(bool clear = false, bool ignorePreviousError = false) {
     auto* stmt = Require();
+    ExecutionScope execution(*this);
 #if defined(SQLITE_ENABLE_SESSION)
     const auto sessions = owner_->PinSessions();
 #endif
@@ -239,6 +263,8 @@ class Statement {
     if (result != SQLITE_OK) throw DatabaseError(owner_->Require(), result);
   }
   bool Step() {
+    Require();
+    ExecutionScope execution(*this);
 #if defined(SQLITE_ENABLE_SESSION)
     const auto sessions = owner_->PinSessions();
 #endif
@@ -358,8 +384,13 @@ inline Connection::~Connection() { if (db_) sqlite3_close_v2(db_); }
 inline void Connection::Close() {
   auto* db = Require();
   if (callbackDepth_) StateError("database cannot be closed while in a callback");
-  for (auto& reference : statements_) if (auto statement = reference.lock()) statement->Finalize();
-  statements_.clear();
+  // Finalizers may prepare/close statements. Never retain an iterator into the
+  // observer vector across callbacks; also retire statements created by them.
+  while (!statements_.empty()) {
+    auto statements = std::move(statements_);
+    statements_.clear();
+    for (auto& reference : statements) if (auto statement = reference.lock()) statement->Finalize();
+  }
 #if defined(SQLITE_ENABLE_SESSION)
   // SQLite requires sessions to retire before their database connection.
   for (auto& reference : sessions_) if (auto session = reference.lock()) session->Delete();

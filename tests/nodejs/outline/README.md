@@ -1,5 +1,10 @@
 # Node 26 core implementation outline
 
+Source154 integrates actual SQLite statement close/disposal and safe native
+retirement. Twelve native/frontend groups, six selected unchanged upstream
+tests per subject and fourteen package-source checks pass. Guest compilation
+and four-host obligations remain open. See [SQLite lifecycle scope](sqlite-lifecycle-integration.md).
+
 Reconciled with main `b92a1c1126ab` through a clean merge.
 The audited Node pin and core source are unchanged; inherited patch-format
 whitespace diagnostics remain recorded. See [merge receipt](main-reconciliation-2026-11-06.json).

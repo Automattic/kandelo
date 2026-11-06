@@ -1,5 +1,10 @@
 # Broad implementation review
 
+Source154 integrates actual SQLite statement close/disposal and safe native
+retirement. Twelve native/frontend groups, six selected unchanged upstream
+tests per subject and fourteen package-source checks pass. Guest compilation
+and four-host obligations remain open. See [SQLite lifecycle scope](sqlite-lifecycle-integration.md).
+
 Source153 integrates real synchronous CommonJS customization hooks and source/
 cache ownership. Seventeen native comparison groups,22 existing loader tests
 and14 package-source tests pass. ESM/async loader and four-host gaps remain.

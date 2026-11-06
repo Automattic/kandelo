@@ -548,11 +548,14 @@ static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
     if (open) owner->connection->Open();
     return KandeloSqliteNewOwner(cx, std::move(owner), args.rval());
   }
-  const bool statementOperation = operation == "checkStatement" || operation == "columns" || operation == "finalize" || operation == "reset" || operation == "bind" || operation == "step" || operation == "stepDiscard" || operation == "names" || operation == "parameters" || operation == "sourceSQL" || operation == "expandedSQL";
+  const bool statementOperation = operation == "checkStatement" || operation == "isStatementFinalized" || operation == "closeStatement" || operation == "columns" || operation == "finalize" || operation == "reset" || operation == "bind" || operation == "step" || operation == "stepDiscard" || operation == "names" || operation == "parameters" || operation == "sourceSQL" || operation == "expandedSQL";
   const bool sessionOperation = operation == "sessionChangeset" || operation == "closeSession";
   auto* owner = KandeloSqliteOwner(args.get(1), sessionOperation ? 2 : statementOperation ? 1 : 0);
   if (operation == "open") owner->connection->Open();
-  else if (operation == "close") owner->connection->Close();
+  else if (operation == "close") {
+    owner->connection->Close();
+    if (JS_IsExceptionPending(cx)) return false;
+  }
   else if (operation == "isOpen") { args.rval().setBoolean(owner->connection->IsOpen()); return true; }
   else if (operation == "isTransaction") { args.rval().setBoolean(owner->connection->IsTransaction()); return true; }
   else if (operation == "location") {
@@ -605,6 +608,11 @@ static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
             window ? KandeloSqliteAggregateValue<false> : nullptr,
             window ? KandeloSqliteAggregateStep<true> : nullptr, KandeloSqliteFunctionDestroy);
     if (result != SQLITE_OK) throw kandelo::sqlite::DatabaseError(db, result);
+  } else if (operation == "isStatementFinalized") {
+    args.rval().setBoolean(owner->statement->IsFinalized()); return true;
+  } else if (operation == "closeStatement") {
+    owner->statement->Close(args.get(2).isTrue());
+    if (JS_IsExceptionPending(cx)) return false;
   } else if (operation == "checkStatement") { owner->statement->Require();
   } else if (operation == "limits") {
     // Hold only a weak native connection; ordinary extra properties live on
@@ -701,6 +709,7 @@ static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
     return KandeloSqliteNewOwner(cx, std::move(result), args.rval(), &args[1].toObject());
   } else if (operation == "finalize") {
     owner->statement->Finalize();
+    if (JS_IsExceptionPending(cx)) return false;
   } else if (operation == "reset") {
     owner->statement->Reset(args.get(2).isTrue(), args.get(3).isTrue());
   } else if (operation == "bind") {
