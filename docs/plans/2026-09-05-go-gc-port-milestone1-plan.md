@@ -5644,3 +5644,27 @@ The porting skill's reference table now routes Go packages directly to the
 public support overview, plain-Go/cgo registry examples, and the focused Go
 runtime/linker guide. This completes the guidance-discovery link for the
 earlier Go-specific guidance work item. It changes documentation only.
+
+**2026-11-06 — Validate revision 37 through both actual Node services.**
+The coherent source union succeeds in 19m56s: 184/184 nodes, all 11
+products, 178 cached and six published dispositions. The normal
+published-consumer checker exits zero. WordPress revision 37 is 79,330,377
+bytes, SHA-256 `79c47b29053245fc4a295af30dfa41a1ea655b7515ec1654b9460fc2a15c1beb`.
+The Go source is `1b0cf58`; the ABI-55 kernel bytes are unchanged.
+
+Both actual Node service tests then pass in 49 seconds
+(`frankenphp-rev37-node-services-1106-010838-19e4`). Classic and Caddy
+start through the image's ordinary init/controller, serve WordPress,
+close the actual listener after SIGTERM, complete a held PHP response,
+and return zero server/controller exits. Both machines retire their
+workers cooperatively. Neither service log contains a Go panic/fatal
+header; Caddy no longer emits the observed certificate-read panic or
+HTTP shutdown deadline warning in this run. This establishes the two
+current Node cases, not the absence of every intermittent failure.
+Artifact identities and raw service logs are retained under
+`.context/frankenphp-node-image-VT1Wsf/`.
+
+The normal `./run.sh browser` preview is preparing its cached projection
+on port 5417. Browser startup/editor checks and the remaining current-image
+load, recovery, and performance gates are still pending. The original
+independent benchmark-baseline build continues without being restarted.
