@@ -25439,8 +25439,17 @@ replay and predicted-to-exact transitions also have causal failure controls.
 | --- | --- |
 | `graphics-fatal-batch-final64-1106-020221-63b4` | PASS8s:64 focused controls, full host source compiler and new host-test compiler0; includes nesting, mixed exact checks, older flags, OOM precedence and import/configuration lifetime |
 | `graphics-fatal-batch-final-gpu-1106-015120-3e06` | PASS1m07: three engines each read the original native getter once for accepted submitted work; pixels and guilty-context/healthy-peer checks pass |
-| R518 combined source check | Graphics2348/92 and all118 ownership checks pass. Broader321 browser cases remain in progress. Its app-compiler stage initially lacked the generated portable product catalog; that provisioning failure remains recorded |
+| R518 `graphics-fatal-audit-broad-r518-r2-1106-021047-9e33` | FAILED24m42 solely on the initially missing generated catalog. Graphics2348/92, all118 ownership checks, host compiler0, all321 three-engine browser cases (zero skips/flakes), independent nested-OOM control, evidence715, shader harness and frozen source checks pass |
 | `graphics-fatal-audit-integration-types-r-1106-023020-3a6f` | PASS12s on integration: normal catalog generation, full host and both complete app compiler contexts0, source and nine normal product/tool hashes unchanged |
+
+After the private R518 run terminated, the normal generator supplied its
+missing catalog from18 byte-identical portable manifests. Both full app
+compiler contexts then passed (112 browser/24 Node roots), and all original
+frozen authored/configuration hashes still match. No source fix, exclusion,
+watchdog adjustment or program/image stamp was needed for that provisioning.
+The original failed run remains failed; its321 passing browser cases are
+scoped host/module and native-C trace controls, not the complete normal-product
+guest-driver suite or final conformance acceptance.
 
 The fixed miniature C diagnostic observes fatal native reads decrease from
 633925 to1053, with production still790 and native GL method counts unchanged.
