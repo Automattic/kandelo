@@ -69,10 +69,11 @@ is the prerequisite for this work, not evidence that all older binaries now
 run unchanged. An exact current-program digest is still a strict admission
 rule, not a supported-baseline compatibility policy.
 
-The initial declared baseline is program ABI 55 and the exact digest recorded
-in `abi/supported-program-baseline.json`. `xtask check-program-baseline` checks
-it against the source-derived program surface, independently of ordinary
-snapshot regeneration, and refuses a stale snapshot. Bootstrap, local package
+The declared baseline is program ABI 56 and the exact digest recorded in
+`abi/supported-program-baseline.json`. ABI 55 was the first declared baseline;
+ABI 56 replaced it. `xtask check-program-baseline` checks the declared baseline
+against the source-derived program surface, independently of ordinary snapshot
+regeneration, and refuses a stale snapshot. Bootstrap, local package
 builds, image commands, package bundling and program stamping also enforce it. The baseline
 does not include kernel-host-only sections: the kernel and host can change
 together without forcing user programs to be rebuilt.
@@ -110,7 +111,29 @@ program compatible.
 
 An incompatible change needs either a bounded Rust adapter that preserves the
 old guest representation/semantics or a deliberately new program baseline.
-Do not add a list of old digests without those tests. In particular, changes
+Do not add a list of old digests without those tests.
+
+ABI 56 took the second route. Routing `klogctl` (`SYS_SYSLOG`, Kandelo syscall
+304) to the kernel message ring adds a syscall number, its pointer-argument
+descriptor and that descriptor's copy-out bound to the program surface, and
+this gate is exact: it refuses a new
+program-surface field as firmly as a changed one. No adapter applies, because
+nothing old is being preserved — a syscall that previously did not exist now
+does — so the baseline moved to ABI 56 rather than the gate being widened.
+The accompanying negative test is
+`crates/wasm-artifact/tests/supported_program_baseline_refusal.rs`: every
+frozen ABI-55 artifact is refused by the declared baseline, and refused with a
+reason naming both the epoch and the contract digest. The ABI-55 cohort is
+therefore now a refusal cohort. `host/test/supported-program-baseline.test.ts`
+still executes those bytes and expects them to run, which an ABI-56 kernel will
+not do: all eight of its cases now fail with `prepared exec target is not
+runnable: ABI 55, expected 56 (errno 8)`. That failure is the truthful state of
+a deliberately new baseline, not a defect to silence — the suite asserts a
+promise the platform no longer makes for this cohort. It needs re-pointing at
+an ABI-56 cohort reproduced from a pinned ABI-56 producer revision; the frozen
+v55 bytes must not be restamped to make it green. Until that cohort exists
+there is no end-to-end evidence that any previously compiled program keeps
+running. In particular, changes
 to signal or channel layouts cannot be solved by a JavaScript version check.
 Moving libc to a smaller stable gateway can hide future internal layouts, but
 does not retroactively decouple programs linked against today's channel.

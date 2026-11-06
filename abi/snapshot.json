@@ -40,7 +40,7 @@
       "wait_contract"
     ]
   },
-  "abi_version": 55,
+  "abi_version": 56,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -949,6 +949,17 @@
         "arguments": [
           {
             "index": 2,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "syslog",
+        "number": 304,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
             "kind": "i64"
           },
           {
@@ -1388,7 +1399,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 55,
+      "abi_version": 56,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -4542,7 +4553,7 @@
       "kind": "memory",
       "maximum_pages": 16384,
       "memory64": false,
-      "minimum_pages": 19,
+      "minimum_pages": 21,
       "module": "env",
       "name": "memory",
       "shared": true
@@ -9269,6 +9280,22 @@
         }
       }
     ],
+    "304": [
+      {
+        "argIndex": 1,
+        "copyOutLength": {
+          "maxValue": 131072,
+          "multiplier": 1,
+          "type": "return-value"
+        },
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 2,
+          "type": "arg"
+        }
+      }
+    ],
     "306": [
       {
         "argIndex": 1,
@@ -11192,6 +11219,10 @@
     {
       "name": "Lchown",
       "number": 299
+    },
+    {
+      "name": "Syslog",
+      "number": 304
     },
     {
       "name": "Renameat2",

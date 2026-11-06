@@ -1387,6 +1387,7 @@ dependencies = [
 name = "wasm-artifact"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "wasm-posix-program-abi",
  "wasmparser 0.247.0",
  "wat",

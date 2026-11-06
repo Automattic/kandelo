@@ -1906,7 +1906,16 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_PTRACE:
         return ENOSYS_NEG;
 
-    case SYS_SYSLOG:
+    /* SYS_SYSLOG (klogctl) is deliberately absent from this file. It reaches
+     * the kernel message ring over the channel path — channel_syscall.c's
+     * generated marshal table and the `304` arm of dispatch_channel_syscall
+     * in crates/kernel/src/wasm_api.rs — and the handler behind it is a plain
+     * Rust function, not a `kernel.*` Wasm export, so this legacy
+     * direct-import glue has nothing to call. Falling through to the default
+     * ENOSYS says that truthfully, the way every other arm retired from this
+     * unlinked file does. The -EPERM that used to sit here never reached a
+     * guest — no build links this file — but it recorded the wrong platform
+     * behavior for a syscall Kandelo now implements. */
     case SYS_CAPGET:
     case SYS_CAPSET:
     case SYS_VHANGUP:

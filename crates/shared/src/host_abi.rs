@@ -954,6 +954,21 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(0, In, cstring!(), required)]
     ),
     entry!(
+        // klogctl. The size and clear actions take no buffer at all, so the
+        // pointer is nullable rather than required; the kernel decides from
+        // the action whether a buffer is needed, permitted, or neither.
+        extra_syscalls::SYS_SYSLOG,
+        // klogctl's return value is a byte count for the read actions but a
+        // ring-size count for the size actions, which write nothing. Declare
+        // the bound on that count explicitly: without it the host reads a
+        // size action's result as a claimed transfer and rejects it as a
+        // protocol failure. The kernel refuses a non-empty buffer for the
+        // actions that produce no bytes, so a claimed transfer can never
+        // exceed the staged capacity.
+        [desc!(1, Out, arg!(2), nullable)
+            .with_copy_out_return_value(1, platform_limits::KMSG_CAPACITY_BYTES as u32)]
+    ),
+    entry!(
         extra_syscalls::SYS_RENAMEAT2,
         [
             desc!(1, In, cstring!(), required),
@@ -1522,6 +1537,9 @@ mod tests {
             (extra_syscalls::SYS_PWRITEV, 1),
             (extra_syscalls::SYS_PREADV2, 1),
             (extra_syscalls::SYS_PWRITEV2, 1),
+            // klogctl's size and clear actions pass no buffer at all, so the
+            // kernel decides from the action whether one was required.
+            (extra_syscalls::SYS_SYSLOG, 1),
         ];
         actual_nullable.sort_unstable();
         expected_nullable.sort_unstable();

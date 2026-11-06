@@ -18,17 +18,23 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
-Program ABI 55 is the first declared supported baseline. The separate
-`abi/supported-program-baseline.json` gate preserves its program digest across
-kernel/host rebuilds; ordinary snapshot regeneration or a program version bump
-does not bypass it. The current gate also refuses additive program changes
-until an explicit required-extension contract is implemented. Kernel-host-only
-changes remain independently versioned and do not affect this baseline.
+Program ABI 56 is the declared supported baseline; ABI 55 was the first one
+and ABI 56 replaced it, because routing `klogctl` added a syscall to the
+program surface and this gate is exact. The separate
+`abi/supported-program-baseline.json` gate preserves the declared program
+digest across kernel/host rebuilds; ordinary snapshot regeneration or a
+program version bump does not bypass it. The current gate also refuses
+additive program changes until an explicit required-extension contract is
+implemented. Kernel-host-only changes remain independently versioned and do
+not affect this baseline.
 
 Run `cargo xtask check-program-baseline` for the focused check. The ordinary
 ABI check and package/build/stamping entry points enforce it as well.
 Already-built fixtures under `abi/program-fixtures/v55` must not be rebuilt to
-make compatibility tests pass. See the [persistent-program compatibility
+make compatibility tests pass. Since the baseline moved to ABI 56 they are a
+refusal cohort: `crates/wasm-artifact/tests/supported_program_baseline_refusal.rs`
+proves the declared baseline turns each of them away by epoch and by contract
+digest. See the [persistent-program compatibility
 contract](persistent-program-compatibility.md) for exact scope and remaining
 release validation.
 
@@ -79,6 +85,37 @@ requests, execute candidate code, publish candidate or canonical artifacts,
 update a GitHub Check, create or protect an ABI branch, or deploy Pages. Those
 operations require the later staging layers and their hosted evidence.
 Existing ABI release and VFS behavior is unchanged.
+
+## ABI 56 klogctl reaches the kernel message ring
+
+`klogctl` (`SYS_SYSLOG`, Kandelo syscall 304 — Kandelo's own numbering, not
+Linux's 103) now reads the kernel message ring. It previously had a
+fake-success stub in the kernel's channel dispatch that answered every action
+with a bare `0`, so a program asking for the kernel log was told it had
+succeeded and handed nothing. That stub is gone.
+
+Neither `dmesg` nor `klogctl` is POSIX, so this is a chosen design for a
+facility POSIX does not describe, not a compatibility claim. The committed
+contract is the rendered byte stream: one line per record, `<pri>` followed by
+the text and a newline, where `pri = facility * 8 + level`. Reads (actions 2,
+3 and 4) are unrestricted because a Kandelo machine has no multi-tenant threat
+model; clearing (actions 4 and 5) requires root because it destroys state
+every reader shares. Actions 6, 7 and 8 are refused with `EINVAL` rather than
+accepted and ignored: Kandelo has no console log level to turn off, turn on, or
+set. So is every action outside the table, including the numbers Linux calls
+`CLOSE` and `OPEN`, for which Kandelo keeps no per-caller state.
+
+Action 9 (`SIZE_UNREAD`) reports *rendered* bytes, not the ring's stored
+header-plus-text bytes, because a caller sizes a buffer from it and then
+reads; reporting the stored count would under-size the buffer and lose
+records. Action 10 (`SIZE_BUFFER`) reports the ring's fixed 128 KiB.
+
+Routing the syscall adds its number, its pointer-argument descriptor and that
+descriptor's copy-out bound to the program surface, and the program contract
+digest is exact, so this is a deliberately new supported program baseline.
+Every program, package archive and ABI-bound VFS image must be rebuilt. See
+[persistent-program compatibility](persistent-program-compatibility.md) for
+what that costs and what evidence it leaves missing.
 
 ## ABI 52 futex deadlines and multicast delivery
 

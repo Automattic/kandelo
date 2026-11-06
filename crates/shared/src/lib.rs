@@ -82,6 +82,14 @@ pub mod platform_limits {
     /// reconstructed by the guest startup code.
     pub const PROCESS_STARTUP_MAX_ENVP_COUNT: usize = 4096;
     pub const NGROUPS_MAX: usize = 32;
+    /// Size of the kernel message ring, and so the largest count `klogctl`
+    /// can return.
+    ///
+    /// The ring itself lives in `runtime_core::kmsg`, but the bound belongs
+    /// here because the host needs it: `klogctl`'s size actions return a
+    /// count rather than a transfer length, so the channel's copy-back
+    /// contract has to know how large that count may legitimately be.
+    pub const KMSG_CAPACITY_BYTES: usize = 128 * 1024;
     pub const SYSV_MSG_MAX_BYTES: usize = 8192;
     /// Largest successful byte count representable by the signed-i32 channel
     /// result without becoming indistinguishable from an errno return.
@@ -2566,6 +2574,7 @@ pub mod abi {
         pub const SYS_PREADV2: u32 = 297;
         pub const SYS_PWRITEV2: u32 = 298;
         pub const SYS_LCHOWN: u32 = 299;
+        pub const SYS_SYSLOG: u32 = 304;
         pub const SYS_RENAMEAT2: u32 = 306;
         pub const SYS_FALLOCATE: u32 = 308;
         pub const SYS_GETCPU: u32 = 325;
@@ -2844,6 +2853,10 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "Lchown",
                 number: SYS_LCHOWN,
+            },
+            AbiSyscallNumber {
+                name: "Syslog",
+                number: SYS_SYSLOG,
             },
             AbiSyscallNumber {
                 name: "Renameat2",

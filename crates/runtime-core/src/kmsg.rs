@@ -57,7 +57,11 @@ use core::cell::UnsafeCell;
 use wasm_posix_shared::Errno;
 
 /// Size of the byte ring: exactly 128 KiB, fixed, not configurable.
-pub const KMSG_CAPACITY_BYTES: usize = 128 * 1024;
+///
+/// The figure itself lives in `wasm_posix_shared::platform_limits` because
+/// `klogctl` reports it to a guest and the host's channel copy-back contract
+/// bounds that report against it. One definition keeps the three in step.
+pub const KMSG_CAPACITY_BYTES: usize = wasm_posix_shared::platform_limits::KMSG_CAPACITY_BYTES;
 
 /// Longest text one record stores. Longer text is truncated and the record is
 /// flagged with [`KMSG_FLAG_TRUNCATED`]. Bounding a record keeps a single

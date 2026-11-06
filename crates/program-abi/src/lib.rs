@@ -224,7 +224,17 @@
 ///     metadata or kernel-host wire formats. Those bump the kernel-host
 ///     version, `abi::HOST_ADAPTER_VERSION` (now 2, checked exactly), instead
 ///     of this. docs/abi-versioning.md ("ABI 55").
-pub const ABI_VERSION: u32 = 55;
+/// 56: `klogctl` (`SYS_SYSLOG`, Kandelo syscall 304) exists. The kernel's
+///     channel dispatch used to answer it with a bare `0`, so a guest reading
+///     the kernel log was told it succeeded and handed nothing; that
+///     fake-success stub is gone and the syscall now routes to the kernel
+///     message ring. Routing it adds a syscall number, its pointer-argument
+///     descriptor and that descriptor's copy-out bound to the program
+///     surface. The program contract digest is exact, so this is a new
+///     supported program baseline and every program, package archive and
+///     ABI-bound VFS image must be rebuilt.
+///     docs/persistent-program-compatibility.md.
+pub const ABI_VERSION: u32 = 56;
 
 
 pub mod abi {

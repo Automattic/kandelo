@@ -6065,6 +6065,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         74 => kernel_umask(a1 as u32) as i32, // SYS_UMASK
         75 => kernel_uname(channel_mut_ptr!(0, u8), 390), // SYS_UNAME (musl passes 1 arg; struct utsname = 6x65 = 390)
         76 => kernel_sysconf(a1) as i32,                  // SYS_SYSCONF
+        // SYS_SYSLOG: klogctl(action, buf, len). The buffer is nullable: the
+        // size and clear actions pass none.
+        304 => kernel_syslog(a1 as i32, channel_mut_ptr!(1, u8), a3 as i32),
         120 => kernel_getrandom(channel_mut_ptr!(0, u8), process_size_u32!(1), a3 as u32), // SYS_GETRANDOM
         109 => {
             // SYS_REALPATH: (path, buf, buf_len)
@@ -7541,7 +7544,6 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         287 => 0, // SYS_PERSONALITY: return 0 (current personality, PER_LINUX)
 
         // -- Filesystem --
-        304 => 0, // SYS_SYSLOG (kernel log): no-op (not the libc syslog)
         306 => {
             // SYS_RENAMEAT2: (olddirfd, oldpath, newdirfd, newpath, flags)
             // Ignore flags (RENAME_NOREPLACE, RENAME_EXCHANGE) — delegate to renameat
@@ -13578,6 +13580,45 @@ pub extern "C" fn kernel_uname(buf_ptr: *mut u8, buf_len: u32) -> i32 {
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_uname(buf) {
         Ok(()) => 0,
+        Err(e) => -(e as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+/// `klogctl`: read or discard kernel log records.
+///
+/// Returns the bytes copied for a read action, a byte count for a size
+/// action, 0 for a bare clear, or a negative errno.
+///
+/// Not a Wasm export: the libc glue reaches it through the syscall channel's
+/// dispatch table, and no host path calls it, so exporting it would only widen
+/// the kernel's surface.
+///
+/// `buf_ptr` is either null or the start of `len` writable bytes of channel
+/// scratch whose extent `channel_mut_ptr!` has already proved at the dispatch
+/// site; this is the same contract every other pointer-taking arm here has.
+pub fn kernel_syslog(action: i32, buf_ptr: *mut u8, len: i32) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    // `None` means the caller supplied no usable buffer: a negative length,
+    // which is not a size, or a null pointer for an argument it left out. The
+    // read actions refuse that; the size and clear actions never look.
+    // A zero length gets a valid empty slice instead of a null pointer,
+    // because Rust requires a non-null aligned address even for an empty
+    // borrow, and because the channel canonicalizes an empty borrow to the
+    // scratch allocation's start rather than passing the caller's own null.
+    let mut empty: [u8; 0] = [];
+    let buf = if len < 0 || buf_ptr.is_null() {
+        None
+    } else if len == 0 {
+        Some(&mut empty[..])
+    } else {
+        Some(unsafe { core::slice::from_raw_parts_mut(buf_ptr, len as usize) })
+    };
+    let uid = syscalls::sys_geteuid(proc);
+    let result = match syscalls::sys_syslog(action, buf, uid) {
+        Ok(value) => value,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;

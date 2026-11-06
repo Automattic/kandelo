@@ -34,3 +34,6 @@ wasmparser = { version = "0.247", default-features = false }
 # reconstructed by whoever next reads the test. Host-only: this crate itself
 # stays `no_std + alloc`.
 wat = "1"
+# Reads the declared supported program baseline (abi/supported-program-baseline.json)
+# in the baseline-refusal test. Host-only, like `wat`.
+serde_json = "1"
