@@ -1,0 +1,83 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -1836,6 +1836,25 @@
+     JS_ReportErrorASCII(cx, "Performance process origin is unavailable"); return false;
+   }
+   args.rval().setDouble(kandeloPerformanceOrigin.unixMilliseconds); return true;
++}
++
++static bool KandeloNativePerformanceLoopState(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  uint64_t start, idle;
++  if (GetShellContext(cx)->kandeloPerformanceLoop.Read(&start, &idle) != 0) {
++    const int error = errno;
++    JS_ReportErrorUTF8(cx, "performance loop clock: %s", strerror(error));
++    KandeloDecoratePendingError(cx, error); return false;
++  }
++  if (!kandeloPerformanceOrigin.initialized ||
++      (start && start < kandeloPerformanceOrigin.monotonic)) {
++    JS_ReportErrorASCII(cx, "Performance loop origin is unavailable"); return false;
++  }
++  RootedObject result(cx, JS::NewArrayObject(cx, 0));
++  if (!result || !JS_DefineElement(cx, result, 0, double(start), JSPROP_ENUMERATE) ||
++      !JS_DefineElement(cx, result, 1, start ? double(start) / 1e6 - double(kandeloPerformanceOrigin.monotonic) / 1e6 : -1.0, JSPROP_ENUMERATE) ||
++      !JS_DefineElement(cx, result, 2, double(idle) / 1e6, JSPROP_ENUMERATE)) return false;
++  args.rval().setObject(*result); return true;
+ }
+
+ static bool KandeloNativeHrtime(JSContext* cx, unsigned argc, Value* vp) {
+@@ -4070,6 +4089,7 @@
+       JS_FN("hrtime", KandeloNativeHrtime, 0, 0),
+       JS_FN("performanceNow", KandeloNativePerformanceNow, 0, 0),
+       JS_FN("performanceTimeOrigin", KandeloNativePerformanceTimeOrigin, 0, 0),
++      JS_FN("performanceLoopState", KandeloNativePerformanceLoopState, 0, 0),
+       JS_FN("getUvErrorData", KandeloNativeUvErrorData, 0, 0),
+       JS_FN("environment", KandeloNativeEnvironment, 3, 0),
+       JS_FN("processUmask", KandeloNativeProcessUmask, 1, 0),
+@@ -5385,6 +5405,7 @@
+   if (sc->quitting) {
+     return;
+   }
++  if (IsKandeloNodeMode()) sc->kandeloPerformanceLoop.Enter();
+
+   bool beforeExitEmittedForIdle = false;
+   while (true) {
+@@ -5545,7 +5566,9 @@
+           sleepUs = useconds_t(wantUs);
+         }
+       }
++      if (IsKandeloNodeMode()) sc->kandeloPerformanceLoop.BeginIdle();
+       usleep(sleepUs);
++      if (IsKandeloNodeMode()) sc->kandeloPerformanceLoop.EndIdle();
+     }
+   }
+ }
+@@ -8850,6 +8873,9 @@
+       KandeloCaptureWorkerException(cx); input->failure = "Could not initialize Worker module loader"; return;
+     }
+     sc->exitCode = 0;
++    // Worker bootstrap/source runs within that worker's independent loop,
++    // unlike the main thread's initial synchronous module evaluation.
++    sc->kandeloPerformanceLoop.Enter();
+     if (!RunKandeloNodeBootstrap(cx) && !sc->quitting) {
+       sc->exitCode = 1; KandeloCaptureWorkerException(cx);
+     }
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -16,6 +16,7 @@
+ #include "js/GCVector.h"
+ #include "js/Principals.h"
+ #include "shell/ModuleLoader.h"
++#include "shell/kandelo-node-performance-clock.h"
+ #include "threading/ConditionVariable.h"
+ #include "threading/LockGuard.h"
+ #include "threading/Mutex.h"
+@@ -195,6 +196,8 @@
+
+   JSContext* cx_;
+
++  kandelo::clock::EventLoopClock kandeloPerformanceLoop;
++
+   // Owns real native jobs, completion roots and buffer leases until shutdown.
+   KandeloNativeWorkQueue* kandeloNativeWork = nullptr;
+   KandeloNativeAsyncState* kandeloNativeAsync = nullptr;

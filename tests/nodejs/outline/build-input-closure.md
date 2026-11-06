@@ -1,5 +1,9 @@
 # Shared Node core build inputs
 
+Source124 adds one complete pinned ELU reference under the declared performance
+directory. The current source guard covers615 inputs;12 fresh package-contract
+checks pass. This is source coverage,not runtime conformance.
+
 At source120, the engine recipe added309 core inputs: 308 existing
 source/reference/license files and the new input guard. The earlier static
 inventory identified 305 files; a conservative scan also found the domain,

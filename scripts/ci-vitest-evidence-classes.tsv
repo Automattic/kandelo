@@ -290,6 +290,7 @@ host/test/node-buffer-encoding.test.ts	source-only
 host/test/node-call-sites.test.ts	source-only
 host/test/node-child-lifecycle.test.ts	source-only
 host/test/node-child-owner.test.ts	source-only
+host/test/node-cipher-platform.test.ts	source-only
 host/test/node-compat-builtin-exports.test.ts	prepared-product
 host/test/node-compression-binding.test.ts	source-only
 host/test/node-console-platform.test.ts	source-only
@@ -298,7 +299,6 @@ host/test/node-crypto-random-sync.test.ts	source-only
 host/test/node-diagnostics-channels.test.ts	source-only
 host/test/node-digests-platform.test.ts	source-only
 host/test/node-directory-platform.test.ts	source-only
-host/test/node-tempdir-platform.test.ts	source-only
 host/test/node-dns-platform.test.ts	source-only
 host/test/node-dotenv-platform.test.ts	source-only
 host/test/node-events.test.ts	source-only
@@ -308,6 +308,7 @@ host/test/node-fd-stream-platform.test.ts	source-only
 host/test/node-file-promises-platform.test.ts	source-only
 host/test/node-file-sync-platform.test.ts	source-only
 host/test/node-fs-removal.test.ts	source-only
+host/test/node-glob-platform.test.ts	source-only
 host/test/node-guest-build.test.ts	source-only
 host/test/node-headers-platform.test.ts	source-only
 host/test/node-hkdf-platform.test.ts	source-only
@@ -322,16 +323,13 @@ host/test/node-kernel-host-diagnostic.test.ts	prepared-product
 host/test/node-kernel-init-refused-image.test.ts	prepared-product
 host/test/node-kernel-pipe-proxy.test.ts	prepared-product
 host/test/node-key-platform.test.ts	source-only
-host/test/node-cipher-platform.test.ts	source-only
 host/test/node-lazy-archive-runtime.test.ts	prepared-product
 host/test/node-lazy-asset-resolver.test.ts	prepared-product
+host/test/node-loop-utilization.test.ts	source-only
 host/test/node-module-entrypoints.test.ts	source-only
 host/test/node-module-records.test.ts	source-only
-host/test/node-module-wrapper-platform.test.ts	source-only
-host/test/node-warning-platform.test.ts	source-only
-host/test/node-realpath-platform.test.ts	source-only
-host/test/node-glob-platform.test.ts	source-only
 host/test/node-module-syntax.test.ts	source-only
+host/test/node-module-wrapper-platform.test.ts	source-only
 host/test/node-network-attempts.test.ts	source-only
 host/test/node-os-platform.test.ts	source-only
 host/test/node-owned-jobs.test.ts	prepared-product
@@ -348,6 +346,7 @@ host/test/node-query-codecs.test.ts	source-only
 host/test/node-readdir-platform.test.ts	source-only
 host/test/node-readline-controls.test.ts	source-only
 host/test/node-readline-interface.test.ts	source-only
+host/test/node-realpath-platform.test.ts	source-only
 host/test/node-response-body.test.ts	source-only
 host/test/node-rootfs-export.test.ts	prepared-product
 host/test/node-rootfs-lazy-cohort.test.ts	prepared-product
@@ -355,6 +354,7 @@ host/test/node-socket-timeouts.test.ts	source-only
 host/test/node-source-map-platform.test.ts	source-only
 host/test/node-sync-processes.test.ts	source-only
 host/test/node-tcp-server.test.ts	source-only
+host/test/node-tempdir-platform.test.ts	source-only
 host/test/node-testing-platform.test.ts	source-only
 host/test/node-text-decoder.test.ts	source-only
 host/test/node-timers.test.ts	source-only
@@ -363,6 +363,7 @@ host/test/node-url-exit-contracts.test.ts	source-only
 host/test/node-util-public.test.ts	source-only
 host/test/node-uv-platform.test.ts	source-only
 host/test/node-vm-platform.test.ts	source-only
+host/test/node-warning-platform.test.ts	source-only
 host/test/node-web-data.test.ts	source-only
 host/test/node-worker-adapter.test.ts	prepared-product
 host/test/node-write-file-platform.test.ts	source-only

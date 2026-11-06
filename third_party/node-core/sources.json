@@ -2508,6 +2508,11 @@
         "path": "upstream/performance/lib/internal/bootstrap/web/exposed-window-or-worker.js",
         "upstreamPath": "lib/internal/bootstrap/web/exposed-window-or-worker.js",
         "sha256": "71be83894cb75264ca62839408c575ac8acd2c91765ff3e0ecc3d27765f2c810"
+      },
+      "lib/internal/perf/event_loop_utilization.js": {
+        "path": "upstream/performance/lib/internal/perf/event_loop_utilization.js",
+        "upstreamPath": "lib/internal/perf/event_loop_utilization.js",
+        "sha256": "41103605f43fd31b497c0bcf188350d078069084a6a403d950d9f7e44d57213b"
       }
     },
     "selections": {

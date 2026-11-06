@@ -464,3 +464,13 @@ repeated warning filters through NODE_OPTIONS and the command line. Preserve
 CLI-only execArgv and environment/CLI precedence. Publish real booleans,
 strings and arrays to each guest bootstrap. This supplies the pinned warning
 owner; native stack recapture/filtering and full CLI conformance remain open.
+
+### 0104: actual per-context event-loop idle measurements
+
+Each ShellContext owns monotonic loop-start and accumulated actual wait time.
+RunShellJobs marks entry once and brackets its real provider wait; synchronous
+JavaScript/native work stays active. A private snapshot feeds unchanged pinned
+Node ELU arithmetic and the nodeTiming loopStart/idleTime getters. Clock errors
+stay visible. Other milestones, loop counters, GC/profiler producers and the
+parent-side Worker.performance contract remain separate implementation gaps.
+No browser host clocks or fixed measurements are substituted.

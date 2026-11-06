@@ -625,6 +625,7 @@
         dnsLookupConstants() { return native.dnsLookupConstants(); },
         performanceNow() { return native.performanceNow(); },
         performanceTimeOrigin() { return native.performanceTimeOrigin(); },
+        performanceLoopState() { return native.performanceLoopState(); },
         socketLookup(host, family, hints) { return native.socketLookup(host, family, hints); },
         socketConnect(host, port, family, localAddress, localPort) {
             return native.socketConnect(host, port, family, localAddress, localPort);

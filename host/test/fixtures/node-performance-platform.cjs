@@ -17,6 +17,16 @@ exports.create=function create(overrides={}) {
     native:{performanceNow:nativeNow,performanceTimeOrigin:()=>nativePerformance.timeOrigin,
       ...overrides}});
 };
+// Explicit native dependency boundary for the actual candidate ELU module.
+// This does not exercise Kandelo's ShellContext clock or its wait hooks.
+exports.createWithLoopMetrics=function createWithLoopMetrics() {
+  const binding=require('internal/test/binding').internalBinding('performance');
+  const {getMilestoneTimestamp}=require('internal/perf/utils');
+  const index=binding.constants.NODE_PERFORMANCE_MILESTONE_LOOP_START;
+  return exports.create({performanceLoopState:()=>[
+    binding.milestones[index],getMilestoneTimestamp(index),binding.loopIdleTime(),
+  ]});
+};
 if(process.env.KANDELO_PERFORMANCE_TIMELINE_PRELOAD==='1') {
   const candidate=exports.create(),{api}=candidate;
   // Only the selected timeline classes/methods are substituted. Other native

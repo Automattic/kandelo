@@ -1,5 +1,9 @@
 # Performance timeline source owners and remaining measurements
 
+Source124 adds the [current loop clock/ELU checkpoint](loop-metrics-implementation-dependencies.md).
+Earlier source/build evidence below retains its historical scope; source117–124
+is uncompiled and complete performance/guest/four-host obligations remain open.
+
 Current integration checkpoint: the normal targeted engine96 build compiles
 the source through95 with guest OpenSSL3.5.9; four focused Node-host
 differential controls pass. Current source99 includes metadata97, sync whole-file98 and queued

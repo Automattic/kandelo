@@ -1,0 +1,213 @@
+{
+  "at": "2026-11-05T23:58:27.863876+00:00",
+  "recipeRevision": 124,
+  "lastAcceptedEngine": 116,
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/performance-contracts.md",
+    "findingIds": [
+      "O-019",
+      "O-020",
+      "O-021"
+    ],
+    "relatedFamilies": [
+      "observability",
+      "workers"
+    ],
+    "retainedRows": [
+      {
+        "rowIndex": 376,
+        "id": "perf_hooks.performance.eventLoopUtilization"
+      },
+      {
+        "rowIndex": 381,
+        "id": "perf_hooks.performance.nodeTiming"
+      },
+      {
+        "rowIndex": 390,
+        "id": "perf_hooks.PerformanceNodeTiming"
+      },
+      {
+        "rowIndex": 396,
+        "id": "perf_hooks.eventLoopUtilization"
+      },
+      {
+        "rowIndex": 2236,
+        "id": "perf_hooks.PerformanceNodeTiming.name"
+      },
+      {
+        "rowIndex": 2237,
+        "id": "perf_hooks.PerformanceNodeTiming.entryType"
+      },
+      {
+        "rowIndex": 2238,
+        "id": "perf_hooks.PerformanceNodeTiming.startTime"
+      },
+      {
+        "rowIndex": 2239,
+        "id": "perf_hooks.PerformanceNodeTiming.duration"
+      },
+      {
+        "rowIndex": 2240,
+        "id": "perf_hooks.PerformanceNodeTiming.nodeStart"
+      },
+      {
+        "rowIndex": 2241,
+        "id": "perf_hooks.PerformanceNodeTiming.v8Start"
+      },
+      {
+        "rowIndex": 2242,
+        "id": "perf_hooks.PerformanceNodeTiming.environment"
+      },
+      {
+        "rowIndex": 2243,
+        "id": "perf_hooks.PerformanceNodeTiming.loopStart"
+      },
+      {
+        "rowIndex": 2244,
+        "id": "perf_hooks.PerformanceNodeTiming.loopExit"
+      },
+      {
+        "rowIndex": 2245,
+        "id": "perf_hooks.PerformanceNodeTiming.bootstrapComplete"
+      },
+      {
+        "rowIndex": 2246,
+        "id": "perf_hooks.PerformanceNodeTiming.idleTime"
+      },
+      {
+        "rowIndex": 2247,
+        "id": "perf_hooks.PerformanceNodeTiming.uvMetricsInfo"
+      },
+      {
+        "rowIndex": 2248,
+        "id": "perf_hooks.PerformanceNodeTiming.uvMetricsInfoBigInt"
+      },
+      {
+        "rowIndex": 2249,
+        "id": "perf_hooks.PerformanceNodeTiming.toJSON"
+      },
+      {
+        "rowIndex": 2250,
+        "id": "perf_hooks.PerformanceNodeTiming.[util.inspect.custom]"
+      },
+      {
+        "rowIndex": 2329,
+        "id": "perf_hooks.Performance.prototype.eventLoopUtilization"
+      },
+      {
+        "rowIndex": 2330,
+        "id": "perf_hooks.Performance.prototype.nodeTiming"
+      },
+      {
+        "rowIndex": 2388,
+        "id": "perf_hooks.eventLoopUtilization.prototype"
+      }
+    ],
+    "scope": "Loop clock/ELU source prerequisites;not complete NodeTiming/API/finding/family conformance"
+  },
+  "sourceImplemented": [
+    "Actual inline per-ShellContext monotonic loop entry/idle accumulator,live waits and sticky state/clock errors;no allocations/timer keepers/fixed metrics",
+    "Engine starts main loop after quit guard and worker loop before bootstrap/source,brackets actual provider wait and copies actual start/relative/idle snapshot",
+    "Complete unchanged pinned ELU module owns cumulative/one-/two-snapshot overloads,coercion/errors and shared public function identity over explicit guest process clock",
+    "nodeTiming loopStart/idleTime share actual owner;remaining milestones/counters/histograms stay unavailable",
+    "Canonical selected-file patch composition and stale family-routing updates;parallel source agents isolated from this candidate"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-loop-metrics-source-r4/report.json",
+    "sha256": "70230719dd20c8ffe6f79f1e63bd2d95022f2b2227329542397f2bcd21d1f0ac",
+    "selectedIdentities": 28,
+    "completeReferences": 11,
+    "guardedInputs": 615,
+    "selectedShellPatches": 85,
+    "newPatchFuzz": 0,
+    "scope": "Complete pinned performance refs,generation/syntax,615guarded inputs,selected-file canonical engine patch composition;guest C++/combined source124uncompiled. No performance improvement/overhead claim."
+  },
+  "frontendAndAffected": {
+    "report": ".context/node26-loop-metrics-frontend-r2.json",
+    "sha256": "cd4c738b4c7a231a063285da12cf214dacfae2da36d475eebab56571b0b10be9",
+    "newPassed": 6,
+    "affectedPassed": 7,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Complete candidate ELU/performance JS over real native26 measurement/event owners,including native Worker context;not Kandelo clock/wait hooks"
+  },
+  "portableNative": {
+    "report": ".context/node26-loop-clock-native-r1/report.json",
+    "sha256": "6315a868454641626d1b3ca1a4e7aa5c21146c753d8eebcde0444c7a0bc7b00e",
+    "passed": 6,
+    "failed": 0,
+    "nativeHelperCompilations": 1,
+    "scope": "Portable real CLOCK_MONOTONIC owner,actual sleeps and busy work,independent context/lifetime/error invariants. Not engine wait-hook/JSAPI,guest kernel clock or four-host conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-loop-metrics-package-r1.json",
+    "sha256": "96811dcd470d3562a89e4e8067b58dd557f9295f0c6ca309c8e0f1b5d3633e6e",
+    "passed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "615-input closure source guard positive/negative package checks,not API conformance"
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-loop-metrics-upstream-r1/report.json",
+    "sha256": "247bb04e2606565b9e6bd84dbbc8246447eadb22a95b711412265126f4c06a26",
+    "files": 1,
+    "candidateFailed": 1,
+    "nativePassed": 1,
+    "scope": "One complete unchanged upstream file in candidate/native modes,including NodeTiming JSON/milestones and native Worker dependencies. Candidate missing milestone errors retained. Neither native dependency fixture nor portable clock proves guest hooks/four-host conformance."
+  },
+  "historicalPositiveControls": [
+    {
+      "report": ".context/node26-loop-metrics-frontend-r1.json",
+      "sha256": "8034eee729d0bdc5de3dcfac0fa2c86acc05360ef157fc423500c64d8c8da450",
+      "passed": 12,
+      "scope": "5new+7existing,before additional native Worker control"
+    },
+    {
+      "report": ".context/node26-loop-metrics-source-r2/report.json",
+      "sha256": "ece963e209b65c78a2755763de0ba04d753f3daf7ac805cc6eb3c7b2b7f002cd",
+      "scope": "Before worker pre-bootstrap loop-entry source followup;not latest candidate"
+    }
+  ],
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-loop-metrics-upstream-r1/report.json",
+      "sha256": "247bb04e2606565b9e6bd84dbbc8246447eadb22a95b711412265126f4c06a26",
+      "kind": "candidate-implementation-failure",
+      "reason": "Unchanged full ELU file fails NodeTiming JSON on missing nodeStart milestone;native control passes. Other milestones/counters/worker/API obligations remain open"
+    },
+    {
+      "report": ".context/node26-loop-metrics-source-r1.log",
+      "sha256": "626239e9e36f35d4fe6645dd19a414bd9e4dfef56bb9876ca7d7acc10ae94d5a",
+      "kind": "source-harness-error",
+      "reason": "Initial selected-file check required zero fuzz for all old patches;0026short-context include hunk stopped. Corrected check mirrors actual historical recipe policy and keeps new0104zero-fuzz;original log/reject retained"
+    },
+    {
+      "report": ".context/node26-loop-metrics-staging-r1.log",
+      "sha256": "fd2e4d05698b30451f68ff2ee1aeed306e95311f57fe8f1e075420d82f48d04e",
+      "kind": "staged-whitespace-check",
+      "reason": "New patch file had a whitespace-only context line,normalized with exact canonical engine bytes unchanged"
+    }
+  ],
+  "remaining": [
+    "Guest117\u2013124source compilation through normal resolver;accepted116is stale and prior crypto exception boundary remains unresolved",
+    "Other milestone/counter/histogram/GC/network producers and NodeTiming JSON;unchanged full ELU file cannot pass until these are implemented",
+    "Actual main/worker/VM clock/entry/wait/GC/error/exit/bootstrap sequencing and parent-side Worker.performance lifecycle against identified artifacts across all four hosts",
+    "Application performance/measurement overhead unmeasured;no improvement/neutrality claim. All other public API/family obligations and nonpasses remain open"
+  ],
+  "parallelWork": {
+    "authorization": "User explicitly asked about subagents working in parallel;root started three isolated source agents",
+    "base": "24e1225a4f4139a2fd624d0c1c63e11a400c4c25",
+    "worktrees": {
+      "crypto": ".context/agent-worktrees/crypto-jwk",
+      "async": ".context/agent-worktrees/async-hooks",
+      "filesystem": ".context/agent-worktrees/filesystem-copy"
+    },
+    "scope": "Pending isolated work,not included as implementation/conformance in source124. Root serializes shared integration/generation/ledger/commits/heavy builds."
+  },
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

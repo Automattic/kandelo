@@ -1,5 +1,15 @@
 # Node 26 core implementation outline
 
+Source124 adds actual per-context loop-start/idle measurements and the full
+pinned event-loop-utilization calculation. Six new and seven existing frontend
+controls, six portable clock-owner checks and12 package checks pass in their
+recorded scopes. The complete unchanged upstream ELU file passes natively and
+fails against the candidate at missing NodeTiming milestones; that failure is
+retained. Selected shell-file patch composition is checked from the canonical
+Mozilla archive. Guest source117–124 remains uncompiled; accepted116 is not
+current. All19 families remain partial; overall suites/full product rebuild
+remain deferred. See [loop measurements](loop-metrics-implementation-dependencies.md).
+
 Source123 adds actual EC/OKP/PQC raw-key imports, exact algorithm spelling,
 point/scalar/seed validation, public-role projection and pinned provider
 encoding initialization. Four new frontend comparisons and23 affected controls

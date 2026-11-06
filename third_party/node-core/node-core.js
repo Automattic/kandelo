@@ -95529,11 +95529,21 @@ NODE_PERFORMANCE_MILESTONE_LOOP_START: 5,
 NODE_PERFORMANCE_MILESTONE_LOOP_EXIT: 6,
 NODE_PERFORMANCE_MILESTONE_BOOTSTRAP_COMPLETE: 7,
     };
+    function loopState() {
+        if (platform.native.performanceLoopState === undefined)
+            return unavailable('performance loop measurements');
+        return platform.native.performanceLoopState();
+    }
+    // Only the actual loop-start producer is installed here. Other milestones
+    // remain unavailable until their owning initialization/exit phases exist.
+    const milestones = primordials.ObjectCreate(null);
+    ObjectDefineProperty(milestones, constants.NODE_PERFORMANCE_MILESTONE_LOOP_START, {
+        __proto__: null, get() { return loopState()[0]; },
+    });
     const binding = {
-        constants,
+        constants, milestones,
         loopIdleTime() {
-            if (platform.native.performanceIdleTime === undefined) return unavailable('performance loop idle measurement');
-            return platform.native.performanceIdleTime();
+            return loopState()[2];
         },
         uvMetricsInfo() { return unavailable('performance loop metric ownership'); },
     };
@@ -95543,12 +95553,10 @@ NODE_PERFORMANCE_MILESTONE_BOOTSTRAP_COMPLETE: 7,
         ['internal/perf/utils', { now,
             getTimeOriginTimestamp: () => platform.native.performanceTimeOrigin(),
             getMilestoneTimestamp(index) {
+                if (index === constants.NODE_PERFORMANCE_MILESTONE_LOOP_START) return loopState()[1];
                 if (platform.native.performanceMilestone === undefined) return unavailable('performance milestone measurement');
                 return platform.native.performanceMilestone(index);
             } }],
-        ['internal/perf/event_loop_utilization', { eventLoopUtilization() {
-            return unavailable('performance event-loop utilization measurement');
-        } }],
         ['internal/histogram', { isHistogram(value) {
             if (platform.histogram === undefined) return unavailable('performance histogram branding/ownership');
             return platform.histogram.isHistogram(value);
@@ -95561,7 +95569,7 @@ NODE_PERFORMANCE_MILESTONE_BOOTSTRAP_COMPLETE: 7,
         ['internal/worker/js_transferable', { structuredClone: platform.structuredClone }],
     ]);
     const factories = {
-        "internal/perf/usertiming": function(module, exports, require, primordials, internalBinding) {
+        "internal/perf/usertiming": function(module, exports, require, primordials, internalBinding, process) {
 'use strict';
 
 const {
@@ -95820,7 +95828,7 @@ module.exports = {
 };
 
 },
-"internal/perf/resource_timing": function(module, exports, require, primordials, internalBinding) {
+"internal/perf/resource_timing": function(module, exports, require, primordials, internalBinding, process) {
 'use strict';
 // https://developer.mozilla.org/en-US/docs/Web/API/PerformanceResourceTiming
 
@@ -96129,7 +96137,7 @@ module.exports = {
 };
 
 },
-"internal/perf/performance": function(module, exports, require, primordials, internalBinding) {
+"internal/perf/performance": function(module, exports, require, primordials, internalBinding, process) {
 'use strict';
 
 const {
@@ -96380,7 +96388,7 @@ module.exports = {
 };
 
 },
-"internal/perf/nodetiming": function(module, exports, require, primordials, internalBinding) {
+"internal/perf/nodetiming": function(module, exports, require, primordials, internalBinding, process) {
 'use strict';
 
 const {
@@ -96579,7 +96587,7 @@ ObjectSetPrototypeOf(
 module.exports = new PerformanceNodeTiming();
 
 },
-"internal/perf/timerify": function(module, exports, require, primordials, internalBinding) {
+"internal/perf/timerify": function(module, exports, require, primordials, internalBinding, process) {
 'use strict';
 
 const {
@@ -96690,6 +96698,69 @@ function timerify(fn, options = kEmptyObject) {
 
 module.exports = timerify;
 
+},
+"internal/perf/event_loop_utilization": function(module, exports, require, primordials, internalBinding, process) {
+'use strict';
+
+const {
+  constants: {
+    NODE_PERFORMANCE_MILESTONE_LOOP_START,
+  },
+  loopIdleTime,
+  milestones,
+} = internalBinding('performance');
+
+function eventLoopUtilization(util1, util2) {
+  // Get the original milestone timestamps that calculated from the beginning
+  // of the process.
+  return internalEventLoopUtilization(
+    milestones[NODE_PERFORMANCE_MILESTONE_LOOP_START] / 1e6,
+    loopIdleTime(),
+    util1,
+    util2,
+  );
+}
+
+function internalEventLoopUtilization(loopStart, loopIdleTime, util1, util2) {
+  if (loopStart <= 0) {
+    return { idle: 0, active: 0, utilization: 0 };
+  }
+
+  if (util2) {
+    const idle = util1.idle - util2.idle;
+    const active = util1.active - util2.active;
+    return { idle, active, utilization: active / (idle + active) };
+  }
+
+  // Using process.hrtime() to get the time from the beginning of the process,
+  // and offset it by the loopStart time (which is also calculated from the
+  // beginning of the process).
+  const now = process.hrtime();
+  const active = now[0] * 1e3 + now[1] / 1e6 - loopStart - loopIdleTime;
+
+  if (!util1) {
+    return {
+      idle: loopIdleTime,
+      active,
+      utilization: active / (loopIdleTime + active),
+    };
+  }
+
+  const idleDelta = loopIdleTime - util1.idle;
+  const activeDelta = active - util1.active;
+  const utilization = activeDelta / (idleDelta + activeDelta);
+  return {
+    idle: idleDelta,
+    active: activeDelta,
+    utilization,
+  };
+}
+
+module.exports = {
+  internalEventLoopUtilization,
+  eventLoopUtilization,
+};
+
 }
     };
     function require(name) {
@@ -96702,7 +96773,7 @@ module.exports = timerify;
         try { factories[name](module, module.exports, require, primordials, name => {
             if (name === 'performance') return binding;
             return unavailable('performance native binding ' + name);
-        }); } catch (error) { modules.delete(name); throw error; }
+        }, process); } catch (error) { modules.delete(name); throw error; }
         modules.set(name, module.exports); return module.exports;
     }
     const { performance, Performance } = require('internal/perf/performance');

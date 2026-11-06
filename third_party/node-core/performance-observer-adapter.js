@@ -44,11 +44,21 @@ function _createNodePerformanceObserverPlatform(platform) {
     const constants = {
         /* NODE_PERFORMANCE_MILESTONE_CONSTANTS */
     };
+    function loopState() {
+        if (platform.native.performanceLoopState === undefined)
+            return unavailable('performance loop measurements');
+        return platform.native.performanceLoopState();
+    }
+    // Only the actual loop-start producer is installed here. Other milestones
+    // remain unavailable until their owning initialization/exit phases exist.
+    const milestones = primordials.ObjectCreate(null);
+    ObjectDefineProperty(milestones, constants.NODE_PERFORMANCE_MILESTONE_LOOP_START, {
+        __proto__: null, get() { return loopState()[0]; },
+    });
     const binding = {
-        constants,
+        constants, milestones,
         loopIdleTime() {
-            if (platform.native.performanceIdleTime === undefined) return unavailable('performance loop idle measurement');
-            return platform.native.performanceIdleTime();
+            return loopState()[2];
         },
         uvMetricsInfo() { return unavailable('performance loop metric ownership'); },
     };
@@ -58,12 +68,10 @@ function _createNodePerformanceObserverPlatform(platform) {
         ['internal/perf/utils', { now,
             getTimeOriginTimestamp: () => platform.native.performanceTimeOrigin(),
             getMilestoneTimestamp(index) {
+                if (index === constants.NODE_PERFORMANCE_MILESTONE_LOOP_START) return loopState()[1];
                 if (platform.native.performanceMilestone === undefined) return unavailable('performance milestone measurement');
                 return platform.native.performanceMilestone(index);
             } }],
-        ['internal/perf/event_loop_utilization', { eventLoopUtilization() {
-            return unavailable('performance event-loop utilization measurement');
-        } }],
         ['internal/histogram', { isHistogram(value) {
             if (platform.histogram === undefined) return unavailable('performance histogram branding/ownership');
             return platform.histogram.isHistogram(value);
@@ -88,7 +96,7 @@ function _createNodePerformanceObserverPlatform(platform) {
         try { factories[name](module, module.exports, require, primordials, name => {
             if (name === 'performance') return binding;
             return unavailable('performance native binding ' + name);
-        }); } catch (error) { modules.delete(name); throw error; }
+        }, process); } catch (error) { modules.delete(name); throw error; }
         modules.set(name, module.exports); return module.exports;
     }
     const { performance, Performance } = require('internal/perf/performance');

@@ -59,14 +59,14 @@
         "third_party/node-core/buffer-codecs-adapter.js": "de9373d9f1ab96f82dc3f9087a7d4e5a66db9cf997f83986ac14076f0ae9a552",
         "packages/registry/node-compat/bootstrap.js": "7df178bcc75bac695c1fe23a1742fb3731f90526307113727e7aa71f53d112ae",
         "packages/registry/spidermonkey/patches/0099-kandelo-object-marks.patch": "30314508f5bb8fe3e2310829cea1a5941301e53507a2ec8a60d54508c46b9bd0",
-        "packages/registry/spidermonkey/node-compat/adapter.js": "0c5784e50da38bb3b3b25d04e237c0e8113909eff1dddbb857444a76843a152a",
+        "packages/registry/spidermonkey/node-compat/adapter.js": "e06c8d944c14ef5430c81a5f0db1456fae91f8c424394fcdf961a9d11354a126",
         "third_party/node-core/native-environment-object.cpp": "89f86b67ae0f608b3c52ceff9d6755a098c3a67a18f1ddca6b7109ae87f2c2cb",
         "third_party/node-core/process-state-adapter.js": "44aaeb3cb8504ff1f7c7fcf94954d9874e283df6668bc75ebcc78dd7414d8792",
         "third_party/node-core/upstream/environment/src/node_env_var.cc": "9b3bfe0143640e9e8ce00ff982385162c288e1361742d250384a515b88958b66",
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "7c3db10dfd956341cd29577f4e655949142961d933d02919006c2cfc634f8b6b"
+        "packages/registry/spidermonkey/build.toml": "508fde9b47d853fddc0d5dd36b648476914b3a100a3577cbe0d2d8e4fa47031f"
       },
       "sourceRoute": "pinned URL/path/byte-path/HTTP-option helpers over shared parser and platform owners; generic native Error location policy; pinned AssertionError/Myers diff and shared validator/error/color/primordial owners; values/util/UV/dotenv/MIME/Buffer/path owners and full querystring/punycode algorithms with saved-frame load-origin source; pinned util/StringDecoder owners and callable Buffer/shared aligned pool/permanent storage/zero-fill source",
       "remainingDependencies": "Private worker marks have a source owner and focused environment evidence; remaining Buffer/backing-store/realm/CLI/error/descriptor edges, remaining util/URL/IDNA/encoding, complete errors/brands/descriptors and guest byte/origin/loader/warning conformance",
@@ -194,10 +194,10 @@
         "host/src/vfs/vfs.ts": "f82497c410a1e1d3a8958bb839b3d332738ab3741040ff2fe2230259f5ca5ccd",
         "host/src/vfs/host-fs.ts": "b22c88bea1a3a3f625b874c92761b76943bf89807af88df69c435761289a3559",
         "host/src/vfs/opfs.ts": "eb4247b8b9ecee3057fc6718238941a0d8043d3fbc74793d4994b07641f60988",
-        "packages/registry/spidermonkey/node-compat/adapter.js": "0c5784e50da38bb3b3b25d04e237c0e8113909eff1dddbb857444a76843a152a"
+        "packages/registry/spidermonkey/node-compat/adapter.js": "e06c8d944c14ef5430c81a5f0db1456fae91f8c424394fcdf961a9d11354a126"
       },
-      "sourceRoute": "pinned public Dir/read/close/disposal queues and persistent DIRHANDLE/native work owners; pinned readdir/Dirent classes/helpers and native typed byte/recursive scan owners; file-jobs/fs/directory/removal adapters, pinned async rimraf and distinct pathname/fd owners; pinned metadata wrappers/native queued POSIX owners, shared UV errors/real final-link timestamp selection and queued callback whole-file write/append source owners; pinned readFileSync/writeFileSync/appendFileSync and private UTF8 byte/fd source; full pinned promise write/append over actual job/FileHandle owners (promise read already queued)",
-      "remainingDependencies": "Guest cursor/GC/ref/OOM/realm and Dir lifecycle integration, complete removal callback/error/extreme-option/permission/lifecycle, remaining metadata/watch/VFS APIs, persistent OPFS metadata (ENOTSUP), signed/precise timestamps, fd/byte-path and descriptors/backend capabilities and guest directory/byte/lifecycle integration",
+      "sourceRoute": "Real hard-link,temporary-directory,logical/native realpath/readlink and full glob owners now join pinned file jobs/handles,Dir/readdir/Dirent,metadata,removal and sync/callback/promise byte algorithms",
+      "remainingDependencies": "Guest cursor/GC/ref/OOM/realm and fd/byte-path/backend integration;complete watchers/VFS/metadata/permissions,timestamp precision and actual statfs capacity;FS-022 raw host paths remain open",
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
@@ -241,7 +241,7 @@
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "third_party/node-core/native-digests.cpp": "c27419711fa945239c1d00b5fe375e2ec4ce0c456ff5c642c466b3c83b114e33",
         "third_party/node-core/digest-operations.h": "0a44643d4dfcadcaf9a9e3ed1dd6fccf40e5435a81352ac3d0701523a5f56825",
-        "packages/registry/spidermonkey/node-compat/adapter.js": "0c5784e50da38bb3b3b25d04e237c0e8113909eff1dddbb857444a76843a152a"
+        "packages/registry/spidermonkey/node-compat/adapter.js": "e06c8d944c14ef5430c81a5f0db1456fae91f8c424394fcdf961a9d11354a126"
       },
       "sourceRoute": "bootstrap process/ChildProcess, process-clock/state/usage validation and explicit absent numeric providers, dotenv/child-wait, pinned OS frontend with native POSIX state, unchanged weak finalization/lazy descriptor and Refable dispatch; actual linked dependency versions with read-only/configurable version descriptors; native live environment virtual Object/property hooks and inherited-receiver policy",
       "remainingDependencies": "Complete environment prototype/constructor/keys/warnings/GC/JIT/clone and worker/TZ/CLI behavior, fatal/rejection/GC/exit/worker/resource reference integration, signal/IPC and exceptional wait/close policy, measurements, permissions and OS metadata; guest lifecycle/mask/parent/env conformance pending",
@@ -362,7 +362,7 @@
         "packages/registry/php/package.toml": "3ae9d7bc075a1e187e0262e276f16d63b02aacd9e213f1f4f440ac52bee6cbba",
         "packages/registry/php/build.toml": "ad4e35904e40a9027b646dd25f342b0335a0afcd025edaee68354d656bc05ab4",
         "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
-        "packages/registry/spidermonkey/build.toml": "7c3db10dfd956341cd29577f4e655949142961d933d02919006c2cfc634f8b6b",
+        "packages/registry/spidermonkey/build.toml": "508fde9b47d853fddc0d5dd36b648476914b3a100a3577cbe0d2d8e4fa47031f",
         "packages/registry/wget/package.toml": "252e2ea144b723a24617f78911bf44ff9ec5ff61d2f0c12a6947c7c170e97b2e",
         "packages/registry/wget/build.toml": "ad538e1d004b0ab32732563826a33c6230ff627d855b0f14de3627d2d508569e"
       },
@@ -439,7 +439,7 @@
         "packages/registry/php/package.toml": "3ae9d7bc075a1e187e0262e276f16d63b02aacd9e213f1f4f440ac52bee6cbba",
         "packages/registry/php/build.toml": "ad4e35904e40a9027b646dd25f342b0335a0afcd025edaee68354d656bc05ab4",
         "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
-        "packages/registry/spidermonkey/build.toml": "7c3db10dfd956341cd29577f4e655949142961d933d02919006c2cfc634f8b6b",
+        "packages/registry/spidermonkey/build.toml": "508fde9b47d853fddc0d5dd36b648476914b3a100a3577cbe0d2d8e4fa47031f",
         "packages/registry/wget/package.toml": "252e2ea144b723a24617f78911bf44ff9ec5ff61d2f0c12a6947c7c170e97b2e",
         "packages/registry/wget/build.toml": "ad538e1d004b0ab32732563826a33c6230ff627d855b0f14de3627d2d508569e",
         "packages/registry/node-ncrypto/package.toml": "aa361891e88e356114e223dd009c63de934a8d7a01986da92ea2f927c4d8716f",
@@ -448,8 +448,8 @@
         "packages/registry/node-ncrypto/build-node-ncrypto.sh": "14a3fc69ffa434bd4d7b5f2c9fd2d4a3977bf47e59ac4aba3a16ef1d2722f476",
         "packages/registry/node-ncrypto/build-node-ncrypto.py": "106dd6038cdd57113ff48fca27ba9cb5be9dd9823b40fabbe2f4fa7a816d0eb6"
       },
-      "sourceRoute": "Pinned random/UUID, queued random/KDF source and actual OpenSSL3.5.9; provider digests/comparison and Hash/Hmac owners; public PBKDF2/scrypt/Argon2; pinned key wrappers over real ncrypto secret/PEM/DER material, roles, details and HMAC handles compiled in100; lazy comparison/public HKDF/common derivation compiled through103",
-      "remainingDependencies": "Current103 guest and four-host validation; backing-store/GC/ref/transfer/provider-accounting policies; raw/JWK imports, asymmetric JWK, store/PKCS12, WebCrypto HKDF, key generation/exchange, cipher/signature/certificates/FIPS/WebCrypto and namespace gaps remain implementation obligations",
+      "sourceRoute": "Pinned random/KDF/digest/Hash/Hmac/HKDF and cipher owners;real ncrypto secret/PEM/DER/raw EC/OKP/PQC material,roles,metadata and one-time provider encoding policy through123source",
+      "remainingDependencies": "Guest117\u2013124uncompiled;retained116cipher exceptions;JWK/store/PKCS12,WebCrypto,key generation/exchange/signatures/certificates,FIPS/provider transitions,transfer and allocation/lifecycle/namespace obligations",
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
@@ -553,8 +553,8 @@
         "third_party/node-core/upstream/readline-interface/lib/internal/repl/history.js": "e32e2308ee985e06afa5c264a14a63bd377c6a6afae509cfde9d0c35477f7fb0",
         "packages/registry/node-compat/bootstrap.js": "7df178bcc75bac695c1fe23a1742fb3731f90526307113727e7aa71f53d112ae"
       },
-      "sourceRoute": "Actual shared/callback/promise Interface, key/history and existing cursor/transaction/isatty source owners",
-      "remainingDependencies": "Actual TTY/stdio/raw/resize/Unicode width, persistence/permissions/REPL and guest lifecycle/symbol/stream integration remain open",
+      "sourceRoute": "Pinned shared/callback/promise readline,history/key/cursor owners plus120actual borrowed terminal-mode leases and window queries",
+      "remainingDependencies": "Full public TTY/stdio classes,signals/resize/drain,Unicode width,persistence/permissions/REPL and guest lifecycle/stream/symbol conformance",
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
@@ -595,10 +595,12 @@
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "7c3db10dfd956341cd29577f4e655949142961d933d02919006c2cfc634f8b6b"
+        "packages/registry/spidermonkey/build.toml": "508fde9b47d853fddc0d5dd36b648476914b3a100a3577cbe0d2d8e4fa47031f",
+        "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
+        "third_party/node-core/performance-clock.h": "b1bc2198b8718731d043282eb67738b900f5855860a5d4bd735d48175aa91f39"
       },
-      "sourceRoute": "Actual thread/context/input/error/join owners and connected local endpoint packets/IO; shared native weak clone/transfer marks, Buffer backing policy and pinned public marking wrappers with native Proxy rejection",
-      "remainingDependencies": "Broader native environment guest/GC/realm evidence beyond three Node-host cases and full prototype/shared-store policy, guest registry/GC/realm/ownership evidence, endpoint/host transfer/context movement, broadcast/thread routing/locks, full Worker options/stdio/resource/ref/failure/termination/public lifecycle and four-host conformance",
+      "sourceRoute": "Actual thread/context/input/error/join owners,connected message packets,115named broadcast registry/fanout and shared native weak clone/transfer marks;124per-context loop measurement source",
+      "remainingDependencies": "Complete endpoint/host transfer/context movement,thread routing/locks,Worker options/stdio/shared environment/resources/ref/failure/termination and parent-side performance/GC/realm/four-host evidence",
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
@@ -623,7 +625,7 @@
         "third_party/node-core/native-work.cpp": "530d8d95eb485264d76f9ef56cbe4d570fdd678ab6adf9cb0cb7c17f174013fa",
         "third_party/node-core/generate-codec-contexts.py": "6f61278030201514033f6fabd0aefc63a2d0e4c23294e2f6113242f98ce760e5",
         "packages/registry/node-compat/bootstrap.js": "7df178bcc75bac695c1fe23a1742fb3731f90526307113727e7aa71f53d112ae",
-        "packages/registry/spidermonkey/build.toml": "7c3db10dfd956341cd29577f4e655949142961d933d02919006c2cfc634f8b6b"
+        "packages/registry/spidermonkey/build.toml": "508fde9b47d853fddc0d5dd36b648476914b3a100a3577cbe0d2d8e4fa47031f"
       },
       "sourceRoute": "pinned codec/archive/iterable JS and native contexts; actual shared/growable queue leases and synchronous resizable codec/CRC/dictionary spans compiled in112",
       "remainingDependencies": "Ordinary async resizable/transfer/pre-existing pin ownership; complete modes/options/iterators/files and native cleanup/cancellation/accounting; retained gzip OS-byte comparison mismatches and complete four-host evidence",
@@ -646,6 +648,7 @@
         "equals": "observability"
       },
       "selectedCurrentSourceIdentities": {
+        "third_party/node-core/upstream/performance/lib/internal/perf/event_loop_utilization.js": "41103605f43fd31b497c0bcf188350d078069084a6a403d950d9f7e44d57213b",
         "third_party/node-core/upstream/performance/lib/internal/perf/performance.js": "e726129389491f2a9d37c64c71aa002b679cdeb22a23ebedafd0fb924561f29b",
         "third_party/node-core/upstream/performance/lib/internal/perf/usertiming.js": "51f709377b76dd94dc50ed3fee62037b5629ef3337155588b51860bdf83f04b3",
         "third_party/node-core/upstream/performance/lib/internal/perf/resource_timing.js": "1866a80999446a7af63801fdfa061b0edc0d6164d86427f801d66465e4de7b79",
@@ -655,17 +658,18 @@
         "third_party/node-core/upstream/console/lib/internal/console/constructor.js": "8bd0572039fd9ce33e432ad25897f01218d58dc9d3a6a0d5f79d793bba0cf674",
         "third_party/node-core/upstream/console/lib/internal/util/debuglog.js": "60de509a07a474fdf76d8c86dd5103e0126c431e6965a755fef4ccb5843501e8",
         "third_party/node-core/diagnostics-platform-adapter.js": "7e64a947850141e7c98839698c2f1dcef43641c94366ece8e0cab701431c3109",
-        "third_party/node-core/performance-observer-adapter.js": "2d5092b103b7d75e5c7da2b936da1c4d46703c753f6b1f6a9dd32734a3b3e16e",
-        "third_party/node-core/performance-clock.h": "f51692f3c7ec0c6054f93da67c9a3bc867a7cc85f20fd9d673a1261244151830",
+        "third_party/node-core/performance-observer-adapter.js": "cd5034712acdb5e5a544d06c746e3d44d1ee83a56aafe4c1e5f0cf068ad9f8ec",
+        "third_party/node-core/performance-clock.h": "b1bc2198b8718731d043282eb67738b900f5855860a5d4bd735d48175aa91f39",
         "third_party/node-core/process-clock-adapter.js": "f88ea5cdc9890104bf5ff8075a586cad55da60f41bfafebdb9de199748baaeca",
-        "packages/registry/node-compat/bootstrap.js": "7df178bcc75bac695c1fe23a1742fb3731f90526307113727e7aa71f53d112ae"
+        "packages/registry/node-compat/bootstrap.js": "7df178bcc75bac695c1fe23a1742fb3731f90526307113727e7aa71f53d112ae",
+        "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e"
       },
-      "sourceRoute": "pinned Console namespace/output/state, direct diagnostics/TCP producers, internal trace subscriptions, pinned DNS observer/entry/list and process-origin clock; pinned Performance/user/resource/timerify and shared buffers/global source owners",
-      "remainingDependencies": "Native milestones/loop metrics/histograms and other performance producers, exact globals/realm lifecycle; complete stack capture/inspector/guest stream/width integration, Performance/EventTarget, non-DNS producers, user timing, histograms/public tracing/report and callback scopes",
+      "sourceRoute": "Pinned Console/diagnostics/TCP/DNS producers,Performance timeline/entry/observer/resource/timerify algorithms and process-origin clock;124real per-context loop-start/idle owner and complete pinned ELU arithmetic",
+      "remainingDependencies": "Compile/validate actual loop hooks;other milestones/counters/histograms/GC/network producers,stack/inspector/global/realm/stream integration,public tracing/reporting and complete four-host conformance",
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
-        "node": "not established for new candidate",
+        "node": "124loop measurement source uncompiled;6new/7affected frontend,6portable checks and12package controls pass. Complete unchanged upstream ELU native passes,candidate fails missing NodeTiming milestone JSON. Full family/current guest/four-host conformance open.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -685,7 +689,7 @@
         "third_party/node-core/native-vm.cpp": "55c20f56eb704baad5e65498ce7361b2991d1382a75f37aff46312dfb5c12b62",
         "packages/registry/node-compat/bootstrap.js": "7df178bcc75bac695c1fe23a1742fb3731f90526307113727e7aa71f53d112ae",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "7c3db10dfd956341cd29577f4e655949142961d933d02919006c2cfc634f8b6b"
+        "packages/registry/spidermonkey/build.toml": "508fde9b47d853fddc0d5dd36b648476914b3a100a3577cbe0d2d8e4fa47031f"
       },
       "sourceRoute": "generic native Error location policy across registered root/worker contexts and VM realms; VM compiler, actual ordinary DONT_CONTEXTIFY globals, per-runtime chained security-callback owners and partial nominal GC budget",
       "remainingDependencies": "Complete ordinary sandbox exotic behavior, context metadata/deadlines/modules/cache/microtasks, inspector, heap measurements and worker/guest integration",
@@ -766,7 +770,7 @@
         "equals": "documentation"
       },
       "selectedCurrentSourceIdentities": {
-        "tests/nodejs/outline/current-capability-reconciliation.md": "7a952ebcfa126aa5f477549fb8886b89f43dddb9ad6433af3f106f0b4980fd66"
+        "tests/nodejs/outline/current-capability-reconciliation.md": "dec3dd9dc8db131a17d67840ac8f4292d43bd96e8525cc63bb860b563e043a89"
       },
       "sourceRoute": "This reconciliation and original requirements",
       "remainingDependencies": "Actual warning/origin/CLI/environment/activation behavior and unresolved target prose/source questions",

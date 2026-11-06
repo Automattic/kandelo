@@ -1546,10 +1546,11 @@ if re.findall(r'V\((\w+),', entry_macro) != entry_types:
     raise ValueError('Review performance entry protocol constants')
 for marker, text in {
     '/* NODE_PERFORMANCE_TIMELINE_MODULES */': ',\n'.join(
-        json.dumps(name.removeprefix('lib/').removesuffix('.js')) + ': function(module, exports, require, primordials, internalBinding) {\n' +
+        json.dumps(name.removeprefix('lib/').removesuffix('.js')) + ': function(module, exports, require, primordials, internalBinding, process) {\n' +
         selected_platform_source(perf_spec, name) + '\n}'
         for name in ['lib/internal/perf/usertiming.js', 'lib/internal/perf/resource_timing.js',
-                     'lib/internal/perf/performance.js', 'lib/internal/perf/nodetiming.js', 'lib/internal/perf/timerify.js']),
+                     'lib/internal/perf/performance.js', 'lib/internal/perf/nodetiming.js', 'lib/internal/perf/timerify.js',
+                     'lib/internal/perf/event_loop_utilization.js']),
     '/* NODE_PERFORMANCE_MILESTONE_CONSTANTS */': '\n'.join(
         'NODE_PERFORMANCE_MILESTONE_' + name + ': ' + str(i) + ','
         for i, name in enumerate(re.findall(r'V\((\w+),', header[header.index('#define NODE_PERFORMANCE_MILESTONES(V)'):header.index('#define NODE_PERFORMANCE_ENTRY_TYPES(V)')]))),
