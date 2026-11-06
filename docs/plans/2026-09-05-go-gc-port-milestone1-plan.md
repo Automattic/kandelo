@@ -50,6 +50,30 @@ not yet pinned in a package image.
 The dated entries below retain the evidence and failures behind this
 checkpoint. They must not be read as current production-readiness claims.
 
+### Remaining release gates
+
+1. Finish the current source build, then pin the tested Go callback fix
+   `29e2118`, add classic-mode HTTP/PHP graceful shutdown, and rebuild the
+   final consumer image through the normal package graph.
+2. Prove that each real FrankenPHP service completes an in-flight PHP
+   request after SIGTERM and exits normally. The shared Node/browser probe
+   is prepared but has not executed against the rebuilt image.
+3. Repeat visible login, Appearance → Editor, post/template saves, and
+   crash recovery on the final image. Resolve the intermittent classic
+   WebKit health/navigation and page-context failures; their cause remains
+   unknown. Earlier revision-32 Caddy workflows pass in all three engines.
+4. Rerun C signal/I/O conformance after coherent source-product publication.
+   Finish sustained traffic/memory checks, paired PHP-FPM/classic/Caddy
+   comparisons, and the nine-suite Node/Chromium incremental before/after
+   benchmark scope. Baseline `5e25c7365` is an intermediate branch revision,
+   so those comparisons cannot establish superiority over main.
+5. Review the remaining general Go/POSIX gaps: child credentials, inherited
+   blocked signal masks, native HostFS path/helper distribution, broader
+   cgo initializer/finalizer and concurrency coverage, and wider upstream
+   conformance. Keep unsupported behavior explicit.
+6. Push the final validated checkpoint, update the draft PR and guidance,
+   and leave a verified current-image Kandelo web-app URL running.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task.
 
@@ -5324,3 +5348,24 @@ the benchmark fixtures. Separate filtered bootstraps replace the published
 projection, so the final union matters. For the candidate, selecting
 `demanded` plus `mariadb64` preserves the normal eleven products while
 adding the memory64 database inputs required by the complete benchmark.
+
+**2026-11-05 — Prepare the incremental comparison baseline.**
+The corrected baseline union build succeeds in 24m01s
+(`go-signal-baseline-final-1105-200509-5aee`). Its normal resolver admits
+the kernel, rootfs, PHP, and both MariaDB server/client architectures.
+The initial microbenchmark attempt stops before execution because the
+baseline's Node worker bundle is missing. After building that baseline's
+host package normally, all four microbenchmark suites run in Node
+(`go-baseline-micro-provisioning-ready-1105-203504-8b03`, 11 seconds) and
+Chromium (`go-baseline-browser-micro-provisioning-1105-203525-a960`,
+19 seconds). The suites are syscall I/O, stdin throughput, process
+lifecycle, and spawn scratch. These single-round provisioning runs occur
+alongside the main compiler build and support no performance claim.
+
+The dormant MariaDB image recipe also builds normally for wasm32 and
+wasm64 through `build-deps resolve --source-only`
+(`go-baseline-database-images-1105-204250-41f6`, 1m09s). It retains its
+dormant product status. The benchmark-only baseline set admits that recipe
+and publishes it with the existing prerequisite union; source caches and
+the baseline's own SDK remain authoritative. Application execution and the
+quiet-machine incremental comparison are still pending.
