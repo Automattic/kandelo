@@ -13,8 +13,8 @@
       "attachExisting": true,
       "requiresHost": true,
       "hostRequires": [
-        "/usr/local/bin/redis-server",
-        "/var/www/redis-board/router.php"
+        "/usr/sbin/redis-server",
+        "/srv/www/redis-board/router.php"
       ],
       "fields": [],
       "category": "services"

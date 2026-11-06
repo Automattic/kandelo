@@ -1,5 +1,7 @@
 script_path = "packages/registry/python-vfs/build-python-vfs.sh"
 inputs = [
+  "images/vfs/scripts/filesystem-layout.ts",
+
   "host/src/native-artifact-identity.ts",
   "packages/registry/python-vfs/build-python-vfs.sh",
   "images/vfs/scripts/build-python-vfs-image.ts",
@@ -39,4 +41,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 7
+revision = 8

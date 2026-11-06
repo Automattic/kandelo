@@ -14,8 +14,8 @@ describe("image-owned service activities", () => {
     installServiceActivities(fs, [{ target: "web-php", port: 8080 }], new Uint8Array([0]));
     expect(decode(fs, "/etc/dinit.d/machine")).toBe("type = internal\nrestart = false\n");
     expect(decode(fs, "/sbin/kandelo-init")).toContain("/sbin/dinit --container -p /run/kandelo-services/dinitctl machine");
-    expect(fs.stat("/usr/local/bin/kandelo-service").mode & 0o7777).toBe(0o4755);
-    const script = decode(fs, "/usr/local/libexec/kandelo-service");
+    expect(fs.stat("/usr/bin/kandelo-service").mode & 0o7777).toBe(0o4755);
+    const script = decode(fs, "/usr/libexec/kandelo-service");
     expect(script).toContain("control stop --ignore-unstarted");
     expect(script).toContain("control is-started");
     expect(script).toContain('control start "$other" || echo');
@@ -37,7 +37,7 @@ describe("image-owned service activities", () => {
     ensureDirRecursive(fs, "/etc/dinit.d");
     writeVfsFile(fs, "/etc/dinit.d/web-php", "type = internal\n");
     installServiceActivities(fs, [{ target: "web-php", port: 8080 }], new Uint8Array([0]));
-    const script = decode(fs, "/usr/local/libexec/kandelo-service");
+    const script = decode(fs, "/usr/libexec/kandelo-service");
     const parser = script.split(' -v enabled="$enabled" \'\n')[1]?.split("\n    }'")[0];
     expect(parser).toBeDefined();
     for (const [snapshot, state] of [

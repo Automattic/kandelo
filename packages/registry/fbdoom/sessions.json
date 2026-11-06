@@ -175,7 +175,7 @@
         }
       ],
       "launch": {
-        "executable": "/usr/local/bin/doom-activity",
+        "executable": "/usr/bin/doom-activity",
         "cwd": "/",
         "args": [
           {
@@ -209,7 +209,7 @@
       "title": "Play Doom",
       "fields": [],
       "launch": {
-        "executable": "/usr/local/bin/doom-activity",
+        "executable": "/usr/bin/doom-activity",
         "cwd": "/",
         "args": [
           {

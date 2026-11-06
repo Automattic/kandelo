@@ -85,7 +85,7 @@
         ]
       },
       "init": {
-        "shellCommand": "/usr/local/bin/doom-launch"
+        "shellCommand": "/usr/bin/doom-launch"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -108,14 +108,14 @@
           "label": "LAN game",
           "description": "Play with the other computers in this network session: host a game that starts once every player has joined (or press Space in its waiting room to start sooner), or join one hosted on the session. Everyone plays the shareware WAD.",
           "menu": [
-            { "id": "coop-2", "label": "2 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 2" },
-            { "id": "coop-3", "label": "3 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 3" },
-            { "id": "coop-4", "label": "4 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 4" },
-            { "id": "deathmatch-2", "label": "2 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 2 -deathmatch" },
-            { "id": "deathmatch-3", "label": "3 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 3 -deathmatch" },
-            { "id": "deathmatch-4", "label": "4 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 4 -deathmatch" },
-            { "id": "join", "label": "Join a LAN game", "group": "Join", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -autojoin" },
-            { "id": "single", "label": "Back to single player", "group": "Single player", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad" }
+            { "id": "coop-2", "label": "2 players", "group": "Host co-op", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 2" },
+            { "id": "coop-3", "label": "3 players", "group": "Host co-op", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 3" },
+            { "id": "coop-4", "label": "4 players", "group": "Host co-op", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 4" },
+            { "id": "deathmatch-2", "label": "2 players", "group": "Host deathmatch", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 2 -deathmatch" },
+            { "id": "deathmatch-3", "label": "3 players", "group": "Host deathmatch", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 3 -deathmatch" },
+            { "id": "deathmatch-4", "label": "4 players", "group": "Host deathmatch", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 4 -deathmatch" },
+            { "id": "join", "label": "Join a LAN game", "group": "Join", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -autojoin" },
+            { "id": "single", "label": "Back to single player", "group": "Single player", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad" }
           ]
         }
       ],
@@ -144,7 +144,7 @@
         ]
       },
       "init": {
-        "shellCommand": "/usr/local/bin/quake"
+        "shellCommand": "/usr/bin/quake"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -246,7 +246,7 @@
         ]
       },
       "init": {
-        "shellCommand": "/usr/local/bin/modeset"
+        "shellCommand": "/usr/bin/modeset"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -278,7 +278,7 @@
         ]
       },
       "init": {
-        "shellCommand": "/usr/local/bin/scummvm"
+        "shellCommand": "/usr/bin/scummvm"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -296,157 +296,157 @@
               "id": "steel-sky",
               "label": "Beneath a Steel Sky",
               "detail": "69 MB",
-              "restart": "/usr/local/bin/scummvm-play steel-sky"
+              "restart": "/usr/bin/scummvm-play steel-sky"
             },
             {
               "id": "drascula",
               "label": "Dráscula: The Vampire Strikes Back",
               "detail": "33 MB",
-              "restart": "/usr/local/bin/scummvm-play drascula"
+              "restart": "/usr/bin/scummvm-play drascula"
             },
             {
               "id": "dreamweb",
               "label": "DreamWeb",
               "detail": "10 MB",
-              "restart": "/usr/local/bin/scummvm-play dreamweb"
+              "restart": "/usr/bin/scummvm-play dreamweb"
             },
             {
               "id": "fotaq",
               "label": "Flight of the Amazon Queen",
               "detail": "34 MB",
-              "restart": "/usr/local/bin/scummvm-play fotaq"
+              "restart": "/usr/bin/scummvm-play fotaq"
             },
             {
               "id": "god-of-thunder",
               "label": "God of Thunder",
               "detail": "1 MB",
-              "restart": "/usr/local/bin/scummvm-play god-of-thunder"
+              "restart": "/usr/bin/scummvm-play god-of-thunder"
             },
             {
               "id": "griffon",
               "label": "The Griffon Legend",
               "detail": "10 MB",
-              "restart": "/usr/local/bin/scummvm-play griffon"
+              "restart": "/usr/bin/scummvm-play griffon"
             },
             {
               "id": "lure",
               "label": "Lure of the Temptress",
               "detail": "6 MB",
-              "restart": "/usr/local/bin/scummvm-play lure"
+              "restart": "/usr/bin/scummvm-play lure"
             },
             {
               "id": "mystery-house",
               "label": "Hi-Res Adventure #1: Mystery House",
               "detail": "59 KB",
-              "restart": "/usr/local/bin/scummvm-play mystery-house"
+              "restart": "/usr/bin/scummvm-play mystery-house"
             },
             {
               "id": "nippon-safes",
               "label": "Nippon Safes, Inc.",
               "detail": "2 MB",
-              "restart": "/usr/local/bin/scummvm-play nippon-safes"
+              "restart": "/usr/bin/scummvm-play nippon-safes"
             },
             {
               "id": "sfinx",
               "label": "Sfinx",
               "detail": "17 MB",
-              "restart": "/usr/local/bin/scummvm-play sfinx"
+              "restart": "/usr/bin/scummvm-play sfinx"
             },
             {
               "id": "soltys",
               "label": "Sołtys",
               "detail": "3 MB",
-              "restart": "/usr/local/bin/scummvm-play soltys"
+              "restart": "/usr/bin/scummvm-play soltys"
             },
             {
               "id": "above-the-waves",
               "label": "Above the Waves",
               "detail": "30 MB",
-              "restart": "/usr/local/bin/scummvm-play above-the-waves"
+              "restart": "/usr/bin/scummvm-play above-the-waves"
             },
             {
               "id": "cubert-badbone",
               "label": "Cubert Badbone, P.I.",
               "detail": "11 MB",
-              "restart": "/usr/local/bin/scummvm-play cubert-badbone"
+              "restart": "/usr/bin/scummvm-play cubert-badbone"
             },
             {
               "id": "frasse",
               "label": "Frasse and the Peas of Kejick",
               "detail": "13 MB",
-              "restart": "/usr/local/bin/scummvm-play frasse"
+              "restart": "/usr/bin/scummvm-play frasse"
             },
             {
               "id": "full-moon",
               "label": "Full Moon",
               "detail": "73 MB",
-              "restart": "/usr/local/bin/scummvm-play full-moon"
+              "restart": "/usr/bin/scummvm-play full-moon"
             },
             {
               "id": "the-interview",
               "label": "The Interview",
               "detail": "2 MB",
-              "restart": "/usr/local/bin/scummvm-play the-interview"
+              "restart": "/usr/bin/scummvm-play the-interview"
             },
             {
               "id": "leptons-quest",
               "label": "Lepton's Quest",
               "detail": "71 MB",
-              "restart": "/usr/local/bin/scummvm-play leptons-quest"
+              "restart": "/usr/bin/scummvm-play leptons-quest"
             },
             {
               "id": "life-flashes-by",
               "label": "Life Flashes By",
               "detail": "160 MB",
-              "restart": "/usr/local/bin/scummvm-play life-flashes-by"
+              "restart": "/usr/bin/scummvm-play life-flashes-by"
             },
             {
               "id": "mandy-christmas",
               "label": "Mandy Christmas Adventure",
               "detail": "4 MB",
-              "restart": "/usr/local/bin/scummvm-play mandy-christmas"
+              "restart": "/usr/bin/scummvm-play mandy-christmas"
             },
             {
               "id": "nathans-second-chance",
               "label": "Nathan's Second Chance",
               "detail": "8 MB",
-              "restart": "/usr/local/bin/scummvm-play nathans-second-chance"
+              "restart": "/usr/bin/scummvm-play nathans-second-chance"
             },
             {
               "id": "out-of-order",
               "label": "Out of Order",
               "detail": "11 MB",
-              "restart": "/usr/local/bin/scummvm-play out-of-order"
+              "restart": "/usr/bin/scummvm-play out-of-order"
             },
             {
               "id": "robins-rescue",
               "label": "Robin's Rescue",
               "detail": "14 MB",
-              "restart": "/usr/local/bin/scummvm-play robins-rescue"
+              "restart": "/usr/bin/scummvm-play robins-rescue"
             },
             {
               "id": "sam-and-max-flintlocked",
               "label": "Sam and Max Flintlocked",
               "detail": "14 MB",
-              "restart": "/usr/local/bin/scummvm-play sam-and-max-flintlocked"
+              "restart": "/usr/bin/scummvm-play sam-and-max-flintlocked"
             },
             {
               "id": "cruise-ship",
               "label": "The Game That Takes Place on a Cruise Ship",
               "detail": "20 MB",
-              "restart": "/usr/local/bin/scummvm-play cruise-ship"
+              "restart": "/usr/bin/scummvm-play cruise-ship"
             },
             {
               "id": "tremendous-corporation",
               "label": "The Secret of Tremendous Corporation",
               "detail": "35 MB",
-              "restart": "/usr/local/bin/scummvm-play tremendous-corporation"
+              "restart": "/usr/bin/scummvm-play tremendous-corporation"
             },
             {
               "id": "wage-collection",
               "label": "World Builder (WAGE) game collection",
               "detail": "93 MB",
-              "restart": "/usr/local/bin/scummvm-play wage-collection"
+              "restart": "/usr/bin/scummvm-play wage-collection"
             },
             {
               "id": "broken-sword-25",
@@ -480,7 +480,7 @@
         ]
       },
       "init": {
-        "shellCommand": "/usr/local/bin/love /usr/share/love/examples/pong"
+        "shellCommand": "/usr/bin/love /usr/share/love/examples/pong"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -501,32 +501,32 @@
             {
               "id": "pong",
               "label": "Pong",
-              "restart": "/usr/local/bin/love /usr/share/love/examples/pong"
+              "restart": "/usr/bin/love /usr/share/love/examples/pong"
             },
             {
               "id": "snake",
               "label": "Snake",
-              "restart": "/usr/local/bin/love /usr/share/love/examples/snake"
+              "restart": "/usr/bin/love /usr/share/love/examples/snake"
             },
             {
               "id": "breakout",
               "label": "Breakout",
-              "restart": "/usr/local/bin/love /usr/share/love/examples/breakout"
+              "restart": "/usr/bin/love /usr/share/love/examples/breakout"
             },
             {
               "id": "asteroids",
               "label": "Asteroids",
-              "restart": "/usr/local/bin/love /usr/share/love/examples/asteroids"
+              "restart": "/usr/bin/love /usr/share/love/examples/asteroids"
             },
             {
               "id": "bytepath",
               "label": "BYTEPATH",
-              "restart": "/usr/local/bin/love /usr/share/love/examples/bytepath"
+              "restart": "/usr/bin/love /usr/share/love/examples/bytepath"
             },
             {
               "id": "snkrx",
               "label": "SNKRX",
-              "restart": "/usr/local/bin/love /usr/share/love/examples/snkrx"
+              "restart": "/usr/bin/love /usr/share/love/examples/snkrx"
             }
           ]
         }

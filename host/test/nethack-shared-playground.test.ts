@@ -107,7 +107,7 @@ describe.skipIf(!available)("NetHack shared playground (Node host, shell product
 
     const run = async (command: string, uid: number, home: string) => {
       output = "";
-      const { exit } = await host.spawnFromVfs("/usr/bin/bash", ["bash", "-c", command], {
+      const { exit } = await host.spawnFromVfs("/bin/bash", ["bash", "-c", command], {
         env: [`HOME=${home}`, "PATH=/usr/bin:/bin"],
         uid,
         gid: uid,
@@ -122,7 +122,7 @@ describe.skipIf(!available)("NetHack shared playground (Node host, shell product
       pty = "";
       let pid = -1;
       const { exit } = await host.spawnFromVfs(
-        "/usr/bin/bash",
+        "/bin/bash",
         ["bash", "-c", `NETHACKOPTIONS='${OPTIONS}' exec nethack -u ${player.name}`],
         {
           env: [`HOME=${player.home}`, `USER=${player.name}`, "TERM=xterm-256color", "PATH=/usr/bin:/bin"],

@@ -39,7 +39,7 @@ ephemeral = true
 
 [boot]
 argv = ["/bin/sh"]
-cwd = "/php-src"
+cwd = "/var/lib/kandelo-tests/php"
 uid = 0
 gid = 0
 

@@ -16,7 +16,7 @@ export async function virtualInspection(
   let output = "";
   const root = await host.readDirFromVfs("/");
   const initialPts = await host.readDirFromVfs("/dev/pts");
-  const { pid: parentPid, exit } = await host.spawnFromVfs("/usr/bin/bash", ["bash", "-c", [
+  const { pid: parentPid, exit } = await host.spawnFromVfs("/bin/bash", ["bash", "-c", [
     "set -e",
     "(",
     "exec 9>/tmp/inspection-open-fd",

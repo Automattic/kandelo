@@ -19,12 +19,11 @@ export async function inspectionImage(large = false): Promise<Uint8Array> {
   fs.writeFile("/inspection/index.html", new TextEncoder().encode("hello"), 0o644);
   fs.symlink("site", "/inspection/current", 56, 78);
   fs.symlink("/foreign", "/inspection/foreign");
-  fs.ensureDirRecursive("/usr/bin/bash");
   fs.mkdir("/bin", 0o755);
   for (const program of ["bash", "coreutils"]) {
-    fs.writeFile(`/usr/bin/${program}`, readFileSync(resolveBinary(`programs/${program}.wasm`)), 0o755);
+    fs.writeFile(`/bin/${program}`, readFileSync(resolveBinary(`programs/${program}.wasm`)), 0o755);
   }
-  for (const command of ["mkdir", "ln", "chmod", "chown"]) fs.symlink("/usr/bin/coreutils", `/bin/${command}`);
+  for (const command of ["mkdir", "ln", "chmod", "chown"]) fs.symlink("/bin/coreutils", `/bin/${command}`);
   if (large) {
     fs.mkdir("/large", 0o755);
     for (let i = 0; i < 800; i++) {

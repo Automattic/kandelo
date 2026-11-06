@@ -25,13 +25,13 @@ export function createServiceControls(host: KernelHost, account: Pick<KernelOwne
       const entries = await host.readVfsDir("/run/kandelo-services");
       assertCurrent();
       if (!entries?.some(entry => entry.name === "dinitctl" && (entry.mode & 0o170000) === 0o140000)) throw new ServiceSupervisorStartingError();
-      const report = await runImageActivityCommand(host, "/usr/local/bin/kandelo-service inspect", account, assertCurrent, 5_000);
+      const report = await runImageActivityCommand(host, "/usr/bin/kandelo-service inspect", account, assertCurrent, 5_000);
       assertCurrent();
       return parseComputerServiceStatus(report, services);
     }),
     change: (action, id) => serialize(async () => {
       if (!["start", "stop", "enable", "disable"].includes(action) || !(await declarations()).some(service => service.id === id)) throw new Error("Unknown service action or identifier");
-      await runImageActivityCommand(host, `/usr/local/bin/kandelo-service ${action} ${id}`, account, assertCurrent);
+      await runImageActivityCommand(host, `/usr/bin/kandelo-service ${action} ${id}`, account, assertCurrent);
       assertCurrent();
     }),
   };

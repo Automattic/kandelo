@@ -274,40 +274,14 @@ function renderService(svc: DinitService): string {
   return lines.join("\n");
 }
 
-/**
- * Standard /etc/passwd entries. Daemons (nginx, redis, etc.) routinely
- * call getpwnam("nobody") or similar at startup; without these entries
- * they fail with [emerg] before doing anything useful.
- */
-const ETC_PASSWD = [
-  "root:x:0:0:root:/root:/bin/bash",
-  "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin",
-  "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin",
-  "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin",
-  "redis:x:100:100:redis:/var/lib/redis:/usr/sbin/nologin",
-  "mysql:x:101:101:mysql:/var/lib/mysql:/usr/sbin/nologin",
-  "maker:x:1000:1000:maker:/home/maker:/bin/bash",
-  "",
-].join("\n");
-
-const ETC_GROUP = [
-  "root:x:0:",
-  "daemon:x:1:",
-  "nogroup:x:65534:",
-  "nobody:x:65534:",
-  "www-data:x:33:",
-  "redis:x:100:",
-  "mysql:x:101:",
-  "maker:x:1000:",
-  "",
-].join("\n");
-
 const ETC_HOSTS = ["127.0.0.1\tlocalhost", "::1\tlocalhost", ""].join("\n");
 
 /**
  * Install the account and network databases shared by dinit-based images.
- * `/etc/services` comes from the rootfs source so derived images cannot drift
- * into a second, smaller service-name contract.
+ * Inherited account databases are authoritative: replacing them would discard
+ * supplementary groups and the base image's login/sudo policy. Fresh images
+ * use the canonical rootfs databases rather than a second hardcoded list.
+ * `/etc/services` likewise comes from the rootfs source.
  */
 export function addDinitBaseSystemFiles(
   fs: VfsImageFilesystem,
@@ -315,8 +289,12 @@ export function addDinitBaseSystemFiles(
   exactServices?: Uint8Array,
 ): void {
   ensureDirRecursive(fs, "/etc");
-  writeVfsFile(fs, "/etc/passwd", ETC_PASSWD);
-  writeVfsFile(fs, "/etc/group", ETC_GROUP);
+  for (const name of ["passwd", "group"]) {
+    const path = `/etc/${name}`;
+    if (residentRegularFile(fs, path) === "missing") {
+      writeVfsBinary(fs, path, readFileSync(join(REPO_ROOT, "images", "rootfs", "etc", name)), 0o644);
+    }
+  }
   writeVfsFile(fs, "/etc/hosts", ETC_HOSTS);
   if (exactServices !== undefined) {
     if (!(exactServices instanceof Uint8Array) || exactServices.byteLength === 0) {
@@ -373,7 +351,7 @@ export interface PathReadinessServiceOptions {
   path: string;
   /** Services that must be started before the readiness check runs. */
   dependsOn?: string[];
-  /** Script path written into the image. Defaults under /usr/local/bin. */
+  /** Private service script written into the image, under /usr/libexec/kandelo. */
   scriptPath?: string;
   /** Human-readable label used in timeout output. */
   label?: string;
@@ -387,7 +365,7 @@ export function addPathReadinessService(
   fs: VfsImageFilesystem,
   options: PathReadinessServiceOptions,
 ): DinitService {
-  const scriptPath = options.scriptPath ?? `/usr/local/bin/${options.name}`;
+  const scriptPath = options.scriptPath ?? `/usr/libexec/kandelo/${options.name}`;
   const timeoutSeconds = options.timeoutSeconds ?? 60;
   const label = options.label ?? options.name;
 

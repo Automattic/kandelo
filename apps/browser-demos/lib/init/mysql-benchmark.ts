@@ -79,7 +79,7 @@ function bench_variant(string $name, array $cfg, int $connectIters, int $queryIt
 
 $connectIters = max(1, min(50, (int) ($_GET['connect_iters'] ?? 8)));
 $queryIters = max(1, min(200, (int) ($_GET['query_iters'] ?? 25)));
-$socket = ini_get('mysqli.default_socket') ?: '/tmp/mysql.sock';
+$socket = ini_get('mysqli.default_socket') ?: '/run/mysqld/mysql.sock';
 $includePersistent = filter_var($_GET['include_persistent'] ?? false, FILTER_VALIDATE_BOOLEAN);
 
 $variants = array(

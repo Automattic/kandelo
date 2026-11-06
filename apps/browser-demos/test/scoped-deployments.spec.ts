@@ -394,7 +394,7 @@ async function readVimArchiveIdentity(
 async function waitForShell(page: Page): Promise<void> {
   await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
-  await expect(page.locator(".xterm-rows").first()).toContainText(/kandelo(?:-bash-[0-9.]+)?\$ ?/, { timeout: 120_000 });
+  await expect(page.locator(".xterm-rows").first()).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, { timeout: 120_000 });
 }
 
 async function runVimVersion(page: Page): Promise<void> {

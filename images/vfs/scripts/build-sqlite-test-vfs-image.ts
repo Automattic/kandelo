@@ -1,3 +1,4 @@
+import { COREUTILS_NAMES, coreutilsCommandPath } from "../lib/init/shell-binaries";
 /** Build the SQLite upstream Tcl test VFS from explicit or legacy inputs. */
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -18,11 +19,7 @@ import {
   walkAndWrite,
 } from "./vfs-image-helpers";
 
-const COREUTILS_SYMLINK_NAMES = [
-  "cat", "chmod", "cp", "date", "dirname", "echo", "env", "expr", "false",
-  "head", "ln", "ls", "mkdir", "mv", "pwd", "rm", "rmdir", "sed", "sleep",
-  "sort", "tail", "tee", "test", "touch", "tr", "true", "uname", "wc", "[",
-];
+const COREUTILS_SYMLINK_NAMES = [...COREUTILS_NAMES, "["];
 
 export interface SqliteTestVfsInputs {
   sqlite3: Uint8Array;
@@ -60,14 +57,12 @@ export async function buildSqliteTestVfsImage(
   fs.setImageCapacity(512 * 1024 * 1024);
   for (const dir of [
     "/tmp", "/home", "/root", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
-    "/usr/lib", "/sqlite",
-  ]) ensureDir(fs, dir);
-  fs.chmod("/tmp", 0o777);
+    "/usr/lib", "/var/lib/kandelo-tests/sqlite",
+  ]) ensureDirRecursive(fs, dir);
+  fs.chmod("/tmp", 0o1777);
 
   writeVfsBinary(fs, "/usr/bin/testfixture", inputs.testfixture);
-  symlink(fs, "/usr/bin/testfixture", "/bin/testfixture");
   writeVfsBinary(fs, "/usr/bin/sqlite3", inputs.sqlite3);
-  symlink(fs, "/usr/bin/sqlite3", "/bin/sqlite3");
   // bash is /bin/sh in every Kandelo image; dash, when present, stays an
   // ordinary command at its own name and does not claim /bin/sh. An image
   // without bash would have no /bin/sh at all, so bash is required.
@@ -81,23 +76,23 @@ export async function buildSqliteTestVfsImage(
     if (inputs.coreutils.byteLength === 0) {
       throw new Error("SQLite staged coreutils is empty");
     }
+    ensureDirRecursive(fs, "/usr/sbin");
     writeVfsBinary(fs, "/bin/coreutils", inputs.coreutils);
     for (const name of COREUTILS_SYMLINK_NAMES) {
-      symlink(fs, "/bin/coreutils", `/bin/${name}`);
-      symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
+      symlink(fs, "/bin/coreutils", coreutilsCommandPath(name));
     }
   }
   walkAndWrite(fs, inputs.tclLibraryDirectory, "/usr/lib/tcl8.6");
-  ensureDirRecursive(fs, "/sqlite");
-  walkAndWrite(fs, inputs.sqliteSourceDirectory, "/sqlite", {
+  ensureDirRecursive(fs, "/var/lib/kandelo-tests/sqlite");
+  walkAndWrite(fs, inputs.sqliteSourceDirectory, "/var/lib/kandelo-tests/sqlite", {
     exclude: (rel) =>
       rel === ".fossil-settings" || rel.startsWith(".fossil-settings/") ||
       rel.startsWith(".git/") || rel.startsWith("testfixture-build/") ||
       rel.endsWith(".o") || rel.endsWith(".a"),
   });
-  symlink(fs, "/usr/bin/testfixture", "/sqlite/testfixture");
-  symlink(fs, "/usr/bin/testfixture", "/sqlite/testfixture.wasm");
-  symlink(fs, "/usr/bin/sqlite3", "/sqlite/sqlite3");
+  symlink(fs, "/usr/bin/testfixture", "/var/lib/kandelo-tests/sqlite/testfixture");
+  symlink(fs, "/usr/bin/testfixture", "/var/lib/kandelo-tests/sqlite/testfixture.wasm");
+  symlink(fs, "/usr/bin/sqlite3", "/var/lib/kandelo-tests/sqlite/sqlite3");
   await saveImage(fs, inputs.outputPath, inputs.targetAbi === undefined
     ? {}
     : {

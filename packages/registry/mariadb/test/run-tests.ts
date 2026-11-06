@@ -922,7 +922,7 @@ async function runMysqlTest(
             // Standard MTR environment variables expected by test scripts
             `MASTER_MYPORT=${port}`,
             `MASTER_MYPORT1=${port}`,
-            `MASTER_MYSOCK=/tmp/mysql.sock`,
+            `MASTER_MYSOCK=/run/mysqld/mysql.sock`,
             `MYSQLD_DATADIR=${resolve(scriptDir, "test-data")}`,
             `MYSQL_BINDIR=${resolve(installDir, "bin")}`,
             `MYSQL_SHAREDIR=${resolve(installDir, "share")}`,

@@ -8,12 +8,12 @@
  * `ST_NOSUID` onto the overlay exec target's statfs view, so
  * `propose_set_id_transition` never proposed an euid/egid change for an
  * overlay-resident set-ID binary. The kernel therefore left `secure_exec`
- * false, libc did not set AT_SECURE, and a setuid `/usr/bin/login` staged in
+ * false, libc did not set AT_SECURE, and a setuid `/bin/login` staged in
  * the overlay ran non-secure (the probe observed `secure=0` and untrusted env
  * still visible, exiting 10).
  *
  * This boots the real Node kernel worker (the path that wires the overlay) and
- * stages the probe as an overlay-resident setuid-root `/usr/bin/login` launched
+ * stages the probe as an overlay-resident setuid-root `/bin/login` launched
  * from an ordinary (uid 1000) process. The overlay owns `/`, so the set-ID
  * bits it serves must drive the correct secure-exec state.
  */
@@ -54,7 +54,7 @@ async function stageImage(): Promise<Uint8Array> {
   fs.mkdir("/usr/bin", 0o755);
   // Ordinary launcher (owner root, no set-ID) and a setuid-root target.
   fs.createFileWithOwner("/bin/launcher", 0o755, 0, 0, probe);
-  fs.createFileWithOwner("/usr/bin/login", 0o4755, 0, 0, probe);
+  fs.createFileWithOwner("/bin/login", 0o4755, 0, 0, probe);
   return fs.saveImage();
 }
 
@@ -104,7 +104,7 @@ describe.runIf(havePrereqs)(
         const { exitCode, stdout, stderr } = await run(image, [
           "secure-exec-probe",
           "launch",
-          "/usr/bin/login",
+          "/bin/login",
           "startup-target",
           "1",
           "0",
@@ -146,7 +146,7 @@ describe.runIf(havePrereqs)(
           [
             "secure-exec-probe",
             "launch",
-            "/usr/bin/login",
+            "/bin/login",
             "startup-target",
             "0",
             "0",

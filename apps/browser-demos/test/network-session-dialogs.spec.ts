@@ -318,7 +318,7 @@ test("changing activity stops Kandelo's previous foreground program and launches
   test.setTimeout(420_000);
   await setup(page);
   await page.locator(".knetwork .kshare-x").click();
-  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toContain("kandelo$");
+  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
   expect((await runTerminalCommand(page, "sleep 600 & echo $! > /tmp/unrelated-activity-test.pid")).exitCode).toBe(0);
   await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
   await form(page).getByLabel("Activity", { exact: true }).selectOption("tyrquake/game");
@@ -353,7 +353,7 @@ test("changing activity stops Kandelo's previous foreground program and launches
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await expect.poll(() => page.locator(".kshell-host:visible .xterm-rows").innerText(), { timeout: 90_000 }).toContain("Development Server");
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
-  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toContain("kandelo$");
+  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
   const processes = await runTerminalCommand(page, "kill -0 $(cat /tmp/unrelated-activity-test.pid) && echo unrelated-still-running; ps -A");
   expect(processes.output).toContain("unrelated-still-running");
   expect(processes.output).not.toMatch(/\/usr\/bin\/quake(?:\s|$)/);
@@ -384,7 +384,7 @@ test("replacing a Freeciv activity retires its server, client and KMS owner befo
   await page.screenshot({ path: `../../.context/session-kms-replacement-${browserName}.png`, animations: "disabled" });
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
-  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toContain("kandelo$");
+  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
   const result = await runTerminalCommand(page, "ps -A");
   expect(result.output).not.toMatch(/freeciv(?:-server| |$)/);
   expect(result.output).toContain("quake");

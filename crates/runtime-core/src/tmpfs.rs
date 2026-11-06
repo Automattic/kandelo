@@ -1,5 +1,4 @@
-//! In-kernel tmpfs backing Kandelo's scratch mounts (`/tmp`, `/var/tmp`,
-//! `/var/log`, `/var/run`, `/dev/shm`).
+//! In-kernel tmpfs backing Kandelo's scratch mounts (`/tmp`, `/run`, `/dev/shm`).
 //!
 //! The portable Rust kernel core, not the TypeScript host, is the filesystem
 //! authority for these mounts, so Node and browser hosts share one
@@ -115,9 +114,9 @@ const NO_LAYOUT: &[LayoutNode] = &[];
 /// the kernel-owned exchange mount, which has no host counterpart.
 const SCRATCH_MOUNTS: &[ScratchMount] = &[
     ScratchMount { prefix: b"/tmp", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
-    ScratchMount { prefix: b"/var/tmp", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 1, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
-    ScratchMount { prefix: b"/var/log", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 2, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
-    ScratchMount { prefix: b"/var/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
+    // /var/log and /var/tmp belong to the persistent root filesystem. /run
+    // starts with directory metadata supplied by the image, never its files.
+    ScratchMount { prefix: b"/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
     // POSIX shared memory. Sticky and world-writable like `/tmp`, and served
     // here for the same reason: the kernel owns `/` and every other scratch
     // prefix, so `/dev/shm` is tmpfs like the rest. `MAP_SHARED` mappings of
@@ -646,8 +645,7 @@ static TMPFS: TmpfsGlobal = TmpfsGlobal::new();
 
 /// The mount whose synthetic `st_dev` this is.
 fn mount_of_dev(st_dev: u64) -> Option<usize> {
-    let index = usize::try_from(st_dev.checked_sub(TMPFS_DEV_BASE)?).ok()?;
-    (index < SCRATCH_MOUNTS.len()).then_some(index)
+    SCRATCH_MOUNTS.iter().position(|mount| mount.st_dev == st_dev)
 }
 
 /// Limit the regular-file content bytes of the mount at `prefix` (the host
@@ -688,6 +686,10 @@ fn match_mount(path: &[u8]) -> Option<(usize, &[u8])> {
         }
     }
     best
+}
+
+pub(crate) fn mount_prefix(path: &[u8]) -> Option<&'static [u8]> {
+    match_mount(path).map(|(index, _)| SCRATCH_MOUNTS[index].prefix)
 }
 
 /// Master switch for in-kernel tmpfs authority over the scratch mounts.
@@ -1401,6 +1403,32 @@ pub fn handle_is_live(handle: i64) -> bool {
 /// mkdir a tmpfs directory.
 pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
+    mkdir_on_mount(mount_idx, rel, mode, uid, gid)
+}
+
+/// Populate a directory in one mount's underlying tree, including the visible
+/// directory entry for a nested mount point. Never changes the nested mount.
+pub(crate) fn seed_image_directory(
+    prefix: &[u8], path: &[u8], mode: u32, uid: u32, gid: u32,
+) -> Result<(), Errno> {
+    let mount_idx = SCRATCH_MOUNTS.iter().position(|mount| mount.prefix == prefix).ok_or(Errno::EINVAL)?;
+    let rel = path.strip_prefix(prefix).filter(|rel| rel.first() == Some(&b'/')).ok_or(Errno::EINVAL)?;
+    match mkdir_on_mount(mount_idx, rel, mode, uid, gid) {
+        Ok(()) => Ok(()),
+        Err(Errno::EEXIST) => TMPFS.with(|state| {
+            let (_, _, target) = state.resolve(mount_idx, &split_components(rel))?;
+            let inode = state.get_mut(target.ok_or(Errno::ENOENT)?).ok_or(Errno::ENOENT)?;
+            if !matches!(&inode.kind, InodeKind::Dir(_)) { return Err(Errno::ENOTDIR); }
+            inode.mode = mode & 0o7777;
+            inode.uid = uid;
+            inode.gid = gid;
+            Ok(())
+        }),
+        Err(error) => Err(error),
+    }
+}
+
+fn mkdir_on_mount(mount_idx: usize, rel: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
     let comps = split_components(rel);
     if comps.is_empty() {
         // The mount root already exists.
@@ -2271,7 +2299,8 @@ mod tests {
         assert_eq!(statfs(b"/run/kandelo/exchange/inbox").unwrap().f_type, 0x4B58_4348);
         assert_eq!(statfs(b"/tmp").unwrap().f_type, 0x0102_1994);
         assert!(owns_path(b"/run/kandelo/exchange"));
-        assert!(!owns_path(b"/run/kandelo"));
+        assert!(owns_path(b"/run/kandelo"));
+        assert_ne!(statfs(b"/run/kandelo").unwrap().f_type, statfs(b"/run/kandelo/exchange").unwrap().f_type);
         assert_ne!(lstat(b"/run/kandelo/exchange").unwrap().st_dev, lstat(b"/tmp").unwrap().st_dev);
     }
 
@@ -2425,12 +2454,15 @@ mod tests {
     fn ownership_matches_scratch_prefixes_only() {
         assert!(owns_path(b"/tmp"));
         assert!(owns_path(b"/tmp/a"));
-        assert!(owns_path(b"/var/run/nginx.pid"));
+        assert!(owns_path(b"/run/nginx.pid"));
         assert!(!owns_path(b"/home/maker/x"));
         assert!(!owns_path(b"/root/settings"));
         assert!(!owns_path(b"/srv/site"));
         assert!(!owns_path(b"/tmpfoo")); // prefix must be a path boundary
         assert!(!owns_path(b"/usr/bin/sh"));
+        assert!(!owns_path(b"/var/log"));
+        assert!(!owns_path(b"/var/tmp"));
+        assert!(!owns_path(b"/var/run"));
         assert!(!owns_path(b"/var")); // /var itself is not a scratch mount
     }
 
@@ -2500,23 +2532,23 @@ mod tests {
 
     #[test]
     fn special_node_socket_semantics() {
-        mknod_special(b"/var/run/s.sock", 0o755, 7, 8, S_IFSOCK).unwrap();
-        let st = lstat(b"/var/run/s.sock").unwrap();
+        mknod_special(b"/run/s.sock", 0o755, 7, 8, S_IFSOCK).unwrap();
+        let st = lstat(b"/run/s.sock").unwrap();
         assert_eq!(st.st_mode & S_IFMT, S_IFSOCK);
         assert_eq!((st.st_uid, st.st_gid), (7, 8));
         assert_eq!(st.st_size, 0);
         // A socket node cannot be opened as a file.
         assert_eq!(
-            open(b"/var/run/s.sock", O_RDWR, 0, 0, 0).unwrap_err(),
+            open(b"/run/s.sock", O_RDWR, 0, 0, 0).unwrap_err(),
             Errno::ENXIO
         );
         // EEXIST on re-create; unlink removes it.
         assert_eq!(
-            mknod_special(b"/var/run/s.sock", 0o755, 0, 0, S_IFSOCK).unwrap_err(),
+            mknod_special(b"/run/s.sock", 0o755, 0, 0, S_IFSOCK).unwrap_err(),
             Errno::EEXIST
         );
-        unlink(b"/var/run/s.sock").unwrap();
-        assert_eq!(lstat(b"/var/run/s.sock").unwrap_err(), Errno::ENOENT);
+        unlink(b"/run/s.sock").unwrap();
+        assert_eq!(lstat(b"/run/s.sock").unwrap_err(), Errno::ENOENT);
     }
 
     /// A guest must not be able to remove or rename a mount root out from
@@ -2567,7 +2599,7 @@ mod tests {
         assert_eq!(lstat(b"/tmp/hl_b").unwrap().st_nlink, 1);
 
         // Guards: cross-mount EXDEV, directory EPERM, existing destination EEXIST.
-        assert_eq!(link(b"/tmp/hl_b", b"/var/tmp/x").unwrap_err(), Errno::EXDEV);
+        assert_eq!(link(b"/tmp/hl_b", b"/run/x").unwrap_err(), Errno::EXDEV);
         mkdir(b"/tmp/hl_d", 0o755, 0, 0).unwrap();
         assert_eq!(link(b"/tmp/hl_d", b"/tmp/hl_e").unwrap_err(), Errno::EPERM);
         let hc = open(b"/tmp/hl_c", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
@@ -2595,7 +2627,7 @@ mod tests {
 
         // Cross-mount rename → EXDEV.
         assert_eq!(
-            rename(b"/tmp/rn_c", b"/var/tmp/rn_c").unwrap_err(),
+            rename(b"/tmp/rn_c", b"/run/rn_c").unwrap_err(),
             Errno::EXDEV
         );
 
@@ -2779,19 +2811,19 @@ mod tests {
 
     #[test]
     fn mkdir_existing_is_eexist() {
-        mkdir(b"/var/log/dir1", 0o755, 0, 0).unwrap();
-        assert_eq!(mkdir(b"/var/log/dir1", 0o755, 0, 0).unwrap_err(), Errno::EEXIST);
+        mkdir(b"/run/dir1", 0o755, 0, 0).unwrap();
+        assert_eq!(mkdir(b"/run/dir1", 0o755, 0, 0).unwrap_err(), Errno::EEXIST);
     }
 
     #[test]
     fn rmdir_nonempty_is_enotempty() {
-        mkdir(b"/var/tmp/rd", 0o755, 0, 0).unwrap();
-        let f = open(b"/var/tmp/rd/f", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        mkdir(b"/run/rd", 0o755, 0, 0).unwrap();
+        let f = open(b"/run/rd/f", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
         release_handle(f);
-        assert_eq!(rmdir(b"/var/tmp/rd").unwrap_err(), Errno::ENOTEMPTY);
-        unlink(b"/var/tmp/rd/f").unwrap();
-        rmdir(b"/var/tmp/rd").unwrap();
-        assert_eq!(lstat(b"/var/tmp/rd").unwrap_err(), Errno::ENOENT);
+        assert_eq!(rmdir(b"/run/rd").unwrap_err(), Errno::ENOTEMPTY);
+        unlink(b"/run/rd/f").unwrap();
+        rmdir(b"/run/rd").unwrap();
+        assert_eq!(lstat(b"/run/rd").unwrap_err(), Errno::ENOENT);
     }
 
     #[test]

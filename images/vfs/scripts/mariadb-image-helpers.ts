@@ -5,10 +5,12 @@ export const MARIADB_UID = 101;
 export const MARIADB_GID = 101;
 export const MARIADB_DATA_MODE = 0o775;
 export const MARIADB_DATA_DIRS = [
-  "/data",
-  "/data/mysql",
-  "/data/tmp",
-  "/data/test",
+  "/var/lib/mysql",
+  "/var/lib/mysql/mysql",
+  "/var/tmp/mysql",
+  "/var/lib/mysql/test",
+  "/var/log/mysql",
+  "/run/mysqld",
 ] as const;
 
 /**

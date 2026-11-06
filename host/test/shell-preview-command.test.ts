@@ -6,12 +6,12 @@ import type { VfsImageFilesystem } from "../src/vfs/vfs-image-filesystem";
 function installedCommand(): { script: string; mode: number } {
   const files: { path: string; content: string; mode: number }[] = [];
   const fs = {
-    mkdir: vi.fn(), chmod: vi.fn(), chown: vi.fn(), close: vi.fn(),
+    mkdir: vi.fn(), chmod: vi.fn(), chown: vi.fn(), close: vi.fn(), symlink: vi.fn(),
     open(path: string, _flags: number, mode: number) { files.push({ path, content: "", mode }); return files.length - 1; },
     write(handle: number, bytes: Uint8Array) { files[handle].content += new TextDecoder().decode(bytes); return bytes.length; },
   } as unknown as VfsImageFilesystem;
   populateShellRuntimeLayout(fs);
-  const command = files.find(file => file.path === "/usr/local/bin/kandelo-preview")!;
+  const command = files.find(file => file.path === "/usr/bin/kandelo-preview")!;
   return { script: command.content, mode: command.mode };
 }
 

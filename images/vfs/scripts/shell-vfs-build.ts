@@ -24,6 +24,7 @@ import {
 } from "../../../host/src/binary-resolver";
 import {
   COREUTILS_NAMES,
+  coreutilsCommandPath,
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
   shellLazySpecDependency,
@@ -467,7 +468,6 @@ export function populateShellEnvironment(
       populateGrep(fs, resolveArtifact);
       populateSed(fs, resolveArtifact);
     }
-    populateBaseExtendedSymlinks(fs);
     if (opts.eagerBinaries) populateBaseExtendedBinaries(fs, resolveArtifact);
     populateMagic(fs, resolveArtifact, strictArtifactResolution);
   }
@@ -507,7 +507,6 @@ function populateShellOverlay(fs: KandeloImageFs): void {
   // here so shell.vfs stays self-contained even as rootfs stays minimal.
   populateCoreutilsSymlinks(fs);
   populateGrepSedSymlinks(fs);
-  populateBaseExtendedSymlinks(fs);
   populateDemoExtendedSymlinks(fs);
 }
 
@@ -528,8 +527,7 @@ function populateBash(
 
 function populateCoreutilsSymlinks(fs: KandeloImageFs): void {
   for (const name of [...COREUTILS_NAMES, "["]) {
-    symlink(fs, "/bin/coreutils", `/bin/${name}`);
-    symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
+    symlink(fs, "/bin/coreutils", coreutilsCommandPath(name));
   }
 }
 
@@ -542,13 +540,8 @@ function populateCoreutils(
 }
 
 function populateGrepSedSymlinks(fs: KandeloImageFs): void {
-  symlink(fs, "/usr/bin/grep", "/bin/grep");
-  symlink(fs, "/usr/bin/grep", "/usr/bin/egrep");
-  symlink(fs, "/usr/bin/grep", "/bin/egrep");
-  symlink(fs, "/usr/bin/grep", "/usr/bin/fgrep");
-  symlink(fs, "/usr/bin/grep", "/bin/fgrep");
-
-  symlink(fs, "/usr/bin/sed", "/bin/sed");
+  symlink(fs, "/bin/grep", "/bin/egrep");
+  symlink(fs, "/bin/grep", "/bin/fgrep");
 }
 
 function populateGrep(
@@ -556,7 +549,7 @@ function populateGrep(
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const bytes = readFileSync(resolveArtifact("programs/grep.wasm", "grep"));
-  writeVfsBinary(fs, "/usr/bin/grep", new Uint8Array(bytes));
+  writeVfsBinary(fs, "/bin/grep", new Uint8Array(bytes));
 }
 
 function populateSed(
@@ -564,7 +557,7 @@ function populateSed(
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const bytes = readFileSync(resolveArtifact("programs/sed.wasm", "sed"));
-  writeVfsBinary(fs, "/usr/bin/sed", new Uint8Array(bytes));
+  writeVfsBinary(fs, "/bin/sed", new Uint8Array(bytes));
 }
 
 function populateLazyBinaries(
@@ -597,79 +590,11 @@ function populateLazyBinaries(
 
 // ── Extended toolset ────────────────────────────────────────────
 
-function populateBaseExtendedSymlinks(fs: KandeloImageFs): void {
-  symlink(fs, "/usr/bin/bc", "/bin/bc");
-  symlink(fs, "/usr/bin/file", "/bin/file");
-  symlink(fs, "/usr/bin/m4", "/bin/m4");
-  symlink(fs, "/usr/bin/make", "/bin/make");
-}
-
 function populateDemoExtendedSymlinks(fs: KandeloImageFs): void {
-  symlink(fs, "/usr/bin/less", "/bin/less");
-  symlink(fs, "/usr/bin/tar", "/bin/tar");
-  symlink(fs, "/usr/bin/curl", "/bin/curl");
-  symlink(fs, "/usr/bin/nc", "/bin/nc");
-  symlink(fs, "/usr/bin/nc", "/usr/bin/netcat");
-  symlink(fs, "/usr/bin/nc", "/bin/netcat");
-  symlink(fs, "/usr/bin/wget", "/bin/wget");
-
-  symlink(fs, "/usr/bin/git", "/bin/git");
-  symlink(fs, "/usr/bin/git-remote-http", "/usr/bin/git-remote-https");
-  symlink(fs, "/usr/bin/git-remote-http", "/usr/bin/git-remote-ftp");
-  symlink(fs, "/usr/bin/git-remote-http", "/usr/bin/git-remote-ftps");
-
-  symlink(fs, "/usr/bin/gzip", "/bin/gzip");
-  symlink(fs, "/usr/bin/gzip", "/usr/bin/gunzip");
-  symlink(fs, "/usr/bin/gzip", "/bin/gunzip");
-  symlink(fs, "/usr/bin/gzip", "/usr/bin/zcat");
-  symlink(fs, "/usr/bin/gzip", "/bin/zcat");
-
-  symlink(fs, "/usr/bin/bzip2", "/bin/bzip2");
-  symlink(fs, "/usr/bin/bzip2", "/usr/bin/bunzip2");
-  symlink(fs, "/usr/bin/bzip2", "/bin/bunzip2");
-  symlink(fs, "/usr/bin/bzip2", "/usr/bin/bzcat");
-  symlink(fs, "/usr/bin/bzip2", "/bin/bzcat");
-
-  symlink(fs, "/usr/bin/xz", "/bin/xz");
-  symlink(fs, "/usr/bin/xz", "/usr/bin/unxz");
-  symlink(fs, "/usr/bin/xz", "/bin/unxz");
-  symlink(fs, "/usr/bin/xz", "/usr/bin/xzcat");
-  symlink(fs, "/usr/bin/xz", "/bin/xzcat");
-  symlink(fs, "/usr/bin/xz", "/usr/bin/lzma");
-  symlink(fs, "/usr/bin/xz", "/bin/lzma");
-  symlink(fs, "/usr/bin/xz", "/usr/bin/unlzma");
-  symlink(fs, "/usr/bin/xz", "/bin/unlzma");
-  symlink(fs, "/usr/bin/xz", "/usr/bin/lzcat");
-  symlink(fs, "/usr/bin/xz", "/bin/lzcat");
-
-  symlink(fs, "/usr/bin/zstd", "/bin/zstd");
-  symlink(fs, "/usr/bin/zstd", "/usr/bin/unzstd");
-  symlink(fs, "/usr/bin/zstd", "/bin/unzstd");
-  symlink(fs, "/usr/bin/zstd", "/usr/bin/zstdcat");
-  symlink(fs, "/usr/bin/zstd", "/bin/zstdcat");
-
-  symlink(fs, "/usr/bin/zip", "/bin/zip");
-  symlink(fs, "/usr/bin/unzip", "/bin/unzip");
-  symlink(fs, "/usr/bin/unzip", "/usr/bin/zipinfo");
-  symlink(fs, "/usr/bin/unzip", "/bin/zipinfo");
-  symlink(fs, "/usr/bin/unzip", "/usr/bin/funzip");
-  symlink(fs, "/usr/bin/unzip", "/bin/funzip");
-
-  symlink(fs, "/usr/bin/nano", "/bin/nano");
-  symlink(fs, "/usr/bin/composer", "/bin/composer");
-  symlink(fs, "/usr/bin/vim", "/bin/vim");
+  for (const spec of SHELL_LAZY_BINARY_SPECS) {
+    for (const alias of spec.symlinks) symlink(fs, spec.vfsPath, alias);
+  }
   symlink(fs, "/usr/bin/vim", "/usr/bin/vi");
-  symlink(fs, "/usr/bin/vim", "/bin/vi");
-
-  symlink(fs, "/usr/bin/nethack", "/bin/nethack");
-
-  symlink(fs, "/usr/bin/lsof", "/bin/lsof");
-
-  // posix-utils-lite's raw `man` applet already ships /bin/man as a symlink
-  // to /usr/bin/man (see displacePosixUtilsLiteManApplet). This alias is a
-  // no-op there (symlink() swallows EEXIST) and is load-bearing for the
-  // from-scratch composition path, where no applet has claimed /bin/man yet.
-  symlink(fs, "/usr/bin/man", "/bin/man");
 }
 
 function populateBaseExtendedBinaries(
@@ -695,13 +620,13 @@ function populateDemoExtendedBinaries(
 ): void {
   const extended: Array<{ relPath: string; vfsPath: string }> = [
     { relPath: "programs/less.wasm",                 vfsPath: "/usr/bin/less" },
-    { relPath: "programs/tar.wasm",                  vfsPath: "/usr/bin/tar" },
+    { relPath: "programs/tar.wasm",                  vfsPath: "/bin/tar" },
     { relPath: "programs/curl.wasm",                 vfsPath: "/usr/bin/curl" },
     { relPath: "programs/netcat/nc.wasm",                   vfsPath: "/usr/bin/nc" },
     { relPath: "programs/wget.wasm",                 vfsPath: "/usr/bin/wget" },
     { relPath: "programs/git/git.wasm",              vfsPath: "/usr/bin/git" },
     { relPath: "programs/git/git-remote-http.wasm",  vfsPath: "/usr/bin/git-remote-http" },
-    { relPath: "programs/gzip.wasm",                 vfsPath: "/usr/bin/gzip" },
+    { relPath: "programs/gzip.wasm",                 vfsPath: "/bin/gzip" },
     { relPath: "programs/bzip2.wasm",                vfsPath: "/usr/bin/bzip2" },
     { relPath: "programs/xz.wasm",                   vfsPath: "/usr/bin/xz" },
     { relPath: "programs/zstd.wasm",                 vfsPath: "/usr/bin/zstd" },

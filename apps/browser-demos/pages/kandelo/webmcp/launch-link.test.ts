@@ -16,7 +16,7 @@ const current: BootDescriptor = {
   packages: [],
   mounts: [{ path: "/", source: "image", ref: "foo.vfs@local" }],
   boot: {
-    argv: ["/usr/bin/login"],
+    argv: ["/bin/login"],
     cwd: "/root",
     env: {},
     inputs: [await createInlineBootInput({ id: "old", filename: "old.sh", bytes: new TextEncoder().encode("old\n"), compression: "gzip" })],
@@ -28,7 +28,7 @@ const item = {
   id: "bar",
   title: "Bar",
   packages: [],
-  bootCommand: ["/usr/bin/login"],
+  bootCommand: ["/bin/login"],
   vfsImageUrl: "https://example.test/bar.vfs.zst",
 } as unknown as GalleryItem;
 

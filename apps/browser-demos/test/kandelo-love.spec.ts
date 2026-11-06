@@ -208,7 +208,7 @@ function love.draw()
   love.graphics.rectangle("fill", x - 8, y - 8, 16, 16)
 end
 LUA
-exec /usr/local/bin/love /tmp/love-pointer-probe
+exec /usr/bin/love /tmp/love-pointer-probe
 `;
   return scriptFragment(script, "love-pointer-probe");
 }
@@ -219,7 +219,7 @@ async function scriptFragment(script: string, id: string) {
     base: "kandelo:shell@abi50",
     runtime: { arch: "wasm32", kernel: "kernel@local", memoryPages: 2048, features: [], time: "real" },
     packages: [], mounts: [{ path: "/", source: "image", ref: "shell.vfs@local" }],
-    boot: { argv: ["/usr/bin/login"], cwd: "/root", env: {},
+    boot: { argv: ["/bin/login"], cwd: "/root", env: {},
       inputs: [await createInlineBootInput({ id: "script", filename: "pointer.sh",
         bytes: new TextEncoder().encode(script), compression: "gzip" })],
       parameters: { runScript: "script" } },
@@ -270,7 +270,7 @@ test("LÖVE audio source controls and stream boundaries @slow", async ({ page })
   test.setTimeout(180_000);
   const fragment = await scriptFragment(
     `for attempt in 1 2; do
-/usr/local/bin/love /usr/share/love/examples/audio-check
+/usr/bin/love /usr/share/love/examples/audio-check
 love_status=$?
 echo "love: audio fixture $attempt exited $love_status"
 if [ "$love_status" != 0 ]; then exit "$love_status"; fi
@@ -314,7 +314,7 @@ function love.run()
   return function() return 0 end
 end
 LUA
-exec /usr/local/bin/love /tmp/snkrx-cursor-check
+exec /usr/bin/love /tmp/snkrx-cursor-check
 `;
   await gotoMachine(page, "love", { hash: await scriptFragment(script, "snkrx-cursor-check") });
   await page.bringToFront();

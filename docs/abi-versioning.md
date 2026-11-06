@@ -1470,6 +1470,11 @@ but `__abi_version` equality is exact, so every program, package archive and
 VFS image is rebuilt for 49; a kernel or host built for ABI 48 cannot run
 against the other.
 
+That list records ABI 49's initial mount policy. The current distribution
+keeps homes, `/root`, `/srv`, `/var/log` and `/var/tmp` on the rootfs and
+mounts tmpfs at `/tmp`, `/run` and `/dev/shm`. See
+[the filesystem layout](filesystem-layout.md) for the current policy.
+
 Structural changes (recorded in the snapshot):
 
 - **Kernel exports: 199 → 233.** Added, all optional for the host-adapter

@@ -13,6 +13,7 @@ function sdkZip(): Uint8Array {
   return zipSync({
     "lib/": [new Uint8Array(0), unix(0o040755)],
     "lib/llvm/bin/clang": [text("clang bytes"), unix(0o100755)],
+    "lib/kandelo/wasm32posix/sysroot/include/stdio.h": [text("stdio declarations"), unix(0o100644)],
     "share/doc/README": [text("readme"), unix(0o100644)],
     "bin/cc": [text("wasm32posix-cc"), unix(0o120777)],
     "bin/wasm32posix-cc": [text("#!/bin/sh\n"), unix(0o100755)],
@@ -52,12 +53,14 @@ describe("installGuestToolchain", () => {
     expect(fs.stat("/usr/share/doc/README").mode & 0o7777).toBe(0o644);
     expect(fs.readlink("/usr/bin/cc")).toBe("wasm32posix-cc");
     expect(fs.isPathDeferred("/usr/lib/llvm/bin/clang")).toBe(false);
+    expect(new TextDecoder().decode(fs.readFile("/usr/lib/kandelo/wasm32posix/sysroot/include/stdio.h"))).toBe("stdio declarations");
+    expect(() => fs.stat("/usr/wasm32posix")).toThrow();
   });
 
   it("refuses a base image that still defers files", () => {
     const fs = eagerRootfs();
-    fs.registerLazyFile("/usr/bin/sed", "binaries/programs/wasm32/sed.wasm", 10, 0o755);
-    expect(() => installGuestToolchain(fs, sdkZip())).toThrow(/\/usr\/bin\/sed/);
+    fs.registerLazyFile("/bin/sed", "binaries/programs/wasm32/sed.wasm", 10, 0o755);
+    expect(() => installGuestToolchain(fs, sdkZip())).toThrow(/\/bin\/sed/);
   });
 
   it("refuses an archive entry that would replace a base file", () => {

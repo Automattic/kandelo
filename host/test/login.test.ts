@@ -205,7 +205,7 @@ function loginRootfsImage(
     bytes(identityWasm),
   );
   fs.createFileWithOwner(
-    "/usr/bin/login",
+    "/bin/login",
     0o4755,
     0,
     0,
@@ -230,7 +230,7 @@ async function runLogin(
     programPath: execArgvWasm,
     argv: [
       "exec-argv",
-      "/usr/bin/login",
+      "/bin/login",
       ...(options.args ?? "maker").split(" "),
     ],
     uid: options.uid ?? 1000,

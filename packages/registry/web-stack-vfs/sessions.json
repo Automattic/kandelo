@@ -12,7 +12,7 @@
       "attachExisting": true,
       "requiresHost": true,
       "hostRequires": [
-        "/usr/local/bin/kandelo-service"
+        "/usr/bin/kandelo-service"
       ],
       "fields": [],
       "category": "services"

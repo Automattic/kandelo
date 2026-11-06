@@ -133,7 +133,7 @@
         "minHeight": 1080
       },
       "init": {
-        "shellCommand": "/usr/local/bin/sdl2"
+        "shellCommand": "/usr/bin/sdl2"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -172,7 +172,7 @@
         "minHeight": 1080
       },
       "init": {
-        "shellCommand": "/usr/local/bin/wldesktop"
+        "shellCommand": "/usr/bin/wldesktop"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -213,7 +213,7 @@
         "minHeight": 1080
       },
       "init": {
-        "shellCommand": "/usr/local/bin/omarchydesktop"
+        "shellCommand": "/usr/bin/omarchydesktop"
       },
       "presentation": {
         "bootPrimary": "syslog",

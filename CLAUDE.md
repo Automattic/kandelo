@@ -107,6 +107,7 @@ changes, package artifacts, or performance claims.
 | Host runtime and Node/browser parity | `docs/agent-guidance/host-runtime.md` | `docs/architecture.md`, `docs/browser-support.md` |
 | Package schema, builds, resolver, cache | `docs/agent-guidance/packages-and-builds.md` | `docs/package-management.md`, `docs/porting-guide.md`, `docs/sdk-guide.md` |
 | Browser demos, VFS images, sharing, users | `docs/agent-guidance/browser-and-user.md` | `docs/browser-support.md` |
+| Filesystem image hierarchy and installed guest paths | `docs/agent-guidance/images.md` | `docs/filesystem-layout.md` |
 | Performance claims and benchmarks | `docs/agent-guidance/performance.md` | `docs/profiling.md` |
 | Dev shell, docs, PR/final reports | `docs/agent-guidance/build-docs-and-prs.md` | `docs/repository-organization.md`, `README.md` |
 | Optional Spacefast deployment, publication and examples | `docs/agent-guidance/spacefast-deployment.md` | `apps/spacefast-cors-proxy/README.md`, `.agents/skills/deploying-kandelo-to-spacefast/SKILL.md` |

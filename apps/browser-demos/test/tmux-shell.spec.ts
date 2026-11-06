@@ -29,7 +29,7 @@ test("the browser shell runs tmux panes and preserves a detached session", async
     await page.keyboard.type(key);
   };
 
-  await expect.poll(screen, { timeout: 120_000 }).toMatch(/kandelo\$/);
+  await expect.poll(screen, { timeout: 120_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$/);
   await clickDockTool(page, "Appearance");
   await page.getByRole("button", { name: "Dark", exact: true }).click();
   await clickDockTool(page, "Appearance");
@@ -58,7 +58,7 @@ test("the browser shell runs tmux panes and preserves a detached session", async
 
   await prefix("d");
   await expect.poll(screen, { timeout: 10_000 }).toContain("[detached (from session trial)]");
-  await expect.poll(screen, { timeout: 10_000 }).toMatch(/kandelo\$/);
+  await expect.poll(screen, { timeout: 10_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$/);
   await command("tmux attach-session -t trial");
   await expect.poll(screen, { timeout: 20_000 }).toContain("TMUX_PANE_ONE");
   await expect.poll(screen).toContain("TMUX_PANE_TWO");
@@ -82,6 +82,6 @@ test("the browser shell runs tmux panes and preserves a detached session", async
 
   await command("tmux kill-server");
   await expect.poll(screen, { timeout: 10_000 }).toContain("[server exited]");
-  await expect.poll(screen, { timeout: 10_000 }).toMatch(/kandelo\$/);
+  await expect.poll(screen, { timeout: 10_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$/);
   expect(errors).toEqual([]);
 });

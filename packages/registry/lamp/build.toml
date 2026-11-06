@@ -1,5 +1,9 @@
 script_path = "packages/registry/lamp/build-lamp.sh"
 inputs = [
+  "images/rootfs/etc/passwd",
+  "images/rootfs/etc/group",
+  "images/vfs/scripts/filesystem-layout.ts",
+
   "host/src/native-artifact-identity.ts",
   "web-libs/kandelo-session/src/session-dependencies.ts",
   "web-libs/kandelo-session/src/package-sessions.ts",
@@ -50,5 +54,5 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 28
+revision = 30
 publication_state = "pending"

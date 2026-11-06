@@ -74,6 +74,9 @@ order, an auto-command, guide data, or image-declared assets, put that in
 `/etc/kandelo/demo.json` via the VFS image builder rather than hardcoding
 package-specific fallbacks in the app loader.
 
+Installed paths must follow the [image contract](images.md) and
+[Kandelo's FHS layout](../filesystem-layout.md), including lazy archive members.
+
 Absence of demo metadata is valid. The app should use generic defaults, not
 package-name conditionals. If metadata for an existing package-backed image
 changes, bump the relevant package/build revision so the image is rebuilt

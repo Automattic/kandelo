@@ -1,0 +1,46 @@
+{
+  "at": "2026-11-06T04:42:59.182362+00:00",
+  "parentSourceCommit": "1f0821a59a818faeafb8a674bf221071b9f612bf",
+  "originMain": "07ee495e062e2ee7d868fe182923e35d9b7868e9",
+  "incomingCommits": [
+    "07ee495e062e2ee7d868fe182923e35d9b7868e9 Shell: Show user, hostname, and directory in the Bash prompt",
+    "30f21086dab34b07a6a46c8c647f500ce4618e36 Images: Preserve inherited accounts and maker sudo access",
+    "114b63dd3de69d6e668b54872cfe4bc051a68fa1 Images: Align provided filesystems with FHS"
+  ],
+  "guardedSourceChanges": {
+    "scripts/ci-vitest-evidence-classes.tsv": {
+      "before": "76ce6b9cc6ad6cffc3b03924a58d63d5e2a901611a0f1e09607c4208608c5f0b",
+      "after": "4e2c6b401c1efb55ec4d4c8036134397651556ebd96257b1db7bdeca1d5d8626"
+    },
+    "docs/architecture.md": {
+      "before": "c8b80e8cebdc9c0ad6a570d3b4d0e9a8f3fce1738d29dd31a537ca8ceaf51457",
+      "after": "07ae485171edff75e7f93d2b8d47c637d5be58e8a4e237fa1099c65b093ea3f4"
+    },
+    "crates/runtime-core/src/syscalls.rs": {
+      "before": "c235ebd695a78917a364cb9a50f15c3c0ea85ffdde1ef96a6676dacc08508581",
+      "after": "62bbf854890c0234c1104ca16cd5e646bdcbcddee5cf7a0e6ff8efd0e7c037b3"
+    },
+    "docs/package-management.md": {
+      "before": "60e9c1d93294df3ec9c458a2586402821e36d8ca8e6702651f9e87eead407855",
+      "after": "3c89b7f836a485ace431817068f3fcbd51f8287aa99b5fe27329f224e70f469c"
+    },
+    "docs/browser-support.md": {
+      "before": "f8ad36387236c3b015198a37977e97d660daa1d66f0f48d4b9376dfb17d31273",
+      "after": "8b25a86786f7c86a223bc692ba3edbd530d537df37751b9185f449c7bd62c97c"
+    },
+    "crates/runtime-core/src/rootfs.rs": {
+      "before": "5fdf7b132429768aa32afc2dd30856632782fde8d1edb5e9f173bafd7af2e588",
+      "after": "0d4ce5908dd83bc6ee1a430c9fdf94992303885adaa0982dcbf076b026ec4df2"
+    }
+  },
+  "kernelRecipeRevision": {
+    "branch": 3,
+    "upstream": 2,
+    "combined": 4,
+    "reason": "Both source branches changed output; new revision preserves combined identity"
+  },
+  "sourceScope": "Automatic source merge; sole manual conflict was kernel recipe revision. Six guarded source/reference files rebased explicitly. Unrelated working edits preserved byte-for-byte. Target/source/native-reference pins unchanged.",
+  "validationScope": "Node build input guard only;no runtime/compilation/product or four-host acceptance for incoming source",
+  "freshnessPending": "Imported image/runtime/SDK-driver changes and kernel revision invalidate old artifact assumptions. Review ordinary dependency freshness before next targeted engine build; full product rebuild remains deferred.",
+  "goalComplete": false
+}

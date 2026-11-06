@@ -54,18 +54,18 @@ describe("run-example isolated filesystem", () => {
         KANDELO_RUNNER_FIXTURE_CWD: "basic",
         KANDELO_RUNNER_GUEST_PROGRAM: "basic/stdio/fopen",
       }, "/ignored")).toEqual({
-        guestCwd: "/run/kandelo-run/basic",
-        guestProgram: "/run/kandelo-run/basic/stdio/fopen",
+        guestCwd: "/var/lib/kandelo-tests/runner/basic",
+        guestProgram: "/var/lib/kandelo-tests/runner/basic/stdio/fopen",
         isolated: true,
         rootfsImage: "default",
-        // The isolated fixture is seeded under `/run` (a host-backed mount the
+        // The isolated fixture is seeded under `/var/lib/kandelo-tests` (a host-backed mount the
         // in-kernel tmpfs never claims), so a spawned child can see it.
         rootfsMountSpec: [
           ...DEFAULT_MOUNT_SPEC,
-          { path: "/run", source: "scratch", mode: 0o755, nosuid: true },
+          { path: "/var/lib/kandelo-tests", source: "scratch", mode: 0o755, nosuid: true },
         ],
         sessionSeedTrees: [{
-          destinationPath: "/run/kandelo-run",
+          destinationPath: "/var/lib/kandelo-tests/runner",
           sourcePath: realpathSync(sourceRoot),
         }],
       });
@@ -87,8 +87,8 @@ describe("run-example isolated filesystem", () => {
         KANDELO_RUNNER_FIXTURE_CWD: "work",
         KANDELO_RUNNER_GUEST_PROGRAM: "work/test.wasm",
       }, "/ignored")).toEqual({
-        guestCwd: "/run/kandelo-run/work",
-        guestProgram: "/run/kandelo-run/work/test.wasm",
+        guestCwd: "/var/lib/kandelo-tests/runner/work",
+        guestProgram: "/var/lib/kandelo-tests/runner/work/test.wasm",
         isolated: true,
         rootfsImage: "default",
         persistentFixtureRoot: realpathSync(sourceRoot),
@@ -201,13 +201,13 @@ describe("run-example isolated filesystem", () => {
     expect(entries.some((entry) => entry.startsWith("KANDELO_"))).toBe(false);
     const persistentEntries = buildRunExampleGuestEnvironment(
       { TMPDIR: "/host/tmp" },
-      "/run/kandelo-run/work",
+      "/var/lib/kandelo-tests/runner/work",
       true,
       "/usr/bin",
       "/root",
-      "/run/kandelo-run/work",
+      "/var/lib/kandelo-tests/runner/work",
     );
-    expect(persistentEntries).toContain("TMPDIR=/run/kandelo-run/work");
+    expect(persistentEntries).toContain("TMPDIR=/var/lib/kandelo-tests/runner/work");
   });
 
   it("keeps legacy KERNEL_* guest entries only in raw-host mode", () => {

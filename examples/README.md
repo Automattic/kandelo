@@ -28,7 +28,7 @@ the legacy direct host-filesystem behavior and accepts `KERNEL_CWD`.
 `KANDELO_RUNNER_VFS=isolated` instead boots the canonical root image with
 lifecycle-owned scratch storage and uses `/tmp` as the guest working directory.
 `KANDELO_RUNNER_VFS=persistent` derives that image with the fixture under
-`/run/kandelo-run`, uses the fixture working directory for `TMPDIR`, and mounts
+`/var/lib/kandelo-tests/runner`, uses the fixture working directory for `TMPDIR`, and mounts
 the resizable journal at the absolute `KANDELO_RUNNER_PERSISTENCE_PATH`.
 It requires a fixture root and exercises rootfs writes rather than host-backed
 `/run` or in-kernel `/tmp`; the caller owns journal cleanup.
@@ -36,7 +36,7 @@ Conformance harnesses may additionally provide one quiescent fixture directory
 with `KANDELO_RUNNER_FIXTURE_ROOT`, a relative
 `KANDELO_RUNNER_FIXTURE_CWD`, and an optional relative
 `KANDELO_RUNNER_GUEST_PROGRAM`. The worker copies that tree under
-`/run/kandelo-run` before readiness (a host-backed mount the in-kernel tmpfs
+`/var/lib/kandelo-tests/runner` before readiness (a host-backed test-work-tree mount the in-kernel tmpfs
 does not claim, so the guest sees the seeded tree); the guest cannot mutate
 the source, and ambient host executable lookup is disabled. These controls are
 runner plumbing, not guest environment variables.

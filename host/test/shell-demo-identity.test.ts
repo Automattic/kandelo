@@ -62,7 +62,7 @@ printf '%s\\n' \
     });
 
     expect(result.exitCode, result.stderr || result.stdout).toBe(0);
-    expect(result.stdout).toContain("PS1=kandelo$ ");
+    expect(result.stdout).toContain("PS1=\\u@\\h:\\W\\$ ");
     expect(result.stdout).toContain("HISTFILE=/home/maker/.bash_history");
     expect(result.stdout).toContain("TMPDIR=/tmp");
     expect(result.stdout).toContain("LANG=en_US.UTF-8");

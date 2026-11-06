@@ -17,7 +17,7 @@ require "erb"
 
 # The VFS is ephemeral in the browser, so the database is per-session by design.
 # Default to the writable scratch mount; override with TODO_DB.
-DB_PATH = ENV.fetch("TODO_DB", "/tmp/todo.sqlite3")
+DB_PATH = ENV.fetch("TODO_DB", "/var/lib/todo/todo.sqlite3")
 DB = SQLite3::Database.new(DB_PATH)
 DB.busy_timeout = 2000
 DB.execute(<<~SQL)

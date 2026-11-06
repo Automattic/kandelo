@@ -101,7 +101,7 @@ describe("worker-side VFS listing and stat", () => {
 
   it("inspects guest writes through symlinks crossing into native scratch mounts", async () => {
     const host = await machine();
-    const { exit } = await host.spawnFromVfs("/usr/bin/bash", ["bash", "-c", INSPECTION_MUTATION], { env: ["PATH=/bin:/usr/bin"] });
+    const { exit } = await host.spawnFromVfs("/bin/bash", ["bash", "-c", INSPECTION_MUTATION], { env: ["PATH=/bin:/usr/bin"] });
     expect(await exit).toBe(0);
     await expect(host.statVfsPath("/inspection/guest/data")).resolves.toMatchObject({ mode: 0o100640, uid: 123, gid: 456, size: 16 });
     const entries = await host.readDirFromVfs("/inspection/guest");

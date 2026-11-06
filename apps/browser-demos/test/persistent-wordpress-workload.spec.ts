@@ -105,7 +105,7 @@ async function terminal(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await expect.poll(() => page.locator(".xterm-rows").first().textContent(), { timeout: 120_000 })
-    .toMatch(/kandelo(?:-bash-[0-9.]+)?\$ ?/);
+    .toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
 }
 
 async function verifyGuestWorkload(page: Page, removedUpload: string): Promise<void> {
@@ -113,7 +113,7 @@ async function verifyGuestWorkload(page: Page, removedUpload: string): Promise<v
   await runTerminalCommand(page, `set -eu
 root=${workloadRoot}/current
 printf 'WORKLOAD_VERIFY_BEGIN\n'
-test ! -e "/var/www/html/${removedUpload}"
+test ! -e "/srv/www/html/${removedUpload}"
 for ((index=0; index<512; index++)); do
   case "$index" in
     0|1|2) continue ;;

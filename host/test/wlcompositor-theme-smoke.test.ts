@@ -439,7 +439,7 @@ describe("wlcompositor — theme system", () => {
         await host.spawn(kwlctlBytes,
           ["kwlctl", "dispatch", "theme", "bbb-tight"], {});
         await waitFor(out, "THEME bbb-tight", 10_000, dump);
-        await waitFor(out, /KWLCTL_EXEC(_FAILED)? "\/usr\/local\/bin\/knotify"/,
+        await waitFor(out, /KWLCTL_EXEC(_FAILED)? "\/usr\/bin\/knotify"/,
           10_000, dump);
       } finally {
         await host.destroy().catch(() => {});

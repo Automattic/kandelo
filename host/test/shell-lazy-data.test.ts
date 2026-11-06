@@ -38,7 +38,7 @@ describe("shell optional data on Node", () => {
       "/usr/share/misc/magic",
       "/usr/share/kandelo/themes/tokyo-night/theme.conf",
     ]) expect(fs.isPathDeferred(path), path).toBe(true);
-    const bash = fs.readFile("/usr/bin/bash");
+    const bash = fs.readFile("/bin/bash");
     let stdout = "";
     let stderr = "";
     const downloads: LazyDownloadEvent[] = [];

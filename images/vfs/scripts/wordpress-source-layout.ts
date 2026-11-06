@@ -14,9 +14,9 @@ import { walkAndWrite } from "./vfs-image-helpers";
  */
 export const WORDPRESS_SETUP_SQLITE_PLUGIN_ALIAS =
   "wp-content/plugins/sqlite-database-integration";
-export const WORDPRESS_CORE_GUEST_PATH = "/var/www/html";
+export const WORDPRESS_CORE_GUEST_PATH = "/srv/www/html";
 export const WORDPRESS_SQLITE_PLUGIN_GUEST_PATH =
-  "/var/www/html/wp-content/plugins/sqlite-database-integration";
+  "/srv/www/html/wp-content/plugins/sqlite-database-integration";
 
 type SourceExtract = typeof ensureSourceExtract;
 

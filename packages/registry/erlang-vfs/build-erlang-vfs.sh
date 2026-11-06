@@ -27,7 +27,7 @@ tar --zstd -xf "$OTP_ARCHIVE" -C "$OTP_ROOT"
 
 STAGE="$ARTIFACT_DIR/erlang-vfs.vfs.zst"
 KANDELO_ERLANG_OTP_ROOT="$OTP_ROOT" KANDELO_ERLANG_VFS_OUT="$STAGE" \
-    npx tsx "$REPO_ROOT/images/vfs/scripts/build-erlang-vfs-image.ts"
+    node --import "$REPO_ROOT/node_modules/tsx/dist/loader.mjs" "$REPO_ROOT/images/vfs/scripts/build-erlang-vfs-image.ts"
 [ -f "$STAGE" ] || { echo "ERROR: $STAGE not produced" >&2; exit 1; }
 
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then

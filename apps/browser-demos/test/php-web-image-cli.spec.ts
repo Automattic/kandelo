@@ -30,7 +30,7 @@ for (const { profile, title, pageText } of [
     await page.getByRole("button", { name: "Terminal", exact: true }).click({
       timeout: 120_000,
     });
-    await expect(page.locator(".xterm-rows").first()).toContainText("kandelo$", {
+    await expect(page.locator(".xterm-rows").first()).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, {
       timeout: 120_000,
     });
 

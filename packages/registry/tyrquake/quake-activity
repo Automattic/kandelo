@@ -5,7 +5,7 @@ shift
 # Fixed, user-writable activity data, separate from the demo's installation.
 base=/tmp/kandelo-quake
 rm -rf "$base"
-/usr/local/bin/quake-data "$source_id" /tmp/kandelo-quake-data.bin "$base"
+/usr/bin/quake-data "$source_id" /tmp/kandelo-quake-data.bin "$base"
 # OpenQuartz's quake.rc omits stuffcmds, so the engine never executes +map,
 # +connect or other launch arguments. A native -game search-path overlay
 # supplies startup policy without changing the original PAKs or their notices.
@@ -19,4 +19,4 @@ stuffcmds
 EOF
     set -- -game activity "$@"
 fi
-exec /usr/bin/quake -basedir "$base" "$@"
+exec /usr/libexec/quake -basedir "$base" "$@"

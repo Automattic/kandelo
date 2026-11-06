@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -18,6 +18,9 @@ const available = kernelPath !== null && bashPath !== null;
 function minimalImage(): Uint8Array {
   const fs = KandeloImageFs.create();
   for (const dir of ["/bin", "/etc", "/usr", "/usr/bin"]) fs.mkdir(dir, 0o755);
+  for (const dir of ["/run", "/var", "/var/tmp"]) fs.mkdir(dir, 0o755);
+  fs.symlink("/run", "/var/run");
+  fs.symlink("/run/lock", "/var/lock");
   writeVfsBinary(fs, "/bin/sh", new Uint8Array(readFileSync(bashPath!)), 0o755);
   return fs.exportImage();
 }
@@ -42,6 +45,28 @@ function request(dir: string, script: string, timeoutMs = 60_000) {
 }
 
 describe.skipIf(!available)("runGuestBuild (Node host, real kernel)", () => {
+  it("refuses scratch aliases and reads inputs mounted beneath persistent /var/tmp", async () => {
+    const dir = workspace();
+    const input = workspace();
+    writeFileSync(join(input, "sentinel"), "dependency bytes");
+    const image = minimalImage();
+    const kernelWasm = new Uint8Array(readFileSync(kernelPath!));
+    for (const guestPath of ["/var/run/deps", "/var/lock/deps"]) {
+      await expect(runGuestBuild({ kernelWasm, image,
+        request: { ...request(dir, "exit 0"), inputs: [{ guestPath, hostPath: input }] },
+        log: () => {},
+      })).rejects.toThrow(/tmpfs/);
+    }
+    let log = "";
+    const result = await runGuestBuild({ kernelWasm, image,
+      request: { ...request(dir, 'printf "%s\\n" "$(</var/tmp/deps/sentinel)"'),
+        inputs: [{ guestPath: "/var/tmp/deps", hostPath: input }] },
+      log: chunk => { log += new TextDecoder().decode(chunk); },
+    });
+    expect(result).toEqual({ exitCode: 0, timedOut: false });
+    expect(log).toBe("dependency bytes\n");
+  }, 60_000);
+
   it("returns the guest exit status and writes through the workspace mount", async () => {
     const dir = workspace();
     let log = "";

@@ -23,7 +23,7 @@ test("shell trust roots, speech, file-type and desktop data download only on fir
   await gotoMachineOrSkip(page, "shell");
   await expect.poll(() => page.locator(".xterm-rows").first().textContent(), {
     timeout: 120_000,
-  }).toContain("kandelo$");
+  }).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
   expect([...requests.entries()]).toEqual([]);
   const command = [
     "set -eu",

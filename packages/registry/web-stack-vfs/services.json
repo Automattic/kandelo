@@ -70,7 +70,7 @@
                 "label": "SQLite file",
                 "description": "Show the demo database PHP-FPM created (SQLite header included).",
                 "kind": "terminal.run",
-                "payload": "ls -l /var/www/data && echo '--- header ---' && head -c 16 /var/www/data/demo.db; echo"
+                "payload": "ls -l /var/lib/php-demo && echo '--- header ---' && head -c 16 /var/lib/php-demo/demo.db; echo"
               },
               {
                 "id": "php-version",
@@ -92,7 +92,7 @@
         "script": {
           "title": "Service check",
           "language": "sh",
-          "initialText": "curl -s http://127.0.0.1:8080/info.php | sed -n '1,40p'\necho \"--- SQLite database (seeded by PHP-FPM on first load) ---\"\nls -l /var/www/data && head -c 16 /var/www/data/demo.db; echo\necho \"--- service processes ---\"\nlsof | grep -E 'nginx|php-fpm' | head -60 || true"
+          "initialText": "curl -s http://127.0.0.1:8080/info.php | sed -n '1,40p'\necho \"--- SQLite database (seeded by PHP-FPM on first load) ---\"\nls -l /var/lib/php-demo && head -c 16 /var/lib/php-demo/demo.db; echo\necho \"--- service processes ---\"\nlsof | grep -E 'nginx|php-fpm' | head -60 || true"
         }
       }
     },

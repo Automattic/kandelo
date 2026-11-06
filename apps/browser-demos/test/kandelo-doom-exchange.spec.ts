@@ -201,7 +201,7 @@ test("the Doom machine starts with the full-width view and its status bar", asyn
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
   const shell = page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows");
   const shellText = () => shell.evaluate((node) => node.textContent ?? "");
-  await expect.poll(shellText, { timeout: 60_000 }).toMatch(/kandelo\$\s*$/);
+  await expect.poll(shellText, { timeout: 60_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
   await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-screen").click();
   await page.keyboard.insertText("cat ~/.fdoom.tar/default.cfg");
   await page.keyboard.press("Enter");

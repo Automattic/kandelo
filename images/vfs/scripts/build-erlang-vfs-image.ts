@@ -98,11 +98,13 @@ export async function buildErlangVfsImage(
 
   // Standard directories
   ensureDir(fs, "/tmp");
-  fs.chmod("/tmp", 0o777);
+  fs.chmod("/tmp", 0o1777);
   ensureDir(fs, "/home");
+  ensureDirRecursive(fs, "/home/maker");
+  fs.chown("/home/maker", 1000, 1000);
 
   // OTP directory tree
-  const otpRoot = "/usr/local/lib/erlang";
+  const otpRoot = "/usr/lib/erlang";
   ensureDirRecursive(fs, otpRoot);
   const totalFiles = walkAndWrite(fs, installDirectory, otpRoot, {
     preserveMode: true,

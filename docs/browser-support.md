@@ -271,8 +271,9 @@ pipe pair.
 - Shell images provide `/home/projects` and the normal `/home/maker` home as
   image-backed directories owned by `maker`. Homes, `/root`, and `/srv` use
   the rootfs journal on persistent computers, rather than being hidden by
-  RAM-only scratch mounts. `/tmp`, `/var/tmp`, `/var/log`, `/var/run`, and
-  `/dev/shm` remain volatile. Memory-only computers lose all changes on shutdown.
+  RAM-only scratch mounts. `/var/log` and `/var/tmp` also use the persistent
+  rootfs; `/tmp`, `/run`, and `/dev/shm` remain volatile. `/var/run` links to
+  `/run`. Memory-only computers lose all changes on shutdown.
 - The Kandelo page creates temporary, resizable, OPFS-backed computers by default.
   **Release compatibility warning:** saved computers from this release will not
   work in the next release. Export important files before updating Kandelo.
@@ -843,14 +844,14 @@ Located in `apps/browser-demos/pages/`:
 | mariadb-test | MariaDB + mysqltest | dinit + spawn | Playwright-driven mysql-test runner |
 | benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
 | network | bash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
-| doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. The image's `/usr/local/bin/fbdoom` is a launch wrapper around the lazy `/usr/bin/fbdoom`: on first launch it writes `screenblocks 10` (the full-width view with the status bar, rather than Doom's default view inset in a tiled border) into a missing `~/.fdoom.tar/default.cfg`, Doom's own per-user config (fbDOOM reads it at startup and saves its settings there when it quits, as every Doom does; doomgeneric had compiled both out), because Doom has no system-wide config. The managed shareware WAD is installed at `/usr/share/doom/doom1.wad`; custom exchange WADs use `/usr/share/doom/user.wad`. Saves live in `$HOME/.fdoom.tar/savegame/doomsav0.dsg` through `doomsav5.dsg`, and persist on saved or temporary disk-backed computers. Doom does not autosave on quit: use Save Game (F2), then Load Game (F3) after restarting. Doom's Screen Size option still changes it. |
+| doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. The image's `/usr/bin/fbdoom` is a launch wrapper around the lazy `/usr/libexec/fbdoom`: on first launch it writes `screenblocks 10` (the full-width view with the status bar, rather than Doom's default view inset in a tiled border) into a missing `~/.fdoom.tar/default.cfg`, Doom's own per-user config (fbDOOM reads it at startup and saves its settings there when it quits, as every Doom does; doomgeneric had compiled both out), because Doom has no system-wide config. The managed shareware WAD is installed at `/usr/share/doom/doom1.wad`; custom exchange WADs use `/var/games/doom/user.wad`. Saves live in `$HOME/.fdoom.tar/savegame/doomsav0.dsg` through `doomsav5.dsg`, and persist on saved or temporary disk-backed computers. Doom does not autosave on quit: use Save Game (F2), then Load Game (F3) after restarting. Doom's Screen Size option still changes it. |
 | sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package as a lazy file in the image, fetched when the profile first runs it; its shader presets are baked into the image. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
-| modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
-| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
+| modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
+| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
 | freeciv | Freeciv 3.2.6 SDL2 client + server | dinit | Lazy game/data archive, GLES2 presentation, and direct TCP multiplayer through network sessions. The Multiplayer dock menu hosts or joins the session host on port 5556. Audio and multicast discovery are disabled; see [Freeciv](freeciv.md). |
 | love | Native LÖVE 11.5 games | dinit | SDL2 KMSDRM/EGL/GLES port with Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX selectable through the Games dock menu. Starts Pong; switching restarts the process with the selected game directory. The executable and game tree download lazily. SDL2/OSS audio output is verified in Chromium. Steam integration is disabled. See `packages/registry/love/README.md` for the port's compatibility boundaries. |
-| wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
-| omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The desktop data archive also fetches on first read; the terminal-only boot does not download it. |
+| wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
+| omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The desktop data archive also fetches on first read; the terminal-only boot does not download it. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -1093,7 +1094,7 @@ Hyprland launcher (`hyprdesktop`) and its config
 it. As packaged, the Hyprland tiling machine boots the same `wlcompositor`
 binary as a Hyprland-class tiling window manager (the floating Wayland desktop
 above is its default layout). The image declares one command,
-`/usr/local/bin/hyprdesktop`, which starts the compositor with
+`/usr/bin/hyprdesktop`, which starts the compositor with
 `WLC_LAYOUT=dwindle` and the image's hyprland.conf-shaped
 `/usr/share/kandelo/hyprland/wlcompositor.conf` (named by `WLC_CONFIG`),
 waits for its socket, then starts three real clients — one `wlclock` and
@@ -1126,7 +1127,7 @@ two `wlterm` terminals. The foreground terminal's exit ends the desktop.
   each app has its own `exec` bind rather than a launcher/`rofi` UI:
   `Return`→`wlterm`, `K`→`wlclock` (K as in clo**K** — see the caveat),
   `P`→`wlpaint` (again on both `SUPER` and `CTRL`). Pressing the combo makes
-  the compositor `posix_spawnp` the binary from `/usr/local/bin`, and the new
+  the compositor `posix_spawnp` the binary from `/usr/bin`, and the new
   client tiles into the layout. Unlike on the Wayland desktop, `wlpaint`
   is not started in the initial layout, so `Ctrl+P` is how you summon it.
   **Caveat:** the compositor grabs a bound combo before the focused client,
@@ -1162,7 +1163,7 @@ package builds it into `kandelo-desktop-data.zip`, which the shell image
 registers as a verified lazy archive under `/usr/share/kandelo`. Its first
 file read downloads the archive; later reads reuse it. The image declares
 one command,
-`/usr/local/bin/omarchydesktop`, which starts a `dbus-daemon` session bus
+`/usr/bin/omarchydesktop`, which starts a `dbus-daemon` session bus
 and the compositor, waits for both sockets and the compositor's Hyprland
 IPC socket, then starts **Quickshell 0.3.1** on the image's `shell.qml`.
 Nothing is staged by the page.
@@ -1582,7 +1583,7 @@ The ScummVM machine (`?vfs=<shell image>&profile=scummvm`) runs unmodified
 upstream ScummVM fullscreen on `/dev/dri/card0`: SDL2's
 KMSDRM backend takes DRM master and renders GLES2 straight to the display,
 and audio goes through OSS on `/dev/dsp`. The program
-(`/usr/bin/scummvm`) and the GUI data the package declares as runtime files
+(`/usr/libexec/scummvm`) and the GUI data the package declares as runtime files
 (themes, icons and fonts under `/usr/share/scummvm`) are lazy files in the
 shell image, fetched on first use.
 
@@ -1599,7 +1600,7 @@ downloads the program plus the one engine of the game it plays. SDL2's
 `--enable-loadso`), and the program links with `--export-all` so a plugin
 resolves every function it imports against it; the package build fails if
 any plugin import has no export to bind to. The machine's command is
-`/usr/local/bin/scummvm`, a small wrapper in the image that:
+`/usr/bin/scummvm`, a small wrapper in the image that:
 
 - names SDL's backends in the environment. Kandelo has no libudev, so
   SDL's evdev layer only finds the kernel's keyboard and pointer when
@@ -1632,11 +1633,11 @@ The catalog is image content.
 `packages/registry/shell/scummvm-freeware-games.json` lists each game's
 archive URL on `downloads.scummvm.org`, its size, and the SHA-256 the
 ScummVM project publishes beside it; the image builder writes it to
-`/usr/local/share/scummvm-play/games.tsv`, and fails if the ScummVM
+`/usr/share/scummvm-play/games.tsv`, and fails if the ScummVM
 profile's dock menu does not list exactly its games. Each button and menu
 entry is a `dockActions` command: it ends the running ScummVM (the
 framebuffer pane signals the `/dev/fb0` owner, described below), then runs
-`/usr/local/bin/scummvm-play <game>` in the machine's shell. That script
+`/usr/bin/scummvm-play <game>` in the machine's shell. That script
 downloads the archive with the machine's own `curl` — in the browser that
 goes through the CORS proxy described below, because the site grants no CORS
 — reporting a percentage against the catalog size (the guest receives
@@ -1646,7 +1647,7 @@ MiB response limit. If any request fails, it switches to 16 MiB ranges with
 up to three attempts per range. Completed ranges stay downloaded; an
 incomplete attempt is discarded before retrying. If the server ignores
 ranges on a smaller archive, it retries the full request. It then checks the
-SHA-256, unzips into `/usr/share/scummvm-games/<game>`, and deletes the
+SHA-256, unzips into `/var/games/scummvm/<game>`, and deletes the
 archive. ScummVM's own `--add --recursive` then finds the game and records
 it as a launcher target, and the script starts that target; a collection
 (the WAGE games) opens the launcher instead. A failed download or a digest
@@ -1658,7 +1659,7 @@ it again starts it without downloading; nothing persists across a reboot.
 No other game ships with the machine: no Kandelo package carries a commercial
 SCUMM title. Sending a `.zip` to the machine (**Load game data** in the
 display's dock, or a drop) hands it to the machine's scummvm rule (up to
-512 MiB), which extracts it into `/usr/share/scummvm-games` while ScummVM
+512 MiB), which extracts it into `/var/games/scummvm` while ScummVM
 keeps running; the batch's toast says when it is done. ScummVM's "Add Game"
 browser opens in that directory. The extracted game must fit the machine's
 filesystem, which lives in kernel memory beside everything else guests have
@@ -1894,7 +1895,7 @@ External hosts, URL credentials, non-HTTP schemes, invalid ports and invalid
 peer addresses are refused. This does not publish a public URL or isolate guest
 JavaScript from the app's browser origin.
 
-Newly built shell-family images install `/usr/local/bin/kandelo-preview`:
+Newly built shell-family images install `/usr/bin/kandelo-preview`:
 
 ```sh
 python3 -m http.server 3000 --bind 0.0.0.0 --directory /home/projects &
@@ -2021,7 +2022,7 @@ WordPress has one shared core, plugin and theme tree, one PHP-FPM pool, and
 both preinstalled database payloads. New computers have two independent sites:
 SQLite and MariaDB keep separate posts, settings, database files and uploads
 under `/var/lib/wordpress-sites/{sqlite,mariadb}/wp-content`. MariaDB's database
-remains under `/data`; SQLite's is inside its site's content directory.
+remains under `/var/lib/mysql`; SQLite's is inside its site's content directory.
 Per-service nginx configuration selects the site for each request. Switching
 services does not copy WordPress core, migrate a database, or merge the sites.
 Plugin and theme software is shared, not independently isolated. Uploads are
@@ -2638,6 +2639,11 @@ HTML, assets, requests and same-origin iframes still use the bridge.
 
 ## VFS Images
 
+Kandelo-provided images follow the [FHS layout](filesystem-layout.md).
+This governs guest command paths, service content and writable state, for
+both the browser and Node hosts. The app consumes those paths from image
+metadata rather than recreating a second layout after boot.
+
 ### Consumer-owned product selection
 
 VFS product definitions live under `images/vfs/products/` and describe what
@@ -3116,7 +3122,7 @@ before the exchange button:
       "id": "demo",
       "label": "Run the demo",
       "description": "Shown as the button's tooltip",
-      "restart": "/usr/local/bin/run-demo"
+      "restart": "/usr/bin/run-demo"
     },
     {
       "id": "freeware",
@@ -3126,7 +3132,7 @@ before the exchange button:
           "id": "lure",
           "label": "Lure of the Temptress",
           "detail": "6 MB",
-          "restart": "/usr/local/bin/scummvm-play lure"
+          "restart": "/usr/bin/scummvm-play lure"
         },
         {
           "id": "helga-deep-in-trouble",
@@ -3191,7 +3197,7 @@ shared memory at `/dev/shm`; image acceptance should exercise devices such as
 
 KMS demos use the same metadata path. A profile can set
 `runningPrimary` to include `"kms"` and declare an `init.shellCommand` such
-as `/usr/local/bin/modeset`; the VFS image must contain that executable. The
+as `/usr/bin/modeset`; the VFS image must contain that executable. The
 Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
 then runs the image-declared command. Do not add browser-loader branches that
 import or spawn a specific `modeset.wasm` file.
@@ -3352,13 +3358,13 @@ An image selects its terminal program with the strict experimental file
   "kind": "kandelo-experimental-terminal-session",
   "version": 1,
   "initial": {
-    "path": "/usr/bin/login",
+    "path": "/bin/login",
     "argv": ["login", "-p", "-f", "maker"],
     "uid": 0,
     "gid": 0
   },
   "afterExit": {
-    "path": "/usr/bin/login",
+    "path": "/bin/login",
     "argv": ["login", "-p"],
     "uid": 0,
     "gid": 0
@@ -3444,7 +3450,7 @@ Malformed authored modules still fail the audit, with their file path in the
 parse error.
 
 The standalone MariaDB demo and MariaDB test images run `mariadbd` as the
-`mysql` account (uid/gid 101). Their writable `/data` directories are
+`mysql` account (uid/gid 101). Their writable `/var/lib/mysql` directories are
 therefore serialized as `101:101` with mode `0775`; `/tmp` remains a
 root-owned `01777` sticky directory.
 

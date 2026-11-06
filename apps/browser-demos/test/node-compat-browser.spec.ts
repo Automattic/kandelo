@@ -41,7 +41,7 @@ test("packaged Node compatibility supports ESM, isolated vm, zstd and async chil
   await expect.poll(
     () => page.locator(".xterm-rows").first().textContent(),
     { timeout: 180_000 },
-  ).toContain("kandelo$");
+  ).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
   const result = await runTerminalCommand(
     page,
     `printf '%s' ${shellQuote(probe)} > /tmp/node-compat-probe.mjs && node /tmp/node-compat-probe.mjs`,

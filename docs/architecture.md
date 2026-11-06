@@ -2388,6 +2388,10 @@ The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don'
 
 ## Filesystem
 
+Kandelo-provided images use the [FHS layout](filesystem-layout.md).
+Image builders own installed guest paths, aliases, configuration and state
+placement; the kernel does not repair an image's hierarchy after boot.
+
 ### Who owns what
 
 The kernel owns the machine's filesystem namespace. Every path a guest names
@@ -2399,7 +2403,7 @@ it:
 | Prefix | Authority | Module |
 |--------|-----------|--------|
 | `/` (everything not listed below) | in-kernel root filesystem built from the VFS image | `crates/runtime-core/src/rootfs.rs` |
-| `/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/dev/shm` | in-kernel tmpfs | `crates/runtime-core/src/tmpfs.rs` |
+| `/tmp`, `/run`, `/dev/shm` | in-kernel tmpfs | `crates/runtime-core/src/tmpfs.rs` |
 | `/dev` (except `/dev/shm`) | kernel devfs and virtual devices | `crates/runtime-core/src/devfs.rs` |
 | `/proc` | kernel procfs | `crates/runtime-core/src/procfs.rs` |
 | a host directory mounted beneath `/` | the host, one path component at a time | `crates/runtime-core/src/hostdir.rs` |
@@ -4059,18 +4063,18 @@ a host transfer observation, independent of native materialization.
 ### Default mount layout
 
 The canonical layout lives in `host/src/vfs/default-mounts.ts` as
-`DEFAULT_MOUNT_SPEC: MountSpec[]`: `/` is the writable image, and `/tmp`,
-`/var/tmp`, `/var/log` and `/var/run` are
-scratch mounts. `resolveForBrowser` and `resolveForNode` validate a spec and
+`DEFAULT_MOUNT_SPEC: MountSpec[]`: `/` is the writable image, and `/tmp`
+and `/run` are scratch mounts. `/var/run` links to `/run`.
+`resolveForBrowser` and `resolveForNode` validate a spec and
 return only the host-backed mounts that remain after the kernel's share is
 removed. The only image mount a spec may name is `/`. The tmpfs's prefixes,
-their root modes and owners (`/tmp` and `/var/tmp` `1777`,
-`/dev/shm` `1777`) and their `nosuid`
+their root modes and owners (`/tmp` and `/dev/shm` `1777`, `/run` `0755`)
+and their `nosuid`
 come from `SCRATCH_MOUNTS` in `crates/runtime-core/src/tmpfs.rs`, not from the
 spec; the spec keeps them for the host side
-(`KERNEL_TMPFS_OWNED_PREFIXES` must match that table).
+(`KERNEL_TMPFS_OWNED_PREFIXES` identifies the host-visible scratch entries).
 
-Homes (`/home/maker` and `/root`) and `/srv` belong to the root filesystem,
+Homes (`/home/maker` and `/root`), `/srv`, `/var/log` and `/var/tmp` belong to the root filesystem,
 not to scratch mounts. Their initial directories, owners and permissions come
 from the image (`MANIFEST` for the canonical rootfs). Their contents use the
 same bounded caches and journal as other rootfs files on a resizable persistent
@@ -4079,6 +4083,11 @@ These directories inherit rootfs mount flags, not the scratch mounts' `nosuid`.
 This is default mount policy on both hosts, not a new syscall or storage ABI.
 Existing guest binaries use ordinary file operations unchanged. An explicitly
 configured foreign mount can still shadow a rootfs path on Node.
+
+Boot copies image-owned directory metadata beneath `/run` into its fresh
+tmpfs, preserving service and user directory permissions without restoring
+files, sockets or symlinks. Nested kernel mounts keep their own layouts.
+See [the filesystem layout](filesystem-layout.md).
 
 Node may also seed a strict descendant of a host-backed scratch mount through
 `NodeKernelHost.sessionSeedTrees`. The worker copies every quiescent source
@@ -5444,7 +5453,7 @@ The same `wlcompositor` binary is also a Hyprland-class tiling WM (PR14); the fl
 - **Server-side decoration.** The compositor advertises `zxdg_decoration_manager_v1` and negotiates the mode by layout: `dwindle` → `SERVER_SIDE` (a tiled window has no titlebar), `floating` → `CLIENT_SIDE` (the client keeps its CSD titlebar). A libkwl client honors the negotiated mode (`decoration_configure`): under SSD it sets its titlebar height to 0 and treats all pointer events as content, so the tiled desktop looks like Hyprland.
 - **Client-side resize.** The compositor composites each surface at its **native** buffer size (`blit_surface` does not scale to the tile; the one exception is an explicit `wp_viewport` destination, which scales that surface's committed source rect), so tiling requires the *client* to resize into the size the compositor dictates. `retile()` sends `xdg_toplevel.configure(w,h)`; libkwl records it and, on the `xdg_surface.configure` ack barrier, rebuilds both `wl_shm` buffers at the new size and pushes a `KWL_RESIZE` event (new content w/h). Clients react: `wlclock` recomputes its dial geometry, `wlterm` reflows its VT100 grid (`vt100_resize` + `TIOCSWINSZ` + `SIGWINCH`), `wlpaint` reallocates its canvas (preserving the painting) so the toolbar + drawing area fill the whole tile rather than a fixed 640×420 corner. The initial `get_toplevel` `configure(0,0)` ("you decide") is ignored, so a floating client (`/?demo=wayland`) never resizes and is byte-identical to before.
 
-These are entirely in-kernel (client↔compositor over the wayland + `/tmp/kwlctl-0` sockets) — no host-runtime change — and gated by `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration,clipboard}-smoke.test.ts`. The browser's Hyprland machine (the shell image's `hyprland` profile, whose `/usr/local/bin/hyprdesktop` launcher sets `WLC_LAYOUT=dwindle` and `WLC_CONFIG=/usr/share/kandelo/hyprland/wlcompositor.conf`; gated by `apps/browser-demos/test/kandelo-hyprland.spec.ts`) boots the same compositor plus a `wlclock` and two `wlterm` terminals, which tile into gapped borderless frames and resize into their tiles — the first end-to-end Hyprland-class desktop. `wlpaint` is in the image but not started, so the `Ctrl+P` launch bind summons it on demand. See [browser-support.md](browser-support.md#hyprland-tiling-demo).
+These are entirely in-kernel (client↔compositor over the wayland + `/tmp/kwlctl-0` sockets) — no host-runtime change — and gated by `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration,clipboard}-smoke.test.ts`. The browser's Hyprland machine (the shell image's `hyprland` profile, whose `/usr/bin/hyprdesktop` launcher sets `WLC_LAYOUT=dwindle` and `WLC_CONFIG=/usr/share/kandelo/hyprland/wlcompositor.conf`; gated by `apps/browser-demos/test/kandelo-hyprland.spec.ts`) boots the same compositor plus a `wlclock` and two `wlterm` terminals, which tile into gapped borderless frames and resize into their tiles — the first end-to-end Hyprland-class desktop. `wlpaint` is in the image but not started, so the `Ctrl+P` launch bind summons it on demand. See [browser-support.md](browser-support.md#hyprland-tiling-demo).
 
 ### Desktop shell (`zwlr_layer_shell_v1`, `kbar`, `klauncher`, themes)
 
@@ -5604,7 +5613,7 @@ Gated end-to-end by `host/test/foot-smoke.test.ts` (foot on wlcompositor:
 connect, fontconfig+fcft startup, first composited frame through the gbm pool
 path, keys typed into its forked `dash`, clean exit). In the browser, foot is
 a launcher entry of the Omarchy machine — a lazy binary at
-`/usr/local/bin/foot`, with the desktop's `fonts.conf` and Inconsolata under
+`/usr/bin/foot`, with the desktop's `fonts.conf` and Inconsolata under
 `/usr/share/kandelo/fonts` — gated by
 `apps/browser-demos/test/kandelo-omarchy.spec.ts`.
 
@@ -5821,7 +5830,7 @@ upstream 2.4.120, KMS subset only — the kernel implements enough of the
 `DRM_IOCTL_MODE_*` surface for unmodified upstream sources to drive it.
 Packages that depend on these APIs link through `wasm32posix-pkg-config` and
 declare their resulting program artifacts as packages. The `modeset` demo is
-one such package: its VFS image installs `/usr/local/bin/modeset`, and
+one such package: its VFS image installs `/usr/bin/modeset`, and
 `/etc/kandelo/demo.json` selects the KMS surface and the `init.shellCommand`
 that starts it. The browser loader stays generic; it does not special-case
 `modeset.wasm`.
