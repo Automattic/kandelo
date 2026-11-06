@@ -4,9 +4,8 @@
  *
  * Everything shown comes from the session's exchange view
  * (web-libs/kandelo-session/src/exchange-session.ts); the app only decides
- * how to save an output. Chromium's `showSaveFilePicker` streams to disk;
- * elsewhere a stored output is saved through a Blob and `<a download>`, and a
- * streamed one is buffered first ("Buffer and download").
+ * how to save an output (./save-file.ts). Without a streaming save, a
+ * streamed output is buffered first ("Buffer and download").
  */
 import * as React from "react";
 import type {
@@ -15,6 +14,7 @@ import type {
 } from "../../../../../web-libs/kandelo-session/src/exchange-session";
 import { useExchangeBatches, useExchangeOutputs, useKernelHost } from "../kernel-host/react";
 import { pickedItems } from "./exchange-drop";
+import { canStreamSave, saveFile } from "./save-file";
 
 const DONE_VISIBLE_MS = 6000;
 
@@ -71,44 +71,12 @@ const BatchToast: React.FC<{ batch: ExchangeBatchView; onDismiss: (key: string) 
   );
 };
 
-type SaveFilePicker = (options: { suggestedName?: string }) => Promise<{
-  createWritable(): Promise<WritableStream<Uint8Array>>;
-}>;
-
-async function saveOutput(output: ExchangeOutputView, read: () => ReadableStream<Uint8Array>): Promise<boolean> {
-  const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker;
-  if (picker) {
-    let handle;
-    try {
-      handle = await picker({ suggestedName: output.name });
-    } catch (error) {
-      // Only a cancelled dialog is quiet; a refusal (SecurityError when the
-      // page lacks activation, say) is shown on the row.
-      if (error instanceof DOMException && error.name === "AbortError") return false;
-      throw error;
-    }
-    await read().pipeTo(await handle.createWritable());
-    return true;
-  }
-  // No streaming save here: the whole output is held in memory once.
-  const blob = await new Response(read()).blob();
-  const typed = output.mimeType ? new Blob([blob], { type: output.mimeType }) : blob;
-  const url = URL.createObjectURL(typed);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = output.name;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  return true;
-}
-
 const OutputRow: React.FC<{ output: ExchangeOutputView }> = ({ output }) => {
   const host = useKernelHost();
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const exchange = host.getExchange();
-  const streamWithoutPicker = output.kind === "stream"
-    && !(window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker;
+  const streamWithoutPicker = output.kind === "stream" && !canStreamSave();
   const detail = [
     output.size !== undefined ? humanBytes(output.size) : output.kind === "stream" ? "stream" : null,
     output.mimeType ?? null,
@@ -119,7 +87,7 @@ const OutputRow: React.FC<{ output: ExchangeOutputView }> = ({ output }) => {
     setSaving(true);
     setError(null);
     try {
-      if (await saveOutput(output, () => exchange.readOutput(output.id))) exchange.finishOutput(output.id);
+      if (await saveFile(output.name, output.mimeType, () => exchange.readOutput(output.id))) exchange.finishOutput(output.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {

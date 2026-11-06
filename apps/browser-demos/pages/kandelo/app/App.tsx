@@ -17,6 +17,7 @@ import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { Inspector, INSPECTOR_TABS } from "../panes/Inspector";
 import { galleryItemUrl } from "../url-state";
 import { ShareDialog } from "../dialogs/ShareDialog";
+import { DownloadDialog } from "../dialogs/DownloadDialog";
 import type {
   BootDescriptor,
   GalleryItem,
@@ -73,6 +74,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
   const [demoGuidePopup, setDemoGuidePopup] = React.useState<React.ReactNode | null>(null);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
+  const [downloadOpen, setDownloadOpen] = React.useState(false);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
   const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
@@ -519,6 +521,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
         )}
 
         {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
+        {downloadOpen && surface.status === "running" && <DownloadDialog onClose={() => setDownloadOpen(false)} />}
 
         {networkSession.open && <NetworkPanel session={networkSession} activity={packageSessions} running={surface.status === "running"} failed={surface.status === "error"} />}
 
@@ -526,6 +529,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
           onSendFiles={surface.status === "running" && exchangeConsumer && exchangeConsumer.state !== "unavailable"
             ? exchangePicker.open
             : undefined}
+          onDownloadFiles={surface.status === "running" ? () => setDownloadOpen(true) : undefined}
           networkPhase={networkSession.state.phase}
           onOpenNetwork={() => networkSession.setOpen(true)}
           minimal={presentation.dock === "minimal"}
