@@ -275,9 +275,9 @@ echo json_encode([
         }
         const serviceLog = await kernel.readFileFromVfs(`/var/log/${serviceName}.log`);
         if (!serviceLog) throw new Error("FrankenPHP service log missing");
-        const graceful = serviceName === "frankenphp-caddy"
-          ? await verifyFrankenPhpGracefulShutdown(kernel, 8080, processExits.waitForExit)
-          : undefined;
+        const graceful = await verifyFrankenPhpGracefulShutdown(
+          kernel, 8080, processExits.waitForExit, serviceName,
+        );
         return {
           graceful,
           opcacheStatus: opcacheResponse.status,
@@ -338,8 +338,8 @@ echo json_encode([
     expect(result.parallelEditorCompleted).toBe(parallelEditorRequests);
     if (serviceName === "frankenphp-caddy") {
       expect(result.restarted).toBe(true);
-      expect(result.graceful).toMatchObject({ listenerClosed: true, status: 200, serverExit: 0, stopExit: 0 });
     }
+    expect(result.graceful).toMatchObject({ listenerClosed: true, status: 200, serverExit: 0, stopExit: 0 });
     expect(result.serviceLog).toContain(serviceName === "frankenphp-caddy" ? '"num_threads":6' : "num_threads=6");
     expect(result.diagnostics).toEqual([]);
     const drained = result.shutdown.filter(event => event.phase === "draining").at(-1);

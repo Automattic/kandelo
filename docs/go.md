@@ -75,6 +75,11 @@ inside FrankenPHP. The Caddy profile uses Caddy's HTTP routing; the classic
 profile uses a smaller Go HTTP entry point. The same image also provides
 nginx/PHP-FPM for comparison.
 
+The generated services allow 30 seconds before forced termination. Classic
+HTTP shutdown and Caddy's configured grace period allow 20 seconds to drain
+requests before PHP cleanup. Actual request-draining validation on the final
+image remains a release gate recorded in the implementation checkpoint.
+
 These profiles use the classic PHP request lifecycle and file-cache-only
 OPcache. They do not provide a persistent WordPress PHP worker or a full-page
 cache. The [paired stack benchmark](../benchmarks/wordpress-stack.ts) measures

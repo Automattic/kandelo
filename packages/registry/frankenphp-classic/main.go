@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/dunglas/frankenphp"
@@ -17,16 +20,22 @@ import (
 const documentRoot = "/var/www/html"
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	threadCount := 2
 	if value := os.Getenv("FRANKENPHP_NUM_THREADS"); value != "" {
 		configured, err := strconv.Atoi(value)
 		if err != nil || configured < 1 {
-			log.Fatal("FRANKENPHP_NUM_THREADS must be a positive integer")
+			return errors.New("FRANKENPHP_NUM_THREADS must be a positive integer")
 		}
 		threadCount = configured
 	}
 	if err := frankenphp.Init(frankenphp.WithNumThreads(threadCount)); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer frankenphp.Shutdown()
 
@@ -41,12 +50,31 @@ func main() {
 	}
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
+	defer server.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(listener) }()
 	log.Printf("FrankenPHP classic listening on %s", address)
-	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+	select {
+	case err := <-served:
+		if !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+	case <-ctx.Done():
+		// Finish PHP handlers before the deferred embedded-runtime shutdown.
+		shutdown, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdown); err != nil {
+			return err
+		}
+		if err := <-served; !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
 	}
+	return nil
 }
 
 func serveRequest(response http.ResponseWriter, request *http.Request) {

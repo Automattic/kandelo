@@ -343,7 +343,8 @@ function buildServices(): DinitService[] {
       logfile: "/var/log/frankenphp-classic.log",
       restart: false,
       noDefaultEnvFile: true,
-      extra: [`env-file = ${FRANKENPHP_ENV_PATH}`],
+      // Allow the 20-second HTTP drain plus PHP thread cleanup before SIGKILL.
+      extra: [`env-file = ${FRANKENPHP_ENV_PATH}`, "stop-timeout = 30"],
     },
     {
       name: "frankenphp-caddy",
@@ -354,7 +355,8 @@ function buildServices(): DinitService[] {
       restart: true,
       restartDelay: 1,
       noDefaultEnvFile: true,
-      extra: [`env-file = ${FRANKENPHP_ENV_PATH}`],
+      // Allow the 20-second HTTP drain plus PHP thread cleanup before SIGKILL.
+      extra: [`env-file = ${FRANKENPHP_ENV_PATH}`, "stop-timeout = 30"],
     },
   ];
 }
@@ -426,6 +428,7 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
   writeVfsFile(fs, FRANKENPHP_CADDY_CONFIG_PATH, `{
 \tadmin off
 \tauto_https off
+\tgrace_period 20s
 
 \tfrankenphp {
 \t\tnum_threads 6

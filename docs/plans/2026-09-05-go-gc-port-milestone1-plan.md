@@ -6,13 +6,13 @@ The work now extends beyond the original hello-world milestone below.
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
 on ABI 55 and latest main `21cfba152` (fetched again November 5).
 
-The package source pin is `930124371e660e1a2cac92cd7f78771a7716bc31`, which
-adds cooperative Go signals, fatal Go tracebacks, shared libc cgo syscall
-dispatch, and the existing host heap-safepoint integration. The revision-35
-WordPress rebuild and actual Caddy/PHP shutdown validation are pending;
-the revision-32 app evidence below remains tied to Go fork `c925e9c`.
-The subsequent callback source commit `29e2118` is pushed and tested but
-not yet pinned in a package image.
+The package source pin is `29e21182116f32de46a7792402860a88ccb1178c`,
+including cooperative Go signals, fatal Go tracebacks, shared libc cgo
+syscall dispatch, host heap-safepoint integration, and the tested callback
+system-stack correction. WordPress revision 36 adds classic HTTP graceful
+shutdown and aligned HTTP/service stop deadlines. Its normal image rebuild
+and actual PHP shutdown validation are pending; the revision-32 app evidence
+below remains tied to Go fork `c925e9c`.
 
 - The revision-32 WordPress image runs actual embedded PHP through both
   FrankenPHP classic and Caddy. Six visible Chromium cases prove
@@ -52,9 +52,8 @@ checkpoint. They must not be read as current production-readiness claims.
 
 ### Remaining release gates
 
-1. Finish the current source build, then pin the tested Go callback fix
-   `29e2118`, add classic-mode HTTP/PHP graceful shutdown, and rebuild the
-   final consumer image through the normal package graph.
+1. Finish the normal final-image build with Go `29e2118`, WordPress revision
+   36, classic HTTP/PHP graceful shutdown, and aligned service deadlines.
 2. Prove that each real FrankenPHP service completes an in-flight PHP
    request after SIGTERM and exits normally. The shared Node/browser probe
    is prepared but has not executed against the rebuilt image.
@@ -5472,3 +5471,26 @@ dinit, Go, or PHP. This image-input patch is not applied during the active
 build; it belongs with WordPress revision 36 and the final source pin.
 Patch applicability and browser-runner shell syntax pass. Actual application
 shutdown evidence remains pending coherent image publication.
+
+**2026-11-05 — Apply the final consumer pin and shutdown implementation.**
+The revision-35 full-product job is deliberately stopped through its verified
+supervisor after 4h29m (exit 143), while starting SpiderMonkey. Its process
+group is confirmed empty before registry edits. Completed source-cache
+entries, including Clang, PHP-ZTS, ScummVM, and Freeciv, remain available;
+no cache is deleted. This avoids publishing a known superseded image before
+the final source pin and deadline corrections. The independent baseline
+build continues unchanged, now instrumenting Clang's wasm-ld.
+
+All four Go consumers now pin the tested `29e2118` source. The classic entry
+point uses standard `signal.NotifyContext` and `http.Server.Shutdown`, waits
+for active PHP handlers, and performs deferred PHP cleanup before returning
+an error to `main`. Deferred HTTP close also covers abnormal Serve returns.
+Both image services allow 30 seconds before supervisor SIGKILL; both HTTP
+servers have a 20-second grace period. WordPress is revision 36.
+
+Node and browser service cases now require the held-PHP drain for both
+profiles. The helper passes strict host TypeScript checking and the Go
+source passes formatting inspection. The normal final build also includes
+standalone Caddy, MariaDB64, and both dormant MariaDB VFS images for the
+remaining validation scope, without changing shipped product exposure.
+Actual final-image build and application evidence remain pending.
