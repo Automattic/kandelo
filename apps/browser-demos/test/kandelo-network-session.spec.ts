@@ -450,7 +450,7 @@ test("a Doom host starts a LAN game before every player has joined", async ({ br
     await expect.poll(() => terminalLines(joiner), { timeout: 30_000 }).toContain("NET_WaitForLaunch: cancelled.");
     await expect.poll(() => terminalLines(page), { timeout: 60_000 }).toMatch(/1 of 4 players have joined\.\s*$/);
     // Quitting Doom leaves the shell; the player starts it again there.
-    await typeAtPrompt(joiner, "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -autojoin");
+    await typeAtPrompt(joiner, "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -autojoin");
     await expect.poll(() => terminalLines(page), { timeout: 90_000 }).toMatch(/2 of 4 players have joined\.\s*$/);
     // The waiting room starts the game with Space, as chocolate-doom's does.
     await pressKeys(page, ["Space"]);

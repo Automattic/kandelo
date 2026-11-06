@@ -283,7 +283,7 @@ const ETC_PASSWD = [
   "root:x:0:0:root:/root:/bin/bash",
   "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin",
   "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin",
-  "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin",
+  "www-data:x:33:33:www-data:/srv/www:/usr/sbin/nologin",
   "redis:x:100:100:redis:/var/lib/redis:/usr/sbin/nologin",
   "mysql:x:101:101:mysql:/var/lib/mysql:/usr/sbin/nologin",
   "maker:x:1000:1000:maker:/home/maker:/bin/bash",
@@ -373,7 +373,7 @@ export interface PathReadinessServiceOptions {
   path: string;
   /** Services that must be started before the readiness check runs. */
   dependsOn?: string[];
-  /** Script path written into the image. Defaults under /usr/local/bin. */
+  /** Private service script written into the image, under /usr/libexec/kandelo. */
   scriptPath?: string;
   /** Human-readable label used in timeout output. */
   label?: string;
@@ -387,7 +387,7 @@ export function addPathReadinessService(
   fs: VfsImageFilesystem,
   options: PathReadinessServiceOptions,
 ): DinitService {
-  const scriptPath = options.scriptPath ?? `/usr/local/bin/${options.name}`;
+  const scriptPath = options.scriptPath ?? `/usr/libexec/kandelo/${options.name}`;
   const timeoutSeconds = options.timeoutSeconds ?? 60;
   const label = options.label ?? options.name;
 

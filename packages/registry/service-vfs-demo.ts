@@ -165,7 +165,7 @@ export function configureWordPressRuntime(
     const wpConfig = readVfsText(fs, "/etc/wp-config-template.php")
       .replaceAll("@@APP_PATH@@", "/")
       .replaceAll("@@PROTO@@", "http");
-    writeVfsFile(fs, "/var/www/html/wp-config.php", wpConfig);
+    writeVfsFile(fs, "/srv/www/html/wp-config.php", wpConfig);
   } catch {
     // Not every web service image has WordPress.
   }
@@ -182,7 +182,7 @@ export function configureWordPressRuntime(
 
   if (options.freshSqliteDatabase) {
     try {
-      fs.unlink("/var/www/html/wp-content/database/wordpress.db");
+      fs.unlink("/var/lib/wordpress/sqlite/wordpress.db");
     } catch {
       // Fresh release images do not contain an installed database.
     }

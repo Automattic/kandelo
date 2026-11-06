@@ -30,7 +30,7 @@ function copyRequiredFixtureTree(
   name: "include" | "std_data",
 ): void {
   const source = join(mysqlTestDir, name);
-  const count = walkAndWrite(fs, source, `/mysql-test/${name}`);
+  const count = walkAndWrite(fs, source, `/var/lib/kandelo-tests/mariadb/${name}`);
   if (count === 0) {
     throw new Error(`Required MariaDB test fixture tree is empty: ${source}`);
   }
@@ -59,11 +59,11 @@ export function copyMariaDbTestSources(
     throw new Error("MariaDB test source selection contains duplicate entries");
   }
 
-  ensureDirRecursive(fs, "/mysql-test/main");
+  ensureDirRecursive(fs, "/var/lib/kandelo-tests/mariadb/main");
   for (const fileName of testFiles) {
     writeVfsBinary(
       fs,
-      `/mysql-test/main/${fileName}`,
+      `/var/lib/kandelo-tests/mariadb/main/${fileName}`,
       requireRegularTestSource(join(mainDir, fileName)),
       0o644,
     );

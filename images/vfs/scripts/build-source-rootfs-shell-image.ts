@@ -93,9 +93,7 @@ export interface SourceRootfsShellInputs {
 // the sh aliases, not only the bash names, so a regression cannot pass.
 const REQUIRED_BASH_ALIASES = [
   "/bin/bash",
-  "/usr/bin/bash",
   "/bin/sh",
-  "/usr/bin/sh",
 ] as const;
 
 /**
@@ -107,7 +105,7 @@ const REQUIRED_BASH_ALIASES = [
  * machine boots, and eager programs accumulate one convenient addition at a
  * time — 2.4 MB of compressed image had grown to 4.1 MB this way.
  */
-const EAGER_SHELL_PROGRAMS: ReadonlySet<string> = new Set(["/usr/bin/bash"]);
+const EAGER_SHELL_PROGRAMS: ReadonlySet<string> = new Set(["/bin/bash"]);
 const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d] as const;
 export const SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES = [
   ...readSourceRootfsShellResolverDependencies(),
@@ -243,24 +241,24 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
     command: "/usr/bin/freeciv-play",
   },
   love: {
-    executable: "/usr/local/bin/love",
-    command: "/usr/local/bin/love /usr/share/love/examples/pong",
+    executable: "/usr/bin/love",
+    command: "/usr/bin/love /usr/share/love/examples/pong",
   },
   doom: {
-    executable: "/usr/local/bin/doom-launch",
-    command: "/usr/local/bin/doom-launch",
+    executable: "/usr/bin/doom-launch",
+    command: "/usr/bin/doom-launch",
   },
   modeset: {
-    executable: "/usr/local/bin/modeset",
-    command: "/usr/local/bin/modeset",
+    executable: "/usr/bin/modeset",
+    command: "/usr/bin/modeset",
   },
   quake: {
-    executable: "/usr/local/bin/quake",
-    command: "/usr/local/bin/quake",
+    executable: "/usr/bin/quake",
+    command: "/usr/bin/quake",
   },
   scummvm: {
-    executable: "/usr/local/bin/scummvm",
-    command: "/usr/local/bin/scummvm",
+    executable: "/usr/bin/scummvm",
+    command: "/usr/bin/scummvm",
   },
   "ffmpeg-fbdev": {
     executable: "/usr/bin/ffmpeg",
@@ -322,21 +320,21 @@ const SUPERVISE_FUNCTION = `supervise() {
 `;
 
 /**
- * fbDOOM's machine command, /usr/local/bin/doom-launch: DOOM with the user's
+ * fbDOOM's machine command, /usr/bin/doom-launch: DOOM with the user's
  * WAD when one has been sent to the machine, else the shareware one, under
  * the supervisor above. The doom WAD handler writes the user's WAD and sends
  * SIGHUP, so the next DOOM plays it.
  */
 const DOOM_LAUNCH_SCRIPT = `#!/bin/sh
-USER_WAD=/usr/share/doom/user.wad
+USER_WAD=/var/games/doom/user.wad
 ${SUPERVISE_FUNCTION}
 start_engine() {
     wad=/usr/share/doom/doom1.wad
     [ -f "$USER_WAD" ] && wad="$USER_WAD"
-    /usr/local/bin/fbdoom -iwad "$wad" "$@" <&3 3<&- &
+    /usr/bin/fbdoom -iwad "$wad" "$@" <&3 3<&- &
     engine=$!
 }
-supervise /tmp/doom-launch.pid "$@"
+supervise /run/user/1000/doom-launch.pid "$@"
 `;
 
 /**
@@ -356,9 +354,9 @@ first_entry() { for entry in "$batch"/*; do echo "$entry"; return; done; }
 `;
 
 const DOOM_LOAD_WAD_HANDLER = `${GAME_HANDLER_PRELUDE}
-pid=$(wrapper_pid /tmp/doom-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
+pid=$(wrapper_pid /run/user/1000/doom-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
 wad=$(first_entry)
-cp "$wad" /usr/share/doom/user.wad.tmp && mv -f /usr/share/doom/user.wad.tmp /usr/share/doom/user.wad || {
+cp "$wad" /var/games/doom/user.wad.tmp && mv -f /var/games/doom/user.wad.tmp /var/games/doom/user.wad || {
     status "failed: could not store the WAD"
     exit 1
 }
@@ -367,9 +365,9 @@ kill -HUP "$pid"
 `;
 
 const QUAKE_LOAD_PAK_HANDLER = `${GAME_HANDLER_PRELUDE}
-pid=$(wrapper_pid /tmp/quake-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
+pid=$(wrapper_pid /run/user/1000/quake-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
 pak=$(first_entry)
-dest=/usr/share/quake/id1/pak0.pak
+dest=/var/games/quake/id1/pak0.pak
 cp "$pak" "$dest.tmp" && mv -f "$dest.tmp" "$dest" || {
     status "failed: could not store the pak"
     exit 1
@@ -379,8 +377,8 @@ kill -HUP "$pid"
 `;
 
 const SCUMMVM_LOAD_ZIP_HANDLER = `${GAME_HANDLER_PRELUDE}
-wrapper_pid /tmp/scummvm-launch.pid >/dev/null || exec /usr/libexec/kandelo/exchange-save "$batch"
-GAMES=/usr/share/scummvm-games
+wrapper_pid /run/user/1000/scummvm-launch.pid >/dev/null || exec /usr/libexec/kandelo/exchange-save "$batch"
+GAMES=/var/games/scummvm
 for zip in "$batch"/*; do
     if ! unzip -o -q "$zip" -d "$GAMES"; then
         status "failed: $(basename "$zip") is not a zip archive"
@@ -414,9 +412,9 @@ const GAME_EXCHANGE_RULES: ReadonlyArray<{ name: string; handler: string; script
 
 /**
  * The Quake software demo's launch wrapper, written eagerly to
- * /usr/local/bin/quake. It extracts id1/pak0.pak from id's original shareware
+ * /usr/bin/quake. It extracts id1/pak0.pak from id's original shareware
  * archive on first launch using the image's own lazy tools (unzip -> lha), then
- * execs the lazy engine at /usr/bin/quake with the shareware basedir. Using an
+ * execs the lazy engine at /usr/libexec/quake with the shareware basedir. Using an
  * absolute engine path avoids recursing back into this wrapper via PATH. The
  * step is idempotent and surfaces failure honestly; the engine then reports its
  * own missing-data error rather than faking success. The engine runs under
@@ -424,23 +422,23 @@ const GAME_EXCHANGE_RULES: ReadonlyArray<{ name: string; handler: string; script
  */
 const QUAKE_LAUNCH_SCRIPT = `#!/bin/sh
 set -e
-BASE=/usr/share/quake
+BASE=/var/games/quake
 PAK="$BASE/id1/pak0.pak"
-ZIP="$BASE/quake106.zip"
+ZIP=/usr/share/quake/quake106.zip
 if [ ! -f "$PAK" ] && [ -f "$ZIP" ]; then
-    /usr/local/bin/quake-data shareware "$ZIP" "$BASE"
+    /usr/bin/quake-data shareware "$ZIP" "$BASE"
 fi
 ${SUPERVISE_FUNCTION}
 start_engine() {
-    /usr/bin/quake -basedir "$BASE" "$@" <&3 3<&- &
+    /usr/libexec/quake -basedir "$BASE" "$@" <&3 3<&- &
     engine=$!
 }
-supervise /tmp/quake-launch.pid "$@"
+supervise /run/user/1000/quake-launch.pid "$@"
 `;
 
 /**
- * fbDOOM's launch wrapper, written eagerly to /usr/local/bin/fbdoom; the
- * engine is the lazy /usr/bin/fbdoom. Doom keeps its settings in the user's
+ * fbDOOM's launch wrapper, written eagerly to /usr/bin/fbdoom; the
+ * engine is the lazy /usr/libexec/fbdoom. Doom keeps its settings in the user's
  * config file ($HOME/.fdoom.tar/default.cfg, read at startup and saved again
  * when Doom quits; fbdoom's 0009 patch restores both) and has no system-wide
  * one. As a distribution's skeleton files would, the wrapper writes
@@ -459,12 +457,12 @@ const FBDOOM_LAUNCH_SCRIPT = `#!/bin/sh
 if [ -n "\${HOME:-}" ] && [ ! -e "$HOME/.fdoom.tar/default.cfg" ]; then
     mkdir -p "$HOME/.fdoom.tar" && printf 'screenblocks 10\\n' > "$HOME/.fdoom.tar/default.cfg"
 fi
-exec /usr/bin/fbdoom "$@"
+exec /usr/libexec/fbdoom "$@"
 `;
 
 /**
- * The ScummVM demo's launch wrapper, written eagerly to /usr/local/bin/scummvm.
- * It execs the lazy engine at /usr/bin/scummvm (an absolute path, so PATH
+ * The ScummVM demo's launch wrapper, written eagerly to /usr/bin/scummvm.
+ * It execs the lazy engine at /usr/libexec/scummvm (an absolute path, so PATH
  * cannot recurse into this wrapper) after two pieces of setup:
  *
  * - SDL's display follows where it is launched. Inside a Wayland session (a
@@ -498,7 +496,7 @@ exec /usr/bin/fbdoom "$@"
  */
 const SCUMMVM_LAUNCH_SCRIPT = `#!/bin/sh
 set -e
-GAMES=/usr/share/scummvm-games
+GAMES=/var/games/scummvm
 INI="\${HOME:-/home/maker}/scummvm.ini"
 if [ ! -f "$INI" ]; then
     printf '[scummvm]\\ngui_scale=100\\nbrowser_lastpath=%s\\n' "$GAMES" > "$INI"
@@ -511,10 +509,10 @@ fi
 set +e
 ${SUPERVISE_FUNCTION}
 start_engine() {
-    /usr/bin/scummvm --config="$INI" "$@" <&3 3<&- &
+    /usr/libexec/scummvm --config="$INI" "$@" <&3 3<&- &
     engine=$!
 }
-supervise /tmp/scummvm-launch.pid "$@"
+supervise /run/user/1000/scummvm-launch.pid "$@"
 `;
 
 /**
@@ -537,8 +535,8 @@ supervise /tmp/scummvm-launch.pid "$@"
 const SCUMMVM_FREEWARE_CATALOG_SOURCE = fileURLToPath(
   new URL("../../../packages/registry/shell/scummvm-freeware-games.json", import.meta.url),
 );
-const SCUMMVM_PLAY_CATALOG = "/usr/local/share/scummvm-play/games.tsv";
-const SCUMMVM_PLAY_COMMAND = "/usr/local/bin/scummvm-play";
+const SCUMMVM_PLAY_CATALOG = "/usr/share/scummvm-play/games.tsv";
+const SCUMMVM_PLAY_COMMAND = "/usr/bin/scummvm-play";
 /** The dock action whose menu lists the catalog. */
 const SCUMMVM_FREEWARE_MENU_ACTION = "freeware";
 
@@ -681,7 +679,7 @@ function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
 }
 
 /**
- * `/usr/local/bin/scummvm-play GAME`, the ScummVM machine's dock actions:
+ * `/usr/bin/scummvm-play GAME`, the ScummVM machine's dock actions:
  * fetch a catalog game, verify it, unpack it, and start it. `--list` prints
  * the catalog, so the same games are a command away in the terminal.
  *
@@ -709,7 +707,7 @@ function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
 export const SCUMMVM_PLAY_SCRIPT = `#!/bin/sh
 set -e
 CATALOG=${SCUMMVM_PLAY_CATALOG}
-GAMES=/usr/share/scummvm-games
+GAMES=/var/games/scummvm
 TAB=$(printf '\\t')
 RANGE_LIMIT=$((100 * 1024 * 1024))
 RANGE_SIZE=$((32 * 1024 * 1024))
@@ -845,16 +843,16 @@ if [ ! -f "$DIR/.targets" ]; then
     fi
     rm -f "$ZIP"
     say "Adding it to ScummVM..."
-    /usr/local/bin/scummvm --add --recursive -p "$DIR" \\
+    /usr/bin/scummvm --add --recursive -p "$DIR" \\
         | sed -n 's/^  Target: *//p' > "$DIR/.targets.partial"
     mv "$DIR/.targets.partial" "$DIR/.targets"
 fi
 if [ "$(grep -c . "$DIR/.targets" || true)" = 1 ]; then
     say "Starting $TITLE..."
-    exec /usr/local/bin/scummvm "$(cat "$DIR/.targets")"
+    exec /usr/bin/scummvm "$(cat "$DIR/.targets")"
 fi
 say "Opening the ScummVM launcher; $TITLE is in its game list"
-exec /usr/local/bin/scummvm
+exec /usr/bin/scummvm
 `;
 
 export function composeSourceRootfsDemoConfig(
@@ -1673,13 +1671,13 @@ export async function buildSourceRootfsShellImage(
   requireManSupersededByMandoc(fs, priorManIdentity);
   requireCompleteProductShellContract(fs);
 
-  ensureDirRecursive(fs, "/usr/local/bin");
+  ensureDirRecursive(fs, "/usr/bin");
   // The desktops' launchers are small scripts, written eagerly. Every Wasm
   // program they exec (wlcompositor, wlterm, foot, Quickshell, ...)
   // is a lazy file registered by the overlay above, so a machine that never
   // starts a desktop never fetches them.
-  writeVfsBinary(fs, "/usr/local/bin/wldesktop", wldesktop, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/omarchydesktop", omarchydesktop, 0o755);
+  writeVfsBinary(fs, "/usr/bin/wldesktop", wldesktop, 0o755);
+  writeVfsBinary(fs, "/usr/bin/omarchydesktop", omarchydesktop, 0o755);
   // WHY: CA, speech and desktop data need not be fetched to boot a shell.
   // Register the exact package ZIPs at their compiled-in guest paths: normal
   // open/read triggers a verified first-use fetch on both Node and browser.
@@ -1698,7 +1696,7 @@ export async function buildSourceRootfsShellImage(
   // fbDOOM is a lazy /usr/bin binary; only its launch wrapper is eager.
   writeVfsBinary(
     fs,
-    "/usr/local/bin/fbdoom",
+    "/usr/bin/fbdoom",
     new TextEncoder().encode(FBDOOM_LAUNCH_SCRIPT),
     0o755,
   );
@@ -1706,25 +1704,21 @@ export async function buildSourceRootfsShellImage(
   // small extraction+launch wrapper is written eagerly.
   writeVfsBinary(
     fs,
-    "/usr/local/bin/quake",
+    "/usr/bin/quake",
     new TextEncoder().encode(QUAKE_LAUNCH_SCRIPT),
     0o755,
   );
-  // The quake profile stages quake106.zip into this basedir at page load, and
-  // the wrapper (running as the unprivileged demo user) extracts id1/pak0.pak
-  // beneath it. The directory must exist (the asset writer does not create
-  // parents) and be world-writable so the demo user can create id1/ and write
-  // the extracted pak.
+  // The verified shareware archive is static data. The unprivileged wrapper
+  // extracts its playable data into /var/games/quake, never into /usr.
   ensureDirRecursive(fs, "/usr/share");
-  ensureDirRecursive(fs, "/usr/share/quake", 0o777);
+  ensureDirRecursive(fs, "/usr/share/quake");
   // ScummVM: the engine, its plugins and its GUI data are lazy; only the launch
   // wrapper, scummvm-play and its catalog are eager. Game data is either the
   // user's own upload or a freeware game scummvm-play fetches; both land in
-  // this directory and the unprivileged demo user unzips them in place — it
-  // must be world-writable, like the Quake basedir above.
+  // /var/games/scummvm; the image account owns that mutable game directory.
   writeVfsBinary(
     fs,
-    "/usr/local/bin/scummvm",
+    "/usr/bin/scummvm",
     new TextEncoder().encode(SCUMMVM_LAUNCH_SCRIPT),
     0o755,
   );
@@ -1734,19 +1728,18 @@ export async function buildSourceRootfsShellImage(
     new TextEncoder().encode(SCUMMVM_PLAY_SCRIPT),
     0o755,
   );
-  ensureDirRecursive(fs, "/usr/local/share/scummvm-play");
+  ensureDirRecursive(fs, "/usr/share/scummvm-play");
   writeVfsBinary(
     fs,
     SCUMMVM_PLAY_CATALOG,
     new TextEncoder().encode(scummvmPlayCatalogTsv(scummvmCatalog)),
     0o644,
   );
-  ensureDirRecursive(fs, "/usr/share/scummvm-games", 0o777);
+  ensureDirRecursive(fs, "/var/games/scummvm");
   // DOOM: the machine command supervises fbdoom; a WAD sent to the machine
-  // lands in /usr/share/doom, world-writable like the game directories above
-  // because the exchange handler runs as the unprivileged handler account.
-  writeVfsBinary(fs, "/usr/local/bin/doom-launch", new TextEncoder().encode(DOOM_LAUNCH_SCRIPT), 0o755);
-  ensureDirRecursive(fs, "/usr/share/doom", 0o777);
+  // lands in /var/games/doom, owned by the unprivileged handler account.
+  writeVfsBinary(fs, "/usr/bin/doom-launch", new TextEncoder().encode(DOOM_LAUNCH_SCRIPT), 0o755);
+  ensureDirRecursive(fs, "/usr/share/doom");
   // The game machines' Kandelo exchange handlers and their rules. The rules
   // go in the image's rule directory, which the base rootfs declares
   // (images/rootfs/MANIFEST) with the ownership kxchgd checks; creating it
@@ -1768,10 +1761,15 @@ export async function buildSourceRootfsShellImage(
     writeVfsBinary(fs, `${rulesDir}/${name}`, new TextEncoder().encode(rule), 0o644);
   }
   // Create the id1 game dir too: the pak handler writes
-  // /usr/share/quake/id1/pak0.pak directly, and that path must work even
+  // /var/games/quake/id1/pak0.pak directly, and that path must work even
   // offline when no quake106.zip was staged and the wrapper's own
   // `mkdir -p id1` never ran.
-  ensureDirRecursive(fs, "/usr/share/quake/id1", 0o777);
+  ensureDirRecursive(fs, "/var/games/quake/id1");
+  ensureDirRecursive(fs, "/var/games/doom");
+  for (const path of ["/var/games/quake", "/var/games/quake/id1", "/var/games/doom", "/var/games/scummvm"]) {
+    fs.chown(path, 1000, 1000);
+    fs.chmod(path, 0o755);
+  }
   writeSdl2ShaderPresets(fs);
   // WHY: the package shell must not promise optional programs it does not own.
   // Bind its extra profiles to executable bytes so a metadata-only edit cannot

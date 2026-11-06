@@ -248,7 +248,7 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   await gotoApp(page, "/?profile=wayland");
 
   // The desktop boot is heavy (four wasm programs + a forkpty'd shell).
-  // The image declares one command, /usr/local/bin/wldesktop, which brings
+  // The image declares one command, /usr/bin/wldesktop, which brings
   // the compositor up and then starts the clients; wait for the tick that
   // fires when the host runs it. The display pane reports its size before
   // that (live-setup waits for it), so the compositor's mode follows the
@@ -256,11 +256,11 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/running \/usr\/local\/bin\/wldesktop/);
+    .toMatch(/running \/usr\/bin\/wldesktop/);
   const bootLog = await syslogText(page);
   expect(bootLog, "wayland setup reported failure").not.toMatch(SETUP_FAILURE);
   expect(bootLog, "display size was not reported before the command ran")
-    .toMatch(/display: \d+×\d+ device px[\s\S]*running \/usr\/local\/bin\/wldesktop/);
+    .toMatch(/display: \d+×\d+ device px[\s\S]*running \/usr\/bin\/wldesktop/);
 
   // Gate 1a: all three clients connected to the compositor.
   await expectTerminal(page, /CLIENT_CONNECTED count=3/, 120_000);

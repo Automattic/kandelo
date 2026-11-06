@@ -39,10 +39,10 @@ const NPM_RUNNER = `const invoked = process.argv[2] || 'npm';
 process.argv.splice(2, 1);
 process.argv[1] = invoked === 'npx' ? '/usr/bin/npx' : '/usr/bin/npm';
 if (invoked === 'npx') {
-  process.argv[1] = '/usr/local/lib/npm/bin/npm-cli.js';
+  process.argv[1] = '/usr/lib/npm/bin/npm-cli.js';
   process.argv.splice(2, 0, 'exec');
 }
-const run = require('/usr/local/lib/npm/lib/cli.js');
+const run = require('/usr/lib/npm/lib/cli.js');
 let settled = false;
 let failure = null;
 Promise.resolve(run(process)).then(
@@ -155,14 +155,14 @@ function patchNpmForSpiderMonkey(npmDir: string): void {
       import('chalk'),
       import('supports-color'),
     ])`,
-      `const { Chalk, createSupportsColor } = require('/usr/local/lib/kandelo/npm-display-shim.js')`,
+      `const { Chalk, createSupportsColor } = require('/usr/lib/kandelo/npm-display-shim.js')`,
       "import('chalk')",
     ],
   ]);
   patchHostText(join(npmDir, "lib/commands/token.js"), [
     [
       `const { v4: isCidrV4, v6: isCidrV6 } = await import('is-cidr')`,
-      `const { v4: isCidrV4, v6: isCidrV6 } = require('/usr/local/lib/kandelo/is-cidr-shim.js')`,
+      `const { v4: isCidrV4, v6: isCidrV6 } = require('/usr/lib/kandelo/is-cidr-shim.js')`,
       "import('is-cidr')",
     ],
   ]);
@@ -473,12 +473,12 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         extraMounts: [
           { mountPoint: "/tmp", hostPath: tmpMountDir, readonly: false },
           {
-            mountPoint: "/usr/local/lib/npm",
+            mountPoint: "/usr/lib/npm",
             hostPath: npmDir,
             readonly: true,
           },
           {
-            mountPoint: "/usr/local/lib/kandelo",
+            mountPoint: "/usr/lib/kandelo",
             hostPath: helperDir,
             readonly: true,
           },
@@ -504,7 +504,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
             nodeBytes,
             [
               "node",
-              "/usr/local/lib/kandelo/npm-runner.js",
+              "/usr/lib/kandelo/npm-runner.js",
               "npm",
               "install",
               `file:///registry/${cowsayTarballFilename}`,

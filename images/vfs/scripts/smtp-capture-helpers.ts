@@ -6,7 +6,7 @@ export const SMTP_CAPTURE_DIR = "/var/mail/smtp-capture";
 export const SMTP_CAPTURE_PORT = 1025;
 
 export function populateSmtpCaptureConfig(fs: VfsImageFilesystem): void {
-  ensureDirRecursive(fs, "/usr/local/bin");
+  ensureDirRecursive(fs, "/usr/bin");
   ensureDirRecursive(fs, SMTP_CAPTURE_DIR);
   ensureDirRecursive(fs, `${SMTP_CAPTURE_DIR}/tmp`);
   ensureDirRecursive(fs, `${SMTP_CAPTURE_DIR}/new`);
@@ -16,7 +16,7 @@ exec /usr/sbin/msmtpd \\
   --interface=127.0.0.1 \\
   --port=${SMTP_CAPTURE_PORT} \\
   --log=/var/log/msmtpd.log \\
-  --command="/usr/local/bin/smtp-capture %F"
+  --command="/usr/bin/smtp-capture %F"
 `;
 
   const captureScript = `#!/bin/sh
@@ -54,15 +54,15 @@ fi
 mv "$tmp_file" "$new_dir/$name"
 `;
 
-  writeVfsFile(fs, "/usr/local/bin/start-msmtpd", startScript, 0o755);
-  writeVfsFile(fs, "/usr/local/bin/smtp-capture", captureScript, 0o755);
+  writeVfsFile(fs, "/usr/bin/start-msmtpd", startScript, 0o755);
+  writeVfsFile(fs, "/usr/bin/smtp-capture", captureScript, 0o755);
 }
 
 export function smtpCaptureService(): DinitService {
   return {
     name: "smtp-capture",
     type: "process",
-    command: "/bin/sh /usr/local/bin/start-msmtpd",
+    command: "/bin/sh /usr/bin/start-msmtpd",
     logfile: "/var/log/smtp-capture.log",
     restart: false,
   };

@@ -152,7 +152,7 @@ test("browser worker preserves postcommit secure-exec state", async ({
       0,
       probe,
     );
-    imageFs.createFileWithOwner("/usr/bin/login", 0o4755, 0, 0, probe);
+    imageFs.createFileWithOwner("/bin/login", 0o4755, 0, 0, probe);
     const image = await imageFs.saveImage();
 
     const run = async (
@@ -202,7 +202,7 @@ test("browser worker preserves postcommit secure-exec state", async ({
 
     return {
       writableImage: await run(image, [
-        "secure-exec-probe", "launch", "/usr/bin/login",
+        "secure-exec-probe", "launch", "/bin/login",
         "startup-target", "1", "0",
       ]),
       nosuid: await run(image, [
@@ -210,19 +210,19 @@ test("browser worker preserves postcommit secure-exec state", async ({
         "startup-target", "0", "0",
       ], true),
       spawnPreserve: await run(image, [
-        "secure-exec-probe", "launch", "/usr/bin/login",
+        "secure-exec-probe", "launch", "/bin/login",
         "spawn-parent", "1", "0", "/bin/secure-child", "startup-target",
       ]),
       spawnReset: await run(image, [
-        "secure-exec-probe", "launch", "/usr/bin/login",
+        "secure-exec-probe", "launch", "/bin/login",
         "spawn-parent", "1", "1", "/bin/secure-child", "startup-target",
       ]),
       stdioOpen: await run(image, [
-        "secure-exec-probe", "launch", "/usr/bin/login",
+        "secure-exec-probe", "launch", "/bin/login",
         "stdio-target", "1", "0",
       ]),
       stdioClosed: await run(image, [
-        "secure-exec-probe", "launch", "/usr/bin/login",
+        "secure-exec-probe", "launch", "/bin/login",
         "stdio-target", "1", "7",
       ]),
     };

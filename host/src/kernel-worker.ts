@@ -1155,7 +1155,7 @@ const EAGAIN_RETRY_MS = 1;
 const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PROFILE;
 
 /**
- * In-kernel tmpfs: the scratch mounts (`/tmp`, `/var/*`,
+ * In-kernel tmpfs: the scratch mounts (`/tmp`, `/run`,
  * `/dev/shm`) are served by the Rust kernel, not by a host
  * filesystem. This is the unconditional authority — the mount resolvers always
  * drop the host-side scratch backends for those prefixes

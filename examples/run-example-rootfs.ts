@@ -13,6 +13,7 @@ import type { PersistentImageIntegrityPolicy } from "../images/vfs/lib/kandelo-i
 import type { PersistentImageReadBinding } from "../host/src/vfs/image-integrity";
 import { HostFileSystem } from "../host/src/vfs/host-fs";
 import { OverlayStorageFile } from "../host/src/vfs/overlay-storage";
+import { ensureDirRecursive } from "../host/src/vfs/image-helpers";
 
 const ROOTFS_LAZY_URL_BASE = "https://kandelo-runner.invalid/";
 
@@ -124,8 +125,7 @@ export async function prepareCheckedPersistentRunExampleRootfs(
 
 function populatePersistentRunExampleRootfs(filesystem: KandeloImageFs, image: Uint8Array, fixtureRoot: string): void {
   filesystem.loadImage(image);
-  filesystem.mkdir("/run", 0o755);
-  filesystem.mkdir("/run/kandelo-run", 0o755);
+  ensureDirRecursive(filesystem, "/var/lib/kandelo-tests/runner");
   const copyTree = (source: string, destination: string): void => {
     for (const entry of readdirSync(source, { withFileTypes: true })) {
       const sourcePath = join(source, entry.name);
@@ -141,5 +141,5 @@ function populatePersistentRunExampleRootfs(filesystem: KandeloImageFs, image: U
       }
     }
   };
-  copyTree(fixtureRoot, "/run/kandelo-run");
+  copyTree(fixtureRoot, "/var/lib/kandelo-tests/runner");
 }

@@ -383,6 +383,10 @@ artifacts.
 
 ### Reproducible VFS image packages
 
+Installed guest paths follow [Kandelo's FHS layout](filesystem-layout.md),
+including lazy archive members and package runtime files. Shipped tools use
+one canonical command path and leave `/usr/local` to the administrator.
+
 A VFS image package (`nginx-php-vfs`, `wordpress`, `lamp`, …) is cached by
 its cache key like any other package, so two builds under the same key must
 produce the same bytes. When they do not, the resolver keeps whichever build
@@ -511,7 +515,7 @@ same image, database and prewarmed opcache included.
 `lamp` package under one cache key still produce different images, so the
 resolver keeps whichever build publishes first and records a
 rebuild-mismatch receipt for the other. Everything WordPress writes is
-identical between builds; the differences are all under `/data`, from
+identical between builds; the differences are all under `/var/lib/mysql`, from
 MariaDB's bootstrap, between 2 and about 76 files per pair of builds:
 
 - **InnoDB redo log and system tablespace (every pair).** After bootstrap
@@ -546,7 +550,7 @@ thread proceeds and advancing virtual time only when every thread is
 blocked. The order would then depend only on what the guests do, never on
 host timing, and MariaDB's bootstrap would be as reproducible as the
 WordPress install. It is the general fix: any threaded installer benefits,
-where the alternatives (a pinned pre-bootstrapped `/data`, or accepting
+where the alternatives (a pinned pre-bootstrapped `/var/lib/mysql`, or accepting
 `lamp` as non-reproducible) fix one package or none.
 
 **Why the scheduler waits for blocking waits to move into Rust.** To
@@ -570,7 +574,7 @@ bootstrap is not reproducible").
 
 What the build already does, so the remaining difference is only thread
 order: the bootstrap runs to completion instead of a fixed wait and a
-kill, the server shuts down slowly, and `/data` lives in the booted
+kill, the server shuts down slowly, and `/var/lib/mysql` lives in the booted
 kernel's own filesystem rather than a host directory, which removed the
 build host's case sensitivity (macOS made MariaDB set
 `lower_case_table_names=2`) from the image.
@@ -1042,12 +1046,12 @@ structured Rust lookup for the destination, exact declared artifact, and fork
 policy before instrumentation or filesystem mutation. It never guesses a path
 for an unregistered or malformed package. Package publication does not create
 a second `sh` resolver output; guest images own their explicit `/bin/sh`
-symlink. That symlink always targets bash: every Kandelo image binds
-`/bin/sh`, `/bin/bash` and `/usr/bin/sh` to `/usr/bin/bash`, and bash
+symlink. That symlink always targets bash: every Kandelo image installs
+`/bin/bash` and links `/bin/sh` to it, and bash
 honors POSIX mode when invoked as `sh`. The base rootfs declares the binding
 as bash's `aliases` in `images/rootfs/PACKAGES.toml`; images composed on it
-(the source-rootfs shell image) inherit it and assert that `/bin/bash`,
-`/usr/bin/bash`, `/bin/sh` and `/usr/bin/sh` all resolve to the image's
+(the source-rootfs shell image) inherit it and assert that `/bin/bash`
+and `/bin/sh` both resolve to the image's
 bash; images built from scratch (the MariaDB, MariaDB-test and SQLite-test
 builders, and the lazy shell image in `shell-vfs-build.ts`) bind it with
 `installBashAsPosixShell` in `images/vfs/scripts/vfs-image-helpers.ts`. An image may also ship dash (or any other shell) as an
@@ -1203,7 +1207,7 @@ fork descendant rather than accepting output as a proxy for process exit.
 The disabled legacy `erlang-vfs` compatibility recipe consumes `erlang`'s
 declared runtime archive through the resolver; it does not read a
 recipe-directory install tree or user cache. Its opt-in VFS image copies the
-complete archive under `/usr/local/lib/erlang`, preserves executable modes,
+complete archive under `/usr/lib/erlang`, preserves executable modes,
 and includes ABI metadata. Staging does not publish that image.
 
 ### `arches`

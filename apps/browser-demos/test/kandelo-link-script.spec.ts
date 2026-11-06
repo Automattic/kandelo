@@ -34,7 +34,7 @@ async function scriptFragment(text: string): Promise<string> {
     packages: [],
     mounts: [{ path: "/", source: "image", ref: "shell.vfs@local" }],
     boot: {
-      argv: ["/usr/bin/login"],
+      argv: ["/bin/login"],
       cwd: "/root",
       env: {},
       inputs: [await createInlineBootInput({

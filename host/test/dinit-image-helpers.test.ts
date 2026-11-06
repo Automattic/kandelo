@@ -386,9 +386,10 @@ describe("dinit-derived image binary ownership", () => {
     ensureDirRecursive(shell, "/sbin");
     ensureDirRecursive(shell, "/etc/kandelo");
     ensureDirRecursive(shell, "/usr/bin");
+    ensureDirRecursive(shell, "/bin");
     writeVfsBinary(shell, "/sbin/dinit", encoder.encode("package dinit"));
     writeVfsBinary(shell, "/sbin/dinitctl", encoder.encode("package dinitctl"));
-    writeVfsBinary(shell, "/usr/bin/login", encoder.encode("package login"), 0o4755);
+    writeVfsBinary(shell, "/bin/login", encoder.encode("package login"), 0o4755);
     writeVfsFile(
       shell,
       EXPERIMENTAL_TERMINAL_SESSION_PATH,
@@ -396,7 +397,7 @@ describe("dinit-derived image binary ownership", () => {
         kind: "kandelo-experimental-terminal-session",
         version: 1,
         initial: {
-          path: "/usr/bin/login",
+          path: "/bin/login",
           argv: ["login", "-p", "-f", "maker"],
           uid: 0,
           gid: 0,

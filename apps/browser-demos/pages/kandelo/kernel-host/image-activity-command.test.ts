@@ -21,9 +21,9 @@ const complete: KernelOwnedJobRead = { expired: false, pid: 101, status: "comple
 test("service preparation runs as the declared terminal account and releases the observed command family", async () => {
   const state = fixture(() => complete);
   const account = { uid: 1000, gid: 1000, env: ["HOME=/home/maker"] };
-  await runImageActivityCommand(state.host, "/usr/local/bin/kandelo-service start web-php", account, () => {});
+  await runImageActivityCommand(state.host, "/usr/bin/kandelo-service start web-php", account, () => {});
   assert.equal(state.started.length, 1);
-  assert.deepEqual(state.started[0].slice(1), ["/bin/sh", ["sh", "-c", "/usr/local/bin/kandelo-service start web-php"], { ...account, timeoutMs: 110000 }]);
+  assert.deepEqual(state.started[0].slice(1), ["/bin/sh", ["sh", "-c", "/usr/bin/kandelo-service start web-php"], { ...account, timeoutMs: 110000 }]);
   assert.equal(state.released.length, 1);
   assert.equal(state.cancelled.length, 0);
 });

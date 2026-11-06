@@ -88,7 +88,7 @@ for (const initialProfile of ["shell", "doom"]) test(`Doom menu saves survive qu
   await page.keyboard.press("Enter");
   await expect(page.locator(".kshell-host:visible .xterm-rows")).toContainText("DOOM_EXIT=0");
   await probe();
-  const afterQuit = await runTerminalCommand(page, "sha256sum \"$HOME/.fdoom.tar/savegame/doomsav0.dsg\"; test ! -f /tmp/doom-launch.pid; test \"$(ps -A | grep -c '[f]bdoom')\" -eq 0");
+  const afterQuit = await runTerminalCommand(page, "sha256sum \"$HOME/.fdoom.tar/savegame/doomsav0.dsg\"; test ! -f /run/user/1000/doom-launch.pid; test \"$(ps -A | grep -c '[f]bdoom')\" -eq 0");
   expect(afterQuit.output).toContain(hash!);
   await startDoom(page);
   await expectDoom(page);

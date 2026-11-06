@@ -411,7 +411,7 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   );
   await runTerminalCommand(
     page,
-    "set -eu; printf '%s\\n' '<!doctype html><title>Kandelo nginx</title><h1>KANDELO_EDIT_OK</h1>' > /var/www/html/index.html; " +
+    "set -eu; printf '%s\\n' '<!doctype html><title>Kandelo nginx</title><h1>KANDELO_EDIT_OK</h1>' > /srv/www/html/index.html; " +
       "printf 'KANDELO_NGINX_EDIT_OK\\n'",
     "KANDELO_NGINX_EDIT_OK",
   );
@@ -462,7 +462,7 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
 // .toml's [evidence.browser].
 test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the Notes API through the web preview", async ({ page }) => {
   // PARTIALLY-CLOSED BROWSER PLATFORM GAP. notes-app's startup
-  // (`python3 /var/www/notes/app.py`) imports a large slice of the stdlib
+  // (`python3 /srv/www/notes/app.py`) imports a large slice of the stdlib
   // (wsgiref -> http.server -> ... -> email.quoprimime). On first import
   // CPython used to compile each of those modules from *source* — a deeply
   // recursive pass (tokenizer -> parser -> AST -> symtable -> code generator).

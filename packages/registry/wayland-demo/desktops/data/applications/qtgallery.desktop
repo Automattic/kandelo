@@ -1,4 +1,4 @@
 [Desktop Entry]
 Type=Application
 Name=Theme Gallery
-Exec=/usr/local/bin/qtgallery
+Exec=/usr/bin/qtgallery

@@ -33,7 +33,7 @@ const PHP_FPM_UID = 65534;
 const PHP_FPM_GID = 65534;
 const MYSQL_UID = 101;
 const MYSQL_GID = 101;
-const MARIADB_PREINSTALL_SOCKET_PATH = "/data/mysql.sock";
+const MARIADB_PREINSTALL_SOCKET_PATH = "/run/mysqld/mysql.sock";
 const MARIADB_ARIA_LOG_FILE_SIZE = 16 * 1024 * 1024;
 const MARIADB_ARIA_PAGECACHE_SIZE = 1024 * 1024;
 const MARIADB_INNODB_LOG_FILE_SIZE = 16 * 1024 * 1024;
@@ -128,19 +128,19 @@ export async function preinstallWordPressSqlite(
   console.log("[wp-preinstall:sqlite] installing WordPress into SQLite database...");
   await withKernelSession(fs, async (session) => {
     await session.runPhp("install", wordpressInstallScript(), {
-      cwd: "/var/www/html",
+      cwd: "/srv/www/html",
       uid: PHP_FPM_UID,
       gid: PHP_FPM_GID,
       timeoutMs: 120_000,
     });
     const dump = await session.runPhp("dump sqlite database", dumpScript([
-      "/var/www/html/wp-content/database",
+      "/var/lib/wordpress/sqlite",
     ]), {
-      cwd: "/var/www/html",
+      cwd: "/srv/www/html",
       timeoutMs: 120_000,
     });
     const written = ingestDump(dump, fs);
-    assertVfsPath(fs, "/var/www/html/wp-content/database/wordpress.db");
+    assertVfsPath(fs, "/var/lib/wordpress/sqlite/wordpress.db");
     console.log(`[wp-preinstall:sqlite] wrote ${written} database entries`);
   }, { programs, determinismSeed: DETERMINISM_SEED_WORDPRESS_SQLITE_INSTALL });
 }
@@ -149,18 +149,18 @@ export async function preinstallWordPressMariaDb(
   fs: VfsImageFilesystem,
   programs?: WordPressPreinstallPrograms,
 ): Promise<void> {
-  console.log("[wp-preinstall:mariadb] initializing MariaDB /data and installing WordPress...");
+  console.log("[wp-preinstall:mariadb] initializing MariaDB /var/lib/mysql and installing WordPress...");
   const mariadbBytes = programs?.mariadb === undefined
     ? loadProgram("programs/mariadb/mariadbd.wasm")
     : exactProgramBuffer(programs.mariadb, "WordPress MariaDB");
-  // /data lives in the booted kernel's own filesystem, as it does on a
+  // /var/lib/mysql lives in the booted kernel's own filesystem, as it does on a
   // running machine. It used to be a host directory mounted into the guest,
   // which made the image depend on the build host: on macOS's
   // case-insensitive APFS, MariaDB switched itself to
   // lower_case_table_names=2, on Linux it did not. It also needed a fixed
   // 60-second wait and a kill to end the bootstrap, because the host could
   // only watch for files to appear. Now the bootstrap runs to completion, the
-  // server shuts down cleanly, and /data is copied out through the guest.
+  // server shuts down cleanly, and /var/lib/mysql is copied out through the guest.
   await withKernelSession(fs, async (session) => {
     try {
       const started = Date.now();
@@ -173,19 +173,19 @@ export async function preinstallWordPressMariaDb(
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(`${message}\n${diagnostics}`);
     }
-    // Copy /data out through the guest, the same way the SQLite database is
+    // Copy /var/lib/mysql out through the guest, the same way the SQLite database is
     // dumped, preserving each entry's mode and owner.
     const dump = await session.runPhpToHostFile(
       "dump MariaDB data directory",
-      dumpScript(["/data"], "/host-dump/data.dump"),
+      dumpScript(["/var/lib/mysql"], "/host-dump/data.dump"),
       "data.dump",
       { cwd: "/", timeoutMs: 300_000 },
     );
     const written = ingestDump(dump, fs);
-    assertVfsPath(fs, "/data/mysql");
-    assertVfsPath(fs, "/data/wordpress");
+    assertVfsPath(fs, "/var/lib/mysql/mysql");
+    assertVfsPath(fs, "/var/lib/mysql/wordpress");
     ensureMariaDbDataOwnership(fs);
-    console.log(`[wp-preinstall:mariadb] wrote ${written} /data entries`);
+    console.log(`[wp-preinstall:mariadb] wrote ${written} /var/lib/mysql entries`);
   }, {
     determinismSeed: DETERMINISM_SEED_WORDPRESS_MARIADB_INSTALL,
     maxWorkers: 16,
@@ -195,7 +195,7 @@ export async function preinstallWordPressMariaDb(
 }
 
 /**
- * Start the server on the bootstrapped /data, run the WordPress installer
+ * Start the server on the bootstrapped /var/lib/mysql, run the WordPress installer
  * against it, and shut it down cleanly: `innodb_fast_shutdown=0` makes InnoDB
  * finish purge and flush everything before it exits, so the image's data
  * files carry no work left for crash recovery.
@@ -211,7 +211,7 @@ async function installWordPressIntoMariaDb(
     ["mariadbd", ...mariadbServerArgs()],
     {
       env: BASE_ENV,
-      cwd: "/data",
+      cwd: "/var/lib/mysql",
       onStarted: (pid) => {
         mariadbPid = pid;
       },
@@ -226,11 +226,11 @@ async function installWordPressIntoMariaDb(
       timeoutMs: 180_000,
     });
     await session.runPhp("install", wordpressInstallScript(), {
-      cwd: "/var/www/html",
+      cwd: "/srv/www/html",
       timeoutMs: 240_000,
     });
     await session.runPhp("shutdown MariaDB", shutdownMariaDbScript(), {
-      cwd: "/var/www/html",
+      cwd: "/srv/www/html",
       timeoutMs: 30_000,
     });
     const code = await withTimeout(serverExit, 180_000, "mariadbd did not shut down");
@@ -389,8 +389,8 @@ function mariadbServerArgs(): string[] {
   return [
     "--no-defaults",
     "--user=mysql",
-    "--datadir=/data",
-    "--tmpdir=/data/tmp",
+    "--datadir=/var/lib/mysql",
+    "--tmpdir=/var/tmp/mysql",
     "--default-storage-engine=Aria",
     `--aria-log-file-size=${MARIADB_ARIA_LOG_FILE_SIZE}`,
     `--aria-pagecache-buffer-size=${MARIADB_ARIA_PAGECACHE_SIZE}`,
@@ -404,7 +404,7 @@ function mariadbServerArgs(): string[] {
     "--skip-networking",
     `--socket=${MARIADB_PREINSTALL_SOCKET_PATH}`,
     "--max-connections=10",
-    "--log-error=/data/error.log",
+    "--log-error=/var/log/mysql/error.log",
     ...MARIADB_BUILD_ONLY_ARGS,
   ];
 }
@@ -432,8 +432,8 @@ function mariadbBootstrapArgs(): string[] {
   return [
     "--no-defaults",
     "--user=mysql",
-    "--datadir=/data",
-    "--tmpdir=/data/tmp",
+    "--datadir=/var/lib/mysql",
+    "--tmpdir=/var/tmp/mysql",
     "--default-storage-engine=Aria",
     `--aria-log-file-size=${MARIADB_ARIA_LOG_FILE_SIZE}`,
     `--aria-pagecache-buffer-size=${MARIADB_ARIA_PAGECACHE_SIZE}`,
@@ -447,7 +447,7 @@ function mariadbBootstrapArgs(): string[] {
     "--bootstrap",
     "--skip-networking",
     "--log-warnings=0",
-    "--log-error=/data/bootstrap.log",
+    "--log-error=/var/log/mysql/bootstrap.log",
     ...MARIADB_BUILD_ONLY_ARGS,
   ];
 }
@@ -467,7 +467,7 @@ async function bootstrapMariaDbSystemTables(
     session.host.spawn(
       mariadbBytes,
       ["mariadbd", ...mariadbBootstrapArgs()],
-      { env: BASE_ENV, cwd: "/data", stdin: bootstrapSql },
+      { env: BASE_ENV, cwd: "/var/lib/mysql", stdin: bootstrapSql },
     ),
     300_000,
     "mariadbd --bootstrap did not exit",
@@ -504,7 +504,7 @@ $_SERVER['REQUEST_URI'] = '/wp-admin/install.php';
 
 define('WP_INSTALLING', true);
 ${buildOnlyWordPressSecrets()}
-require_once '/var/www/html/wp-load.php';
+require_once '/srv/www/html/wp-load.php';
 require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
 if (is_blog_installed()) {
@@ -554,7 +554,7 @@ function buildOnlyWordPressSecrets(): string {
 
 async function collectMariaDbDiagnostics(host: NodeKernelHost): Promise<string> {
   const chunks: string[] = [];
-  for (const path of ["/data/bootstrap.log", "/data/error.log"]) {
+  for (const path of ["/var/log/mysql/bootstrap.log", "/var/log/mysql/error.log"]) {
     chunks.push(`== ${path} ==`);
     const bytes = await host.readFileFromVfs(path).catch(() => null);
     chunks.push(bytes === null
@@ -736,7 +736,7 @@ function ingestDump(buf: Uint8Array, fs: VfsImageFilesystem): number {
 }
 
 function ensureMariaDbDataOwnership(fs: VfsImageFilesystem): void {
-  for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/wordpress"]) {
+  for (const dir of ["/var/lib/mysql", "/var/lib/mysql/mysql", "/var/tmp/mysql", "/var/lib/mysql/wordpress"]) {
     try {
       fs.chown(dir, MYSQL_UID, MYSQL_GID);
       fs.chmod(dir, 0o775);

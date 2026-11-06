@@ -4,7 +4,7 @@ import { posix } from "node:path";
 
 import type { VfsDirEntrySnapshot, VfsPathStat } from "../host/src/vfs/vfs";
 
-const FIXTURE_ROOT = "/run/kandelo-run";
+const FIXTURE_ROOT = "/var/lib/kandelo-tests/runner";
 const MAX_ENTRIES = 10_000;
 const MAX_TOTAL_FILE_BYTES = 32 * 1024 * 1024;
 const MAX_TOTAL_SAMPLE_BYTES = 8 * 1024 * 1024;

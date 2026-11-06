@@ -49,7 +49,7 @@ daemon off;
 master_process on;
 worker_processes 2;
 error_log stderr info;
-pid /tmp/nginx.pid;
+pid /run/nginx.pid;
 
 events {
     worker_connections 64;
@@ -76,7 +76,7 @@ http {
     server {
         listen 8080;
         server_name localhost;
-        root /var/www/html;
+        root /srv/www/html;
         index index.html;
         location / {}
     }
@@ -126,23 +126,23 @@ export async function buildNginxVfsImage(
         inputs.shellImage,
         NGINX_IMAGE_MAX_BYTES,
       );
-  fs.chmod("/tmp", 0o777);
+  fs.chmod("/tmp", 0o1777);
   ensureDirRecursive(fs, "/usr/sbin");
   ensureDirRecursive(fs, "/run");
   ensureDirRecursive(fs, "/var");
-  ensureDirRecursive(fs, "/var/www/html");
+  ensureDirRecursive(fs, "/srv/www/html");
   ensureDirRecursive(fs, "/etc/nginx");
 
   // nginx binary + config + content
   writeVfsBinary(fs, "/usr/sbin/nginx", inputs.nginx);
   writeVfsFile(fs, "/etc/nginx/nginx.conf", NGINX_CONF);
-  writeVfsFile(fs, "/var/www/html/index.html", INDEX_HTML);
-  fs.chown("/var/www", DEMO_UID, DEMO_GID);
-  fs.chown("/var/www/html", DEMO_UID, DEMO_GID);
-  fs.chown("/var/www/html/index.html", DEMO_UID, DEMO_GID);
-  fs.chmod("/var/www", 0o755);
-  fs.chmod("/var/www/html", 0o755);
-  fs.chmod("/var/www/html/index.html", 0o644);
+  writeVfsFile(fs, "/srv/www/html/index.html", INDEX_HTML);
+  fs.chown("/srv/www", DEMO_UID, DEMO_GID);
+  fs.chown("/srv/www/html", DEMO_UID, DEMO_GID);
+  fs.chown("/srv/www/html/index.html", DEMO_UID, DEMO_GID);
+  fs.chmod("/srv/www", 0o755);
+  fs.chmod("/srv/www/html", 0o755);
+  fs.chmod("/srv/www/html/index.html", 0o644);
 
   // dinit + service tree
   addDinitInit(fs, [

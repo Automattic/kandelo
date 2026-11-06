@@ -208,10 +208,10 @@ function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-/** Extract the zip's wasm32posix/ tree (sysroot, glue, config.site). */
+/** Extract the zip's lib/kandelo/wasm32posix/ tree (sysroot, glue, config.site). */
 function extractSdkData(zip: Uint8Array, destination: string): void {
   for (const entry of parseZipCentralDirectory(zip)) {
-    if (!entry.fileName.startsWith("wasm32posix/")) continue;
+    if (!entry.fileName.startsWith("lib/kandelo/wasm32posix/")) continue;
     const path = join(destination, entry.fileName);
     if (entry.isDirectory) {
       mkdirSync(path, { recursive: true });
@@ -247,8 +247,8 @@ describe.skipIf(!available)("SDK equivalence: inside Kandelo and on the build ma
       extractSdkData(sdk!, sdkData);
       const env = {
         ...process.env,
-        WASM_POSIX_SYSROOT: join(sdkData, "wasm32posix/sysroot"),
-        WASM_POSIX_GLUE_DIR: join(sdkData, "wasm32posix/glue"),
+        WASM_POSIX_SYSROOT: join(sdkData, "lib/kandelo/wasm32posix/sysroot"),
+        WASM_POSIX_GLUE_DIR: join(sdkData, "lib/kandelo/wasm32posix/glue"),
       };
       const hostOutputs = new Map<string, string>();
       for (const sample of cases) {
@@ -286,7 +286,7 @@ describe.skipIf(!available)("SDK equivalence: inside Kandelo and on the build ma
       async function run(command: string) {
         stdout = "";
         stderr = "";
-        const { exit } = await host.spawnFromVfs("/usr/bin/bash", ["bash", "-lc", command], {
+        const { exit } = await host.spawnFromVfs("/bin/bash", ["bash", "-lc", command], {
           env: ["PATH=/usr/bin:/bin", "HOME=/home/maker", "USER=maker", "TMPDIR=/tmp"],
           cwd: "/tmp",
           uid: 1000,

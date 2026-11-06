@@ -88,11 +88,11 @@ describe("installBashAsPosixShell", () => {
 
     installBashAsPosixShell(fs, bash);
 
-    expect(fs.readFile("/usr/bin/bash")).toEqual(bash);
-    expect(fs.stat("/usr/bin/bash").mode & 0o777).toBe(0o755);
-    expect([...BASH_SHELL_PATHS].sort()).toEqual(["/bin/bash", "/bin/sh", "/usr/bin/sh"]);
+    expect(fs.readFile("/bin/bash")).toEqual(bash);
+    expect(fs.stat("/bin/bash").mode & 0o777).toBe(0o755);
+    expect([...BASH_SHELL_PATHS].sort()).toEqual(["/bin/sh"]);
     for (const path of BASH_SHELL_PATHS) {
-      expect(fs.readlink(path)).toBe("/usr/bin/bash");
+      expect(fs.readlink(path)).toBe("/bin/bash");
       // Follows the link to the same bytes -- /bin/sh IS bash, not a copy.
       expect(fs.readFile(path)).toEqual(bash);
     }
@@ -109,7 +109,7 @@ describe("installBashAsPosixShell", () => {
     installBashAsPosixShell(fs, new Uint8Array([0x62, 0x61, 0x73, 0x68]));
 
     expect(fs.readFile("/bin/dash")).toEqual(dash);
-    expect(fs.readlink("/bin/sh")).toBe("/usr/bin/bash");
+    expect(fs.readlink("/bin/sh")).toBe("/bin/bash");
   });
 
   it("refuses an empty bash rather than publishing a broken /bin/sh", () => {

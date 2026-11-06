@@ -113,6 +113,7 @@ host/test/fetch-backend.test.ts	source-only
 host/test/fifo-lifecycle-guest.test.ts	prepared-product
 host/test/file-read-buffer.test.ts	source-only
 host/test/file-shared-memory.test.ts	source-only
+host/test/filesystem-layout.test.ts	prepared-product
 host/test/filesystem-memory.test.ts	source-only
 host/test/fixed-rootfs-persistence.test.ts	prepared-product
 host/test/fontstack-smoke.test.ts	prepared-product
@@ -440,6 +441,7 @@ host/test/socket-timeout-options.test.ts	prepared-product
 host/test/spawn-credential-order.test.ts	source-only
 host/test/spawn-host-parity.test.ts	source-only
 host/test/spawn-pid-authority.test.ts	prepared-product
+host/test/sqlite-test-image.test.ts	prepared-product
 host/test/sqlite-testrunner-patch.test.ts	source-only
 host/test/staged-rootfs-image.test.ts	source-only
 host/test/startup-crt-contract.test.ts	source-only

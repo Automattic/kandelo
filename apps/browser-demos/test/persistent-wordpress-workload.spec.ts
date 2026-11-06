@@ -113,7 +113,7 @@ async function verifyGuestWorkload(page: Page, removedUpload: string): Promise<v
   await runTerminalCommand(page, `set -eu
 root=${workloadRoot}/current
 printf 'WORKLOAD_VERIFY_BEGIN\n'
-test ! -e "/var/www/html/${removedUpload}"
+test ! -e "/srv/www/html/${removedUpload}"
 for ((index=0; index<512; index++)); do
   case "$index" in
     0|1|2) continue ;;

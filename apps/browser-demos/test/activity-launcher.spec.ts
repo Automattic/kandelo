@@ -122,7 +122,7 @@ test("ScummVM can replace its game and hand graphics to Freeciv on the same comp
   const gameOwner = await display.getAttribute("data-kms-owner-pid");
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await page.getByRole("tab", { name: "ScummVM", exact: true }).click();
-  await expect(page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows")).toContainText("/usr/local/bin/scummvm-play mystery-house");
+  await expect(page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows")).toContainText("/usr/bin/scummvm-play mystery-house");
   await page.getByRole("button", { name: "Activities", exact: true }).click();
   await panel.locator('[data-image-activity="freeciv"]').getByRole("button", { name: "Start", exact: true }).click();
   await expect(panel).not.toBeVisible({ timeout: 120_000 });
@@ -204,7 +204,7 @@ test("a plain shell discovers a command-line KMS program without selecting a gra
   await expect(page.getByRole("button", { name: "Graphics", exact: true })).toBeDisabled();
   const terminal = page.locator(".kshell-host:visible .xterm-helper-textarea");
   await terminal.focus();
-  await page.keyboard.insertText("/usr/local/bin/modeset");
+  await page.keyboard.insertText("/usr/bin/modeset");
   await page.keyboard.press("Enter");
   const surface = page.locator(".kmodeset-surface");
   await expect(surface).toBeVisible({ timeout: 120_000 });

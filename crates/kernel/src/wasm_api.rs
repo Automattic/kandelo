@@ -2586,7 +2586,7 @@ pub extern "C" fn kernel_set_rootfs_nosuid(nosuid: i32) -> i32 {
 }
 
 /// Register the set of *foreign* mount prefixes still mounted under `/` after
-/// the host hands `/` ownership to the overlay (for example `/run/kandelo-run`
+/// the host hands `/` ownership to the overlay (for example `/var/lib/kandelo-tests/runner`
 /// session-seed host mounts and extra `HostFileSystem` mounts). `ptr..len` is a NUL-separated list of canonical absolute mount
 /// points in kernel Wasm memory. The overlay must not claim paths at or under
 /// these prefixes — they belong to a sibling filesystem and must fall through

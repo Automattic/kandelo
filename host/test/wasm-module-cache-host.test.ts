@@ -121,7 +121,7 @@ describe.skipIf(!available)("compiled-module sharing on the Node host", () => {
 
       // Different program at the same path: bash's own module, not echo's.
       expect(
-        await bash(host, "cp /usr/bin/bash /tmp/x/echo; /tmp/x/echo -c 'echo as-bash'"),
+        await bash(host, "cp /bin/bash /tmp/x/echo; /tmp/x/echo -c 'echo as-bash'"),
         output(),
       ).toBe(0);
 

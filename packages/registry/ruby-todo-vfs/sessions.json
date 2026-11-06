@@ -13,7 +13,7 @@
       "requiresHost": true,
       "hostRequires": [
         "/usr/bin/ruby",
-        "/var/lib/todo/app.rb"
+        "/usr/share/kandelo/ruby-todo/app.rb"
       ],
       "fields": [],
       "category": "services"

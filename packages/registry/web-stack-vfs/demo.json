@@ -50,7 +50,7 @@
         "internalsAccess": "drawer"
       },
       "activity": {
-        "shellCommand": "/usr/local/bin/kandelo-service start web-static",
+        "shellCommand": "/usr/bin/kandelo-service start web-static",
         "category": "services",
         "share": "web-stack-vfs/service"
       }
@@ -101,7 +101,7 @@
         "internalsAccess": "drawer"
       },
       "activity": {
-        "shellCommand": "/usr/local/bin/kandelo-service start web-php",
+        "shellCommand": "/usr/bin/kandelo-service start web-php",
         "category": "services",
         "share": "web-stack-vfs/service"
       }
@@ -152,7 +152,7 @@
         "internalsAccess": "drawer"
       },
       "activity": {
-        "shellCommand": "/usr/local/bin/kandelo-service start web-python",
+        "shellCommand": "/usr/bin/kandelo-service start web-python",
         "category": "services",
         "share": "web-stack-vfs/service"
       }
@@ -199,7 +199,7 @@
         "internalsAccess": "drawer"
       },
       "activity": {
-        "shellCommand": "/usr/local/bin/kandelo-service start web-ruby",
+        "shellCommand": "/usr/bin/kandelo-service start web-ruby",
         "category": "services",
         "share": "web-stack-vfs/service"
       }
@@ -240,7 +240,7 @@
         "probePath": "/health"
       },
       "activity": {
-        "shellCommand": "/usr/local/bin/kandelo-service start web-redis",
+        "shellCommand": "/usr/bin/kandelo-service start web-redis",
         "category": "services",
         "share": "web-stack-vfs/service"
       },
