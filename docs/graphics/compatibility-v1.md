@@ -25468,3 +25468,49 @@ program56/host3/GL17/fork21 ABI family is unchanged. These focused
 controls do not replace normal-product C consumers, three-engine CTS and
 desktop gates, the combined ownership/graphics gates, or matched ship-bar
 measurements.
+
+## Complete B1 normal-product checkpoint, 2026-11-06
+
+The frozen normal application build at `ae3752484c0015cbf6505f82262b34205c6aea2d`
+finished successfully. Job
+`graphics-complete-b1-build-r494-r2-1106-000644-53e2` ran the declared development
+shell and private `normal-build.sh`, then the ordinary `./run.sh setup --all`,
+ABI check and `xtask verify-fresh`. Its own release xtask build passed111s,
+setup passed15825s, ABI passed37s and freshness passed3s. The output manifest
+records295 normal projection files totaling1,484,109,708 bytes. Full logs,
+submodule state before/after and product hashes remain in
+`.context/graphics-complete-b1-build-r494-r2/`.
+
+That frozen source predates the scalar-state and fatal-audit corrections.
+The build result does not admit a complete B1 preview. The next normal
+refresh first verifies every recorded product and unchanged compiled
+ABI/libc/Rust/SDK/package/image input, then runs the ordinary graph on the
+current host source. The existing preview remains on its older immutable
+source until required B1 application, audit and stage checks pass.
+
+A separate complete current C-consumer selection at
+`ebdd15fbce09fee47b2206aab3f479bfb1c7d2b8` deliberately collected all17 tracked
+`gles-*.spec.ts` browser files and all7 corresponding Node test files.
+Job `graphics-fatal-audit-consumer-r519-r2-1106-024702-39f9` failed29m11s:
+Node28/28 passed72s, browser1032/1074 passed1648s with42 failures. Both final
+source and nine normal-product checks passed. Browser retries were disabled;
+no cases were skipped. The tiny actual C guests were compiled through the
+normal SDK and ran against the normal kernel/image writer. Node checks
+exercise its truthful absent-renderer boundary, not native GL rendering.
+
+The browser failures comprise12 default-framebuffer request-count assertions
+and30 fatal-audit attribution assertions across all3 engines and both pointer
+widths. Their expected per-call diagnostics conflict with the newer physical
+batch sampling contract; the request assertion also predates the default
+framebuffer proof being rearmed after rebinding zero. Those explanations are
+under causal review with retained rendering, injected-error, guilty-context,
+healthy-peer and retirement controls. The failed run remains failed. No
+assertion correction or final passing rerun is claimed here.
+
+Exact selection, commands, raw results, input manifest and product checks are
+in `.context/graphics-fatal-audit-consumer-r519/`. A first launch failed before
+tests because its exact-HEAD preflight received a shortened commit ID; it
+changed no source or products and is preserved separately. Neither this
+consumer selection nor the normal build replaces full dEQP, desktop,
+browser-memory, POSIX, benchmark or physical latency acceptance. B1 and the
+complete preview remain incomplete; no stage or final requirement is reduced.
