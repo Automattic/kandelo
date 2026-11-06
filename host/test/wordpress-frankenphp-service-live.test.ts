@@ -95,8 +95,19 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("WordPress on Kandelo");
     if (service === "frankenphp-caddy") {
-      const graceful = await verifyFrankenPhpGracefulShutdown(host, port, processExits.waitForExit);
-      expect(graceful).toMatchObject({ listenerClosed: true, status: 200, serverExit: 0, stopExit: 0 });
+      try {
+        const graceful = await verifyFrankenPhpGracefulShutdown(host, port, processExits.waitForExit);
+        expect(graceful).toMatchObject({ listenerClosed: true, status: 200, serverExit: 0, stopExit: 0 });
+      } catch (error) {
+        const listener = await host.pickListenerTarget(port).catch(() => null);
+        const paths = [`/var/log/${service}.log`, ...(listener ? [`/proc/${listener.pid}/status`] : [])];
+        const reports = await Promise.all(paths.map(async path => {
+          const bytes = await host.readFileFromVfs(path).catch(() => null);
+          const text = bytes ? new TextDecoder().decode(bytes) : "unavailable";
+          return `${path}:\n${text.slice(0, 4000)}\n${text.length > 12_000 ? "...\n" : ""}${text.slice(4000).slice(-8000)}`;
+        }));
+        throw new Error(`${String(error)}\n${reports.join("\n")}\n${logs.slice(-4000)}`, { cause: error });
+      }
     }
     await host.destroy();
     const drained = shutdown.filter(event => event.phase === "draining").at(-1);

@@ -5423,3 +5423,6 @@ compiler (`.context/frankenphp-graceful-listener-typecheck.log`). An initial
 root-level npx attempt selected an unrelated `tsc` command and failed before
 checking the file; it was corrected to the declared host compiler. Actual
 Node/browser execution of this stronger gate still awaits image publication.
+The Node case preserves the service log's beginning and end, plus the live
+listener process's status when available, if the drain probe fails. This
+keeps fatal headers and signal-mask evidence available before teardown.
