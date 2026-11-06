@@ -228,6 +228,7 @@ inputs = [
   "third_party/node-core/directory-operations.h",
   "third_party/node-core/native-file-jobs.cpp",
   "third_party/node-core/write-file-operations.h",
+  "third_party/node-core/read-file-buffer.h",
   "third_party/node-core/file-jobs-adapter.js",
   "third_party/node-core/file-sync-adapter.js",
   "third_party/node-core/fs-callback-adapter.js",
@@ -579,4 +580,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 151
+revision = 152

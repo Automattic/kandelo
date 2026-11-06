@@ -1,0 +1,78 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem-contracts.md",
+    "findingIds": [
+      "FS-010",
+      "FS-011"
+    ],
+    "relatedFamilies": [
+      "filesystem",
+      "values",
+      "workers"
+    ],
+    "scope": "Actual ReadFile result allocation and native owner capacity; partial prerequisite, not finding/API closure"
+  },
+  "sourceImplemented": [
+    "Actual native ReadFileBuffer owns allocator/capacity/claims from worker through USER_OWNED result handoff",
+    "Logical JS length stays separate from capacity; optional shrink failure/empty storage/fault retirement and native last release keep concrete owners",
+    "Declare/stage new producer header; exact sealed postimages and unchanged WriteFile tail over actual current source"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-readfile152-source-r1/report.json",
+    "sha256": "52a718f42f390ae4468047a393951a40c8bfb92870cb80656334bbdeec284f77",
+    "guardedInputs": 716,
+    "scope": "Current-source ReadFile ownership and exact sealed postimages,716guarded inputs and actual normal source/header/unity staging. Prior identified native/helper evidence reused, no new compilation or runtime acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-readfile152-affected-r1.json",
+    "sha256": "cb963074c315a8197e761a048a4915103169e60a126fb485ba15aeb117fa28c9",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing package-source checks; no API runtime acceptance"
+  },
+  "producerControls": {
+    "report": ".context/readfile-capacity-agent/report.json",
+    "sha256": "7de9a4c0e2e44609e6a4f289328a3aabe589004fa69990cbd8f43c939e6af2c6",
+    "reused": true,
+    "nativeReferenceCases": 5,
+    "priorHelperCompileAttempts": 7,
+    "priorHelperCompileSuccesses": 6,
+    "priorFixtureCompileFailures": 1,
+    "scope": "Prior exact source/helper/native-reference evidence; not new execution. Real JSAPI/GC/guest/four-host remain unvalidated"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/readfile-capacity-agent/component/before-report.json",
+      "sha256": "7cf6d88d97affc2995aee0e0027a25869d90a59914175230c5f76969a92a4ff6",
+      "kind": "historical-real-worker-capacity-ledger",
+      "reason": "Old source147 worker held allocator capacity without payload ledger; bounded reaped abort remains a nonpass"
+    },
+    {
+      "report": ".context/readfile-capacity-agent/component/initial-fixture-keyword-macro.log",
+      "sha256": "312b9aad0ce741e05c225731869ca470c78e4daf44ef618a9809397580fb6c75",
+      "kind": "prior-component-fixture-compile",
+      "reason": "Initial fixture compilation failed; actual production body/assertions preserved in corrected explicit virtual base fixture"
+    },
+    {
+      "report": ".context/node26-readfile152-checks-r1.log",
+      "sha256": "9968120c42342bca58d29c7417bf9850a425def35d30a5eaef363129da33195c",
+      "kind": "root-source-stage-fixture",
+      "reason": "Initial root source fixture expected raw include rather than normal shell rewrite; generator unchanged, exact normal output checked"
+    }
+  ],
+  "remaining": [
+    "Compile actual new producer/JSAPI together with source151 corrections using normal targeted engine build",
+    "Validate actual InstallUserOwned result/conversion OOM, GC/realm/transfer/clone/context retirement and exact callback parity",
+    "Complete other filesystem/backend/metadata/watch/permission and four-host obligations; no FS-010/011 closure"
+  ],
+  "at": "2026-11-06T17:57:38.410351+00:00",
+  "recipeRevision": 152,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

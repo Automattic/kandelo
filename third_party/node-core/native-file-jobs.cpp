@@ -4,6 +4,7 @@
  */
 #include <cstring>
 #include "kandelo-node-write-file-operations.h"
+#include "kandelo-node-read-file-buffer.h"
 namespace {
 struct KandeloReadFileWork final : KandeloFsWork {
   const char* path;
@@ -11,17 +12,23 @@ struct KandeloReadFileWork final : KandeloFsWork {
   int flags;
   int handoffFd = -1, closeError = 0;
   uint64_t regularSize = 0;
-  char* data = nullptr;
-  size_t used = 0, capacity = 0, associated;
+  std::shared_ptr<kandelo::nodefs::ReadFileBuffer> allocation;
+  size_t used = 0, associated;
   const char* failedSyscall = "read";
   KandeloReadFileWork(JSContext* cx, JSObject* request)
       : KandeloFsWork(cx, request, -1, 0, Operation::FileRead),
         path(State()->name.get()), limit(State()->limit), flags(State()->flags),
+        allocation(std::make_shared<kandelo::nodefs::ReadFileBuffer>(
+            kandelo::nodefs::ReadFileBuffer::Allocator{
+                [](size_t size) { return js_malloc(size); },
+                [](void* data, size_t size) { return js_realloc(data, size); },
+                [](void* data) noexcept { js_free(data); }},
+            KandeloNativeMemoryOwner(cx), KandeloBackingAccountOf)),
         associated(sizeof(*this) - sizeof(KandeloFsWork)) {
     JS::AddAssociatedMemory(owner, associated, JS::MemoryUse::Embedding3);
   }
   ~KandeloReadFileWork() override {
-    js_free(data);
+    allocation.reset();
     if (handoffFd >= 0) KandeloFsDoClose(handoffFd);
     JS::RemoveAssociatedMemory(owner, associated, JS::MemoryUse::Embedding3);
   }
@@ -40,53 +47,47 @@ struct KandeloReadFileWork final : KandeloFsWork {
     if (status < 0) { Fail("fstat", -errno); return; }
     regularSize = (metadata.st_mode & S_IFMT) == S_IFREG ? uint64_t(metadata.st_size) : 0;
     if (regularSize > limit) { handoffFd = opened; opened = -1; return; }
-    capacity = regularSize ? size_t(regularSize) : 64u * 1024;
+    const size_t initialCapacity = regularSize ? size_t(regularSize) : 64u * 1024;
     // This SDK must represent the actual allocation, independent of the
     // larger integer metadata a stat record may report.
-    if (uint64_t(capacity) != (regularSize ? regularSize : uint64_t(64u * 1024))) {
+    if (uint64_t(initialCapacity) != (regularSize ? regularSize : uint64_t(64u * 1024))) {
       Fail("read", -ENOMEM); return;
     }
-    data = static_cast<char*>(js_malloc(capacity));
-    if (!data) { Fail("read", -ENOMEM); return; }
+    if (!allocation->Resize(initialCapacity)) { Fail("read", -ENOMEM); return; }
     while (true) {
-      if (used == capacity) {
+      if (used == allocation->Capacity()) {
         if (regularSize) break;
-        if (capacity > SIZE_MAX / 2) { Fail("read", -ENOMEM); break; }
-        const size_t grownSize = capacity * 2;
-        char* grown = static_cast<char*>(js_realloc(data, grownSize));
-        if (!grown) { Fail("read", -ENOMEM); break; }
-        data = grown; capacity = grownSize;
+        if (allocation->Capacity() > SIZE_MAX / 2) { Fail("read", -ENOMEM); break; }
+        if (!allocation->Resize(allocation->Capacity() * 2)) { Fail("read", -ENOMEM); break; }
       }
-      const size_t count = std::min(capacity - used, size_t(256u * 1024 * 1024));
-      ssize_t bytes; do { bytes = read(opened, data + used, count); } while (bytes < 0 && errno == EINTR);
+      const size_t count = std::min(allocation->Capacity() - used, size_t(256u * 1024 * 1024));
+      ssize_t bytes; do { bytes = read(opened, allocation->Data() + used, count); } while (bytes < 0 && errno == EINTR);
       if (bytes < 0) { Fail("read", -errno); break; }
       if (bytes == 0) break;
       used += size_t(bytes);
     }
-    if (result < 0) { js_free(data); data = nullptr; used = capacity = 0; }
-    else if (capacity - used >= 4096) {
+    if (result < 0) { allocation->Clear(); used = 0; }
+    else if (allocation->Capacity() - used >= 4096) {
       const size_t smaller = used ? used : 1;
-      char* shrunk = static_cast<char*>(js_realloc(data, smaller));
-      if (shrunk) { data = shrunk; capacity = smaller; }
+      // A failed optional shrink still succeeds with the actual old capacity.
+      (void)allocation->Resize(smaller);
     }
     performed = true;
   }
   bool PrepareResult(JSContext* cx) override {
     // Result views, like Node Buffer::New, exist before MakeCallback's
     // before hook. They are real typed arrays over the owned backing store.
-    if (capacity) JS::AddAssociatedMemory(owner, capacity, JS::MemoryUse::Embedding3);
-    associated += capacity;
     JS::RootedValueArray<4> fields(cx);
     fields[1].setInt32(handoffFd);
     if (handoffFd >= 0) fields[2].setNumber(double(regularSize));
     else {
-      mozilla::UniquePtr<void, JS::FreePolicy> owned(data); data = nullptr;
-      RootedObject buffer(cx, JS::NewArrayBufferWithContents(cx, used, std::move(owned)));
-      if (!buffer) return false;
-      // The engine now owns/accounted the allocation. Retire the native
-      // charge at that actual transfer, before any callback can observe it.
-      if (capacity) JS::RemoveAssociatedMemory(owner, capacity, JS::MemoryUse::Embedding3);
-      associated -= capacity;
+      // JS exposes the logical result length; the real allocation capability
+      // retains successful malloc/realloc capacity and its exact deallocator.
+      // USER_OWNED is native-accounted, so no logical-size engine credit hides
+      // slack or duplicates this physical allocation's existing ledger record.
+      RootedObject buffer(cx, JS::NewArrayBufferWithUserOwnedContents(cx, used, allocation->Data()));
+      if (!buffer || !JS::KandeloBacking::InstallUserOwned(cx, buffer, allocation)) return false;
+      allocation.reset(); // Actual engine owner now retains this same allocation.
       RootedObject view(cx, JS_NewUint8ArrayWithBuffer(cx, buffer, 0, int64_t(used)));
       if (!view) return false;
       RootedObject prototype(cx, &JS::GetReservedSlot(owner, FsRequestBuffers).toObject());
@@ -137,7 +138,10 @@ static bool KandeloNativeRunReadFileJob(JSContext* cx, unsigned argc, Value* vp)
   }
   auto failed = mozilla::MakeScopeExit([&] { KandeloFsAbandonRequest(owner); });
   auto* queue = js::shell::KandeloGetNativeWorkQueue(cx); if (!queue) return false;
-  auto* work = js_new<KandeloReadFileWork>(cx, owner.get());
+  KandeloReadFileWork* work;
+  try { work = js_new<KandeloReadFileWork>(cx, owner.get()); }
+  catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
+  catch (const std::exception& error) { JS_ReportErrorUTF8(cx, "ReadFileJob ownership: %s", error.what()); return false; }
   if (!work) { JS_ReportOutOfMemory(cx); return false; }
   state->dispatched = true;
   if (!queue->Submit(work)) { js_delete(work); JS_ReportErrorASCII(cx, "ReadFileJob work queue is closing"); return false; }

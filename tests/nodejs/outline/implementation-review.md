@@ -1,5 +1,10 @@
 # Broad implementation review
 
+Source152 preserves actual ReadFile allocation capacity through the native
+worker and USER_OWNED backing handoff. Source/staging and fourteen package
+checks pass; production JSAPI and four-host conformance remain open. See
+[ReadFile ownership scope](readfile-capacity-integration.md).
+
 Source151 corrects production VM/backing API compilation errors exposed by
 the actual source150 targeted build. Source and fourteen package checks pass;
 the normal engine retry is still required. See [compilation correction
