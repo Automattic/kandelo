@@ -1,0 +1,80 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/worker-contracts.md",
+    "findingIds": [
+      "R-009",
+      "R-015"
+    ],
+    "relatedFamilies": [
+      "workers",
+      "processes",
+      "loading",
+      "engine"
+    ],
+    "scope": "Startup argv/eval capture only; R-015 lazy/descriptor/Navigator requirements remain open"
+  },
+  "sourceImplemented": [
+    "Pinned early argv validation/coercion and single eval-branch capture use existing real bootstrap transport",
+    "Classic eval argv naming and array-like append semantics in actual worker prefix; main startup unchanged",
+    "Current native default-trigger/histogram/lock/clone forwarders preserved without engine or wire changes"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-worker-startup-source-r1/report.json",
+    "sha256": "a41a492da5189a7e20fa8fd37abd8c0158cbbf10bccef1496b2848ac935fac67",
+    "guardedInputs": 671,
+    "wholeNodeReferences": 7,
+    "scope": "Exact current constructor/startup/bundle/bootstrap and frozen prerequisite/reference identities. Intercepted create/native Node reference controls do not prove guest native-thread/JSAPI/clone/loop/four-host behavior."
+  },
+  "nativeControls": {
+    "report": ".context/node26-worker-startup-controls-r1/report.json",
+    "sha256": "42c7db06706a16e8ae073f2b07b88bbe0c4ee7f499e47f49eb69d5201269bae7",
+    "comparisons": 32,
+    "mainStartupControls": 2,
+    "nativeOnlyPrerequisiteCases": 15,
+    "scope": "Candidate constructor and exact startup source with native create intercepted,compared with actual pinned Node workers;15lazy/Navigator cases are native-only baselines. Not guest native-thread/JSAPI/clone/loop/four-host execution."
+  },
+  "affectedControls": {
+    "report": ".context/node26-worker-startup-affected-r1.json",
+    "sha256": "df5fa1e48c7efde1ce68228f6e4b4ae050439285a85800673c6cabd1ef1783a1",
+    "passed": 25,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "11port dependency groups and14package/source checks;not guest conformance"
+  },
+  "packageChecks": {
+    "report": ".context/node26-worker-startup-affected-r1.json",
+    "sha256": "df5fa1e48c7efde1ce68228f6e4b4ae050439285a85800673c6cabd1ef1783a1",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package checks within25aggregate,not additional runtime passes"
+  },
+  "privateHandoff": {
+    "report": ".context/worker-lazy-data-agent/startup-handoff/report.json",
+    "sha256": "199980830e09fba0b729e16567a4ec793716b545b2ef831726e581907f822470",
+    "sealSha256": "7c1b6df03b9068a8a373122d650645d171523d639dc70e6cb2725e40e87f4694",
+    "scope": "Frozen source identities and six expected old-source regression failures verified,not rerun"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/worker-lazy-data-agent/startup-handoff/report.json",
+      "sha256": "199980830e09fba0b729e16567a4ec793716b545b2ef831726e581907f822470",
+      "kind": "old-source-regressions",
+      "reason": "Six old constructor/prefix failures retained;R-015/Navigator remain concrete implementation gaps"
+    }
+  ],
+  "remaining": [
+    "Implement real lazy native data/holder/integrity/IC and Navigator CPU/locale providers without fake metadata",
+    "Integrate ELD,VM modules,HTTP outgoing framing and original-backing-store engine bridge source",
+    "Compile combined candidate and validate real Worker startup/clone/lifecycle and all four hosts;all19families partial"
+  ],
+  "at": "2026-11-06T03:38:42.153270+00:00",
+  "recipeRevision": 135,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

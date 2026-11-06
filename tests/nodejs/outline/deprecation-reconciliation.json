@@ -89,7 +89,7 @@
     "third_party/node-core/values-platform-adapter.js": "661bef00b89d498492117b7315ace5423befb0dcde7ee1b882bf3cc53aeb99bf",
     "third_party/node-core/vm-platform-adapter.js": "9953f331c80bc086e8092c5b9aa7dd5aa6ab64c3aa9990eddb885f6120ed86fa",
     "third_party/node-core/warning-platform-adapter.js": "63e20e6db2e5dfc77e1499b08956158a4a74f1d77295bce7cd6509f200f068df",
-    "third_party/node-core/worker-platform-adapter.js": "9be9974530bdad64295acda168178ff1d4daf7d038c8ecbb589923e182db9caf",
+    "third_party/node-core/worker-platform-adapter.js": "9a0454e3d951044e1c3e6c96e3d56fcc9923c638b72749621cdc29bfe830a2f7",
     "third_party/node-core/upstream/query-codecs/lib/punycode.js": "c5c75d5f31323affefa3595e63b3c50bca8bf7a2766936699e20460398e61717"
   },
   "sourceOccurrenceMeaning": "Literal location only; neither callsite reachability nor correct runtime warning/activation established",

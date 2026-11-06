@@ -26,12 +26,20 @@ function _createNodeWorkerPlatform(platform) {
         constructor(filename, options = ObjectCreate(null)) {
             super();
             if (options.execArgv) validateArray(options.execArgv, 'options.execArgv');
-            if (options.argv) validateArray(options.argv, 'options.argv');
-            let source = '', path = '';
+            // Pinned internal/worker.js captures/coerces argv before resolving
+            // filename or reading environment/options. Preserve observable
+            // getter/coercion order and retain the one mapped startup value.
+            let argv;
+            if (options.argv) {
+                validateArray(options.argv, 'options.argv');
+                argv = ArrayPrototypeMap(options.argv, String);
+            }
+            let source = '', path = '', doEval = false;
             if (options.eval) {
                 if (typeof filename !== 'string') throw new ERR_INVALID_ARG_VALUE('options.eval', options.eval,
                     "must be false when 'filename' is not a string");
                 source = filename;
+                doEval = true;
             } else {
                 if (platform.isURL(filename)) {
                     if (filename.protocol !== 'file:') unavailable('data URL worker loader');
@@ -51,11 +59,12 @@ function _createNodeWorkerPlatform(platform) {
                 throw new ERR_INVALID_ARG_TYPE('options.env', ['object', 'undefined', 'null', 'worker_threads.SHARE_ENV'], options.env);
             const env = ObjectCreate(null);
             for (const [key, value] of ObjectEntries(options.env == null ? platform.process.env : options.env)) env[key] = `${value}`;
-            const argv = options.argv ? ArrayPrototypeMap(options.argv, String) : [];
             const cliOptions = ObjectCreate(null);
             for (const key of ObjectGetOwnPropertyNames(platform.cliOptions || {})) cliOptions[key] = platform.cliOptions[key];
-            cliOptions.evalSource = options.eval ? source : '';
-            const config = { source, path, eval: !!options.eval, argv, env, cliOptions };
+            cliOptions.evalSource = doEval ? source : '';
+            // The engine's bootstrap consumes an array-like startup value;
+            // undefined means no user suffix, represented by an empty list.
+            const config = { source, path, eval: doEval, argv: argv === undefined ? [] : argv, env, cliOptions };
             const bootstrap = platform.native.serializeMessage(config, []);
             const serialized = platform.native.serializeMessage({ environmentData, workerData: options.workerData }, options.transferList || []);
             const launched = operation('create', serialized, bootstrap);

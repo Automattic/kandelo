@@ -674,4 +674,12 @@
     _nodeNative.cliOptions = workerEnvironment ? workerEnvironment.cliOptions : (globalThis.__kandeloNodeCliOptions || {});
 
     const argv0 = 'node';
-    const execArgv = entryPath ? ['node', entryPath, ...args] : ['node', ...args];
+    let execArgv;
+    if (workerEnvironment) {
+        // Pinned main/worker_thread.js inserts the classic eval name and uses
+        // ArrayPrototypePushApply: mapped argv may be a non-iterable array-like
+        // value returned by Array species. No user code has run in this realm.
+        execArgv = workerEnvironment.eval ? ['node', '[worker eval]'] :
+            entryPath ? ['node', entryPath] : ['node'];
+        Reflect.apply(Array.prototype.push, execArgv, args);
+    } else execArgv = entryPath ? ['node', entryPath, ...args] : ['node', ...args];

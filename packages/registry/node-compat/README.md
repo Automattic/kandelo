@@ -1,5 +1,15 @@
 # Node core compatibility target
 
+Source checkpoint 135 fixes Worker argv coercion and option-getter order,
+captures eval once, and supplies the classic eval argument through the real
+startup configuration. All 32 source/native comparisons and two main-startup
+controls pass, along with 11 affected port groups and 14 package checks.
+Native lazy-property and Navigator observations remain prerequisites, not
+candidate passes. Combined engine and four-host validation remain pending.
+All 19 families remain partial; overall suites and full rebuilds are deferred.
+See [Worker startup scope](../../../tests/nodejs/outline/worker-startup-integration.md).
+
+
 Source134 adds real HDR/statistics/sliding-window histogram owners, unchanged
 pinned public wrappers, native queued QRDE completion and packet-owned clone
 material, together with process-owned retained-memory accounting. It preserves
