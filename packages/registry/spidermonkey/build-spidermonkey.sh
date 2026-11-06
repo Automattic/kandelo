@@ -364,6 +364,7 @@ python3 "$REPO_ROOT/third_party/node-core/stage-copy-directory.py" "$SRC_DIR/js/
 cp "$REPO_ROOT/third_party/node-core/write-file-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-write-file-operations.h"
 cp "$REPO_ROOT/third_party/node-core/read-file-buffer.h" "$SRC_DIR/js/src/shell/kandelo-node-read-file-buffer.h"
 cp "$REPO_ROOT/third_party/node-core/key-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-key-operations.h"
+cp "$REPO_ROOT/third_party/node-core/x509-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-x509-operations.h"
 cp "$REPO_ROOT/third_party/node-core/cipher-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-cipher-operations.h"
 cp "$REPO_ROOT/third_party/node-core/digest-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-digest-operations.h"
 cp "$REPO_ROOT/third_party/node-core/child-wait.h" "$SRC_DIR/js/src/shell/kandelo-node-child-wait.h"

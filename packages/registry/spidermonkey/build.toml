@@ -1,5 +1,10 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/x509-operations.h",
+  "third_party/node-core/native-x509.cpp",
+  "third_party/node-core/x509-platform-adapter.js",
+  "third_party/node-core/x509-sources.json",
+  "third_party/node-core/upstream/x509",
   "third_party/node-core/fetch-body-platform-adapter.js",
   "third_party/node-core/fetch-body-sources.json",
   "third_party/node-core/upstream/fetch-body",
@@ -585,4 +590,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 156
+revision = 157

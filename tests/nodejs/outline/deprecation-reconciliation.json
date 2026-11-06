@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "d27bbcd55fe14a979cdbf77bc3487fdb84eefaeecf5cb6ba6ecb1e48b8fc7f17",
+    "packages/registry/node-compat/bootstrap.js": "6c071538116ef652364a88e5fbbf90450a0e84731587a5b9dfaa0def03871d0b",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "86cc28c808dcc716688df60c8631fd684f8041b500c2d3c3f8807105cdec145d",
@@ -56,7 +56,7 @@
     "third_party/node-core/incremental-crypto-adapter.js": "06b695ccac9a79973f78f8987175ee600cf8364efffb9d0396bf76a4d7c5c1b6",
     "third_party/node-core/inspection-adapter.js": "c090c337276d93d5dc4762c932666ed18232400904d331bb3444a3b28a9b6eb7",
     "third_party/node-core/kdf-platform-adapter.js": "74cafdd780cce9587d5fb2169f28ce0b4fa74ecffb6727e6ead640c2642716d4",
-    "third_party/node-core/keys-platform-adapter.js": "e072c809e76b93aa36bf43de667d018c23250df8528bbdb14de6d2d93bb432ac",
+    "third_party/node-core/keys-platform-adapter.js": "b4c538381474d9d3f404af57ebad33b1e06f15509d821cd3744624ea21749b24",
     "third_party/node-core/locks-platform-adapter.js": "cd26661d86138bb1b6db799eda051f544176fb8cc28bac63d5fd564a0076b532",
     "third_party/node-core/module-hooks-platform-adapter.js": "a241506687a307fa48c26de60502b1c53fba0490ffae6394e7a8bac95a900e6d",
     "third_party/node-core/module-record-platform-adapter.js": "d2cf4407dc4a171624829d0c9768eb0e9302a82882190b2548f1ee7b48b769c4",
@@ -99,6 +99,7 @@
     "third_party/node-core/vm-platform-adapter.js": "e44ec14ccb12ed54f4cba302e58e7399487c811e99b0bba660a0fb436cc2e5fc",
     "third_party/node-core/warning-platform-adapter.js": "63e20e6db2e5dfc77e1499b08956158a4a74f1d77295bce7cd6509f200f068df",
     "third_party/node-core/worker-platform-adapter.js": "b88251d2f6a91b5e00bb19d6bca33dbcfdd254fc220262bc824f3a8e09502466",
+    "third_party/node-core/x509-platform-adapter.js": "2982f2c4dfbf78d7954aade87d7a60fffad31ddff7d9b0fc4055ea7be0448dfe",
     "third_party/node-core/upstream/query-codecs/lib/punycode.js": "c5c75d5f31323affefa3595e63b3c50bca8bf7a2766936699e20460398e61717"
   },
   "sourceOccurrenceMeaning": "Literal location only; neither callsite reachability nor correct runtime warning/activation established",

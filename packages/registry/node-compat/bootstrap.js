@@ -3464,14 +3464,11 @@ Object.assign(crypto, _createNodeCipherPlatform({
 crypto.generateKeyPairSync = _notImpl('crypto', 'generateKeyPairSync');
 crypto.sign = _notImpl('crypto', 'sign');
 crypto.verify = _notImpl('crypto', 'verify');
-// Constructable class stub: throws only when actually instantiated, so
-// `import { X509Certificate } from "crypto"` still links.
-crypto.X509Certificate = (function () {
-    function X509Certificate() {
-        throw new Error('crypto.X509Certificate is not implemented on spidermonkey-node');
-    }
-    return X509Certificate;
-})();
+const _nodeX509 = _createNodeX509Platform({
+    native: _nodeNative, values: _nodeValues, keys: _nodeCryptoKeys,
+    types: util.types, inspection: _nodeInspection, Buffer, codecs: _nodeBufferCodecs,
+});
+crypto.X509Certificate = _nodeX509.X509Certificate;
 
 // ============================================================
 // net module (TCP client policy; listening servers remain incomplete)

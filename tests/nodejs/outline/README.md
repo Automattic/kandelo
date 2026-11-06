@@ -1,5 +1,10 @@
 # Node 26 core implementation outline
 
+Source157 integrates actual X509 material/metadata/key ownership and a source-
+realm view correction. Twenty-one native component groups, the private Buffer
+owner check,32 web tests and14 package checks pass. Production JSAPI/current
+four-host remain unvalidated. See [X509 scope](x509-owner-integration.md).
+
 Source156 integrates actual Response Body consumption/MIME/multipart owners.
 Fourteen native comparison groups,32 existing web tests and14 package-source
 checks pass. Request/Fetch/backend and current four-host gaps remain open.

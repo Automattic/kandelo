@@ -1929,6 +1929,18 @@ if fetch_body_adapter.count('/* NODE_FETCH_BODY_MODULES */') != 1:
     raise ValueError('Review Fetch Body module marker')
 bundle += fetch_body_adapter.replace('/* NODE_FETCH_BODY_MODULES */', ',\n'.join(fetch_body_factories)).rstrip('\n') + '\n'
 
+x509_spec = manifest['x509Platform']
+if x509_spec['version'] != manifest['version'] or x509_spec['commit'] != manifest['commit']:
+    raise ValueError('X509 sources must retain the audited Node target')
+for name, item in {**x509_spec['sources'], **x509_spec['references']}.items():
+    if hashlib.sha256((root / item['path']).read_bytes()).hexdigest() != item['sha256']:
+        raise ValueError('X509 source identity mismatch: ' + name)
+x509_adapter = (root / 'x509-platform-adapter.js').read_text()
+if x509_adapter.count('/* NODE_X509_MODULE */') != 1:
+    raise ValueError('Review X509 module marker')
+bundle += x509_adapter.replace('/* NODE_X509_MODULE */',
+    (root / x509_spec['sources']['lib/internal/crypto/x509.js']['path']).read_text()).rstrip('\n') + '\n'
+
 dest = root / 'node-core.js'
 if '--check' in sys.argv:
     if dest.read_text() != bundle:

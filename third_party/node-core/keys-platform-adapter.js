@@ -106,5 +106,5 @@ function _createNodeCryptoKeys(platform) {
     const keys = require('internal/crypto/keys');
     return { ...keys, api: { KeyObject: keys.KeyObject, createSecretKey: keys.createSecretKey,
         createPublicKey: keys.createPublicKey, createPrivateKey: keys.createPrivateKey },
-        keyOperation: call };
+        keyOperation: call, nativeHandlePrototype: KeyObjectHandle.prototype };
 }

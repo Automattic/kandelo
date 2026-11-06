@@ -1,0 +1,36 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/internal/crypto/x509.js": {
+      "path": "upstream/x509/lib/internal/crypto/x509.js",
+      "sha256": "359d33b5fcca4930bda1f1301f41a3b43804168220b7aa6fc94f35ef42c69eb9"
+    }
+  },
+  "references": {
+    "src/crypto/crypto_x509.cc": {
+      "path": "upstream/x509/src/crypto/crypto_x509.cc",
+      "sha256": "9ee4a24d1b467e77ce247ec6f6b664f0a81357f47b751df81b99c4ca15fcac15"
+    },
+    "src/crypto/crypto_x509.h": {
+      "path": "upstream/x509/src/crypto/crypto_x509.h",
+      "sha256": "3a88ec8cf679c6f483e6d13b426bc3b9f5c06f8284049add006926bdd022fcba"
+    },
+    "deps/ncrypto/ncrypto.h": {
+      "path": "upstream/x509/deps/ncrypto/ncrypto.h",
+      "sha256": "bdbb7c65f6a6d8bcb7e8574a5ca6ae9b5fbc849625f0111e7bce4a627d98b0a8"
+    },
+    "deps/ncrypto/ncrypto.cc": {
+      "path": "upstream/x509/deps/ncrypto/ncrypto.cc",
+      "sha256": "405d2a22d5aadca4f07fd9dc086dbc145d093b539bb1a788a78e959ad5cbd211"
+    },
+    "src/util.h": {
+      "path": "upstream/x509/src/util.h",
+      "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
+    },
+    "src/util-inl.h": {
+      "path": "upstream/x509/src/util-inl.h",
+      "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561"
+    }
+  }
+}

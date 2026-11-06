@@ -1,0 +1,97 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto-contracts.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "crypto",
+      "secure-network",
+      "values",
+      "engine"
+    ],
+    "scope": "Substantive X509 owner/wrapper/metadata/key slice; full certificate and crypto requirements remain open"
+  },
+  "sourceImplemented": [
+    "Actual ncrypto X509Pointer material and GC-owned Box, metadata/Date/raw/PEM/cache/inspection/descriptors and real public-key/issuer/key/verify checks",
+    "Pinned wrapper over native key ownership with normal source inputs/staging and additive engine0122 registration",
+    "Actual checked-unwrapped view/source-realm/no-GC public data acquisition and atomic shared copy; caller realm restored before result allocation",
+    "Preserve exact imported source and current prior families; normalize only new final assembled block EOF newline"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-x509157-source-r1/report.json",
+    "sha256": "0796ba2a1ecb59fcbe399358fdf1716a94ba55b2ac67d7a9dd4d1c5e1aeb1351",
+    "guardedInputs": 740,
+    "scope": "Current real X509 owner/wrapper/native key source integration,21native component groups and actual candidate private Buffer codec check;normal input/bootstrap/unity staging. New JSAPI/CCW/GC/guest/four-host uncompiled/unvalidated."
+  },
+  "packageChecks": {
+    "report": ".context/node26-x509157-affected-r1.json",
+    "sha256": "f29272dc5c3c169bef4159b040a03b20510fdbc4066ccf337f89340e4315376a",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package-source checks within46test run;32web components separate"
+  },
+  "nativeComponents": {
+    "report": ".context/node26-x509157-source-r1/report.json",
+    "sha256": "0796ba2a1ecb59fcbe399358fdf1716a94ba55b2ac67d7a9dd4d1c5e1aeb1351",
+    "passed": 21,
+    "failed": 0,
+    "privateCodecCheck": {
+      "scope": "Actual composed X509 wrapper/private Buffer codecs/unpooled owner with explicit native NAPI cert allocator; not SM/guest",
+      "rawLength": 1004,
+      "backingLength": 1004,
+      "offset": 0,
+      "brandedCandidateBuffer": true,
+      "cacheIdentity": true,
+      "publicCodecPoisonBypassed": true,
+      "certificateIndependent": true
+    },
+    "scope": "Actual candidate wrapper over real native ncrypto/X509 Material; explicit native key/VM/Buffer/error bridges, not SM slot/GC/realm acquisition conformance"
+  },
+  "affectedWebComponents": {
+    "report": ".context/node26-x509157-affected-r1.json",
+    "sha256": "f29272dc5c3c169bef4159b040a03b20510fdbc4066ccf337f89340e4315376a",
+    "passed": 32,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Current combined web/Body frontend regression controls, not X509 JSAPI"
+  },
+  "constructorSourceReview": {
+    "report": ".context/x509-view-acquisition-review-153/report.json",
+    "sha256": "903d86fc4b41002cbe85c0c4ca27f2197a198a24f887f3abfa0c8501d64c41e7",
+    "scope": "Exact pinned source/API/roundtrip proof only; no guest runtime reproduction or compilation"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/x509-owner-agent/HANDOFF.md",
+      "sha256": "853c24f9fe1639f3d024f02c3c8a0c2bad2b134d5914e803e288f96f57a0e852",
+      "kind": "prior-native-fixture-and-source-composition",
+      "reason": "Initial template/include/fixture global and staging failures retained in immutable capsule"
+    },
+    {
+      "report": ".context/body-x509-integration-153/REVIEW.md",
+      "sha256": "4296953fbb5243d59943ffbaff0f3dd6a35cbd24e9bfad5594032dc8d675e62c",
+      "kind": "retracted-compile-claim",
+      "reason": "Complete actual JSContext includes disprove speculative incomplete-type compile claim; no original compilation nonpass asserted"
+    },
+    {
+      "report": ".context/node26-x509157-source-initial-EOF.log",
+      "sha256": "7f42285da906d62f3d3bd01a397a3c99fd9369b368f2c0d4d9a6237027f02b46",
+      "kind": "root-final-bundle-format",
+      "reason": "Initial duplicate EOF newline source failure; actual final assembly normalized, no assertions/imported algorithms altered"
+    }
+  ],
+  "remaining": [
+    "Compile and validate actual X509 JSAPI/key/realm/GC/OOM/retirement and four-host paths with identified current engine",
+    "Matching/issuer/legacy/clone and complete OpenSSL/control-block accounting remain implementation gaps",
+    "Shared crypto rooted/no-GC/random original-storage ownership fixes are separate; component success is not full public-core conformance"
+  ],
+  "at": "2026-11-06T18:59:58.436466+00:00",
+  "recipeRevision": 157,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
