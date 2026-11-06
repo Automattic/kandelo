@@ -7,8 +7,16 @@ The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
 on ABI 55 and main `21cfba152` (last fetched November 5).
 
 All four Go consumer recipes now pin validated source
-`5834adc306dddf6784c20e402deeabf643ad9c37`; its normal artifact rebuild is
-next. The published revision-37 preview still uses `1b0cf580`.
+`5834adc306dddf6784c20e402deeabf643ad9c37`. The normal artifact rebuild
+passes all 184 nodes in 18m24s (178 cached, six published) and consumer
+admission. WordPress revision 38 is 79,417,871 bytes, SHA-256
+`b120951e025403adb03ddeebd65d18a323361bd26da616a625bb670e5e4ade0e`.
+Its Node service tests pass both profiles, including real PHP draining,
+zero server/controller exits and cooperative retirement (57s). The new
+port-5453 preview passes artifact hash/size and Chromium/Firefox demo login
+and Appearance Editor checks (2/2, 2m51s). Its URL and identity are in
+`.context/frankenphp-rev38-admitted-preview-artifacts.json`. The older
+port-5451 preview still uses `1b0cf580`.
 The target supports cooperative
 signals, fatal Go tracebacks, shared libc cgo syscall dispatch, callbacks,
 worker retirement, and host heap safepoints. The latest eight-line runtime
@@ -465,10 +473,41 @@ and `.context/frankenphp-webkit-host-ONzy4Y/`, each with `aligned-memory.json`.
 With the original-cohort measurements retained, validated Go source
 `5834adc` is pinned in all four consumers. Revisions become Go sample 26,
 standalone Caddy 10, FrankenPHP classic 33, FrankenPHP+Caddy 12 and WordPress
-38. The normal serialized cohort build must finish before final-artifact
-claims or comparisons. The old preview remains identified as revision 37.
+38. The normal serialized cohort build passes as
+`frankenphp-go-wait-checkpoint-cohort-1106-132832-55fb`: 184 nodes, 178
+cached, six published, 18m24s plus consumer admission. The kernel remains
+byte-identical (`bfdf6ce5`, ABI 55). Final artifact validation and comparisons
+remain pending; the old preview remains identified as revision 37.
 The new target-OS waits pass 159/159 browser cases and four standard-library
 builds without compiler or collector edits.
+
+### Revision-38 preview and shutdown observation — 2026-11-06
+
+The normal `./run.sh browser` on port 5452 is still preparing its default
+projection through the debug xtask, observed at 99% CPU after seven minutes.
+The separate benchmark projection has already passed all 184 cached nodes
+and consumer admission in 4m27s. Serving that complete projection through
+standard Vite and the unchanged SourceOnly plugin on 5453 lets app checks
+proceed without bypassing build, identity or admission checks. Both roots
+contain image `b120951e` and kernel `bfdf6ce5`. The new preview passes the
+actual Chromium/Firefox homepage, demo login and site-editor cases.
+
+The browser-host fixture can now keep its page alive after destruction with
+`KANDELO_FRANKENPHP_POST_DESTROY_SECONDS` (0–120; default 0; requires memory
+diagnostics). All diagnostic phases retain UTC timestamps, including phases
+without a live guest snapshot. A real revision-38 classic Chromium workflow
+passes in 26s and records 10.005s between destruction and its final stage.
+Those records have no guest-memory value; the alignment parser reports
+unknown guest metrics as null rather than zero. The diagnostic changes do
+not force GC, reload, change production configuration or relax HTTP checks.
+Evidence: `frankenphp-rev38-postdestroy-observation-1106-140000-a72a` and
+`.context/frankenphp-postdestroy-control-SgdQEB/`.
+
+Matched one/six-thread WebKit controls with 90-second traffic and a
+30-second post-destroy window are running on the revision-38 projection as
+`frankenphp-rev38-webkit-pool-memory-1106-140211-e92b`. Their results are not
+yet known. The full visible UI, persistence, final lifecycle repetitions,
+sustained comparisons and nine-suite timings remain release work.
 
 ### Wait checkpoint: signals, callbacks and retirement — 2026-11-06
 

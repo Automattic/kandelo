@@ -56,6 +56,18 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   RSS, shared memory reservations, and guest linear-memory size; none is a
   substitute for the others. Use the actual limit and worker ownership
   evidence to investigate memory use before choosing a runtime change.
+  Align native samples with kernel/process linear bytes, guest thread
+  counts and module-cache counters at the same workload stages; retain the
+  timestamp skew. A macOS WebKit content process can be launched through
+  XPC rather than as a child of the driver, so a descendant-only RSS sum
+  can miss it. Read-only inspector categories are useful diagnostics, but
+  its JavaScript heap category describes the observed VM and its direct
+  worker events need not include nested guest workers. Keep guest thread
+  counts authoritative and native buckets separate from RSS and the
+  process-kill footprint. A navigation can replace the inspector target
+  while preserving the Page; verify that observation survives it. Keep
+  the same page alive after machine destruction to observe later native
+  reclamation separately from retirement, without forced GC or a reload.
 - Validate descriptor pollability in `netpollopen`, even when readiness
   interests are armed lazily. Go's ordinary `os.File` code needs the epoll
   registration error to clear `O_NONBLOCK` and disable deadlines on regular

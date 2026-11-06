@@ -12,6 +12,11 @@ const churnRequests = Number(process.env.KANDELO_FRANKENPHP_CHURN_REQUESTS ?? "0
 const editorBurstRounds = Number(process.env.KANDELO_FRANKENPHP_EDITOR_BURST_ROUNDS ?? "0");
 const parallelEditorRequests = process.env.KANDELO_FRANKENPHP_PARALLEL_EDITOR_REQUESTS === "1";
 const memoryDiagnostics = process.env.KANDELO_FRANKENPHP_MEMORY_DIAGNOSTICS === "1";
+const postDestroySeconds = Number(process.env.KANDELO_FRANKENPHP_POST_DESTROY_SECONDS ?? "0");
+if (!Number.isSafeInteger(postDestroySeconds) || postDestroySeconds < 0 || postDestroySeconds > 120 ||
+    (postDestroySeconds > 0 && !memoryDiagnostics)) {
+  throw new Error("KANDELO_FRANKENPHP_POST_DESTROY_SECONDS requires memory diagnostics and an integer from 0 to 120");
+}
 const numThreads = Number(process.env.KANDELO_FRANKENPHP_NUM_THREADS ?? "6");
 if (!Number.isSafeInteger(numThreads) || numThreads < 1 || numThreads > 32) {
   throw new Error("KANDELO_FRANKENPHP_NUM_THREADS must be an integer from 1 to 32");
@@ -72,7 +77,7 @@ const artifactTest = test.extend<{ artifactUrls: { imageUrl: string; kernelUrl: 
 for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
   artifactTest(`WordPress on ${serviceName} serves PHP in the browser kernel host`, async ({ page, baseURL, browser, artifactUrls }) => {
     test.setTimeout(Math.max(serviceName === "frankenphp-caddy" || parallelEditorRequests ? 300_000 : 240_000,
-      (soakSeconds + 240) * 1000));
+      (soakSeconds + postDestroySeconds + 240) * 1000));
     test.skip(!imagePath, "Build the WordPress image and set KANDELO_WORDPRESS_FRANKENPHP_VFS");
     expect(baseURL).toBeTruthy();
     const { imageUrl, kernelUrl } = artifactUrls;
@@ -93,12 +98,12 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     const memoryEvidencePath = test.info().outputPath("browser-memory-samples.jsonl");
     await page.exposeFunction("recordFrankenPhpStage", (stage: string, memory?: unknown) => {
       record(`stage: ${stage}`);
-      if (memory !== undefined) appendFileSync(memoryEvidencePath,
+      if (memoryDiagnostics) appendFileSync(memoryEvidencePath,
         JSON.stringify({ recordedAt: new Date().toISOString(), stage, configuredPhpThreads: numThreads, memory }) + "\n");
     });
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, numThreads }) => {
+    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds }) => {
       let readMemory: (() => Promise<unknown>) | undefined;
       const stage = async (message: string) => {
         let snapshot: unknown;
@@ -403,10 +408,16 @@ echo json_encode([
         await kernel.destroy();
         readMemory = undefined;
         await stage("machine destroyed");
+        if (postDestroySeconds > 0) {
+          // Keep the same page alive so external native-memory observation can
+          // distinguish worker retirement from later engine reclamation.
+          await new Promise(resolveDelay => setTimeout(resolveDelay, postDestroySeconds * 1000));
+          await stage(`after destroy: ${postDestroySeconds}s`);
+        }
       }
     }, {
       imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName,
-      memoryDiagnostics, soakSeconds, numThreads,
+      memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds,
       gracefulProbeUrl: new URL(`/@fs/${resolve(repoRoot, "host/test/support/frankenphp-graceful.ts")}`, baseURL!).href,
       runtimeUrlsModuleUrl: new URL("/lib/init/image-owned-runtime-urls.ts", baseURL!).href,
     }).catch(async error => {
