@@ -115,6 +115,27 @@ login. The fixture now accepts that normal dismissal and requires the
 unobstructed view before continuing. A final coherent rebuilt cohort and
 full production repetitions remain required.
 
+The longer old-production editor check (`db91`) passes Firefox's five-minute
+health interval but fails WebKit at the 150-second health request with
+`Service Worker context closed`. The page logs a restored service-worker
+bridge; Caddy remains PID 111 with one two-thread startup and no fatal Go
+log. This does not demonstrate a Caddy crash. The failure and earlier
+fork-child launch diagnostic are retained in
+`.context/frankenphp-production-editor-soak-zCSKoh/`. The corrected bundle
+still needs this real-editor check; do not replace it with the successful
+raw-HTTP fixture or accept a failed health request.
+
+Three additional old-bundle WebKit Caddy/library recovery repetitions
+(`2771`, 13m10s) finish with one pass and two failures. The new failure
+inspector provides the guest service logs: both failures include PHP's
+`Maximum execution time of 30+2 seconds exceeded (terminated)` and dinit
+reports Caddy exit 124 before restarting it. One subsequent restart also
+throws Go's `newosproc: child bootstrap timed out`. Thus these reload
+failures do include real guest process exits, unlike the separate
+service-worker health failure above. No execution-time or bootstrap limits
+are raised. The corrected checkpoint still needs equivalent repetitions.
+Raw logs are retained as `.context/old-production-recovery-failure-{1,2}.log`.
+
 ### Remaining release gates
 
 1. The full memory/lifecycle gate on revision 39 is complete. Vite cache

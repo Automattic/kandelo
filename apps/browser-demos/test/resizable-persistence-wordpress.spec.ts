@@ -68,8 +68,19 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
       page.on("domcontentloaded", () => recordLifecycle("main document loaded"));
       page.on("crash", () => recordLifecycle("page crashed"));
       page.on("pageerror", error => recordLifecycle("page error", String(error)));
-      page.on("console", message => {
-        if (message.type() === "error") recordLifecycle("console error", message.text().slice(0, 4000));
+      context.on("console", message => {
+        if (message.type() !== "error" && message.type() !== "warning") return;
+        recordLifecycle(`console ${message.type()}`, message.text().slice(0, 4000));
+        // Bridge failures log an Error whose cause is lost in text(). Read
+        // it while its worker realm still exists, before reload/cleanup.
+        void Promise.all(message.args().map(argument => argument.evaluate(value => {
+          const describe = (value: unknown, depth: number): unknown => value instanceof Error
+            ? { name: value.name, message: value.message, stack: value.stack,
+              cause: depth > 0 ? describe(value.cause, depth - 1) : undefined }
+            : String(value);
+          return describe(value, 4);
+        }))).then(details => recordLifecycle("console arguments", JSON.stringify(details).slice(0, 16000)))
+          .catch(error => recordLifecycle("console arguments unavailable", String(error)));
       });
       const resolvedTarget = await machineUrl(page, profile, {
         search: {
