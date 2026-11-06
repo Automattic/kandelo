@@ -6,17 +6,41 @@ The work now extends beyond the original hello-world milestone below.
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
 on ABI 55 and main `21cfba152` (last fetched November 5).
 
-All four Go consumer recipes now pin validated source
-`5834adc306dddf6784c20e402deeabf643ad9c37`. The normal artifact rebuild
-passes all 184 nodes in 18m24s (178 cached, six published) and consumer
-admission. WordPress revision 38 is 79,417,871 bytes, SHA-256
-`b120951e025403adb03ddeebd65d18a323361bd26da616a625bb670e5e4ade0e`.
-Its Node service tests pass both profiles, including real PHP draining,
-zero server/controller exits and cooperative retirement (57s). The new
-port-5453 preview passes artifact hash/size and Chromium/Firefox demo login
-and Appearance Editor checks (2/2, 2m51s). Its URL and identity are in
-`.context/frankenphp-rev38-admitted-preview-artifacts.json`. The older
-port-5451 preview still uses `1b0cf580`.
+All four Go consumer recipes pin validated source
+`5834adc306dddf6784c20e402deeabf643ad9c37`. WordPress revision 39 publishes
+through the normal 184-node build and consumer admission in 7m47s
+(180 cached, four published). Its image is 79,417,372 bytes, SHA-256
+`b5d9a0326b57ac4f4c808cdbd72e068f9a403682be37f8d4652ae26c7b8de438`.
+Both actual Node service workflows pass with two PHP threads, held-response
+draining, zero server/controller exits and cooperative retirement (44s).
+The artifact-verified port-5454 preview passes Chromium/Firefox demo login
+and Appearance Editor checks (2/2, 2m53s). Its URL and identity are in
+`.context/frankenphp-rev39-admitted-preview-artifacts.json`. Older preview
+ports retain their historical artifacts and are not the current preview.
+
+The current runtime passes 159/159 ordinary Go browser cases, all four
+standard-library compile gates, plain-Go/cgo Node wait probes, three Node
+and nine browser callback checks, and ten Node signal modes plus two Node
+retirement and 57 browser signal/retirement cases. The normal Go sample
+revision 26 passes its Node C launcher and three browser cases. Allocation
+probes pass Node and all three browsers: Go's scavenger makes pages reusable,
+but linear memory does not shrink and PHP allocations remain outside the
+soft Go memory limit.
+
+Matched WebKit pool controls complete a 90-second traffic interval and
+crash/restart/drain/retirement with one or two PHP threads. The two-thread
+native allocation bucket peaks at 10.61 GiB, settles near 5.6 GiB during
+traffic, and falls to 0.28 GiB thirty seconds after destruction. A six-thread
+run still exceeds WebKit's content-process footprint threshold. Revision 39
+uses the measured two-thread default through one common environment setting;
+Node comparison runs explicitly configure six FPM children and six PHP
+threads and verify the actual Caddy startup count. This is resource sizing,
+not proof that the per-thread native cost is solved or that long-term memory
+use is bounded. The detailed controls below preserve measurement scope.
+
+The full revision-39 visible UI and required memory/lifecycle gate are
+running. Final crash persistence, all-engine service recovery/draining,
+sustained comparisons and quiet nine-suite measurements remain open.
 The target supports cooperative
 signals, fatal Go tracebacks, shared libc cgo syscall dispatch, callbacks,
 worker retirement, and host heap safepoints. The latest eight-line runtime
@@ -24,72 +48,13 @@ correction validates descriptor pollability at open, allowing Go's unchanged
 file code to restore blocking reads for regular files. It requires no compiler,
 standard library, dependency, kernel, or ABI patch.
 
-The declared-tool cohort for WordPress revision 37 passes all 184 nodes,
-all 11 products, and published-consumer admission in 20m36s (172 cached,
-12 published). Its image is 79,342,248 bytes, SHA-256
-`389ec37e63422e400b7c683031eb803ffb1c975d8242606f4aff49c1bbdeeff5`.
-The rebuilt cohort passes Chromium/Firefox homepage, demo login and
-Appearance/site-editor checks (2/2, 2m48s). The verified preview now runs on
-port 5451; its URL and checked HTTP identity are in
-`.context/frankenphp-current-preview-artifacts.json`. The older port-5417
-server pins the earlier `79c47b29` image. Full app validation remains open.
-
-- The current plain-Go/cgo regular-file regressions fail before the
-  pollability correction and pass afterward in Node and all three browsers.
-  All four standard-library compile gates pass. The complete ordinary Go
-  browser inventory passes 153/153 across Chromium, Firefox, and WebKit.
-- Both actual revision-37 Node services pass startup, WordPress HTTP,
-  held-PHP draining after listener closure, and zero server/controller
-  exits. The initial two-case run also passes cooperative machine
-  retirement. Stronger reruns exposed intermittent forced retirement of
-  the root dinit worker after normal PHP/server shutdown. A native-waiter
-  regression now reproduces a terminal-notification defect before the fix:
-  an outstanding host waiter consumes the guest's only wake. Terminal
-  publication now wakes every waiter on that exact retiring channel. All
-  28 related host checks pass, followed by eight actual service drain and
-  cooperative-retirement cases across four fresh Node runs. The broader
-  Full Node/Bun/browser lifecycle validation now passes in 19m15s: 18
-  browser cases, source boundary 7/7, ownership 239/239, Node teardown 3/3
-  and Bun teardown 7/7. Six reviewed standalone Go/C linker-probe
-  allocations hold no live kernel memory. The next Go-pinned image rebuild
-  still needs its final artifact checks.
-- The visible Caddy UI case passes in Chromium and Firefox: homepage,
-  Shortcuts admin login, Appearance/site editor, template canvas blocks,
-  and 20 seconds of editor HTTP health. The real service log contains no
-  Go panic/fatal header.
-- The heavier current browser-host run passes five of six cases: both
-  profiles in Chromium/Firefox and classic in WebKit. Passing cases cover
-  real OPcache file-cache artifacts, login/editor HTTP, 40 request-churn
-  iterations, 20 editor burst rounds, ten parallel editor requests,
-  held-PHP draining, and cooperative retirement. Caddy also recovers after
-  intentional guest SIGKILL. WebKit Caddy loses its page context.
-- An isolated WebKit diagnostic then reproduces a same-URL reload during
-  classic request churn about 60 seconds after navigation. Phase evidence
-  and a trace are retained outside the page. Native browser stderr reports
-  a 21,182 MB footprint exceeding its 16,384 MB kill threshold. A plain-page
-  70-second control passes. The source of the memory use remains unknown.
-  A fresh Caddy-only run also reaches a native footprint kill (19,981 MB
-  against 16,384 MB). Its last kernel/guest linear-memory snapshot totals
-  about 499 MiB, with six compiled modules accounting for 210,675,443 input
-  bytes and no thread-module compilations. These counters do not identify
-  the remaining native footprint. The Caddy binary has no DWARF sections;
-  stripping debug information is not an evidence-backed fix.
-- Current C signal/I/O conformance passes 89 cases on Node and 89 on
-  Chromium, with two existing skips per host and no failures/timeouts.
-  Both hosts use the same admitted kernel/rootfs bytes and host sources.
-  The related stop/continue host suites pass 185/185.
-- The current revision-25 Go sample passes normal publication, Node C VFS
-  spawning, and all three browser launch cases, with matching ABI stamps
-  and no Node fork, stderr, or host diagnostics.
-- Earlier Go source `29e2118` passes 51 browser signal cases, three Node
-  and nine browser callback probes, the full cgo-enabled upstream Node
-  `os` inventory (224 top-level tests/examples, 21 skips). These
-  results remain tied to their recorded source/artifact identities.
-- Historical revision-32 app evidence covers post writes and real template
-  saves in Chromium for both FrankenPHP profiles; all three visible Caddy
-  cases pass in Firefox/WebKit. Classic crash recovery preserves a post,
-  exact uploaded image, and homepage template in both storage modes with
-  the original image source disabled. Current-image repetitions are pending.
+Current C signal/I/O conformance passes 89 cases on Node and 89 on
+Chromium, with two existing skips per host and no failures/timeouts.
+Both hosts use the same admitted kernel/rootfs bytes and host sources.
+Related stop/continue host suites pass 185/185. Earlier pinned source
+`29e2118` also passes the cgo-enabled upstream Node `os` inventory
+(224 top-level tests/examples, 21 skips); that historical result remains
+scoped to its recorded source, not the entire upstream Go test suite.
 
 The dated entries below retain the evidence and failures behind this
 checkpoint. These results do not establish complete Go/POSIX conformance,
@@ -97,17 +62,16 @@ production readiness, a physical-memory plateau, or superiority over PHP-FPM.
 
 ### Remaining release gates
 
-1. Rebuild the demo with validated Go source `5834adc` and repeat the
-   final artifact checks. Vite cache isolation and the complete current
-   memory/lifecycle gate now pass, including all 18 three-engine cases.
+1. Finish the full memory/lifecycle gate on revision 39. Vite cache
+   isolation and the earlier complete gate pass all 18 three-engine cases.
    The terminal-channel wake fix has a fail-before/pass-after regression
    and real service repetitions. The exact waiter order behind the
    original intermittent dinit retirement was not captured.
 2. Complete browser PHP draining and retirement for Caddy on WebKit.
    Reduce or explain the workload memory use behind the observed native
    content-process kill; a same-URL reload is distinct from a Go exit.
-3. Repeat the full visible login, editor, post/template-save, and crash
-   recovery workflows on the rebuilt revision-37 cohort. Resolve the earlier intermittent
+3. Finish the full visible login, editor, post/template-save, and crash
+   recovery workflows on the rebuilt revision-39 cohort. Resolve the earlier intermittent
    classic WebKit health/navigation failures; their cause remains unknown.
 4. Finish sustained traffic/memory checks, paired PHP-FPM/classic/Caddy
    comparisons, and all nine Node/Chromium incremental before/after
@@ -517,6 +481,25 @@ observed PHP thread count. Evidence:
 `.context/wordpress-node-pool-smoke-HpLw7M/`. It runs for 25 seconds under
 concurrent UI validation and supplies no performance conclusion. Quiet
 sustained measurements remain pending.
+
+### Standalone Caddy and byte ownership review — 2026-11-06
+
+Standalone Caddy revision 10 passes its real static HTTP response on Node
+and all three browser engines (3/3, 26s total) with the final Go pin.
+The program resolves normally from the admitted 184-node projection, with
+the same ABI-55 kernel. Node records no host diagnostics or Go panic.
+Evidence: `final-standalone-caddy-1106-151503-e0d4`,
+`.context/caddy-final-r6eHaF/`.
+
+The host ownership review identifies a further concrete allocation lead:
+both Node and browser clone initialization send the full program bytes as
+well as the shared compiled module. For FrankenPHP+Caddy that is roughly
+206 MB per cloned thread before engine allocations. Thread initialization
+currently uses those bytes for reflection, typed owner-import routing,
+fork-template identity, and legacy channel TLS detection. A future generic
+metadata handoff could remove the redundant byte copies while preserving
+those checks. No such change is made or measured here; this source finding
+does not quantify its share of the native bucket or establish a leak.
 
 ### Measured service budget and common pool setting — 2026-11-06
 
