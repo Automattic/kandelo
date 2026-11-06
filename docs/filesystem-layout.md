@@ -36,6 +36,11 @@ missing platform capabilities to claim full-system FHS conformance.
 
 ## Decisions and references
 
+Core images share the rootfs account and privilege foundation: `maker` belongs
+to `wheel`, and `/etc/sudoers` grants that group password-authenticated sudo.
+Service builders preserve inherited account databases and supplementary groups;
+fresh images use the rootfs account files instead of independent account lists.
+
 Kandelo retains separate `/bin` and `/usr/bin` directories and installs each
 command once. The FHS distinction is about purpose, not whether a command
 was built from a package. The coreutils multicall implementation lives at
