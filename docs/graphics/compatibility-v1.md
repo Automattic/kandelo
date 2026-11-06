@@ -25644,3 +25644,60 @@ application acceptance. Exact launcher, source/build identity, availability
 scope and HTTP response are in `.context/graphics-b1-preview-r539/`.
 The published descriptor-reuse defect remains open and is being fixed at its
 kernel/resource-ownership layer before complete B1 admission.
+
+### 2026-11-06 frozen B1 and Freeciv baseline checkpoint
+
+The maintainer added Freeciv alongside ScummVM as required application
+acceptance, including fixed saved-game inputs, original input-to-visible
+map/UI response, rendering correctness and a pinned native control. This
+changes the validation scope; it establishes no performance result and
+waives no existing gate. The normal preview at
+http://localhost:6271/pages/kandelo/ remains available and immutable.
+
+Frozen normal source: `ebdd15fbce09fee47b2206aab3f479bfb1c7d2b8`, using the
+R524 295-file product manifest already recorded above. Commands ran through
+`scripts/dev-shell.sh bash` with the frozen scripts
+`.context/graphics-b1-stage-baseline-r536/run.sh` and
+`.context/graphics-freeciv-baseline-r543-r2/run.sh`, unique ports and private
+outputs. Both complete jobs failed; successful stages below are narrower
+evidence. Authored-source and recorded product hashes remained unchanged.
+
+| Frozen scope | Exact result |
+|---|---|
+| GLES2 `negative-api,functional.state_query --strict`, each of Chromium/Firefox/WebKit | 642 cases each: 633 Pass, 9 NotSupported, zero failures/timeouts/missing/accounting errors; all 642 per-case verdicts identical |
+| Ten complete desktop/compositor/application specs, all three engines | 84 scheduled: 66 pass, 12 fail, 6 skip, zero flaky results; 6061s |
+| Full libc-test on Node | 324: 306 pass, 17 expected failures, one flaky pass (`regression/pthread_cond-smasher`); no build error/timeout/unexpected failure; 1024s |
+| Full libc-test browser invocation | Vite failed its 30s startup deadline before test execution; all 324 recorded as ERROR, zero tests passed; 667s |
+| Existing Freeciv Node package checks | 2/2 pass: shipped executables and ruleset/AI turns/save/reload; 60s; setting-validation gap below |
+| Complete existing Freeciv browser spec on Chromium, densities 1 and 2 | 36 cases: 24 pass, 12 fail, no skips/flaky results/retries; 3572s |
+
+Desktop failures include LÖVE menu rendering on all three engines, Firefox
+Wayland move-grab continuity, and WebKit Cage, audio/cursor, Omarchy and
+ScummVM/freeware paths. Six skips remain unvalidated coverage. Freeciv
+failures cover initial/local-peer startup, pointer-lock/navigation, resize
+choices, fitted cursor alignment and active-game quit. Root-cause work is
+required; a timeout does not establish browser or application fault. Node
+save/reload is not Node graphics coverage. This Chromium functional run is
+not the new fixed-scene three-engine latency/native-control comparison.
+
+The fixed-save investigation also found that the existing Node test sends
+`set firsttimeout 1`, which the shipped server rejects; the accepted spelling
+is `first_timeout`. The old passing test did not assert setting acceptance.
+The canonical scene and corrected acceptance check must validate the actual
+server responses rather than assume requested configuration took effect.
+
+Per-case judgments and original reports remain in the two run directories.
+Desktop report SHA256:
+`32294f02351b3449388f2794ed8d2f681083663e462759139680803007f20418`;
+Freeciv report SHA256:
+`1ddbcb6d1f4e52e42810a0c3f804f12c4b759bb6413133e7fc938cdca23d1429`.
+GLES2 maps and hashes remain in
+`.context/graphics-b1-stage-baseline-r536/gles2-per-case-comparison.json`.
+Original failed launcher attempts remain failed separately.
+
+B1's descriptor/OFD ownership defect remains unwaived. Private C, Rust and
+GLES drafts retain exact file and buffer identities instead of recyclable
+descriptor numbers. Focused controls are not combined normal SDK/kernel/
+browser admission. Host retry integration, inherited-resource reconstruction,
+a coherent normal rebuild and remaining B1 gates are still required. No
+performance improvement or native-feel claim follows from this checkpoint.
