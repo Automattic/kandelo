@@ -60,6 +60,15 @@ coverage. Native signal-context unwinding and asynchronous preemption are
 not implemented. Mapping APIs retain the kernel's documented partial shared
 mapping/writeback semantics; see [POSIX status](posix-status.md).
 
+Memory reuse and host reclamation are separate boundaries. The target's
+idle-page scavenging hook currently does no platform work, and kernel
+`madvise` does not discard backing pages. A smaller live Go heap does not
+establish smaller linear memory or native footprint. Go's
+[`GOMEMLIMIT`](https://pkg.go.dev/runtime/debug#SetMemoryLimit) is a soft
+runtime budget; it excludes embedded PHP allocations and browser-engine
+memory. Whole-service memory accounting and sustained reclamation checks
+remain release work.
+
 Go values and C addresses have different widths in this target. Raw C
 address fields are not Go-managed pointers; use typed C accessors for layouts
 that cross this boundary. Go main return and `os.Exit` bypass registered C

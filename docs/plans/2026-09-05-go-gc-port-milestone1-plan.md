@@ -14,13 +14,13 @@ correction validates descriptor pollability at open, allowing Go's unchanged
 file code to restore blocking reads for regular files. It requires no compiler,
 standard library, dependency, kernel, or ABI patch.
 
-WordPress revision 37 builds through the normal source union: 184/184
-nodes, all 11 products, and the published-consumer check pass in 19m56s.
-The image is 79,330,377 bytes with SHA-256
-`79c47b29053245fc4a295af30dfa41a1ea655b7515ec1654b9460fc2a15c1beb`.
-This image predates the declared RSS-tool cohort now being rebuilt.
-The normal Kandelo web app is running on loopback port 5417 and serves those
-exact bytes. The preview URL and HTTP identity record are in
+The declared-tool cohort for WordPress revision 37 passes all 184 nodes,
+all 11 products, and published-consumer admission in 20m36s (172 cached,
+12 published). Its image is 79,342,248 bytes, SHA-256
+`389ec37e63422e400b7c683031eb803ffb1c975d8242606f4aff49c1bbdeeff5`.
+Full app validation of this rebuilt cohort is pending. The existing web app
+on port 5417 still pins the earlier `79c47b29` image; do not mix its lazy
+asset snapshots with the rebuilt cohort. The preview URL and HTTP identity record are in
 `.context/frankenphp-preview-artifacts.json`.
 
 - The current plain-Go/cgo regular-file regressions fail before the
@@ -84,15 +84,18 @@ production readiness, a physical-memory plateau, or superiority over PHP-FPM.
 
 ### Remaining release gates
 
-1. Complete the full Node/Bun/browser memory and lifecycle gate for the
-   terminal-channel wake fix. The focused regression fails before and
+1. Repair the browser fixture's Vite dependency-cache mismatch and rerun
+   the full memory/lifecycle browser phase. The required gate passes its
+   prepared cohort, source, host, and Node/Bun phases, then is stopped after
+   pre-boot React module failures. This does not establish browser teardown.
+   Continue validation of the terminal-channel wake fix. The focused regression fails before and
    passes afterward; real service repetitions pass. The exact waiter order
    behind the original intermittent dinit retirement was not captured.
 2. Complete browser PHP draining and retirement for Caddy on WebKit.
    Reduce or explain the workload memory use behind the observed native
    content-process kill; a same-URL reload is distinct from a Go exit.
 3. Repeat the full visible login, editor, post/template-save, and crash
-   recovery workflows on revision 37. Resolve the earlier intermittent
+   recovery workflows on the rebuilt revision-37 cohort. Resolve the earlier intermittent
    classic WebKit health/navigation failures; their cause remains unknown.
 4. Finish sustained traffic/memory checks, paired PHP-FPM/classic/Caddy
    comparisons, and all nine Node/Chromium incremental before/after
@@ -102,8 +105,8 @@ production readiness, a physical-memory plateau, or superiority over PHP-FPM.
    provisioning under build load is not a performance comparison. Browser
    RSS sampling now uses declared psutil after Nix Darwin `ps` rejected
    its RSS query for a missing entitlement. A real four-process Chromium
-   sample passes; full WordPress sampling and the coherent tool-input
-   rebuild remain pending. The
+   sample and coherent tool-input rebuild pass; full WordPress sampling
+   remains pending. The
    baseline commit `5e25c7365` is an intermediate branch revision, so those
    comparisons cannot establish superiority over main.
 5. Review the remaining general Go/POSIX gaps: child credentials, inherited
@@ -259,6 +262,77 @@ not change the shipped defaults or establish a memory fix. The new pool
 control awaits a browser run after the required lifecycle gate. Native
 sampling will retain the owned browser process tree outside the page, with
 guest `/proc` thread counts and module/linear-memory snapshots alongside it.
+
+### GC and memory-control review — 2026-11-06
+
+Go's collector manages its heap inside linear memory in this port. Wasm GC
+manages separate reference objects; it does not automatically collect the
+Go/PHP heaps or reclaim compiled code. Moving Go's heap representation to
+Wasm GC would be a separate compiler/runtime effort, outside the maintained
+target port's present design.
+
+Two current platform boundaries are concrete: the Go target's
+`src/runtime/mem_kandelo.go::sysUnusedOS` is empty, and Kandelo's
+`sys_madvise` accepts advice without discarding backing pages. Go's normal
+scavenger updates its ready-memory accounting before invoking the OS hook.
+This needs a measured accounting/reclamation review; it is not proof that
+scavenging explains the observed WebKit kill. The last 499-MiB guest/kernel
+snapshot preceded the later 19,981-MB native footprint report, so those are
+not synchronized readings or an allocation breakdown.
+
+Recommended work, in order:
+
+1. Audit Go's non-channel waits before broad memory tuning. At the pinned
+   target source, `lock2` waits indefinitely in `atomicWait32` and
+   `kandeloNoteSleep` can do the same; neither uses the existing host-heap
+   checkpoint. The syscall channel does use it. Review scheduler sleeps and
+   bootstrap waits too, preserving real wakes and original deadlines.
+   Reuse the existing suspected `JSC-BLOCKED-WAIT-GC-STARVATION` contract;
+   this source gap does not establish the cause of the native memory kill.
+2. Attribute guest heaps, Wasm/JavaScript references, module bytes, instances,
+   and native/JIT allocations during identical traffic and pool-size runs.
+   Retain measurements outside the page. On macOS a simple descendant-PID
+   walk omits WebKit's XPC content processes; the blank-page control confirms
+   that limitation. Do not present that partial tree as renderer RSS.
+3. Validate Go scavenger accounting with allocation/reuse cycles and
+   `debug.FreeOSMemory`, comparing Go statistics, process mappings, linear
+   memory, and native footprint. Distinguish reusable pages from physical
+   release. Investigate platform discard support before promising it.
+4. Extend resource budgeting to worker/pool and module/instance costs, with
+   measured defaults and visible refusal when known budgets cannot fit.
+   `GOMEMLIMIT` is a soft Go-runtime limit and excludes C/PHP and engine
+   allocations; it cannot be treated as the entire service's cap.
+5. Audit retained references and asynchronous owners through repeated
+   boot/load/drain/destroy cycles and sustained traffic. Keep the normal
+   ownership and lifecycle assertions, without forced-GC or reload shortcuts.
+
+References: [Go memory-limit semantics](https://pkg.go.dev/runtime/debug#SetMemoryLimit),
+[Wasm GC](https://github.com/WebAssembly/spec/blob/main/proposals/gc/Overview.md),
+and [Wasm memory control](https://github.com/WebAssembly/memory-control/blob/main/proposals/memory-control/Overview.md).
+These are investigation and platform work items, not new support claims.
+
+### Native attribution and browser-fixture failure — 2026-11-06
+
+A disposable diagnostic reads WebKit 26.6 `Memory.trackingUpdate` events
+through the pinned driver's existing inspector connection. The blank-page
+control receives four samples with JavaScript, JIT, image, layer, page and
+other category sizes. It uses no engine flags, heap snapshots, forced GC,
+or driver source patches. Raw control:
+`.context/webkit-native-memory-control.json`. This demonstrates a scoped
+measurement path, not an attribution of the FrankenPHP footprint.
+
+The first broad browser-memory run passes its source/host/Node/Bun phases
+but Chromium's real application page remains blank before Doom starts.
+The trace records a SyntaxError: cached `react-dom.js` does not export `t`.
+The same pre-boot problem prevents the real audio gesture case from starting.
+The dependency optimizer cache is shared across concurrent Vite instances;
+its exact isolation fix and browser rerun remain required. This is fixture
+failure evidence, not a Go, kernel, Wasm GC, or guest reclamation result.
+The owned invalid run was stopped through its verified supervisor after
+32m52s (exit 143), preserving partial results and the passed earlier phases.
+Durable copies of traces, error contexts, screenshots, console and status:
+`.context/terminal-wake-browser-memory-failed/`.
+Screenshot: `.context/browser-memory-doom-failure.png`.
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task.
