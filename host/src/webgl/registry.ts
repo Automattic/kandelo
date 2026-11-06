@@ -1,3 +1,4 @@
+import type {GlWirePayload} from "./wire-payload.js";
 import {GlErrorDrainReceipt} from "./error-query.js";
 import { retireProgramJournal, createProgramJournalControl, type GlProgramJournal, type GlProgramJournalControl } from "./program-journal.js";
 import { retireContextProgramCaptures, retireLastPublicProgramCaptures } from "./program-captures.js";
@@ -115,6 +116,8 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
    *  wasm Memory SAB. Built on the first submit and dropped to `null`
    *  by `rebindMemory` after a `Memory.grow()`. */
   cmdbufView: Uint8Array | null;
+  /** Cold native-context admission owns one reusable synchronous decoder. */
+  wirePayload:GlWirePayload|null;
 
   /** Live WebGL2 context, lazily constructed at `host_gl_create_context`
    *  time once the embedder has attached a canvas. */
@@ -331,6 +334,7 @@ export class GlContextRegistry {
       undefinedDefaultFbo: null,
       clientArrayStream: null,
       cmdbufView: null,
+      wirePayload:null,
       gl: null,
       fences: new GlFenceOwner({pid:b.pid,sessionId,operations}),
       operations,

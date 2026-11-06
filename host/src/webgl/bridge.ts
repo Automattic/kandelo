@@ -1,8 +1,9 @@
+import {scalarColorsUnclamped,scalarNativeCalls} from "./scalar-state.js";
 import type {GlWirePayload} from "./wire-payload.js";
 import {validPreparedInlineDraw,validPreparedInlineCompact,validPreparedInlineBody} from "./owned-inline-draw.js";
 import {clearFramebufferSnapshot,validFramebufferSnapshotClear} from "./private-framebuffer-clear.js";
 import {drawBufferSnapshots,validBufferSnapshotDraw} from "./private-buffer-draw.js";
-import {nativeGlFault} from "./native-recovery.js";
+import {nativeGlFault,checkedPreparedNativeCall} from "./native-recovery.js";
 import {journalInteger} from "./program-journal-query.js";
 import { interruptCompressedUpload } from "./compressed-upload.js";
 import { rendererLost } from "./renderer-loss.js";
@@ -41,7 +42,7 @@ import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { expandedFloatFormat, expandedNative, expandedSourceBytes, expandRows } from "./luminance-float.js";
 import { glesExtensionAdvertised } from "./capabilities.js";
-import { clearStorageAlphaToOne, nativeColorMask, setOpaqueAlphaStorage, prepareDrawTarget } from "./opaque-alpha.js";
+import { clearStorageAlphaToOne, setOpaqueAlphaStorage, prepareDrawTarget } from "./opaque-alpha.js";
 import { copiedTextureColorRenderable, depthTextureFormat, nativeRenderbufferFormat, renderbufferColorRenderable,
   renderbufferOpaqueAlpha,
   renderbufferDepthRenderable, renderbufferStencilRenderable, textureColorRenderable } from "./es2-formats.js";
@@ -49,13 +50,13 @@ import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, 
 import { installShaderSource, nativeShaderSource } from "./shader-source.js";
 import { compileGuestShader, compatibleShaderSource, recordShaderLanguage, type ShaderLanguage } from "./essl3-translation.js";
 import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
-import { nativeBlendFunc, updateBlendSourceFactor } from "./blend-constant.js";
+import { webglForbiddenBlendPair, updateBlendSourceFactor } from "./blend-constant.js";
 import { attributeAliasLayout } from "./attribute-aliasing.js";
 import { noteSamplerWrite } from "./depth-sampling.js";
 import { externalTexParameter, recordCompiledExternalSamplers, TEXTURE_EXTERNAL_OES, validateExternalSamplers } from "./external-texture.js";
 import { recordProgramValidation } from "./validate-status.js";
 import { recordRenderbufferSize, requireGlesFramebufferComplete } from "./image-sizes.js";
-import { nativeDepthRange, noteUniformWrite, recordCompiledShader } from "./reversed-depth.js";
+import { noteUniformWrite, recordCompiledShader } from "./reversed-depth.js";
 import { drawGlesElements } from "./index-data.js";
 import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-client-draw.js";
 import { installExistingVertexAttribute, installVertexAttribute, installVertexConstant } from "./vertex-data.js";
@@ -115,9 +116,6 @@ function updateStencilFaces(
 
 /** ES 2.0 clamps ClearColor/BlendColor to [0,1]; with a floating-point
  * color buffer extension the values are kept as specified. */
-function colorClamp(gl: WebGL2RenderingContext): (value: number) => number {
-  return glesExtensionAdvertised(gl, "GL_EXT_color_buffer_half_float") ? value => value : clampUnit;
-}
 
 function clampUnit(value: number): number {
   return Math.min(1, Math.max(0, value));
@@ -151,7 +149,7 @@ function decodeAndDispatchFrame(
   if (!b.cmdbufView || !b.gl) return GL_SUBMIT_OK;
   // Validate the entire batch before the first observable mutation. A bad
   // trailing record must not leave a partially executed, rejected batch.
-  const reader=b.programJournal?.wirePayload;
+  const reader=b.wirePayload??undefined;
   const validation = walkCommandBuffer(b.cmdbufView,offset,length,null,reader);
   if (validation !== GL_SUBMIT_OK) {b.compressedUpload=null;b.uniformUpload=null;return validation;}
   const result = walkCommandBuffer(b.cmdbufView,offset,length,b,reader,storage);
@@ -787,22 +785,21 @@ function dispatch(
     case O.OP_CLEAR_COLOR: {
       // GL_EXT_color_buffer_half_float issues 5 and 8: the clear color is not
       // clamped when specified (fixed-point buffers clamp when cleared).
-      const color = colorClamp(gl);
-      b.shadow.clearColor = [
-        color(v.getFloat32(p, true)), color(v.getFloat32(p + 4, true)),
-        color(v.getFloat32(p + 8, true)), color(v.getFloat32(p + 12, true)),
-      ];
-      gl.clearColor(...b.shadow.clearColor);
+      const extended=scalarColorsUnclamped(gl),color=b.shadow.clearColor;
+      for(let i=0;i<4;i++){const value=v.getFloat32(p+i*4,true);color[i]=extended?value:clampUnit(value);}
+      gl.clearColor(color[0],color[1],color[2],color[3]);
       return;
     }
     case O.OP_VIEWPORT: {
       const maximum = maxViewport(gl);
-      b.shadow.viewport = [
-        v.getInt32(p, true), v.getInt32(p + 4, true),
-        Math.min(v.getInt32(p + 8, true), maximum?.[0] ?? Infinity),
-        Math.min(v.getInt32(p + 12, true), maximum?.[1] ?? Infinity),
-      ];
-      gl.viewport(...b.shadow.viewport);
+      // These context-owned rows are live state, not immutable snapshots.
+      // Native inverses and submitted drawable selectors copy their scalars;
+      // replacing the row here would allocate after local acceptance.
+      const viewport=b.shadow.viewport;
+      viewport[0]=v.getInt32(p,true);viewport[1]=v.getInt32(p+4,true);
+      viewport[2]=Math.min(v.getInt32(p+8,true),maximum?.[0]??Infinity);
+      viewport[3]=Math.min(v.getInt32(p+12,true),maximum?.[1]??Infinity);
+      gl.viewport(viewport[0],viewport[1],viewport[2],viewport[3]);
       return;
     }
     case O.OP_SCISSOR: {
@@ -811,7 +808,7 @@ function dispatch(
       const w = v.getInt32(p + 8, true);
       const h = v.getInt32(p + 12, true);
       gl.scissor(x, y, w, h);
-      b.shadow.scissor.rect = [x, y, w, h];
+      const rect=b.shadow.scissor.rect;rect[0]=x;rect[1]=y;rect[2]=w;rect[3]=h;
       return;
     }
     // The capability is one of ES 2.0's nine, each a WebGL 2 capability, and
@@ -839,12 +836,15 @@ function dispatch(
       const separate = op === O.OP_BLEND_FUNC_SEPARATE;
       const srcRGB = v.getUint32(p, true), dstRGB = v.getUint32(p + 4, true);
       const srcA = separate ? v.getUint32(p + 8, true) : srcRGB, dstA = separate ? v.getUint32(p + 12, true) : dstRGB;
-      const logical = { srcRGB, dstRGB, srcA, dstA };
+      const logical=b.shadow.blendFunc;
       // ES 2.0 table 4.1 allows constant color with constant alpha; WebGL
       // does not, so that RGB source factor is applied by the draw
       // (blend-constant.ts) and the native one is ONE.
-      if (!checkedGlCall(b, () => gl.blendFuncSeparate(...nativeBlendFunc(logical)))) return;
-      b.shadow.blendFunc = logical;
+      const nativeSource=webglForbiddenBlendPair(srcRGB,dstRGB)?1:srcRGB;
+      const receiver=scalarNativeCalls(gl).blend,call=receiver.call as ["blendFuncSeparate",number,number,number,number];
+      call[1]=nativeSource;call[2]=dstRGB;call[3]=srcA;call[4]=dstA;
+      if(!checkedPreparedNativeCall(b,receiver))return;
+      logical.srcRGB=srcRGB;logical.dstRGB=dstRGB;logical.srcA=srcA;logical.dstA=dstA;
       updateBlendSourceFactor(b.shadow);
       return;
     }
@@ -863,12 +863,9 @@ function dispatch(
     }
     case O.OP_BLEND_COLOR: {
       // Issue 7: the constant blend color is not clamped when specified.
-      const color = colorClamp(gl);
-      b.shadow.blendColor = [
-        color(v.getFloat32(p, true)), color(v.getFloat32(p + 4, true)),
-        color(v.getFloat32(p + 8, true)), color(v.getFloat32(p + 12, true)),
-      ];
-      gl.blendColor(...b.shadow.blendColor);
+      const extended=scalarColorsUnclamped(gl),color=b.shadow.blendColor;
+      for(let i=0;i<4;i++){const value=v.getFloat32(p+i*4,true);color[i]=extended?value:clampUnit(value);}
+      gl.blendColor(color[0],color[1],color[2],color[3]);
       updateBlendSourceFactor(b.shadow);
       return;
     }
@@ -880,15 +877,12 @@ function dispatch(
       b.shadow.clearStencil = v.getInt32(p, true);
       gl.clearStencil(b.shadow.clearStencil);
       return;
-    case O.OP_COLOR_MASK:
-      b.shadow.colorMask = [
-        v.getUint32(p, true) !== 0,
-        v.getUint32(p + 4, true) !== 0,
-        v.getUint32(p + 8, true) !== 0,
-        v.getUint32(p + 12, true) !== 0,
-      ];
-      gl.colorMask(...nativeColorMask(b.shadow));
+    case O.OP_COLOR_MASK: {
+      const mask=b.shadow.colorMask;
+      for(let i=0;i<4;i++)mask[i]=v.getUint32(p+i*4,true)!==0;
+      gl.colorMask(mask[0],mask[1],mask[2],mask[3]&&!b.shadow.drawTarget.locked);
       return;
+    }
     case O.OP_DEPTH_MASK:
       b.shadow.depthMask = v.getUint32(p, true) !== 0;
       gl.depthMask(b.shadow.depthMask);
@@ -987,9 +981,12 @@ function dispatch(
       // ES 2.0 section 2.12.1 permits n > f; WebGL does not. The native range
       // is the ordered pair and reversed draws run a z-negating twin
       // executable (reversed-depth.ts), so the shadow keeps the logical pair.
-      const range = [v.getFloat32(p, true), v.getFloat32(p + 4, true)].map(clampUnit) as [number, number];
-      if (!checkedGlCall(b, () => gl.depthRange(...nativeDepthRange(range)))) return;
-      b.shadow.depthRange = range;
+      const near=clampUnit(v.getFloat32(p,true)),far=clampUnit(v.getFloat32(p+4,true));
+      const nativeNear=near>far?far:near,nativeFar=near>far?near:far;
+      const receiver=scalarNativeCalls(gl).range,call=receiver.call as ["depthRange",number,number];
+      call[1]=nativeNear;call[2]=nativeFar;
+      if(!checkedPreparedNativeCall(b,receiver))return;
+      b.shadow.depthRange[0]=near;b.shadow.depthRange[1]=far;
       return;
     }
     case O.OP_SAMPLE_COVERAGE:

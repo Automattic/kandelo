@@ -57,16 +57,24 @@ export function nativeBlendFunc(f: GlShadowState["blendFunc"]): [number, number,
   return [webglForbiddenBlendPair(f.srcRGB, f.dstRGB) ? ONE : f.srcRGB, f.dstRGB, f.srcA, f.dstA];
 }
 
-/** Recompute the folded RGB source factor after BlendFunc or BlendColor. A new
- * array per change lets each variant detect a stale uniform by identity. */
-export function updateBlendSourceFactor(s: GlShadowState): void {
-  const { srcRGB, dstRGB } = s.blendFunc;
-  if (!webglForbiddenBlendPair(srcRGB, dstRGB)) { s.blendSourceFactor = null; return; }
-  const [r, g, b, a] = s.blendColor;
-  const factor: [number, number, number] = srcRGB === CONSTANT_COLOR ? [r, g, b]
-    : srcRGB === ONE_MINUS_CONSTANT_COLOR ? [1 - r, 1 - g, 1 - b]
-    : srcRGB === CONSTANT_ALPHA ? [a, a, a] : [1 - a, 1 - a, 1 - a];
-  s.blendSourceFactor = factor;
+/** A scalar write cannot allocate a new factor row after local acceptance.
+ * Keep context identity stable and explicitly version changed values so a
+ * shared executable's cached native uniform never relies on array replacement. */
+export function updateBlendSourceFactor(s:GlShadowState):void {
+  const {srcRGB,dstRGB}=s.blendFunc;
+  if(!webglForbiddenBlendPair(srcRGB,dstRGB)){s.blendSourceFactor=null;return;}
+  const color=s.blendColor,factor=s.blendSourceValues;
+  let x:number,y:number,z:number;
+  if(srcRGB===CONSTANT_COLOR){x=color[0];y=color[1];z=color[2];}
+  else if(srcRGB===ONE_MINUS_CONSTANT_COLOR){x=1-color[0];y=1-color[1];z=1-color[2];}
+  else {x=y=z=srcRGB===CONSTANT_ALPHA?color[3]:1-color[3];}
+  if(s.blendSourceFactor!==factor||factor[0]!==x||factor[1]!==y||factor[2]!==z){
+    factor[0]=x;factor[1]=y;factor[2]=z;
+    // Saturation is permanently dirty. Equal saturated counters must never
+    // make a changed value appear cached after a long-lived context wraps.
+    s.blendSourceVersion=s.blendSourceVersion<0||s.blendSourceVersion>=Number.MAX_SAFE_INTEGER?-1:s.blendSourceVersion+1;
+  }
+  s.blendSourceFactor=factor;
 }
 
 /** Whether this draw needs the fold. Null-factor draws exit on the first test. */

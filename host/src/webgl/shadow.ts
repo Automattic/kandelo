@@ -39,6 +39,9 @@ export interface GlShadowState {
    * RGB source factor a draw folds into its fragment color while the RGB
    * factors form a pair WebGL rejects; null otherwise. */
   blendSourceFactor: [number, number, number] | null;
+  /** Stable context-owned factor bank; revisions invalidate shared twins. */
+  blendSourceValues:[number,number,number];
+  blendSourceVersion:number;
 
   cullFaceEnabled: boolean;
   cullFace: number;
@@ -146,6 +149,8 @@ export function defaultShadow(): GlShadowState {
     blendEquation: { rgb: 0x8006, alpha: 0x8006 },   // GL_FUNC_ADD
     blendColor: [0, 0, 0, 0],
     blendSourceFactor: null,
+    blendSourceValues:[0,0,0],
+    blendSourceVersion:0,
     cullFaceEnabled: false,
     cullFace: 0x0405,    // GL_BACK
     frontFace: 0x0901,   // GL_CCW

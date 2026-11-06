@@ -57,6 +57,35 @@ explicitly wants to wait until all changes are integrated into a normally
 built preview that passes its required checks. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Scalar acceptance and shared decoding, 2026-11-06 (R490/R497/R498)
+
+Successful native context admission now reserves its bounded payload receiver,
+viewport/color capabilities and checked scalar native-call rows before exposing
+success. Node's null-renderer refusal allocates none. Ordinary and journal GL
+share that receiver, borrowing input bytes only on the synchronous stack and
+dropping them in finally. Whole-batch shape validation still precedes all effects.
+Scalar setters update live rows without replacement tuples or late capability
+queries. Shared blend variants check row identity plus value revision; saturation
+stays dirty. Native exceptions retain the current context's checked reset policy.
+
+| Frozen run | Exact scope and result |
+| --- | --- |
+| R490 `graphics-scalar-final-r490-1106-001815-0653` | PASS45s: graphics2312/90, host compiler0, evidence711 and24 real WebGL module cases across three engines/production+fatal; source hashes match. Includes deterministic first/warm CPU refusal and cold admission retry controls, not physical memory exhaustion |
+| R497 `graphics-scalar-consumer-r497-1106-002448-b670`, port6237 | PASS11m10 on integration: Node26/6 and all336 actual C browser cases across three engines/both widths/production+fatal, zero skips/flakes. Normal R488 SDK/kernel/product hashes and all frozen source/config inputs match |
+| R498 `graphics-scalar-validation-r498-1106-002856-0430`, port6239 | PASS5m37 on an exact private projection: graphics2312/90, ownership118/2, full host and both app compilers0,24 module GPU cases, evidence713, shader harness297/294/297 with zero hard failures and unchanged Firefox controls, frozen source hashes |
+
+The expanded ownership graph covers740 runtime sources. Its full graph takes
+213105ms under the unchanged300000ms watchdog; ordinary fixture budgets remain
+5000ms. C, Rust, ABI, xtask and package inputs remain exact to the normal
+producer; no guest image or ABI stamp is substituted. Versions stay56/3/17/21.
+
+The full application/image producer is running on frozen `ae3752484c`. Before
+complete preview admission, apply this host-only correction after that producer
+terminates, verify exact unaffected product inputs, rebuild host/browser normally
+and complete required stage/application/conformance and measurement checks.
+Ordinary decoder CPU cost and total desktop instrumentation overhead remain
+unmeasured. These results do not establish native feel or a complete B1 preview.
+
 ## Prepared draws and cold cleanup custody, 2026-11-05 (R472–R493)
 
 The guest now connects action13's cold executable/sampling authority to owned

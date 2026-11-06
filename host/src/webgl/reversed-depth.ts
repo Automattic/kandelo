@@ -210,7 +210,7 @@ export type VariantOptions = { reversedDepth: boolean; depthSamplers: readonly s
    * fixed-point or floating-point color buffer clamping. */
   blendFold?: "fixed" | "float" };
 type Twin = { program: WebGLProgram; retirement:NativeRetirement; sources: LinkedSources; uniforms: number; vertexDepthRange: boolean; rangeValues: string | null;
-  blendFold: boolean; blendFactor: readonly number[] | null;
+  blendFold: boolean; blendFactor: readonly number[] | null; blendVersion:number;
   /** The twin is an ESSL 3.00 translation of a program WebGL linked as ES
    * 1.00: its interface names are the translated ones. */
   renamed: boolean };
@@ -222,6 +222,7 @@ class ReservedTwin implements Twin {
   uniforms=-1;
   rangeValues:string|null=null;
   blendFactor:readonly number[]|null=null;
+  blendVersion=-1;
   constructor(readonly sources:LinkedSources,readonly retirement:NativeRetirement,
     readonly vertexDepthRange:boolean,readonly blendFold:boolean,readonly renamed:boolean){}
 }
@@ -484,13 +485,14 @@ export function synchronizeReversedDepthTwin(b: GlBinding, twinProgram: WebGLPro
       twin.rangeValues = key;
     }
   }
-  // The folded factor changes only with BlendFunc/BlendColor, which replace
-  // the shadow's array; an unchanged array needs no upload.
+  // Stable rows need both context identity and value revision: peers can
+  // share this native twin while holding equal revision numbers but different
+  // blend colors. Saturation stays dirty instead of reusing stale values.
   const factor = b.shadow.blendSourceFactor;
-  if (twin.blendFold && factor && twin.blendFactor !== factor) {
+  if (twin.blendFold && factor && (twin.blendFactor!==factor || twin.blendVersion!==b.shadow.blendSourceVersion || b.shadow.blendSourceVersion<0)) {
     const gl = b.gl!;
     if (!checkedGlCall(b, () => gl.uniform3f(gl.getUniformLocation(twin.program, BLEND_SOURCE_FACTOR_UNIFORM), ...factor))) return false;
-    twin.blendFactor = factor;
+    twin.blendFactor = factor;twin.blendVersion=b.shadow.blendSourceVersion;
   }
   return true;
 }

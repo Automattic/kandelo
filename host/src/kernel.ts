@@ -1,3 +1,4 @@
+import {prepareScalarState} from "./webgl/scalar-state.js";
 import {validProgramJournalRequest,validProgramJournalBarrierRequest} from "./webgl/program-journal-query.js";
 import { QOP_GET_ERROR } from "./webgl/ops.js";
 import { withNativeBatch } from "./webgl/native-batch.js";
@@ -3321,6 +3322,10 @@ export class WasmPosixKernel {
             b.robustAccess = robustAccess;
             this.tryAttachKmsGlCanvas(b);
             if (b.gl && !b.gl.isContextLost() && (!b.surface.gl || b.surface.gl === b.gl)) {
+              // Scalar prediction also applies without a program journal.
+              // Reserve its receiver/capabilities before context success,
+              // while CPU preparation can still refuse this cold admission.
+              prepareScalarState(b,true);
               // Losses of this renderer before now belong to earlier owners.
               observeRendererLoss(b);
               if (!source) return 0;

@@ -1,4 +1,5 @@
-import {GlWirePayload} from "./wire-payload.js";
+import type {GlWirePayload} from "./wire-payload.js";
+import {prepareScalarState} from "./scalar-state.js";
 import {GlInlineDraws} from "./owned-inline-draw.js";
 import {combinedTextureUnits} from "./limits.js";
 import type {OptionalCpuPreparation} from "./errors.js";
@@ -49,7 +50,11 @@ export class GlProgramJournal {
   private previewActive = false;
   private previewTicket = 0;
   private bufferSnapshots:GlBufferSnapshots|null=null;
-  readonly wirePayload=new GlWirePayload();
+  get wirePayload():GlWirePayload {
+    const reader=this.binding.wirePayload;
+    if(!reader)nativeGlFault("An admitted journal lost its cold payload receiver");
+    return reader;
+  }
   private readonly ownedDrawCells=Array.from({length:16},()=>({token:0,proof:null as PreparedOwnedDraw|null,ready:false,family:0,target:0xffff_ffff,targetToken:0}));
   private inlineDraws:GlInlineDraws|null=null;
   inlineDrawWorkspace():GlInlineDraws|null{return this.ready&&!this.closed&&!this.poisoned?this.inlineDraws:null;}
@@ -127,6 +132,7 @@ export class GlProgramJournal {
     }
     let journal: GlProgramJournal | undefined;
     try {
+      prepareScalarState(b);
       let order=orders.get(b.objects);
       if(!order) {order={sequence:0,nextJournal:1,journals:new Map()};orders.set(b.objects,order);}
       if(order.nextJournal>0xffff_ffff){recordGlError(b,0x505);return null;}

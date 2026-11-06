@@ -1,7 +1,7 @@
-/** One synchronous borrowed command payload. Journal activation reserves the
+/** One synchronous borrowed command payload. Native context admission reserves the
  * scalar scratch cold: constructing DataViews per TLV after the guest has
  * accepted an exact command would introduce a new CPU-allocation failure.
- * Ordinary contexts keep their existing decoder and allocate no receiver. */
+ * Null-renderer bindings allocate no receiver; journals share this owner. */
 import {nativeGlFault} from "./native-recovery.js";
 export class GlWirePayload implements DataView {
   readonly [Symbol.toStringTag]="DataView";

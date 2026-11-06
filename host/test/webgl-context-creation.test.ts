@@ -209,7 +209,7 @@ describe("context creation acknowledgement", () => {
     kernel.gl.bind({ displayFileId: 1n, pid:7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
     let allocate = false;
     const framebuffer = {} as WebGLFramebuffer, deleted: unknown[] = [];
-    const gl = { getExtension: () => null, isContextLost: () => false, getError: () => 0,
+    const gl = { getParameter: (p:number) => p===0x0d3a?new Int32Array([16384,16384]):null, getExtension: () => null, isContextLost: () => false, getError: () => 0,
       createFramebuffer: () => allocate ? framebuffer : null,
       deleteFramebuffer: (value: unknown) => deleted.push(value) };
     kernel.gl.attachCanvas(7, { width: 100, height: 80, getContext: () => gl } as unknown as OffscreenCanvas);
@@ -279,7 +279,7 @@ describe("context creation acknowledgement", () => {
   it.each([false, true])("initializes drawable state once (surfaceless first: %s)", surfaceless => {
     const { kernel, create, imports } = harness();
     kernel.gl.bind({ displayFileId: 1n, pid:7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
-    const gl = { getExtension: () => null, isContextLost: () => false,
+    const gl = { getParameter: (p:number) => p===0x0d3a?new Int32Array([16384,16384]):null, getExtension: () => null, isContextLost: () => false,
       createFramebuffer: () => ({}), getError: () => 0 };
     kernel.gl.attachCanvas(7, { width: 320, height: 240, getContext: () => gl } as unknown as OffscreenCanvas);
     expect(create(7, 21, 11)).toBe(0);
@@ -360,7 +360,7 @@ describe("context creation acknowledgement", () => {
     expect(create(7)).toBe(-19); // ENODEV
     expect(b.contextId).toBeNull();
     expect(b.gl).toBeNull();
-    const gl = { getExtension: () => null, isContextLost: () => false };
+    const gl = { getParameter: (p:number) => p===0x0d3a?new Int32Array([16384,16384]):null, getExtension: () => null, isContextLost: () => false };
     kernel.gl.attachCanvas(7, {
       width: 16, height: 16, getContext: () => gl,
     } as unknown as OffscreenCanvas);

@@ -1340,9 +1340,11 @@ and provenance-safe CPU refusal, with actual C cross-engine controls.
 R472–R493 connect prepared VBO/inline executable and sampling authority and
 bounded journal decoding, with a coherent normal SDK/kernel and336 actual
 three-engine guest cases. Cold pin/variant publication failures retain exact
-native cleanup custody. Complete the remaining predicted scalar receiver/cache
-gap and full application checks within B1; do not turn this checkpoint into a
-new stage boundary or substitute it for application measurements. Duplicate
+native cleanup custody. R490/R497/R498 then close predicted scalar receiver/cache
+allocation, including ordinary GL decoding, with matched actual C and module
+controls. Complete the remaining stage and full application checks within B1;
+do not turn these checkpoints into a new stage boundary or substitute them for
+application measurements. Ordinary decoding CPU cost, duplicate
 upload costs and final machine memory lifecycle remain unmeasured. The complete
 B1 preview still waits for all B1 changes and required
 checks; B2's asynchronous bindings and moved total-request gate remain separate.

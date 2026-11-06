@@ -149,7 +149,7 @@ function setup(fragment = FRAGMENT) {
   send(O.OP_USE_PROGRAM, [20]);
   send(O.OP_BLEND_COLOR, floats([0.2, 0.4, 0.6, 0.8]));
   const draw = () => send(O.OP_DRAW_ARRAYS, [0, 0, 1]);
-  return { b, gl, proxy, send, error, integer, draw, floats, primary: gl.current! };
+  return { b, gl, proxy, send, error, integer, draw, floats, reg, primary: gl.current! };
 }
 
 describe("constant color with constant alpha blend factors (ES 2.0 table 4.1)", () => {
@@ -259,4 +259,28 @@ describe("blend fold shader source", () => {
     expect(folded).toContain(`gl_FragData[0].rgb = clamp(gl_FragData[0].rgb, 0.0, 1.0) * clamp(${FACTOR}, 0.0, 1.0);`);
     expect(folded).not.toMatch(/\bgl_FragColor\b/);
   });
+});
+
+it("uses stable blend factor rows without aliasing shared twins at equal peer revisions",()=>{
+ const f=setup(),{b,reg,gl,send,draw,floats}=f;b.contextId=1;
+ send(O.OP_ENABLE,[BLEND]);send(O.OP_BLEND_FUNC,[CONSTANT_COLOR,CONSTANT_ALPHA]);draw();
+ const first=b.shadow.blendSourceFactor;expect(gl.uniformWrites).toBe(1);
+ reg.bind({pid:1,sessionId:12,cmdbufAddr:0,cmdbufLen:65536});const peer=reg.get(1,12)!;peer.gl=b.gl;peer.contextId=2;peer.cmdbufView=new Uint8Array(65536);
+ expect(reg.shareObjects(1,12,0)).toBe(true);
+ const peerSend=(op:number,words:number[])=>{const bytes=new Uint8Array(4+words.length*4),v=new DataView(bytes.buffer);v.setUint16(0,op,true);v.setUint16(2,words.length*4,true);for(let i=0;i<words.length;i++)v.setUint32(4+i*4,words[i],true);peer.cmdbufView=bytes;expect(decodeAndDispatch(peer,0,bytes.length)).toBe(0);};
+ peerSend(O.OP_USE_PROGRAM,[20]);peerSend(O.OP_BLEND_COLOR,floats([.75,.5,.25,1]));peerSend(O.OP_ENABLE,[BLEND]);peerSend(O.OP_BLEND_FUNC,[CONSTANT_COLOR,CONSTANT_ALPHA]);
+ expect(peer.shadow.blendSourceVersion).toBe(b.shadow.blendSourceVersion);expect(peer.shadow.blendSourceFactor).not.toBe(first);
+ peerSend(O.OP_DRAW_ARRAYS,[0,0,1]);expect(gl.draws.at(-1)!.uniforms.get(FACTOR)).toEqual([.75,.5,.25]);expect(gl.uniformWrites).toBe(2);
+ draw();expect(gl.draws.at(-1)!.uniforms.get(FACTOR)![0]).toBeCloseTo(.2,6);expect(gl.uniformWrites).toBe(3);
+ const row=peer.shadow.blendSourceFactor;peerSend(O.OP_BLEND_COLOR,floats([.125,.25,.5,1]));expect(peer.shadow.blendSourceFactor).toBe(row);
+ peerSend(O.OP_DRAW_ARRAYS,[0,0,1]);peerSend(O.OP_DRAW_ARRAYS,[0,0,1]);expect(gl.draws.at(-1)!.uniforms.get(FACTOR)).toEqual([.125,.25,.5]);expect(gl.uniformWrites).toBe(4);
+ draw();expect(gl.draws.at(-1)!.uniforms.get(FACTOR)![0]).toBeCloseTo(.2,6);expect(gl.uniformWrites).toBe(5);
+ reg.unbind(1);
+});
+it("keeps saturated blend revisions permanently dirty rather than reusing stale shared values",()=>{
+ const {b,gl,send,draw,floats,reg}=setup();send(O.OP_ENABLE,[BLEND]);send(O.OP_BLEND_FUNC,[CONSTANT_COLOR,CONSTANT_ALPHA]);draw();
+ const row=b.shadow.blendSourceFactor;b.shadow.blendSourceVersion=Number.MAX_SAFE_INTEGER;
+ send(O.OP_BLEND_COLOR,floats([.5,.25,.125,1]));expect(b.shadow.blendSourceVersion).toBe(-1);expect(b.shadow.blendSourceFactor).toBe(row);draw();
+ expect(gl.draws.at(-1)!.uniforms.get(FACTOR)).toEqual([.5,.25,.125]);send(O.OP_BLEND_COLOR,floats([.125,.5,.25,1]));expect(b.shadow.blendSourceVersion).toBe(-1);draw();draw();
+ expect(gl.draws.at(-1)!.uniforms.get(FACTOR)).toEqual([.125,.5,.25]);expect(gl.uniformWrites).toBe(4);reg.unbind(1);
 });

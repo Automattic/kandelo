@@ -7430,8 +7430,11 @@ exceptional native-reset recovery reconciles them before a healthy peer resumes.
 
 Prepared inline records preserve the full first-vertex operand and use bounded
 CPU upload scratch. A compact header handles the existing maximum-size payload
-without narrowing the GL API. Journal decoding borrows one cold reusable scalar
-receiver only for the synchronous command stack and clears it in finally,
+without narrowing the GL API. Successful native context admission reserves the
+bounded payload receiver, immutable scalar capabilities and checked native-call
+rows before acknowledging creation. Journals share that binding-owned receiver;
+Node's null-renderer refusal allocates none. Decoding borrows bytes only for the
+synchronous command stack and clears them in finally,
 including after Wasm memory growth. Full shape and authority checks precede any
 upload or private pointer mutation. Stale authority gets the ordinary GL error;
 an invariant lost after preflight fails loudly.
@@ -7442,7 +7445,13 @@ receiver before native creation, retaining the original context owner through
 publication failure, deferred cleanup and normal retirement. Nested retirement
 cannot collect the same in-flight receipt twice.
 
-This checkpoint does not finish B1. Predicted ordinary scalar setters still need
-stable receivers and cold capability preparation. Final application/conformance
-checks, measurements and the complete normal preview remain required. Retaining
+Predicted scalar setters mutate their context's live rows without replacing
+tuples or querying capabilities late. Shared blend variants compare both context
+row identity and value revision; saturation stays permanently dirty rather than
+reusing stale values. Checked native DepthRange/BlendFunc failures still use the
+current logical context's original reset authority.
+
+These controls do not establish B1 completion. Final application/conformance
+checks, measurements and the complete normal preview remain required. Ordinary
+GL now shares reusable decoding, whose CPU cost remains unmeasured. Retaining
 storage alone does not prove every later CPU emulation receiver exists.
