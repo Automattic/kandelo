@@ -1,0 +1,35 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { runCentralizedProgram } from "./centralized-test-helper";
+
+/**
+ * klogctl() used to be a fake success: the kernel's channel dispatch answered
+ * SYS_SYSLOG with a bare 0, so a program asking for the kernel log was told
+ * it had succeeded and handed nothing. ABI 56 routes Kandelo syscall 304 to
+ * the kernel message ring, and this is the end-to-end evidence for that route
+ * — a real guest, a real libc klogctl(), the channel glue, host argument
+ * staging and kernel dispatch.
+ *
+ * The guest judges its own result (examples/klogctl_test.c); its strongest
+ * assertion is that SIZE_BUFFER reports 131072, a number only the kernel's
+ * ring holds. The action table itself is unit-tested in
+ * crates/runtime-core/src/syscalls.rs.
+ */
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const programPath = join(__dirname, "../../examples/klogctl_test.wasm");
+
+describe("klogctl", () => {
+  it("reaches the kernel message ring instead of being refused in the glue", async () => {
+    const result = await runCentralizedProgram({
+      programPath,
+      timeout: 60_000,
+      useDefaultRootfs: false,
+    });
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe("klogctl-ok\n");
+    expect(result.stderr).toBe("");
+  });
+});

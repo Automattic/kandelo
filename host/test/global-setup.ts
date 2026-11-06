@@ -195,6 +195,7 @@ const TEST_PROGRAMS = [
   "getpwent_smoke.c",
   "initial-credentials-test.c",
   "locale_info_test.c",
+  "klogctl_test.c",
   "thread-exit-group.c",
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
