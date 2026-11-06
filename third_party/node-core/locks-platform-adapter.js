@@ -4,7 +4,7 @@
 function _createNodeLocksPlatform(platform) {
     'use strict';
     const P = _createNodePrimordials();
-    const { ArrayPrototypePush, ObjectDefineProperty, Promise, PromisePrototypeThen, ReflectApply, SafeMap } = P;
+    const { ObjectDefineProperty, Promise, PromisePrototypeThen, ReflectApply, SafeMap } = P;
     const requests = new SafeMap();
     const native = (...args) => ReflectApply(platform.native.locks, undefined, args);
     let publicModule;
@@ -43,7 +43,13 @@ function _createNodeLocksPlatform(platform) {
                 const id = event.localStolen[index];
                 const victim = requests.get(id);
                 if (!victim) throw new P.Error('Missing receiver-local stolen Web Locks request');
-                ArrayPrototypePush(victims, { id, entry: victim, error: new P.Error('LOCK_STOLEN') });
+                // Push still invokes inherited indexed setters. Define our
+                // own roots so user code cannot leak/drop them before commit.
+                ObjectDefineProperty(victims, victims.length, {
+                    __proto__: null,
+                    value: { id, entry: victim, error: new P.Error('LOCK_STOLEN') },
+                    writable: true, enumerable: true, configurable: true,
+                });
             }
             if (native('commit', event.id)) break;
         }

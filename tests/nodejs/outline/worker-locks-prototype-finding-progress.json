@@ -1,0 +1,117 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/worker-contracts.md",
+    "findingIds": [
+      "R-015",
+      "R-014"
+    ],
+    "retainedRows": [
+      {
+        "rowIndex": 328,
+        "id": "worker_threads.locks"
+      },
+      {
+        "rowIndex": 3024,
+        "id": "worker_threads.Lock"
+      },
+      {
+        "rowIndex": 3025,
+        "id": "worker_threads.Lock.prototype.name"
+      },
+      {
+        "rowIndex": 3026,
+        "id": "worker_threads.Lock.prototype.mode"
+      },
+      {
+        "rowIndex": 3027,
+        "id": "worker_threads.Lock.prototype.Symbol(Symbol.toStringTag)"
+      },
+      {
+        "rowIndex": 3028,
+        "id": "worker_threads.LockManager"
+      },
+      {
+        "rowIndex": 3029,
+        "id": "worker_threads.LockManager.prototype.request"
+      },
+      {
+        "rowIndex": 3030,
+        "id": "worker_threads.LockManager.prototype.query"
+      },
+      {
+        "rowIndex": 3031,
+        "id": "worker_threads.LockManager.prototype.Symbol(Symbol.toStringTag)"
+      }
+    ],
+    "relatedFamilies": [
+      "workers",
+      "async",
+      "observability",
+      "values",
+      "web"
+    ],
+    "scope": "Actual lock manager/public algorithms and delivery/scheduling foundation;not complete R-015/descriptor/global/worker conformance"
+  },
+  "sourceImplemented": [
+    "Genuine own indexed receiver roots prevent inherited setter leak/drop/throw/reentry before native grant/steal commit",
+    "Truthful NAPI fixture packet/query own elements mirror existing production JS_DefineElement"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-locks-prototype-source-r1/report.json",
+    "sha256": "ee8ad025ad5bc5cf5a2517d19f9722b432eca9811206436c33167bbfa388b228",
+    "selectedIdentities": 15,
+    "guardedInputs": 638,
+    "scope": "Four exact delta paths,task docs and byte-preserved documentation-only main reconciliation,bundle/bootstrap syntax and638declared inputs;other recorded sources unchanged. Candidate JS receiver/control evidence,not full engine/guest/four-host acceptance."
+  },
+  "portableNative": {
+    "report": ".context/node26-locks-prototype-controls-r1/report.json",
+    "sha256": "78f81528eab5bace43dc8d9d76a2ad3e746da0131d05e777ff3dacf3b7d3c803",
+    "existingMatchingGroups": 17,
+    "existingCandidateFailureGroups": 2,
+    "newNativeGroups": 4,
+    "newCandidateGroups": 7,
+    "expectedOldRegressionFailures": 2,
+    "scope": "own indexed receiver/fixture operations with actual portable manager/promises; R-015 lazy/global/JSAPI/four-host remain open"
+  },
+  "packageChecks": {
+    "report": ".context/node26-locks-prototype-package-r1.json",
+    "sha256": "2b294c42b7ea3ecde92e96fa96f5b891d0c7ebb5b42ba612e122f792ce18f182",
+    "passed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "638source/package declarations,not API conformance"
+  },
+  "privateAgentEvidence": {
+    "report": ".context/worker-locks-agent/prototype-fixes/sealed.json",
+    "sha256": "4df40deea95b3c0d77ebd8bb1fffb15638321a2d387ccfcc50e0b58e3b2cec12",
+    "scope": "Exact four-path postimages/baselines and private controls;root independently rebuilt/rechecked fixture"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/worker-locks-prototype-review/report.json",
+      "sha256": "7a27017e513cc17c76d83e54e30678c7f84b6caa9dc959631966e34befc816ba",
+      "kind": "original-receiver-corruption",
+      "reason": "Original observed regression retained;131source/focused controls correct it,no guest JSAPI closure"
+    },
+    {
+      "report": ".context/node26-locks-prototype-controls-r1/report.json",
+      "sha256": "78f81528eab5bace43dc8d9d76a2ad3e746da0131d05e777ff3dacf3b7d3c803",
+      "kind": "expected-old-regression-detection",
+      "reason": "Two old preimage subjects intentionally fail identical current assertions;not candidate compatibility failures"
+    }
+  ],
+  "remaining": [
+    "Compile combined117\u2013131and exercise actual JSAPI/root/OOM/realm/provider/unref/teardown on all4hosts",
+    "Complete native lazy-data/creation-realm and global Navigator ownership;resolve query/termination and all other R-015/worker gaps",
+    "All19families remain partial;histogram/datagram/shared private byte owners and retained memory prerequisites pending integration"
+  ],
+  "at": "2026-11-06T02:23:34.972197+00:00",
+  "recipeRevision": 131,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

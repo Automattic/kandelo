@@ -29,6 +29,15 @@ std::u16string Name(napi_env env, napi_value value) {
 }
 bool Boolean(napi_env env, napi_value value) { bool result; Check(napi_get_value_bool(env, value, &result)); return result; }
 void Set(napi_env env, napi_value object, const char* name, napi_value value) { Check(napi_set_named_property(env, object, name, value)); }
+void DefineElement(napi_env env, napi_value array, size_t index, napi_value value) {
+  // Production uses JS_DefineElement. Assignment would run an inherited
+  // numeric setter and introduce a fixture-only JS boundary in the packet.
+  const auto name = std::to_string(index);
+  napi_property_descriptor property{};
+  property.utf8name = name.c_str(); property.value = value;
+  property.attributes = napi_property_attributes(napi_writable | napi_enumerable | napi_configurable);
+  Check(napi_define_properties(env, array, 1, &property));
+}
 napi_value Info(napi_env env, const kandelo::locks::Info& info) {
   napi_value result, name; Check(napi_create_object(env, &result));
   Check(napi_create_string_utf16(env, info.name.data(), info.name.size(), &name));
@@ -38,7 +47,7 @@ napi_value Info(napi_env env, const kandelo::locks::Info& info) {
 }
 napi_value Array(napi_env env, const std::vector<kandelo::locks::Info>& values) {
   napi_value result; Check(napi_create_array_with_length(env, values.size(), &result));
-  for (size_t i = 0; i < values.size(); ++i) Check(napi_set_element(env, result, i, Info(env, values[i])));
+  for (size_t i = 0; i < values.size(); ++i) DefineElement(env, result, i, Info(env, values[i]));
   return result;
 }
 void Cleanup(void* pointer) {
@@ -70,7 +79,7 @@ napi_value Dispatch(napi_env env, napi_callback_info callback) {
       Set(env, result, "kind", String(env, event.kind == kandelo::locks::Event::Kind::Grant ? "grant" : event.kind == kandelo::locks::Event::Kind::Miss ? "miss" : "stolen")); PacketCheckpoint(context, step++);
       napi_value stolen; Check(napi_create_array_with_length(env, event.localStolen.size(), &stolen)); PacketCheckpoint(context, step++);
       for (size_t i = 0; i < event.localStolen.size(); ++i)
-        { Check(napi_set_element(env, stolen, i, Number(env, event.localStolen[i]))); PacketCheckpoint(context, step++); }
+        { DefineElement(env, stolen, i, Number(env, event.localStolen[i])); PacketCheckpoint(context, step++); }
       Set(env, result, "localStolen", stolen); PacketCheckpoint(context, step++);
       context.prepared.emplace(std::move(event)); return result;
     }

@@ -129,3 +129,25 @@ The earlier worker-termination scheduling and query ordering across distinct
 names remain unresolved. No acceptance or audit finding closes from this
 followup; actual engine compilation, provider execution, Promise activation,
 GC/OOM, cancellation/steal/death races and four-host controls remain required.
+
+## Indexed-prototype receiver followup
+
+Local steal-victim roots now use the captured ObjectDefineProperty primordial
+with a complete null-prototype descriptor. Capturing Array.prototype.push
+does not prevent inherited numeric setters from receiving, dropping or
+reentering with private victim records before commit. An absent dropped
+element could previously fail after a successful native commit, leaving local
+stolen notifications undelivered until the original callback settled. Own
+definitions remove that user-JS boundary while preserving native preview,
+commit and the actual waiting/released Promise ownership.
+
+The native-host fixture now defines packet/query array elements as own data
+properties, mirroring production JS_DefineElement. Its prior napi_set_element
+assignment could independently invoke the same inherited setter and obscure
+whether a failure came from fixture construction or receiver preparation.
+The durable node-locks-prototype-controls.cjs fixture tests global poisoning
+and poisoning armed only after packet construction, for dropping, throwing
+and reentering setters, plus own query elements. Native and adapter assertions
+remain equivalent. These checks cover the stated indexed operations only;
+they do not establish general Object.prototype immunity, lazy-data/global
+property parity, JSAPI execution or four-host acceptance. R-015 remains open.

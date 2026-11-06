@@ -1,5 +1,15 @@
 # Current public-contract reconciliation
 
+Source131 fixes receiver victim-root insertion with genuine own properties,
+so inherited indexed setters cannot leak/drop roots or reenter before commit.
+The NAPI packet fixture now mirrors production own-element definitions.
+Original17matched public groups,2existing failure groups,4native/7candidate
+prototype groups and12package checks pass;old receiver and old fixture fail
+the new assertions as expected. Production JSAPI/combined117–131engine remains
+uncompiled;all19families partial. Overall suites/full rebuild stay deferred.
+See [indexed receiver ownership](worker-locks-prototype-fix.md).
+
+
 Source130 removes public Buffer allocation/JavaScript callbacks from native
 JWK byte ownership,preserves OOM/control failures,and roots material across
 reentrant getters and foreign-handle realm access.20root key checks(including
@@ -254,7 +264,7 @@ of the APIs, overloads, inherited members, symbols and open questions.
 | Web | File/FormData/Headers, private header guard/list consumers, Blob/clone and Web Stream owners | Complete body/Fetch/WebIDL/global/encoding/URL semantics, transfer and network/crypto dependencies |
 | Loading | Partial pinned Module.wrap/wrapper and patched-script source owners with single exports snapshot; Real native parser goals and direct CJS body compilation, pinned filename/package/entry selection and shared ESM source format in103; Module record/require/JSON, package cache/reader, exports/imports/conditions/self/maps and SourceMap algorithms | Actual guest parser/error/source/realm evidence; complete provided-source execution, CJS wrapper/hooks/cache and ESM URL/namespace/JSON/async/cycle/dynamic-import graphs; TypeScript/Wasm/addon/source-map/cache/preload/CLI/permission/lifecycle owners; four-host conformance |
 | Terminal | Pinned shared/callback/promise readline,history/key/cursor owners plus120actual borrowed terminal-mode leases and window queries | Full public TTY/stdio classes,signals/resize/drain,Unicode width,persistence/permissions/REPL and guest lifecycle/stream/symbol conformance |
-| Workers | Real process/thread-shared lock manager,transactional receiver delivery,dual-Promise/callback lifetime and fair provider dispatch in129source;actual thread/context/input/error/join owners,connected packets,115broadcast registry/shared native weak clone marks and124per-context loop measurement source | Newly reproduced receiver victim-array inherited-setter gap awaits separate fix;native lazy-data descriptors/global Navigator alias remain missing;guest117–129uncompiled;complete endpoint/host transfer/context movement,thread routing,Worker options/stdio/shared environment/resources/ref/failure/termination and parent-side performance/GC/realm/four-host evidence |
+| Workers | Real process/thread-shared lock manager,transactional receiver delivery,dual-Promise/callback lifetime and fair provider dispatch in129source;actual thread/context/input/error/join owners,connected packets,115broadcast registry/shared native weak clone marks and124per-context loop measurement source | Receiver victim-array indexed insertion fixed in131source;guest validation pending;native lazy-data descriptors/global Navigator alias remain missing;guest117–129uncompiled;complete endpoint/host transfer/context movement,thread routing,Worker options/stdio/shared environment/resources/ref/failure/termination and parent-side performance/GC/realm/four-host evidence |
 | Compression | pinned codec/archive/iterable JS and native contexts; actual shared/growable queue leases and synchronous resizable codec/CRC/dictionary spans compiled in112 | Ordinary async resizable/transfer/pre-existing pin ownership; complete modes/options/iterators/files and native cleanup/cancellation/accounting; retained gzip OS-byte comparison mismatches and complete four-host evidence |
 | Observability | Pinned Console/diagnostics/TCP/DNS producers,Performance timeline/entry/observer/resource/timerify algorithms and process-origin clock;124real per-context loop-start/idle owner and complete pinned ELU arithmetic | Compile/validate actual loop hooks;other milestones/counters/histograms/GC/network producers,stack/inspector/global/realm/stream integration,public tracing/reporting and complete four-host conformance |
 | Engine | generic native Error location policy across registered root/worker contexts and VM realms; VM compiler, actual ordinary DONT_CONTEXTIFY globals, per-runtime chained security-callback owners and partial nominal GC budget | Complete ordinary sandbox exotic behavior, context metadata/deadlines/modules/cache/microtasks, inspector, heap measurements and worker/guest integration |

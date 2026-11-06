@@ -1,5 +1,15 @@
 # Shared Node core build inputs
 
+Source131 fixes receiver victim-root insertion with genuine own properties,
+so inherited indexed setters cannot leak/drop roots or reenter before commit.
+The NAPI packet fixture now mirrors production own-element definitions.
+Original17matched public groups,2existing failure groups,4native/7candidate
+prototype groups and12package checks pass;old receiver and old fixture fail
+the new assertions as expected. Production JSAPI/combined117–131engine remains
+uncompiled;all19families partial. Overall suites/full rebuild stay deferred.
+See [indexed receiver ownership](worker-locks-prototype-fix.md).
+
+
 Source130 removes public Buffer allocation/JavaScript callbacks from native
 JWK byte ownership,preserves OOM/control failures,and roots material across
 reentrant getters and foreign-handle realm access.20root key checks(including
