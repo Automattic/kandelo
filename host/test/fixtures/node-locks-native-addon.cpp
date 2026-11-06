@@ -60,6 +60,14 @@ napi_value Dispatch(napi_env env, napi_callback_info callback) {
     auto& context = *static_cast<Context*>(pointer);
     const auto id = context.id;
     const auto operation = Text(env, args[0]);
+    if (operation == "ready") {
+      Check(napi_get_boolean(env, manager.Ready(id), &result)); return result;
+    }
+    if (operation == "waitForReady") {
+      uint32_t maximum; Check(napi_get_value_uint32(env, args[1], &maximum));
+      Check(napi_get_boolean(env, manager.WaitForReady(id, std::chrono::milliseconds(maximum)), &result));
+      return result;
+    }
     if (operation == "request") return Number(env, manager.Request(id, Name(env, args[1]), Text(env, args[2]),
         Text(env, args[3]) == "shared" ? kandelo::locks::Mode::Shared : kandelo::locks::Mode::Exclusive,
         Boolean(env, args[4]), Boolean(env, args[5])));

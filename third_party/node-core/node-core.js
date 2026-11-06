@@ -8338,10 +8338,26 @@ function createHook(fns) {
         // InternalCallbackScope skips AsyncWrap hooks for ID zero; a public
         // timer here would manufacture an extra Immediate lifecycle.
         const prior = platform.native.getAsyncContext();
-        setState(ObjectFreeze({ __proto__: null, frame: undefined,
-            id: 0, triggerId: 0, resource: {} }));
-        try { return ReflectApply(fn, undefined, []); }
-        finally { setState(prior); }
+        const resource = {};
+        const active = ObjectFreeze({ __proto__: null, frame: undefined,
+            id: 0, triggerId: 0, resource });
+        // This actual internal-immediate delivery owns a real plain resource,
+        // default frame and IDs0/0. Updating JS metadata alone cannot override
+        // the owning native execution stack used by the environment.
+        platform.native.pushAsyncExecution(0, 0, resource, true);
+        setState(active);
+        let completed = false;
+        try {
+            const result = ReflectApply(fn, undefined, []);
+            completed = true; return result;
+        } finally {
+            // A failed delivery keeps its execution owner/frame until the
+            // outer native entry handles the exception. Recovery can clear
+            // the stack while this call is active; never restore that snapshot.
+            if (completed && platform.native.executionAsyncResource() === resource) {
+                platform.native.popAsyncExecution(0); setState(prior);
+            }
+        }
     }
     function emitBefore(asyncId, triggerId, resource) {
         platform.native.pushAsyncExecution(asyncId, triggerId, resource, false);
@@ -106148,7 +106164,12 @@ module.exports = {
     }
     return {
         // One event per engine phase preserves the ordinary tick/job checkpoint.
-        dispatch: dispatchOne,
+        dispatch() {
+            // Only real deliverable native work owns an internal immediate.
+            // Synchronous request/settlement processing keeps its caller scope.
+            if (!loaded || !native('ready')) return 0;
+            return platform.runInternalImmediate(dispatchOne);
+        },
         // Private builtin routing owns the same module/singleton regardless of
         // assignment, defineProperty or deletion on public worker_threads.
         require: requireBuiltin,

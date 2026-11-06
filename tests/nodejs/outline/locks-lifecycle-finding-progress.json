@@ -1,0 +1,85 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/workers.md",
+    "findingIds": [
+      "R-014",
+      "R-015"
+    ],
+    "relatedFamilies": [
+      "workers",
+      "async"
+    ],
+    "scope": "Deferred lock-provider execution/resource ownership only; remaining lifecycle/target questions not closed"
+  },
+  "sourceImplemented": [
+    "Real ready deferred delivery pushes actual native0/0 execution resource and default frame; synchronous calls retain caller scope",
+    "Guard native scope restoration against clear/failure and avoid creating a scope for empty providers",
+    "Expose real manager readiness through existing native operation path, preserving manager lifecycle/wakeup and current shared execution prerequisites"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-locks155-source-r1/report.json",
+    "sha256": "c2886fd76ae9320e0ecfc235774ed606e6cdb38329159e3bbc078586dd6c97f2",
+    "guardedInputs": 718,
+    "scope": "Current integrated real deferred Locks zero-ID/default-frame/native execution ownership;3bounded native/component processes. Prior addons unchanged/reused; no production JSAPI/guest/four-host conformance or new compilation. Termination/query-order/per-batch differences remain open."
+  },
+  "packageChecks": {
+    "report": ".context/node26-locks155-affected-r1.json",
+    "sha256": "7e3c0e8990e4c8c4e36a5ea3a1fd9aad8d9f0dccfff309a23ed3aba15cd9977d",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing package-source checks only"
+  },
+  "focusedControls": {
+    "report": ".context/node26-locks155-source-r1/report.json",
+    "sha256": "c2886fd76ae9320e0ecfc235774ed606e6cdb38329159e3bbc078586dd6c97f2",
+    "boundedProcesses": 3,
+    "exitCodes": [
+      0,
+      0,
+      0
+    ],
+    "scope": "One pinned-native provider reference and two current adapter/real native execution-owner/manager components with explicit Node-API/host dependencies"
+  },
+  "priorCausalControls": {
+    "report": ".context/locks-lifecycle-agent/controls-final/report.json",
+    "sha256": "dce39cdbec8f40e7c0a7d2b52ec968e65888c723d51ce03507d9764b6e1f5ffd",
+    "reused": true,
+    "brokenVariantsRejected": 3,
+    "scope": "Prior variants fail unchanged assertions; not passing compatibility cases"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/locks-lifecycle-agent/query-order-report.json",
+      "sha256": "c15ba1c654ab6f6e544e6ad39b92f30b37350735de2e0c36517bc11d0bc801ec",
+      "kind": "query-order-nonmatch",
+      "reason": "Real resource iteration order remains nonmatching; no snapshot sorting"
+    },
+    {
+      "report": ".context/locks-lifecycle-agent/native-r2/native-report.json",
+      "sha256": "f147874174f9f3b425e46cceed8e456a501419916503886773bff6c9fdd18865",
+      "kind": "termination-target-observation",
+      "reason": "Native termination wake differs from real current manager notification; no accepted boundary"
+    },
+    {
+      "report": ".context/node26-locks155-source-initial-path.log",
+      "sha256": "4c621d60ee2ae4f42e2be317abe2b359bc0eb779d36844b2d3479f345ef181a3",
+      "kind": "root-source-fixture-path",
+      "reason": "Wrong header path, before native controls; corrected exact real path/hash without runtime/source change"
+    }
+  ],
+  "remaining": [
+    "Actual JSAPI/GC/OOM/realm/cancellation/ref/worker/Promise integration and current four-host conformance",
+    "Raw query order, native termination-wake distinction and per-batch resource/phase identity remain open",
+    "Complete remaining worker/async findings; no copied export or component pass establishes compatibility"
+  ],
+  "at": "2026-11-06T18:34:20.471213+00:00",
+  "recipeRevision": 155,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

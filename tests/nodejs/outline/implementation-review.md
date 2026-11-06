@@ -1,5 +1,10 @@
 # Broad implementation review
 
+Source155 integrates actual deferred Locks execution ownership. Three focused
+native/component controls and fourteen package-source checks pass. Native
+termination/query-order differences and current four-host obligations remain
+open. See [Locks lifecycle scope](locks-lifecycle-integration.md).
+
 Source154 integrates actual SQLite statement close/disposal and safe native
 retirement. Twelve native/frontend groups, six selected unchanged upstream
 tests per subject and fourteen package-source checks pass. Guest compilation

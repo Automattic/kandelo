@@ -73,6 +73,9 @@ static bool KandeloLockDispatch(JSContext* cx, unsigned argc, Value* vp) {
   if (!operation) return false;
   auto& context = KandeloLockEnvironment(cx);
   const auto environment = context.identity;
+  if (!strcmp(operation.get(), "ready")) {
+    args.rval().setBoolean(KandeloLockManager().Ready(environment)); return true;
+  }
   if (!strcmp(operation.get(), "request")) {
     if (!args.get(1).isString() || !args.get(2).isString() || !args.get(3).isString() ||
         !args.get(4).isBoolean() || !args.get(5).isBoolean()) {

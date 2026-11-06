@@ -189,7 +189,12 @@ function _createNodeLocksPlatform(platform) {
     }
     return {
         // One event per engine phase preserves the ordinary tick/job checkpoint.
-        dispatch: dispatchOne,
+        dispatch() {
+            // Only real deliverable native work owns an internal immediate.
+            // Synchronous request/settlement processing keeps its caller scope.
+            if (!loaded || !native('ready')) return 0;
+            return platform.runInternalImmediate(dispatchOne);
+        },
         // Private builtin routing owns the same module/singleton regardless of
         // assignment, defineProperty or deletion on public worker_threads.
         require: requireBuiltin,

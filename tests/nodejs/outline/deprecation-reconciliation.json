@@ -8,10 +8,10 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "98fb5f72cf80eed43402a9ccfeb4632ab42b56118765431f07af9f0aa34bd820",
+    "packages/registry/node-compat/bootstrap.js": "ac0a419c49be1e43cdf48473b875dc2a456eb59dca58ea42440e6ef60046c8bf",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
-    "third_party/node-core/async-platform-adapter.js": "956ca813da11af1b926489497097facf21006e20105214c992d7686d9b66aca3",
+    "third_party/node-core/async-platform-adapter.js": "86cc28c808dcc716688df60c8631fd684f8041b500c2d3c3f8807105cdec145d",
     "third_party/node-core/buffer-bytes-adapter.js": "b73d5e43885582c9d25be752d8c4211a796b904412d2b824be4162e7b3dbd68a",
     "third_party/node-core/buffer-codecs-adapter.js": "de9373d9f1ab96f82dc3f9087a7d4e5a66db9cf997f83986ac14076f0ae9a552",
     "third_party/node-core/buffer-constructor-adapter.js": "2074bd8ba330ce3450d65bc6b09a965c85679adc6a33c79bfd409d5149375da1",
@@ -56,7 +56,7 @@
     "third_party/node-core/inspection-adapter.js": "c090c337276d93d5dc4762c932666ed18232400904d331bb3444a3b28a9b6eb7",
     "third_party/node-core/kdf-platform-adapter.js": "74cafdd780cce9587d5fb2169f28ce0b4fa74ecffb6727e6ead640c2642716d4",
     "third_party/node-core/keys-platform-adapter.js": "e072c809e76b93aa36bf43de667d018c23250df8528bbdb14de6d2d93bb432ac",
-    "third_party/node-core/locks-platform-adapter.js": "1b8008b770ee61050130193390771c41b1e813b4a2c3b11aabcaaca734c71393",
+    "third_party/node-core/locks-platform-adapter.js": "cd26661d86138bb1b6db799eda051f544176fb8cc28bac63d5fd564a0076b532",
     "third_party/node-core/module-hooks-platform-adapter.js": "a241506687a307fa48c26de60502b1c53fba0490ffae6394e7a8bac95a900e6d",
     "third_party/node-core/module-record-platform-adapter.js": "d2cf4407dc4a171624829d0c9768eb0e9302a82882190b2548f1ee7b48b769c4",
     "third_party/node-core/module-syntax-platform-adapter.js": "9d414e514dcc5d9740591c2b2e4e29dc096b472269745d43e717300f19d4b272",

@@ -4959,6 +4959,7 @@ globalThis.__kandeloDispatchWorkers = _nodeWorkerPlatform.dispatch;
 const _nodeLocksPlatform = _createNodeLocksPlatform({
     native: _nodeNative, values: _nodeValues, process, worker: _nodeWorkerPlatform.internal,
     types: util.types, diagnostics: _nodeDiagnostics.api,
+    runInternalImmediate: _nodeAsyncPlatform.runInternalImmediate,
     eventRequire: name => _nodeEventPlatform.require(name),
 });
 globalThis.__kandeloDispatchLocks = _nodeLocksPlatform.dispatch;
