@@ -21,14 +21,16 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # also needs this cwd; it used to set it just before the npx call.)
 cd "$REPO_ROOT"
 SYSROOT="$REPO_ROOT/sysroot"
-OS_TEST="$REPO_ROOT/tests/sortix/os-test"
+# Match the Node runner's source authority: case-distinct upstream files need
+# a faithful checkout, while the SDK/kernel still belong to this worktree.
+OS_TEST="${KANDELO_SORTIX_SOURCE_ROOT:-$REPO_ROOT/tests/sortix/os-test}"
 OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
 # Upstream tests that do not test a POSIX requirement on Kandelo are
 # reported as SKIP; see scripts/sortix-not-applicable.sh.
 source "$REPO_ROOT/scripts/sortix-not-applicable.sh"
 # shellcheck source=scripts/browser-runner-accounting.sh
 source "$REPO_ROOT/scripts/browser-runner-accounting.sh"
-BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
+BUILD_DIR="$OS_TEST/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # Expected failures, their recorded reasons, and how expected output is
@@ -298,6 +300,10 @@ run_include_suite() {
 
     local count=${#tests[@]}
     echo "  Discovered $count tests"
+    if [ "$count" -eq 0 ]; then
+        note_empty_suite include
+        return
+    fi
 
     local JOBS
     JOBS=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
@@ -432,6 +438,10 @@ run_runtime_suite() {
 
     local count=${#tests[@]}
     echo "  Discovered $count tests"
+    if [ "$count" -eq 0 ]; then
+        note_empty_suite "$suite"
+        return
+    fi
 
     # Build all tests
     echo "  Building $count tests..."
@@ -683,6 +693,14 @@ XFAIL=0
 XPASS=0
 RESULTS=()
 TOTAL=0
+# Discovery failure is a suite error, not a synthetic test case or a skip.
+# Otherwise an empty/uninitialized source directory can report success while
+# exercising none of the intended conformance inventory.
+EMPTY_SUITES=()
+note_empty_suite() {
+    echo "  ERROR: suite '$1' discovered 0 tests; check the selected os-test source root: $OS_TEST" >&2
+    EMPTY_SUITES+=("$1")
+}
 
 for suite in "${SUITES[@]}"; do
     echo ""
@@ -731,6 +749,10 @@ fi
 # The expected failures are shared with the Node.js runner, so an XPASS is a
 # Node/browser divergence or a stale entry, and fails the run as it does on
 # Node. ERROR and TIMEOUT are tests that did not finish.
+if [ ${#EMPTY_SUITES[@]} -gt 0 ]; then
+    echo "Error: suites with no tests: ${EMPTY_SUITES[*]}" >&2
+    exit 1
+fi
 if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] \
     || [ $ERROR_COUNT -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1

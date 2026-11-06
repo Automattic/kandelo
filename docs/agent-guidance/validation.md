@@ -555,6 +555,23 @@ scripts/dev-shell.sh env KANDELO_SORTIX_SOURCE_ROOT=/absolute/os-test \
 
 The runner keeps its build directory below the selected source root;
 SDK, kernel, overrides, and runtime still come from the current worktree.
+The browser wrapper uses the same override:
+
+```bash
+scripts/dev-shell.sh env KANDELO_SORTIX_SOURCE_ROOT=/absolute/os-test \
+  bash scripts/run-browser-sortix-tests.sh --all
+```
+
+Both wrappers fail when a requested suite discovers no tests. After changing
+source selection or accounting, run:
+
+```bash
+scripts/dev-shell.sh bash scripts/test-sortix-source-root.sh
+```
+
+It exercises both real wrappers with the current SDK, a source path containing
+spaces, a refused compilation, and empty include/runtime suites. These controls
+do not replace upstream conformance.
 
 Before blaming a suite failure on your change, confirm it actually is your
 change: a few package/demo tests (e.g. the Erlang `ring` benchmark) can fail for

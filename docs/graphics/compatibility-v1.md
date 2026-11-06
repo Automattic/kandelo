@@ -57,6 +57,26 @@ explicitly wants to wait until all changes are integrated into a normally
 built preview that passes its required checks. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Sortix validation source parity, 2026-11-06 (R513)
+
+The browser Sortix runner now honors the same `KANDELO_SORTIX_SOURCE_ROOT`
+as Node and keeps its build directory under that source root. The SDK, kernel,
+local overrides and runtime still come from the current Kandelo worktree.
+Both runners reject a requested suite that discovers no tests; no synthetic
+test or skip is added to make its totals appear complete.
+
+The causal before run (`graphics-sortix-source-root-before-r513-1106-014554-7e08`)
+failed its regression control: the browser wrapper ignored the selected source
+and returned success with zero discovered tests. The frozen final run
+(`graphics-sortix-source-root-final-r513-1106-014932-d641`) passes43s. Each real
+wrapper compiles a selected fixture through the current SDK, rejects its
+deliberately refused compilation, and fails empty include and runtime suites.
+The selected root contains spaces. Authored source and all nine normal R488
+product/tool hashes match before and after. These are runner controls, not
+upstream Sortix conformance or B1 acceptance. Full Node/browser POSIX runs remain
+required. This portable source override adds no operating-system-specific build
+command, ABI change or ported-software modification.
+
 ## Scalar acceptance and shared decoding, 2026-11-06 (R490/R497/R498)
 
 Successful native context admission now reserves its bounded payload receiver,
