@@ -75,6 +75,25 @@ pub const KMSG_HEADER_BYTES: usize = 21;
 /// Record flag: the text was cut at [`KMSG_MAX_TEXT_BYTES`].
 pub const KMSG_FLAG_TRUNCATED: u8 = 0x01;
 
+/// Most decimal digits a `u64` renders to.
+pub(crate) const U64_DECIMAL_DIGITS: usize = 20;
+
+/// Render `value` in decimal into the tail of `buf` and return the digits.
+///
+/// Both read surfaces build their lines from numbers, in a context that must
+/// not allocate, so they share this rather than going through `format!`.
+pub(crate) fn format_decimal(mut value: u64, buf: &mut [u8; U64_DECIMAL_DIGITS]) -> &[u8] {
+    let mut start = U64_DECIMAL_DIGITS;
+    loop {
+        start -= 1;
+        buf[start] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            return &buf[start..];
+        }
+    }
+}
+
 /// Internal flag marking a pad entry. Never set on a real record.
 const PAD_FLAG: u8 = 0x80;
 

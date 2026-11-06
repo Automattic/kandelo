@@ -169,6 +169,10 @@ pub enum VirtualDevice {
     /// `/dev/kandelo/clipboard` — host clipboard text for the guest's
     /// clipboard agent (see `crate::clipboard`). host_handle -12.
     Clipboard,
+    /// `/dev/kmsg` — the kernel message ring, one record per `read` and a
+    /// per-open cursor held in the OFD file position (see
+    /// `crate::kmsg_device`). host_handle -13.
+    Kmsg,
 }
 
 impl VirtualDevice {
@@ -186,6 +190,7 @@ impl VirtualDevice {
             VirtualDevice::DriCard0 => -9,
             VirtualDevice::InputEvent { device } => -10 - device as i64,
             VirtualDevice::Clipboard => -12,
+            VirtualDevice::Kmsg => -13,
         }
     }
 
@@ -204,6 +209,7 @@ impl VirtualDevice {
             -10 => Some(VirtualDevice::InputEvent { device: 0 }),
             -11 => Some(VirtualDevice::InputEvent { device: 1 }),
             -12 => Some(VirtualDevice::Clipboard),
+            -13 => Some(VirtualDevice::Kmsg),
             _ => None,
         }
     }
@@ -222,6 +228,7 @@ impl VirtualDevice {
             VirtualDevice::DriCard0 => 9,
             VirtualDevice::InputEvent { device } => 10 + device as u64,
             VirtualDevice::Clipboard => 12,
+            VirtualDevice::Kmsg => 13,
         }
     }
 
@@ -276,6 +283,7 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/input/event0" => Some(VirtualDevice::InputEvent { device: 0 }),
         b"/dev/input/event1" => Some(VirtualDevice::InputEvent { device: 1 }),
         b"/dev/kandelo/clipboard" => Some(VirtualDevice::Clipboard),
+        b"/dev/kmsg" => Some(VirtualDevice::Kmsg),
         _ => None,
     }
 }
@@ -2336,10 +2344,13 @@ pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host:
 /// Build a synthetic WasmStat for a virtual device.
 fn virtual_device_stat(dev: VirtualDevice, uid: u32, gid: u32) -> WasmStat {
     use wasm_posix_shared::mode::S_IFCHR;
+    // The kernel log is readable by everyone and writable by no one: a write
+    // is refused whoever asks, so the mode must not promise otherwise.
+    let permissions = if dev == VirtualDevice::Kmsg { 0o444 } else { 0o666 };
     WasmStat {
         st_dev: 5,
         st_ino: dev.ino(),
-        st_mode: S_IFCHR | 0o666,
+        st_mode: S_IFCHR | permissions,
         st_nlink: 1,
         st_uid: uid,
         st_gid: gid,
@@ -3588,6 +3599,7 @@ fn publish_virtual_device_fd(proc: &mut Process, device: VirtualDevice, status_f
             VirtualDevice::Fb0 => acquire_fb0_or_busy(proc.pid)?,
             VirtualDevice::Mice => acquire_mice_or_busy(proc.pid)?,
             VirtualDevice::Clipboard => crate::clipboard::acquire_or_busy(proc.pid)?,
+            VirtualDevice::Kmsg => crate::kmsg_device::start_at_oldest(description),
             _ => {},
         }
         Ok(device.host_handle())
@@ -5705,6 +5717,10 @@ pub fn sys_read(
                         // character devices block. (Not evdev's Ok(0): a 0
                         // return would read as end-of-file.)
                         VirtualDevice::Clipboard => crate::clipboard::read_into(buf)?,
+                        // One record per read, at the cursor held in the OFD
+                        // position. EAGAIN at the tail parks a blocking reader
+                        // the same way.
+                        VirtualDevice::Kmsg => crate::kmsg_device::read(ofd, buf)?,
                     };
                     return Ok(n);
                 }
@@ -6195,6 +6211,10 @@ pub fn sys_write(
                         // The agent's acknowledgement of an offer, or its
                         // report of the desktop's new selection.
                         VirtualDevice::Clipboard => crate::clipboard::write_from_agent(buf),
+                        // The ring is strictly kernel-sourced: a program that
+                        // could append could forge a kernel record. Refused
+                        // rather than accepted and discarded.
+                        VirtualDevice::Kmsg => Err(Errno::EACCES),
                         _ => Ok(buf.len()), // Null, Zero, Urandom, Mice: discard
                     };
                 }
@@ -6473,6 +6493,17 @@ pub fn sys_lseek(
                 }
                 ofd.set_offset(new_off);
                 return Ok(new_off);
+            }
+            // The file position is the kmsg cursor, so seeking is how a
+            // program moves it. Only the oldest record, the post-clear
+            // record and the tail are reachable.
+            if dev == VirtualDevice::Kmsg {
+                // SAFETY: the kernel services one syscall at a time.
+                let ring = unsafe { crate::kmsg::global_kmsg_ring() };
+                let cursor = crate::kmsg_device::seek(ring, whence, offset)?;
+                let position = i64::try_from(cursor).map_err(|_| Errno::EOVERFLOW)?;
+                ofd.set_offset(position);
+                return Ok(position);
             }
             return Ok(0);
         }
@@ -15665,6 +15696,16 @@ fn poll_check_depth(
                     }
                     if pollfd.events & POLLOUT != 0 {
                         revents |= POLLOUT;
+                    }
+                } else if ofd.file_type == FileType::CharDevice
+                    && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Kmsg)
+                {
+                    // Readable while a record, or the news that the reader was
+                    // overrun, is waiting at the cursor, matching sys_read's
+                    // EAGAIN at the tail. Always-ready would spin a tailing
+                    // daemon. Writes are refused, so never POLLOUT.
+                    if pollfd.events & POLLIN != 0 && crate::kmsg_device::readable(ofd) {
+                        revents |= POLLIN;
                     }
                 } else if ofd.file_type == FileType::CharDevice
                     && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Dsp)
@@ -56448,6 +56489,232 @@ impl HostIO for RelSymlinkMock {
             assert!(crate::tmpfs::lstat(&dir).is_ok(), "the inherited reference keeps it");
             assert!(crate::descriptor_backing::release_for_ofd(FileType::CharDevice, handle));
             assert_eq!(crate::tmpfs::lstat(&dir).unwrap_err(), Errno::ENOENT);
+        }
+    }
+
+    /// `/dev/kmsg`: the syscall surface over [`crate::kmsg_device`]. The
+    /// record rendering and cursor rules are tested there against an explicit
+    /// ring; these tests prove the device is wired to an open file
+    /// description whose file position is the cursor.
+    mod kmsg_device_tests {
+        use super::*;
+        use crate::kmsg::{global_kmsg_ring, KmsgRing};
+        use crate::kmsg_device::TEST_LOCK;
+
+        const KMSG: &[u8] = b"/dev/kmsg";
+
+        /// Take the machine-global ring for one test and start it empty.
+        /// `clear` keeps `seq` counting up, so tests read their records'
+        /// numbers from `push` rather than assuming zero.
+        fn lock_ring() -> (std::sync::MutexGuard<'static, ()>, &'static mut KmsgRing) {
+            let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: TEST_LOCK serializes every test that touches the ring.
+            let ring = unsafe { global_kmsg_ring() };
+            ring.clear();
+            (guard, ring)
+        }
+
+        fn open_kmsg(proc: &mut Process, host: &mut MockHostIO) -> i32 {
+            sys_open(proc, host, KMSG, O_RDONLY, 0).unwrap()
+        }
+
+        fn read_line(proc: &mut Process, host: &mut MockHostIO, fd: i32) -> Result<Vec<u8>, Errno> {
+            let mut buf = vec![0u8; 8192];
+            let n = sys_read(proc, host, fd, &mut buf)?;
+            buf.truncate(n);
+            Ok(buf)
+        }
+
+        #[test]
+        fn open_dev_kmsg_yields_a_chardevice_ofd_with_sentinel_minus_13() {
+            let (_guard, _ring) = lock_ring();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = open_kmsg(&mut proc, &mut host);
+            let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+            assert_eq!(ofd.file_type, FileType::CharDevice);
+            assert_eq!(ofd.host_handle, -13);
+            assert_eq!(VirtualDevice::Kmsg.host_handle(), -13);
+            assert_eq!(VirtualDevice::from_host_handle(-13), Some(VirtualDevice::Kmsg));
+            // -12 is still the clipboard, and no two devices share an inode.
+            assert_eq!(VirtualDevice::from_host_handle(-12), Some(VirtualDevice::Clipboard));
+            assert_ne!(VirtualDevice::Kmsg.ino(), VirtualDevice::Clipboard.ino());
+            assert_eq!(match_virtual_device(KMSG), Some(VirtualDevice::Kmsg));
+        }
+
+        #[test]
+        fn each_read_returns_exactly_one_record_in_pri_seq_usec_flag_format() {
+            let (_guard, ring) = lock_ring();
+            let first = ring.push(0, 6, 1_500_000, b"one");
+            let second = ring.push(0, 3, 2_000_000, b"two");
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = open_kmsg(&mut proc, &mut host);
+            // The buffer could hold both records; each read still returns one.
+            assert_eq!(
+                read_line(&mut proc, &mut host, fd).unwrap(),
+                format!("6,{first},1500,-;one\n").into_bytes()
+            );
+            assert_eq!(
+                read_line(&mut proc, &mut host, fd).unwrap(),
+                format!("3,{second},2000,-;two\n").into_bytes()
+            );
+            assert_eq!(read_line(&mut proc, &mut host, fd), Err(Errno::EAGAIN));
+        }
+
+        #[test]
+        fn two_opens_have_independent_cursors() {
+            let (_guard, ring) = lock_ring();
+            let a = ring.push(0, 6, 0, b"a");
+            let b = ring.push(0, 6, 0, b"b");
+            let c = ring.push(0, 6, 0, b"c");
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let first = open_kmsg(&mut proc, &mut host);
+            let second = open_kmsg(&mut proc, &mut host);
+            assert_eq!(read_line(&mut proc, &mut host, first).unwrap(), format!("6,{a},0,-;a\n").into_bytes());
+            assert_eq!(read_line(&mut proc, &mut host, first).unwrap(), format!("6,{b},0,-;b\n").into_bytes());
+            // Reading never consumed anything: the second open still starts
+            // at the oldest record, and the first is unaffected by it.
+            assert_eq!(read_line(&mut proc, &mut host, second).unwrap(), format!("6,{a},0,-;a\n").into_bytes());
+            assert_eq!(read_line(&mut proc, &mut host, first).unwrap(), format!("6,{c},0,-;c\n").into_bytes());
+        }
+
+        #[test]
+        fn forked_child_sharing_the_ofd_shares_the_cursor() {
+            let (_guard, ring) = lock_ring();
+            let a = ring.push(0, 6, 0, b"a");
+            let b = ring.push(0, 6, 0, b"b");
+            let mut parent = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = open_kmsg(&mut parent, &mut host);
+            assert_eq!(read_line(&mut parent, &mut host, fd).unwrap(), format!("6,{a},0,-;a\n").into_bytes());
+            let mut child = fork_child_of(&parent, 2);
+            child.ofd_table.link_shared_states_from(&parent.ofd_table).unwrap();
+            // One open file description: the child picks up where the parent
+            // stopped, and the parent then finds nothing left.
+            assert_eq!(read_line(&mut child, &mut host, fd).unwrap(), format!("6,{b},0,-;b\n").into_bytes());
+            assert_eq!(read_line(&mut parent, &mut host, fd), Err(Errno::EAGAIN));
+            // A dup is the same description inside one process.
+            let c = ring.push(0, 6, 0, b"c");
+            let copy = sys_dup(&mut parent, fd).unwrap();
+            assert_eq!(read_line(&mut parent, &mut host, copy).unwrap(), format!("6,{c},0,-;c\n").into_bytes());
+            assert_eq!(read_line(&mut parent, &mut host, fd), Err(Errno::EAGAIN));
+        }
+
+        #[test]
+        fn lseek_set_rewinds_to_oldest_and_end_seeks_to_tail() {
+            let (_guard, ring) = lock_ring();
+            let a = ring.push(0, 6, 0, b"a");
+            ring.push(0, 6, 0, b"b");
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = open_kmsg(&mut proc, &mut host);
+            read_line(&mut proc, &mut host, fd).unwrap();
+            read_line(&mut proc, &mut host, fd).unwrap();
+            assert_eq!(read_line(&mut proc, &mut host, fd), Err(Errno::EAGAIN));
+
+            // SEEK_SET rewinds to the oldest record, and the position the
+            // call reports is the cursor itself.
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET), Ok(a as i64));
+            assert_eq!(read_line(&mut proc, &mut host, fd).unwrap(), format!("6,{a},0,-;a\n").into_bytes());
+
+            // SEEK_END skips to the tail: only newer records are seen.
+            sys_lseek(&mut proc, &mut host, fd, 0, SEEK_END).unwrap();
+            assert_eq!(read_line(&mut proc, &mut host, fd), Err(Errno::EAGAIN));
+            let d = ring.push(0, 6, 0, b"d");
+            assert_eq!(read_line(&mut proc, &mut host, fd).unwrap(), format!("6,{d},0,-;d\n").into_bytes());
+
+            // SEEK_DATA is the first record after the last clear.
+            ring.clear();
+            let e = ring.push(0, 6, 0, b"e");
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, crate::kmsg_device::SEEK_DATA), Ok(e as i64));
+            assert_eq!(read_line(&mut proc, &mut host, fd).unwrap(), format!("6,{e},0,-;e\n").into_bytes());
+
+            // A record number is not something a program may compute.
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 1, SEEK_SET), Err(Errno::EINVAL));
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_CUR), Err(Errno::EINVAL));
+        }
+
+        #[test]
+        fn write_to_dev_kmsg_returns_eacces() {
+            let (_guard, ring) = lock_ring();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, KMSG, O_RDWR, 0).unwrap();
+            let head = ring.head_seq();
+            // A refusal, not an accept-and-discard, and never an append.
+            assert_eq!(sys_write(&mut proc, &mut host, fd, b"6,0,0,-;forged\n"), Err(Errno::EACCES));
+            assert_eq!(ring.head_seq(), head);
+        }
+
+        #[test]
+        fn dev_kmsg_is_listed_in_dev_and_stats_as_a_character_device() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let entries = crate::devfs::dir_entries(&proc, &crate::devfs::DevfsEntry::Root).unwrap();
+            let listed = entries.iter().find(|(name, _, _)| name.as_slice() == b"kmsg");
+            assert_eq!(listed.map(|(_, dtype, _)| *dtype), Some(2), "DT_CHR");
+            let st = sys_stat(&mut proc, &mut host, KMSG).unwrap();
+            assert_eq!(st.st_mode & S_IFMT, wasm_posix_shared::mode::S_IFCHR);
+            assert_eq!(st.st_ino, VirtualDevice::Kmsg.ino());
+            // Everyone may read it and nobody may write it.
+            assert_eq!(st.st_mode & 0o777, 0o444);
+        }
+
+        #[test]
+        fn open_after_the_ring_has_wrapped_starts_at_the_oldest_survivor() {
+            let (_guard, ring) = lock_ring();
+            let text = [b'x'; 100];
+            while ring.oldest_seq() == 0 || ring.oldest_seq() == ring.head_seq() {
+                ring.push(0, 6, 0, &text);
+            }
+            let oldest = ring.oldest_seq();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            // A reader that has read nothing has not been overrun, so its
+            // first read is a record and not a spurious EPIPE.
+            let fd = open_kmsg(&mut proc, &mut host);
+            let first = read_line(&mut proc, &mut host, fd).unwrap();
+            assert!(first.starts_with(format!("6,{oldest},").as_bytes()));
+        }
+
+        #[test]
+        fn overrun_through_the_fd_reports_epipe_once_and_moves_the_position() {
+            let (_guard, ring) = lock_ring();
+            let text = [b'x'; 100];
+            ring.push(0, 6, 0, &text);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = open_kmsg(&mut proc, &mut host);
+            let start = ring.oldest_seq();
+            while ring.oldest_seq() == start {
+                ring.push(0, 6, 0, &text);
+            }
+            let oldest = ring.oldest_seq();
+            assert_eq!(read_line(&mut proc, &mut host, fd), Err(Errno::EPIPE));
+            // The file position itself moved: the cursor lives in the OFD.
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET), Ok(oldest as i64));
+            let first = read_line(&mut proc, &mut host, fd).unwrap();
+            assert!(first.starts_with(format!("6,{oldest},").as_bytes()));
+        }
+
+        #[test]
+        fn poll_reports_readable_only_while_a_record_is_waiting() {
+            let (_guard, ring) = lock_ring();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = open_kmsg(&mut proc, &mut host);
+            let mut pollfd = WasmPollFd { fd, events: POLLIN | POLLOUT, revents: 0 };
+            poll_check(&mut proc, &mut host, core::slice::from_mut(&mut pollfd));
+            // Always-ready would spin a tailing daemon against EAGAIN.
+            assert_eq!(pollfd.revents, 0, "empty ring: not readable, and never writable");
+            ring.push(0, 6, 0, b"x");
+            poll_check(&mut proc, &mut host, core::slice::from_mut(&mut pollfd));
+            assert_eq!(pollfd.revents, POLLIN);
+            read_line(&mut proc, &mut host, fd).unwrap();
+            poll_check(&mut proc, &mut host, core::slice::from_mut(&mut pollfd));
+            assert_eq!(pollfd.revents, 0);
         }
     }
 }

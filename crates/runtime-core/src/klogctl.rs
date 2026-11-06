@@ -257,7 +257,7 @@ fn syslog_rendered_len(record: &KmsgRecordRef<'_>) -> usize {
 }
 
 /// RFC 5424 priority: `facility * 8 + level`.
-fn syslog_pri(record: &KmsgRecordRef<'_>) -> u32 {
+pub(crate) fn syslog_pri(record: &KmsgRecordRef<'_>) -> u32 {
     u32::from(record.facility) * 8 + u32::from(record.level)
 }
 
@@ -273,18 +273,16 @@ fn syslog_pri_digits(pri: u32) -> usize {
 /// Render `<pri>text\n` into `out`, writing only what fits. Returns the bytes
 /// written, which is [`syslog_rendered_len`] unless `out` was too small.
 fn syslog_render(record: &KmsgRecordRef<'_>, out: &mut [u8]) -> usize {
+    let mut digits = [0u8; crate::kmsg::U64_DECIMAL_DIGITS];
+    let pri = crate::kmsg::format_decimal(u64::from(syslog_pri(record)), &mut digits);
     let mut prefix = [0u8; SYSLOG_PRI_MAX_DIGITS + 2];
-    let mut pri = syslog_pri(record);
-    let digits = syslog_pri_digits(pri);
     prefix[0] = b'<';
-    for offset in (1..=digits).rev() {
-        prefix[offset] = b'0' + (pri % 10) as u8;
-        pri /= 10;
-    }
-    prefix[digits + 1] = b'>';
+    prefix[1..=pri.len()].copy_from_slice(pri);
+    prefix[pri.len() + 1] = b'>';
+    let prefix_len = pri.len() + 2;
 
     let mut written = 0;
-    for part in [&prefix[..digits + 2], record.text, &b"\n"[..]] {
+    for part in [&prefix[..prefix_len], record.text, &b"\n"[..]] {
         let room = out.len() - written;
         if room == 0 {
             break;

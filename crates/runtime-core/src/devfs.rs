@@ -179,6 +179,7 @@ pub(crate) fn dir_entries(
             entries.try_push((crate::IoBuffer::copy_from(b"ptmx")?, DT_CHR, devfs_ino(b"/dev/ptmx")))?;
             entries.try_push((crate::IoBuffer::copy_from(b"fb0")?, DT_CHR, devfs_ino(b"/dev/fb0")))?;
             entries.try_push((crate::IoBuffer::copy_from(b"dsp")?, DT_CHR, devfs_ino(b"/dev/dsp")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"kmsg")?, DT_CHR, devfs_ino(b"/dev/kmsg")))?;
 
             // Symlinks
             entries.try_push((crate::IoBuffer::copy_from(b"stdin")?, DT_LNK, devfs_ino(b"/dev/stdin")))?;

@@ -51,6 +51,7 @@ pub mod kernel_file_mapping;
 pub mod kandelo_image_write;
 pub mod klogctl;
 pub mod kmsg;
+pub mod kmsg_device;
 pub mod lock;
 pub mod memory;
 pub mod mouse;
