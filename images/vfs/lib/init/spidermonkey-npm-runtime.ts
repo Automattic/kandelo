@@ -1,7 +1,6 @@
 import type { VfsImageFilesystem } from "../../../../host/src/vfs/vfs-image-filesystem";
 import {
   ensureDirRecursive,
-  symlink,
   writeVfsFile,
 } from "../../../../host/src/vfs/image-helpers";
 
@@ -9,10 +8,10 @@ export const NPM_RUNNER = `const invoked = process.argv[2] || 'npm';
 process.argv.splice(2, 1);
 process.argv[1] = invoked === 'npx' ? '/usr/bin/npx' : '/usr/bin/npm';
 if (invoked === 'npx') {
-  process.argv[1] = '/usr/local/lib/npm/bin/npm-cli.js';
+  process.argv[1] = '/usr/lib/npm/bin/npm-cli.js';
   process.argv.splice(2, 0, 'exec');
 }
-const run = require('/usr/local/lib/npm/lib/cli.js');
+const run = require('/usr/lib/npm/lib/cli.js');
 let settled = false;
 let failure = null;
 Promise.resolve(run(process)).then(
@@ -51,12 +50,12 @@ process.exit(process.exitCode || 0);
 
 export const NPM_LAUNCHER = `#!/usr/bin/node
 process.argv.splice(2, 0, 'npm');
-require('/usr/local/lib/kandelo/npm-runner.js');
+require('/usr/lib/kandelo/npm-runner.js');
 `;
 
 export const NPX_LAUNCHER = `#!/usr/bin/node
 process.argv.splice(2, 0, 'npx');
-require('/usr/local/lib/kandelo/npm-runner.js');
+require('/usr/lib/kandelo/npm-runner.js');
 `;
 
 export const NPM_DISPLAY_SHIM = `function plain(...args) {
@@ -106,43 +105,38 @@ module.exports = { v4: isCidrV4, v6: isCidrV6 };
 export function stageSpiderMonkeyNpmRuntime(fs: VfsImageFilesystem): void {
   ensureDirRecursive(fs, "/bin");
   ensureDirRecursive(fs, "/usr/bin");
-  ensureDirRecursive(fs, "/usr/local/bin");
-  ensureDirRecursive(fs, "/usr/local/lib/kandelo");
+  ensureDirRecursive(fs, "/usr/lib/kandelo");
 
-  writeVfsFile(fs, "/usr/local/lib/kandelo/npm-runner.js", NPM_RUNNER, 0o644);
-  writeVfsFile(fs, "/usr/local/lib/kandelo/npm-display-shim.js", NPM_DISPLAY_SHIM, 0o644);
-  writeVfsFile(fs, "/usr/local/lib/kandelo/is-cidr-shim.js", NPM_IS_CIDR_SHIM, 0o644);
+  writeVfsFile(fs, "/usr/lib/kandelo/npm-runner.js", NPM_RUNNER, 0o644);
+  writeVfsFile(fs, "/usr/lib/kandelo/npm-display-shim.js", NPM_DISPLAY_SHIM, 0o644);
+  writeVfsFile(fs, "/usr/lib/kandelo/is-cidr-shim.js", NPM_IS_CIDR_SHIM, 0o644);
   patchNpmForSpiderMonkey(fs);
 
   writeVfsFile(fs, "/usr/bin/npm", NPM_LAUNCHER, 0o755);
   writeVfsFile(fs, "/usr/bin/npx", NPX_LAUNCHER, 0o755);
-  symlink(fs, "/usr/bin/npm", "/bin/npm");
-  symlink(fs, "/usr/bin/npm", "/usr/local/bin/npm");
-  symlink(fs, "/usr/bin/npx", "/bin/npx");
-  symlink(fs, "/usr/bin/npx", "/usr/local/bin/npx");
 }
 
 export function patchNpmForSpiderMonkey(fs: VfsImageFilesystem): void {
-  patchVfsText(fs, "/usr/local/lib/npm/lib/utils/display.js", [
+  patchVfsText(fs, "/usr/lib/npm/lib/utils/display.js", [
     [
       `const [{ Chalk }, { createSupportsColor }] = await Promise.all([
       import('chalk'),
       import('supports-color'),
     ])`,
-      `const { Chalk, createSupportsColor } = require('/usr/local/lib/kandelo/npm-display-shim.js')`,
+      `const { Chalk, createSupportsColor } = require('/usr/lib/kandelo/npm-display-shim.js')`,
       "import('chalk')",
     ],
   ]);
-  patchVfsText(fs, "/usr/local/lib/npm/lib/commands/token.js", [
+  patchVfsText(fs, "/usr/lib/npm/lib/commands/token.js", [
     [
       `const { v4: isCidrV4, v6: isCidrV6 } = await import('is-cidr')`,
-      `const { v4: isCidrV4, v6: isCidrV6 } = require('/usr/local/lib/kandelo/is-cidr-shim.js')`,
+      `const { v4: isCidrV4, v6: isCidrV6 } = require('/usr/lib/kandelo/is-cidr-shim.js')`,
       "import('is-cidr')",
     ],
   ]);
   for (const path of [
-    "/usr/local/lib/npm/node_modules/cacache/lib/entry-index.js",
-    "/usr/local/lib/npm/node_modules/cacache/lib/verify.js",
+    "/usr/lib/npm/node_modules/cacache/lib/entry-index.js",
+    "/usr/lib/npm/node_modules/cacache/lib/verify.js",
   ]) {
     patchVfsText(fs, path, [
       [

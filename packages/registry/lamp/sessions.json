@@ -28,7 +28,7 @@
       "requiresHost": true,
       "hostRequires": [
         "/usr/sbin/mariadbd",
-        "/var/www/html/wp-config.php"
+        "/srv/www/html/wp-config.php"
       ],
       "fields": [],
       "category": "services"

@@ -46,7 +46,7 @@ describe("isolated runner rootfs transport", () => {
     const filesystem = KandeloImageFs.createFromPositionedImage(new Uint8Array(readFileSync(modulePath)), reader.length,
       (offset, destination) => reader.readAt(offset, destination), saved.rootfsPersistentImageBinding);
     try {
-      expect(new TextDecoder().decode(filesystem.readFile("/run/kandelo-run/state"))).toBe("fixture state");
+      expect(new TextDecoder().decode(filesystem.readFile("/var/lib/kandelo-tests/runner/state"))).toBe("fixture state");
       expect(saved.rootfsPersistentImageBinding.dataCachePages).toBe(2);
       expect(saved.rootfsPersistentImageBinding.indexCachePages).toBe(2);
       const logicalLength = KandeloImageFs.inspectPersistentImage(new Uint8Array(readFileSync(modulePath)), reader.length,
@@ -64,8 +64,8 @@ describe("isolated runner rootfs transport", () => {
     const derived = await preparePersistentRunExampleRootfs(base, directory);
     const filesystem = KandeloImageFs.create();
     filesystem.loadImage(derived);
-    expect(filesystem.readFile("/run/kandelo-run/work/test.wasm")).toEqual(Uint8Array.of(0, 97, 115, 109));
-    expect(filesystem.stat("/run/kandelo-run/work/test.wasm").mode & 0o777).toBe(0o755);
+    expect(filesystem.readFile("/var/lib/kandelo-tests/runner/work/test.wasm")).toEqual(Uint8Array.of(0, 97, 115, 109));
+    expect(filesystem.stat("/var/lib/kandelo-tests/runner/work/test.wasm").mode & 0o777).toBe(0o755);
     symlinkSync(join(directory, "work"), join(directory, "linked"));
     await expect(preparePersistentRunExampleRootfs(base, directory)).rejects.toThrow(/unsupported entry/);
   });
@@ -136,7 +136,7 @@ describe("isolated runner rootfs transport", () => {
 
   it.each([
     "binaries/programs/wasm32/../../host-file",
-    "file:///usr/bin/bash",
+    "file:///bin/bash",
     "https://example.com/bash.wasm",
   ])("rejects unsupported transport %s before resolving artifacts", async (url) => {
     const image = await imageWithSources([{ url, size: 4 }]);

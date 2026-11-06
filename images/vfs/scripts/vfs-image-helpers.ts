@@ -15,6 +15,7 @@ import {
 import { join, relative } from "path";
 import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
 import { KandeloImageFs } from "../lib/kandelo-image-fs";
+import { assertKandeloFilesystemLayout } from "./filesystem-layout";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
 import {
@@ -541,6 +542,7 @@ export async function saveImage(
   }
 
   console.log("Saving VFS image...");
+  assertKandeloFilesystemLayout(fs);
   const serialized = await serializeImage(fs, outFile, options);
 
   const outDir = outFile.substring(0, outFile.lastIndexOf("/"));
@@ -563,10 +565,10 @@ export async function saveImage(
  * mode when invoked as `sh`. A per-builder copy of this list is how three
  * images drifted to dash while the rootfs and the shell image used bash.
  */
-export const BASH_SHELL_PATHS = ["/bin/bash", "/bin/sh", "/usr/bin/sh"] as const;
+export const BASH_SHELL_PATHS = ["/bin/sh"] as const;
 
 /**
- * Install bash at /usr/bin/bash and bind every POSIX shell path to it.
+ * Install the essential shell at /bin/bash and bind /bin/sh to it.
  *
  * An image may still ship other shells (dash, for one) as ordinary commands at
  * their own names; none of them may claim /bin/sh.
@@ -578,6 +580,6 @@ export function installBashAsPosixShell(
   if (bash.byteLength === 0) {
     throw new Error("installBashAsPosixShell: bash.wasm is empty");
   }
-  writeVfsBinary(fs, "/usr/bin/bash", bash);
-  for (const path of BASH_SHELL_PATHS) symlink(fs, "/usr/bin/bash", path);
+  writeVfsBinary(fs, "/bin/bash", bash);
+  for (const path of BASH_SHELL_PATHS) symlink(fs, "/bin/bash", path);
 }

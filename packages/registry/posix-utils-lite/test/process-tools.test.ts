@@ -18,7 +18,7 @@ describe.skipIf(!artifactsAvailable)("posix-utils-lite process tools", () => {
       ["/bin/pgrep", pgrep!],
       ["/usr/bin/pgrep", pgrep!],
       ["/bin/ps", ps!],
-      ["/usr/bin/ps", ps!],
+      ["/bin/ps", ps!],
       ["/bin/sleep", coreutils!],
       ["/usr/bin/sleep", coreutils!],
     ]);

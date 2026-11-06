@@ -7,7 +7,7 @@
 # the SDK driver (wasm32posix-cc and the other SDK tools) and wasm-opt — into
 # a single archive. The demo registers this as a lazy archive with mount
 # prefix /usr/, so entries become /usr/lib/llvm/bin/clang,
-# /usr/wasm32posix/sysroot/..., /usr/bin/cc, and so on. On first exec of cc
+# /usr/lib/kandelo/wasm32posix/sysroot/..., /usr/bin/cc, and so on. On first exec of cc
 # (or clang), the whole archive is fetched and unpacked in one go.
 #
 # The SDK driver is the build machine's driver (crates/kandelo-cc) compiled
@@ -141,22 +141,22 @@ mkdir -p "$STAGING/lib/llvm/lib/clang/21"
 # compiler-rt libraries (e.g. Darwin Mach-O archives) are not guest libraries.
 cp -RL "$HOST_CLANG_RESOURCE_DIR/include" "$STAGING/lib/llvm/lib/clang/21/"
 
-# --- wasm32posix/sysroot — musl + libc++ ---
-mkdir -p "$STAGING/wasm32posix/sysroot"
-cp -RL "$REPO_ROOT/sysroot/." "$STAGING/wasm32posix/sysroot/"
-mkdir -p "$STAGING/wasm32posix/sysroot/lib"
-cp "$LIBCXX_DIR/lib/libc++.a" "$STAGING/wasm32posix/sysroot/lib/libc++.a"
-cp "$LIBCXX_DIR/lib/libc++abi.a" "$STAGING/wasm32posix/sysroot/lib/libc++abi.a"
-rm -rf "$STAGING/wasm32posix/sysroot/include/c++/v1"
-mkdir -p "$STAGING/wasm32posix/sysroot/include/c++"
-cp -RL "$LIBCXX_DIR/include/c++/v1" "$STAGING/wasm32posix/sysroot/include/c++/v1"
+# --- lib/kandelo/wasm32posix/sysroot — musl + libc++ ---
+mkdir -p "$STAGING/lib/kandelo/wasm32posix/sysroot"
+cp -RL "$REPO_ROOT/sysroot/." "$STAGING/lib/kandelo/wasm32posix/sysroot/"
+mkdir -p "$STAGING/lib/kandelo/wasm32posix/sysroot/lib"
+cp "$LIBCXX_DIR/lib/libc++.a" "$STAGING/lib/kandelo/wasm32posix/sysroot/lib/libc++.a"
+cp "$LIBCXX_DIR/lib/libc++abi.a" "$STAGING/lib/kandelo/wasm32posix/sysroot/lib/libc++abi.a"
+rm -rf "$STAGING/lib/kandelo/wasm32posix/sysroot/include/c++/v1"
+mkdir -p "$STAGING/lib/kandelo/wasm32posix/sysroot/include/c++"
+cp -RL "$LIBCXX_DIR/include/c++/v1" "$STAGING/lib/kandelo/wasm32posix/sysroot/include/c++/v1"
 
-# --- wasm32posix/glue — the glue sources AND their headers. The SDK driver
+# --- lib/kandelo/wasm32posix/glue — the glue sources AND their headers. The SDK driver
 # compiles the glue into every executable it links (the same way it does on
 # the build machine), and channel_syscall.c #includes abi_constants.h (plus
 # gl_abi.h / syscall_imports.h), so the headers ship alongside the .c files.
-mkdir -p "$STAGING/wasm32posix/glue"
-cp -RL "$REPO_ROOT/libc/glue/." "$STAGING/wasm32posix/glue/"
+mkdir -p "$STAGING/lib/kandelo/wasm32posix/glue"
+cp -RL "$REPO_ROOT/libc/glue/." "$STAGING/lib/kandelo/wasm32posix/glue/"
 
 # --- bin — the SDK driver under every SDK tool name, and wasm-opt. One
 # driver program; the name it runs as selects the tool.
@@ -171,8 +171,8 @@ for name in cc c89 c99 c++; do
     ln -s kandelo-cc "$STAGING/bin/$name"
 done
 
-# --- wasm32posix/config.site — autoconf cross-compilation cache ---
-cp "$REPO_ROOT/sdk/config.site" "$STAGING/wasm32posix/config.site"
+# --- lib/kandelo/wasm32posix/config.site — autoconf cross-compilation cache ---
+cp "$REPO_ROOT/sdk/config.site" "$STAGING/lib/kandelo/wasm32posix/config.site"
 
 bash "$SCRIPT_DIR/create-deterministic-zip.sh" "$STAGING" "$OUTPUT_FILE"
 

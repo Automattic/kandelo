@@ -28,13 +28,13 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
     // The image's `init.shellCommand` is what launches this machine's
     // program now, so the host logs the command it ran rather than an
     // app-side demo name.
-    .toMatch(/running \/usr\/local\/bin\/sdl2/);
+    .toMatch(/running \/usr\/bin\/sdl2/);
 
   const canvas = page.locator(".kmodeset-canvas").first();
   await expect(canvas).toBeVisible({ timeout: 30_000 });
 
   /* Wait for the app's FIRST presented frame before sampling anything.
-   * "running /usr/local/bin/sdl2" only means the process launched: between that and
+   * "running /usr/bin/sdl2" only means the process launched: between that and
    * the first drmModePageFlip sit EGL/WebGL2 context creation, shader
    * compiles, the text-atlas bake, and the sound-shader tile
    * prerender + readback — under CI's software GL (SwiftShader) that

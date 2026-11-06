@@ -77,12 +77,12 @@ ephemeral = true
 
 [boot]
 argv = ["/bin/sh"]
-cwd = "/home"
+cwd = "/home/maker"
 uid = 1000
 gid = 1000
 
 [boot.env]
-HOME = "/home"
+HOME = "/home/maker"
 PATH = "/usr/local/bin:/usr/bin:/bin"
 TMPDIR = "/tmp"
 

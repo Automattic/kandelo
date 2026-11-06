@@ -66,24 +66,25 @@ export async function buildRedisVfsImage(
   // was never anything but the old constructor's first argument.
   fs.setImageCapacity(128 * 1024 * 1024);
 
-  for (const dir of ["/tmp", "/home", "/dev", "/etc", "/run", "/var", "/data"]) {
-    ensureDir(fs, dir);
+  for (const dir of ["/tmp", "/home", "/dev", "/etc", "/run", "/var", "/var/lib/redis"]) {
+    ensureDirRecursive(fs, dir);
   }
-  fs.chmod("/tmp", 0o777);
-  fs.chmod("/data", 0o777);
-  ensureDirRecursive(fs, "/usr/local/bin");
+  fs.chmod("/tmp", 0o1777);
+  fs.chmod("/var/lib/redis", 0o777);
+  ensureDirRecursive(fs, "/usr/bin");
+  ensureDirRecursive(fs, "/usr/sbin");
 
-  writeVfsBinary(fs, "/usr/local/bin/redis-server", inputs.redis);
-  writeVfsBinary(fs, "/usr/local/bin/php", inputs.php);
+  writeVfsBinary(fs, "/usr/sbin/redis-server", inputs.redis);
+  writeVfsBinary(fs, "/usr/bin/php", inputs.php);
   ensureDirRecursive(fs, "/usr/lib/php");
   writeVfsBinary(fs, "/usr/lib/php/phar.so", inputs.phar);
-  ensureDirRecursive(fs, "/var/www/redis-board");
+  ensureDirRecursive(fs, "/srv/www/redis-board");
   for (const name of ["router.php", "index.html"]) {
-    writeVfsFile(fs, `/var/www/redis-board/${name}`, readFileSync(join(
+    writeVfsFile(fs, `/srv/www/redis-board/${name}`, readFileSync(join(
       findRepoRoot(), "packages/registry/redis-vfs/app", name,
     ), "utf8"));
   }
-  const adminPath = "/var/www/redis-board/admin";
+  const adminPath = "/srv/www/redis-board/admin";
   // Install only upstream runtime files. Tests, development tooling and the
   // remote PHP-server endpoint are not part of this Redis-only application.
   for (const name of ["assets", "src", "templates"]) {
@@ -101,11 +102,11 @@ export async function buildRedisVfsImage(
   ), "utf8"));
 
   if (inputs.redisCli) {
-    writeVfsBinary(fs, "/usr/local/bin/redis-cli", inputs.redisCli);
+    writeVfsBinary(fs, "/usr/bin/redis-cli", inputs.redisCli);
     ensureDirRecursive(fs, "/etc/kandelo");
     writeVfsBinary(fs, EXPERIMENTAL_TERMINAL_SESSION_PATH, new TextEncoder().encode(JSON.stringify({
       kind: "kandelo-experimental-terminal-session", version: 1,
-      initial: { path: "/usr/local/bin/redis-cli", argv: ["redis-cli"], uid: 1000, gid: 1000 },
+      initial: { path: "/usr/bin/redis-cli", argv: ["redis-cli"], uid: 1000, gid: 1000 },
     })), 0o644);
     writeTrackedDemoConfig(fs, "packages/registry/redis-vfs/redis-demo.json");
     installImageSessions(fs, "redis-vfs");
@@ -122,15 +123,15 @@ export async function buildRedisVfsImage(
       command:
         // This temporary service is shared over explicitly joined Kandelo
         // virtual networks; it has no physical-network listening socket.
-        "/usr/local/bin/redis-server --port 6379 --bind 0.0.0.0 --protected-mode no " +
-        "--save \"\" --appendonly no --io-threads 1 --dir /data",
+        "/usr/sbin/redis-server --port 6379 --bind 0.0.0.0 --protected-mode no " +
+        "--save \"\" --appendonly no --io-threads 1 --dir /var/lib/redis",
       restart: true,
       restartDelay: 2,
     },
     {
       name: "redis-board",
       type: "process",
-      command: "/usr/local/bin/php -n -d extension=/usr/lib/php/phar.so -d session.save_path=/tmp -S 0.0.0.0:8080 -t /var/www/redis-board /var/www/redis-board/router.php",
+      command: "/usr/bin/php -n -d extension=/usr/lib/php/phar.so -d session.save_path=/tmp -S 0.0.0.0:8080 -t /srv/www/redis-board /srv/www/redis-board/router.php",
       dependsOn: ["redis"],
       logfile: "/var/log/redis-board.log",
       restart: false,

@@ -146,7 +146,7 @@ describe("init and web blocks", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
       init: {
         program: "/usr/bin/ruby",
-        args: ["/var/lib/todo/server.rb"],
+        args: ["/usr/share/kandelo/ruby-todo/server.rb"],
         cwd: "/var/lib/todo",
         uid: 1000,
         gid: 1000,
@@ -219,9 +219,9 @@ describe("init and web blocks", () => {
   // which used to live one block away as presentation.autoCommand.
   it("accepts a shell-command init", () => {
     expect(resolveDemoInit(withProfile({
-      init: { shellCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad" },
+      init: { shellCommand: "/usr/bin/fbdoom -iwad /doom1.wad" },
     }), "m")).toEqual({
-      shellCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
+      shellCommand: "/usr/bin/fbdoom -iwad /doom1.wad",
     });
   });
 

@@ -52,7 +52,7 @@ unset($kandelo_backend, $kandelo_site_backend);`;
     "define('DB_PASSWORD', '');",
     "define('DB_HOST', '');",
     "",
-    "define('DB_DIR', (defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : __DIR__ . '/wp-content') . '/database/');",
+    "define('DB_DIR', defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR . '/database/' : '/var/lib/wordpress/sqlite/');",
     "define('DB_FILE', 'wordpress.db');",
   ].join("\n");
 }
@@ -95,7 +95,7 @@ export const WORDPRESS_SECRET_NAMES = [
  * A site someone runs for real would keep the check.
  */
 export const WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN_PATH =
-  "/var/www/html/wp-content/mu-plugins/kandelo-admin-email.php";
+  "/srv/www/html/wp-content/mu-plugins/kandelo-admin-email.php";
 export const WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN = `<?php
 // Kandelo demo images: the admin email is a placeholder and the install date
 // is the build's fixed epoch, so WordPress's admin email re-verification

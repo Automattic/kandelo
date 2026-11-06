@@ -216,7 +216,7 @@ export const SHELL_PROFILE_SCRIPT_PATHS: readonly string[] =
 
 // The maker account's interactive identity: prompt, history file, locale,
 // terminal type, and the TLS trust anchors curl/wget/etc. expect at their
-// well-known paths. `/usr/bin/login -p -f maker` (the image's
+// well-known paths. `/bin/login -p -f maker` (the image's
 // experimental-terminal-session initial program) sets HOME/USER/LOGNAME/PATH
 // from /etc/passwd and preserves the caller's TERM, but nothing sets these
 // the rest of the way — that used to be the browser app's job (a SHELL_ENV
@@ -339,9 +339,8 @@ export function registerManShellProfile(fs: VfsImageFilesystem): void {
  * lazy-archive's `bin/man` member mounts a formatting `man` front-end at the
  * exact same path, so registering the archive over an existing applet would
  * throw EEXIST. Clear the applet's entry first so the archive's own symlink
- * can claim /usr/bin/man — mandoc must win. /bin/man is an existing symlink
- * to /usr/bin/man (not a separate inode), so it needs no separate removal:
- * it keeps resolving to whatever now lives at /usr/bin/man.
+ * can claim /usr/bin/man — mandoc must win. The command has only that one
+ * installed location; the image does not create a second /bin/man alias.
  */
 export function displacePosixUtilsLiteManApplet(fs: VfsImageFilesystem): void {
   try {

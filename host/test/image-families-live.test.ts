@@ -52,7 +52,7 @@ it.each([false, true])("web-stack-service-switch: switches websites and reports 
     }
     if (targetFails) writeVfsFile(fs, "/etc/dinit.d/web-static", "type = process\ncommand = /missing/server\nrestart = false\n");
     const services = JSON.parse(new TextDecoder().decode(fs.readFile("/etc/kandelo/services.json")));
-    installServiceActivities(fs, services.services.map((service: { id: string; port: number }) => ({ target: service.id, port: service.port })), fs.readFile("/usr/local/bin/kandelo-service"));
+    installServiceActivities(fs, services.services.map((service: { id: string; port: number }) => ({ target: service.id, port: service.port })), fs.readFile("/usr/bin/kandelo-service"));
   });
   try {
     await machine.command("while [ ! -S /run/kandelo-services/dinitctl ]; do sleep 1; done");
@@ -88,18 +88,18 @@ it("web-stack-service-switch: one image switches all five web demos and keeps it
     await machine.command("kandelo-service disable web-python", 1000);
     expect(await machine.command("kandelo-service list", 1000)).not.toMatch(/\senabled\b/);
     for (const [target, content] of [["web-static", "Hello from nginx"], ["web-python", "Notes"], ["web-ruby", "Todo"], ["web-redis", "What should we do next"], ["web-php", "Kandelo SQLite demo"]]) {
-      await machine.command(`/usr/local/bin/kandelo-service start ${target}`, 1000);
+      await machine.command(`/usr/bin/kandelo-service start ${target}`, 1000);
       const listing = await machine.command("kandelo-service list", 1000);
       expect(listing).toMatch(new RegExp(`${target}\\s+running\\s+disabled`));
       expect(listing.match(/\brunning\b/g)).toHaveLength(1);
       await machine.command(`curl --fail --silent --location --cookie-jar /tmp/adminer-cookies --cookie /tmp/adminer-cookies --max-time 10 -o /tmp/family-page http://127.0.0.1:8080/ && grep -i '${content}' /tmp/family-page >/dev/null && /sbin/dinitctl -p /run/kandelo-services/dinitctl is-started ${target}`);
       await machine.command("test \"$(cat /home/maker/family-note)\" = kept; ps -A | grep '[d]init' | awk '{print $1}' >/tmp/init-after; cmp /tmp/init-before /tmp/init-after");
     }
-    await machine.command("/usr/local/bin/kandelo-service stop web-php", 1000);
+    await machine.command("/usr/bin/kandelo-service stop web-php", 1000);
     expect(await machine.command("kandelo-service list", 1000)).toMatch(/web-php\s+stopped\s+disabled/);
     await machine.command("! /sbin/dinitctl -p /run/kandelo-services/dinitctl is-started web-php; /sbin/dinitctl -p /run/kandelo-services/dinitctl is-started machine");
-    await machine.command("/usr/local/bin/kandelo-service start web-php", 65534, 1);
-    await machine.command("/usr/local/bin/kandelo-service start ../bad", 1000, 2);
+    await machine.command("/usr/bin/kandelo-service start web-php", 65534, 1);
+    await machine.command("/usr/bin/kandelo-service start ../bad", 1000, 2);
     await machine.command("kandelo-service list", 65534, 1);
     for (const invalid of ["", "list web-php", "list web-php extra", "start", "status", "nonsense web-php"]) {
       await machine.command(`kandelo-service ${invalid}`, 1000, 2);
@@ -119,7 +119,7 @@ for (const backend of ["sqlite", "mariadb"] as const) {
     try {
       expect(await machine.command("kandelo-preview --help", 1000)).toContain("Usage: kandelo-preview");
       await machine.command("curl --fail --silent --show-error --retry 30 --retry-connrefused --retry-delay 1 --max-time 3 -o /tmp/wordpress-page http://127.0.0.1:8080/ && grep -i wordpress /tmp/wordpress-page >/dev/null || { cat /tmp/wordpress-page /var/log/nginx.log /var/log/php-fpm.log; exit 1; }");
-      await machine.host.writeFileToVfs("/var/www/html/backend-probe.php", new TextEncoder().encode(`<?php
+      await machine.host.writeFileToVfs("/srv/www/html/backend-probe.php", new TextEncoder().encode(`<?php
 require __DIR__ . '/wp-load.php';
 header('Content-Type: application/json');
 if (isset($_GET['value'])) update_option('kandelo_site_probe', $_GET['value']);
@@ -129,7 +129,7 @@ echo json_encode(array('backend' => defined('DB_DIR') ? 'sqlite' : 'mariadb', 'v
       expect(listing).toMatch(new RegExp(`wordpress-${backend}\\s+running\\s+enabled`));
       const other = backend === "sqlite" ? "mariadb" : "sqlite";
       for (const site of [backend, other]) {
-        await machine.command(`/usr/local/bin/kandelo-service start wordpress-${site}`, 1000);
+        await machine.command(`/usr/bin/kandelo-service start wordpress-${site}`, 1000);
         const result = JSON.parse(await machine.command(`curl --fail --silent --max-time 30 'http://127.0.0.1:8080/backend-probe.php?value=${site}-private'`));
         expect(result).toEqual({ backend: site, value: `${site}-private` });
         await machine.command(`printf '${site}-upload' > /var/lib/wordpress-sites/${site}/wp-content/uploads/probe.txt`);
@@ -137,7 +137,7 @@ echo json_encode(array('backend' => defined('DB_DIR') ? 'sqlite' : 'mariadb', 'v
         await machine.command(`printf '<?php echo "must-not-run"; ?>' > /var/lib/wordpress-sites/${site}/wp-content/uploads/index.php`);
       }
       for (const site of [backend, other, backend]) {
-        await machine.command(`/usr/local/bin/kandelo-service start wordpress-${site}`, 1000);
+        await machine.command(`/usr/bin/kandelo-service start wordpress-${site}`, 1000);
         expect(JSON.parse(await machine.command("curl --fail --silent --max-time 30 http://127.0.0.1:8080/backend-probe.php"))).toEqual({ backend: site, value: `${site}-private` });
         expect(await machine.command("curl --fail --silent --max-time 10 http://127.0.0.1:8080/wp-content/uploads/probe.txt")).toBe(`${site}-upload`);
         expect(await machine.command("curl --fail --silent --max-time 10 http://127.0.0.1:8080/wp-content/uploads/probe.pdf")).toBe(`${site}-pdf`);
@@ -147,7 +147,7 @@ echo json_encode(array('backend' => defined('DB_DIR') ? 'sqlite' : 'mariadb', 'v
         const state = await machine.command("kandelo-service inspect", 1000);
         expect(state.match(/\trunning\t/g)).toHaveLength(1);
       }
-      await machine.command(`/usr/local/bin/kandelo-service enable wordpress-${other}`, 1000);
+      await machine.command(`/usr/bin/kandelo-service enable wordpress-${other}`, 1000);
       await machine.command("test ! -e /etc/kandelo/wordpress-backend; test ! -d /var/lib/wordpress-sites/sqlite/wp-admin; test ! -d /var/lib/wordpress-sites/mariadb/wp-admin");
     } finally { await machine.host.destroy(); }
   }, 240000);

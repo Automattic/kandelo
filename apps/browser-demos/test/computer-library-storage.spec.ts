@@ -26,7 +26,7 @@ test("the computer namespace starts fresh without reading, migrating or cleaning
     await store.cleanup(Number.MAX_SAFE_INTEGER);
     const descriptor = { version: 1, id: "shell", title: "Shell", base: "kandelo:shell@local",
       runtime: { arch: "wasm32", kernel: "kernel@local", features: [] }, packages: [],
-      mounts: [], boot: { argv: ["/usr/bin/login"], cwd: "/root", env: {} } };
+      mounts: [], boot: { argv: ["/bin/login"], cwd: "/root", env: {} } };
     const created = await store.create(descriptor);
     try {
       const directory = await browserComputerDirectory(created.id, false);
@@ -57,7 +57,7 @@ test("computer directories, retention changes, ownership and interrupted deletio
       version: 1, id: "shell", title: "Shell", base: "kandelo:shell@local",
       runtime: { arch: "wasm32", kernel: "kernel@local", memoryPages: 2048, features: [] },
       packages: [], mounts: [{ path: "/", source: "image", ref: "https://example.com/shell.vfs" }],
-      boot: { argv: ["/usr/bin/login"], cwd: "/root", env: {} },
+      boot: { argv: ["/bin/login"], cwd: "/root", env: {} },
     };
     const saved = await store.create(descriptor, "saved");
     const defaultComputer = await store.create(descriptor, "saved", null);
@@ -136,7 +136,7 @@ test("computer metadata is bounded, validated, and never silently replaced", asy
     const store = new BrowserComputerStore();
     const descriptor = { version: 1, id: "shell", title: "Shell", base: "kandelo:shell@local",
       runtime: { arch: "wasm32", kernel: "kernel@local", features: [] }, packages: [],
-      mounts: [], boot: { argv: ["/usr/bin/login"], cwd: "/root", env: {} } };
+      mounts: [], boot: { argv: ["/bin/login"], cwd: "/root", env: {} } };
     const computer = await store.create(descriptor);
     const healthy = await store.create(descriptor);
     const file = await (await browserComputerDirectory(computer.id)).getFileHandle("computer.json");
@@ -170,7 +170,7 @@ test("provisioning state prevents accidental recreation and abandoned creation i
     const store = new BrowserComputerStore();
     const descriptor = { version: 1, id: "shell", title: "Shell", base: "kandelo:shell@local",
       runtime: { arch: "wasm32", kernel: "kernel@local", features: [] }, packages: [],
-      mounts: [], boot: { argv: ["/usr/bin/login"], cwd: "/root", env: {} } };
+      mounts: [], boot: { argv: ["/bin/login"], cwd: "/root", env: {} } };
     const computer = await store.create(descriptor);
     const before = await store.filesystemInitialized(computer.id);
     await store.markFilesystemInitialized(computer.id);
@@ -200,7 +200,7 @@ test("storage format identification is explicit and unsupported formats are pres
     const store = new BrowserComputerStore();
     const descriptor = { version: 1, id: "shell", title: "Shell", base: "kandelo:shell@local",
       runtime: { arch: "wasm32", kernel: "kernel@local", features: [] }, packages: [],
-      mounts: [], boot: { argv: ["/usr/bin/login"], cwd: "/root", env: {} } };
+      mounts: [], boot: { argv: ["/bin/login"], cwd: "/root", env: {} } };
     const saved = await store.create(descriptor, "saved");
     const temporary = await store.create(descriptor, "temporary");
     const format = "kandelo-opfs-image-v1";

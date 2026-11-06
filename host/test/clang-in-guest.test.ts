@@ -50,8 +50,8 @@ describe.skipIf(!available)("base shell in-guest compiler", () => {
       "/usr/bin/cc", "/usr/bin/c++", "/usr/lib/llvm/bin/clang",
       "/usr/lib/llvm/bin/wasm-ld", "/usr/lib/llvm/bin/llvm-ar",
       "/usr/lib/llvm/bin/llvm-ranlib", "/usr/lib/llvm/bin/llvm-nm",
-      "/usr/wasm32posix/sysroot/lib/libc.a",
-      "/usr/wasm32posix/sysroot/include/c++/v1/vector",
+      "/usr/lib/kandelo/wasm32posix/sysroot/lib/libc.a",
+      "/usr/lib/kandelo/wasm32posix/sysroot/include/c++/v1/vector",
     ]) {
       expect(image.isPathDeferred(path), `${path} must be a lazy reference in shell.vfs.zst`).toBe(true);
     }
@@ -82,7 +82,7 @@ describe.skipIf(!available)("base shell in-guest compiler", () => {
     async function run(command: string) {
       stdout = "";
       stderr = "";
-      const { exit } = await host.spawnFromVfs("/usr/bin/bash", ["bash", "-lc", command], {
+      const { exit } = await host.spawnFromVfs("/bin/bash", ["bash", "-lc", command], {
         env: ["PATH=/usr/bin:/bin", "HOME=/home/maker", "USER=maker", "TMPDIR=/tmp"],
         cwd: "/tmp",
         uid: 1000,
@@ -101,6 +101,7 @@ describe.skipIf(!available)("base shell in-guest compiler", () => {
       expect(sdkDownloads()).toEqual([]);
 
       for (const sample of guestCompilerCases) {
+        console.info(`Guest compiler acceptance: compiling ${sample.name}`);
         const compiled = await run(`set -eu\n${guestCompileCommand(sample)}`);
         expect(compiled.exitCode, `${sample.name}: ${compiled.stderr}\n${compiled.stdout}`).toBe(0);
         const wasm = await host.readFileFromVfs(`/tmp/${sample.name}`);
@@ -111,6 +112,7 @@ describe.skipIf(!available)("base shell in-guest compiler", () => {
         expect(sdkDownloads().filter((event) => event.status === "started")).toHaveLength(1);
         expect(sdkDownloads().filter((event) => event.status === "complete")).toHaveLength(1);
         expect(sdkDownloads().filter((event) => event.status === "error")).toEqual([]);
+        console.info(`Guest compiler acceptance: ${sample.name} compiled and ran`);
       }
     } finally {
       await host.destroy();

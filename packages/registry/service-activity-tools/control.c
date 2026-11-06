@@ -38,14 +38,14 @@ int main(int argc, char **argv) {
         fputs("Only the machine's maker account may control its service activities\n", stderr);
         return 1;
     }
-    const char *directories[] = { "/", "/usr", "/usr/local", "/usr/local/libexec", "/etc", "/etc/dinit.d", "/etc/kandelo", "/run", "/run/kandelo-services", NULL };
+    const char *directories[] = { "/", "/usr", "/usr/libexec", "/etc", "/etc/dinit.d", "/etc/kandelo", "/run", "/run/kandelo-services", NULL };
     for (size_t index = 0; directories[index]; index++) {
         if (!trusted_path(directories[index], 1)) {
             fputs("Service control requires root-owned, non-writable configuration paths\n", stderr);
             return 1;
         }
     }
-    if (!trusted_path("/usr/local/libexec/kandelo-service", 0)) return 1;
+    if (!trusted_path("/usr/libexec/kandelo-service", 0)) return 1;
     if (setgroups(0, NULL) || setresgid(0, 0, 0) || setresuid(0, 0, 0)) {
         perror("kandelo-service: credentials");
         return 1;
@@ -58,7 +58,7 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
-    char *command[] = { "/bin/sh", "/usr/local/libexec/kandelo-service", argv[1], argv[2], NULL };
+    char *command[] = { "/bin/sh", "/usr/libexec/kandelo-service", argv[1], argv[2], NULL };
     char *environment[] = { "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin", "HOME=/root", "USER=root", "LOGNAME=root", "TMPDIR=/tmp", NULL };
     execve(command[0], command, environment);
     perror("kandelo-service: exec");

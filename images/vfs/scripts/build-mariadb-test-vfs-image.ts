@@ -1,3 +1,4 @@
+import { COREUTILS_NAMES, coreutilsCommandPath } from "../lib/init/shell-binaries";
 /**
  * Build a fully-bootable VFS image for the MariaDB mysql-test browser
  * runner. dinit, the first user process, brings up the test-server tree:
@@ -48,15 +49,7 @@ import { copyMariaDbTestSources } from "./mariadb-test-source-copy";
 import { ensureSourceExtract } from "./source-extract-helper";
 
 const REPO_ROOT = findRepoRoot();
-const COREUTILS_SYMLINK_NAMES = [
-  "ls", "cat", "cp", "mv", "rm", "echo", "mkdir", "rmdir", "touch", "pwd",
-  "head", "tail", "wc", "sort", "uniq", "cut", "tr", "date", "basename",
-  "dirname", "chmod", "chown", "ln", "readlink", "true", "false", "yes",
-  "sleep", "env", "printenv", "id", "whoami", "hostname", "uname", "stat",
-  "df", "du", "tee", "nl", "paste", "tac", "rev", "expand", "unexpand",
-  "fold", "fmt", "pr", "od", "hexdump", "xxd", "sha256sum", "sha512sum",
-  "md5sum", "seq", "test", "[",
-];
+const COREUTILS_SYMLINK_NAMES = [...COREUTILS_NAMES, "["];
 
 // 184 tests verified to pass in headless Chromium with MariaDB on kandelo.
 const CURATED_TESTS = [
@@ -147,7 +140,7 @@ function commonMariadbArgs(): string[] {
     // populates mysql.user / global_priv so root@127.0.0.1 has full
     // access. The daemon itself runs as the mysql user (uid 101).
     "--user=mysql",
-    "--datadir=/data", "--tmpdir=/data/tmp",
+    "--datadir=/var/lib/mysql", "--tmpdir=/var/tmp/mysql",
     "--default-storage-engine=Aria",
     "--skip-grant-tables",
     "--key-buffer-size=1048576", "--table-open-cache=10",
@@ -164,7 +157,7 @@ function buildServices(): DinitService[] {
     "--max-connections=10",
     "--wait-timeout=10", "--net-read-timeout=10",
     "--net-write-timeout=10", "--lock-wait-timeout=10",
-    "--log-error=/data/error.log",
+    "--log-error=/var/log/mysql/error.log",
   ].join(" ");
 
   return [
@@ -245,9 +238,9 @@ export async function buildMariadbTestVfsImage(
   for (const dir of [
     "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
     "/usr/local", "/usr/local/bin", "/usr/share", "/root", "/usr/sbin",
-    "/data", "/data/mysql", "/data/tmp", "/data/test",
+    "/var/lib/mysql", "/var/lib/mysql/mysql", "/var/tmp/mysql", "/var/lib/mysql/test",
   ]) {
-    ensureDir(fs, dir);
+    ensureDirRecursive(fs, dir);
   }
   prepareMariadbWritableDirectories(fs);
 
@@ -256,18 +249,16 @@ export async function buildMariadbTestVfsImage(
   // ordinary command at its own name.
   installBashAsPosixShell(fs, inputs.bash);
   writeVfsBinary(fs, "/bin/dash", inputs.dash);
-  symlink(fs, "/bin/dash", "/usr/bin/dash");
+  ensureDirRecursive(fs, "/usr/sbin");
   writeVfsBinary(fs, "/bin/coreutils", inputs.coreutils);
   for (const name of COREUTILS_SYMLINK_NAMES) {
-    symlink(fs, "/bin/coreutils", `/bin/${name}`);
-    symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
+    symlink(fs, "/bin/coreutils", coreutilsCommandPath(name));
   }
 
   console.log("  Writing mariadbd binary...");
   writeVfsBinary(fs, "/usr/sbin/mariadbd", inputs.mariadbd);
   console.log("  Writing mysqltest binary...");
   writeVfsBinary(fs, "/usr/bin/mysqltest", inputs.mysqltest);
-  symlink(fs, "/usr/bin/mysqltest", "/bin/mysqltest");
 
   console.log("  Writing bootstrap SQL...");
   ensureDirRecursive(fs, "/etc/mariadb");
@@ -281,7 +272,7 @@ export async function buildMariadbTestVfsImage(
   const bootstrapArgs = [
     ...commonMariadbArgs(),
     "--bootstrap", "--skip-networking", "--log-warnings=0",
-    "--log-error=/data/bootstrap.log",
+    "--log-error=/var/log/mysql/bootstrap.log",
   ].join(" ");
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sh", `${bootstrapArgs} < /etc/mariadb/bootstrap.sql &
 PID=$!
@@ -305,8 +296,8 @@ exit 0
   console.log(`    ${testCount} test files`);
 
   // Setup and reset SQL test files (run by the page after server-ready)
-  writeVfsFile(fs, "/mysql-test/main/__setup.test", SETUP_SQL);
-  writeVfsFile(fs, "/mysql-test/main/__reset.test", RESET_SQL);
+  writeVfsFile(fs, "/var/lib/kandelo-tests/mariadb/main/__setup.test", SETUP_SQL);
+  writeVfsFile(fs, "/var/lib/kandelo-tests/mariadb/main/__reset.test", RESET_SQL);
 
   // dinit service tree. The canonical product boot contract selects the
   // mariadb leaf so container mode keeps the database tree running.

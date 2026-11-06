@@ -88,20 +88,19 @@ import { MAX_STAGED_VFS_IMAGE_BYTES } from "./opfs-source-image";
 import { openOpfsFileReference, type OpfsFileReference } from "../../../../../host/src/vfs/opfs-file-reference";
 import { ABI_VERSION, ERRNO } from "../../../../../host/src/generated/abi";
 import { stageConfiguredAssets } from "./configured-assets";
+import { prepareMariadbWritableDirectories } from "../../../../../images/vfs/scripts/mariadb-image-helpers";
 
 const ROOT_UID = 0;
 const ROOT_GID = 0;
 const ROOT_HOME = "/root";
 const PHP_FPM_UID = 65534;
 const PHP_FPM_GID = 65534;
-const MYSQL_UID = 101;
-const MYSQL_GID = 101;
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;
 const DEMO_HOME = "/home/maker";
 const MARIADB_SOCKET_PATH = WORDPRESS_MARIADB_SOCKET_PATH;
 const MARIADB_READY_SERVICE = "mariadb-ready";
-const MARIADB_READY_SCRIPT_PATH = "/usr/local/bin/mariadb-ready";
+const MARIADB_READY_SCRIPT_PATH = "/usr/libexec/mariadb-ready";
 
 /**
  * php-fpm's static worker pool, sized by the host.
@@ -341,7 +340,7 @@ export async function composeKandeloImage(
       );
       ensureDirRecursive(buildFs, "/var/cache/opcache");
     }
-    if (vfsPathExists(buildFs, "/var/www/html/wp-includes")) {
+    if (vfsPathExists(buildFs, "/srv/www/html/wp-includes")) {
       if (vfsPathExists(buildFs, "/etc/dinit.d/mariadb")) {
         patchMariaDbUnixSocketConfig(buildFs);
         patchWordPressRuntimeConfig(buildFs, vfsPathExists(buildFs, "/etc/kandelo/wordpress-backends") ? "selectable" : "mariadb", job.appPath, job.proto);
@@ -601,39 +600,35 @@ function patchWordPressRuntimeConfig(
   );
   writeVfsFile(
     fs,
-    "/var/www/html/wp-config.php",
+    "/srv/www/html/wp-config.php",
     renderWordPressConfig(kind, appPath, proto),
   );
   if (kind === "sqlite") {
     ensureOwnedDir(
       fs,
-      "/var/www/html/wp-content/database",
+      "/var/lib/wordpress/sqlite",
       0o775,
       PHP_FPM_UID,
       PHP_FPM_GID,
     );
   } else if (kind === "mariadb") {
-    for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
-      ensureOwnedDir(fs, dir, 0o775, MYSQL_UID, MYSQL_GID);
-    }
     patchWordPressPersistentMysqli(fs);
     writeVfsFile(
       fs,
-      "/var/www/html/kandelo-mysql-bench.php",
+      "/srv/www/html/kandelo-mysql-bench.php",
       MYSQL_BENCHMARK_PHP,
     );
   }
-  ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
+  ensureDirRecursive(fs, "/srv/www/html/wp-content/mu-plugins");
   writeVfsFile(
     fs,
-    "/var/www/html/wp-content/mu-plugins/kandelo-url.php",
+    "/srv/www/html/wp-content/mu-plugins/kandelo-url.php",
     WORDPRESS_URL_MU_PLUGIN,
   );
 }
 
 function patchMariaDbUnixSocketConfig(fs: KandeloImageFs): void {
-  ensureDirRecursive(fs, "/tmp");
-  fs.chmod("/tmp", 0o1777);
+  prepareMariadbWritableDirectories(fs);
   ensureDirRecursive(fs, dirname(WORDPRESS_MARIADB_READY_FILE));
   writeVfsFile(fs, WORDPRESS_MARIADB_READY_FILE, WORDPRESS_MARIADB_READY_PHP);
 
@@ -731,8 +726,8 @@ function patchPhpFpmMariaDbDependency(fs: KandeloImageFs): void {
 
 function patchWordPressPersistentMysqli(fs: KandeloImageFs): void {
   for (const path of [
-    "/var/www/html/wp-includes/class-wpdb.php",
-    "/var/www/html/wp-includes/wp-db.php",
+    "/srv/www/html/wp-includes/class-wpdb.php",
+    "/srv/www/html/wp-includes/wp-db.php",
   ]) {
     const source = readOptionalVfsText(fs, path);
     if (source === null) continue;

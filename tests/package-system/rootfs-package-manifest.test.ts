@@ -280,7 +280,7 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
     )?.[0];
 
     expect(loginBlock).toContain('install = "eager"');
-    expect(loginBlock).toContain('path = "/usr/bin/login"');
+    expect(loginBlock).toContain('path = "/bin/login"');
     expect(loginBlock).toContain('mode = "4755"');
     expect(sudoLiteBlock).not.toContain('install = "eager"');
     expect(sudoLiteBlock).toContain('path = "/usr/bin/sudo-lite"');
@@ -302,13 +302,13 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
     );
 
     expect(config.initial).toEqual({
-      path: "/usr/bin/login",
+      path: "/bin/login",
       argv: ["login", "-p", "-f", "maker"],
       uid: 0,
       gid: 0,
     });
     expect(config.afterExit).toEqual({
-      path: "/usr/bin/login",
+      path: "/bin/login",
       argv: ["login", "-p"],
       uid: 0,
       gid: 0,
@@ -1144,7 +1144,13 @@ function makeResolverRoot(): {
   writeFileSync(join(root, "package.json"), '{"name":"kandelo"}\n');
   return {
     root,
-    env: { WASM_POSIX_BINARY_RESOLVER_REPO_ROOT: root },
+    // These fixtures exercise ordinary tier ordering without a published
+    // SourceOnly authority. Do not inherit the caller's stricter policy.
+    env: {
+      WASM_POSIX_BINARY_RESOLVER_REPO_ROOT: root,
+      WASM_POSIX_RESOLUTION_POLICY: undefined,
+      WASM_POSIX_SOURCE_ONLY_BINARY_ROOT: undefined,
+    },
     write: (tier, rel, bytes) => writeArtifact(join(root, tier), rel, bytes),
   };
 }

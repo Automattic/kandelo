@@ -204,9 +204,9 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
       const appsDir = makeHostScratchTempRoot("kandelo-apps-");
       mkdirSync(appsDir, { recursive: true });
       writeFileSync(join(appsDir, "terminal.conf"),
-        "name = Terminal\nexec = /usr/local/bin/wlterm\n");
+        "name = Terminal\nexec = /usr/bin/wlterm\n");
       writeFileSync(join(appsDir, "clock.conf"),
-        "name = Clock\nexec = /usr/local/bin/wlclock\n");
+        "name = Clock\nexec = /usr/bin/wlclock\n");
 
       const out = { value: "" };
       const err = { value: "" };
@@ -253,12 +253,12 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
 
         // Enter hands the entry's command to the compositor over kwlctl and
         // dismisses the launcher. The compositor reports the launch either
-        // way; this VFS has no /usr/local/bin/wlterm staged, so what is
+        // way; this VFS has no /usr/bin/wlterm staged, so what is
         // asserted is that the dispatch arrived with the right command.
         tap(KEY_ENTER);
-        await waitFor(out, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/wlterm/,
+        await waitFor(out, /KLAUNCHER_EXEC cmd=\/usr\/bin\/wlterm/,
           10_000, dump);
-        await waitFor(out, /KWLCTL_EXEC(_FAILED)? "\/usr\/local\/bin\/wlterm"/,
+        await waitFor(out, /KWLCTL_EXEC(_FAILED)? "\/usr\/bin\/wlterm"/,
           10_000, dump);
         await waitFor(out, "KLAUNCHER_EXIT", 10_000, dump);
 
@@ -284,9 +284,9 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
       const appsDir = makeHostScratchTempRoot("kandelo-apps-");
       mkdirSync(appsDir, { recursive: true });
       writeFileSync(join(appsDir, "terminal.conf"),
-        "name = Terminal\nexec = /usr/local/bin/wlterm\n");
+        "name = Terminal\nexec = /usr/bin/wlterm\n");
       writeFileSync(join(appsDir, "clock.conf"),
-        "name = Clock\nexec = /usr/local/bin/wlclock\n");
+        "name = Clock\nexec = /usr/bin/wlclock\n");
 
       const out = { value: "" };
       const err = { value: "" };

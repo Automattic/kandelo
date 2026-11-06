@@ -107,7 +107,7 @@ const echoExecMap = new Map<string, string>([
 const shCandidate = resolveBinary("programs/sh.wasm");
 const popenExecMap = new Map<string, string>([
   ["/bin/sh", shCandidate],
-  ["/usr/bin/sh", shCandidate],
+  ["/bin/sh", shCandidate],
   ["/bin/echo", echoBinary],
   ["/usr/bin/echo", echoBinary],
   ["/tmp/echo", echoBinary],

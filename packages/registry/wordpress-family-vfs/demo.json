@@ -53,7 +53,7 @@
         "internalsAccess": "drawer"
       },
       "activity": {
-        "shellCommand": "/usr/local/bin/kandelo-service start wordpress-sqlite",
+        "shellCommand": "/usr/bin/kandelo-service start wordpress-sqlite",
         "category": "services",
         "share": "wordpress-family-vfs/service"
       }
@@ -109,7 +109,7 @@
         "internalsAccess": "drawer"
       },
       "activity": {
-        "shellCommand": "/usr/local/bin/kandelo-service start wordpress-mariadb",
+        "shellCommand": "/usr/bin/kandelo-service start wordpress-mariadb",
         "category": "services",
         "share": "wordpress-family-vfs/service"
       }

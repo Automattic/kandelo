@@ -117,14 +117,14 @@ function tempRoot(): string {
 async function writeRootfs(
   path: string,
   kernelAbi = ABI_VERSION,
-  terminalProgramPath = "/usr/bin/login",
+  terminalProgramPath = "/bin/login",
 ) {
   const maxByteLength = 16 * MiB;
   // The producer that writes the source images this bridge composes from.
   const fs = KandeloImageFs.create();
   fs.setImageCapacity(maxByteLength);
   fs.registerLazyFile(
-    "/usr/bin/bash",
+    "/bin/bash",
     "binaries/programs/wasm32/bash.wasm",
     3_348_482,
     0o755,
@@ -146,14 +146,12 @@ async function writeRootfs(
     new Uint8Array(readFileSync(join(repoRoot, "images/rootfs/etc/group"))),
     0o644,
   );
-  fs.symlink("/usr/bin/bash", "/bin/bash");
   // Every Kandelo rootfs also binds bash as /bin/sh (images/rootfs/PACKAGES.toml
   // `aliases`), and the shell image builder asserts all four names.
-  fs.symlink("/usr/bin/bash", "/bin/sh");
-  fs.symlink("/usr/bin/bash", "/usr/bin/sh");
+  fs.symlink("/bin/bash", "/bin/sh");
   writeVfsBinary(
     fs,
-    "/usr/bin/login",
+    "/bin/login",
     new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]),
     0o4755,
   );
@@ -170,7 +168,7 @@ async function writeRootfs(
         gid: 0,
       },
       afterExit: {
-        path: "/usr/bin/login",
+        path: "/bin/login",
         argv: ["login", "-p"],
         uid: 0,
         gid: 0,
@@ -623,7 +621,7 @@ describe("canonical source-rootfs shell", () => {
     expect(composed.lazyEntries().files.find(entry => entry.path === "/usr/bin/less")).toMatchObject({
       uri: programUri, size: program.length,
     });
-    expect(composed.stat("/usr/bin/less").ino).toBe(composed.stat("/bin/less").ino);
+    expect(() => composed.lstat("/bin/less")).toThrow(/ENOENT/);
     const originalPath = `/usr/lib/kandelo/originals/${sha256}.wasm`;
     expect(composed.lstat(originalPath).mode & 0o7777).toBe(0o444);
     expect(composed.lazyEntries().files.find(entry => entry.path === originalPath)).toMatchObject({
@@ -666,7 +664,7 @@ describe("canonical source-rootfs shell", () => {
     sourceFs.loadImage(source.image);
     const sourceEntries = sourceFs.lazyEntries();
     const sourceLazy = sourceEntries.files
-      .filter((file) => file.archiveId === 0 && file.path !== "/usr/bin/bash")
+      .filter((file) => file.archiveId === 0 && file.path !== "/bin/bash")
       .map((file) => ({ path: file.path, uri: file.uri, size: file.size }));
     const sourceArchives = sourceEntries.archives.map((archive) => archive.uri);
     const firstOut = join(root, "first.vfs.zst");
@@ -730,19 +728,14 @@ describe("canonical source-rootfs shell", () => {
       uri: "kandelo-lazy:programs/jq.wasm",
     });
     expect(fs.stat("/usr/bin/jq").mode & 0o777).toBe(0o755);
-    expect(fs.readlink("/bin/jq")).toBe("/usr/bin/jq");
-    expect(fs.stat("/bin/jq").ino).toBe(
-      fs.stat("/usr/bin/jq").ino,
-    );
+    expect(() => fs.lstat("/bin/jq")).toThrow(/ENOENT/);
     expect(composed.files.find((file) => file.path === "/usr/bin/php")).toMatchObject({
       uri: "kandelo-lazy:programs/php/php.wasm",
     });
     expect(fs.stat("/usr/bin/php").mode & 0o777).toBe(0o755);
-    expect(fs.readlink("/bin/php")).toBe("/usr/bin/php");
-    expect(fs.stat("/bin/php").ino).toBe(fs.stat("/usr/bin/php").ino);
+    expect(() => fs.lstat("/bin/php")).toThrow(/ENOENT/);
     expect(fs.isPathDeferred("/usr/bin/composer")).toBe(true);
-    expect(fs.readlink("/bin/composer")).toBe("/usr/bin/composer");
-    expect(fs.stat("/bin/composer").ino).toBe(fs.stat("/usr/bin/composer").ino);
+    expect(() => fs.lstat("/bin/composer")).toThrow(/ENOENT/);
     // FFmpeg's three programs are lazy files provided by the ffmpeg package.
     for (const id of ["ffmpeg", "ffprobe", "ffplay"]) {
       const spec = SHELL_LAZY_BINARY_SPECS.find((candidate) => candidate.id === id);
@@ -759,17 +752,17 @@ describe("canonical source-rootfs shell", () => {
       ).toBe(true);
     }
     expect(fs.isPathDeferred("/bin/bash")).toBe(false);
-    expect(fs.isPathDeferred("/usr/bin/bash")).toBe(false);
-    expect(fs.stat("/bin/bash").ino).toBe(fs.stat("/usr/bin/bash").ino);
-    expect(fs.readlink("/bin/bash")).toBe("/usr/bin/bash");
+    expect(fs.isPathDeferred("/bin/sh")).toBe(false);
+    expect(fs.stat("/bin/bash").ino).toBe(fs.stat("/bin/sh").ino);
+    expect(fs.readlink("/bin/sh")).toBe("/bin/bash");
     expect(readVfsFile(fs, "/bin/bash")).toEqual(
       new Uint8Array(readFileSync(paths.bashPath)),
     );
-    expect(readVfsFile(fs, "/usr/bin/bash")).toEqual(
+    expect(readVfsFile(fs, "/bin/bash")).toEqual(
       new Uint8Array(readFileSync(paths.bashPath)),
     );
     expect(
-      composed.files.find((file) => file.path === "/usr/bin/grep"),
+      composed.files.find((file) => file.path === "/bin/grep"),
     ).toMatchObject({
       uri: "binaries/programs/wasm32/grep.wasm",
       size: 412_000,
@@ -780,23 +773,23 @@ describe("canonical source-rootfs shell", () => {
     // (sdl2 and espeak-ng were once fetched by the page and written into the
     // image at browser boot; the image must not depend on that.)
     for (const [guest, url] of [
-      ["/usr/bin/fbdoom", "kandelo-lazy:programs/fbdoom/fbdoom.wasm"],
-      ["/usr/local/bin/modeset", "kandelo-lazy:programs/modeset.wasm"],
-      ["/usr/local/bin/sdl2", "kandelo-lazy:programs/sdl2.wasm"],
+      ["/usr/libexec/fbdoom", "kandelo-lazy:programs/fbdoom/fbdoom.wasm"],
+      ["/usr/bin/modeset", "kandelo-lazy:programs/modeset.wasm"],
+      ["/usr/bin/sdl2", "kandelo-lazy:programs/sdl2.wasm"],
       ["/usr/bin/espeak-ng", "kandelo-lazy:programs/espeak-ng/espeak-ng.wasm"],
       [
-        "/usr/local/bin/wlcompositor",
+        "/usr/bin/wlcompositor",
         "kandelo-lazy:programs/wayland-demo/wlcompositor.wasm",
       ],
-      ["/usr/local/bin/wlterm", "kandelo-lazy:programs/wayland-demo/wlterm.wasm"],
-      ["/usr/local/bin/wlclock", "kandelo-lazy:programs/wayland-demo/wlclock.wasm"],
-      ["/usr/local/bin/wlpaint", "kandelo-lazy:programs/wayland-demo/wlpaint.wasm"],
+      ["/usr/bin/wlterm", "kandelo-lazy:programs/wayland-demo/wlterm.wasm"],
+      ["/usr/bin/wlclock", "kandelo-lazy:programs/wayland-demo/wlclock.wasm"],
+      ["/usr/bin/wlpaint", "kandelo-lazy:programs/wayland-demo/wlpaint.wasm"],
       [
-        "/usr/local/bin/klauncher",
+        "/usr/bin/klauncher",
         "kandelo-lazy:programs/wayland-demo/klauncher.wasm",
       ],
       [
-        "/usr/local/bin/notify-send",
+        "/usr/bin/notify-send",
         "kandelo-lazy:programs/wayland-demo/notify-send.wasm",
       ],
     ]) {
@@ -834,12 +827,12 @@ describe("canonical source-rootfs shell", () => {
     // eager executable, and every game it can fetch must be pinned in the
     // catalog it reads: an unverified download would let a changed file
     // start as the game.
-    const play = text(readVfsFile(fs, "/usr/local/bin/scummvm-play"));
-    expect(fs.stat("/usr/local/bin/scummvm-play").mode & 0o777).toBe(0o755);
+    const play = text(readVfsFile(fs, "/usr/bin/scummvm-play"));
+    expect(fs.stat("/usr/bin/scummvm-play").mode & 0o777).toBe(0o755);
     expect(play).toContain("sha256sum -c -");
     const catalog = loadScummvmFreewareCatalog();
     const catalogRows = text(
-      readVfsFile(fs, "/usr/local/share/scummvm-play/games.tsv"),
+      readVfsFile(fs, "/usr/share/scummvm-play/games.tsv"),
     ).trimEnd().split("\n").map((line) => line.split("\t"));
     expect(catalogRows).toEqual(catalog.games.map((game) => [
       game.id,
@@ -861,11 +854,11 @@ describe("canonical source-rootfs shell", () => {
     // Ctrl+C at the machine's terminal must stop ScummVM itself. The wrapper's
     // supervisor runs the engine in the background, where POSIX has SIGINT
     // ignored, so it must forward it or the old engine keeps the display.
-    const scummvmWrapper = text(readVfsFile(fs, "/usr/local/bin/scummvm"));
+    const scummvmWrapper = text(readVfsFile(fs, "/usr/bin/scummvm"));
     expect(scummvmWrapper).toContain(
       `trap 'kill -TERM "$engine" 2>/dev/null; wait "$engine"; rm -f "$pidfile"; exit 130' INT TERM`,
     );
-    expect(scummvmWrapper).toContain("supervise /tmp/scummvm-launch.pid");
+    expect(scummvmWrapper).toContain("supervise /run/user/1000/scummvm-launch.pid");
     // The game machines' exchange rules and handlers: rule files root-owned
     // and not group- or world-writable (kxchgd refuses others), handlers
     // executable.
@@ -878,16 +871,16 @@ describe("canonical source-rootfs shell", () => {
     }
     // Doom's wrapper seeds a missing user config with the full-width view
     // and execs the lazy engine, so the engine stays the display's owner.
-    const fbdoomWrapper = text(readVfsFile(fs, "/usr/local/bin/fbdoom"));
-    expect(fs.stat("/usr/local/bin/fbdoom").mode & 0o777).toBe(0o755);
+    const fbdoomWrapper = text(readVfsFile(fs, "/usr/bin/fbdoom"));
+    expect(fs.stat("/usr/bin/fbdoom").mode & 0o777).toBe(0o755);
     expect(fbdoomWrapper).toContain(`printf 'screenblocks 10\\n' > "$HOME/.fdoom.tar/default.cfg"`);
-    expect(fbdoomWrapper).toContain('exec /usr/bin/fbdoom "$@"');
+    expect(fbdoomWrapper).toContain('exec /usr/libexec/fbdoom "$@"');
     // The desktops' launchers are eager scripts on PATH (the programs they
     // exec are the lazy files above), and wlcompositor's statically linked
     // libinput finds its device quirks at LIBINPUT_QUIRKS_DIR.
     for (const [guest, host] of [
-      ["/usr/local/bin/wldesktop", paths.wldesktopPath],
-      ["/usr/local/bin/omarchydesktop", paths.omarchydesktopPath],
+      ["/usr/bin/wldesktop", paths.wldesktopPath],
+      ["/usr/bin/omarchydesktop", paths.omarchydesktopPath],
     ]) {
       expect(readVfsFile(fs, guest), guest).toEqual(
         new Uint8Array(readFileSync(host)),
@@ -966,20 +959,20 @@ describe("canonical source-rootfs shell", () => {
     }
     expect(() => fs.stat("/home/.nethack")).toThrow();
 
-    // The quake basedir and its id1 game dir must exist and be writable by the
-    // unprivileged demo user: the profile stages quake106.zip into the basedir,
-    // the launch wrapper extracts id1/pak0.pak, and the exchange pak handler
-    // (running as the handler account) writes id1/pak0.pak directly.
-    expect(fs.stat("/usr/share/quake").mode & 0o777).toBe(0o777);
-    expect(fs.stat("/usr/share/quake/id1").mode & 0o777).toBe(0o777);
+    // Static shareware archive and mutable game data have separate owners.
+    // The wrapper and exchange handler write only to the maker-owned game dir.
+    expect(fs.stat("/usr/share/quake").mode & 0o777).toBe(0o755);
+    expect(fs.stat("/usr/share/quake").uid).toBe(0);
+    expect(fs.stat("/var/games/quake/id1").mode & 0o777).toBe(0o755);
+    expect(fs.stat("/var/games/quake/id1").uid).toBe(1000);
 
     const terminalSessionBytes = readVfsFile(
       fs,
       EXPERIMENTAL_TERMINAL_SESSION_PATH,
     );
     expect(parseExperimentalTerminalSession(text(terminalSessionBytes))).toMatchObject({
-      initial: { path: "/usr/bin/login", uid: 0, gid: 0 },
-      afterExit: { path: "/usr/bin/login", uid: 0, gid: 0 },
+      initial: { path: "/bin/login", uid: 0, gid: 0 },
+      afterExit: { path: "/bin/login", uid: 0, gid: 0 },
     });
     const demoBytes = readVfsFile(fs, KANDELO_DEMO_CONFIG_PATH);
     const demo = parseKandeloDemoConfig(text(demoBytes));
@@ -989,14 +982,14 @@ describe("canonical source-rootfs shell", () => {
     // DOOM runs under its supervising launcher, which plays a WAD sent to the
     // machine and otherwise the shareware one.
     expect(resolveDemoInit(demo!, "doom")).toEqual({
-      shellCommand: "/usr/local/bin/doom-launch",
+      shellCommand: "/usr/bin/doom-launch",
     });
-    const doomLaunch = text(readVfsFile(fs, "/usr/local/bin/doom-launch"));
+    const doomLaunch = text(readVfsFile(fs, "/usr/bin/doom-launch"));
     expect(doomLaunch).toContain("wad=/usr/share/doom/doom1.wad");
     // The engine reads the keyboard from the terminal the supervisor saved
     // on fd 3, not the /dev/null a background command would get.
     expect(doomLaunch).toContain("exec 3<&0");
-    expect(doomLaunch).toContain('/usr/local/bin/fbdoom -iwad "$wad" "$@" <&3 3<&- &');
+    expect(doomLaunch).toContain('/usr/bin/fbdoom -iwad "$wad" "$@" <&3 3<&- &');
     expect(resolveDemoPresentation(demo!, "doom")?.touchControls).toBe(true);
     expect(resolveDemoPresentation(demo!, "doom")?.runningPrimary).toEqual([
       "framebuffer",
@@ -1012,7 +1005,7 @@ describe("canonical source-rootfs shell", () => {
       },
     ]);
     expect(resolveDemoInit(demo!, "love")).toEqual({
-      shellCommand: "/usr/local/bin/love /usr/share/love/examples/pong",
+      shellCommand: "/usr/bin/love /usr/share/love/examples/pong",
     });
     const loveProfile = demo!.profiles!.love;
     expect(loveProfile.runtime?.features).toEqual(["kms", "evdev-input"]);
@@ -1024,9 +1017,9 @@ describe("canonical source-rootfs shell", () => {
       menu: [
         ["pong", "Pong"], ["snake", "Snake"], ["breakout", "Breakout"],
         ["asteroids", "Asteroids"], ["bytepath", "BYTEPATH"], ["snkrx", "SNKRX"],
-      ].map(([id, label]) => ({id, label, restart: `/usr/local/bin/love /usr/share/love/examples/${id}`})),
+      ].map(([id, label]) => ({id, label, restart: `/usr/bin/love /usr/share/love/examples/${id}`})),
     }]);
-    expect(composed.files.find((file) => file.path === "/usr/local/bin/love")?.uri)
+    expect(composed.files.find((file) => file.path === "/usr/bin/love")?.uri)
       .toContain("programs/love/love.wasm");
     const loveArchive = composed.archives.find(
       (archive) => archive.uri === "kandelo-lazy:programs/love/share/love-examples.zip",
@@ -1039,7 +1032,7 @@ describe("canonical source-rootfs shell", () => {
     }));
 
     expect(resolveDemoInit(demo!, "quake")).toEqual({
-      shellCommand: "/usr/local/bin/quake",
+      shellCommand: "/usr/bin/quake",
     });
     expect(resolveDemoPresentation(demo!, "quake")?.touchControls).toBe(true);
     expect(resolveDemoPresentation(demo!, "quake")?.runningPrimary).toEqual([
@@ -1079,7 +1072,7 @@ describe("canonical source-rootfs shell", () => {
       "syslog",
     ]);
     expect(resolveDemoInit(demo!, "modeset")).toEqual({
-      shellCommand: "/usr/local/bin/modeset",
+      shellCommand: "/usr/bin/modeset",
     });
     expect(resolveDemoPresentation(demo!, "modeset")?.runningPrimary).toEqual([
       "kms",
@@ -1296,7 +1289,7 @@ describe("canonical source-rootfs shell", () => {
     ).rejects.toThrow(
       "source-rootfs shell must add programs as lazy files " +
         "(SHELL_LAZY_BINARY_SPECS), but wrote eager Wasm at: " +
-        "/usr/local/bin/wldesktop",
+        "/usr/bin/wldesktop",
     );
     expect(existsSync(join(root, "eager-program.vfs.zst"))).toBe(false);
   });
@@ -1314,7 +1307,7 @@ describe("canonical source-rootfs shell", () => {
     writeFileSync(
       demoProfileOverlayPath,
       readFileSync(paths.demoProfileOverlayPath, "utf8").replace(
-        '"shellCommand": "/usr/local/bin/modeset"',
+        '"shellCommand": "/usr/bin/modeset"',
         '"shellCommand": "/usr/local/bin/not-modeset"',
       ),
     );
@@ -1328,7 +1321,7 @@ describe("canonical source-rootfs shell", () => {
         sourceDateEpoch: "0",
       }),
     ).rejects.toThrow(
-      "source-rootfs demo profile modeset must launch /usr/local/bin/modeset",
+      "source-rootfs demo profile modeset must launch /usr/bin/modeset",
     );
   });
 
@@ -1351,7 +1344,7 @@ describe("canonical source-rootfs shell", () => {
         sourceDateEpoch: "0",
       }),
     ).rejects.toThrow(
-      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, ffmpeg-fbdev, ffplay, freeciv, love, modeset, quake, scummvm",
+      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, ffmpeg-fbdev, ffmpeg-video, ffplay, freeciv, love, modeset, quake, scummvm",
     );
   });
 

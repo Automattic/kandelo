@@ -14,6 +14,7 @@ import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   writeVfsBinary,
   ensureDir,
+  ensureDirRecursive,
   exactVfsImageMetadata,
   saveImage,
   type ExactVfsImageAbi,
@@ -168,8 +169,10 @@ export async function buildPerlVfsImage(
 
   // Create standard directories
   ensureDir(fs, "/tmp");
-  fs.chmod("/tmp", 0o777);
+  fs.chmod("/tmp", 0o1777);
   ensureDir(fs, "/home");
+  ensureDirRecursive(fs, "/home/maker");
+  fs.chown("/home/maker", 1000, 1000);
   ensureDir(fs, "/usr");
   ensureDir(fs, "/usr/bin");
   ensureDir(fs, "/usr/lib");

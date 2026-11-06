@@ -2068,7 +2068,7 @@ fn reject_fixed_persistence_mutation() -> Result<(), Errno> {
 
 /// Registry of *foreign* mount prefixes: the canonical mount points of every
 /// other filesystem still mounted under `/` after the host hands `/` to the
-/// overlay (for example `/run/kandelo-run` session-seed host mounts and extra
+/// overlay (for example `/var/lib/kandelo-tests/runner` session-seed host mounts and extra
 /// `HostFileSystem` mounts). As the sole `/` authority the overlay would
 /// otherwise greedily claim these sibling paths and shadow the real mount, so
 /// `owns_path` returns false for any path at or under a registered prefix and
@@ -2394,9 +2394,9 @@ fn mkdir_ancestor_chain(path: &[u8], mode: u32, uid: u32, gid: u32) -> (usize, R
 }
 
 /// Whether `path` lies at or under a registered foreign mount prefix. The match
-/// respects path-component boundaries, so a foreign mount at `/run/kandelo-run`
-/// matches `/run/kandelo-run` and `/run/kandelo-run/...` but not
-/// `/run/kandelo-runner` or a sibling `/run/other`.
+/// respects path-component boundaries, so a foreign mount at `/var/lib/kandelo-tests/runner`
+/// matches `/var/lib/kandelo-tests/runner` and `/var/lib/kandelo-tests/runner/...` but not
+/// `/var/lib/kandelo-tests/runner-extra` or a sibling `/run/other`.
 fn path_under_foreign(path: &[u8]) -> bool {
     FOREIGN_MOUNTS.with(|prefixes| {
         prefixes.iter().any(|p| {
@@ -3443,6 +3443,51 @@ fn ensure_kernel_mount_points() -> Result<(), Errno> {
             }
         }
         ensure_directory(mount)?;
+    }
+    seed_runtime_directory_layout()?;
+    Ok(())
+}
+
+/// Preserve image-owned directory permissions beneath the fresh /run mount.
+/// Files, sockets and symlinks are boot-lifetime state and are not copied.
+/// Composition loads deliberately skip this runtime-only initialization.
+fn seed_runtime_directory_layout() -> Result<(), Errno> {
+    if !crate::tmpfs::is_enabled() {
+        return Ok(());
+    }
+    let mut pending = alloc::vec![b"/run".to_vec()];
+    let mut directories = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let handle = opendir(&directory)?;
+        let result = (|| {
+            let mut name = [0u8; 256];
+            while let Some((_, _, length)) = readdir(handle, &mut name)? {
+                let name = &name[..length];
+                if name == b"." || name == b".." { continue; }
+                let mut path = directory.clone();
+                path.push(b'/');
+                path.extend_from_slice(name);
+                let stat = lstat(&path)?;
+                if stat.st_mode & S_IFMT == S_IFDIR {
+                    // A nested kernel mount has its own authoritative layout.
+                    // Keep its mount-point entry visible, but do not copy its
+                    // authored children or change the mounted filesystem.
+                    if crate::tmpfs::mount_prefix(&path) == Some(&b"/run"[..]) {
+                        pending.push(path.clone());
+                    }
+                    directories.push((path, stat.st_mode & 0o7777, stat.st_uid, stat.st_gid));
+                }
+            }
+            Ok::<_, Errno>(())
+        })();
+        let closed = closedir(handle);
+        result?;
+        closed?;
+    }
+    // Parents were collected before their children. Collect first so an
+    // unreadable image cannot silently yield an incomplete directory layout.
+    for (path, mode, uid, gid) in directories {
+        crate::tmpfs::seed_image_directory(b"/run", &path, mode, uid, gid)?;
     }
     Ok(())
 }
@@ -11195,7 +11240,7 @@ mod tests {
         // tmpfs scratch prefixes belong to tmpfs, not rootfs.
         assert!(!owns_path(b"/tmp"));
         assert!(!owns_path(b"/tmp/x"));
-        assert!(!owns_path(b"/var/run/php.sock"));
+        assert!(!owns_path(b"/run/php.sock"));
         // non-absolute is never a rootfs path.
         assert!(!owns_path(b"relative"));
     }
@@ -11204,7 +11249,7 @@ mod tests {
     fn owns_path_excludes_registered_foreign_mounts() {
         let _g = TestGuard::acquire();
         // Baseline: with nothing registered, sibling `/` paths are overlay-owned.
-        assert!(owns_path(b"/run/kandelo-run/work/1-1.wasm"));
+        assert!(owns_path(b"/var/lib/kandelo-tests/runner/work/1-1.wasm"));
         assert!(owns_path(b"/mnt/data/file"));
 
         // `/dev/shm` is NOT one of them any more: the in-kernel tmpfs serves it,
@@ -11215,26 +11260,26 @@ mod tests {
         assert!(crate::tmpfs::owns_path(b"/dev/shm/sem.foo"));
 
         // The host registers the sibling mounts that remain after dropping `/`.
-        let n = set_foreign_prefixes(b"/dev/shm\0/run/kandelo-run\0/mnt/data\0");
+        let n = set_foreign_prefixes(b"/dev/shm\0/var/lib/kandelo-tests/runner\0/mnt/data\0");
         assert_eq!(n, 3);
 
         // Paths at or under a foreign prefix are NOT overlay-owned: they must
         // fall through to the sibling host mount.
-        assert!(!owns_path(b"/run/kandelo-run"));
-        assert!(!owns_path(b"/run/kandelo-run/work/1-1.wasm"));
+        assert!(!owns_path(b"/var/lib/kandelo-tests/runner"));
+        assert!(!owns_path(b"/var/lib/kandelo-tests/runner/work/1-1.wasm"));
         assert!(!owns_path(b"/mnt/data/file"));
 
         // Siblings that share a leading path segment but are NOT under a
         // foreign mount stay overlay-owned (component-boundary match).
-        assert!(owns_path(b"/run/other"));
-        assert!(owns_path(b"/run/kandelo-runner")); // not `/run/kandelo-run/...`
+        assert!(owns_path(b"/var/lib/kandelo-tests/other"));
+        assert!(owns_path(b"/var/lib/kandelo-tests/runner-extra")); // not `/var/lib/kandelo-tests/runner/...`
         assert!(owns_path(b"/mnt/datastore")); // not `/mnt/data/...`
         assert!(owns_path(b"/usr/bin/ls"));
         assert!(owns_path(b"/"));
 
         // A fresh (empty) registration restores the greedy default.
         assert_eq!(set_foreign_prefixes(b""), 0);
-        assert!(owns_path(b"/run/kandelo-run/work/1-1.wasm"));
+        assert!(owns_path(b"/var/lib/kandelo-tests/runner/work/1-1.wasm"));
     }
 
     #[test]
@@ -11566,6 +11611,47 @@ mod tests {
         let image = image_with_root_entries(&[(b"run", true)]);
         load_image(image.len() as u64, image_host(&image)).expect("load image");
         assert_eq!(lstat(b"/run/kandelo/exchange").unwrap().st_mode & S_IFMT, S_IFDIR);
+    }
+
+    #[test]
+    fn runtime_mount_keeps_image_directory_metadata_but_not_run_files() {
+        let _guard = TestGuard::acquire();
+        struct RestoreTmpfs(bool);
+        impl Drop for RestoreTmpfs {
+            fn drop(&mut self) { crate::tmpfs::set_enabled(self.0); }
+        }
+        let image = image_with_root_entries(&[]);
+        load_image_for_composition(image.len() as u64, image_host(&image)).unwrap();
+        mkdir(b"/run", 0o755, 0, 0).unwrap();
+        mkdir(b"/run/image-layout", 0o710, 1234, 5678).unwrap();
+        mkdir(b"/run/image-layout/nested", 0o700, 1234, 5678).unwrap();
+        mkdir(b"/run/kandelo", 0o755, 0, 0).unwrap();
+        mkdir(b"/run/kandelo/exchange", 0o777, 2000, 2000).unwrap();
+        mkdir(b"/run/kandelo/exchange/work", 0o777, 2000, 2000).unwrap();
+        write_file_at(b"/run/image-layout/stale.pid", 0, b"123", 0o600, true, &mut no_bytes()).unwrap();
+        symlink(b"stale.pid", b"/run/image-layout/stale-link", 0, 0).unwrap();
+        let _restore = RestoreTmpfs(crate::tmpfs::set_enabled(true));
+        ensure_kernel_mount_points().unwrap();
+        let directory = crate::tmpfs::lstat(b"/run/image-layout").unwrap();
+        assert_eq!((directory.st_uid, directory.st_gid, directory.st_mode & 0o7777), (1234, 5678, 0o710));
+        assert_eq!(crate::tmpfs::lstat(b"/run/image-layout/nested").unwrap().st_mode & 0o7777, 0o700);
+        assert_eq!(crate::tmpfs::lstat(b"/run/image-layout/stale.pid").unwrap_err(), Errno::ENOENT);
+        assert_eq!(crate::tmpfs::lstat(b"/run/image-layout/stale-link").unwrap_err(), Errno::ENOENT);
+        let work = crate::tmpfs::lstat(b"/run/kandelo/exchange/work").unwrap();
+        assert_eq!((work.st_uid, work.st_gid, work.st_mode & 0o7777), (0, crate::exchange::EXCHANGE_GID, 0o750));
+        let exchange = crate::tmpfs::lstat(b"/run/kandelo/exchange").unwrap();
+        assert_eq!((exchange.st_uid, exchange.st_gid, exchange.st_mode & 0o7777), (0, 0, 0o755));
+        let handle = crate::tmpfs::opendir(b"/run/kandelo").unwrap();
+        let mut name = [0; 256];
+        let mut saw_exchange = false;
+        while let Some((_, _, length)) = crate::tmpfs::readdir(handle, &mut name).unwrap() {
+            saw_exchange |= &name[..length] == b"exchange";
+        }
+        crate::tmpfs::closedir(handle).unwrap();
+        assert!(saw_exchange, "nested mount points remain visible in their parent");
+        // Boot initialization does not rewrite the image's authored contents.
+        assert_eq!(lstat(b"/run/image-layout/stale.pid").unwrap().st_size, 3);
+        crate::tmpfs::remove_tree(b"/run/image-layout").unwrap();
     }
 
     #[test]

@@ -174,7 +174,7 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       );
       // The ordinary writable image owns both the bytes and the set-ID
       // metadata. No publisher-only projection or immutable overlay exists.
-      fs.createFileWithOwner("/usr/bin/login", 0o4755, 0, 0, login);
+      fs.createFileWithOwner("/bin/login", 0o4755, 0, 0, login);
       const image = await fs.saveImage();
       const kernelWasm = kernelBytes.buffer.slice(
         kernelBytes.byteOffset,
@@ -393,13 +393,13 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         kind: "kandelo-experimental-terminal-session",
         version: 1,
         initial: {
-          path: "/usr/bin/login",
+          path: "/bin/login",
           argv: ["login", "-p", "-f", "maker"],
           uid: 0,
           gid: 0,
         },
         afterExit: {
-          path: "/usr/bin/login",
+          path: "/bin/login",
           argv: ["login", "-p"],
           uid: 0,
           gid: 0,
@@ -411,7 +411,7 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
   expect(result.argv[0]).toEqual(["login", "-p", "-f", "maker"]);
   expect(result.argv[1]).toEqual(["login", "-p"]);
   expect(result.argv[2]).toEqual(["login", "-p"]);
-  expect(result.programPaths.every((path) => path === "/usr/bin/login"))
+  expect(result.programPaths.every((path) => path === "/bin/login"))
     .toBe(true);
   expect(result.spawnCountAfterReattach).toBe(result.spawnCountBeforeReattach);
   expect(result.autologinAfterPassword).toBe(result.autologinBeforeLogout);

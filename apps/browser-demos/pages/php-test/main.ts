@@ -97,7 +97,7 @@ function prepareGuestWritableWorkspace(
   // Match Node's copied-source contract: directories are world-writable and
   // files retain execute bits while becoming writable. Do this once per VFS,
   // before any section mutates it.
-  makeTreeWritableByGuest(fs, "/php-src");
+  makeTreeWritableByGuest(fs, "/var/lib/kandelo-tests/php");
 }
 
 function binaryStringToBytes(value: string): Uint8Array {
@@ -130,7 +130,7 @@ async function ensureKernel(uid?: number, gid?: number): Promise<BrowserKernel> 
       throw new Error("PHP test runtime is not initialized");
     }
     const buildFs = initialFs;
-    prepareGuestWritableWorkspace(buildFs, "/php-src", uid, gid);
+    prepareGuestWritableWorkspace(buildFs, "/var/lib/kandelo-tests/php", uid, gid);
     const vfsImage = await finalizeKernelOwnedImage(buildFs);
     const nextKernel = new BrowserKernel({
       kernelOwnedFs: true,
@@ -205,9 +205,9 @@ async function init() {
 
   kernelBytes = kernelBuf;
   const fs = await createFs(new Uint8Array(imageBuf));
-  const php = fs.stat("/usr/local/bin/php");
+  const php = fs.stat("/usr/bin/php");
   if ((php.mode & 0o170000) !== 0o100000) {
-    throw new Error("PHP test VFS does not contain a regular /usr/local/bin/php");
+    throw new Error("PHP test VFS does not contain a regular /usr/bin/php");
   }
   initialFs = fs;
 
@@ -234,8 +234,8 @@ async function init() {
       "HOME=/tmp",
       "TMPDIR=/tmp",
       "PATH=/usr/local/bin:/usr/bin:/bin",
-      "TEST_PHP_EXECUTABLE=/usr/local/bin/php",
-      "TEST_PHP_EXECUTABLE_ESCAPED='/usr/local/bin/php'",
+      "TEST_PHP_EXECUTABLE=/usr/bin/php",
+      "TEST_PHP_EXECUTABLE_ESCAPED='/usr/bin/php'",
       ...(request.env ?? []),
     ];
 
@@ -254,8 +254,8 @@ async function init() {
       activeOutput = capture;
 
       const spawned = await runtime.spawnFromVfs(
-        "/usr/local/bin/php",
-        ["/usr/local/bin/php", ...request.argv],
+        "/usr/bin/php",
+        ["/usr/bin/php", ...request.argv],
         {
           cwd: request.cwd,
           env,

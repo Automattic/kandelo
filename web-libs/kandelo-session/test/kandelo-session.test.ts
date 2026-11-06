@@ -988,7 +988,7 @@ describe("LiveKernelHost: process listing", () => {
     const vfs = makeVfs({
       "/etc/passwd": [
         "root:x:0:0:root:/root:/bin/sh",
-        "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin",
+        "www-data:x:33:33:www-data:/srv/www:/usr/sbin/nologin",
         "mysql:x:101:101:mysql:/var/lib/mysql:/usr/sbin/nologin",
         "",
       ].join("\n"),
@@ -1010,7 +1010,7 @@ describe("LiveKernelHost: process listing", () => {
 });
 
 describe("LiveKernelHost: VFS reads go through the kernel worker", () => {
-  const passwd = "root:x:0:0::/root:/bin/sh\nwww-data:x:33:33::/var/www:/bin/false\n";
+  const passwd = "root:x:0:0::/root:/bin/sh\nwww-data:x:33:33::/srv/www:/bin/false\n";
   const group = "root:x:0:\nwww-data:x:33:\n";
 
   it("reads a file through readFileFromVfs", async () => {
@@ -1797,13 +1797,13 @@ describe("LiveKernelHost: shell command queue", () => {
 
 const LOGIN_SESSION_POLICY = {
   initial: {
-    programPath: "/usr/bin/login",
+    programPath: "/bin/login",
     argv: ["login", "-p", "-f", "maker"],
     uid: 0,
     gid: 0,
   },
   afterExit: {
-    programPath: "/usr/bin/login",
+    programPath: "/bin/login",
     argv: ["login", "-p"],
     uid: 0,
     gid: 0,
@@ -2029,13 +2029,13 @@ describe("LiveKernelHost: supervised terminal sessions", () => {
       output += new TextDecoder().decode(bytes);
     });
 
-    harness.failNextSpawn("missing /usr/bin/login");
+    harness.failNextSpawn("missing /bin/login");
     harness.exit(1);
     await settleTerminalSessionWork();
     await vi.advanceTimersByTimeAsync(250);
     await settleTerminalSessionWork();
 
-    expect(output).toContain("missing /usr/bin/login");
+    expect(output).toContain("missing /bin/login");
     expect(harness.spawns).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(60_000);
@@ -2867,13 +2867,13 @@ describe("experimental terminal session image configuration", () => {
       kind: "kandelo-experimental-terminal-session",
       version: 1,
       initial: {
-        path: "/usr/bin/login",
+        path: "/bin/login",
         argv: ["login", "-p", "-f", "maker"],
         uid: 0,
         gid: 0,
       },
       afterExit: {
-        path: "/usr/bin/login",
+        path: "/bin/login",
         argv: ["login", "-p"],
         uid: 0,
         gid: 0,
@@ -2884,13 +2884,13 @@ describe("experimental terminal session image configuration", () => {
       kind: "kandelo-experimental-terminal-session",
       version: 1,
       initial: {
-        path: "/usr/bin/login",
+        path: "/bin/login",
         argv: ["login", "-p", "-f", "maker"],
         uid: 0,
         gid: 0,
       },
       afterExit: {
-        path: "/usr/bin/login",
+        path: "/bin/login",
         argv: ["login", "-p"],
         uid: 0,
         gid: 0,
@@ -2898,13 +2898,13 @@ describe("experimental terminal session image configuration", () => {
     });
     expect(experimentalTerminalSessionPolicy(config)).toMatchObject({
       initial: {
-        programPath: "/usr/bin/login",
+        programPath: "/bin/login",
         argv: ["login", "-p", "-f", "maker"],
         uid: 0,
         gid: 0,
       },
       afterExit: {
-        programPath: "/usr/bin/login",
+        programPath: "/bin/login",
         argv: ["login", "-p"],
         uid: 0,
         gid: 0,
@@ -3469,7 +3469,7 @@ it("an owned terminal's root exit cannot restart a login outside its family", as
     const host = new LiveKernelHost({ kernel: {
       spawnFromVfs, readOwnedJob() {}, releaseOwnedJob() {}, onPtyOutput() {}, ptyResize() {}, ptyWrite() {},
     } as any });
-    const login = { programPath: "/usr/bin/login", argv: ["login", "-p", "-f", "maker"], uid: 0, gid: 0 };
+    const login = { programPath: "/bin/login", argv: ["login", "-p", "-f", "maker"], uid: 0, gid: 0 };
     host.setTerminalSessionPolicy({ initial: login, afterExit: login, shortRunThresholdMs: 2000, initialRestartDelayMs: 250, maximumRestartDelayMs: 5000 });
     await host.attachPty("/dev/pts/4", undefined, { id: "activity-one", timeoutMs: 0 });
     finish(0); await exit;

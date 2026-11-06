@@ -70,7 +70,7 @@ const canvasLocator = (page: Page) =>
 
 /**
  * Boot the ScummVM machine the way a visitor does: through its gallery row.
- * The image declares /usr/local/bin/scummvm as the machine's command, which
+ * The image declares /usr/bin/scummvm as the machine's command, which
  * execs the engine once SDL's environment and the user's config are set.
  */
 async function bootScummvm(page: Page) {
@@ -81,7 +81,7 @@ async function bootScummvm(page: Page) {
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/running \/usr\/local\/bin\/scummvm/);
+    .toMatch(/running \/usr\/bin\/scummvm/);
   expect(await syslogText(page), "scummvm setup reported failure")
     .not.toMatch(/configured command failed/);
 
@@ -165,7 +165,7 @@ async function runInShell(page: Page, command: string): Promise<string> {
       .poll(() => terminalText(page), { timeout: 60_000 })
       .toMatch(/kandelo\$\s*$/);
     expect(await terminalText(page), "the probe shell is ScummVM's terminal")
-      .not.toMatch(/\/usr\/local\/bin\/scummvm/);
+      .not.toMatch(/\/usr\/bin\/scummvm/);
     probeTerminalOpen = true;
   }
   await expect(page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows")).toBeVisible({
@@ -223,12 +223,12 @@ test("Load game data extracts the archive into the directory the launcher browse
   await expect.poll(
     () => page.getByTestId("exchange-batch-status").last().textContent(),
     { timeout: 90_000 },
-  ).toBe("extracted into /usr/share/scummvm-games; add it from the launcher");
+  ).toBe("extracted into /var/games/scummvm; add it from the launcher");
 
   await expect.poll(async () => {
     await runInShell(
       page,
-      "test -s /usr/share/scummvm-games/foo/bar.001"
+      "test -s /var/games/scummvm/foo/bar.001"
         + ` && ${marker("EXTRACTED", "OK")}`,
     );
     return terminalText(page);
@@ -239,7 +239,7 @@ test("Load game data extracts the archive into the directory the launcher browse
   // inbox and went with its batch, so the launcher shows no zip.
   await runInShell(
     page,
-    `test -e /usr/share/scummvm-games/foo.zip || ${marker("ARCHIVE", "ABSENT")}`,
+    `test -e /var/games/scummvm/foo.zip || ${marker("ARCHIVE", "ABSENT")}`,
   );
   await expect.poll(() => terminalText(page), { timeout: 60_000 })
     .toContain("ARCHIVE_ABSENT");
@@ -286,10 +286,10 @@ test("Beneath a Steel Sky from the freeware menu fetches the game and starts it 
   // ScummVM detected in the verified data, which kept its licence readme.
   await runInShell(
     page,
-    "G=/usr/share/scummvm-games/steel-sky"
+    "G=/var/games/scummvm/steel-sky"
       + " && T=$(cat $G/.targets)"
       + " && for f in /proc/[0-9]*/cmdline; do tr '\\0' ' ' < $f; echo; done"
-      + " | grep -q -- \"^/usr/bin/scummvm .* $T \""
+      + " | grep -q -- \"^/usr/libexec/scummvm .* $T \""
       + " && test -s \"$(find $G -name sky.dsk | head -n1)\""
       + " && test -s \"$(find $G -name readme.txt | head -n1)\""
       + ` && ${marker("STEEL_SKY", "RUNNING")}`,
@@ -355,7 +355,7 @@ test("Flight of the Amazon Queen runs from its single MP3 talkie ZIP @slow", asy
   const launchText = await terminalText(page);
   expect(launchText).toMatch(/scummvm-play: Starting Flight of the Amazon Queen/);
   expect(launchText).not.toContain("Illegal instruction");
-  await runInShell(page, `test -s /usr/share/scummvm-games/fotaq/queen.1c && test ! -e /usr/share/scummvm-games/fotaq/queen.tbl && ${marker("QUEEN_DATA", "PRESENT")}`);
+  await runInShell(page, `test -s /var/games/scummvm/fotaq/queen.1c && test ! -e /var/games/scummvm/fotaq/queen.tbl && ${marker("QUEEN_DATA", "PRESENT")}`);
   await expect.poll(() => terminalText(page), { timeout: 60_000 })
     .toContain("QUEEN_DATA_PRESENT");
 

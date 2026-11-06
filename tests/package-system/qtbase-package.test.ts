@@ -61,7 +61,7 @@ describe("qtbase package contract", () => {
     // Qt bakes the configure-time prefix into QtCore as qt_prfxpath. It
     // must be the guest path, with the staging directory reached only by
     // relocating at install time.
-    expect(build).toContain('GUEST_PREFIX="/usr/local/qt6"');
+    expect(build).toContain('GUEST_PREFIX="/usr/lib/qt6"');
     expect(build).toContain('-DCMAKE_INSTALL_PREFIX="$GUEST_PREFIX"');
     expect(build).toContain(
       'cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"',

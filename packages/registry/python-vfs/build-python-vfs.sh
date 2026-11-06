@@ -34,7 +34,7 @@ VFS="$WORK_DIR/python-vfs.vfs.zst"
 KANDELO_PYTHON_RUNTIME_ROOT="$RUNTIME_ROOT" \
 KANDELO_PYTHON_WASM="$PYTHON_WASM" \
 KANDELO_PYTHON_VFS_OUT="$VFS" \
-    npx tsx "$REPO_ROOT/images/vfs/scripts/build-python-vfs-image.ts"
+    node --import "$REPO_ROOT/node_modules/tsx/dist/loader.mjs" "$REPO_ROOT/images/vfs/scripts/build-python-vfs-image.ts"
 
 [ -f "$VFS" ] || { echo "ERROR: $VFS not produced" >&2; exit 1; }
 

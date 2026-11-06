@@ -76,7 +76,7 @@ import {
 
 export const WORDPRESS_SECRETS_SERVICE = "wordpress-secrets";
 export const WORDPRESS_ADMIN_REHASH_MU_PLUGIN_PATH =
-  "/var/www/html/wp-content/mu-plugins/kandelo-admin-rehash.php";
+  "/srv/www/html/wp-content/mu-plugins/kandelo-admin-rehash.php";
 /** The option recording that this machine re-salted the admin hash. */
 export const WORDPRESS_ADMIN_REHASH_MARKER = "kandelo_admin_hash_resalted";
 export const WORDPRESS_SECRETS_SCRIPT = "/usr/sbin/kandelo-wordpress-secrets";
@@ -211,7 +211,7 @@ add_action( 'init', static function () {
  * PHP-FPM's nobody workers read it, no one else can.
  */
 export function populateWordPressFirstBootSecrets(fs: VfsImageFilesystem): void {
-  ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
+  ensureDirRecursive(fs, "/srv/www/html/wp-content/mu-plugins");
   writeVfsFile(
     fs,
     WORDPRESS_ADMIN_REHASH_MU_PLUGIN_PATH,

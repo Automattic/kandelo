@@ -152,6 +152,8 @@ rootfs_input_hash() {
         images/vfs/lib/kandelo-image-fs.ts \
         images/vfs/scripts/program-originals.ts \
         images/vfs/scripts/dependency-original-inputs.ts \
+        images/vfs/scripts/filesystem-layout.ts \
+        scripts/check-image-layout.ts \
         crates/kandelo-image-module \
         crates/wasm-artifact \
         crates/runtime-core/Cargo.toml \
@@ -278,6 +280,8 @@ fi
     --sab-size "$ROOTFS_SAB_SIZE" \
     --max-size "$ROOTFS_MAX_SIZE" \
     "${metadata_args[@]}"
+
+node --import tsx scripts/check-image-layout.ts "$OUT"
 
 SIZE=$(wc -c < "$OUT" | tr -d ' ')
 echo "==> Built $OUT ($SIZE bytes)"

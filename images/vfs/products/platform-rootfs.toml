@@ -25,7 +25,7 @@ gid = 0
 ephemeral = true
 
 [boot]
-argv = ["/usr/bin/login", "-p", "-f", "maker"]
+argv = ["/bin/login", "-p", "-f", "maker"]
 cwd = "/home/maker"
 uid = 0
 gid = 0

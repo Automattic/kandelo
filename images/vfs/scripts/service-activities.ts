@@ -18,17 +18,17 @@ export function installServiceActivities(fs: KandeloImageFs, activities: readonl
   }
   const targets = activities.map(activity => activity.target).join(" ");
   const ports = activities.map(activity => `  ${activity.target}) port=${activity.port} ;;`).join("\n");
-  for (const path of ["/sbin", "/usr/local/bin", "/usr/local/libexec", "/etc/kandelo", "/run/kandelo-services"]) ensureDirRecursive(fs, path);
+  for (const path of ["/sbin", "/usr/bin", "/usr/libexec", "/etc/kandelo", "/run/kandelo-services"]) ensureDirRecursive(fs, path);
   fs.chmod("/run/kandelo-services", 0o700);
   const services = parseComputerServices(JSON.stringify({ version: 1, services: activities.map(activity => ({
     id: activity.target, title: activity.title ?? activity.target, port: activity.port,
     ...(activity.shortcuts ? { shortcuts: activity.shortcuts } : {}),
   })) }));
   writeVfsFile(fs, COMPUTER_SERVICES_PATH, JSON.stringify({ version: 1, services }));
-  fs.writeFile("/usr/local/bin/kandelo-service", control, 0o4755);
-  fs.chmod("/usr/local/bin/kandelo-service", 0o4755);
+  fs.writeFile("/usr/bin/kandelo-service", control, 0o4755);
+  fs.chmod("/usr/bin/kandelo-service", 0o4755);
   writeVfsFile(fs, "/etc/dinit.d/machine", "type = internal\nrestart = false\n");
-  writeVfsFile(fs, "/usr/local/libexec/kandelo-service", `#!/bin/sh
+  writeVfsFile(fs, "/usr/libexec/kandelo-service", `#!/bin/sh
 set -eu
 action=\${1:-}
 target=\${2:-}
@@ -128,7 +128,7 @@ ${preflight}
 previous=
 if [ -f /etc/kandelo/initial-service ]; then previous=$(cat /etc/kandelo/initial-service); fi
 if [ "$previous" != "$target" ]; then
-  /usr/local/bin/kandelo-service enable "$target"
+  /usr/bin/kandelo-service enable "$target"
   printf '%s\\n' "$target" > /etc/kandelo/initial-service
   sync
 fi

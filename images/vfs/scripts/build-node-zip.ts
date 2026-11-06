@@ -3,7 +3,7 @@
  * Build node.zip for the browser shell demo: a root-relative archive of
  * bin/node (the SpiderMonkey-based Node.js interpreter) plus npm + npx and
  * the npm dist. The shell overlay mounts it at /usr/, so entries become
- * /usr/bin/node, /usr/bin/npm, /usr/local/lib/npm/... On first exec the archive
+ * /usr/bin/node, /usr/bin/npm, /usr/lib/npm/... On first exec the archive
  * is fetched and unpacked in one go.
  *
  * npm on SpiderMonkey needs a job-queue-pumping runner and a few source shims
@@ -52,7 +52,7 @@ const fs = KandeloImageFs.create();
 // the old constructor's first argument.
 fs.setImageCapacity(160 * 1024 * 1024);
 ensureDirRecursive(fs, "/usr/bin");
-ensureDirRecursive(fs, "/usr/local/lib");
+ensureDirRecursive(fs, "/usr/lib");
 // The browser kernel worker writes the MITM CA cert here on init; npm reads it
 // for HTTPS. Create the directory so it exists once the archive is mounted.
 ensureDirRecursive(fs, "/etc/ssl");
@@ -60,18 +60,16 @@ ensureDirRecursive(fs, "/etc/ssl");
 writeVfsBinary(fs, "/usr/bin/node", new Uint8Array(readFileSync(nodeWasmPath)), 0o755);
 
 console.log("==> Mounting npm dist...");
-const written = walkAndWrite(fs, npmSourceDir, "/usr/local/lib/npm", {
+const written = walkAndWrite(fs, npmSourceDir, "/usr/lib/npm", {
   exclude: (rel: string) =>
     rel === "man" || rel.startsWith("man/") ||
     rel === "docs" || rel.startsWith("docs/"),
 });
 console.log(`    ${written} npm files`);
 
-// The SpiderMonkey npm runtime glue (runner, launchers, shims, source patches,
-// /usr/bin/npm+npx, /usr/local/bin symlinks). It also writes /bin/npm symlinks,
-// but those live outside /usr so the subtree export below simply drops them;
-// the shell overlay owns the /bin aliases, and /etc/profile.d/node.sh (see
-// shell-lazy-archives.ts) carries npm's settings for the image.
+// The SpiderMonkey npm runtime glue (runner, launchers, shims and source
+// patches) lives entirely under /usr. /etc/profile.d/node.sh supplies the
+// image's npm settings; no /bin or /usr/local aliases are installed.
 stageSpiderMonkeyNpmRuntime(fs);
 
 console.log("==> Exporting the /usr subtree...");

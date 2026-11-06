@@ -1,6 +1,6 @@
 /** User-visible filesystem layout shared by every Kandelo shell image. */
 import type { VfsImageFilesystem } from "./vfs/vfs-image-filesystem";
-import { ensureDirRecursive, writeVfsFile } from "./vfs/image-helpers";
+import { ensureDirRecursive, symlink, writeVfsFile } from "./vfs/image-helpers";
 
 /**
  * Populate ordinary shell state without selecting binaries, lazy archives,
@@ -11,11 +11,19 @@ export function populateShellRuntimeLayout(fs: VfsImageFilesystem): void {
     "/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin",
     "/usr/share", "/usr/share/misc", "/usr/share/file",
     "/etc", "/root", "/tmp", "/home", "/home/maker", "/home/projects",
-    "/dev", "/usr/sbin",
+    "/dev", "/sbin", "/lib", "/usr/sbin", "/usr/lib", "/usr/libexec",
+    "/srv", "/run", "/run/lock", "/run/user", "/run/user/1000", "/var", "/var/lib", "/var/log",
+    "/var/cache", "/var/tmp", "/media", "/mnt", "/opt",
+    "/usr/local/sbin", "/usr/local/lib", "/usr/local/share",
   ]) {
     ensureDirRecursive(fs, dir);
   }
 
+  symlink(fs, "/run", "/var/run");
+  symlink(fs, "/run/lock", "/var/lock");
+  fs.chown("/run/user/1000", 1000, 1000);
+  fs.chmod("/run/user/1000", 0o700);
+  fs.chmod("/var/tmp", 0o1777);
   fs.chmod("/tmp", 0o1777);
   fs.chmod("/root", 0o700);
   fs.chown("/home/maker", 1000, 1000);
@@ -37,7 +45,7 @@ export function populateShellRuntimeLayout(fs: VfsImageFilesystem): void {
     "",
   ].join("\n");
   writeVfsFile(fs, "/etc/gitconfig", gitconfig);
-  writeVfsFile(fs, "/usr/local/bin/kandelo-preview", `#!/bin/sh
+  writeVfsFile(fs, "/usr/bin/kandelo-preview", `#!/bin/sh
 set -eu
 if [ "$#" = 1 ] && [ "$1" = --help ]; then
   printf '%s\n' 'Usage: kandelo-preview http://localhost:PORT/path' 'Also accepts host, peer-N, or a connected 10.89.0.N guest.' 'Requires an attached Kandelo terminal. Requests a preview; connection errors appear in Web.'
