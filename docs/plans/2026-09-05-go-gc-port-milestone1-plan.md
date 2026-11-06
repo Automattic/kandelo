@@ -36,7 +36,9 @@ exact bytes. The preview URL and HTTP identity record are in
   publication now wakes every waiter on that exact retiring channel. All
   28 related host checks pass, followed by eight actual service drain and
   cooperative-retirement cases across four fresh Node runs. The broader
-  Node/Bun/browser lifecycle gate remains pending.
+  Node/Bun/browser lifecycle gate remains pending. Its source-only memory
+  selection now passes 239/239 after explicit review of six standalone
+  Go/C linker-probe allocations; none holds a live kernel memory.
 - The visible Caddy UI case passes in Chromium and Firefox: homepage,
   Shortcuts admin login, Appearance/site editor, template canvas blocks,
   and 20 seconds of editor HTTP health. The real service log contains no
@@ -152,6 +154,37 @@ records 254,181,376 bytes in `.context/declared-browser-rss-check.log`.
 This proves tool availability, not WordPress memory behavior or stability.
 The flake is a global package input, so the next build regenerates its
 cohort normally instead of bypassing cache identity or ambient host tools.
+
+### Coherent rebuild and ownership audit — 2026-11-06
+
+The first changed-tool union, job
+`frankenphp-declared-rss-tool-cohort-1106-030716-9e6b`, ends after 4h53m:
+149 packages publish, 15 nodes are cached, SpiderMonkey fails, and 19
+consumers remain blocked. Mozilla correctly rejects the unrelated psutil
+7.1.2 exposed by the benchmark's declared Python environment; its build
+requires psutil at most 5.9.4. No compiler or upstream package patch is
+needed. SpiderMonkey revision 16 creates a private, pip-free Python virtual
+environment under its resolver work directory, retaining Mozilla's own
+requirements. A direct environment check confirms psutil is absent there.
+The normal retry, `frankenphp-isolated-python-cohort-1106-104015-9736`,
+reuses the completed package cache. Its final result remains pending.
+
+The first broad source-only host memory run records 238/239 passing in
+`.context/terminal-wake-memory-source-r9fenE/`. Its audit identifies six
+unreviewed allocations in the existing standalone Go/C linker probes.
+They instantiate synthetic program modules with private test-owned shared
+memory and stub imports, never a Kandelo kernel or live guest memory.
+Explicit exact-site allowances preserve the audit's full source inventory.
+The corrected run passes all 239 checks in 137.21 seconds:
+`.context/terminal-wake-memory-source-6QMYZh/vitest.JCfjqc/`.
+This does not replace the prepared-product Node/Bun and repeated browser
+switching parts of `./run.sh test browser-memory`.
+
+Caddy is also added to both storage modes in the existing real WordPress
+crash-recovery fixture. It must preserve a published post, exact uploaded
+PNG, and saved site-template heading with the original image source
+disabled. These new cases are not yet run. Optional browser-host memory
+samples now also retain ordinary `/proc/<pid>/status` thread counts.
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task.

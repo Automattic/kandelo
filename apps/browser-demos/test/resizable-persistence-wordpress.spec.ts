@@ -29,9 +29,11 @@ for (const storageMode of ["experimental", "library"] as const) {
 for (const { profile, title: machineTitle, image } of [
   { profile: "wordpress-sqlite", title: "WordPress SQLite", image: "wordpress" },
   { profile: "wordpress-frankenphp", title: "WordPress on FrankenPHP", image: "wordpress" },
+  { profile: "wordpress-frankenphp-caddy", title: "WordPress on FrankenPHP + Caddy", image: "wordpress" },
   { profile: "wordpress-mariadb", title: "WordPress MariaDB", image: "lamp" },
 ]) {
-const content = profile === "wordpress-frankenphp" ? "posts, uploads, and saved site templates" : "posts and uploads";
+const savesTemplates = profile === "wordpress-frankenphp" || profile === "wordpress-frankenphp-caddy";
+const content = savesTemplates ? "posts, uploads, and saved site templates" : "posts and uploads";
 test(`${machineTitle} ${content} survive OPFS restart without checkpointing or the source image (${storageMode})`, async ({ playwright, browserName }, testInfo) => {
   test.skip(process.env.KANDELO_TEST_MACHINE_URLS === undefined && !imageReady(`programs/wasm32/${image}.vfs.zst`), "ABI-matched browser WordPress product is required");
   test.setTimeout(540_000);
@@ -143,7 +145,7 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
         if (!response.ok) throw new Error(`Embedding uploaded media failed: ${response.status} ${await response.text()}`);
       }, { appPrefix, nonce, postId, sourceUrl: uploaded.sourceUrl });
 
-      const templateHeading = profile === "wordpress-frankenphp"
+      const templateHeading = savesTemplates
         ? `Kandelo durable template ${crypto.randomUUID()}` : undefined;
       if (templateHeading !== undefined) {
         await gotoInPreviewViaDock(page,
@@ -208,7 +210,7 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
           .locator('[data-type="core/heading"]').filter({ hasText: templateHeading }).first())
           .toBeVisible({ timeout: 180_000 });
         await recoveryPage.screenshot({
-          path: `../../.context/frankenphp-template-after-restart-${storageMode}-${browserName}.png`,
+          path: `../../.context/${profile}-template-after-restart-${storageMode}-${browserName}.png`,
         });
       }
       sourceRequestsDuringRecovery = source.observations().refusedImageRequests;

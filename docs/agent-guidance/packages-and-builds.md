@@ -43,6 +43,11 @@ that owns those direct dependencies, including an archive-stage override. A
 build script that relies on ambient host tools, global SDK links, undeclared
 transitive deps, or files outside its contract is not cache-safe.
 
+When an upstream build validates Python dependency versions, give it a private
+virtual environment under its work directory. Other tools declared in the
+dev shell can require different versions. Preserve the upstream requirements
+instead of weakening them to match unrelated host tooling.
+
 Build scripts configure, fetch, patch, generate, and compile only under
 `WASM_POSIX_DEP_WORK_DIR`, and install only into `WASM_POSIX_DEP_OUT_DIR`.
 The checkout is reviewed input, not scratch. Two resolves of one recipe in

@@ -1136,6 +1136,32 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 
 const auditAllowances: AuditAllowance[] = [
   {
+    key: "tests/go/cgo/link-only/test-run.mjs::<module>::wasm-memory-authority::new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The standalone Go/C linker probe creates only its synthetic program memory. It instantiates no Kandelo kernel and gives both test instances this memory to check that their C TLS remains distinct.",
+  },
+  {
+    key: "tests/go/cgo/link-only/test-run.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(module, imports)",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    count: 2,
+    why: "Both standalone link-probe instances receive the probe's synthetic program memory and stub function imports. Neither receives kernel imports or a live guest memory; the second instance tests C TLS isolation.",
+  },
+  {
+    key: "tests/go/cgo/link-only/test-run-browser.mjs::<module>::wasm-memory-authority::new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The disposable browser link-probe page creates only synthetic program memory to test Go-linked C and per-instance TLS. It boots no Kandelo machine and receives no kernel memory.",
+  },
+  {
+    key: "tests/go/cgo/link-only/test-run-browser.mjs::<module>::wasm-instance-authority::WebAssembly.instantiate(module, imports)",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    count: 2,
+    why: "These two instances in the disposable linker-probe page share only its synthetic program memory and stub imports. The second instance checks TLS isolation; neither can access a Kandelo kernel or persistent app realm.",
+  },
+  {
     key: "host/src/kernel.ts::WasmPosixKernel.init::kernel-export-direct-use::configureCursor(1)",
     disposition: "kernel-control",
     why: "Startup negotiates a scalar protocol version through the gated instance before publishing the initialized kernel. The call receives no pointer and exposes no memory view; cursor records use the entry-scoped scratch path instead.",

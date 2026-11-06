@@ -149,7 +149,11 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
           const [kernelPages, processes, modules] = await Promise.all([
             kernel.getKernelMemoryPages(), kernel.enumProcs(), kernel.getWasmModuleCacheStats(),
           ]);
-          return { kernelBytes: kernelPages * 65536, processes, modules };
+          const statuses = await Promise.all(processes.filter(process => process.pid !== 1).map(async process => {
+            const status = await kernel.readFileFromVfs(`/proc/${process.pid}/status`);
+            return { pid: process.pid, status: status ? decoder.decode(status) : null };
+          }));
+          return { kernelBytes: kernelPages * 65536, processes, statuses, modules };
         };
         await stage("kernel initialized");
         const template = await kernel.readFileFromVfs("/etc/wp-config-template.php");
