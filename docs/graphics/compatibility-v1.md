@@ -25550,3 +25550,73 @@ identities and the Why review are in
 not a passing replacement for the complete1074-case browser inventory;
 that integrated rerun remains required, along with all other B1 and final
 acceptance. No new preview, ABI change or performance claim follows.
+
+## Complete B1 consumer rerun and current normal build, 2026-11-06
+
+`graphics-b1-consumer-complete-r529-1106-095319-bf1b` passed30m55s at
+`6b3acfb70bdb9130c2916f72845299305fd43a5f`. The exact launcher is
+`scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-b1-consumer-complete-r529/run.sh 6b3acfb70bdb9130c2916f72845299305fd43a5f`.
+All17 tracked GLES consumer specs passed1074/1074:358 on each of Chromium,
+Firefox and WebKit, with no skipped, flaky, unexpected or retried case.
+Each test has exactly one passing attempt in the original JSON report.
+All28 Node tests in7 complete files passed66s; browser execution passed1767s.
+Final authored/configuration and normal-product hashes match. These actual C
+fixtures compile through the normal SDK and use the normal kernel/image
+writer. Node retains its truthful absent-renderer boundary.
+
+The report SHA256 is
+`a0a983468bb9b7a070893dbba24fab8b01b555769b7c5990e2eaee5b4ab68e78`.
+Exact selection, commands, raw output, every case and a verified compact
+judgment remain in `.context/graphics-b1-consumer-complete-r529/`. The older
+R519 failed run remains failed; this passing integrated run replaces its
+obsolete assertion expectations without weakening the rendering, error,
+context ownership or retirement controls.
+
+The current normal full refresh at
+`ebdd15fbce09fee47b2206aab3f479bfb1c7d2b8` also passed:
+`graphics-complete-b1-refresh-r524-1106-094407-dafb`,45m15s, using the ordinary
+`./run.sh setup --all` (2671s), ABI check (31s), `xtask verify-fresh` (4s) and
+frozen authored-source check (1s). Its295-file normal projection totals
+1,484,111,443 bytes; manifest SHA256 is
+`a829929e6ea582a14e40dfce486c900c1cf6a5fdd497aa19eed482e17b6989ec`.
+The normal kernel remains
+`a2b7c521955bbef64dd42dfe78999b8300e91d88f44ac88b2c81611052bdec96`.
+All compiled ABI/libc/Rust/SDK/package/image source was verified unchanged
+before this host refresh. Logs and before/after identities remain in
+`.context/graphics-complete-b1-refresh-r524/`.
+
+Its finalizer spent1167.9s recomputing artifact identities. A native process
+sample identifies the normal package-receipt hash path in the debug build
+of xtask. An attempted owned-process replacement failed its live-process
+preflight because that process had already finished; no signal was sent.
+The original refresh completed successfully and is not an interrupted run.
+No tracked build-script change or package/stamp workaround was introduced.
+This diagnostic concerns build execution, not desktop performance.
+
+The completed historical R406 Firefox GLES2 leg remains FAILED36378s on
+a61 source:19280 Pass,415 NotSupported,3 QualityWarning,3 CompatibilityWarning,
+27 Fail,15 Timeout,80 Missing and2 InternalError, with zero Crash or accounting
+errors. All19825 unique cases are accounted for; all124 adverse outcomes are
+unwaived. The missing cases follow exhausted timeout resumes, not successful
+native execution. Its per-case judgment and hashes are in
+`.context/graphics-cts-firefox-audit-judgment-r530/`. Existing standalone
+Firefox projected-LOD evidence remains scoped as recorded above; current
+shader/audit changes still require actual guest reruns. WebKit/EGL work
+continues on that immutable historical source.
+
+A new independent review also reproduces an existing production libEGL
+ownership defect at6b3, without any B2 draft: close its original DRM file,
+reuse the descriptor number for another DRM file with the same numeric GEM
+handle, then release the imported BO. Cleanup wrongly closes the replacement
+file's BO. The native fixture uses public EGL/WPK/GLES and ordinary fd/device
+operations; all3 production glue files match the committed source. The
+causal failing run is
+`graphics-fd-public-baseline-r2-r534-1106-103045-ec1a`,12s; its evidence is in
+`.context/graphics-fd-public-baseline-r534-runs/`. A kernel/descriptor ownership
+fix and regression validation remain required before complete B1 admission.
+This finding is not waived or deferred to B2.
+
+B1 and its complete preview remain incomplete: the ownership defect,
+remaining stage/application/conformance and physical latency gates are open.
+These consumer/build passes do not replace full dEQP, desktop, memory,
+POSIX, benchmark or final acceptance. ABI56/host3/GL17/fork21 is unchanged.
