@@ -746,19 +746,34 @@ fn klog_at<H: HostIO + ?Sized>(
 /// would otherwise spend a kernel event's slot, so it is limited, together
 /// with the other such numbers, in the limiter's overflow slot.
 ///
+/// `pid` is the process that made the call, so a reader can tell which of
+/// several running programs is hitting the gap. A limiter slot is per syscall
+/// number, not per process: two programs spinning on the same missing syscall
+/// share one burst.
+///
 /// `name` is the syscall's name where the call site knows it. Kandelo's
 /// syscall numbers are its own, so a name is given only where the kernel
 /// itself names the syscall, never guessed from another system's table.
-pub fn klog_unimplemented_syscall<H: HostIO + ?Sized>(host: &mut H, number: u32, name: Option<&str>) -> Option<u64> {
+pub fn klog_unimplemented_syscall<H: HostIO + ?Sized>(
+    host: &mut H,
+    pid: u32,
+    number: u32,
+    name: Option<&str>,
+) -> Option<u64> {
     let callsite = if number <= KMSG_MAX_SYSCALL_CALLSITE_ID { number } else { CallsiteId::MAX };
     match name {
         Some(name) => klog_at(
             host,
             callsite,
             LOG_WARNING,
-            format_args!("syscall {number} ({name}) is not implemented (ENOSYS)"),
+            format_args!("pid {pid} called syscall {number} ({name}), which is not implemented (ENOSYS)"),
         ),
-        None => klog_at(host, callsite, LOG_WARNING, format_args!("syscall {number} is not implemented (ENOSYS)")),
+        None => klog_at(
+            host,
+            callsite,
+            LOG_WARNING,
+            format_args!("pid {pid} called syscall {number}, which is not implemented (ENOSYS)"),
+        ),
     }
 }
 
@@ -1411,14 +1426,15 @@ mod tests {
     fn an_unimplemented_syscall_records_its_number_and_name() {
         reset_test_ring();
         let mut host = ClockHost::at(5, 0);
-        assert!(klog_unimplemented_syscall(&mut host, 247, Some("inotify_init1")).is_some());
-        // A syscall the call site cannot name is still reported by number.
-        assert!(klog_unimplemented_syscall(&mut host, 253, None).is_some());
+        assert!(klog_unimplemented_syscall(&mut host, 42, 247, Some("inotify_init1")).is_some());
+        // A syscall the call site cannot name is still reported by number, and
+        // each record names the process that made the call.
+        assert!(klog_unimplemented_syscall(&mut host, 7, 253, None).is_some());
         assert_eq!(
             logged().iter().map(|(level, _, text)| (*level, text.as_str())).collect::<Vec<_>>(),
             [
-                (LOG_WARNING, "syscall 247 (inotify_init1) is not implemented (ENOSYS)"),
-                (LOG_WARNING, "syscall 253 is not implemented (ENOSYS)"),
+                (LOG_WARNING, "pid 42 called syscall 247 (inotify_init1), which is not implemented (ENOSYS)"),
+                (LOG_WARNING, "pid 7 called syscall 253, which is not implemented (ENOSYS)"),
             ]
         );
         with_ring(|ring| assert_eq!(ring.read_at(0).unwrap().facility, LOG_KERN));
@@ -1437,7 +1453,7 @@ mod tests {
         let mut written = 0;
         for i in 0..spins {
             let mut host = ClockHost::at(1, i as i64);
-            if klog_unimplemented_syscall(&mut host, 247, Some("inotify_init1")).is_some() {
+            if klog_unimplemented_syscall(&mut host, 42, 247, Some("inotify_init1")).is_some() {
                 written += 1;
             }
         }
@@ -1452,12 +1468,12 @@ mod tests {
 
         // A different unimplemented syscall has its own budget, however hard
         // the first is spinning.
-        assert!(klog_unimplemented_syscall(&mut ClockHost::at(1, spins as i64), 248, Some("inotify_add_watch")).is_some());
+        assert!(klog_unimplemented_syscall(&mut ClockHost::at(1, spins as i64), 42, 248, Some("inotify_add_watch")).is_some());
 
         // After the quiet interval the window reopens and the count of what was
         // dropped is reported.
         let mut later = ClockHost::at(1 + 61, 0);
-        assert!(klog_unimplemented_syscall(&mut later, 247, Some("inotify_init1")).is_some());
+        assert!(klog_unimplemented_syscall(&mut later, 42, 247, Some("inotify_init1")).is_some());
         let dropped = spins - u64::from(KMSG_RATE_BURST);
         assert!(
             texts_logged().contains(&format!("{dropped} messages suppressed")),
@@ -1473,7 +1489,7 @@ mod tests {
         let mut host = ClockHost::at(1, 0);
         for number in (KMSG_MAX_SYSCALL_CALLSITE_ID + 1)..=KMSG_MAX_CALLSITE_ID + 1 {
             for _ in 0..KMSG_RATE_BURST + 1 {
-                klog_unimplemented_syscall(&mut host, number, None);
+                klog_unimplemented_syscall(&mut host, 42, number, None);
             }
         }
         for site in KlogSite::ALL {
@@ -1486,7 +1502,7 @@ mod tests {
         reset_test_ring();
         let mut host = ClockHost::at(1, 0);
         host.monotonic = Err(wasm_posix_shared::Errno::ENOSYS);
-        assert_eq!(klog_unimplemented_syscall(&mut host, 247, Some("inotify_init1")), None);
+        assert_eq!(klog_unimplemented_syscall(&mut host, 42, 247, Some("inotify_init1")), None);
         assert!(logged().is_empty());
     }
 

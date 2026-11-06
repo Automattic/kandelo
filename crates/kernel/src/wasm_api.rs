@@ -5538,7 +5538,8 @@ const _: extern "C" fn(i32, *mut u8, u32, *mut u8, u32, *mut u8, u32, i32) -> i3
 /// The log call is on this refusal path only, never on a path that succeeds.
 fn refuse_unimplemented_syscall(nr: u32, name: Option<&str>) -> i32 {
     let mut host = WasmHostIO;
-    crate::kmsg::klog_unimplemented_syscall(&mut host, nr, name);
+    let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+    crate::kmsg::klog_unimplemented_syscall(&mut host, pid, nr, name);
     -(Errno::ENOSYS as i32)
 }
 
