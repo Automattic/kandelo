@@ -1,5 +1,17 @@
 # Shared Node core build inputs
 
+Source129 adds a real shared worker-lock manager,receiver-local waiting and
+released Promises,transactional grant/steal delivery and fair native-provider
+dispatch.17public groups match exact native26;2fixture failure groups,
+38affected controls and12package checks pass. One unchanged upstream
+lock-diagnostics file passes both dependency-fixture modes. Portable owners
+also compile through the actual SDK. These are scoped source/native controls;
+production JSAPI/guest/four-host behavior is unvalidated. Lazy native-data
+properties,global Navigator routing and earlier compatibility gaps remain open.
+All19families remain partial;overall suites/full rebuild remain deferred.
+See [lock integration and limits](worker-locks-integration.md).
+
+
 Source128 selects the copy owner’s reflink header by actual availability.
 Targeted engine127failed on an absent linux/fs.h selected by the existing
 package macro;it also recorded an unresolved SDK calltypes-plugin crash.

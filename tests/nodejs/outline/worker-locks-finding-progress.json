@@ -1,0 +1,145 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/worker-contracts.md",
+    "findingIds": [
+      "R-015",
+      "R-014"
+    ],
+    "retainedRows": [
+      {
+        "rowIndex": 328,
+        "id": "worker_threads.locks"
+      },
+      {
+        "rowIndex": 3024,
+        "id": "worker_threads.Lock"
+      },
+      {
+        "rowIndex": 3025,
+        "id": "worker_threads.Lock.prototype.name"
+      },
+      {
+        "rowIndex": 3026,
+        "id": "worker_threads.Lock.prototype.mode"
+      },
+      {
+        "rowIndex": 3027,
+        "id": "worker_threads.Lock.prototype.Symbol(Symbol.toStringTag)"
+      },
+      {
+        "rowIndex": 3028,
+        "id": "worker_threads.LockManager"
+      },
+      {
+        "rowIndex": 3029,
+        "id": "worker_threads.LockManager.prototype.request"
+      },
+      {
+        "rowIndex": 3030,
+        "id": "worker_threads.LockManager.prototype.query"
+      },
+      {
+        "rowIndex": 3031,
+        "id": "worker_threads.LockManager.prototype.Symbol(Symbol.toStringTag)"
+      }
+    ],
+    "relatedFamilies": [
+      "workers",
+      "async",
+      "observability",
+      "values",
+      "web"
+    ],
+    "scope": "Actual lock manager/public algorithms and delivery/scheduling foundation;not complete R-015/descriptor/global/worker conformance"
+  },
+  "sourceImplemented": [
+    "Process/thread-shared native manager with copied metadata,receiver-local callbacks/dual Promises and actual teardown/wakeup ownership",
+    "Two-phase native/JS delivery commit,independent thenable resolution,query Promise-init ordering and consumed callback root retirement",
+    "Fair successful-provider rotation with preserved checkpoint/GC-close/idle/deadline/liveness contracts"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-locks-source-r1/report.json",
+    "sha256": "d522d0d6f313114515c295d9c57cfab73f8bfafdd7113b4b2f9ce7d047ec72b3",
+    "selectedIdentities": 25,
+    "completeReferences": 3,
+    "guardedInputs": 636,
+    "scope": "15owned payload files,3complete pinned references,generation/bootstrap syntax,native unity/input declarations and exact106engine composition;combined117\u2013129guest source not compiled."
+  },
+  "frontendAndAffected": {
+    "report": ".context/node26-locks-affected-r1.json",
+    "sha256": "4ce2e62955f6bff7940af4d242a958949345b55caf804e36a90f9509fed32591",
+    "passed": 38,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Affected async/ports/loop frontends with native dependencies,not guest/provider runtime"
+  },
+  "portableNative": {
+    "report": ".context/node26-locks-controls-r1/report.json",
+    "sha256": "a5767df394533fc377c9cfe99cf7481d193865c413fc5b66813208c6c32febc1",
+    "matchingPublicGroups": 17,
+    "candidateOnlyFailureGroups": 2,
+    "scope": "Root strict standalone portable/thread/transaction controls and17identical public groups2modes +2candidate-only fixture failure groups. Actual C++manager/receiver adapter over host NAPI,not production SpiderMonkey JSAPI or engine/guest/four-host acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-locks-package-r1.json",
+    "sha256": "27867e706c2f40424f152bcc0e16210f71e78bcb39073489f3872be0cd140eb8",
+    "passed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "636input source/package declaration controls,not API conformance"
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-locks-upstream-r1/report.json",
+    "sha256": "93552f1c42d7a2ccabc5a904762a9f5db22758ba2903ff16e86ed5197bd56bb4",
+    "files": 1,
+    "candidatePassed": 1,
+    "nativePassed": 1,
+    "failed": 0,
+    "scope": "One complete unchanged diagnostics-channel upstream file in candidate/native modes. Candidate substitutes only navigator.locks service with complete pinned public locks module/receiver adapter over actual portable native manager through NAPI fixture. Global Navigator and runtime remain native;not candidate global namespace,production JSAPI/guest/four-host evidence."
+  },
+  "targetHeader": {
+    "report": ".context/node26-locks-source-r1/target-report.json",
+    "sha256": "7cdf905a59db34fa422cb6fbd8572eac144f8fb5d187a2cfd3fc25133d5559a0",
+    "objects": 1,
+    "scope": "One actual SDK Wasm object instantiates portable manager/preview/commit/query/retirement/provider rotation. Not production SpiderMonkey JSAPI/link/runtime validation."
+  },
+  "privateAgentEvidence": {
+    "report": ".context/worker-locks-agent/review-fixes/report.json",
+    "sha256": "ab3d253ec6ee84de3177a013953ba591b02502525e9ec429ca0ace44373de004",
+    "scope": "Sealed15file/3patch/review evidence identities,matched public regressions and exact source provider400-turn/100grant/fence controls;not root reruns or engine acceptance"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/worker-locks-review/review-evidence.json",
+      "sha256": "79dd32c72642935366573ac24cfbb535c80cadbdf8482709f78782a41bcead43",
+      "kind": "original-three-reproduced-differences",
+      "reason": "Original source observations retained,now corrected in129source/focused controls;not production JSAPI closure"
+    },
+    {
+      "report": ".context/worker-locks-agent/reference-r1.log",
+      "sha256": "fa40cd8f2543e116d37d1382b673ba0a7f1afe236610b35d65f72fb89ee84f1b",
+      "kind": "termination-scheduling-unresolved",
+      "reason": "Reference timeout-window progress required another request;immediate candidate retirement wakeup kept,no accepted exclusion"
+    },
+    {
+      "report": ".context/worker-locks-agent/review-fixes/controls-r2.log",
+      "sha256": "cd74be9bc196a708791c85c64a02eb9c5aa748553b579bd5bbe225e1e12e68b1",
+      "kind": "fixture-primordial-copy",
+      "reason": "Non-enumerable descriptor-copy fixture failure retained before correction"
+    }
+  ],
+  "remaining": [
+    "Complete lazy native-data/creation-realm descriptors and actual global Navigator/locks owner;R-015not closed",
+    "Compile combined117\u2013129engine/JSAPI and resolve prior127SDK-plugin failure;test actual context/provider/GC/OOM/interrupt/unref/shutdown behavior on all4hosts",
+    "Resolve retained termination/query-order/foreign visibility differences and run unchanged worker/WPT coverage later;all19families remain partial"
+  ],
+  "at": "2026-11-06T01:56:11.523434+00:00",
+  "recipeRevision": 129,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

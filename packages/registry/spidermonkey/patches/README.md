@@ -484,3 +484,13 @@ the pinned libuv policy. Actual directory type rejects zero-sized directories.
 Reflink force fails when the platform lacks the operation. This registration
 does not establish guest or four-host conformance; directory errno and
 concurrent-truncation differences remain unresolved.
+
+### 0106: real worker locks and provider progress
+
+Register a process-shared native lock manager with receiver-local Promise and
+callback ownership. Grant/steal delivery commits only after the receiver owns
+its packet and error roots. Context teardown retires held/pending ownership.
+Rotate work,port,worker and lock providers after actual progress,preserving
+tick/job checkpoints,GC-close fences and existing bounded idle measurements.
+Only deliverable locks keep the loop alive;held/pending Promises do not. This
+source does not establish descriptor,JSAPI,guest or four-host conformance.

@@ -1777,6 +1777,20 @@ if warning_adapter.count('/* NODE_WARNING_MODULE */') != 1:
     raise ValueError('Review warning owner marker')
 bundle += warning_adapter.replace('/* NODE_WARNING_MODULE */', warning_source) + '\n'
 bundle += (root / 'worker-platform-adapter.js').read_text() + '\n'
+
+locks_manifest = json.loads((root / 'locks-sources.json').read_text())
+if (locks_manifest['version'], locks_manifest['commit']) != (manifest['version'], manifest['commit']):
+    raise ValueError('Web Locks target identity mismatch')
+for name, item in locks_manifest['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Web Locks source identity mismatch: ' + name)
+locks_source = (root / locks_manifest['sources']['lib/internal/locks.js']['path']).read_text()
+locks_adapter = (root / 'locks-platform-adapter.js').read_text()
+if locks_adapter.count('/* NODE_LOCKS_MODULE */') != 1:
+    raise ValueError('Review Web Locks public module marker')
+bundle += locks_adapter.replace('/* NODE_LOCKS_MODULE */', locks_source) + '\n'
+
 bundle += (root / 'adapter.js').read_text().replace('/* UPSTREAM_MODULES */', ',\n'.join(entries))
 dest = root / 'node-core.js'
 if '--check' in sys.argv:

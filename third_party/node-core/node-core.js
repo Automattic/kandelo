@@ -100267,6 +100267,517 @@ function _createNodeWorkerPlatform(platform) {
         initializeData(data) { environmentData = new SafeMap(data.environmentData); api.workerData = data.workerData; } };
 }
 
+// Native ownership is process-shared, while callbacks/promises below are
+// context-local. The complete pinned public Lock/LockManager source owns all
+// WebIDL, signal, diagnostic and observable public-object behavior.
+function _createNodeLocksPlatform(platform) {
+    'use strict';
+    const P = _createNodePrimordials();
+    const { ArrayPrototypePush, ObjectDefineProperty, Promise, PromisePrototypeThen, ReflectApply, SafeMap } = P;
+    const requests = new SafeMap();
+    const native = (...args) => ReflectApply(platform.native.locks, undefined, args);
+    let publicModule;
+    function settle(id, entry, rejected, value, processQueue = true) {
+        const status = native('complete', id);
+        requests.delete(id);
+        // A stolen holder's released promise has already rejected. The user's
+        // callback still owns its original lifetime and settles independently.
+        if (status === 2 && !entry.stolen) {
+            entry.stolen = true;
+            entry.reject(new P.Error('LOCK_STOLEN'));
+        } else if (!entry.stolen) {
+            if (rejected) entry.reject(value); else entry.resolve(value);
+        }
+        if (processQueue) dispatchAll();
+    }
+    function stolen(id, entry, error) {
+        entry.stolen = true;
+        entry.reject(error);
+        if (entry.callbackSettled) { native('complete', id); requests.delete(id); }
+    }
+    function dispatchOne() {
+        if (!publicModule) return 0;
+        let event, entry, victims, stolenError;
+        // Prepare receiver-local roots/errors before the native state commit.
+        // A GC/allocation failure or reentrant request cannot consume a steal
+        // notification whose receiver has not acquired its actual JS packet.
+        while (true) {
+            event = native('next');
+            if (event === undefined) return 0;
+            entry = requests.get(event.id);
+            if (!entry) throw new P.Error('Missing receiver-local Web Locks request');
+            victims = [];
+            stolenError = event.kind === 'stolen' ? new P.Error('LOCK_STOLEN') : undefined;
+            for (let index = 0; index < event.localStolen.length; index++) {
+                const id = event.localStolen[index];
+                const victim = requests.get(id);
+                if (!victim) throw new P.Error('Missing receiver-local stolen Web Locks request');
+                ArrayPrototypePush(victims, { id, entry: victim, error: new P.Error('LOCK_STOLEN') });
+            }
+            if (native('commit', event.id)) break;
+        }
+        if (event.kind === 'stolen') {
+            stolen(event.id, entry, stolenError);
+            return 1;
+        }
+        for (let index = 0; index < victims.length; index++) {
+            const victim = victims[index];
+            stolen(victim.id, victim.entry, victim.error);
+        }
+        entry.started = true;
+        let value;
+        try { value = ReflectApply(entry.callback, undefined, [event.kind === 'miss' ? null : event.info]); }
+        catch (error) {
+            // Pinned native ProcessQueue rejects but retains the granted lock
+            // on a synchronous throw. Retire releases it at context teardown.
+            // This is an observed target behavior, not a compatibility repair.
+            entry.waitReject(error);
+            entry.reject(error);
+            entry.callbackSettled = true;
+            if (event.kind === 'miss') { native('complete', event.id); requests.delete(event.id); }
+            return 2; // Pinned ProcessQueue ends this pass on a throw/miss.
+        } finally { entry.callback = undefined; }
+        // Match native IsPromise rather than assimilating thenables before
+        // release. Promise resolution still assimilates the final result.
+        if (platform.types.isPromise(value)) {
+            try {
+                PromisePrototypeThen(value,
+                    result => settle(event.id, entry, false, result, event.kind !== 'miss'),
+                    error => settle(event.id, entry, true, error, event.kind !== 'miss'));
+            } catch (error) {
+                entry.waitReject(error); entry.reject(error); entry.callbackSettled = true;
+                if (event.kind === 'miss') { native('complete', event.id); requests.delete(event.id); }
+                return 2;
+            }
+            entry.waitResolve(value);
+        } else {
+            // The target owns TWO actual internal promises. Resolving waiting
+            // before release preserves thenable getters while the lock is held;
+            // released resolves independently after the real registry release.
+            entry.waitResolve(value);
+            settle(event.id, entry, false, value, event.kind !== 'miss');
+        }
+        return event.kind === 'miss' ? 2 : 1;
+    }
+    function dispatchAll() {
+        let count = 0;
+        let progress;
+        while ((progress = dispatchOne())) { count++; if (progress === 2) break; }
+        return count;
+    }
+    const binding = {
+        LOCK_MODE_SHARED: 'shared', LOCK_MODE_EXCLUSIVE: 'exclusive', LOCK_STOLEN_ERROR: 'LOCK_STOLEN',
+        request(name, clientId, mode, steal, ifAvailable, callback) {
+            let waitResolve, waitReject, resolve, reject;
+            const waiting = new Promise((yes, no) => { waitResolve = yes; waitReject = no; });
+            const released = new Promise((yes, no) => { resolve = yes; reject = no; });
+            platform.native.markPromiseAsHandled(waiting);
+            platform.native.markPromiseAsHandled(released);
+            const id = native('request', name, clientId, mode, steal, ifAvailable);
+            const entry = { callback, waitResolve, waitReject, resolve, reject,
+                stolen: false, started: false, callbackSettled: false };
+            try { requests.set(id, entry); }
+            catch (error) { native('complete', id); throw error; }
+            // Pinned Request calls ProcessQueue synchronously on this context.
+            try { dispatchAll(); }
+            catch (error) {
+                native('discard');
+                // The newly submitted callback has not run. Retire that exact
+                // pending/undelivered owner; other prepared entries stay queued
+                // and retryable, with their receiver-local roots intact.
+                if (!entry.started) {
+                    native('complete', id); requests.delete(id); entry.callback = undefined;
+                    waitReject(error); reject(error);
+                }
+                throw error;
+            }
+            return released;
+        },
+        query() {
+            let resolve;
+            const result = new Promise(yes => { resolve = yes; });
+            resolve(native('query'));
+            return result;
+        },
+    };
+    function load() {
+        if (publicModule) return publicModule;
+        const module = { exports: {} };
+        function require(name) {
+            if (name === 'internal/errors') return platform.values.errors;
+            if (name === 'internal/util') return platform.values.util;
+            if (name === 'internal/validators') return platform.values.validators;
+            if (name === 'internal/worker') return platform.worker;
+            if (name === 'internal/webidl') return platform.eventRequire(name);
+            if (name === 'diagnostics_channel') return platform.diagnostics;
+            throw new P.Error('Unsupported Web Locks dependency: ' + name);
+        }
+        function internalBinding(name) {
+            if (name === 'locks') return binding;
+            throw new P.Error('Unsupported Web Locks binding: ' + name);
+        }
+        (function(module, exports, require, primordials, internalBinding, process) {
+            'use strict';
+
+const {
+  ObjectDefineProperties,
+  Promise,
+  PromisePrototypeThen,
+  PromiseResolve,
+  SafePromisePrototypeFinally,
+  Symbol,
+  SymbolToStringTag,
+} = primordials;
+
+const {
+  ERR_ILLEGAL_CONSTRUCTOR,
+  ERR_INVALID_THIS,
+} = require('internal/errors');
+const {
+  kEmptyObject,
+  lazyDOMException,
+  kEnumerableProperty,
+} = require('internal/util');
+const {
+  validateAbortSignal,
+  validateFunction,
+} = require('internal/validators');
+const { threadId } = require('internal/worker');
+const {
+  converters,
+  createEnumConverter,
+  createDictionaryConverter,
+} = require('internal/webidl');
+const dc = require('diagnostics_channel');
+
+const locks = internalBinding('locks');
+const lockRequestStartChannel = dc.channel('locks.request.start');
+const lockRequestGrantChannel = dc.channel('locks.request.grant');
+const lockRequestMissChannel = dc.channel('locks.request.miss');
+const lockRequestEndChannel = dc.channel('locks.request.end');
+
+const kName = Symbol('kName');
+const kMode = Symbol('kMode');
+const kConstructLock = Symbol('kConstructLock');
+const kConstructLockManager = Symbol('kConstructLockManager');
+
+// WebIDL dictionary LockOptions
+const convertLockOptions = createDictionaryConverter('LockOptions', [
+  {
+    key: 'mode',
+    converter: createEnumConverter('LockMode', [
+      'shared',
+      'exclusive',
+    ]),
+    defaultValue: () => 'exclusive',
+  },
+  {
+    key: 'ifAvailable',
+    converter: (value) => !!value,
+    defaultValue: () => false,
+  },
+  {
+    key: 'steal',
+    converter: (value) => !!value,
+    defaultValue: () => false,
+  },
+  {
+    key: 'signal',
+    converter: converters.object,
+  },
+]);
+
+// https://w3c.github.io/web-locks/#api-lock
+class Lock {
+  constructor(symbol = undefined, name, mode) {
+    if (symbol !== kConstructLock) {
+      throw new ERR_ILLEGAL_CONSTRUCTOR();
+    }
+    this[kName] = name;
+    this[kMode] = mode;
+  }
+
+  get name() {
+    if (this instanceof Lock) {
+      return this[kName];
+    }
+    throw new ERR_INVALID_THIS('Lock');
+  }
+
+  get mode() {
+    if (this instanceof Lock) {
+      return this[kMode];
+    }
+    throw new ERR_INVALID_THIS('Lock');
+  }
+}
+
+ObjectDefineProperties(Lock.prototype, {
+  name: kEnumerableProperty,
+  mode: kEnumerableProperty,
+  [SymbolToStringTag]: {
+    __proto__: null,
+    value: 'Lock',
+    writable: false,
+    enumerable: false,
+    configurable: true,
+  },
+});
+
+// Helper to create Lock objects from internal C++ lock data
+function createLock(internalLock) {
+  return internalLock === null ? null : new Lock(kConstructLock, internalLock.name, internalLock.mode);
+}
+
+// Convert LOCK_STOLEN_ERROR to AbortError DOMException
+function convertLockError(error) {
+  if (error?.message === locks.LOCK_STOLEN_ERROR) {
+    return lazyDOMException('The operation was aborted', 'AbortError');
+  }
+  return error;
+}
+
+function publishLockRequestStart(name, mode) {
+  if (lockRequestStartChannel.hasSubscribers) {
+    lockRequestStartChannel.publish({ name, mode });
+  }
+}
+
+function publishLockRequestGrant(name, mode) {
+  if (lockRequestGrantChannel.hasSubscribers) {
+    lockRequestGrantChannel.publish({ name, mode });
+  }
+}
+
+function publishLockRequestMiss(name, mode, ifAvailable) {
+  if (ifAvailable && lockRequestMissChannel.hasSubscribers) {
+    lockRequestMissChannel.publish({ name, mode });
+  }
+}
+
+function publishLockRequestEnd(name, mode, ifAvailable, steal, error) {
+  if (lockRequestEndChannel.hasSubscribers) {
+    lockRequestEndChannel.publish({ name, mode, ifAvailable, steal, error });
+  }
+}
+
+// https://w3c.github.io/web-locks/#api-lock-manager
+class LockManager {
+  constructor(symbol = undefined) {
+    if (symbol !== kConstructLockManager) {
+      throw new ERR_ILLEGAL_CONSTRUCTOR();
+    }
+  }
+
+  /**
+   * Request a Web Lock for a named resource.
+   * @param {string} name - The name of the lock resource
+   * @param {object} [options] - Lock options (optional)
+   * @param {string} [options.mode] - Lock mode: 'exclusive' or 'shared' default is exclusive
+   * @param {boolean} [options.ifAvailable] - Only grant if immediately available
+   * @param {boolean} [options.steal] - Steal existing locks with same name
+   * @param {AbortSignal} [options.signal] - Signal to abort pending lock request
+   * @param {Function} [callback] - Function called when lock is granted
+   * @returns {Promise} Promise that resolves when the lock is released
+   * @throws {TypeError} When name is not a string or callback is not a function
+   * @throws {DOMException} When validation fails or operation is not supported
+   */
+  // https://w3c.github.io/web-locks/#api-lock-manager-request
+  async request(name, options, callback = undefined) {
+    if (callback === undefined) {
+      callback = options;
+      options = undefined;
+    }
+
+    name = converters.DOMString(name);
+    validateFunction(callback, 'callback');
+
+    if (options === undefined || typeof options === 'function') {
+      options = kEmptyObject;
+    }
+
+    // Convert LockOptions dictionary
+    options = convertLockOptions(options);
+
+    const { mode, ifAvailable, steal, signal } = options;
+
+    validateAbortSignal(signal, 'options.signal');
+
+    if (signal) {
+      signal.throwIfAborted();
+    }
+
+    if (name[0] === '-') {
+      // If name starts with U+002D HYPHEN-MINUS (-), then reject promise with a
+      // "NotSupportedError" DOMException.
+      throw lazyDOMException('Lock name may not start with hyphen',
+                             'NotSupportedError');
+    }
+
+    if (ifAvailable === true && steal === true) {
+      // If both options' steal dictionary member and option's
+      // ifAvailable dictionary member are true, then reject promise with a
+      // "NotSupportedError" DOMException.
+      throw lazyDOMException('ifAvailable and steal are mutually exclusive',
+                             'NotSupportedError');
+    }
+
+    if (mode !== locks.LOCK_MODE_EXCLUSIVE && steal === true) {
+      // If options' steal dictionary member is true and options' mode
+      // dictionary member is not "exclusive", then return a promise rejected
+      // with a "NotSupportedError" DOMException.
+      throw lazyDOMException(`mode: "${locks.LOCK_MODE_SHARED}" and steal are mutually exclusive`,
+                             'NotSupportedError');
+    }
+
+    if (signal && (steal === true || ifAvailable === true)) {
+      // If options' signal dictionary member is present, and either of
+      // options' steal dictionary member or options' ifAvailable dictionary
+      // member is true, then return a promise rejected with a
+      // "NotSupportedError" DOMException.
+      throw lazyDOMException('signal cannot be used with steal or ifAvailable',
+                             'NotSupportedError');
+    }
+
+    const clientId = `node-${process.pid}-${threadId}`;
+    publishLockRequestStart(name, mode);
+
+    // Handle requests with AbortSignal
+    if (signal) {
+      return new Promise((resolve, reject) => {
+        let lockGranted = false;
+
+        const abortListener = () => {
+          if (!lockGranted) {
+            reject(signal.reason || lazyDOMException('The operation was aborted', 'AbortError'));
+          }
+        };
+
+        signal.addEventListener('abort', abortListener, { once: true });
+
+        const wrappedCallback = (lock) => {
+          return PromisePrototypeThen(PromiseResolve(), () => {
+            if (signal.aborted) {
+              return undefined;
+            }
+            lockGranted = true;
+            publishLockRequestGrant(name, mode);
+
+            return callback(createLock(lock));
+          });
+        };
+
+        try {
+          const released = locks.request(
+            name,
+            clientId,
+            mode,
+            steal,
+            ifAvailable,
+            wrappedCallback,
+          );
+
+          // When released promise settles, clean up listener and resolve main promise
+          SafePromisePrototypeFinally(
+            PromisePrototypeThen(
+              released,
+              (result) => {
+                publishLockRequestEnd(name, mode, ifAvailable, steal, undefined);
+                resolve(result);
+              },
+              (error) => {
+                const convertedError = convertLockError(error);
+                publishLockRequestEnd(name, mode, ifAvailable, steal, convertedError);
+                reject(convertedError);
+              },
+            ),
+            () => signal.removeEventListener('abort', abortListener),
+          );
+        } catch (error) {
+          signal.removeEventListener('abort', abortListener);
+          const convertedError = convertLockError(error);
+          publishLockRequestEnd(name, mode, ifAvailable, steal, convertedError);
+          reject(convertedError);
+        }
+      });
+    }
+
+    // When ifAvailable: true and lock is not available, C++ passes null to indicate no lock granted
+    const wrapCallback = (internalLock) => {
+      if (internalLock === null) {
+        publishLockRequestMiss(name, mode, ifAvailable);
+      } else {
+        publishLockRequestGrant(name, mode);
+      }
+      const lock = createLock(internalLock);
+      return callback(lock);
+    };
+
+    // Standard request without signal
+    try {
+      const result = await locks.request(name, clientId, mode, steal, ifAvailable, wrapCallback);
+      publishLockRequestEnd(name, mode, ifAvailable, steal, undefined);
+
+      return result;
+    } catch (error) {
+      const convertedError = convertLockError(error);
+      publishLockRequestEnd(name, mode, ifAvailable, steal, convertedError);
+      throw convertedError;
+    }
+  }
+
+  /**
+   * Query the current state of locks for this environment.
+   * @returns {Promise<{held: Array<object>, pending: Array<object>}>} Promise resolving to lock manager snapshot
+   */
+  // https://w3c.github.io/web-locks/#api-lock-manager-query
+  async query() {
+    if (this instanceof LockManager) {
+      return locks.query();
+    }
+    throw new ERR_INVALID_THIS('LockManager');
+  }
+}
+
+ObjectDefineProperties(LockManager.prototype, {
+  request: kEnumerableProperty,
+  query: kEnumerableProperty,
+  [SymbolToStringTag]: {
+    __proto__: null,
+    value: 'LockManager',
+    writable: false,
+    enumerable: false,
+    configurable: true,
+  },
+});
+
+module.exports = {
+  Lock,
+  LockManager,
+  locks: new LockManager(kConstructLockManager),
+};
+
+        })(module, module.exports, require, P, internalBinding, platform.process);
+        publicModule = module.exports;
+        return publicModule;
+    }
+    return {
+        // One event per engine phase preserves the ordinary tick/job checkpoint.
+        dispatch: dispatchOne,
+        install(target) {
+            ObjectDefineProperty(target, 'locks', {
+                configurable: true, enumerable: true,
+                get() {
+                    const value = load().locks;
+                    ObjectDefineProperty(target, 'locks', { value, writable: true, configurable: true, enumerable: true });
+                    return value;
+                },
+                set(value) { ObjectDefineProperty(target, 'locks', { value, writable: true, configurable: true, enumerable: true }); },
+            });
+        },
+    };
+}
+
 // Shared intrinsic brands for the assertion and inspection adapters.
 function _createNodeCoreTypes(platform) {
     const uncurry = fn => Function.prototype.call.bind(fn);

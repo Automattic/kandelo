@@ -1,5 +1,17 @@
 # Current public-contract reconciliation
 
+Source129 adds a real shared worker-lock manager,receiver-local waiting and
+released Promises,transactional grant/steal delivery and fair native-provider
+dispatch.17public groups match exact native26;2fixture failure groups,
+38affected controls and12package checks pass. One unchanged upstream
+lock-diagnostics file passes both dependency-fixture modes. Portable owners
+also compile through the actual SDK. These are scoped source/native controls;
+production JSAPI/guest/four-host behavior is unvalidated. Lazy native-data
+properties,global Navigator routing and earlier compatibility gaps remain open.
+All19families remain partial;overall suites/full rebuild remain deferred.
+See [lock integration and limits](worker-locks-integration.md).
+
+
 Source128 selects the copy owner’s reflink header by actual availability.
 Targeted engine127failed on an absent linux/fs.h selected by the existing
 package macro;it also recorded an unresolved SDK calltypes-plugin crash.
@@ -231,7 +243,7 @@ of the APIs, overloads, inherited members, symbols and open questions.
 | Web | File/FormData/Headers, private header guard/list consumers, Blob/clone and Web Stream owners | Complete body/Fetch/WebIDL/global/encoding/URL semantics, transfer and network/crypto dependencies |
 | Loading | Partial pinned Module.wrap/wrapper and patched-script source owners with single exports snapshot; Real native parser goals and direct CJS body compilation, pinned filename/package/entry selection and shared ESM source format in103; Module record/require/JSON, package cache/reader, exports/imports/conditions/self/maps and SourceMap algorithms | Actual guest parser/error/source/realm evidence; complete provided-source execution, CJS wrapper/hooks/cache and ESM URL/namespace/JSON/async/cycle/dynamic-import graphs; TypeScript/Wasm/addon/source-map/cache/preload/CLI/permission/lifecycle owners; four-host conformance |
 | Terminal | Pinned shared/callback/promise readline,history/key/cursor owners plus120actual borrowed terminal-mode leases and window queries | Full public TTY/stdio classes,signals/resize/drain,Unicode width,persistence/permissions/REPL and guest lifecycle/stream/symbol conformance |
-| Workers | Actual thread/context/input/error/join owners,connected message packets,115named broadcast registry/fanout and shared native weak clone/transfer marks;124per-context loop measurement source | Complete endpoint/host transfer/context movement,thread routing/locks,Worker options/stdio/shared environment/resources/ref/failure/termination and parent-side performance/GC/realm/four-host evidence |
+| Workers | Real process/thread-shared lock manager,transactional receiver delivery,dual-Promise/callback lifetime and fair provider dispatch in129source;actual thread/context/input/error/join owners,connected packets,115broadcast registry/shared native weak clone marks and124per-context loop measurement source | Native lazy-data descriptors/global Navigator alias remain missing;guest117–129uncompiled;complete endpoint/host transfer/context movement,thread routing,Worker options/stdio/shared environment/resources/ref/failure/termination and parent-side performance/GC/realm/four-host evidence |
 | Compression | pinned codec/archive/iterable JS and native contexts; actual shared/growable queue leases and synchronous resizable codec/CRC/dictionary spans compiled in112 | Ordinary async resizable/transfer/pre-existing pin ownership; complete modes/options/iterators/files and native cleanup/cancellation/accounting; retained gzip OS-byte comparison mismatches and complete four-host evidence |
 | Observability | Pinned Console/diagnostics/TCP/DNS producers,Performance timeline/entry/observer/resource/timerify algorithms and process-origin clock;124real per-context loop-start/idle owner and complete pinned ELU arithmetic | Compile/validate actual loop hooks;other milestones/counters/histograms/GC/network producers,stack/inspector/global/realm/stream integration,public tracing/reporting and complete four-host conformance |
 | Engine | generic native Error location policy across registered root/worker contexts and VM realms; VM compiler, actual ordinary DONT_CONTEXTIFY globals, per-runtime chained security-callback owners and partial nominal GC budget | Complete ordinary sandbox exotic behavior, context metadata/deadlines/modules/cache/microtasks, inspector, heap measurements and worker/guest integration |

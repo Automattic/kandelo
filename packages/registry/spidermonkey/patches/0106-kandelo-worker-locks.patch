@@ -1,0 +1,120 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3970,6 +3970,7 @@
+       JS_FN("getBufferLimits", KandeloNativeBufferLimits, 0, 0),
+       JS_FN("engineGcHeapLimit", KandeloNativeEngineGcHeapLimit, 0, 0),
+       JS_FN("worker", KandeloNativeWorker, 3, 0),
++      JS_FN("locks", KandeloNativeLocks, 6, 0),
+       JS_FN("createFsRequest", KandeloNativeCreateFsRequest, 2, 0),
+       JS_FN("cancelFsRequest", KandeloNativeCancelFsRequest, 1, 0),
+       JS_FN("createReadFileJob", (KandeloFsPromiseGuard<KandeloNativeCreateReadFileJob>), 7, 0),
+@@ -5410,6 +5411,7 @@
+   if (IsKandeloNodeMode()) sc->kandeloPerformanceLoop.Enter();
+
+   bool beforeExitEmittedForIdle = false;
++  kandelo::node_loop::ProviderRotation providerRotation;
+   while (true) {
+     if (sc->quitting) return;
+     if (IsKandeloNodeMode()) {
+@@ -5465,7 +5467,8 @@
+       // but do not enter another turn when no referenced owner remains.
+       if (!timerReferences && !KandeloSocketHasWatches(cx) &&
+           !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
+-          !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx)) {
++          !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx) &&
++          !KandeloLocksHaveReferences(cx)) {
+         if (beforeExitEmittedForIdle) return;
+         beforeExitEmittedForIdle = true;
+         double ignored;
+@@ -5518,42 +5521,43 @@
+       }
+       if (sc->quitting) return;
+     }
+-    // One completion per turn, so its callback's ticks/jobs run before the
+-    // next completion. The work queue owns loop liveness even without timers.
+-    int ranWork = KandeloDispatchNativeWork(cx);
+-    if (sc->quitting) return; // Preserve explicit exit/hook-fatal status. No further JS.
+-    if (ranWork < 0) {
+-      if (sc->quitting) return;
++    // One real provider completion per turn, followed by the ordinary
++    // tick/job checkpoint. Rotate successful providers so continuous native
++    // work, messages or worker exits cannot indefinitely defer a ready lock.
++    const int ranProvider = providerRotation.Dispatch(
++        [&](kandelo::node_loop::Provider provider) -> int {
++      if (provider != kandelo::node_loop::Provider::Work) {
++        if (!IsKandeloNodeMode()) return 0;
++        const char* queue = provider == kandelo::node_loop::Provider::Ports
++            ? "__kandeloDispatchPorts" : provider == kandelo::node_loop::Provider::Workers
++            ? "__kandeloDispatchWorkers" : "__kandeloDispatchLocks";
++        double progress;
++        if (!KandeloCallAsyncQueue(cx, queue, &progress) || sc->quitting) return -1;
++        return progress != 0 ? 1 : 0;
++      }
++      const int ranWork = KandeloDispatchNativeWork(cx);
++      if (sc->quitting || ranWork < 0) return -1;
++      // Keep the native completion/retirement fence before its deferred GC
++      // close diagnostic; no other provider enters JS inside that fence.
++      if (IsKandeloNodeMode()) {
++        double gcCloseErrors;
++        if (!KandeloCallAsyncQueue(cx, "__kandeloRunFsGcCloseError", &gcCloseErrors) || sc->quitting)
++          return -1;
++        if (gcCloseErrors) return 1;
++      }
++      return ranWork;
++    });
++    if (sc->quitting) return;
++    if (ranProvider < 0) {
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+     }
+-    if (IsKandeloNodeMode()) {
+-      double gcCloseErrors;
+-      if (!KandeloCallAsyncQueue(cx, "__kandeloRunFsGcCloseError", &gcCloseErrors)) {
+-        if (sc->quitting) return;
+-        AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+-      }
+-      if (gcCloseErrors) continue;
+-    }
+-    if (ranWork) continue;
+-    if (IsKandeloNodeMode()) {
+-      double ranPorts;
+-      if (!KandeloCallAsyncQueue(cx, "__kandeloDispatchPorts", &ranPorts)) {
+-        if (sc->quitting) return;
+-        AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+-      }
+-      if (ranPorts) continue;
+-      double ranWorkers;
+-      if (!KandeloCallAsyncQueue(cx, "__kandeloDispatchWorkers", &ranWorkers)) {
+-        if (sc->quitting) return;
+-        AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+-      }
+-      if (ranWorkers) continue;
+-    }
++    if (ranProvider) continue;
+
+     if (!ranTasks && ranNative == 0 && ranTimers == 0 &&
+         !KandeloSocketHasWatches(cx) && !timersPending &&
+         !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
+-          !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx)) {
++          !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx) &&
++          !KandeloLocksHaveReferences(cx)) {
+       if (IsKandeloNodeMode()) continue;
+       break;
+     }
+@@ -5569,7 +5573,7 @@
+         }
+       }
+       if (IsKandeloNodeMode()) sc->kandeloPerformanceLoop.BeginIdle();
+-      usleep(sleepUs);
++      if (!KandeloWaitForLocksReady(cx, sleepUs)) usleep(sleepUs);
+       if (IsKandeloNodeMode()) sc->kandeloPerformanceLoop.EndIdle();
+     }
+   }
+@@ -16686,6 +16690,7 @@
+
+ ShellContext::~ShellContext() {
+   // Children retire their contexts/roots before their parent runtime disappears.
++  KandeloShutdownLocks(cx_);
+   KandeloShutdownWorkers(cx_);
+   // Finish/cancel native jobs and retire pins/roots while the JSContext lives.
+   KandeloShutdownNativeWork(this);

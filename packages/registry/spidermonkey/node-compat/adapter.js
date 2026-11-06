@@ -480,6 +480,7 @@
         getOpenSSLVersion() { return native.getOpenSSLVersion(); },
         timingSafeEqual(a, b) { return native.timingSafeEqual(a, b); },
         port(operation, owner, value) { return native.port(operation, owner, value); },
+        locks(...args) { return native.locks(...args); },
         serializeMessage(value, transfer) {
             return native.serializeMessage(value, transfer);
         },

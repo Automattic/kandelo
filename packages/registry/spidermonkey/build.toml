@@ -28,6 +28,12 @@ inputs = [
   "third_party/node-core/upstream/testing",
   "third_party/node-core/worker-platform-adapter.js",
   "third_party/node-core/native-worker.cpp",
+  "third_party/node-core/native-locks.cpp",
+  "third_party/node-core/lock-manager.h",
+  "third_party/node-core/provider-rotation.h",
+  "third_party/node-core/locks-platform-adapter.js",
+  "third_party/node-core/locks-sources.json",
+  "third_party/node-core/upstream/locks",
   "third_party/node-core/http-incoming-adapter.js",
   "third_party/node-core/http-parser-platform-adapter.js",
   "third_party/node-core/http-parser.h",
@@ -498,4 +504,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 128
+revision = 129

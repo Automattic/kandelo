@@ -1,0 +1,21 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/internal/locks.js": {
+      "path": "upstream/locks/lib/internal/locks.js",
+      "upstreamPath": "lib/internal/locks.js",
+      "sha256": "a14a6a26b00f8a26dcf33469f12c020947626a0b84cb4bee3e16f44a3fbe0b68"
+    },
+    "src/node_locks.cc": {
+      "path": "upstream/locks/src/node_locks.cc",
+      "upstreamPath": "src/node_locks.cc",
+      "sha256": "28f2a9cbffb561a4535031331025bcab15a9065ca1432800c2d8f9b5875c4666"
+    },
+    "src/node_locks.h": {
+      "path": "upstream/locks/src/node_locks.h",
+      "upstreamPath": "src/node_locks.h",
+      "sha256": "2039fed85f34a3ac3eba928499fb1f32e66532fdd0c7ddf06fb5263b15876690"
+    }
+  }
+}

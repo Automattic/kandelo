@@ -5185,5 +5185,29 @@
       }
     },
     "scope": "Pinned public copyFile wrappers with real bounded fd/FSReq owners;native JSAPI/guest conformance pending"
+  },
+  "locksPlatform": {
+    "manifest": {
+      "path": "locks-sources.json",
+      "sha256": "2158c43bdb26cccfa4afb7a8116863e1f502ae878f33d20e707d93dbcb02ce01"
+    },
+    "sources": {
+      "lib/internal/locks.js": {
+        "path": "upstream/locks/lib/internal/locks.js",
+        "upstreamPath": "lib/internal/locks.js",
+        "sha256": "a14a6a26b00f8a26dcf33469f12c020947626a0b84cb4bee3e16f44a3fbe0b68"
+      },
+      "src/node_locks.cc": {
+        "path": "upstream/locks/src/node_locks.cc",
+        "upstreamPath": "src/node_locks.cc",
+        "sha256": "28f2a9cbffb561a4535031331025bcab15a9065ca1432800c2d8f9b5875c4666"
+      },
+      "src/node_locks.h": {
+        "path": "upstream/locks/src/node_locks.h",
+        "upstreamPath": "src/node_locks.h",
+        "sha256": "2039fed85f34a3ac3eba928499fb1f32e66532fdd0c7ddf06fb5263b15876690"
+      }
+    },
+    "scope": "Full pinned public module over actual shared native manager,receiver-local promises and fair provider dispatch;not complete descriptor/guest/four-host conformance"
   }
 }
