@@ -1341,3 +1341,10 @@ the foundation into a new stage boundary or substitute it for application
 measurements. Duplicate upload costs and final machine memory lifecycle remain
 unmeasured. The complete B1 preview still waits for all B1 changes and required
 checks; B2's asynchronous bindings and moved total-request gate remain separate.
+
+The R445 host source-ownership correction closes the24-diagnostic TypeScript
+gate without changing `rootDir`, public distribution paths or ABI. Its combined
+compiler, focused Node/browser TLS, graphics, Node graphics-refusal and normal
+host-build checks pass. Full host/POSIX/memory/benchmark, B1 offscreen ownership,
+normal application preview and native-feel acceptance remain required; the
+compiler fix does not substitute for those gates.

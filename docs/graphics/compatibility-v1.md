@@ -57,6 +57,44 @@ explicitly wants to wait until all changes are integrated into a normally
 built preview that passes its required checks. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Host TLS source ownership and compiler gate, 2026-11-05 (R445)
+
+The shared host/legacy-JavaScript TLS implementation now lives under
+`host/src/networking/tls`, within the host's existing source and declaration
+boundary. `rootDir`, public distribution paths and ABI remain unchanged.
+Fetch and WebCrypto receive exact byte ranges with non-shared backing;
+shared inputs are copied, while private views preserve their offsets. Global
+WebCrypto type widening is removed. Inline Why comments explain both the
+byte-range invariant and upstream NOTICE preservation in the normal host
+build. The legacy worker imports this same source and its normal regenerated
+bundle includes the extended-master-secret logic already present in source.
+The guest OpenSSL C recipe is unchanged; this is not a guest OpenSSL execution
+claim or a patch to ported client software.
+
+Private R441 first reproduces24 compiler diagnostics, then clears them.
+Initial validation-launcher import and distribution-probe assumptions fail
+before their corrected frozen R3 run passes28s:105 focused tests across three
+files, no skips; three real-browser crypto/Fetch/certificate controls;
+legacy-worker CA verification; normal ESM/CJS/declaration build and37 declared
+distribution paths plus NOTICE. Those original failures remain recorded.
+
+Integration command
+`scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-host-types-integration-r445/run.sh`,
+job `graphics-host-types-integration-r445-1105-203550-f4f6`, passes4m23.
+It includes an initial wait for a pinned Nix input fetch lock, not a measured
+runtime performance change. Full compiler0 diagnostics, graphics2224/89,
+Node20/6,105 focused TLS/certificate/resolver tests, the normal host build,
+37 distribution paths/NOTICE/imports, legacy CA verification, three browser
+engine checks, ABI/evidence710 and frozen input checks all pass. No new host
+test file or ABI snapshot/version change is introduced. The preceding R443's
+failed compiler result remains historical evidence; the compiler gate is
+now closed at this checkpoint.
+
+Exact source hashes, commands, first failures and scoped judgments are under
+`.context/graphics-host-types-r441-runs/` and
+`.context/graphics-host-types-integration-r445/`. This is not a full host suite,
+new application preview, benchmark result or completion of B1/final acceptance.
+
 ## Connected owned buffer draws, 2026-11-05 (R432–R444)
 
 The ordinary guest C driver now uses the bounded private buffer bank for

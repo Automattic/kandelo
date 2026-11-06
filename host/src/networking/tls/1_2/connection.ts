@@ -1,4 +1,10 @@
-import { concatUint8Arrays } from '../shims';
+/*!
+ * TLS 1.2 implementation from WordPress Playground.
+ * Copyright WordPress Foundation and contributors.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ * Source provenance and local modifications are recorded in NOTICE.
+ */
+import { concatUint8Arrays, nonSharedBytes } from '../shims';
 
 import { ServerNameExtension } from '../extensions/0_server_name';
 import { ECPointFormatsExtension } from '../extensions/11_ec_point_formats';
@@ -351,7 +357,7 @@ export class TLS_1_2_Connection {
 			serverPrivateKey: ecdheKeyPair.privateKey,
 			clientPublicKey: await crypto.subtle.importKey(
 				'raw',
-				clientKeyExchangeRecord.body.exchange_keys,
+				nonSharedBytes(clientKeyExchangeRecord.body.exchange_keys),
 				{ name: 'ECDH', namedCurve: 'P-256' },
 				false,
 				[]
@@ -454,14 +460,14 @@ export class TLS_1_2_Connection {
 			masterSecret,
 			clientWriteKey: await crypto.subtle.importKey(
 				'raw',
-				clientWriteKey,
+				nonSharedBytes(clientWriteKey),
 				{ name: 'AES-GCM' },
 				false,
 				['encrypt', 'decrypt']
 			),
 			serverWriteKey: await crypto.subtle.importKey(
 				'raw',
-				serverWriteKey,
+				nonSharedBytes(serverWriteKey),
 				{ name: 'AES-GCM' },
 				false,
 				['encrypt', 'decrypt']
@@ -773,7 +779,7 @@ export class TLS_1_2_Connection {
 				tagLength: 128,
 			},
 			this.sessionKeys!.serverWriteKey,
-			payload
+			nonSharedBytes(payload)
 		);
 		++this.sentRecordSequenceNumber;
 

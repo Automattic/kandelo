@@ -3147,6 +3147,15 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
 
 2. **TlsNetworkBackend**: Terminates the guest's TLS connection with a generated, in-VFS CA and sends the decoded HTTP request through browser `fetch()`. Service-worker-controlled apps may proxy cross-origin fetches transparently. Other embedders set `BrowserKernelOptions.corsProxyUrl`; the option crosses the main-thread/worker protocol and routes backend fetches through the application's CORS proxy.
 
+   The shared TLS 1.2 implementation and its upstream NOTICE live in
+   `host/src/networking/tls/`, inside the host runtime's source/declaration
+   boundary; the host build preserves its NOTICE in
+   `dist/networking/tls/NOTICE`. The legacy OpenSSL example worker imports this same source;
+   it is not part of the guest OpenSSL C recipe. Fetch and WebCrypto receive
+   exact byte ranges with non-shared backing. Private views retain their
+   byte offsets; shared views are copied rather than admitted by globally
+   widening the platform's WebCrypto types.
+
    The browser bridge deliberately declines TLS 1.2 session resumption.
    TLS 1.3-capable clients can send a nonempty legacy session ID even without
    an existing Kandelo session. Echoing it after selecting TLS 1.2 would
