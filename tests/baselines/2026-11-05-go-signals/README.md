@@ -27,3 +27,23 @@ the first 45-case safepoint run. The metadata assertion used synchronous
 main-thread compilation above 8 MB. Its asynchronous-compilation correction
 passes the full 45-case rerun. Source-log SHA-256:
 `48e0bf792626ce540d7d8d321a51f50d985cfb614460a22696e33f52ab94c10f`.
+
+`go-browser-waitid.log` records the Chromium upstream `os/exec` Unix-path
+and wait probe failure in the rebuilt current-runtime browser inventory
+(`go-core-current-runtime-1105-191504-61b5`). `TestWaitid` reports a child
+exit status 1; guest stderr and host diagnostics are empty. This run has
+146 passing cases and one failure. The same case passes in Firefox and
+WebKit in that run; a subsequent three-repeat Chromium selection also
+passes (`go-waitid-chromium-repro-1105-192258-4b84`). The result remains
+intermittent, with no root cause established. A source-product build and
+baseline provisioning were active during the main run.
+
+Kandelo source commit: `663b4a472756`, with prepared WordPress test and
+benchmark edits in the working tree. Go source: `29e2118`. Command:
+
+```sh
+scripts/dev-shell.sh bash -c 'set -e; bash tests/go/build-browser-fixtures.sh; cd apps/browser-demos; KANDELO_GO_BROWSER_TESTS=1 KANDELO_PLAYWRIGHT_PORT=5423 npx playwright test test/go-port.spec.ts --workers=1 --reporter=line'
+```
+
+Complete source-log SHA-256:
+`5857215b9ba337ab9269daa246b0c30f97899c28518b7ac20c894f014ea04f9d`.

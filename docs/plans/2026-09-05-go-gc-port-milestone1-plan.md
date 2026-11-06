@@ -4,12 +4,15 @@
 
 The work now extends beyond the original hello-world milestone below.
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
-on ABI 55, with Go fork `c925e9c9ca8c63c549053fd07d3fe0799473d4e0`.
+on ABI 55 and latest main `21cfba152` (fetched again November 5).
 
-The next source pin is `930124371e660e1a2cac92cd7f78771a7716bc31`, which
+The package source pin is `930124371e660e1a2cac92cd7f78771a7716bc31`, which
 adds cooperative Go signals, fatal Go tracebacks, shared libc cgo syscall
-dispatch, and the existing host heap-safepoint integration. The revision-35 WordPress rebuild and actual Caddy/PHP shutdown validation are
-pending; the revision-32 app evidence below remains tied to `c925e9c`.
+dispatch, and the existing host heap-safepoint integration. The revision-35
+WordPress rebuild and actual Caddy/PHP shutdown validation are pending;
+the revision-32 app evidence below remains tied to Go fork `c925e9c`.
+The subsequent callback source commit `29e2118` is pushed and tested but
+not yet pinned in a package image.
 
 - The revision-32 WordPress image runs actual embedded PHP through both
   FrankenPHP classic and Caddy. Six visible Chromium cases prove
@@ -32,6 +35,10 @@ pending; the revision-32 app evidence below remains tied to `c925e9c`.
 - Caddy also passes all three visible WebKit cases. The full WebKit UI
   run is 4/6: classic post writes pass, while classic editor health and
   template navigation remain intermittent failures.
+- Current source-level signal tests pass 51/51 across the three browsers;
+  ordinary/foreign callback regressions pass three Node probes and nine
+  browser cases. The complete cgo-enabled upstream Node `os` run passes
+  224 top-level tests/examples with 21 skips and clean guest diagnostics.
 - Next: finish the Go signal-notification port and validate application
   shutdown, isolate the classic WebKit failures, then establish sustained
   traffic/memory behavior and current paired stack comparisons. Child
@@ -5178,3 +5185,14 @@ is `.context/go-signal-system-stack-os-build.log`. The latter retains the
 existing macOS port-49152 publication warning; no host service was stopped.
 This is a runtime/standard-library gate, not validation of the pending
 WordPress image.
+
+
+The rebuilt full Go browser inventory runs 147 cases: 146 pass and one
+Chromium upstream `os/exec` Unix-path/wait case fails in `TestWaitid` with
+child exit status 1 (`go-core-current-runtime-1105-191504-61b5`, 7m04s
+including fixture builds). The same case passes in Firefox and WebKit;
+three focused Chromium repeats also pass (35 seconds). This remains an
+intermittent failure, not a green full-inventory result. Its actual failure
+payload and source-log hash are retained under
+`tests/baselines/2026-11-05-go-signals/`. A smaller stop/continue pipe
+reproducer with child-error capture is running before any behavior change.
