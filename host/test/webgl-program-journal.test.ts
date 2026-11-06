@@ -1,7 +1,10 @@
+import {recordCpuGlOutOfMemory,beginOptionalCpuPreparation,endOptionalCpuPreparation,optionalCpuPreparationRefused} from "../src/webgl/errors.js";
+import {withNativeBatch} from "../src/webgl/native-batch.js";
+import {RENDERER_LOST,rendererLost} from "../src/webgl/renderer-loss.js";
 import {expect,it,vi} from "vitest";
 import {GlContextRegistry} from "../src/webgl/registry.js";
 import {GlMuxer} from "../src/webgl/muxer.js";
-import {GlProgramJournal} from "../src/webgl/program-journal.js";
+import {GlProgramJournal,createProgramJournalControl} from "../src/webgl/program-journal.js";
 import {captureContextGlProgram,releaseGlProgramCapture} from "../src/webgl/program-captures.js";
 import {GlProgramQueryPin,currentProgramName,publicCurrentProgramName,finalizeProgram,useProgramIfAccepted,
   linkProgramRetainingExecutable} from "../src/webgl/program-objects.js";
@@ -243,4 +246,54 @@ it("keeps peer publication cleanup errors with the current metadata authority",(
   finally{errors.mockRestore();}
   expect(f.b.errors).toEqual([]);expect(peer.errors).toEqual([0x500]);
   expect(f.journal.execute(0,1)).toBe(true);expect(f.journal.execute(1,2)).toBe(true);f.dispose();
+});
+
+
+it("keeps optional CPU reservation refusal out of guest flags without touching prior505 or other errors",()=>{
+ const f=fixture(),previous=[0x505,0x500];f.b.errors=previous;
+ const map=vi.spyOn(Array.prototype,"map").mockImplementationOnce(()=>{throw new Error("private CPU metadata reservation refused");});
+ const out=new Uint8Array(48),input=new Uint8Array(new Uint32Array([10,1,f.journal.id,2]).buffer);
+ try{expect(runGlQuery(f.b,0x3b,input,out,f.execution)).toBe(48);}finally{map.mockRestore();}
+ expect([...new Uint32Array(out.buffer)].slice(0,5)).toEqual([1,1,10,f.journal.id,0]);
+ expect(f.b.errors).toBe(previous);expect(f.b.errors).toEqual([0x505,0x500]);
+ // A later ordinary allocation failure has its ordinary guest ownership;
+ // completing the private query must have restored the provenance scope.
+ f.b.errors.length=0;recordCpuGlOutOfMemory(f.b);expect(f.b.errors).toEqual([0x505]);f.dispose();
+});
+it("does not classify invalid private authority as CPU unavailability",()=>{
+ const f=fixture(),out=new Uint8Array(48),input=new Uint8Array(new Uint32Array([10,1,f.journal.id+1,2]).buffer);
+ expect(runGlQuery(f.b,0x3b,input,out,f.execution)).toBe(48);
+ expect(new Uint32Array(out.buffer)[0]).toBe(1);expect(f.b.errors).toEqual([0x502]);f.dispose();
+});
+it("keeps native OOM sampling authoritative after a completed private CPU refusal receipt",()=>{
+ const f=fixture(),out=new Uint8Array(48),input=new Uint8Array(new Uint32Array([10,1,f.journal.id,2]).buffer);
+ const reserve=vi.spyOn(f.journal,"prepareBufferSnapshots").mockImplementation(()=>{recordCpuGlOutOfMemory(f.b);return 0;});
+ let native=0;const get=vi.spyOn(f.gl,"getError").mockImplementation(()=>{const error=native;native=0;return error;});
+ try{
+  const result=withNativeBatch(f.b,"optional CPU refusal followed by actual native OOM",()=>{
+   const bytes=runGlQuery(f.b,0x3b,input,out,f.execution);
+   expect(bytes).toBe(48);expect(new Uint32Array(out.buffer)[0]).toBe(1);
+   native=0x505;return bytes;
+  });
+  expect(result).toBe(RENDERER_LOST);expect(rendererLost(f.b)).toBe(true);
+ }finally{reserve.mockRestore();get.mockRestore();}f.dispose();
+});
+
+it("binds optional CPU refusal to exact receivers across derived owners and nested contexts",()=>{
+ const outer=createProgramJournalControl(),inner=createProgramJournalControl(),unrelated={errors:[] as number[]};
+ beginOptionalCpuPreparation(outer.cpuPreparation);
+ try{
+  recordCpuGlOutOfMemory(unrelated);expect(unrelated.errors).toEqual([0x505]);
+  expect(optionalCpuPreparationRefused(outer.cpuPreparation)).toBe(false);
+  beginOptionalCpuPreparation(inner.cpuPreparation);
+  try{
+   recordCpuGlOutOfMemory({errors:outer.errors});
+   expect(optionalCpuPreparationRefused(outer.cpuPreparation)).toBe(true);
+   expect(optionalCpuPreparationRefused(inner.cpuPreparation)).toBe(false);
+   recordCpuGlOutOfMemory({errors:inner.errors});expect(optionalCpuPreparationRefused(inner.cpuPreparation)).toBe(true);
+   expect(outer.errors).toEqual([]);expect(inner.errors).toEqual([]);
+  }finally{endOptionalCpuPreparation(inner.cpuPreparation);}
+  expect(optionalCpuPreparationRefused(outer.cpuPreparation)).toBe(true);
+ }finally{endOptionalCpuPreparation(outer.cpuPreparation);}
+ recordCpuGlOutOfMemory({errors:outer.errors});expect(outer.errors).toEqual([0x505]);
 });

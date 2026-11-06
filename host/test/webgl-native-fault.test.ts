@@ -328,3 +328,47 @@ it("keeps an accepted draw's private savepoint exact before discarding its inver
   expect(draws).toBe(1);
   expect(owner.errors).toEqual([0x501]);
 });
+
+it("reserves reusable inverse receivers before metadata refusal can mutate native state",()=>{
+  const r=renderer(),effects=vi.fn();
+  const inverse=R.prepareNativeInverse(r.owner,[["bindTexture",0xde1,null]])!;
+  const map=Array.prototype.map;
+  let prepared:R.PreparedNativeChanges|null=null;
+  try{
+    Array.prototype.map=function(){throw new Error("injected cold metadata exhaustion");};
+    prepared=R.PreparedNativeChanges.reserve(r.owner,[{apply:()=>{effects();return true;},restore:inverse}]);
+  }finally{Array.prototype.map=map;}
+  expect(prepared).toBeNull();expect(effects).not.toHaveBeenCalled();expect(r.owner.errors).toEqual([0x505]);
+});
+
+it("reuses warmed native receivers without allocating map, inverse, or stack metadata",()=>{
+  const r=renderer(),calls:unknown[]=[],guestErrors:number[]=[];
+  const owner=Object.assign(r.owner,{pid:7,sessionId:11});
+  r.gl.bindTexture=(_target,texture)=>{calls.push(texture);};
+  const selected=r.make(),original=r.make();
+  const apply=R.prepareNativeCall(r.gl,["bindTexture",0xde1,selected]);
+  const inverse=R.prepareNativeInverse(owner,[["bindTexture",0xde1,original]])!;
+  const receiver=R.PreparedNativeChanges.reserve(owner,[{apply:()=>R.checkedPreparedNativeCall(owner,apply),restore:inverse}],{finalizer:inverse})!;
+  // Admission had a receipt-local queue. The same reserved owner must follow
+  // the ordinary guest queue, or restoration falls back to per-call drains.
+  owner.errors=guestErrors;
+  withNativeBatch(owner,"prime reusable receiver",()=>{expect(receiver.apply()).toBe(true);});
+  calls.length=0;let samples=0,accepted=false;
+  r.gl.getError=()=>{samples++;return 0;};
+  const map=Array.prototype.map,flatMap=Array.prototype.flatMap,set=WeakMap.prototype.set;
+  const forbidden=()=>{throw new Error("warm metadata allocation");};
+  try{
+    Array.prototype.map=forbidden;Array.prototype.flatMap=forbidden;WeakMap.prototype.set=forbidden;
+    withNativeBatch(owner,"reused receiver",()=>{accepted=receiver.apply();});
+  }finally{Array.prototype.map=map;Array.prototype.flatMap=flatMap;WeakMap.prototype.set=set;}
+  expect(accepted).toBe(true);expect(calls).toEqual([selected,original]);expect(samples).toBe(1);
+  expect(guestErrors).toEqual([]);expect(hasNativeRepair(r.gl)).toBe(false);
+});
+
+it("keeps refused reusable restoration owned and fatal on a live renderer",()=>{
+  const r=renderer();
+  const inverse=R.prepareNativeInverse(r.owner,[["bindTexture",0xde1,null]])!;
+  const receiver=R.PreparedNativeChanges.reserve(r.owner,[{apply:()=>{r.refuse(true);return false;},restore:inverse}])!;
+  expect(caught(()=>receiver.apply())?.name).toBe("NativeGlFault");
+  expect(hasNativeRepair(r.gl)).toBe(true);
+});

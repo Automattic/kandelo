@@ -531,10 +531,15 @@ for (const fault of ["draw","read","active"]) it(`faults when the live renderer 
 });
 
 it("reserves raw BO mutation rollback after unit capture before detaching shared references", () => {
-  const {reg,b,peer,gl,gpu,frames,framebuffers,object} = revocationSetup(), set = WeakMap.prototype.set;
-  let reservations = 0;
-  WeakMap.prototype.set = function(key,value) { if (++reservations === 2) throw new RangeError("mutation inverse reservation failed"); return set.call(this,key,value); };
-  try { reg.retireForeignBo(41); } finally { WeakMap.prototype.set = set; }
+  const {reg,b,peer,gl,gpu,frames,framebuffers,object}=revocationSetup(),map=Array.prototype.map;
+  let reservations=0;
+  // The stable renderer stack cell no longer allocates on each publication;
+  // refuse the second real inverse-list reservation after unit capture.
+  Array.prototype.map=function(callback,thisArg){
+    if(this[0]?.restore&&++reservations===2)throw new RangeError("mutation inverse reservation failed");
+    return map.call(this,callback,thisArg);
+  };
+  try{reg.retireForeignBo(41);}finally{Array.prototype.map=map;}
   expect(reservations).toBe(2); expect(b.shadow.textureUnits[0]).toBe(object);
   for (const frame of framebuffers) expect(frames.get(frame)!.get(0x8ce0)).toBe(gpu.tex);
   expect(gl.getParameter(0x84e0)).toBe(0x84c2); expect(peer.shadow.textureUnits[1]).toBe(object);

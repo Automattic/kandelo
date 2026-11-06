@@ -1,3 +1,6 @@
+import {GlProgramJournal} from "../src/webgl/program-journal.js";
+import {GlMuxer} from "../src/webgl/muxer.js";
+import {GlUniformCpuPreparation,UNIFORM_CPU_COMPONENTS} from "../src/webgl/uniform-cpu-preparation.js";
 import { describe, expect, it, vi } from "vitest";
 import { decodeAndDispatch, validateCommandBuffer } from "../src/webgl/bridge.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
@@ -38,7 +41,9 @@ function setup(type=0x1406,size=20000,array=true) {
   const gl=new Proxy(native,{get(target,key){
     if(typeof key==="string" && key.startsWith("uniform")) return (_loc:unknown,...args:unknown[])=>{
       if(native.failUniform){errors.push(0x502);return;}
-      const data=args.at(-1) as ArrayLike<number>;calls.push({name:key,values:Array.from(data)});
+      const at=args.findIndex(value=>ArrayBuffer.isView(value)),data=args[at] as ArrayLike<number>;
+      const values=Array.from(data),offset=args[at+1] as number|undefined,length=args[at+2] as number|undefined;
+      calls.push({name:key,values:offset===undefined?values:values.slice(offset,offset+(length??values.length))});
     };
     return Reflect.get(target,key)??(()=>{});
   }}) as unknown as WebGL2RenderingContext;
@@ -214,5 +219,58 @@ describe("atomic large uniform uploads",()=>{
     t.b.cmdbufView!.set(malformed);expect(decodeAndDispatch(t.b,0,malformed.length)).toBe(-22);
     expect(t.b.uniformUpload).toBeNull();expect(t.calls).toEqual([]);
     t.begin(20000,O.OP_UNIFORM1FV,2);t.registry.destroyContext(1,2);expect(t.b.uniformUpload).toBeNull();
+  });
+});
+
+
+describe("cold CPU receivers for locally predicted inline uniforms",()=>{
+  function admit(t:ReturnType<typeof setup>){
+    const execution=t.registry.retainContextExecution(1,2,new GlMuxer(t.gl))!;
+    const journal=GlProgramJournal.create(execution,4)!;
+    const request=new Uint8Array(new Uint32Array([14,1,journal.id]).buffer),reply=new Uint8Array(48);
+    expect(runGlQuery(t.b,O.QOP_PROGRAM_JOURNAL,request,reply)).toBe(48);
+    expect(new DataView(reply.buffer).getUint32(16,true)).toBe(UNIFORM_CPU_COMPONENTS);
+    expect(journal.uniformSignature(0,0,new Uint32Array(12))).toBe(true);
+    return {journal,execution,done(){journal.retire();execution.release();t.registry.unbind(1);}};
+  }
+  it.each(signatures)("reuses admitted private data for opcode%s and ignores excessive array tails",(op,type,name)=>{
+    const t=setup(type,2),owner=admit(t),components=uniformUploadComponents(op);
+    const integer=op>=O.OP_UNIFORM1IV&&op<=O.OP_UNIFORM4IV,matrix=name.startsWith("uniformMatrix");
+    const values=Array.from({length:components*3},(_,i)=>integer?i-2:i*.5-2);
+    const data=t.bytes(op,[0,3,...(matrix?[0]:[]),...t.bits(values,integer)]);
+    t.b.cmdbufView!.set(data);
+    const originalFloat=globalThis.Float32Array,originalInt=globalThis.Int32Array;
+    let result=-1;
+    try {
+      // Both constructors fail deterministically after cold preparation. A
+      // successful decoder call must use the admitted receiver, including
+      // integer vectors and shared/unaligned-independent numeric copies.
+      vi.stubGlobal("Float32Array",new Proxy(originalFloat,{construct(){throw new Error("late float payload");}}));
+      vi.stubGlobal("Int32Array",new Proxy(originalInt,{construct(){throw new Error("late integer payload");}}));
+      result=decodeAndDispatch(t.b,0,data.length);
+    }finally{vi.stubGlobal("Float32Array",originalFloat);vi.stubGlobal("Int32Array",originalInt);}
+    expect(result).toBe(0);expect(t.calls).toEqual([{name,values:values.slice(0,components*2)}]);
+    expect(t.b.errors).toEqual([]);owner.done();
+  });
+  it("returns stable completed unavailability on cold CPU refusal without adding a guest error",()=>{
+    const t=setup(),execution=t.registry.retainContextExecution(1,2,new GlMuxer(t.gl))!;
+    const journal=GlProgramJournal.create(execution,2)!,reserve=vi.spyOn(GlUniformCpuPreparation,"reserve").mockReturnValue(null);
+    try{
+      for(const tx of [1,2]){
+        const request=new Uint8Array(new Uint32Array([14,tx,journal.id]).buffer),out=new Uint8Array(48);
+        expect(runGlQuery(t.b,O.QOP_PROGRAM_JOURNAL,request,out)).toBe(48);
+        expect([...new Uint32Array(out.buffer)].slice(0,5)).toEqual([0,tx,14,journal.id,0]);
+      }
+      expect(reserve).toHaveBeenCalledTimes(1);expect(t.b.errors).toEqual([]);
+      expect(t.send(O.OP_UNIFORM1FV,[0,1,...t.bits([7])])).toBe(0);
+      expect(t.calls).toEqual([{name:"uniform1fv",values:[7]}]);
+    }finally{reserve.mockRestore();journal.retire();execution.release();t.registry.unbind(1);}
+  });
+  it("copies exact unaligned SharedArrayBuffer ranges without borrowing its storage",()=>{
+    const cpu=GlUniformCpuPreparation.reserve()!,input=new DataView(new SharedArrayBuffer(40),3,29);
+    input.setFloat32(1,1.5,true);input.setFloat32(5,-2.25,true);input.setInt32(13,-123,true);
+    expect(cpu.readFloats(input,1,2)).toBe(cpu.floats);expect([...cpu.floats.slice(0,2)]).toEqual([1.5,-2.25]);
+    expect(cpu.readIntegers(input,13,1)).toBe(cpu.integers);expect(cpu.integers[0]).toBe(-123);
+    input.setFloat32(1,9,true);expect(cpu.floats[0]).toBe(1.5);expect(cpu.floats.buffer).toBeInstanceOf(ArrayBuffer);
   });
 });

@@ -386,3 +386,52 @@ it("keeps failed private image refreshes stale and counts possible writes throug
   expect(view.synced).toBe(storageWrites(first).count); expect(peer.errors).toEqual([]);
   registry.unbind(7); gl.deleteTexture(first); gl.deleteTexture(second); expect(alive.size).toBe(0);
 });
+
+// Accepted private draws own native storage, independently of public texture
+// names and the optional EGLImage BO owner.
+it("retains an ordinary texture generation across respecification without deleting its live replacement",async()=>{
+  const {GlImageGenerationPin}=await import("../src/webgl/image-generations.js");
+  const {recordTextureLevel}=await import("../src/webgl/texture-levels.js");
+  const f=foreignTextureGl(),reg=new GlContextRegistry();reg.bind({pid:91,cmdbufAddr:0,cmdbufLen:64});
+  const b=reg.get(91)!;b.gl=f.gl;b.contextId=1;
+  const object=f.gl.createTexture()!;b.textures.set(1,object);b.shadow.textureUnits[0]=object;f.gl.bindTexture(0xde1,object);
+  recordTextureLevel(object,0xde1,0,{width:4,height:4,internalFormat:0x8058,format:0x1908,type:0x1401,compressed:false});
+  const pin=GlImageGenerationPin.acquire(b,object)!;expect(pin).not.toBeNull();
+  expect(imageTextureOperation(b,0xde1,true,()=>f.gl.texImage2D(0xde1,0,0x8058,2,2,0,0x1908,0x1401,null),false,0)).toBe(true);
+  const replacement=textureNative(b,object);expect(replacement).not.toBe(object);expect(f.alive.has(object)).toBe(true);
+  expect(pin.release()).toBe(true);expect(f.alive.has(object)).toBe(false);expect(f.alive.has(replacement)).toBe(true);
+  expect(destroyTextureView(b,object)).toBe(true);b.textures.clear();reg.unbind(91);
+});
+it("dropping an image-generation cache pin does not delete a texture still owned by its ordinary name",async()=>{
+  const {GlImageGenerationPin}=await import("../src/webgl/image-generations.js");
+  const f=foreignTextureGl(),reg=new GlContextRegistry();reg.bind({pid:92,cmdbufAddr:0,cmdbufLen:64});const b=reg.get(92)!;b.gl=f.gl;b.contextId=1;
+  const object=f.gl.createTexture()!;b.textures.set(1,object);
+  expect(GlImageGenerationPin.acquire(b,object)!.release()).toBe(true);expect(f.alive.has(object)).toBe(true);
+  expect(destroyTextureView(b,object)).toBe(true);expect(f.alive.has(object)).toBe(false);b.textures.clear();reg.unbind(92);
+});
+it("keeps one native deletion owner when a pinned source is subsequently exported as an EGLImage",async()=>{
+  const {GlImageGenerationPin}=await import("../src/webgl/image-generations.js");
+  const {recordTextureLevel}=await import("../src/webgl/texture-levels.js");
+  const {exportImageStorage,retireExportedImage}=await import("../src/webgl/image-storage.js");
+  const f=foreignTextureGl(),reg=new GlContextRegistry();reg.bind({pid:93,cmdbufAddr:0,cmdbufLen:64});const b=reg.get(93)!;b.gl=f.gl;b.contextId=1;
+  const object=f.gl.createTexture()!;b.textures.set(1,object);b.shadow.textureUnits[0]=object;f.gl.bindTexture(0xde1,object);
+  recordTextureLevel(object,0xde1,0,{width:4,height:4,internalFormat:0x8058,format:0x1908,type:0x1401,compressed:false});
+  const pin=GlImageGenerationPin.acquire(b,object)!;const exported=exportImageStorage(b,7,0xde1,1,0);
+  expect(typeof exported).toBe("object");if(typeof exported==="number")throw new Error("export unavailable");
+  expect(imageTextureOperation(b,0xde1,true,()=>f.gl.texImage2D(0xde1,0,0x8058,2,2,0,0x1908,0x1401,null),false,0)).toBe(true);
+  expect(f.alive.has(object)).toBe(true);expect(retireExportedImage(exported.record)).toBe(true);expect(f.alive.has(object)).toBe(true);
+  expect(pin.release()).toBe(true);expect(f.alive.has(object)).toBe(false);
+  expect(destroyTextureView(b,object)).toBe(true);b.textures.clear();reg.unbind(93);
+});
+
+it("sampling-handle custody does not force a nonrenderable ALPHA source into a storage-orphan copy",async()=>{
+  const {GlImageGenerationPin}=await import("../src/webgl/image-generations.js");
+  const {recordTextureLevel}=await import("../src/webgl/texture-levels.js");
+  const f=foreignTextureGl(),reg=new GlContextRegistry();reg.bind({pid:94,cmdbufAddr:0,cmdbufLen:64});const b=reg.get(94)!;b.gl=f.gl;b.contextId=1;
+  const object=f.gl.createTexture()!;b.textures.set(1,object);b.shadow.textureUnits[0]=object;f.gl.bindTexture(0xde1,object);
+  recordTextureLevel(object,0xde1,0,{width:4,height:4,internalFormat:0x1906,format:0x1906,type:0x1401,compressed:false});
+  const pin=GlImageGenerationPin.acquire(b,object,false,false,object)!;
+  expect(imageTextureOperation(b,0xde1,true,()=>f.gl.texImage2D(0xde1,1,0x1906,2,2,0,0x1906,0x1401,null),true,1)).toBe(true);
+  expect(textureNative(b,object)).toBe(object);expect(pin.release()).toBe(true);expect(f.alive.has(object)).toBe(true);
+  expect(destroyTextureView(b,object)).toBe(true);b.textures.clear();reg.unbind(94);
+});

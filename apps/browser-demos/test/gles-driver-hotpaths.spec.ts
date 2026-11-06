@@ -64,10 +64,11 @@ for(const mode of ["ordinary","admitted","automatic"] as const) for(const arch o
     expect((byName.get("matrix4") as any).total).toBe(mode==="ordinary"?20:0);
     expect((byName.get("draw-arrays") as any).total).toBe(mode==="ordinary"?20:0);
     expect(setup).toHaveLength(14);
-    // Owned-buffer draws already learned this executable's uniform layout.
-    // The later matrix setter must reuse that proof, not repeat cold queries.
-    expect(setup.find((row:any)=>row.operation==="matrix4").deviceRequests).toBe(mode==="ordinary"?1:0);
-    expect(lines).toContain(`INITIAL_MATRIX ${mode==="automatic"?2:1}`);
+    // The explicit-admission path reserves CPU upload storage at its first
+    // setter. Automatic admission already paid that cold preparation above;
+    // both modes still require zero requests for every warmed operation.
+    expect(setup.find((row:any)=>row.operation==="matrix4").deviceRequests).toBe(mode==="ordinary"?1:mode==="admitted"?3:0);
+    expect(lines).toContain(`INITIAL_MATRIX ${mode==="automatic"?3:1}`);
     expect(lines).toContain("MATRIX_PROOFS 19");
     expect(lines).toContain("UNIFORM_PROOFS 40");
     const uniformCounts=lines.filter((line:string)=>line.startsWith("UNIFORM_COUNT ")).map((line:string)=>JSON.parse(line.slice(14)));

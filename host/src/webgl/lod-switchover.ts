@@ -104,6 +104,14 @@ export function setTextureFilters(object: WebGLTexture, min: number, mag: number
   else filters.set(object, { min, mag, half });
 }
 
+/** Copy accepted filter traits into private retained-storage metadata. The
+ * descriptor is not a guest texture: later public storage replacement must
+ * not make draw-time shader emulation inspect the replacement's filters. */
+export function copyTextureFilters(source:WebGLTexture,target:WebGLTexture):void {
+  const value=filters.get(source);
+  setTextureFilters(target,value?.min??NEAREST_MIPMAP_LINEAR,value?.mag??LINEAR);
+}
+
 /** TexParameteri/f of a 2D or cube texture: track its filters. Only values
  * WebGL accepts change native state (others are INVALID_ENUM and leave it),
  * so an invalid value is not recorded. A float names an enum after rounding

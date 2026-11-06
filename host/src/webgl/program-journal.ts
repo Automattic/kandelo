@@ -1,3 +1,8 @@
+import type {OptionalCpuPreparation} from "./errors.js";
+import {GlUniformCpuPreparation} from "./uniform-cpu-preparation.js";
+import {prepareUniformWrites} from "./reversed-depth.js";
+import {prepareSamplerWrites} from "./depth-sampling.js";
+import {GlFramebufferSnapshots} from "./framebuffer-snapshots.js";
 /** Pre-admitted logical program history. This is shared Node/browser device
  * state, not a guest wire entrypoint. The driver transport must publish each
  * committed shared intent before a peer changes its namespace. */
@@ -40,6 +45,28 @@ export class GlProgramJournal {
   private previewActive = false;
   private previewTicket = 0;
   private bufferSnapshots:GlBufferSnapshots|null=null;
+  private uniformCpu:GlUniformCpuPreparation|null=null;
+  private uniformCpuAttempted=false;
+  prepareUniformCpu():number {
+    if(!this.ready||this.closed||this.poisoned)return 0;
+    if(!this.uniformCpuAttempted){
+      this.uniformCpuAttempted=true;
+      try{
+        this.uniformCpu=GlUniformCpuPreparation.reserve();
+        // Draw signatures may already be cached in the C driver. Reserve
+        // every retained executable now; a cache hit after this receipt must
+        // not require a second signature query to make its first setter safe.
+        if(this.uniformCpu)for(const generation of this.generations.values())if(generation.pin){
+          prepareUniformWrites(generation.pin.program);prepareSamplerWrites(generation.pin.program);
+        }
+      }catch(error){rethrowNativeGlFault(error);this.uniformCpu=null;}
+    }
+    return this.uniformCpu?.floats.length??0;
+  }
+  uniformCpuPreparation():GlUniformCpuPreparation|null {
+    return this.ready&&!this.closed&&!this.poisoned?this.uniformCpu:null;
+  }
+  private framebufferSnapshots:GlFramebufferSnapshots|null=null;
 
   private readonly objects: GlObjectGroup;
 
@@ -177,8 +204,8 @@ export class GlProgramJournal {
 
   /** Cold preparation is memoized, including partial native failure. Publish
    * the receiver before initialization so retirement can never lose a copy.
-   * Action10 uses the sealed mutation receipt: lost copyout must recover the
-   * same partial preparation instead of allocating a second native bank. */
+   * The mutation receipt owns partial admission and recovers it without
+   * replaying native allocation after a lost reply. */
   prepareBufferSnapshots(capacity=BUFFER_SNAPSHOT_CAPACITY):number {
     if(!this.ready || this.closed || this.poisoned || !this.execution)return 0;
     if(this.bufferSnapshots && this.bufferSnapshots.capacity!==capacity)return 0;
@@ -193,11 +220,34 @@ export class GlProgramJournal {
     if(!this.ready || this.closed || this.poisoned || !this.bufferSnapshots){recordGlError(this.binding,0x502);return null;}
     return this.bufferSnapshots.captureAttribute(this.binding,index,token,attribute);
   }
+  defineBufferSnapshotFromWire(index:number,token:number,target:number,wire:DataView,offset:number,bytes:number,usage:number):boolean {
+    if(!this.ready||this.closed||this.poisoned||!this.bufferSnapshots){recordGlError(this.binding,0x502);return false;}
+    return this.bufferSnapshots.defineFromWire(this.binding,index,token,target,wire,offset,bytes,usage);
+  }
+  bufferDrawWorkspace(){
+    return this.ready&&!this.closed&&!this.poisoned?this.bufferSnapshots?.drawWorkspace??null:null;
+  }
   bufferDrawExecutionView():GlBinding|null {
     return this.ready&&!this.closed&&!this.poisoned?this.bufferSnapshots?.executionView(this.binding)??null:null;
   }
   resolveBufferSnapshot(index:number,token:number,object:WebGLBuffer,requiredBytes:number):WebGLBuffer|null {
     return this.ready&&!this.closed&&!this.poisoned?this.bufferSnapshots?.resolve(this.binding,index,token,object,requiredBytes)??null:null;
+  }
+
+  captureFramebuffer(index:number,token:number,name:number):number|null {
+    if(!this.ready||this.closed||this.poisoned||!this.execution)return null;
+    if(!this.framebufferSnapshots)this.framebufferSnapshots=GlFramebufferSnapshots.create(this.execution);
+    return this.framebufferSnapshots?.capture(index,token,name)??null;
+  }
+  framebufferTargetChanges(index:number,token:number){
+    if(!this.ready||this.closed||this.poisoned)return null;
+    const capture=this.framebufferSnapshots?.resolve(index,token);
+    return capture?this.framebufferSnapshots!.targetChanges(capture):null;
+  }
+  framebufferDrawChanges(index:number,token:number){
+    if(!this.ready||this.closed||this.poisoned)return null;
+    const capture=this.framebufferSnapshots?.resolve(index,token);
+    return capture?this.framebufferSnapshots!.changes(capture):null;
   }
 
   /** Cold driver proof for this journal's immutable executable, never the
@@ -209,6 +259,11 @@ export class GlProgramJournal {
     if(!pin)return false;
     const layout=uniformLayout(this.binding,pin.program);
     if(!layout || !layout.current)return false;
+    // The signature grants local prediction only after its executable's
+    // write counters exist. An ordinary checked setter may create them;
+    // an admitted one must only increment cold mutable cells.
+    if(this.uniformCpu)try{prepareUniformWrites(pin.program);prepareSamplerWrites(pin.program);}
+    catch(error){rethrowNativeGlFault(error);return false;}
     const meta=location>=0?layout.slots[location]:undefined;
     if(meta){
       const native=layout.resolvedNative(location);
@@ -339,6 +394,10 @@ export class GlProgramJournal {
     if(!this.closed || this.active || this.generations.size || this.pending || this.retiringName)return;
     // The bank's own execution lease and native deletion receiver survive a
     // refused close. Do not sever the journal or its context lease first.
+    if(this.framebufferSnapshots){
+      if(!this.framebufferSnapshots.retire())nativeGlFault("Program journal framebuffer generation retirement remains unacknowledged");
+      this.framebufferSnapshots=null;
+    }
     if(this.bufferSnapshots){
       if(!this.bufferSnapshots.retire())nativeGlFault("Program journal buffer snapshot retirement remains unacknowledged");
       this.bufferSnapshots=null;
@@ -361,9 +420,10 @@ export function lookupProgramJournal(authority: GlBinding,id: number): GlProgram
   return journal && journal.binding.pid===authority.pid && journal.binding.objects===authority.objects ? journal : null;
 }
 export function programJournalSequence(binding: GlBinding): number {return orders.get(binding.objects)?.sequence ?? 0;}
-export type GlProgramJournalControl={receipt:Uint32Array;bytes:Uint8Array;snapshot:Uint32Array;snapshotBytes:Uint8Array;errors:number[]};
+export type GlProgramJournalControl={receipt:Uint32Array;bytes:Uint8Array;snapshot:Uint32Array;snapshotBytes:Uint8Array;errors:number[];cpuPreparation:OptionalCpuPreparation};
 export function createProgramJournalControl(): GlProgramJournalControl {
   const receipt=new Uint32Array(12),snapshot=new Uint32Array(12);
   receipt[11]=snapshot[11]=0x47514c33;
-  return {receipt,bytes:new Uint8Array(receipt.buffer),snapshot,snapshotBytes:new Uint8Array(snapshot.buffer),errors:[]};
+  const errors:number[]=[],cpuPreparation:OptionalCpuPreparation={errors,previous:null,active:false,refused:false};
+  return {receipt,bytes:new Uint8Array(receipt.buffer),snapshot,snapshotBytes:new Uint8Array(snapshot.buffer),errors,cpuPreparation};
 }

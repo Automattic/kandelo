@@ -376,6 +376,10 @@ struct wpk_draw_signature { uint32_t token; int known, simple; };
 /* valid: -1 completed-unavailable, 0 invalidated, 1 retained generation.
  * Memoize unavailable captures so unused large stores add no per-frame query. */
 struct wpk_buffer_snapshot { uint64_t serial;uint32_t token,bytes;int valid; };
+struct wpk_framebuffer_snapshot {
+    uint64_t storage_epoch,target_serial,inputs[16];
+    uint32_t name,token;int valid;
+};
 struct wpk_program_intent {
     struct wpk_program_stream *owner;
     struct wpk_program_intent *next;
@@ -396,6 +400,9 @@ struct wpk_program_stream {
     uint32_t draw_cursor, draw_slot;
     struct wpk_buffer_snapshot buffers[32];
     uint32_t buffer_cursor;int buffer_bank_ready;
+    int uniform_cpu_ready;
+    struct wpk_framebuffer_snapshot framebuffers[16];
+    uint32_t framebuffer_cursor;
 
     uint32_t signature_request[4], signature_reply[12];
     struct wpk_program_intent slots[WPK_PROGRAM_SLOTS];
@@ -460,6 +467,8 @@ struct wpk_gles_context {
     int array_binding_known;
     uint64_t buffer_raw_known_at;
     int default_framebuffer_rearmable;
+    GLuint requested_framebuffer;
+    uint64_t target_storage_epoch;
     int default_vertex_array_only;
     /* Known current default target; raw I/O or a lost prefix revokes it. */
     int default_framebuffer_only;
@@ -619,6 +628,7 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
     state->default_vertex_array_only = 1;
     state->default_framebuffer_only = 1;
     state->default_framebuffer_rearmable = 1;
+    state->target_storage_epoch = 1;
     state->buffer_raw_known_at = _wpk_gl_raw_device_requests();
     init_vertex_array(&state->default_vertex_array);
     return state;
@@ -652,6 +662,24 @@ static void invalidate_binding_knowledge(struct wpk_gles_context *state) {
     atomic_store_explicit(&state->objects->program_records_known, 0, memory_order_relaxed);
 }
 
+static void invalidate_framebuffer_generations(struct wpk_gles_context *state) {
+    if(!state)return;
+    // Zero permanently disables cache reuse after counter exhaustion.
+    if(state->target_storage_epoch)state->target_storage_epoch=state->target_storage_epoch==UINT64_MAX?0:state->target_storage_epoch+1;
+}
+/* Raw I/O is effectful, even when its next error drain succeeds. Revoke at
+ * that boundary, and when EGL adopts a previously foreign encoder; ordinary
+ * GL command entry pays no additional raw-epoch lookup. */
+void _wpk_gl_reconcile_raw_authority(struct wpk_gles_context *state) {
+    if(!state)return;
+    uint64_t epoch=_wpk_gl_raw_device_requests();
+    if(state->buffer_raw_known_at==epoch)return;
+    state->buffer_raw_known_at=epoch;
+    invalidate_binding_knowledge(state);state->default_vertex_array_only=0;
+    state->errors_known=0;invalidate_framebuffer_generations(state);
+    struct wpk_program_stream *stream=state->program_stream;
+    if(stream)for(unsigned i=0;i<32;i++)stream->buffers[i].valid=0;
+}
 static void invalidate_buffer_snapshot(struct wpk_gles_context *state,uint64_t serial,int resize) {
     struct wpk_program_stream *stream=state->program_stream;
     if(stream && stream->buffer_bank_ready)for(unsigned i=0;i<32;i++)
@@ -911,9 +939,12 @@ void glClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
     EMIT_INFALLIBLE_END()
 }
 
+static int emit_owned_framebuffer_clear(GLbitfield);
 void glClear(GLbitfield mask) {
     struct wpk_gles_context *state = _wpk_gl_command_encoder();
     if (!state) return;
+    if(!(mask&~(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT)) &&
+       !state->default_framebuffer_only && emit_owned_framebuffer_clear(mask))return;
     if (state->default_framebuffer_only && _wpk_gl_has_draw_surface()) {
         /* No guest attachment or shared namespace can change this target.
          * Keep the original record so the host independently checks it. */
@@ -2234,6 +2265,7 @@ static int publish_object_image(struct wpk_object_group *group, struct wpk_objec
     pthread_mutex_lock(&group->mutex);
     int current = revision == object->image_revision && source == object->image_source;
     if (revision > object->image_revision) {
+        invalidate_framebuffer_generations(_wpk_gl_current_encoder());
         old = object->image;
         object->image = image;
         object->image_source = source;
@@ -2427,6 +2459,8 @@ static int valid_program_mutation_receipt(struct wpk_program_stream *stream,cons
     if (action==4) return reply[4]==stream->request[3];
     if(action==10)return reply[4]==32;
     if(action==11)return reply[4]<=32768;
+    if(action==12)return reply[4]<=1;
+    if(action==14)return reply[4]==0||reply[4]==16384;
     return action==5 && !reply[4];
 }
 /* One entry, then read-only reconciliation. Never replay a mutation after an
@@ -2623,7 +2657,9 @@ static int disable_program_stream(struct wpk_gles_context *state) {
     stream->active=0;stream->id=0;stream->ticket=0;stream->current_token=0;
     memset(stream->signatures,0,sizeof stream->signatures);stream->signature_cursor=0;
     memset(stream->draw_signatures,0,sizeof stream->draw_signatures);stream->draw_cursor=stream->draw_slot=0;
+    stream->uniform_cpu_ready=0;
     stream->buffer_bank_ready=0;memset(stream->buffers,0,sizeof stream->buffers);stream->buffer_cursor=0;
+    memset(stream->framebuffers,0,sizeof stream->framebuffers);stream->framebuffer_cursor=0;
     for (unsigned i=0;i<WPK_PROGRAM_CACHE;i++) {
         struct wpk_program_generation *g=&stream->generations[i];
         g->token=0; // The acknowledged journal closure retired every token.
@@ -2909,6 +2945,7 @@ static int checked_container_query(uint32_t op, const uint32_t *words, uint32_t 
     return -1;
 }
 static int delete_image_object(uint32_t kind, GLuint name, uint32_t *containers) {
+    invalidate_framebuffer_generations(_wpk_gl_current_encoder());
     uint32_t words[2] = {kind,name};
     return (containers ? checked_container_query(QOP_IMAGE_OBJECT_DELETE,words,2,containers,2)
                        : checked_mutation_query(QOP_IMAGE_OBJECT_DELETE,words,2)) == 1;
@@ -2954,6 +2991,7 @@ static int track_image_attachment(GLenum target, GLuint point, GLuint kind, GLen
     if (!entry) return 1;
     struct wpk_object_name *old = entry->object;
     entry->object = object; entry->framebuffer = framebuffer; entry->point = point;
+    invalidate_framebuffer_generations(_wpk_gl_current_encoder());
     if (!name) { *slot = entry->next; free(entry); }
     object_release(group,old);
     return 1;
@@ -3306,6 +3344,7 @@ static int is_cube_face(GLenum target) {
     return target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z;
 }
 static int sync_respecified_image(GLenum target) {
+    invalidate_framebuffer_generations(_wpk_gl_current_encoder());
     if (target == GL_TEXTURE_2D)
         return sync_object_image(1, g_texture_units[g_active_unit].texture_object);
     if (target != GL_TEXTURE_CUBE_MAP && !is_cube_face(target))
@@ -4035,6 +4074,21 @@ static int uniform_error_prediction(GLint location,GLsizei count,uint32_t type,
     if(!atomic_load_explicit(&state->objects->program_records_known,memory_order_relaxed))return 0;
     *error=GL_INVALID_OPERATION;
     if(!state->current_program)return 1;
+    if(!stream->uniform_cpu_ready){
+        // Private views must exist before the guest promises NoError locally.
+        // Completed CPU refusal grants no new authority or synthetic GL error.
+        if(!publish_program_intents_from_encoder(state,1)||flush_commands()!=0)return -1;
+        stream->request[2]=stream->id;
+        int prepared=program_stream_mutate(stream,14,3,QOP_PROGRAM_JOURNAL);
+        if(prepared!=1){
+            if((prepared==0||prepared==-2)&&!stream->blocked&&!_wpk_gl_context_reset()){
+                stream->uniform_cpu_ready=-1;return 0;
+            }
+            return -1;
+        }
+        stream->uniform_cpu_ready=stream->reply[4]==16384?1:-1;
+    }
+    if(stream->uniform_cpu_ready<0)return 0;
     struct wpk_uniform_signature *meta=NULL;
     int available=uniform_signature(state,location,&meta,0);
     if(available<=0)return available;
@@ -4121,7 +4175,7 @@ static unsigned buffer_snapshot_slot(struct wpk_program_stream *stream,uint64_t 
 }
 static int emit_snapshot_definition(GLenum target,uint32_t bytes,const void *data,GLenum usage) {
     struct wpk_gles_context *state=_wpk_gl_current_encoder();struct wpk_program_stream *stream=state->program_stream;
-    if(!stream || !stream->buffer_bank_ready || !stream->active || stream->blocked || target!=GL_ARRAY_BUFFER ||
+    if(!stream || stream->buffer_bank_ready<=0 || !stream->active || stream->blocked || target!=GL_ARRAY_BUFFER ||
        !state->array_binding_known || !state->array_serial || bytes>32768 ||
        atomic_load_explicit(&state->objects->ever_shared,memory_order_acquire))return 0;
     struct wpk_gl_name_scope guard __attribute__((cleanup(_wpk_gl_end_name_scope)))=begin_dispatch_scope(state);
@@ -4139,11 +4193,81 @@ static int emit_snapshot_definition(GLenum target,uint32_t bytes,const void *dat
     *entry=(struct wpk_buffer_snapshot){state->array_serial,token,bytes,1};
     finish_predicted_command(start,cursor,GL_NO_ERROR);return 1;
 }
+static int owned_framebuffer_slot(struct wpk_gles_context *state,struct wpk_program_stream *stream) {
+    if(!state->requested_framebuffer||!state->target_storage_epoch)return -1;
+    struct wpk_object_name *target=NULL;
+    for(struct wpk_image_attachment *a=state->image_attachments;a;a=a->next)if(a->framebuffer==state->requested_framebuffer){
+        if(a->point!=GL_COLOR_ATTACHMENT0||target||!a->object||a->object->name_space!=WPK_NAMES_TEXTURE||a->object->target!=GL_TEXTURE_2D)return -1;
+        target=a->object;
+    }
+    if(!target||target->image||target->image_source||target->external)return -1;
+    uint64_t inputs[16]={0};
+    for(unsigned i=0;i<state->texture_unit_count;i++){
+        const struct wpk_texture_unit *unit=&state->texture_units[i];
+        if(unit->cube_object||unit->external_object)return -1;
+        const struct wpk_object_name *object=unit->texture_object;
+        if(!object)continue;if(i>=16)return -1;
+        // All bound units matter: a peer may change a sampler's unit after
+        // acceptance. No bound ordinary source may alias the retained target.
+        if(object==target||object->image||object->image_source||object->external)return -1;
+        inputs[i]=object->serial;
+    }
+    for(unsigned i=0;i<16;i++){
+        struct wpk_framebuffer_snapshot *entry=&stream->framebuffers[i];
+        if(entry->valid&&entry->name==state->requested_framebuffer&&entry->storage_epoch==state->target_storage_epoch&&
+           entry->target_serial==target->serial&&!memcmp(entry->inputs,inputs,sizeof inputs))return entry->valid>0?(int)i:-1;
+    }
+    unsigned slot=16;
+    for(unsigned i=0;i<16;i++){
+        unsigned next=stream->framebuffer_cursor++%16;
+        if(stream->framebuffers[next].token!=UINT32_MAX){slot=next;break;}
+    }
+    if(slot==16)return -1;
+    struct wpk_framebuffer_snapshot *entry=&stream->framebuffers[slot];
+    if(!publish_program_intents_from_encoder(state,1)||flush_commands()!=0)return -2;
+    uint32_t token=entry->token+1;entry->valid=0;
+    stream->request[2]=stream->id;stream->request[3]=slot;stream->request[4]=token;stream->request[5]=state->requested_framebuffer;
+    int captured=program_stream_mutate(stream,12,6,QOP_PROGRAM_JOURNAL);
+    if(captured!=1){
+        if((captured==0||captured==-2)&&!stream->blocked&&!_wpk_gl_context_reset()){
+            // Capture consumes the cell token before effectful reservation.
+            // A completed refusal owns that attempt; an old READ_LAST does not.
+            if(captured==0){
+                entry->token=token;entry->name=state->requested_framebuffer;entry->storage_epoch=state->target_storage_epoch;
+                entry->target_serial=target->serial;memcpy(entry->inputs,inputs,sizeof inputs);entry->valid=-1;
+            }
+            return -1;
+        }
+        return -2;
+    }
+    entry->token=token;
+    entry->name=state->requested_framebuffer;entry->storage_epoch=state->target_storage_epoch;
+    entry->target_serial=target->serial;memcpy(entry->inputs,inputs,sizeof inputs);
+    // Completed unavailability is stable for this exact storage/binding key;
+    // unsupported targets must not add another cold query on every draw.
+    entry->valid=stream->reply[4]?1:-1;
+    return entry->valid>0?(int)slot:-1;
+}
+static int emit_owned_framebuffer_clear(GLbitfield mask) {
+    struct wpk_gles_context *state=_wpk_gl_current_encoder();struct wpk_program_stream *stream=state->program_stream;
+    if(!stream||!stream->active||!state->default_framebuffer_rearmable||
+       atomic_load_explicit(&state->objects->ever_shared,memory_order_acquire))return 0;
+    struct wpk_gl_name_scope guard __attribute__((cleanup(_wpk_gl_end_name_scope)))=begin_dispatch_scope(state);
+    if(!guard.group)return -1;
+    if(stream->blocked){raise_client_error(GL_INVALID_OPERATION);return -1;}
+    if(atomic_load_explicit(&state->objects->ever_shared,memory_order_acquire))return 0;
+    if(!buffer_snapshot_epoch(state))return 0;
+    int slot=owned_framebuffer_slot(state,stream);if(slot<0)return slot==-2?-1:0;
+    uint8_t *cursor=reserve(20);if(!cursor)return -1;uint8_t *start=cursor;
+    w_u16(&cursor,OP_CLEAR_FRAMEBUFFER_SNAPSHOT);w_u16(&cursor,16);w_u32(&cursor,stream->id);
+    w_u32(&cursor,slot);w_u32(&cursor,stream->framebuffers[slot].token);w_u32(&cursor,mask);
+    finish_predicted_command(start,cursor,GL_NO_ERROR);return 1;
+}
 static int emit_owned_buffer_arrays(GLenum mode,GLint first,GLsizei count) {
     struct wpk_gles_context *state=_wpk_gl_current_encoder();struct wpk_program_stream *stream=state->program_stream;
     if(count<=0 || !stream || !stream->active || !state->default_vertex_array_only ||
-       state->current_vertex_array!=&state->default_vertex_array || !state->default_framebuffer_only ||
-       !_wpk_gl_has_draw_surface() || atomic_load_explicit(&state->objects->ever_shared,memory_order_acquire))return 0;
+       state->current_vertex_array!=&state->default_vertex_array ||
+       (state->default_framebuffer_only&&!_wpk_gl_has_draw_surface()) || atomic_load_explicit(&state->objects->ever_shared,memory_order_acquire))return 0;
     struct wpk_gl_name_scope guard __attribute__((cleanup(_wpk_gl_end_name_scope)))=begin_dispatch_scope(state);
     if(!guard.group)return -1;if(stream->blocked){raise_client_error(GL_INVALID_OPERATION);return -1;}
     if(atomic_load_explicit(&state->objects->ever_shared,memory_order_acquire))return 0;
@@ -4158,13 +4282,22 @@ static int emit_owned_buffer_arrays(GLenum mode,GLint first,GLsizei count) {
         indices[rows++]=i;
     }
     if(!rows)return 0;
+    if(stream->buffer_bank_ready<0)return 0;
     int exact=inline_client_error_prediction();if(exact<=0)return exact;
     if(!stream->buffer_bank_ready){
         // Prepare once, before locally accepting any owned draw. Generic
         // receipt recovery retains partial native admission without replay.
         if(!publish_program_intents_from_encoder(state,1) || flush_commands()!=0)return -1;
         stream->request[2]=stream->id;stream->request[3]=32;
-        if(program_stream_mutate(stream,10,4,QOP_PROGRAM_JOURNAL)!=1)return -1;
+        int prepared=program_stream_mutate(stream,10,4,QOP_PROGRAM_JOURNAL);
+        if(prepared!=1){
+            if((prepared==0||prepared==-2)&&!stream->blocked&&!_wpk_gl_context_reset()){
+                // A completed failed bank is not repairable by repeating the
+                // same cold query on every draw. Ordinary GL stays observed.
+                stream->buffer_bank_ready=-1;return 0;
+            }
+            return -1;
+        }
         stream->buffer_bank_ready=1;
     }
     // Later cold captures may evict cache entries, but never an earlier row
@@ -4183,7 +4316,16 @@ static int emit_owned_buffer_arrays(GLenum mode,GLint first,GLsizei count) {
             if(!publish_program_intents_from_encoder(state,1) || flush_commands()!=0)return -1;
             uint32_t token=entry->token+1;entry->valid=0;
             stream->request[2]=stream->id;stream->request[3]=slot;stream->request[4]=token;stream->request[5]=indices[row];
-            if(program_stream_mutate(stream,11,6,QOP_PROGRAM_JOURNAL)!=1)return -1;
+            int captured=program_stream_mutate(stream,11,6,QOP_PROGRAM_JOURNAL);
+            if(captured!=1){
+                if((captured==0||captured==-2)&&!stream->blocked&&!_wpk_gl_context_reset()){
+                    // A sealed refusal consumed this next-cell token before
+                    // copying. Proven nonentry did not: never skip its token.
+                    if(captured==0)*entry=(struct wpk_buffer_snapshot){a->buffer_serial,token,0,-1};
+                    return 0;
+                }
+                return -1;
+            }
             *entry=(struct wpk_buffer_snapshot){a->buffer_serial,token,stream->reply[4],stream->reply[4]?1:-1};
             if(entry->valid<0)return 0;
         }
@@ -4191,9 +4333,15 @@ static int emit_owned_buffer_arrays(GLenum mode,GLint first,GLsizei count) {
         uint64_t required=(uint64_t)(uintptr_t)a->pointer+((uint64_t)(uint32_t)first+(uint32_t)count-1)*stride+element;
         if(required>entry->bytes)return 0;slots[row]=slot;chosen|=1u<<slot;
     }
-    uint32_t payload=20+rows*32;uint8_t *cursor=reserve(4+payload);if(!cursor)return -1;uint8_t *start=cursor;
-    w_u16(&cursor,OP_DRAW_BUFFER_SNAPSHOTS);w_u16(&cursor,payload);w_u32(&cursor,stream->id);w_u32(&cursor,mode);
+    int target_slot=-1;
+    if(!state->default_framebuffer_only){
+        target_slot=owned_framebuffer_slot(state,stream);
+        if(target_slot<0)return target_slot==-2?-1:0;
+    }
+    uint32_t payload=(target_slot<0?20:28)+rows*32;uint8_t *cursor=reserve(4+payload);if(!cursor)return -1;uint8_t *start=cursor;
+    w_u16(&cursor,target_slot<0?OP_DRAW_BUFFER_SNAPSHOTS:OP_DRAW_FRAMEBUFFER_SNAPSHOTS);w_u16(&cursor,payload);w_u32(&cursor,stream->id);w_u32(&cursor,mode);
     w_i32(&cursor,first);w_i32(&cursor,count);w_u32(&cursor,rows);
+    if(target_slot>=0){w_u32(&cursor,target_slot);w_u32(&cursor,stream->framebuffers[target_slot].token);}
     for(unsigned row=0;row<rows;row++){
         const struct wpk_client_attrib *a=&g_attribs[indices[row]];const struct wpk_buffer_snapshot *entry=&stream->buffers[slots[row]];
         w_u32(&cursor,indices[row]);w_u32(&cursor,slots[row]);w_u32(&cursor,entry->token);w_u32(&cursor,a->size);w_u32(&cursor,a->type);
@@ -4360,6 +4508,8 @@ void glDeleteFramebuffers(GLsizei n, const GLuint *names) {
         if (!delete_image_object(3, names[i], NULL))
             continue;
         retire_image_attachments(names[i]);
+        invalidate_framebuffer_generations(state);
+        if(state->requested_framebuffer==names[i])state->requested_framebuffer=0;
         size_t slot = framebuffer_name_slot(state, names[i]);
         if (names[i] && slot < state->framebuffer_name_count && state->framebuffer_names[slot] == names[i]) {
             memmove(state->framebuffer_names + slot, state->framebuffer_names + slot + 1,
@@ -4398,8 +4548,10 @@ void glBindFramebuffer(GLenum target, GLuint fb) {
         // Logical zero is infallible on a live draw surface. Re-establish
         // current knowledge after offscreen use, not an "ever default" flag.
         state->default_framebuffer_only = state->default_framebuffer_rearmable;
+        state->requested_framebuffer=0;
     } else {
         state->default_framebuffer_only = 0;
+        state->requested_framebuffer=fb;
         EMIT_BEGIN(OP_BIND_FRAMEBUFFER,8)
         w_u32(&_c,target); w_u32(&_c,fb);
         EMIT_END()
@@ -5680,6 +5832,7 @@ void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, 
                          (uint32_t)height};
     if (checked_mutation_query(QOP_IMAGE_STORAGE, words, 5) != 1)
         return;
+    invalidate_framebuffer_generations(_wpk_gl_current_encoder());
     if (target == GL_RENDERBUFFER)
         sync_object_image(2, _wpk_gl_current_encoder()->renderbuffer_object);
 }

@@ -38,3 +38,27 @@ export function captureNativeGlErrors(gl: WebGL2RenderingContext, owner: GlError
   // A failed renderer cannot authorize a switch with errors still pending.
   throw new Error("Native GL error state did not clear");
 }
+
+
+// Optional preparations run synchronously inside exact cold error receivers.
+// Provenance never follows a numeric OUT_OF_MEMORY flag and never applies to
+// a different context merely because it reenters while a scope is active.
+export type OptionalCpuPreparation={errors:number[];previous:OptionalCpuPreparation|null;active:boolean;refused:boolean};
+let optionalCpuScope:OptionalCpuPreparation|null=null;
+/** The query owns this receiver before entry. Linking an existing scope does
+ * not allocate or leave a window with the guest's error receiver swapped. */
+export function beginOptionalCpuPreparation(scope:OptionalCpuPreparation):void {
+  if(scope.active)throw new Error("Optional CPU preparation receiver reentered");
+  scope.previous=optionalCpuScope;scope.refused=false;scope.active=true;optionalCpuScope=scope;
+}
+export function optionalCpuPreparationRefused(scope:OptionalCpuPreparation):boolean{return scope.active&&scope.refused;}
+export function endOptionalCpuPreparation(scope:OptionalCpuPreparation):void {
+  if(optionalCpuScope!==scope||!scope.active)throw new Error("Optional CPU preparation scopes retired out of order");
+  optionalCpuScope=scope.previous;scope.previous=null;scope.active=false;
+}
+/** Call only at a proven CPU metadata reservation failure, never for a native
+ * GL flag, null native allocation, validation error, or failed restoration. */
+export function recordCpuGlOutOfMemory(owner:GlErrorState):void {
+  for(let scope=optionalCpuScope;scope;scope=scope.previous)if(scope.errors===owner.errors){scope.refused=true;return;}
+  recordGlError(owner,0x505);
+}

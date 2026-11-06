@@ -1334,9 +1334,11 @@ R420 adds the host journal's bounded private buffer-copy ownership foundation,
 with focused source and three-engine real-WebGL checks. Optional action10 and OP_BUFFER_DATA_SNAPSHOT now connect it to the existing
 current-context wire, with raw C guest and three-engine GPU regressions. R432–R444 add cold actual-attribute capture, owned buffer-backed draws and
 the ordinary C serial/token cache/encoder connection for eligible default
-targets, with matched three-engine request controls. Complete offscreen target
-and input-generation/feedback authority and raw-target proof closure within B1;
-do not turn
+targets, with matched three-engine request controls. R461–R470 add eligible
+offscreen target/input generations, raw-target revocation, reusable receivers
+and provenance-safe CPU refusal, with actual C cross-engine controls. Complete
+prepared VBO/inline executable and sampling authority, selected-path decoding
+and full application checks within B1; do not turn
 the foundation into a new stage boundary or substitute it for application
 measurements. Duplicate upload costs and final machine memory lifecycle remain
 unmeasured. The complete B1 preview still waits for all B1 changes and required

@@ -192,14 +192,21 @@ export function depthSamplingShaderSource(source: string, depth: ReadonlySet<str
 
 // --- draw-time selection --------------------------------------------------------
 
-const samplerWrites = new WeakMap<WebGLProgram, number>();
+const samplerWrites = new WeakMap<WebGLProgram, {value:number}>();
+export function prepareSamplerWrites(program:WebGLProgram):void {
+  if(!samplerWrites.has(program))samplerWrites.set(program,{value:0});
+}
 /** Sampler units change only through Uniform1i/Uniform1iv (ES 2.0 2.10.4). */
 export function noteSamplerWrite(program: WebGLProgram | null): void {
-  if (program) samplerWrites.set(program, (samplerWrites.get(program) ?? 0) + 1);
+  if(program){
+    let cell=samplerWrites.get(program);
+    if(!cell){prepareSamplerWrites(program);cell=samplerWrites.get(program)!;}
+    cell.value++;
+  }
 }
 /** Changes when a sampler unit of `program` may have changed. */
 export function samplerWriteGeneration(program: WebGLProgram): number {
-  return samplerWrites.get(program) ?? 0;
+  return samplerWrites.get(program)?.value ?? 0;
 }
 
 /** Level 0 of the face a unit of that kind samples is a depth image. */
@@ -263,7 +270,7 @@ export function depthSamplersForDraw(b: GlBinding, units = samplingUnits(b.shado
   if (units.depth === 0 && !(units.defaults & DEPTH_TRAIT)) return NO_DEPTH_SAMPLERS;
   const depthAt = (cube: boolean, unit: number) =>
     samplesDepth((cube ? s.cubeTextureUnits : s.textureUnits)[unit] ?? s.defaultTextures.get(cube ? 0x8513 : 0x0de1), cube);
-  const link = programLinkGeneration(b, program).value, writes = samplerWrites.get(program) ?? 0;
+  const link = programLinkGeneration(b, program).value, writes = samplerWrites.get(program)?.value ?? 0;
   let cache = caches.get(program);
   if (!cache || cache.link !== link || cache.writes !== writes) {
     const samplers: SamplerCache["samplers"] = [];

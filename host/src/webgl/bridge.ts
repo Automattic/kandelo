@@ -1,3 +1,4 @@
+import {clearFramebufferSnapshot,validFramebufferSnapshotClear} from "./private-framebuffer-clear.js";
 import {drawBufferSnapshots,validBufferSnapshotDraw} from "./private-buffer-draw.js";
 import {nativeGlFault} from "./native-recovery.js";
 import {journalInteger} from "./program-journal-query.js";
@@ -424,6 +425,10 @@ function validPayload(op: number, v: DataView): boolean {
       return validPrivateClientDraw(v);
     case O.OP_DRAW_BUFFER_SNAPSHOTS:
       return validBufferSnapshotDraw(v);
+    case O.OP_DRAW_FRAMEBUFFER_SNAPSHOTS:
+      return validBufferSnapshotDraw(v,true);
+    case O.OP_CLEAR_FRAMEBUFFER_SNAPSHOT:
+      return validFramebufferSnapshotClear(v);
     case O.OP_BEGIN_CLIENT_ARRAY:
     case O.OP_END_CLIENT_ARRAY:
       return exact(v,0);
@@ -1006,9 +1011,9 @@ function dispatch(
       const journal=b.programJournal;
       if(!journal || journal.id!==v.getUint32(p,true)){recordGlError(b,0x502);return;}
       const bytes=v.getUint32(p+16,true);
-      const data=v.byteLength===24?bytes:copyBytes(v,p+24,bytes);
-      journal.defineBufferSnapshot(v.getUint32(p+4,true),v.getUint32(p+8,true),
-        v.getUint32(p+12,true),data,v.getUint32(p+20,true));
+      const index=v.getUint32(p+4,true),token=v.getUint32(p+8,true),target=v.getUint32(p+12,true),usage=v.getUint32(p+20,true);
+      if(v.byteLength===24)journal.defineBufferSnapshot(index,token,target,bytes,usage);
+      else journal.defineBufferSnapshotFromWire(index,token,target,v,p+24,bytes,usage);
       return;
     }
     // Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage
@@ -1545,71 +1550,92 @@ function dispatch(
       const loc = uniformTarget.native;
       const count = uniformCount;
       const transpose = v.getUint32(p + 8, true) !== 0;
-      gl.uniformMatrix4fv(loc, transpose, floatsAt(v, p + 12, count * 16));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniformMatrix4fv(loc,transpose,cpu.readFloats(v,p+12,count*16),0,count*16);
+      else gl.uniformMatrix4fv(loc, transpose, floatsAt(v, p + 12, count * 16));
       return;
     }
     // Payload: i32 location, u32 count, f32 v[count*4]
     case O.OP_UNIFORM4FV: {
       const loc = uniformTarget.native;
       const count = uniformCount;
-      gl.uniform4fv(loc, floatsAt(v, p + 8, count * 4));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform4fv(loc,cpu.readFloats(v,p+8,count*4),0,count*4);
+      else gl.uniform4fv(loc, floatsAt(v, p + 8, count * 4));
       return;
     }
     case O.OP_UNIFORM1FV: {
       const loc = uniformTarget.native;
       const count = uniformCount;
-      gl.uniform1fv(loc, copyFloat32Array(v, p + 8, count));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform1fv(loc,cpu.readFloats(v,p+8,count*1),0,count*1);
+      else gl.uniform1fv(loc,copyFloat32Array(v,p+8,count));
       return;
     }
     case O.OP_UNIFORM2FV: {
       const loc = uniformTarget.native;
       const count = uniformCount;
-      gl.uniform2fv(loc, copyFloat32Array(v, p + 8, count * 2));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform2fv(loc,cpu.readFloats(v,p+8,count*2),0,count*2);
+      else gl.uniform2fv(loc,copyFloat32Array(v,p+8,count * 2));
       return;
     }
     case O.OP_UNIFORM3FV: {
       const loc = uniformTarget.native;
       const count = uniformCount;
-      gl.uniform3fv(loc, copyFloat32Array(v, p + 8, count * 3));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform3fv(loc,cpu.readFloats(v,p+8,count*3),0,count*3);
+      else gl.uniform3fv(loc,copyFloat32Array(v,p+8,count * 3));
       return;
     }
     case O.OP_UNIFORM1IV: {
       const loc = uniformTarget.native;
       const count = uniformCount;
-      const values = copyInt32Array(v, p + 8, count);
-      gl.uniform1iv(loc, values);
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform1iv(loc,cpu.readIntegers(v,p+8,count*1),0,count*1);
+      else gl.uniform1iv(loc,copyInt32Array(v,p+8,count));
       return;
     }
     case O.OP_UNIFORM2IV: {
       const loc = uniformTarget.native;
       const count = uniformCount;
-      gl.uniform2iv(loc, copyInt32Array(v, p + 8, count * 2));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform2iv(loc,cpu.readIntegers(v,p+8,count*2),0,count*2);
+      else gl.uniform2iv(loc,copyInt32Array(v,p+8,count * 2));
       return;
     }
     case O.OP_UNIFORM3IV: {
       const loc = uniformTarget.native;
       const count = uniformCount;
-      gl.uniform3iv(loc, copyInt32Array(v, p + 8, count * 3));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform3iv(loc,cpu.readIntegers(v,p+8,count*3),0,count*3);
+      else gl.uniform3iv(loc,copyInt32Array(v,p+8,count * 3));
       return;
     }
     case O.OP_UNIFORM4IV: {
       const loc = uniformTarget.native;
       const count = uniformCount;
-      gl.uniform4iv(loc, copyInt32Array(v, p + 8, count * 4));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform4iv(loc,cpu.readIntegers(v,p+8,count*4),0,count*4);
+      else gl.uniform4iv(loc,copyInt32Array(v,p+8,count * 4));
       return;
     }
     case O.OP_UNIFORM_MATRIX2FV: {
       const loc = uniformTarget.native;
       const count = uniformCount;
       const transpose = v.getUint32(p + 8, true) !== 0;
-      gl.uniformMatrix2fv(loc, transpose, copyFloat32Array(v, p + 12, count * 4));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniformMatrix2fv(loc,transpose,cpu.readFloats(v,p+12,count*4),0,count*4);
+      else gl.uniformMatrix2fv(loc, transpose, copyFloat32Array(v, p + 12, count * 4));
       return;
     }
     case O.OP_UNIFORM_MATRIX3FV: {
       const loc = uniformTarget.native;
       const count = uniformCount;
       const transpose = v.getUint32(p + 8, true) !== 0;
-      gl.uniformMatrix3fv(loc, transpose, copyFloat32Array(v, p + 12, count * 9));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniformMatrix3fv(loc,transpose,cpu.readFloats(v,p+12,count*9),0,count*9);
+      else gl.uniformMatrix3fv(loc, transpose, copyFloat32Array(v, p + 12, count * 9));
       return;
     }
 
@@ -1663,6 +1689,10 @@ function dispatch(
       drawPrivateClientArrays(b,v); return;
     case O.OP_DRAW_BUFFER_SNAPSHOTS:
       drawBufferSnapshots(b,v); return;
+    case O.OP_DRAW_FRAMEBUFFER_SNAPSHOTS:
+      drawBufferSnapshots(b,v,true); return;
+    case O.OP_CLEAR_FRAMEBUFFER_SNAPSHOT:
+      clearFramebufferSnapshot(b,v); return;
     case O.OP_DRAW_ARRAYS:
       if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
       if (v.getUint32(p,true) > 6) { recordGlError(b,0x500); return; }

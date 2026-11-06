@@ -2,7 +2,7 @@ import { NativeContextReset, predictsNativeCalls, predictedNativeCalls, observeB
 import type { GlObjectGroup } from "./object-group.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
-import { recordGlError } from "./errors.js";
+import { recordGlError, recordCpuGlOutOfMemory } from "./errors.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import { releaseReversedDepthTwin } from "./reversed-depth.js";
 import { rendererLossCount, rendererObjectEpoch } from "./renderer-loss.js";
@@ -109,7 +109,8 @@ export type NativeInverse = { owner: CheckedGlOwner; groups: NativeCall[][];
    * still detects a failed restoration (a NativeGlFault on a live renderer). */
   batched?: boolean;
   /** A private savepoint must be restored before publishing completion. */
-  bookkeeping?: boolean };
+  bookkeeping?: boolean;
+  prepared?: {groups:PreparedNativeCall[][];predicted:readonly (()=>void)[]} };
 export type NativeChange = { apply(): boolean; restore: NativeInverse };
 export type NativeCompletion = {submitted: boolean; complete: boolean};
 type Repair = {
@@ -126,12 +127,44 @@ type Repair = {
 };
 /** Repairs exist only while applyNativeChanges runs: a restoration either
  * completes, or faults (live renderer), or is dropped (lost renderer). */
-const repairs = new WeakMap<WebGL2RenderingContext, Repair>();
+type RepairSlot={top:Repair|undefined};
+const repairs = new WeakMap<WebGL2RenderingContext, RepairSlot>();
+const repairTop=(gl:WebGL2RenderingContext):Repair|undefined=>repairs.get(gl)?.top;
+function repairSlot(gl:WebGL2RenderingContext):RepairSlot {
+  let slot=repairs.get(gl);
+  if(!slot){slot={top:undefined};repairs.set(gl,slot);}
+  return slot;
+}
+function setRepairTop(gl:WebGL2RenderingContext,top:Repair|undefined):void {repairSlot(gl).top=top;}
 /** Renderers whose retirement collection waited for an in-flight change. */
 const deferredCollections = new WeakSet<WebGL2RenderingContext>();
 function collectOrDefer(gl: WebGL2RenderingContext): void {
-  if (repairs.has(gl)) deferredCollections.add(gl);
+  if (repairTop(gl)) deferredCollections.add(gl);
   else collectNativeRetirements(gl);
+}
+
+export type PreparedNativeCall={call:NativeCall;enabled:boolean;invoke:()=>void;predicted:readonly (()=>void)[]};
+export function prepareNativeCall(gl:WebGL2RenderingContext,call:NativeCall):PreparedNativeCall {
+  const args:unknown[]=call.slice(1);
+  const prepared:PreparedNativeCall={call,enabled:true,invoke:()=>{},predicted:[]};
+  prepared.invoke=()=>{
+    if(!prepared.enabled)return;
+    for(let i=0;i<args.length;i++)args[i]=prepared.call[i+1];
+    Reflect.apply(gl[prepared.call[0]],gl,args);
+  };
+  prepared.predicted=[prepared.invoke];return prepared;
+}
+export function checkedPreparedNativeCall(owner:CheckedGlOwner,call:PreparedNativeCall):boolean {
+  if(!call.enabled)return true;
+  return predictsNativeCalls(owner)?predictedNativeCalls(call.predicted):checkedGlCall(owner,call.invoke);
+}
+export type PreparedNativeInverse=NativeInverse&{prepared:NonNullable<NativeInverse["prepared"]>};
+export function prepareNativeInverse(owner:CheckedGlOwner,...groups:NativeCall[][]):PreparedNativeInverse|null {
+  if(!owner.gl)return null;
+  try{
+    const prepared=groups.map(group=>group.map(call=>prepareNativeCall(owner.gl!,call)));
+    return {owner:nativeOwner(owner),groups,prepared:{groups:prepared,predicted:prepared.flatMap(group=>group.map(call=>call.invoke))}};
+  }catch(error){rethrowNativeGlFault(error);recordCpuGlOutOfMemory(owner);return null;}
 }
 
 export function invokeNativeCall(gl: WebGL2RenderingContext, call: NativeCall): boolean {
@@ -149,13 +182,15 @@ function restoreInverse(inverse: NativeInverse): boolean {
   if (inverse.bookkeeping && predictsNativeCalls(inverse.owner))
     return withNativeBookkeeping(() => restoreInverse(inverse));
   if (predictsNativeCalls(inverse.owner)) {
-    return predictedNativeCalls(inverse.groups.flatMap(group => group.map(call => () => { invokeNativeCall(inverse.owner.gl!, call); })));
+    return predictedNativeCalls(inverse.prepared?.predicted??inverse.groups.flatMap(group => group.map(call => () => { invokeNativeCall(inverse.owner.gl!, call); })));
   }
   if (inverse.batched) return restoreBatched(inverse);
   let accepted = true;
   // Evidence belongs only to this synchronous inverse and error owner.
   let cleanEntry = false;
-  for (const group of inverse.groups) for (const call of group) {
+  for (let groupIndex=0;groupIndex<inverse.groups.length;groupIndex++) for(let callIndex=0;callIndex<inverse.groups[groupIndex].length;callIndex++) {
+    const call=inverse.groups[groupIndex][callIndex],prepared=inverse.prepared?.groups[groupIndex]?.[callIndex];
+    if(prepared&&!prepared.enabled)continue;
     let acceptedCall = false;
     const gl = inverse.owner.gl;
     let cleared = cleanEntry;
@@ -170,7 +205,7 @@ function restoreInverse(inverse: NativeInverse): boolean {
           recordGlError(inverse.owner, error);
         }
         if (cleared) {
-          invokeNativeCall(gl, call);
+          if(prepared)prepared.invoke();else invokeNativeCall(gl,call);
           const error = gl.getError();
           observeBatchNativeError(gl, error);
           recordGlError(inverse.owner, error);
@@ -202,7 +237,7 @@ export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion
     return retirement;
   } catch (error) {
     if (isKernelExportFailure(error)) throw error;
-    recordGlError(b,0x505); return null;
+    recordCpuGlOutOfMemory(b); return null;
   }
 }
 function finishNativeRetirement(retirement: NativeRetirement): void {
@@ -278,7 +313,7 @@ export function retireNativeRetirement(retirement: NativeRetirement): boolean {
   return retirement.complete;
 }
 export function hasNativeRepair(gl: WebGL2RenderingContext): boolean {
-  for (let repair = repairs.get(gl); repair; repair = repair.parent) if (repair.pending) return true;
+  for (let repair = repairTop(gl); repair; repair = repair.parent) if (repair.pending) return true;
   for (const retirement of retirements.get(gl) ?? []) if (retirement.pending && !retainedRetirement(retirement)) return true;
   return false;
 }
@@ -342,7 +377,7 @@ export function retainNativeRetirement(retirement: NativeRetirement): NativeReti
  * restoration is a NativeGlFault; a lost renderer has no state left to
  * restore, so its repair is dropped and its bindings report the loss. */
 export function repairNativeState(gl: WebGL2RenderingContext): boolean {
-  let repair = repairs.get(gl);
+  let repair = repairTop(gl);
   while (repair) {
     if (!repair.pending || repair.replaying) return false;
     repair.replaying = true;
@@ -370,9 +405,9 @@ export function repairNativeState(gl: WebGL2RenderingContext): boolean {
           nativeGlFault("the live renderer refused to restore native state after a rejected change");
       }
       if (repair.completion) repair.completion.complete = true;
-      if (repair.parent) repairs.set(gl,repair.parent); else repairs.delete(gl);
+      setRepairTop(gl,repair.parent);
     } finally { repair.replaying = false; }
-    repair = repairs.get(gl);
+    repair = repairTop(gl);
   }
   deferredCollections.delete(gl);
   return collectNativeRetirements(gl);
@@ -383,15 +418,19 @@ export function repairNativeState(gl: WebGL2RenderingContext): boolean {
 export function applyNativeChanges(b: CheckedGlOwner & { shadow: object }, changes: NativeChange[], options: {shared?: boolean; finalizer?: NativeInverse; completion?: NativeCompletion} = {}): boolean {
   const gl = b.gl;
   if (!gl) return false;
-  const parent = repairs.get(gl);
+  const parent = repairTop(gl);
   if (parent?.pending) return false;
   let repair: Repair;
   try {
     repair = { parent, lifetime:options.shared ? null : b.shadow, finalizer:options.finalizer, completion:options.completion, restores:changes.map(change => change.restore),
       attempted:0, pending:false, replaying:false, owner:nativeOwner(b), epoch:rendererLossCount(gl) };
-    repairs.set(gl,repair);
+    setRepairTop(gl,repair);
     if (repair.completion) repair.completion.submitted = true;
-  } catch { recordGlError(b,0x505); return false; }
+  } catch(error) {rethrowNativeGlFault(error);recordCpuGlOutOfMemory(b);return false;}
+  return applyNativeChangeRecord(gl,changes,repair,parent);
+}
+
+function applyNativeChangeRecord(gl:WebGL2RenderingContext,changes:NativeChange[],repair:Repair,parent:Repair|undefined):boolean {
   try {
     for (const change of changes) {
       repair.attempted++;
@@ -399,19 +438,19 @@ export function applyNativeChanges(b: CheckedGlOwner & { shadow: object }, chang
       try { accepted = change.apply(); }
       catch (error) {
         if (error instanceof NativeContextReset || error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
-        recordGlError(b,0x502);
+        recordGlError(repair.owner,0x502);
       }
       if (accepted) continue;
       repair.pending = true;
       repairNativeState(gl);
       return false;
     }
-    if (repairs.get(gl) !== repair || (repair.finalizer && !restoreInverse(repair.finalizer))) {
+    if (repairTop(gl) !== repair || (repair.finalizer && !restoreInverse(repair.finalizer))) {
       repair.pending = true;
       repairNativeState(gl);
       return false;
     }
-    if (parent) repairs.set(gl,parent); else repairs.delete(gl);
+    setRepairTop(gl,parent);
     if (repair.completion) repair.completion.complete = true;
     if (!parent && deferredCollections.has(gl)) { deferredCollections.delete(gl); collectNativeRetirements(gl); }
     return true;
@@ -427,10 +466,46 @@ export function applyNativeChanges(b: CheckedGlOwner & { shadow: object }, chang
   }
 }
 
+/** A reusable native change reserves its recovery receiver before API local
+ * acceptance. Keep the renderer's stack cell even while idle: deleting and
+ * reinserting a WeakMap key would rediscover allocation failure during a
+ * warmed draw. Idle cells retain no binding or native handle. */
+export class PreparedNativeChanges {
+  private busy=false;
+  private constructor(private readonly binding:CheckedGlOwner&{shadow:object},private readonly gl:WebGL2RenderingContext,
+    private readonly changes:NativeChange[],private readonly repair:Repair,private readonly slot:RepairSlot){}
+  static reserve(b:CheckedGlOwner&{shadow:object},changes:NativeChange[],options:{shared?:boolean;finalizer?:NativeInverse;completion?:NativeCompletion}={}):PreparedNativeChanges|null {
+    if(!b.gl)return null;
+    try{
+      const slot=repairSlot(b.gl),repair:Repair={lifetime:options.shared?null:b.shadow,finalizer:options.finalizer,
+        completion:options.completion,restores:changes.map(change=>change.restore),attempted:0,pending:false,replaying:false,
+        owner:nativeOwner(b),epoch:rendererLossCount(b.gl)};
+      return new PreparedNativeChanges(b,b.gl,changes,repair,slot);
+    }catch(error){rethrowNativeGlFault(error);recordCpuGlOutOfMemory(b);return null;}
+  }
+  apply():boolean {
+    const b=this.binding,repair=this.repair;
+    if(this.busy)nativeGlFault("a prepared native change was reentered while its receiver is borrowed");
+    if(b.gl!==this.gl||rendererLossCount(this.gl)!==repair.epoch)return false;
+    const parent=this.slot.top;if(parent?.pending)return false;
+    // Cold query admission temporarily redirects b.errors to receipt flags.
+    // Refresh the preallocated owner pointers at each ordinary batch so the
+    // same context's predictions/reset policy remain authoritative.
+    repair.owner.errors=b.errors;
+    for(const inverse of repair.restores)inverse.owner.errors=b.errors;
+    if(repair.finalizer)repair.finalizer.owner.errors=b.errors;
+    repair.parent=parent;repair.attempted=0;repair.pending=false;repair.replaying=false;
+    if(repair.completion){repair.completion.submitted=true;repair.completion.complete=false;}
+    this.slot.top=repair;this.busy=true;
+    try{return applyNativeChangeRecord(this.gl,this.changes,repair,parent);}
+    finally{this.busy=false;if(this.slot.top!==repair&&!repair.pending)repair.parent=undefined;}
+  }
+}
+
 /** Shared repair may outlive its submitter, but cannot reattach a container
  * that its owner has since retired. Scalar selector inverses become zero. */
 export function retireNativeObject(gl: WebGL2RenderingContext, object: object): void {
-  for (let repair = repairs.get(gl); repair; repair = repair.parent) {
+  for (let repair = repairTop(gl); repair; repair = repair.parent) {
     for (const inverse of repair.restores) retireInverseObject(inverse,object);
     if (repair.finalizer) retireInverseObject(repair.finalizer,object);
   }
@@ -440,6 +515,7 @@ function retireInverseObject(inverse: NativeInverse, object: object): void {
     const group = inverse.groups[i];
     if (group.some(call => call[0] === "bindFramebuffer" && call[2] === object)
         && group.some(call => call[0] === "framebufferTexture2D" || call[0] === "framebufferTextureLayer" || call[0] === "framebufferRenderbuffer")) {
+      if(inverse.prepared){for(const call of inverse.prepared.groups[i])call.enabled=false;inverse.prepared.groups.splice(i,1);}
       inverse.groups.copyWithin(i,i+1); inverse.groups.length--; continue;
     }
     for (const call of group) {
@@ -455,10 +531,10 @@ function retireInverseObject(inverse: NativeInverse, object: object): void {
  * shared storage contents. Teardown deletes the containers; they must never
  * be revived by a later owner's repair. Muxer retirement precedes this call. */
 export function retireNativeRepair(gl: WebGL2RenderingContext, lifetime: object): void {
-  let top = repairs.get(gl);
+  let top = repairTop(gl);
   while (top?.lifetime === lifetime) top = top.parent;
-  if (!top) { repairs.delete(gl); return; }
-  repairs.set(gl,top);
+  if (!top) { setRepairTop(gl,undefined); return; }
+  setRepairTop(gl,top);
   for (let repair: Repair|undefined = top; repair; repair = repair.parent)
     while (repair.parent?.lifetime === lifetime) repair.parent = repair.parent.parent;
 }
@@ -481,7 +557,8 @@ export function batchedNativeInverse(owner: CheckedGlOwner, ...groups: NativeCal
 }
 function restoreBatched(inverse: NativeInverse): boolean {
   let accepted = true;
-  for (const group of inverse.groups) {
+  for (let groupIndex=0;groupIndex<inverse.groups.length;groupIndex++) {
+    const group=inverse.groups[groupIndex],prepared=inverse.prepared?.groups[groupIndex];
     const gl = inverse.owner.gl;
     let restored = false;
     try {
@@ -494,7 +571,7 @@ function restoreBatched(inverse: NativeInverse): boolean {
           recordGlError(inverse.owner, error);
         }
         if (cleared) {
-          for (const call of group) invokeNativeCall(gl, call);
+          for(let i=0;i<group.length;i++)if(!prepared||prepared[i].enabled){if(prepared)prepared[i].invoke();else invokeNativeCall(gl,group[i]);}
           const error = gl.getError();
           observeBatchNativeError(gl, error);
           recordGlError(inverse.owner, error);

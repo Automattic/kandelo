@@ -4883,6 +4883,21 @@ int main(int argc, char **argv) {
             // A known, infallible bind0 restores the current target proof.
             // The lost-prefix and surfaceless guards below remain unknown.
             glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_NO_ERROR && error_queries==queries);
+            // A raw selector mutation followed by an empty error drain must
+            // not restore stale C framebuffer knowledge. The double supplies
+            // the error the incomplete raw target's subsequent clear produces.
+            glFlush();
+            uint8_t *raw=_wpk_gl_cmdbuf_base();
+            const uint16_t raw_header[2]={OP_BIND_FRAMEBUFFER,8};
+            const uint32_t raw_words[2]={GL_FRAMEBUFFER,17};
+            memcpy(raw,raw_header,4);memcpy(raw+4,raw_words,8);
+            struct gl_submit_info raw_submit={.length=12};
+            _wpk_gl_note_device_request();assert(ioctl(_wpk_gl_fd(),GLIO_SUBMIT,&raw_submit)==0);
+            assert(glGetError()==GL_NO_ERROR);
+            queries=error_queries;query_gl_error=GL_INVALID_FRAMEBUFFER_OPERATION;
+            glClear(GL_COLOR_BUFFER_BIT);
+            assert(glGetError()==GL_INVALID_FRAMEBUFFER_OPERATION&&error_queries==queries+1);
+            assert(glGetError()==GL_NO_ERROR);
             /* A different fresh context loses its prefix without selecting
              * a user FBO. Later drains/default binds must not rearm it. */
             EGLContext other=eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs);

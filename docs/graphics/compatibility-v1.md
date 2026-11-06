@@ -57,6 +57,64 @@ explicitly wants to wait until all changes are integrated into a normally
 built preview that passes its required checks. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Offscreen generations and preparation refusal, 2026-11-05 (R461–R474)
+
+The guest driver now cold-captures eligible offscreen target/input native
+generations, with separate immutable target metadata and converged deletion
+custody. Clear borrows target-only selectors. Native inverse/call receivers and
+bounded upload storage are reserved cold; action14 reserves uniform CPU arrays
+and executable write counters. Definite private preparation refusal falls back
+to the original observed API, while completed token consumption and proven
+nonentry remain distinct. Raw I/O revokes program/layout/target knowledge;
+successful error draining does not restore it. A capacity guard now limits
+actual nonzero input identities, rather than rejecting the initial32-unit
+container even when only two units are bound. Existing unsupported proof shapes
+retain ordinary GL execution; these are internal eligibility rules, not new API
+boundaries or a completed stage.
+
+CPU refusal provenance is bound to a preallocated private error receiver.
+Earlier guest505/500 flags, derived owners, unrelated owners and nested scopes
+are independently checked. There is no numeric505 filtering or blanket drain.
+A controlled native505 injection after receipt completion still reaches the
+existing batch/reset policy; this source control does not claim physical GPU
+exhaustion. Native OOM retains D-50's context reset under production and audit.
+
+| Frozen run | Exact scope and result |
+| --- | --- |
+| R463 `graphics-b1-normal-refusal-r463-1105-220612-7716` | PASS11m44: graphics2273/89, host compiler0, native489, one both-width Rust authority test, one additive-contract xtask test, own release tool, normal snapshot/SDK32/SDK64/kernel/image writer, ABI/evidence and input hashes |
+| R464 `graphics-b1-refusal-guest-r464-1105-221858-cc51`, port6212 | FAILED24m23: Node22/6 pass;162 browser cases produce138 pass/24 failed assertions. All156 actual C guests exit0; six module cases pass. The24 failures are stale cold-request expectations, not suppressed guest failures |
+| R470 `graphics-hotpath-cpu-ready-r470-1105-224530-fbfa`, port6214 | PASS3m09: all36 hotpath cases across three engines/both widths/production+fatal with the corrected exact cold oracle; runtime, C fixture, SDK and kernel bytes unchanged; all original warm/pixel/error/lifetime assertions retained |
+| R471 `graphics-offscreen-integration-r471-1105-230150-34a8` | PASS7m48 on the integration tree: graphics2273/89, host compiler0, native489, Rust authority1, xtask additive-contract1, own release tool, normal snapshot/SDK32/SDK64/kernel/image writer, ABI/evidence and frozen inputs. All nine recorded products match R463 byte for byte |
+| R473 `graphics-offscreen-shader-r473-1105-231023-00f4` | PASS25s on the integration tree: shader harness297/294/297 passes on Chromium/Firefox/WebKit, zero hard failures; Firefox retains one inconclusive and two registered native-engine controls |
+| R474 `graphics-offscreen-integration-check-r47-1105-231548-7451`, port6216 | PASS6m29 on the integration tree: Node22/6 and all162 browser cases, three engines/both widths/production+fatal. Frozen source and all nine normal products match before/after; all corrected cold and original warm/pixel/error/lifetime assertions pass |
+
+The explicit-admission matrix's cold setup now makes3 requests instead of0;
+automatic admission's initial matrix makes3 instead of2, while its later setup
+remains0. Both retain zero warmed matrix/uniform requests. The new safety
+preparation is a cold cost, not a latency improvement claim. R470 relocates the
+same consumer mechanically and changes only those two exact expectations and
+their Why comment. It does not turn the original failed R464 run green.
+
+The126 non-hotpath cases in R464 pass, including36 real cold-refusal controls:
+each first visible draw/clear has error0 and exact pixels, with later token/store
+recovery also checked. The original cold BEFORE result was honest505 plus a
+black pixel, not proven silent success. Completed private admission refusal now
+preserves the original draw with correct pixels/error0. Actual raw-mode controls
+assert re-admission refusal followed by correct ordinary rendering, not stale
+cache authority. Exact scripts/manifests and per-case records remain under
+`.context/graphics-b1-combined-r461-runs/`,
+`.context/graphics-b1-refusal-guest-r464/` and
+`.context/graphics-hotpath-cpu-ready-r470/`.
+
+The normal checkpoint kernel is
+`ce837bcdc540d72e215acd47fae84d656e5d9ce9b01b6359ba1d12ca6011433b`,
+snapshot `40c292493ce263270ea3c09a15a3d02ae12c45cc3b00fd7a6cb4af41087fe19c`.
+Optional additions preserve56/3/17/21 and existing entries; coherent application
+and image rebuilding remains required by the new digest. Prepared VBO/inline
+executable/sampling authority, selected-path decoding, full B1 application
+checks and the complete preview are still open. No native-feel or full final
+validation claim follows, and no acceptance requirement is reduced.
+
 ## Lazy asset failure visibility, 2026-11-05 (R454/R459)
 
 Native VFS already rejects lazy bytes with the wrong declared length/digest

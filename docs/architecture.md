@@ -7377,6 +7377,29 @@ First sharing is ordered with local admission; new local proofs remain revoked
 after the last peer leaves. Known own bind0 can restore default-target knowledge
 only while its independent rearmable proof survives. Ordinary inactive paths
 allocate no bank or duplicate uploads. The duplicate-upload/application cost is
-unmeasured. Offscreen generation/feedback authority, raw-target proof closure,
-full B1 application/conformance acceptance and the complete normal preview remain
-required. See the compatibility ledger's R432–R444 evidence and limits.
+unmeasured. See the compatibility ledger's R432–R444 evidence and limits.
+
+The journal also cold-captures eligible offscreen targets and input native
+generations. Private framebuffer metadata describes the retained attachment,
+separately from a public texture that can acquire replacement storage. Target
+pins force storage orphaning; input pins preserve native identity while following
+in-place metadata updates until replacement. Their deletion custody converges
+with EGLImage ownership rather than manufacturing a new BO/export lifetime.
+Private framebuffer deletion precedes release of its target pin. Raw graphics
+I/O revokes program, layout and target knowledge together; a later successful
+error drain cannot recreate that authority.
+
+Upload scratch, native call arguments, inverse receivers and uniform write
+counters are reserved before granting their corresponding local prediction.
+Uniform uploads borrow bounded nonshared arrays synchronously. Optional CPU
+preparation refusal is distinct from guest GL flags: a preallocated scope binds
+the exact private error receiver, preserving earlier flags and nested owners.
+Definite refusal executes the original API through its observed path; uncertain
+entry is reconciled without replay. Native OOM retains the approved context-reset
+policy, including under the audit; other unpredicted native errors remain fatal
+under the audit. No numeric error filtering substitutes for provenance.
+
+This checkpoint does not finish B1. Complete prepared executable/sampling and
+inline execution, selected-path decoding, final application/conformance checks,
+measurements and the complete normal preview remain required. In particular,
+retaining storage alone does not prove every later CPU emulation receiver exists.

@@ -1,3 +1,4 @@
+import {recordCpuGlOutOfMemory} from "./errors.js";
 import { predictsNativeCalls, predictedNativeCalls, observeBatchNativeError, noteNativeBatchWork } from "./native-batch.js";
 import { copyExternalSamplers, recordLinkedExternalSamplers } from "./external-texture.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
@@ -582,9 +583,9 @@ export class GlProgramQueryPin {
   private static acquireExact(execution: GlContextExecutionLease,name: number,program: WebGLProgram): GlProgramQueryPin | null {
     const b=execution.binding;
     const count=b.programQueryPins.get(program)??0;
-    if(count>=Number.MAX_SAFE_INTEGER) {recordGlError(b,0x505);return null;}
+    if(count>=Number.MAX_SAFE_INTEGER) {recordCpuGlOutOfMemory(b);return null;}
     const retained=execution.clone();
-    if(!retained) {recordGlError(b,0x505);return null;}
+    if(!retained) {recordCpuGlOutOfMemory(b);return null;}
     try {
       const pin=new GlProgramQueryPin(retained,b,name,program);
       programLinkGeneration(b,program);
@@ -592,7 +593,7 @@ export class GlProgramQueryPin {
       return pin;
     } catch (error) { rethrowNativeGlFault(error); if(isKernelExportFailure(error)) throw error;
       // The caller still owns its execution lease, so this cannot retire it.
-      retained.release();recordGlError(b,0x505);return null;
+      retained.release();recordCpuGlOutOfMemory(b);return null;
     }
   }
 
@@ -602,15 +603,15 @@ export class GlProgramQueryPin {
     if(this.released || !this.execution) return null;
     const b=this.binding, count=b.programQueryPins.get(this.program);
     if(!count) nativeGlFault("Program executable pin lost before cloning");
-    if(count>=Number.MAX_SAFE_INTEGER) {recordGlError(errorOwner,0x505);return null;}
+    if(count>=Number.MAX_SAFE_INTEGER) {recordCpuGlOutOfMemory(errorOwner);return null;}
     const retained=this.execution.clone();
-    if(!retained) {recordGlError(errorOwner,0x505);return null;}
+    if(!retained) {recordCpuGlOutOfMemory(errorOwner);return null;}
     try {
       const pin=new GlProgramQueryPin(retained,b,this.name,this.program);
       b.programQueryPins.set(this.program,count+1);
       return pin;
     } catch(error) { rethrowNativeGlFault(error);if(isKernelExportFailure(error))throw error;
-      retained.release();recordGlError(errorOwner,0x505);return null;
+      retained.release();recordCpuGlOutOfMemory(errorOwner);return null;
     }
   }
 

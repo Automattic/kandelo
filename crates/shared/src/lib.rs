@@ -4180,6 +4180,8 @@ pub mod gl {
     pub const OP_DRAW_CLIENT_ARRAYS: u16 = 0x0506;
     /// Own-context buffer generations; no guest address or public name.
     pub const OP_DRAW_BUFFER_SNAPSHOTS: u16 = 0x0507;
+    pub const OP_DRAW_FRAMEBUFFER_SNAPSHOTS: u16 = 0x0508;
+    pub const OP_CLEAR_FRAMEBUFFER_SNAPSHOT: u16 = 0x0509;
     pub const OP_DRAW_ELEMENTS: u16 = 0x0504;
     /// `glVertexAttrib4fv(index, value)` — constant (non-array) vertex
     /// attribute. ScummVM's shader pipeline feeds the per-draw color
@@ -6781,6 +6783,8 @@ mod gl_tests {
             OP_DRAW_ARRAYS,
             OP_DRAW_CLIENT_ARRAYS,
             OP_DRAW_BUFFER_SNAPSHOTS,
+            OP_DRAW_FRAMEBUFFER_SNAPSHOTS,
+            OP_CLEAR_FRAMEBUFFER_SNAPSHOT,
             OP_DRAW_ELEMENTS,
             OP_VERTEX_ATTRIB_4FV,
             OP_GEN_VERTEX_ARRAYS,

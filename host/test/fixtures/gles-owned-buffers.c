@@ -29,7 +29,11 @@ int main(int argc,char **argv){
  for(unsigned i=0;i<3;i++){glBindBuffer(GL_ARRAY_BUFFER,buffers[i]);glBufferData(GL_ARRAY_BUFFER,i==2?sizeof colors:sizeof positions,i==0?positions:i==1?uv:colors,GL_STATIC_DRAW);glVertexAttribPointer(i,i==2?4:2,GL_FLOAT,GL_FALSE,0,NULL);glEnableVertexAttribArray(i);}
  GLuint v=shader(GL_VERTEX_SHADER,"attribute vec2 p;attribute vec2 uv;attribute vec4 color;varying vec4 c;void main(){gl_Position=vec4(p,0.,1.);c=color+vec4(uv*.00001,0.,0.);}"),f=shader(GL_FRAGMENT_SHADER,"precision mediump float;varying vec4 c;void main(){gl_FragColor=c;}");
  GLuint program=glCreateProgram();glAttachShader(program,v);glAttachShader(program,f);glBindAttribLocation(program,0,"p");glBindAttribLocation(program,1,"uv");glBindAttribLocation(program,2,"color");glLinkProgram(program);GLint linked=0;glGetProgramiv(program,GL_LINK_STATUS,&linked);assert(linked);glUseProgram(program);
- if(raw||!strcmp(argv[1],"admitted")){assert(_wpk_gl_enable_program_journal());glUseProgram(0);glUseProgram(program);}
+ // Raw I/O revoked the shared program/link table. Creating later ordinary
+ // objects cannot reconstruct unknown earlier lifetimes; cold admission must
+ // refuse while the observed GL path still renders every draw correctly.
+ if(raw)assert(!_wpk_gl_enable_program_journal());
+ else if(!strcmp(argv[1],"admitted")){assert(_wpk_gl_enable_program_journal());glUseProgram(0);glUseProgram(program);}
  glViewport(0,0,16,16);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_NO_ERROR);
  uint64_t static_warm=warm();pixel();
  uint64_t dynamic_warm=0;

@@ -391,9 +391,11 @@ it("keeps a restore request when ticket reservation fails and retries it on admi
   const {b,gl,submit,object} = pointerSetup();
   expect(submit([[O.OP_BEGIN_CLIENT_ARRAY,[]],[O.OP_BIND_BUFFER,[ARRAY,18]]])).toBe(0);
   const temporary = b.shadow.arrayBuffer;
-  const set = WeakMap.prototype.set; let rc = 0;
-  WeakMap.prototype.set = () => {throw new RangeError("ticket reservation failed");};
-  try { rc = submit([[O.OP_END_CLIENT_ARRAY,[]]]); } finally { WeakMap.prototype.set = set; }
+  // Idle renderer stack cells are reused. Refuse the actual per-transaction
+  // inverse list, rather than requiring another WeakMap insertion to occur.
+  const map=Array.prototype.map;let rc=0;
+  Array.prototype.map=()=>{throw new RangeError("ticket reservation failed");};
+  try{rc=submit([[O.OP_END_CLIENT_ARRAY,[]]]);}finally{Array.prototype.map=map;}
   expect(rc).toBe(-5); expect(b.shadow.arrayBuffer).toBe(temporary);
   expect(b.savedClientArrayBuffer).toBe(object); expect(b.clientArrayEndRequested).toBe(true);
   expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);

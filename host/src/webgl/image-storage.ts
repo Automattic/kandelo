@@ -1,3 +1,4 @@
+import {imageGenerationHeld,imageGenerationOwnsDeletion,retireImageGeneration,refreshImageGenerationMetadata} from "./image-generations.js";
 import { withNativeBookkeeping } from "./native-batch.js";
 import { rendererObjectEpoch } from "./renderer-loss.js";
 import { applyNativeChanges, invokeNativeCall, rethrowNativeGlFault, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, type NativeChange, type NativeCall, type NativeDeletion } from "./native-recovery.js";
@@ -299,8 +300,12 @@ function transferCandidate(view: GlTextureView): void {
 function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureView): boolean {
   const old = b.textureViews.get(object) ?? { native: object, source: null, read: null };
   const had = b.textureViews.has(object);
+  // Stage old-generation sampling facts before any logical view publication.
+  // An input-only pin must not force renderability-dependent storage copies.
+  try{refreshImageGenerationMetadata(old.native,object);}
+  catch(error){rethrowNativeGlFault(error);recordGlError(b,0x505);return false;}
   const retired = reserveNativeRetirement(b,[
-    ["deleteTexture",b.externallyOwnedTextures.has(old.native) || exportOwned(old.native) ? null : old.native], ["deleteFramebuffer",old.read]]);
+    ["deleteTexture",b.externallyOwnedTextures.has(old.native) || exportOwned(old.native) || imageGenerationOwnsDeletion(old.native) ? null : old.native], ["deleteFramebuffer",old.read]]);
   if (!retired) return false;
   let committed = false;
   try {
@@ -355,6 +360,7 @@ function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureV
     b.textureViewOwners.delete(old.native);
     unlinkSource(object, next.native);
     committed = true;
+    if(!b.externallyOwnedTextures.has(old.native) && !exportOwned(old.native))retireImageGeneration(old.native);
     retireNativeRetirement(retired);
     return true;
   } finally {
@@ -367,7 +373,7 @@ function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureV
 function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: GlRenderbufferView): boolean {
   const old = b.renderbufferViews.get(object) ?? { native: object, source: null };
   const had = b.renderbufferViews.has(object);
-  const retired = reserveNativeRetirement(b,[["deleteRenderbuffer",next.native === old.native || exportOwned(old.native) ? null : old.native]]);
+  const retired = reserveNativeRetirement(b,[["deleteRenderbuffer",next.native === old.native || exportOwned(old.native) || imageGenerationOwnsDeletion(old.native) ? null : old.native]]);
   if (!retired) return false;
   let committed = false;
   try {
@@ -424,7 +430,9 @@ function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: 
       b.renderbufferViewOwners.delete(old.native);
     }
     unlinkSource(object, next.native);
-    committed = true; retireNativeRetirement(retired);
+    committed = true;
+    if(next.native!==old.native && !exportOwned(old.native))retireImageGeneration(old.native);
+    retireNativeRetirement(retired);
     return true;
   } finally {
     // The object's native storage (and so what its attachments are) may have
@@ -626,7 +634,7 @@ function textureOperation(b: GlBinding, target: number, respecify: boolean, call
   if (!view?.source) {
     const object = (target === TEX ? b.shadow.textureUnits : isCubeFace(target) || target === CUBE
       ? b.shadow.cubeTextureUnits : [])[b.shadow.activeTexture];
-    if (respecify && object && linkedSource(object))
+    if (respecify && object && (linkedSource(object) || imageGenerationHeld(textureNative(b,object))))
       return orphanLinkedTexture(b, object, target === TEX ? TEX : CUBE,
         level === undefined ? null : {face: target, level}, call);
     return checkedGlCall(b, call);
@@ -670,7 +678,7 @@ function renderbufferStorageOperation(b: GlBinding, call: () => void): boolean {
   const object = b.shadow.renderbuffer, view = object && b.renderbufferViews.get(object);
   // Respecifying an exported renderbuffer orphans its image: the image
   // keeps the old storage and the object receives new storage.
-  if (!view?.source && !(object && linkedSource(object)))
+  if (!view?.source && !(object && (linkedSource(object) || imageGenerationHeld(renderbufferNative(b,object)))))
     return checkedGlCall(b, call);
   const candidate = reserveNativeRetirement(b,[["deleteRenderbuffer",null]]);
   if (!candidate) return false;
@@ -697,16 +705,23 @@ function renderbufferStorageOperation(b: GlBinding, call: () => void): boolean {
 function imageRetirement(b: GlBinding, object: WebGLTexture|WebGLRenderbuffer, calls: Parameters<typeof reserveNativeRetirement>[1]): boolean {
   let retirement = b.imageRetirements.get(object);
   if (!retirement) {
-    retirement = reserveNativeRetirement(b,calls) ?? undefined;
+    let ordinary=calls;
+    for(const call of calls)if(call[1]&&imageGenerationOwnsDeletion(call[1])){
+      ordinary=calls.map(row=>row[1]&&imageGenerationOwnsDeletion(row[1])?[row[0],null] as NativeDeletion:row);break;
+    }
+    retirement = reserveNativeRetirement(b,ordinary) ?? undefined;
     if (!retirement) return false;
     try { b.imageRetirements.set(object,retirement); }
     catch (caught) { transferNativeRetirement(retirement); rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   }
+  for(const call of calls)if(call[1] && imageGenerationOwnsDeletion(call[1]))retireImageGeneration(call[1]);
   if (!retireNativeRetirement(retirement)) return false;
   b.imageRetirements.delete(object); return true;
 }
 export function destroyTextureView(b: GlBinding, object: WebGLTexture): boolean {
   const view = b.textureViews.get(object), native = view?.native ?? object;
+  try{refreshImageGenerationMetadata(native,object);}
+  catch(error){rethrowNativeGlFault(error);recordGlError(b,0x505);return false;}
   unlinkSource(object, null);
   // A cube map's other 2D array storages (cube-storage.ts) go with it,
   // except one an exported image still uses.
@@ -1025,6 +1040,7 @@ export function retireExportedImage(record: GlExportedImage): boolean {
     return true;
   }
   exportedByNative.delete(record.native);
+  if(imageGenerationOwnsDeletion(record.native))return retireImageGeneration(record.native);
   const retirement = reserveNativeRetirement({ gl: record.gl, errors: [], nativeEpoch: record.nativeEpoch },
     [[record.renderbuffer ? "deleteRenderbuffer" : "deleteTexture", record.native] as NativeDeletion]);
   return !!retirement && retireNativeRetirement(retirement);

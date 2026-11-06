@@ -412,6 +412,7 @@ void _wpk_gl_note_device_request(void) {
     uint64_t previous=atomic_fetch_add_explicit(&g_raw_device_requests,1,memory_order_seq_cst);
     // A wrapped epoch would revive previously revoked layout authority.
     if(previous==UINT64_MAX)abort();
+    _wpk_gl_reconcile_raw_authority(_wpk_gl_current_encoder());
 }
 uint64_t _wpk_gl_raw_device_requests(void) {
     return atomic_load_explicit(&g_raw_device_requests,memory_order_seq_cst);
@@ -1536,6 +1537,10 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLC
                                           .object = context,
                                           .draw = d,
                                           .read = r};
+    // Raw packets can name an owned foreign session, but cannot execute
+    // another current TID's GL. Reconcile at successful context adoption,
+    // before local commands may use its retained validation knowledge.
+    _wpk_gl_reconcile_raw_authority(context->encoder);
     if (previous && previous != generation)
         retire_pending_resources_locked(previous);
     retire_pending_resources_locked(generation);

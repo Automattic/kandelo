@@ -175,10 +175,17 @@ export function recordLinkedProgram(b: GlBinding, program: WebGLProgram, linked:
 
 // --- uniform write generations ------------------------------------------------
 
-const uniformWrites = new WeakMap<WebGLProgram, number>();
+const uniformWrites = new WeakMap<WebGLProgram, {value:number}>();
+export function prepareUniformWrites(program:WebGLProgram):void {
+  if(!uniformWrites.has(program))uniformWrites.set(program,{value:0});
+}
 /** Uniform commands always address the installed executable (ES 2.0 2.10.4). */
 export function noteUniformWrite(program: WebGLProgram | null): void {
-  if (program) uniformWrites.set(program, (uniformWrites.get(program) ?? 0) + 1);
+  if(program){
+    let cell=uniformWrites.get(program);
+    if(!cell){prepareUniformWrites(program);cell=uniformWrites.get(program)!;}
+    cell.value++;
+  }
 }
 
 // --- twins ----------------------------------------------------------------------
@@ -429,7 +436,7 @@ export function synchronizeReversedDepthTwin(b: GlBinding, twinProgram: WebGLPro
   const primary = b.currentProgram;
   const twin = primary ? [...twins.get(primary)?.values() ?? []].find(variant => variant.program === twinProgram) : undefined;
   if (!primary || !twin) { recordGlError(b, 0x502); return false; }
-  const generation = uniformWrites.get(primary) ?? 0;
+  const generation = uniformWrites.get(primary)?.value ?? 0;
   if (twin.uniforms !== generation) {
     if (!copyUniforms(b, primary, twin)) return false;
     twin.uniforms = generation;

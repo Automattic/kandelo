@@ -79,6 +79,9 @@ export const OP_DRAW_ARRAYS                 = 0x0503;
 export const OP_DRAW_CLIENT_ARRAYS          = 0x0506;
 /** Exact retained buffer generations and logical attribute layouts. */
 export const OP_DRAW_BUFFER_SNAPSHOTS       = 0x0507;
+/** Retained target/input generations plus the exact buffer draw layout. */
+export const OP_DRAW_FRAMEBUFFER_SNAPSHOTS  = 0x0508;
+export const OP_CLEAR_FRAMEBUFFER_SNAPSHOT  = 0x0509;
 export const INLINE_DRAW_HEADER_BYTES = 16;
 export const INLINE_DRAW_ATTRIBUTE_BYTES = 20;
 export const INLINE_DRAW_MAX_BYTES = 65535;

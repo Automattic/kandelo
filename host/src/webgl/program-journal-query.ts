@@ -1,7 +1,7 @@
 import {rendererLost} from "./renderer-loss.js";
 import type {GlBinding,GlContextExecutionLease} from "./registry.js";
 import {GlProgramJournal,lookupProgramJournal,programJournalSequence} from "./program-journal.js";
-import {recordGlError} from "./errors.js";
+import {recordGlError,beginOptionalCpuPreparation,endOptionalCpuPreparation,optionalCpuPreparationRefused} from "./errors.js";
 import {nativeGlFault,rethrowNativeGlFault} from "./native-recovery.js";
 
 export const PROGRAM_JOURNAL_REPLY_BYTES=48;
@@ -22,6 +22,8 @@ export function validProgramJournalRequest(input:Uint8Array,outputBytes:number):
   if(n<8 || !v.getUint32(4,true))return false;
   if(action===8 || action===9)return n===16;
   if(action===10)return n===16 && v.getUint32(8,true)!==0 && v.getUint32(12,true)>0 && v.getUint32(12,true)<=32;
+  if(action===12)return n===24 && v.getUint32(8,true)!==0 && v.getUint32(12,true)<16 && v.getUint32(16,true)!==0 && v.getUint32(20,true)!==0;
+  if(action===14)return n===12 && v.getUint32(8,true)!==0;
   if(action===11)return n===24 && v.getUint32(8,true)!==0 && v.getUint32(12,true)<32 && v.getUint32(16,true)!==0 && v.getUint32(20,true)<16;
   if(action===1)return n===12 && v.getUint32(8,true)>0 && v.getUint32(8,true)<=256;
   if(action===2)return n===12 && v.getUint32(8,true)!==0;
@@ -77,7 +79,13 @@ export function runProgramJournalQuery(b:GlBinding,input:Uint8Array,out:Uint8Arr
   if(words[0]===2 || words[1]===0xffff_ffff || tx!==words[1]+1)return -22;
   words.fill(0);words[0]=2;words[1]=tx;words[2]=action;words[11]=MAGIC;
   let journal:GlProgramJournal|null=b.programJournal??null,value=0,accepted=false;
-  const previous=b.errors;control.errors.length=0;b.errors=control.errors;
+  const previous=b.errors;
+  const optional=action>=10&&action<=14&&b.programJournal?.id===v.getUint32(8,true),cpuScope=control.cpuPreparation;
+  // The receiver and its linked-scope cell were allocated at context creation.
+  // Enter before swapping errors, so failed/reentrant admission cannot leave
+  // the original guest queue replaced by a private preparation receiver.
+  if(optional)beginOptionalCpuPreparation(cpuScope);
+  control.errors.length=0;b.errors=control.errors;
   try {
   if(action===1){
     if(execution && execution.binding===b && !execution.retired){
@@ -124,7 +132,22 @@ export function runProgramJournalQuery(b:GlBinding,input:Uint8Array,out:Uint8Arr
       accepted=bytes!==null;value=bytes??0;
     }
   }
-  if(!accepted && !b.errors.length)recordGlError(b,0x502);
+  else if(action===12){
+    // A completed target/input capture is recovered exactly, never recaptured
+    // from public storage which may have changed after the lost response.
+    if(journal?.id===v.getUint32(8,true)){
+      const captured=journal.captureFramebuffer(v.getUint32(12,true),v.getUint32(16,true),v.getUint32(20,true));
+      accepted=captured!==null;value=captured??0;
+    }
+  }
+  else if(action===14){
+    if(journal?.id===v.getUint32(8,true)){value=journal.prepareUniformCpu();accepted=true;}
+  }
+  // Private CPU reservation failure grants no draw/setter authority and no
+  // synthetic guest error. Actual native flags and invalid authority remain
+  // in their original error path; the guest prefix's previous flags are never
+  // inspected, cleared or reclassified by this admission protocol.
+  if(!accepted && !b.errors.length && !(optional&&optionalCpuPreparationRefused(cpuScope)))recordGlError(b,0x502);
   words[3]=journal?.id??0;words[4]=value;snapshot(words,b,journal);
   // Publish completion only after every progress field is sealed. A failed
   // copyout can then recover this exact receipt without replaying effects.
@@ -142,7 +165,9 @@ export function runProgramJournalQuery(b:GlBinding,input:Uint8Array,out:Uint8Arr
     }
     throw error;
   }finally{
-    b.errors=previous;
-    if(rendererLost(b))previous.length=0;else for(const error of control.errors)recordGlError(b,error);
+    try{
+      b.errors=previous;
+      if(rendererLost(b))previous.length=0;else for(const error of control.errors)recordGlError(b,error);
+    }finally{if(optional)endOptionalCpuPreparation(cpuScope);}
   }
 }

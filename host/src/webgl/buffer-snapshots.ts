@@ -1,15 +1,18 @@
+import {recordCpuGlOutOfMemory} from "./errors.js";
 /** Owned, bounded copies of small buffer definitions. A queued driver draw
  * must not depend on a public name or on storage a peer can replace later.
  * The ordinary logical buffer remains unchanged by these private copies.
  * This bank is prepared cold, then used only by its retained execution owner.
  */
+import {BufferSnapshotDraw} from "./buffer-snapshot-draw.js";
 import type {GlBinding,GlContextExecutionLease} from "./registry.js";
 import {canonicalBuffer,replaceBufferData,prepareBufferDraw,withBufferTransfer} from "./buffer-storage.js";
 import {checkedGlCall,recordGlError} from "./program-objects.js";
-import {withNativeBookkeeping} from "./native-batch.js";
+import {predictsNativeCalls,predictedNativeCalls,withNativeBookkeeping} from "./native-batch.js";
 import {rendererLost,rendererLossCount,shareRendererLossAuthority} from "./renderer-loss.js";
 import {applyNativeChanges,nativeInverse,nativeGlFault,reserveNativeRetirement,retireNativeRetirement,
-  rethrowNativeGlFault,type NativeRetirement} from "./native-recovery.js";
+  PreparedNativeChanges,prepareNativeInverse,prepareNativeCall,checkedPreparedNativeCall,
+  rethrowNativeGlFault,type NativeRetirement,type NativeCall} from "./native-recovery.js";
 import {activeVertexArray} from "./buffer-references.js";
 import {packedVertexLayout} from "./vertex-data.js";
 import {isKernelExportFailure} from "../kernel-entry-gate.js";
@@ -32,6 +35,16 @@ export class GlBufferSnapshots {
   private readonly contextId:GlBinding["contextId"];
   private retirement:NativeRetirement|null=null;
   private readonly drawView:GlBinding;
+  readonly drawWorkspace:BufferSnapshotDraw;
+  private readonly definition:PreparedNativeChanges;
+  private readonly definitionRestore:NativeCall;
+  private definitionData:number|Uint8Array<ArrayBuffer>|null=null;
+  private definitionUsage=0;
+  private definitionLength=0;
+  private readonly uploadScratch=new Uint8Array(BUFFER_SNAPSHOT_MAX_BYTES);
+  private definitionCell:Cell|null=null;
+  private definitionObject:WebGLBuffer|null=null;
+  private originalDefinitionAccepted=false;
   private constructor(readonly binding:GlBinding,private readonly cells:Cell[]){
     this.epoch=rendererLossCount(binding.gl!);
     this.objects=binding.objects;this.contextId=binding.contextId;
@@ -40,6 +53,24 @@ export class GlBufferSnapshots {
     // letting it substitute that store would replace our retained bytes.
     this.drawView=Object.create(binding,{robustAccess:{value:false}}) as GlBinding;
     shareRendererLossAuthority(binding,this.drawView);
+    this.drawWorkspace=new BufferSnapshotDraw(binding);
+    const b=binding,gl=b.gl!;
+    this.definitionRestore=["bindBuffer",ARRAY,null];
+    const inverse=prepareNativeInverse(b,[this.definitionRestore]);
+    if(!inverse)throw new Error("Unable to reserve buffer definition inverse");
+    const select=prepareNativeCall(gl,["bindBuffer",ARRAY,null]);
+    const upload=()=>{const data=this.definitionData!;
+      if(typeof data==="number"||this.definitionLength===0)gl.bufferData(ARRAY,this.definitionLength,this.definitionUsage);
+      else gl.bufferData(ARRAY,data,this.definitionUsage,0,this.definitionLength);};
+    const uploads=[upload],issue=()=>predictsNativeCalls(b)?predictedNativeCalls(uploads):checkedGlCall(b,upload);
+    const receiver=PreparedNativeChanges.reserve(b,[{apply:()=>{
+      if(!replaceBufferData(b,ARRAY,this.definitionData!,this.definitionUsage,issue,this.definitionLength))return false;
+      this.originalDefinitionAccepted=true;
+      if(!this.definitionObject)nativeGlFault("Accepted buffer definition lost its bound identity");
+      (select.call as ["bindBuffer",number,WebGLBuffer|null])[2]=this.definitionCell!.native;
+      return checkedPreparedNativeCall(b,select)&&issue();
+    },restore:inverse}],{finalizer:inverse});
+    if(!receiver)throw new Error("Unable to reserve buffer definition receiver");this.definition=receiver;
   }
   get capacity():number {return this.cells.length;}
 
@@ -54,7 +85,7 @@ export class GlBufferSnapshots {
       bank.retirement=retirement;return bank;
     } catch(error) {
       rethrowNativeGlFault(error);if(isKernelExportFailure(error))throw error;
-      recordGlError(binding,0x505);return null;
+      recordCpuGlOutOfMemory(binding);return null;
     }
   }
 
@@ -65,7 +96,7 @@ export class GlBufferSnapshots {
     this.phase="initializing";
     try {
       this.execution=execution.clone();
-      if(!this.execution){recordGlError(this.binding,0x505);return false;}
+      if(!this.execution){recordCpuGlOutOfMemory(this.binding);return false;}
       const b=this.binding,gl=b.gl!;
       const ready=withNativeBookkeeping(()=>{
         for(let i=0;i<this.cells.length;i++) {
@@ -98,7 +129,17 @@ export class GlBufferSnapshots {
    * inverse failure after API acceptance is fatal and retains its owner.
    */
   define(authority:GlBinding,index:number,token:number,target:number,data:number|Uint8Array<ArrayBuffer>,usage:number):boolean {
-    const bytes=typeof data==="number"?data:data.byteLength;
+    return this.defineData(authority,index,token,target,data,usage,typeof data==="number"?data:data.byteLength);
+  }
+  /** Copy the already frozen wire bytes into cold storage. A new ArrayBuffer
+   * or typed-array view here could fail after C had answered NO_ERROR locally.
+   * WebGL2's source range uploads exactly this definition, not the capacity. */
+  defineFromWire(authority:GlBinding,index:number,token:number,target:number,wire:DataView,offset:number,bytes:number,usage:number):boolean {
+    if(!Number.isInteger(bytes)||bytes<0||bytes>this.uploadScratch.length||!Number.isInteger(offset)||offset<0||offset+bytes>wire.byteLength){recordGlError(authority,0x502);return false;}
+    for(let i=0;i<bytes;i++)this.uploadScratch[i]=wire.getUint8(offset+i);
+    return this.defineData(authority,index,token,target,this.uploadScratch,usage,bytes);
+  }
+  private defineData(authority:GlBinding,index:number,token:number,target:number,data:number|Uint8Array<ArrayBuffer>,usage:number,bytes:number):boolean {
     if(!this.owns(authority) || !Number.isInteger(index) || index<0 || index>=this.cells.length ||
       !Number.isInteger(token) || token<1 || token>0xffff_ffff || target!==ARRAY ||
       !Number.isInteger(bytes) || bytes<0 || bytes>BUFFER_SNAPSHOT_MAX_BYTES) {
@@ -110,25 +151,15 @@ export class GlBufferSnapshots {
     // rejected definition never exposes a preceding copy under its new token.
     cell.token=token;cell.ready=false;cell.object=null;cell.bytes=0;
     const b=this.binding,array=b.shadow.arrayBuffer,object=array&&canonicalBuffer(b,array);
-    let originalAccepted=false;
-    // Unlike shared storage publication, no peer can consume these copies.
-    // Keep guest-batch calls predicted: its one final native sample resets
-    // this owner before another query can resolve a failed private upload.
-    const copied=applyNativeChanges(b,[{
-      apply:()=>{
-        // The repair receiver must exist BEFORE the original storage mutation.
-        // CPU metadata refusal must leave ordinary bytes untouched, rather than
-        // converting an already accepted definition into a bookkeeping fault.
-        if(!replaceBufferData(b,target,data,usage))return false;
-        originalAccepted=true;
-        if(!object)nativeGlFault("Accepted buffer definition lost its bound identity");
-        return checkedGlCall(b,()=>b.gl!.bindBuffer(ARRAY,cell.native)) &&
-          checkedGlCall(b,()=>{if(typeof data==="number")b.gl!.bufferData(ARRAY,data,usage);else b.gl!.bufferData(ARRAY,data,usage);});
-      },
-      restore:nativeInverse(b,[["bindBuffer",ARRAY,array]]),
-    }],{finalizer:nativeInverse(b,[["bindBuffer",ARRAY,array]])});
+    // Admission reserved this receiver and its upload closures. Never discover
+    // CPU bookkeeping exhaustion after the ordinary BufferData has mutated.
+    this.definitionData=data;this.definitionUsage=usage;this.definitionLength=bytes;this.definitionCell=cell;this.definitionObject=object;
+    this.definitionRestore[2]=array;this.originalDefinitionAccepted=false;
+    let copied=false;
+    try{copied=this.definition.apply();}
+    finally{this.definitionData=null;this.definitionCell=null;this.definitionObject=null;}
     if(!copied){
-      if(originalAccepted)nativeGlFault("Accepted buffer definition could not retain its private storage copy");
+      if(this.originalDefinitionAccepted)nativeGlFault("Accepted buffer definition could not retain its private storage copy");
       return false;
     }
     cell.object=object;cell.bytes=bytes;cell.ready=true;return true;

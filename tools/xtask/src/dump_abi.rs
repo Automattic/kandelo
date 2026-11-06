@@ -4574,6 +4574,37 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "validation":"original-program-framebuffer-and-shader-emulations; in-range-retained-storage-proof",
         "lifetime":"journal-execution-lease; shared-original-logical-reset-identity",
     }));
+    s.add(Program, "gl_program_framebuffer_snapshots", json!({
+        "query":shared::gl::QOP_PROGRAM_JOURNAL,"capture_action":12,"request_bytes":24,
+        "request_fields":["action","transaction","own_journal","cell","next_token","expected_framebuffer_name"],
+        "reply_bytes":48,"reply":"sealed-journal-mutation-receipt; value-one-complete-zero-unavailable",
+        "capacity":16,"maximum_input_units":16,
+        "authority":"own-current-context-tid-journal; expected-name-must-match-actual-selected-container",
+        "capture":"complete-positive-single-2D-color-attachment; exact-native-target-storage-and-sampling-handle-custody",
+        "ownership":"private-container; target-respecification-orphans-storage; input-replacement-preserves-native-identity-and-metadata; no-fake-EGLImage-export",
+        "feedback":"all-bound-ordinary-2D-input-identities-distinct-from-target; imported-cube-external-uncertainty-unavailable",
+        "draw_opcode":shared::gl::OP_DRAW_FRAMEBUFFER_SNAPSHOTS,"draw_header_bytes":28,"draw_attribute_bytes":32,
+        "draw_header_fields":["own_journal","mode","first","positive_count","attribute_count","target_cell","target_token"],
+        "draw":"original-buffer-snapshot-shape-and-authority; retained-target-and-input-substitution; exact-selector-restoration",
+        "clear_opcode":shared::gl::OP_CLEAR_FRAMEBUFFER_SNAPSHOT,"clear_bytes":16,
+        "clear_fields":["own_journal","target_cell","target_token","valid_clear_mask"],
+        "clear":"same-owned-target-authority; original-scissor-mask-and-write-accounting; no-program-or-vertex-dependency",
+        "accounting":"private-retained-attachment-level-and-native-write-destination; original-logical-reset-identity",
+        "recovery":"read-last-same-completed-capture; no-mutator-replay; failed-candidates-retained-until-cleanup",
+        "lifecycle_barrier":"forbidden; no-peer-encoder-execution",
+    }));
+    s.add(Program, "gl_uniform_cpu_preparation", json!({
+        "query":shared::gl::QOP_PROGRAM_JOURNAL,"action":14,"request_bytes":12,
+        "request_fields":["action","transaction","own_journal"],
+        "reply_bytes":48,"reply":"sealed-journal-receipt; value16384-components-or-zero-unavailable",
+        "authority":"own-current-context-tid-journal; lifecycle-barrier-forbidden",
+        "storage":"private-fixed-Float32-and-Int32-inline-payload-banks; WebGL2-source-offset-length",
+        "ownership":"synchronous-borrow; no-retained-guest-memory; no-per-setter-view-allocation",
+        "metadata":"signature-reflection-cold-reserves-mutable-executable-uniform-and-sampler-write-cells",
+        "refusal":"completed-zero-without-new-guest-API-error; original-observed-setter-remains-available",
+        "recovery":"read-last-without-mutator-replay; context-retirement-releases-private-banks",
+        "legacy":"all-existing-query-shapes-and-setter-records-remain-unchanged",
+    }));
     s.add(Program, "gl_error_drain_receipt", json!({
         "query":shared::gl::QOP_GET_ERROR,
         "request_mode":shared::gl::error_drain_receipt::REQUEST,
@@ -8703,6 +8734,8 @@ fn additive_top_level_section(section: &str) -> bool {
             | "gl_program_uniform_guest_signature"
             | "gl_program_buffer_snapshots"
             | "gl_program_buffer_attribute_capture"
+            | "gl_program_framebuffer_snapshots"
+            | "gl_uniform_cpu_preparation"
             | "gl_buffer_snapshot_draw"
             | "clipboard_device_abi"
             | "host_adapter"
@@ -10462,7 +10495,7 @@ mod tests {
 
     #[test]
     fn buffer_capture_and_draw_are_additive_but_existing_contracts_stay_exact() {
-        for section in ["gl_program_buffer_attribute_capture","gl_buffer_snapshot_draw"] {
+        for section in ["gl_program_buffer_attribute_capture","gl_buffer_snapshot_draw","gl_program_framebuffer_snapshots","gl_uniform_cpu_preparation"] {
             let old=base_snapshot();let mut new=old.clone();
             new[section]=json!({"authority":"own-context-exact-generations","layout":"bounded","recovery":"no-replay"});
             assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());

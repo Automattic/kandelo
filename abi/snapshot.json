@@ -33,6 +33,7 @@
       "gl_program_buffer_attribute_capture",
       "gl_program_buffer_snapshots",
       "gl_program_capture",
+      "gl_program_framebuffer_snapshots",
       "gl_program_journal",
       "gl_program_journal_barrier",
       "gl_program_mutation",
@@ -43,6 +44,7 @@
       "gl_shader_program_creation",
       "gl_submit_query",
       "gl_transport_error_observation",
+      "gl_uniform_cpu_preparation",
       "host_env_imports",
       "host_intercepted_syscalls",
       "io_multiplexing",
@@ -1783,6 +1785,52 @@
     ],
     "requires_current_context": true
   },
+  "gl_program_framebuffer_snapshots": {
+    "accounting": "private-retained-attachment-level-and-native-write-destination; original-logical-reset-identity",
+    "authority": "own-current-context-tid-journal; expected-name-must-match-actual-selected-container",
+    "capacity": 16,
+    "capture": "complete-positive-single-2D-color-attachment; exact-native-target-storage-and-sampling-handle-custody",
+    "capture_action": 12,
+    "clear": "same-owned-target-authority; original-scissor-mask-and-write-accounting; no-program-or-vertex-dependency",
+    "clear_bytes": 16,
+    "clear_fields": [
+      "own_journal",
+      "target_cell",
+      "target_token",
+      "valid_clear_mask"
+    ],
+    "clear_opcode": 1289,
+    "draw": "original-buffer-snapshot-shape-and-authority; retained-target-and-input-substitution; exact-selector-restoration",
+    "draw_attribute_bytes": 32,
+    "draw_header_bytes": 28,
+    "draw_header_fields": [
+      "own_journal",
+      "mode",
+      "first",
+      "positive_count",
+      "attribute_count",
+      "target_cell",
+      "target_token"
+    ],
+    "draw_opcode": 1288,
+    "feedback": "all-bound-ordinary-2D-input-identities-distinct-from-target; imported-cube-external-uncertainty-unavailable",
+    "lifecycle_barrier": "forbidden; no-peer-encoder-execution",
+    "maximum_input_units": 16,
+    "ownership": "private-container; target-respecification-orphans-storage; input-replacement-preserves-native-identity-and-metadata; no-fake-EGLImage-export",
+    "query": 59,
+    "recovery": "read-last-same-completed-capture; no-mutator-replay; failed-candidates-retained-until-cleanup",
+    "reply": "sealed-journal-mutation-receipt; value-one-complete-zero-unavailable",
+    "reply_bytes": 48,
+    "request_bytes": 24,
+    "request_fields": [
+      "action",
+      "transaction",
+      "own_journal",
+      "cell",
+      "next_token",
+      "expected_framebuffer_name"
+    ]
+  },
   "gl_program_journal": {
     "actions": {
       "disable": [
@@ -2158,6 +2206,25 @@
     "oracle": "no-exact-flag-proof; ordinary-error-observed-audit-unchanged",
     "payload_bytes": 0,
     "returned_error": 1282
+  },
+  "gl_uniform_cpu_preparation": {
+    "action": 14,
+    "authority": "own-current-context-tid-journal; lifecycle-barrier-forbidden",
+    "legacy": "all-existing-query-shapes-and-setter-records-remain-unchanged",
+    "metadata": "signature-reflection-cold-reserves-mutable-executable-uniform-and-sampler-write-cells",
+    "ownership": "synchronous-borrow; no-retained-guest-memory; no-per-setter-view-allocation",
+    "query": 59,
+    "recovery": "read-last-without-mutator-replay; context-retirement-releases-private-banks",
+    "refusal": "completed-zero-without-new-guest-API-error; original-observed-setter-remains-available",
+    "reply": "sealed-journal-receipt; value16384-components-or-zero-unavailable",
+    "reply_bytes": 48,
+    "request_bytes": 12,
+    "request_fields": [
+      "action",
+      "transaction",
+      "own_journal"
+    ],
+    "storage": "private-fixed-Float32-and-Int32-inline-payload-banks; WebGL2-source-offset-length"
   },
   "host_adapter": {
     "kernel_export_lifecycles": [
