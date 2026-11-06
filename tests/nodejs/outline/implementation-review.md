@@ -1,5 +1,16 @@
 # Broad implementation review
 
+Source133 adds a native per-context default-trigger owner, separate from
+captured frames and execution IDs, and routes AsyncResource, ticks and existing
+FS/DNS/codec constructors through it. Production adapter forwarders are covered
+by one new control;21 affected async groups and12 package checks also pass.
+Actual native numeric-owner/RAII/dependency controls pass;the retained native
+callback fixture ID difference is not counted as execution-ID compatibility.
+Combined117–133engine/JSAPI and four-host conformance remain unvalidated.
+All19families partial;overall suites/full product rebuild remain deferred.
+See [default-trigger integration](async-default-trigger-integration.md).
+
+
 Source132 shares native string-byte primitives across JWK and hash/HMAC/cipher
 updates. Original strings/encodings now reach native owned conversion;public
 Buffer allocation cannot supply private native input.31root groups(including

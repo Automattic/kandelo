@@ -1,0 +1,35 @@
+'use strict';
+const assert=require('node:assert/strict');
+const vm=require('node:vm');
+const nativeExecutionAsyncId=require('node:async_hooks').executionAsyncId;
+const addon=require(process.env.KANDELO_DEFAULT_TRIGGER_ADDON);
+const {createAsyncPlatformControl}=require('../../host/test/fixtures/node-async-default-trigger-platform.cjs');
+const subject=createAsyncPlatformControl();
+const {AsyncResource}=subject.api;
+const rows=[];
+const take=name=>{const r=new AsyncResource(name,{requireManualDestroy:true});const row={name,trigger:r.triggerAsyncId(),execution:subject.api.executionAsyncId()};r.emitDestroy();rows.push(row);return row;};
+(async()=>{
+ const baseline=subject.api.executionAsyncId(), nativeBaseline=nativeExecutionAsyncId();let later;
+ subject.defaultTriggerAsyncIdScope(77,()=>{
+  assert.equal(take('sync').trigger,77);
+  assert.equal(subject.defaultTriggerAsyncIdScope(undefined,()=>take('undefined')).trigger,77);
+  assert.equal(subject.defaultTriggerAsyncIdScope(0,()=>take('zero')).trigger,0);
+  assert.equal(subject.defaultTriggerAsyncIdScope(-1,()=>take('negative')).trigger,baseline);
+  assert.throws(()=>subject.defaultTriggerAsyncIdScope(88,()=>{assert.equal(take('nested').trigger,88);throw Error('restore');}),/restore/);
+  assert.equal(take('restored').trigger,77);
+  const caller=new AsyncResource('manual',{requireManualDestroy:true});
+  caller.runInAsyncScope(()=>{const row=take('manual-reentry');assert.equal(row.trigger,77);assert.equal(row.execution,caller.asyncId());});caller.emitDestroy();
+  subject.runNative(()=>{const row=take('native-reentry');assert.equal(row.trigger,77);row.actualNodeExecution=nativeExecutionAsyncId();assert.notEqual(row.actualNodeExecution,nativeBaseline);});
+  assert.equal(vm.runInNewContext('new AsyncResource("vm").triggerAsyncId()', {AsyncResource}),77);
+  later=Promise.resolve().then(()=>take('after-promise'));
+  let nested;
+  const hook=subject.api.createHook({init(id,type){if(type==='init-parent')nested=take('init-child');}}).enable();
+  take('init-parent');hook.disable();assert.equal(nested.trigger,77);
+  subject.enqueueTick(()=>{const row=take('after-tick');assert.equal(row.trigger,row.execution);assert.notEqual(row.trigger,77);});
+ });
+ assert.equal(take('outside').trigger,baseline);subject.drainTicks();
+ const p=await later;assert.equal(p.trigger,p.execution);assert.notEqual(p.trigger,77);
+ for(const value of [NaN,Infinity,-2,0.5,9007199254740992])assert.throws(()=>addon.swap(value),/safe ID/);
+ assert.equal(addon.resolve(123),123);
+ console.log(JSON.stringify({node:process.version,rows,scope:'actual native numeric owner + checked current131 async adapter; Node ALS/AsyncResource dependency fixture',promiseEngineMetadata:'uncompiled/unvalidated'}));
+})().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>subject.close());

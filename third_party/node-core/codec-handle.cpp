@@ -734,15 +734,15 @@ static bool KandeloCreateCompressionHandle(JSContext* cx, unsigned argc, Value* 
       JS_FN("getAsyncContextFrame", KandeloCodecGuard<KandeloCodecGetContextFrame>, 0, 0),
       JS_FS_END};
   if (!JS_DefineFunctions(cx, owner, methods)) return false;
-  RootedValue frame(cx), trigger(cx);
-  if (!cx->kandeloAsyncProperty("frame", &frame) || !cx->kandeloAsyncProperty("id", &trigger)) return false;
+  RootedValue frame(cx); double trigger;
+  if (!cx->kandeloAsyncProperty("frame", &frame) || !cx->getKandeloDefaultTriggerAsyncId(&trigger)) return false;
   auto* lifetime = js::shell::KandeloGetNativeAsyncState(cx);
   if (!lifetime) return false;
   auto* nativeState = static_cast<KandeloCodecState*>(JS::GetReservedSlot(owner, CodecNativeState).toPrivate());
   lifetime->Retain();
   nativeState->asyncLifetime = lifetime;
   nativeState->asyncId = cx->allocateKandeloAsyncId();
-  nativeState->triggerId = trigger.isNumber() ? trigger.toNumber() : 0;
+  nativeState->triggerId = trigger;
   JS::SetReservedSlot(owner, CodecContextFrame, frame);
   if (!cx->notifyKandeloAsyncLifecycle("native:init", owner, frame)) return false;
   args.rval().setObject(*owner);

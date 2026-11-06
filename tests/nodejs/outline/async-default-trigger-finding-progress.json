@@ -1,0 +1,101 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/async-context-contracts.md",
+    "findingIds": [
+      "A-003",
+      "A-014",
+      "A-025"
+    ],
+    "relatedFamilies": [
+      "async",
+      "filesystem",
+      "network",
+      "compression",
+      "workers",
+      "observability",
+      "engine"
+    ],
+    "scope": "Shared default-trigger prerequisite only;full providers/callback/Promise/family/API closure remains open"
+  },
+  "sourceImplemented": [
+    "One native numeric default per JSContext,never copied into captured frames/jobs/execution stacks",
+    "Pinned AsyncResource/tick/task consumers and root-Promise fallback,with Promise parent precedence",
+    "Existing FS/DNS/codec owners consume native accessor,production adapter forwards both operations without coercion"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-default-trigger-source-r1/report.json",
+    "sha256": "7e506191a2b97c9c6174edc1efff8584abbf2d083efbc9c5d242e2402e5393c4",
+    "guardedInputs": 643,
+    "scope": "Exact generic numeric owner/header/native consumers and native bindings with real production forwarding;bundle/bootstrap/unity/source input checks only. Guest JSContext/Promise fallback/GC/realm/runtime uncompiled and unvalidated."
+  },
+  "frontendAndAffected": {
+    "report": ".context/node26-default-trigger-frontend-r3.json",
+    "sha256": "8a8196f0d46b0908879869694bcdba7b3dc2d58f0c6b50f725a7aa2058503a14",
+    "newGroups": 1,
+    "affectedPassed": 21,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Complete production adapter forwarding and existing source/native-dependency frontend groups;not engine execution"
+  },
+  "nativeControls": {
+    "report": ".context/node26-default-trigger-controls-r1/report.json",
+    "sha256": "27353cc913828d61101e4eca825ec481199adb90078c7c787aff50aed56ed19d",
+    "compileAttempts": 2,
+    "controlProcesses": 4,
+    "scope": "Actual native numeric owner/RAII and current production generated async adapter over Node ALS/AsyncResource/NAPI dependencies;not guest JSAPI/Promise/realm/worker conformance"
+  },
+  "packageChecks": {
+    "report": ".context/node26-default-trigger-package-r2.json",
+    "sha256": "b00f8270fedec41568581097338c477d7b5d8b51029cbd7d8045cd0b4233dd1d",
+    "passed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "643declared inputs/source contracts,not runtime conformance"
+  },
+  "privateHandoff": {
+    "report": ".context/datagram-owner-agent/default-trigger/identities.json",
+    "sha256": "3a3efa644e2ba42ae90fdd0618f4f54f008b718422e288d2acab21ab8e213bde",
+    "sealSha256": "ff7e3c4781f72e7a1a3c1210a8d7b35613cc2092f6af0db3f6641dc9f3bcf7a9",
+    "scope": "Frozen source and engine postimages independently verified before integration"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/datagram-owner-agent/default-trigger/reentry-nonpass-controls.json",
+      "sha256": "d9751faa58187070f8c1da7c09ab934966f27cc0f3c1f0f5e5296600fd6994b8",
+      "kind": "native-dependency-fixture",
+      "reason": "Candidate fixture callback executionID0 vs real native nonzero;default-only scope separated,not hidden"
+    },
+    {
+      "report": ".context/node26-default-trigger-frontend-r1.json",
+      "sha256": "c7e28879ae5631364fad9977e8b3ba416ce4514ac5137ceb95b076e37a932052",
+      "kind": "harness-zero-collected",
+      "reason": "Wrong test root,exit1,no tests executed"
+    },
+    {
+      "report": ".context/node26-default-trigger-frontend-r2.log",
+      "sha256": "5e6dc20ab3fdfc4ad4fe68c50c605babb92e471c513b562e1bd2e0bfa6418e51",
+      "kind": "harness-startup",
+      "reason": "Relative config resolved under host root,exit1,no tests"
+    },
+    {
+      "report": ".context/node26-default-trigger-package-r1.log",
+      "sha256": "c8ea88319d70e633e8b3da8a3067d26cc2c8148510472555567b8265e60f6efe",
+      "kind": "harness-startup",
+      "reason": "Relative config resolved under host root,exit1,no tests"
+    }
+  ],
+  "remaining": [
+    "Compile actual JSContext/shell/native consumers and validate Promise/callback/default behavior across4hosts",
+    "Integrate sealed histogram/retained-memory/ELD and UDP consumers;original-view leases and ABI budget remain explicit",
+    "Continue independent real VM modules and lazy-native-property/global Navigator work;all19families partial"
+  ],
+  "at": "2026-11-06T03:06:28.365546+00:00",
+  "recipeRevision": 133,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

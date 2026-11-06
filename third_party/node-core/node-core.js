@@ -8603,7 +8603,10 @@ module.exports = RunScope;
     const validateFunction = validators.validateFunction;
     const ERR_INVALID_ASYNC_ID = codes.ERR_INVALID_ASYNC_ID;
     const ERR_ASYNC_TYPE = codes.ERR_ASYNC_TYPE;
-    const getDefaultTriggerAsyncId = () => executionState().id;
+    const getDefaultTriggerAsyncId = () => {
+        executionState();  // Preserve the existing untracked-resource guard.
+        return platform.native.getDefaultTriggerAsyncId();
+    };
     const newAsyncId = () => platform.native.allocateAsyncId();
     const initHooksExist = () => hookExists('init');
     const destroyHooksExist = () => hookExists('destroy');
@@ -8745,7 +8748,14 @@ class AsyncResource {
             emit('after', [record.id], record.isPromise);
         } else incomplete('Unknown native async lifecycle event: ' + kind);
     }
-    function createTask(resource, type, id = newAsyncId(), triggerId = executionState().id) {
+    // The override belongs to the native environment, never a captured frame.
+    function defaultTriggerAsyncIdScope(triggerId, block, ...args) {
+        if (triggerId === undefined) return ReflectApply(block, null, args);
+        const prior = platform.native.swapDefaultTriggerAsyncId(triggerId);
+        try { return ReflectApply(block, null, args); }
+        finally { platform.native.swapDefaultTriggerAsyncId(prior); }
+    }
+    function createTask(resource, type, id = newAsyncId(), triggerId = getDefaultTriggerAsyncId()) {
         const record = { id, triggerId, frame: frame(), resource, destroyed: false };
         tasks.set(resource, record);
         resource[async_id_symbol] = id;
@@ -8790,7 +8800,7 @@ class AsyncResource {
     function enqueueTick(fn, ...args) {
         validateFunction(fn, 'callback');
         if (platform.process._exiting) return;
-        const id = newAsyncId(), triggerId = executionState().id;
+        const id = newAsyncId(), triggerId = getDefaultTriggerAsyncId();
         const resource = new TickObject(fn, args.length ? args : undefined, id, triggerId);
         createTask(resource, 'TickObject', id, triggerId);
         ArrayPrototypePush(tickQueue, resource);
@@ -8900,7 +8910,7 @@ VERIFYREQUEST: 68
     modules.set('async_hooks', api);
     return { api, validators, frame: AsyncContextFrame, enabledHooksExist,
         symbols: { owner_symbol, async_id_symbol, trigger_async_id_symbol },
-        createTask, runTask, retireTask, enqueueTick, drainTicks, drainDestroys, runInternalImmediate,
+        createTask, runTask, retireTask, enqueueTick, drainTicks, drainDestroys, runInternalImmediate, defaultTriggerAsyncIdScope,
         hasTicks: () => tickCursor < tickQueue.length,
     };
 }

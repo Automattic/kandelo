@@ -121,15 +121,15 @@ static bool KandeloCreateFsResource(JSContext* cx, HandleObject prototype,
   result.set(owner); return true;
 }
 static bool KandeloInitializeFsResource(JSContext* cx, HandleObject owner) {
-  RootedValue frame(cx), trigger(cx);
+  RootedValue frame(cx); double trigger;
   if (!cx->kandeloAsyncProperty("frame", &frame) ||
-      !cx->kandeloAsyncProperty("id", &trigger)) return false;
+      !cx->getKandeloDefaultTriggerAsyncId(&trigger)) return false;
   auto* state = KandeloFsRequestStateOf(cx, owner);
   if (!state) return false;
   auto* lifetime = js::shell::KandeloGetNativeAsyncState(cx);
   if (!lifetime) return false;
   lifetime->Retain(); state->lifetime = lifetime;
-  state->id = cx->allocateKandeloAsyncId(); state->trigger = trigger.isNumber() ? trigger.toNumber() : 0;
+  state->id = cx->allocateKandeloAsyncId(); state->trigger = trigger;
   JS::SetReservedSlot(owner, FsRequestFrame, frame);
   return cx->notifyKandeloAsyncLifecycle("native:init", owner, frame);
 }

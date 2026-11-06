@@ -94,14 +94,14 @@ static bool KandeloNativeCreateDnsRequest(JSContext* cx, unsigned argc, Value* v
 }
 static bool KandeloInitializeDnsRequest(JSContext* cx, HandleObject owner,
                                         KandeloDnsRequestState* state) {
-  RootedValue frame(cx), trigger(cx);
+  RootedValue frame(cx); double trigger;
   if (!cx->kandeloAsyncProperty("frame", &frame) ||
-      !cx->kandeloAsyncProperty("id", &trigger)) return false;
+      !cx->getKandeloDefaultTriggerAsyncId(&trigger)) return false;
   auto* lifetime = js::shell::KandeloGetNativeAsyncState(cx);
   if (!lifetime) return false;
   lifetime->Retain(); state->lifetime = lifetime;
   state->id = cx->allocateKandeloAsyncId();
-  state->trigger = trigger.isNumber() ? trigger.toNumber() : 0;
+  state->trigger = trigger;
   JS::SetReservedSlot(owner, DnsRequestFrame, frame);
   return cx->notifyKandeloAsyncLifecycle("native:init", owner, frame);
 }

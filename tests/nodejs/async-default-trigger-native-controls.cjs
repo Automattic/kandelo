@@ -1,0 +1,32 @@
+'use strict';
+const assert=require('node:assert/strict');
+const {AsyncResource,executionAsyncId,createHook}=require('node:async_hooks');
+const {defaultTriggerAsyncIdScope}=require('internal/async_hooks');
+const vm=require('node:vm');
+const rows=[];
+const take=(name)=>{const resource=new AsyncResource(name,{requireManualDestroy:true});const row={name,trigger:resource.triggerAsyncId(),execution:executionAsyncId()};resource.emitDestroy();rows.push(row);return row;};
+(async()=>{
+ const baseline=executionAsyncId();
+ let tick,promise;
+ defaultTriggerAsyncIdScope(77,()=>{
+  assert.equal(take('sync').trigger,77);
+  assert.equal(defaultTriggerAsyncIdScope(undefined,()=>take('undefined')).trigger,77);
+  assert.equal(defaultTriggerAsyncIdScope(0,()=>take('zero')).trigger,0);
+  assert.equal(defaultTriggerAsyncIdScope(-1,()=>take('negative')).trigger,baseline);
+  assert.throws(()=>defaultTriggerAsyncIdScope(88,()=>{assert.equal(take('nested').trigger,88);throw Error('restore');}),/restore/);
+  assert.equal(take('restored').trigger,77);
+  const caller=new AsyncResource('manual',{requireManualDestroy:true});
+  caller.runInAsyncScope(()=>{const row=take('manual-reentry');assert.equal(row.trigger,77);assert.equal(row.execution,caller.asyncId());});caller.emitDestroy();
+  const vmResult=vm.runInNewContext('new AsyncResource("vm").triggerAsyncId()', {AsyncResource});assert.equal(vmResult,77);
+  tick=new Promise(resolve=>process.nextTick(()=>resolve(take('after-tick'))));
+  promise=Promise.resolve().then(()=>take('after-promise'));
+  let nested;
+  const hook=createHook({init(id,type){if(type==='init-parent')nested=take('init-child');}}).enable();
+  take('init-parent');hook.disable();assert.equal(nested.trigger,77);
+ });
+ assert.equal(take('outside').trigger,baseline);
+ const [t,p]=await Promise.all([tick,promise]);
+ assert.equal(t.trigger,t.execution);assert.notEqual(t.trigger,77);
+ assert.equal(p.trigger,p.execution);assert.notEqual(p.trigger,77);
+ console.log(JSON.stringify({node:process.version,scope:'exact native default override vs execution push/pop/VM/init/Promise/tick',rows}));
+})().catch(error=>{console.error(error);process.exitCode=1;});

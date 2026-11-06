@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import nativeAsyncHooks, { AsyncLocalStorage, createHook, asyncWrapProviders } from 'node:async_hooks';
 import { createAsyncPlatformControl } from './fixtures/node-async-platform.cjs';
+import { createNativeAdapter } from './fixtures/node-native-adapter.cjs';
 import { EventEmitter as NativeEventEmitter } from 'node:events';
 import * as nativeTimers from 'node:timers';
 import * as util from 'node:util';
@@ -60,6 +61,23 @@ function timerSubject() {
 describe('audited async/event source gaps against exact native reference', () => {
   it('uses the exact audited native version', () => {
     expect(process.versions.node).toBe(target.version);
+  });
+
+  it('forwards default-trigger operations through the complete production adapter', () => {
+    const calls: unknown[] = [], bad = { valueOf() { throw Error('Unexpected coercion'); } };
+    const rejection = Error('Native private validation');
+    const adapter = createNativeAdapter({
+      getDefaultTriggerAsyncId() { calls.push('get'); return 77; },
+      swapDefaultTriggerAsyncId(value: unknown) {
+        calls.push(value);
+        if (value === bad) throw rejection;
+        return -1;
+      },
+    });
+    expect(adapter.getDefaultTriggerAsyncId()).toBe(77);
+    expect(adapter.swapDefaultTriggerAsyncId(0)).toBe(-1);
+    expect(() => adapter.swapDefaultTriggerAsyncId(bad)).toThrow(rejection);
+    expect(calls).toEqual(['get', 0, bad]);
   });
 
   it('matches AsyncHook option validation and precedence', () => {

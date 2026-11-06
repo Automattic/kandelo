@@ -1,5 +1,16 @@
 # Current public-contract reconciliation
 
+Source133 adds a native per-context default-trigger owner, separate from
+captured frames and execution IDs, and routes AsyncResource, ticks and existing
+FS/DNS/codec constructors through it. Production adapter forwarders are covered
+by one new control;21 affected async groups and12 package checks also pass.
+Actual native numeric-owner/RAII/dependency controls pass;the retained native
+callback fixture ID difference is not counted as execution-ID compatibility.
+Combined117–133engine/JSAPI and four-host conformance remain unvalidated.
+All19families partial;overall suites/full product rebuild remain deferred.
+See [default-trigger integration](async-default-trigger-integration.md).
+
+
 Source132 shares native string-byte primitives across JWK and hash/HMAC/cipher
 updates. Original strings/encodings now reach native owned conversion;public
 Buffer allocation cannot supply private native input.31root groups(including
@@ -263,7 +274,7 @@ of the APIs, overloads, inherited members, symbols and open questions.
 | Family | Current shared source routes | Remaining owner requirements |
 |---|---|---|
 | Values | pinned URL/path/byte-path/HTTP-option helpers over shared parser and platform owners; generic native Error location policy; pinned AssertionError/Myers diff and shared validator/error/color/primordial owners; values/util/UV/dotenv/MIME/Buffer/path owners and full querystring/punycode algorithms with saved-frame load-origin source; pinned util/StringDecoder owners and callable Buffer/shared aligned pool/permanent storage/zero-fill source | Private worker marks have a source owner and focused environment evidence; remaining Buffer/backing-store/realm/CLI/error/descriptor edges, remaining util/URL/IDNA/encoding, complete errors/brands/descriptors and guest byte/origin/loader/warning conformance |
-| Async | Pinned public AsyncHook/createHook algorithms over real symbol/array/count registry,nested mutation publication and native destroy tracking;ordinary public metadata/root resource;existing frame/ID/resource/tick/job callback owners | Promise activation/removal and ALS CLI path,full native resource/provider/default-trigger mapping,GC/destroy/rejection/fatal/worker/realm/loop/cancellation/ref integration and guest/four-host conformance remain open |
+| Async | Pinned public AsyncHook/createHook algorithms over real symbol/array/count registry,nested publication and native destroy tracking;133native per-context default-trigger override with public/tick/Promise fallback and existing FS/DNS/codec consumers;ordinary public metadata/root resource and callback owners | Promise activation/removal and ALS CLI path,remaining native providers/default-trigger consumers,GC/destroy/rejection/fatal/worker/realm/loop/cancellation/ref integration and actual117–133guest/four-host conformance remain open |
 | Streams | stream/fd-stream platform adapters and shared pinned StringDecoder public/byte-state owner | Socket/TTY/file subclasses, backing-store transfer, fd reuse/retirement, pipeline/adapter lifecycle/errors and guest decoder integration |
 | Filesystem | Real bounded descriptor/queued copyFile owners with atomic exclusive open and actual zero-size directory type handling;hard-link,temporary-directory,logical/native realpath/readlink and full glob owners join pinned file jobs/handles,Dir/readdir/Dirent,metadata,removal and sync/callback/promise byte algorithms | Guest117–128uncompiled;engine127build failed;copy directory errno and concurrent-shrink/zero-progress differences unresolved;cursor/GC/ref/OOM/realm and fd/byte-path/backend integration;complete watchers/VFS/metadata/permissions,timestamp precision and actual statfs capacity;FS-022 raw host paths remain open |
 | Processes | bootstrap process/ChildProcess, process-clock/state/usage validation and explicit absent numeric providers, dotenv/child-wait, pinned OS frontend with native POSIX state, unchanged weak finalization/lazy descriptor and Refable dispatch; actual linked dependency versions with read-only/configurable version descriptors; native live environment virtual Object/property hooks and inherited-receiver policy | Complete environment prototype/constructor/keys/warnings/GC/JIT/clone and worker/TZ/CLI behavior, fatal/rejection/GC/exit/worker/resource reference integration, signal/IPC and exceptional wait/close policy, measurements, permissions and OS metadata; guest lifecycle/mask/parent/env conformance pending |

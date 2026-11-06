@@ -135,6 +135,7 @@ inputs = [
   "third_party/node-core/generate-sqlite-constants.py",
   "third_party/node-core/native-work.cpp",
   "third_party/node-core/native-async.cpp",
+  "third_party/node-core/async-default-trigger.h",
   "third_party/node-core/native-callback.cpp",
   "third_party/node-core/callback-scope.h",
   "third_party/node-core/native-fs.cpp",
@@ -508,4 +509,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 132
+revision = 133

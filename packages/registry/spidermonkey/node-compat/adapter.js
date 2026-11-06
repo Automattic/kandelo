@@ -503,6 +503,8 @@
         getConstructorName: value => native.getConstructorName(value),
         getAsyncContext: () => native.getAsyncContext(),
         allocateAsyncId: () => native.allocateAsyncId(),
+        getDefaultTriggerAsyncId: () => native.getDefaultTriggerAsyncId(),
+        swapDefaultTriggerAsyncId: value => native.swapDefaultTriggerAsyncId(value),
         setAsyncLifecycle: callback => native.setAsyncLifecycle(callback),
         setAsyncDestroyTracking: enabled => native.setAsyncDestroyTracking(enabled),
         drainNativeAsyncDestroyIds: () => native.drainNativeAsyncDestroyIds(),

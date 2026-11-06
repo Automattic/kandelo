@@ -60,13 +60,21 @@ if (!core.includes(source.slice(0, source.indexOf('// Keep the pinned'))))
 // The subject's own hook registry, public classes, symbols and dispatch run
 // unmodified except for the explicit native-count publication above. This is
 // neither a guest JSAPI/GC control nor a Promise activation-mode control.
-function createAsyncPlatformControl() {
+function createAsyncPlatformControl({ defaultTrigger } = {}) {
   const state = new nativeAsync.AsyncLocalStorage();
   const allocated = new Map(), records = new WeakMap(), driverResources = new Map();
   let lifecycle, nativeHook, priorDriverState;
   const destroyTrackingChanges = [];
   const native = {
     getAsyncContext: () => state.getStore(),
+    // Ordinary registry controls only need the current execution default.
+    // Override controls inject the compiled native owner, never a JS duplicate.
+    getDefaultTriggerAsyncId: () => defaultTrigger ?
+      defaultTrigger.resolve(state.getStore()?.id ?? 0) : state.getStore()?.id ?? 0,
+    swapDefaultTriggerAsyncId(value) {
+      if (!defaultTrigger) throw Error('Native default-trigger owner was not supplied');
+      return defaultTrigger.swap(value);
+    },
     setAsyncContext: value => state.enterWith(value),
     allocateAsyncId() {
       const owner = new nativeAsync.AsyncResource('CandidateIdAllocator', { requireManualDestroy: true });

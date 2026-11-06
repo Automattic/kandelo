@@ -1,0 +1,143 @@
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -33,6 +33,7 @@
+ #include "threading/ProtectedData.h"
+ #include "util/StructuredSpewer.h"
+ #include "vm/Activation.h"  // js::Activation
++#include "vm/KandeloDefaultTrigger.h"
+ #include "vm/MallocProvider.h"
+ #include "vm/Runtime.h"
+ #include "wasm/WasmContext.h"
+@@ -609,6 +610,7 @@
+   js::ContextData<JS::PersistentRooted<JS::Value>> kandeloAsyncLifecycleHook_;
+   js::ContextData<double> kandeloAsyncIdCounter_;
+   js::ContextData<double> kandeloAsyncParentId_;
++  js::ContextData<kandelo::async::DefaultTrigger> kandeloDefaultTrigger_;
+   js::ContextData<JS::PersistentRootedObject> kandeloObjectMarks_;
+   js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneModeSymbol_;
+   js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneErrorFactory_;
+@@ -653,6 +655,9 @@
+   bool reportKandeloCloneError(const char* message);
+   bool getKandeloCloneMode(JS::HandleObject object, int32_t* mode);
+   double& kandeloAsyncParentId() { return kandeloAsyncParentId_.ref(); }
++  // Environment override, deliberately excluded from captured job/frame data.
++  kandelo::async::DefaultTrigger& kandeloDefaultTrigger() { return kandeloDefaultTrigger_.ref(); }
++  bool getKandeloDefaultTriggerAsyncId(double* result);
+   JS::Value& kandeloAsyncLifecycleHook() {
+     if (!kandeloAsyncLifecycleHook_.ref().initialized()) kandeloAsyncLifecycleHook_.ref().init(this);
+     return kandeloAsyncLifecycleHook_.ref().get();
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -837,6 +837,15 @@
+   return JS_WrapValue(this, result);
+ }
+
++bool JSContext::getKandeloDefaultTriggerAsyncId(double* result) {
++  const double override = kandeloDefaultTrigger().Raw();
++  if (override >= 0) { *result = override; return true; }
++  RootedValue current(this);
++  if (!kandeloAsyncProperty("id", &current)) return false;
++  *result = current.isNumber() ? current.toNumber() : 0;
++  return true;
++}
++
+ bool JSContext::notifyKandeloAsyncLifecycle(const char* kind,
+                                            HandleObject resource,
+                                            HandleValue frame) {
+@@ -856,11 +865,12 @@
+
+ static bool NewKandeloAsyncData(JSContext* cx,
+                                  MutableHandle<KandeloAsyncResourceData*> result) {
+-  RootedValue frame(cx), currentId(cx);
+-  if (!cx->kandeloAsyncProperty("frame", &frame) ||
+-      !cx->kandeloAsyncProperty("id", &currentId)) return false;
++  RootedValue frame(cx);
++  if (!cx->kandeloAsyncProperty("frame", &frame)) return false;
+   double trigger = cx->kandeloAsyncParentId();
+-  if (trigger < 0) trigger = currentId.isNumber() ? currentId.toNumber() : 0;
++  // Promise parent identity takes precedence; root promises/native jobs use
++  // the environment default, which is never captured in their frame snapshot.
++  if (trigger < 0 && !cx->getKandeloDefaultTriggerAsyncId(&trigger)) return false;
+   result.set(NewBuiltinClassInstance<KandeloAsyncResourceData>(cx));
+   if (!result) return false;
+   result->setReservedSlot(0, NumberValue(cx->allocateKandeloAsyncId()));
+@@ -1175,6 +1185,7 @@
+       kandeloAsyncLifecycleHook_(this),
+       kandeloAsyncIdCounter_(this, 0),
+       kandeloAsyncParentId_(this, -1),
++      kandeloDefaultTrigger_(this, kandelo::async::DefaultTrigger()),
+       kandeloObjectMarks_(this),
+       kandeloCloneModeSymbol_(this),
+       kandeloCloneErrorFactory_(this),
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3481,6 +3481,20 @@
+   args.rval().setNumber(cx->allocateKandeloAsyncId());
+   return true;
+ }
++static bool KandeloNativeGetDefaultTriggerAsyncId(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp); double value;
++  if (!cx->getKandeloDefaultTriggerAsyncId(&value)) return false;
++  args.rval().setNumber(value); return true;
++}
++static bool KandeloNativeSwapDefaultTriggerAsyncId(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp); double previous;
++  // No coercion or user getters before the validated mutation/old-value return.
++  if (!args.get(0).isNumber() ||
++      !cx->kandeloDefaultTrigger().Swap(args[0].toNumber(), &previous)) {
++    JS_ReportErrorASCII(cx, "Default trigger requires a safe ID or -1"); return false;
++  }
++  args.rval().setNumber(previous); return true;
++}
+ static bool KandeloNativeSetAsyncLifecycle(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+   if (!args.get(0).isObject() || !JS::IsCallable(&args[0].toObject())) {
+@@ -3952,6 +3966,8 @@
+       JS_FN("hasObjectKind", KandeloNativeHasObjectKind, 2, 0),
+       JS_FN("getAsyncContext", KandeloNativeGetAsyncContext, 0, 0),
+       JS_FN("allocateAsyncId", KandeloNativeAllocateAsyncId, 0, 0),
++      JS_FN("getDefaultTriggerAsyncId", KandeloNativeGetDefaultTriggerAsyncId, 0, 0),
++      JS_FN("swapDefaultTriggerAsyncId", KandeloNativeSwapDefaultTriggerAsyncId, 1, 0),
+       JS_FN("setAsyncLifecycle", KandeloNativeSetAsyncLifecycle, 1, 0),
+       JS_FN("setAsyncDestroyTracking", KandeloNativeSetDestroyTracking, 1, 0),
+       JS_FN("drainNativeAsyncDestroyIds", KandeloNativeDrainDestroyIds, 0, 0),
+--- /dev/null
++++ b/js/src/vm/KandeloDefaultTrigger.h
+@@ -0,0 +1,37 @@
++#ifndef KANDELO_ASYNC_DEFAULT_TRIGGER_H
++#define KANDELO_ASYNC_DEFAULT_TRIGGER_H
++#include <cmath>
++#include <cassert>
++namespace kandelo::async {
++// One owning environment/context holds this value. Execution-ID push/pop,
++// continuation frames and queued jobs must neither copy nor restore it.
++class DefaultTrigger {
++  double value_ = -1;
++ public:
++  static bool Valid(double value) {
++    return std::isfinite(value) && value >= -1 && value <= 9007199254740991.0 &&
++        std::floor(value) == value;
++  }
++  double Raw() const { return value_; }
++  double Resolve(double execution) const { return value_ < 0 ? execution : value_; }
++  bool Swap(double value, double* previous) {
++    if (!Valid(value)) return false;
++    *previous = value_; value_ = value; return true;
++  }
++};
++class DefaultTriggerScope {
++  DefaultTrigger& state_;
++  double previous_ = -1;
++  bool ready_;
++ public:
++  DefaultTriggerScope(DefaultTrigger& state, double value)
++      : state_(state), ready_(state_.Swap(value, &previous_)) {}
++  DefaultTriggerScope(const DefaultTriggerScope&) = delete;
++  DefaultTriggerScope& operator=(const DefaultTriggerScope&) = delete;
++  bool Ready() const { return ready_; }
++  ~DefaultTriggerScope() {
++    if (ready_) { double ignored; const bool ok = state_.Swap(previous_, &ignored); assert(ok); (void)ok; }
++  }
++};
++}  // namespace kandelo::async
++#endif
