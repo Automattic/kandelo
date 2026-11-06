@@ -63,7 +63,7 @@ A fixed header plus variable text in one pre-allocated byte ring, so steady stat
 | Field | Type | Purpose |
 |---|---|---|
 | `seq` | `u64` | monotonic, never reused; survives wraparound |
-| `ts_nsec` | `u64` | `CLOCK_MONOTONIC`, already defined as nanoseconds since kernel boot |
+| `ts_nsec` | `u64` | nanoseconds, machine-relative — see the correction below |
 | `facility` | `u8` | RFC 5424 / Linux encoding; kernel records are `LOG_KERN` (0) |
 | `level` | `u8` | 0–7, emergency through debug |
 | `flags` | `u8` | continuation, truncation |
@@ -114,6 +114,12 @@ The performance contract names conditional debug-ring logging for trivial syscal
 ### Known cost
 
 The monotonic clock is reached through `host.host_clock_gettime(CLOCK_MONOTONIC)` on a `HostIO` reference, and not every prospective log site necessarily holds one. `host` will be threaded where needed rather than emitting records with a missing-timestamp sentinel; half-timestamped output is the kind of plausible-looking falsehood the platform-values contract forbids. The per-callsite cost is to be enumerated during planning.
+
+**Correction (2026-11-06), after implementation.** An earlier draft of this spec asserted that `CLOCK_MONOTONIC` was "already defined as nanoseconds since kernel boot". That was wrong, and the claim reached the implementation plan before a reviewer caught it. The host's monotonic clock is not machine-relative on either host: Node returns raw `process.hrtime.bigint()` for that clock id (`host/src/platform/node.ts:629`), whose origin is arbitrary and in practice host uptime, while the browser returns `performance.now()`, counting from the worker's time origin. The two hosts therefore disagreed, in the one field `dmesg` prints first, which is a host-parity defect as well as a false statement.
+
+The fix is in the kernel, not the host. The ring captures a baseline on its first monotonic read and stores `now - baseline`, so the first record sits at zero and both hosts become machine-relative identically. The host's clock is deliberately left alone, because the same `CLOCK_MONOTONIC` is what **guest programs** receive from `clock_gettime`: POSIX requires only monotonicity, not a boot origin, so the host's answer is not wrong — it simply is not the origin this one consumer wants. Rebasing there would have changed observable behavior for every guest program to suit the log.
+
+Timestamps are therefore *machine-relative*, measured from the kernel's first monotonic read, and should be described that way rather than as time since boot.
 
 ## 2. Read surfaces
 
