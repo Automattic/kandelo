@@ -582,7 +582,7 @@ describe("canonical source-rootfs shell", () => {
     // dropped the prompt still fails here.
     expect(
       text(readVfsFile(fs, "/etc/profile.d/00-kandelo-shell.sh")),
-    ).toContain("export PS1='kandelo$ '");
+    ).toContain("export PS1='\\u@\\h:\\W\\$ '");
   });
 
   it("adds the selected original even when its executable already exists in the base", async () => {

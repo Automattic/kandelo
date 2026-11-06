@@ -233,7 +233,7 @@ export function registerDemoShellProfile(fs: VfsImageFilesystem): void {
     "# The demo account's interactive shell identity. login sets HOME/USER/\n" +
       "# LOGNAME/PATH from /etc/passwd already; this fills in the rest.\n" +
       'if [ "${HOME:-}" = /home/maker ]; then\n' +
-      "  export PS1='kandelo$ '\n" +
+      "  export PS1='\\u@\\h:\\W\\$ '\n" +
       '  export HISTFILE="$HOME/.bash_history"\n' +
       "  export TMPDIR=/tmp\n" +
       "  export LANG=en_US.UTF-8\n" +

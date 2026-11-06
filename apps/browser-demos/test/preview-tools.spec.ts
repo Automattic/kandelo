@@ -10,7 +10,7 @@ async function shell(page: Page): Promise<void> {
   await page.goto(await machineUrl(page, "shell"));
   await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
   await expect(page.locator(".xterm-rows").first()).toBeVisible();
-  await expect(page.locator(".xterm-rows").first()).toContainText(/kandelo(?:-bash-[0-9.]+)?\$ ?/, { timeout: 120_000 });
+  await expect(page.locator(".xterm-rows").first()).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, { timeout: 120_000 });
 }
 
 async function server(page: Page): Promise<void> {
@@ -240,7 +240,7 @@ test("More exposes secondary tools and community links with keyboard dismissal",
   await expect(page.getByRole("complementary", { name: "Feedback invitation" })).toHaveCount(0);
   await page.reload();
   await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 120_000 });
-  await expect(page.locator(".kshell-host:visible .xterm-rows").first()).toContainText(/kandelo(?:-bash-[0-9.]+)?\$ ?/, { timeout: 120_000 });
+  await expect(page.locator(".kshell-host:visible .xterm-rows").first()).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, { timeout: 120_000 });
   await expect(page.getByRole("complementary", { name: "Feedback invitation" })).toHaveCount(0);
   const moreButton = page.getByRole("button", { name: "More", exact: true });
   await page.locator(".kdock-more-popover").evaluate(popup => {

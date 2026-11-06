@@ -51,7 +51,7 @@ test("the main shell uses FHS command paths and preserves the correct state acro
 
   await page.goto(await machineUrl(page, "shell"), { waitUntil: "domcontentloaded" });
   await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
-  await expect(page.locator(".xterm-rows").first()).toContainText(/kandelo(?:-bash-[0-9.]+)?\$ ?/, { timeout: 120_000 });
+  await expect(page.locator(".xterm-rows").first()).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, { timeout: 120_000 });
   await runTerminalCommand(page,
     "ok=1; for path in /bin/*; do name=${path##*/}; [[ ! -e /usr/bin/$name ]] || ok=0; done; " +
     "[[ $(type -P bash) == /bin/bash && $(type -P grep) == /bin/grep && " +
@@ -66,7 +66,7 @@ test("the main shell uses FHS command paths and preserves the correct state acro
     `printf 'FHS_STATE_SAVED\\n'`, "FHS_STATE_SAVED");
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
-  await expect(page.locator(".xterm-rows").first()).toContainText(/kandelo(?:-bash-[0-9.]+)?\$ ?/, { timeout: 120_000 });
+  await expect(page.locator(".xterm-rows").first()).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, { timeout: 120_000 });
   await runTerminalCommand(page,
     `[[ $(cat /var/tmp/${marker}) == retained && ! -e /run/user/1000/${marker} && ` +
     `-w /run/user/1000 && $(readlink /var/run) == /run ]] && ` +

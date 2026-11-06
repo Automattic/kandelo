@@ -19,7 +19,7 @@ async function ready(page: Page): Promise<void> {
     return status;
   }, { timeout: 180_000 }).toBe("running");
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 60_000 });
-  await expect.poll(() => page.locator(".xterm-rows").first().textContent(), { timeout: 120_000 }).toMatch(/kandelo(?:-bash-[0-9.]+)?\$ ?/);
+  await expect.poll(() => page.locator(".xterm-rows").first().textContent(), { timeout: 120_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
 }
 
 test("saved computers reload and switch independently; temporary computers can be kept or deleted", async ({ page, baseURL }, testInfo) => {

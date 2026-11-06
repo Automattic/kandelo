@@ -4,7 +4,7 @@ import { NodeKernelHost } from "../src/node-kernel-host";
 import { resolveBinary } from "../src/binary-resolver";
 
 for (const name of ["web-stack-vfs", "wordpress-family-vfs"]) {
-  it(`${name} preserves maker's login and sudo access`, async () => {
+  it(`${name} preserves maker's login, sudo access, and dynamic Bash prompt`, async () => {
     let transcript = "";
     let notify = () => {};
     const host = new NodeKernelHost({
@@ -22,7 +22,10 @@ for (const name of ["web-stack-vfs", "wordpress-family-vfs"]) {
       const login = await host.spawnFromVfs("/bin/login", ["login", "-p", "-f", "maker"], {
         pty: true, env: ["TERM=xterm-256color"],
       });
-      await waitFor(/kandelo\$ /);
+      await waitFor(/maker@[^:\s]+:~\$ /);
+      transcript = "";
+      host.ptyWrite(login.pid, new TextEncoder().encode("cd /var/tmp\n"));
+      await waitFor(/maker@[^:\s]+:tmp\$ /);
       transcript = "";
       host.ptyWrite(login.pid, new TextEncoder().encode(
         "printf 'kandelo\\n' | sudo -S -p '' /bin/bash -c 'test \"$UID\" = 0 && printf \"CORE_SUDO_%s\\n\" ROOT_OK'; printf 'CORE_STATUS_%s\\n' \"$?\"\n",

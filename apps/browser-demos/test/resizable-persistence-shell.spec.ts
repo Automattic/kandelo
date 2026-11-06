@@ -30,7 +30,7 @@ async function waitForShell(page: Page): Promise<void> {
       throw new Error(`persistent shell boot failed:\n${lines.join("\n")}`);
     }
     return page.locator(".xterm-rows").first().textContent();
-  }, { timeout: 120_000 }).toMatch(/kandelo(?:-bash-[0-9.]+)?\$ ?/);
+  }, { timeout: 120_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
 }
 
 test("Kandelo shell-created files survive repeated OPFS reloads", async ({ playwright, browserName }, testInfo) => {

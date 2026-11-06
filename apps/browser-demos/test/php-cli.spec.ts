@@ -20,7 +20,7 @@ test("base shell fetches PHP CLI only on first use", async ({ page }) => {
   await expect.poll(
     () => page.locator(".xterm-rows").first().textContent(),
     { timeout: 120_000 },
-  ).toContain("kandelo$");
+  ).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
   expect(downloads).toEqual([]);
   const first = await runTerminalCommand(
     page, "php -r 'echo 6 * 7, PHP_EOL;'", "42", 120_000,

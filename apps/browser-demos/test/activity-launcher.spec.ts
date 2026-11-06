@@ -9,7 +9,7 @@ test.use({ actionTimeout: 30_000 });
 
 async function ready(page: Page) {
   await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
-  await expect.poll(() => page.locator(".xterm-rows").first().textContent(), { timeout: 120_000 }).toMatch(/kandelo(?:-bash-[0-9.]+)?\$ ?/);
+  await expect.poll(() => page.locator(".xterm-rows").first().textContent(), { timeout: 120_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
 }
 
 async function startNodeRepl(page: Page, title = "Node.js") {

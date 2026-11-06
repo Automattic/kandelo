@@ -60,7 +60,7 @@ async function guestCommand(page: Page, command: string) {
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
   const slot = page.locator(".kshell-terminal-slot:not([hidden])");
   const transcript = () => slot.locator(".xterm-rows").innerText();
-  await expect.poll(transcript, { timeout: 60_000 }).toMatch(/kandelo\$\s*$/);
+  await expect.poll(transcript, { timeout: 60_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
   const protocol = buildTerminalCommand(command);
   await slot.locator(".xterm-screen").click();
   await page.keyboard.insertText(protocol.command);
@@ -87,7 +87,7 @@ async function gotoMachine(...args: Parameters<typeof gotoDefaultMachine>) {
   await expect(page.getByRole("button", { name: "Terminal", exact: true }))
     .toHaveAttribute("aria-current", "true", { timeout: 30_000 });
   await expect.poll(() => page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").innerText())
-    .toMatch(/kandelo\$\s*$/);
+    .toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
   await guestCommand(page, [
     'mkdir -p "$HOME/.freeciv"',
     'printf "[client]\\nmigration_sdl2_from_sdl=TRUE\\nflag_sdl2_default_screen_size_set=TRUE\\ngui_sdl2_screen.width=960\\ngui_sdl2_screen.height=540\\nsound_effects_volume=25\\n" > "$HOME/.freeciv/freeciv-client-rc-3.2"',
@@ -550,7 +550,7 @@ test("New Game launches Freeciv's own local server child", async ({ page, browse
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
   const slot = page.locator(".kshell-terminal-slot:not([hidden])");
   const transcript = () => slot.locator(".xterm-rows").innerText();
-  await expect.poll(transcript, { timeout: 60_000 }).toMatch(/kandelo\$\s*$/);
+  await expect.poll(transcript, { timeout: 60_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
   const protocol = buildTerminalCommand([
     "for path in /proc/[0-9]*/cmdline; do",
     "  command=$(tr '\\0' ' ' < \"$path\" 2>/dev/null)",
@@ -622,7 +622,7 @@ for (const density of [1, 2]) {
           .toBe(true);
         const terminal = page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows");
         await expect(terminal).toBeVisible();
-        await expect.poll(() => terminal.innerText()).toMatch(/kandelo\$\s*$/);
+        await expect.poll(() => terminal.innerText()).toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
         return terminal;
       };
 
