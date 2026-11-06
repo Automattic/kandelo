@@ -2307,6 +2307,20 @@ const _nodeDirPlatform = _createNodeDirPlatform({
 });
 Object.assign(fs, _nodeDirPlatform.api);
 Object.assign(fs.promises, _nodeDirPlatform.promises);
+const _nodeCopyDirectory = _createNodeCopyDirectoryPlatform({
+    fs, path, process, util, types: util.types, values: _nodeValues, utils: _nodeFsStats,
+    native: _nodeNative, constants: { os: { errno: nodeOs.constants.errno } },
+    getAssert: () => _nodeCore.require('internal/assert'),
+    // The current CLI rejects enabled permission-model activation.
+    permission: { isEnabled: () => false },
+    internalModuleStat(path) {
+        const result = _nodeNative.fsStatSync(path, true, false);
+        if (typeof result === 'number') return result;
+        return (result[1] & fs.constants.S_IFMT) === fs.constants.S_IFDIR ? 1 : 0;
+    },
+});
+Object.assign(fs, _nodeCopyDirectory.api);
+Object.assign(fs.promises, _nodeCopyDirectory.promises);
 const _nodeRealpathPlatform = _createNodeRealpathPlatform({
     native: _nodeNative, values: _nodeValues, fs, path, process, Buffer,
     utils: _nodeFsStats, truncation: _nodeFsTruncation, codecs: _nodeBufferCodecs,

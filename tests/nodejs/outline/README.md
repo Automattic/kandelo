@@ -1,5 +1,12 @@
 # Node 26 core implementation outline
 
+Source checkpoint147 integrates pinned recursive cp algorithms and actual native
+worker/resource ownership. Existing evidence retains16matching groups and one
+handled-callback after-hook nonpass. The combined engine and four-host runtime
+remain unvalidated; all19families stay partial. See the
+[recursive copy scope](copy-directory-integration.md).
+
+
 Source checkpoint146 routes original allocation spans through queued FS/codec
 consumers and makes USER_OWNED deallocation a committed native transaction.
 One actual component control and36 affected frontend/package checks pass with

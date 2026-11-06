@@ -1,0 +1,31 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3503,4 +3503,7 @@
+   RootedObject resource(cx, &args[0].toObject());
+   RootedObject unwrapped(cx, js::CheckedUnwrapStatic(resource));
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloCpClass) {
++    return KandeloCpResourceInfo(cx, unwrapped, args.rval());
++  }
+   if (unwrapped && JS::GetClass(unwrapped) == &KandeloELDClass) {
+     return KandeloELDResourceInfo(cx, unwrapped, args.rval());
+@@ -4010,4 +4013,9 @@
+       JS_FN("fsReaddirSync", (KandeloFsPromiseGuard<KandeloNativeReaddirSync>), 4, 0),
+       JS_FN("fsReaddirPromise", (KandeloFsPromiseGuard<KandeloNativeReaddirPromise>), 5, 0),
++      JS_FN("cpSyncCheckPaths", (KandeloFsPromiseGuard<KandeloCpSyncCheckPaths>), 4, 0),
++      JS_FN("cpSyncOverrideFile", (KandeloFsPromiseGuard<KandeloCpSyncOverrideFile>), 4, 0),
++      JS_FN("cpSyncCopyDir", (KandeloFsPromiseGuard<KandeloCpSyncCopyDir>), 7, 0),
++      JS_FN("createCpDirJob", (KandeloFsPromiseGuard<KandeloCreateCpDirJob>), 10, 0),
++      JS_FN("runCpDirJob", (KandeloFsPromiseGuard<KandeloRunCpDirJob>), 1, 0),
+       JS_FN("fsPathSync", (KandeloFsPromiseGuard<KandeloFsPathSync>), 4, 0),
+       JS_FN("fsPathPromise", (KandeloFsPromiseGuard<KandeloFsPathPromise>), 5, 0),
+diff --git a/js/src/shell/moz.build b/js/src/shell/moz.build
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -84,2 +84,6 @@
+ SOURCES += ["kandelo-node-stat-poll.cc"]
+ SOURCES["kandelo-node-stat-poll.cc"].flags += ["-std=c++20"]
++
++# Node's unchanged directory-copy walk uses C++20 string path checks.
++SOURCES += ["kandelo-node-copy-directory-operations.cpp"]
++SOURCES["kandelo-node-copy-directory-operations.cpp"].flags += ["-std=c++20"]

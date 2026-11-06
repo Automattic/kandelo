@@ -5988,6 +5988,20 @@ The combined engine, actual GC/realm behavior and four-host conformance remain
 unvalidated; UDP/socket consumers and shared-codec races remain separate gaps.
 See [original backing allocation scope](../tests/nodejs/outline/original-backing-consumers-integration.md).
 
+### Recursive Node copy source ownership
+
+The source147 candidate installs pinned public recursive-copy algorithms
+over real POSIX directory traversal, descriptor copies and a native CpDirJob
+worker owner. Scheduled jobs retain their actual resource and path state;
+inactive jobs remain collectible. Cancellation retires real work without
+claiming filesystem rollback. The normal adapter, bootstrap and package
+staging own these routes.
+
+Native/component evidence retains a recovered-callback mismatch: the component
+misses the target after hook. Shared uncaught recovery remains an implementation
+gap. Current SpiderMonkey/GC/realm/guest and four-host conformance are unvalidated.
+See [recursive copy scope](../tests/nodejs/outline/copy-directory-integration.md).
+
 ### Node stdio stream source candidate
 
 The Node compatibility source now routes process stdio through

@@ -42248,6 +42248,924 @@ function copyFileSync(src, dest, mode) {
     return { api: publicAPIs(), promises: promiseAPIs() };
 }
 
+// Complete pinned cp algorithms over actual native directory-copy ownership.
+function _createNodeCopyDirectoryPlatform(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { Error, MathMin, ObjectDefineProperty, ObjectPrototypeHasOwnProperty, ReflectApply } = primordials;
+    const process = platform.process;
+    const { hideStackFrames, codes: { ERR_INCOMPATIBLE_OPTION_PAIR } } = platform.values.errors;
+    const { validateBoolean, validateFunction, validateInteger, validateObject } = platform.values.validators;
+    const { getValidatedPath } = platform.utils;
+    const { F_OK, R_OK, W_OK, X_OK, COPYFILE_EXCL, COPYFILE_FICLONE, COPYFILE_FICLONE_FORCE } = platform.fs.constants;
+    const assert = (...args) => ReflectApply(platform.getAssert(), undefined, args);
+    // The access modes can be any of F_OK, R_OK, W_OK or X_OK. Some might not be
+// available on specific systems. They can be used in combination as well
+// (F_OK | R_OK | W_OK | X_OK).
+const kMinimumAccessMode = MathMin(F_OK, W_OK, R_OK, X_OK);
+const kMaximumAccessMode = F_OK | W_OK | R_OK | X_OK;
+
+const kDefaultCopyMode = 0;
+// The copy modes can be any of COPYFILE_EXCL, COPYFILE_FICLONE or
+// COPYFILE_FICLONE_FORCE. They can be used in combination as well
+// (COPYFILE_EXCL | COPYFILE_FICLONE | COPYFILE_FICLONE_FORCE).
+const kMinimumCopyMode = MathMin(
+  kDefaultCopyMode,
+  COPYFILE_EXCL,
+  COPYFILE_FICLONE,
+  COPYFILE_FICLONE_FORCE,
+);
+const kMaximumCopyMode = COPYFILE_EXCL |
+                         COPYFILE_FICLONE |
+                         COPYFILE_FICLONE_FORCE;
+
+const defaultCpOptions = {
+  dereference: false,
+  errorOnExist: false,
+  filter: undefined,
+  force: true,
+  preserveTimestamps: false,
+  recursive: false,
+  verbatimSymlinks: false,
+};
+
+const validateCpOptions = hideStackFrames((options) => {
+  if (options === undefined)
+    return { ...defaultCpOptions };
+  validateObject(options, 'options');
+  options = { ...defaultCpOptions, ...options };
+  validateBoolean(options.dereference, 'options.dereference');
+  validateBoolean(options.errorOnExist, 'options.errorOnExist');
+  validateBoolean(options.force, 'options.force');
+  validateBoolean(options.preserveTimestamps, 'options.preserveTimestamps');
+  validateBoolean(options.recursive, 'options.recursive');
+  validateBoolean(options.verbatimSymlinks, 'options.verbatimSymlinks');
+  options.mode = getValidMode(options.mode, 'copyFile');
+  if (options.dereference === true && options.verbatimSymlinks === true) {
+    throw new ERR_INCOMPATIBLE_OPTION_PAIR.HideStackFramesError('dereference', 'verbatimSymlinks');
+  }
+  if (options.filter !== undefined) {
+    validateFunction(options.filter, 'options.filter');
+  }
+  return options;
+});
+
+const getValidMode = hideStackFrames((mode, type) => {
+  let min = kMinimumAccessMode;
+  let max = kMaximumAccessMode;
+  let def = F_OK;
+  if (type === 'copyFile') {
+    min = kMinimumCopyMode;
+    max = kMaximumCopyMode;
+    def = mode || kDefaultCopyMode;
+  } else {
+    assert(type === 'access');
+  }
+  if (mode == null) {
+    return def;
+  }
+  validateInteger.withoutStackTrace(mode, 'mode', min, max);
+  return mode;
+});
+
+
+    // Native C++ cp errors are plain Error objects, distinct from the pinned
+    // JS walk's SystemError subclasses. Record fields have native own storage.
+    function fromNative(packet) {
+        if (packet === undefined || packet[0] === 0) return null;
+        const kind = packet[0], status = packet[1], syscall = packet[2];
+        const message = packet[3], path = packet[4], dest = packet[5];
+        let error;
+        if (kind === 1) {
+            const code = status === 0 ? '' : platform.values.util.getSystemErrorName(-status);
+            error = new Error(`${code}, ${message} '${path}'`);
+            error.errno = status; error.code = code; error.path = path; error.syscall = syscall;
+        } else if (kind === 2) {
+            const code = platform.values.util.getSystemErrorName(status);
+            const description = platform.values.util.getSystemErrorMessage(status);
+            error = new Error(`${code}: ${description}, ${syscall} '${path}'` +
+                (dest === undefined ? '' : ` -> '${dest}'`));
+            error.errno = status; error.code = code; error.syscall = syscall; error.path = path;
+            if (dest !== undefined) error.dest = dest;
+        } else {
+            const codes = { __proto__: null, 3: 'ERR_FS_CP_EINVAL',
+                4: 'ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY', 5: 'ERR_FS_CP_EEXIST',
+                6: 'ERR_FS_CP_SOCKET', 7: 'ERR_FS_CP_FIFO_PIPE', 8: 'ERR_FS_CP_UNKNOWN',
+                9: 'ERR_FS_CP_DIR_TO_NON_DIR', 10: 'ERR_FS_CP_NON_DIR_TO_DIR', 11: 'ERR_FS_EISDIR' };
+            error = new Error(message);
+            // Pinned C++ coded errors use Object::Set. Preserve observable
+            // inherited setters here; only internal packets require own data.
+            error.code = codes[kind];
+        }
+        return error;
+    }
+    function finishSync(packet) {
+        const error = fromNative(packet);
+        if (error !== null) throw error;
+    }
+    class CpDirJob {
+        constructor(src, dest, force, dereference, errorOnExist, verbatimSymlinks, preserveTimestamps, mode) {
+            return platform.native.createCpDirJob(CpDirJob.prototype, src, dest, force, dereference,
+                errorOnExist, verbatimSymlinks, preserveTimestamps, mode, fromNative);
+        }
+        run() { return platform.native.runCpDirJob(this); }
+    }
+    const fsBinding = {
+        CpDirJob,
+        cpSyncCheckPaths(src, dest, dereference, recursive) {
+            return finishSync(platform.native.cpSyncCheckPaths(src, dest, dereference, recursive));
+        },
+        cpSyncOverrideFile(src, dest, mode, preserveTimestamps) {
+            // Pinned GetValidFileMode defaults null/undefined to copy mode0.
+            return finishSync(platform.native.cpSyncOverrideFile(src, dest, mode ?? 0, preserveTimestamps));
+        },
+        cpSyncCopyDir(src, dest, force, dereference, errorOnExist, verbatimSymlinks, preserveTimestamps) {
+            return finishSync(platform.native.cpSyncCopyDir(src, dest, force, dereference,
+                errorOnExist, verbatimSymlinks, preserveTimestamps));
+        },
+        internalModuleStat: platform.internalModuleStat,
+    };
+    const moduleFactories = {
+        "internal/fs/cp/cp": function(module, exports, require, primordials, internalBinding, process) {
+'use strict';
+
+// This file is a modified version of the fs-extra's copy method.
+
+const {
+  ArrayPrototypeEvery,
+  ArrayPrototypeFilter,
+  Boolean,
+  ErrorCaptureStackTrace,
+  Promise,
+  PromisePrototypeThen,
+  PromiseReject,
+  SafePromiseAll,
+  StringPrototypeSplit,
+} = primordials;
+const {
+  codes: {
+    ERR_FS_CP_DIR_TO_NON_DIR,
+    ERR_FS_CP_EEXIST,
+    ERR_FS_CP_EINVAL,
+    ERR_FS_CP_FIFO_PIPE,
+    ERR_FS_CP_NON_DIR_TO_DIR,
+    ERR_FS_CP_SOCKET,
+    ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY,
+    ERR_FS_CP_UNKNOWN,
+    ERR_FS_EISDIR,
+  },
+} = require('internal/errors');
+const {
+  os: {
+    errno: {
+      EEXIST,
+      EISDIR,
+      EINVAL,
+      ENOTDIR,
+    },
+  },
+} = internalBinding('constants');
+const {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  opendir,
+  readlink,
+  stat,
+  symlink,
+  unlink,
+  utimes,
+} = require('fs/promises');
+const {
+  dirname,
+  isAbsolute,
+  join,
+  parse,
+  resolve,
+  sep,
+} = require('path');
+const fsBinding = internalBinding('fs');
+const permission = require('internal/process/permission');
+
+async function cpFn(src, dest, opts) {
+  // Warn about using preserveTimestamps on 32-bit node
+  if (opts.preserveTimestamps && process.arch === 'ia32') {
+    const warning = 'Using the preserveTimestamps option in 32-bit ' +
+      'node is not recommended';
+    process.emitWarning(warning, 'TimestampPrecisionWarning');
+  }
+  const stats = await checkPaths(src, dest, opts);
+  const { srcStat, destStat, skipped } = stats;
+  if (skipped) return;
+  await checkParentPaths(src, srcStat, dest);
+  return checkParentDir(destStat, src, dest, opts);
+}
+
+async function checkPaths(src, dest, opts) {
+  if (opts.filter && !(await opts.filter(src, dest))) {
+    return { __proto__: null, skipped: true };
+  }
+  const { 0: srcStat, 1: destStat } = await getStats(src, dest, opts);
+  if (destStat) {
+    if (areIdentical(srcStat, destStat)) {
+      throw new ERR_FS_CP_EINVAL({
+        message: 'src and dest cannot be the same',
+        path: dest,
+        syscall: 'cp',
+        errno: EINVAL,
+        code: 'EINVAL',
+      });
+    }
+    if (srcStat.isDirectory() && !destStat.isDirectory()) {
+      throw new ERR_FS_CP_DIR_TO_NON_DIR({
+        message: `cannot overwrite non-directory ${dest} ` +
+            `with directory ${src}`,
+        path: dest,
+        syscall: 'cp',
+        errno: EISDIR,
+        code: 'EISDIR',
+      });
+    }
+    if (!srcStat.isDirectory() && destStat.isDirectory()) {
+      throw new ERR_FS_CP_NON_DIR_TO_DIR({
+        message: `cannot overwrite directory ${dest} ` +
+            `with non-directory ${src}`,
+        path: dest,
+        syscall: 'cp',
+        errno: ENOTDIR,
+        code: 'ENOTDIR',
+      });
+    }
+  }
+
+  if (srcStat.isDirectory() && isSrcSubdir(src, dest)) {
+    throw new ERR_FS_CP_EINVAL({
+      message: `cannot copy ${src} to a subdirectory of self ${dest}`,
+      path: dest,
+      syscall: 'cp',
+      errno: EINVAL,
+      code: 'EINVAL',
+    });
+  }
+  return { __proto__: null, srcStat, destStat, skipped: false };
+}
+
+function areIdentical(srcStat, destStat) {
+  return destStat.ino && destStat.dev && destStat.ino === srcStat.ino &&
+    destStat.dev === srcStat.dev;
+}
+
+function getStats(src, dest, opts) {
+  const statFunc = opts.dereference ?
+    (file) => stat(file, { bigint: true }) :
+    (file) => lstat(file, { bigint: true });
+  return SafePromiseAll([
+    statFunc(src),
+    PromisePrototypeThen(statFunc(dest), undefined, (err) => {
+      if (err.code === 'ENOENT') return null;
+      throw err;
+    }),
+  ]);
+}
+
+async function checkParentDir(destStat, src, dest, opts) {
+  const destParent = dirname(dest);
+  const dirExists = await pathExists(destParent);
+  if (dirExists) return getStatsForCopy(destStat, src, dest, opts);
+  await mkdir(destParent, { recursive: true });
+  return getStatsForCopy(destStat, src, dest, opts);
+}
+
+function pathExists(dest) {
+  return PromisePrototypeThen(
+    stat(dest),
+    () => true,
+    (err) => (err.code === 'ENOENT' ? false : PromiseReject(err)));
+}
+
+// Recursively check if dest parent is a subdirectory of src.
+// It works for all file types including symlinks since it
+// checks the src and dest inodes. It starts from the deepest
+// parent and stops once it reaches the src parent or the root path.
+async function checkParentPaths(src, srcStat, dest) {
+  const srcParent = resolve(dirname(src));
+  const destParent = resolve(dirname(dest));
+  if (destParent === srcParent || destParent === parse(destParent).root) {
+    return;
+  }
+  let destStat;
+  try {
+    destStat = await stat(destParent, { bigint: true });
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  if (areIdentical(srcStat, destStat)) {
+    throw new ERR_FS_CP_EINVAL({
+      message: `cannot copy ${src} to a subdirectory of self ${dest}`,
+      path: dest,
+      syscall: 'cp',
+      errno: EINVAL,
+      code: 'EINVAL',
+    });
+  }
+  return checkParentPaths(src, srcStat, destParent);
+}
+
+const normalizePathToArray = (path) =>
+  ArrayPrototypeFilter(StringPrototypeSplit(resolve(path), sep), Boolean);
+
+// Return true if dest is a subdir of src, otherwise false.
+// It only checks the path strings.
+function isSrcSubdir(src, dest) {
+  const srcArr = normalizePathToArray(src);
+  const destArr = normalizePathToArray(dest);
+  return ArrayPrototypeEvery(srcArr, (cur, i) => destArr[i] === cur);
+}
+
+async function getStatsForCopy(destStat, src, dest, opts) {
+  const statFn = opts.dereference ? stat : lstat;
+  const srcStat = await statFn(src);
+  if (srcStat.isDirectory() && opts.recursive) {
+    return onDir(srcStat, destStat, src, dest, opts);
+  } else if (srcStat.isDirectory()) {
+    throw new ERR_FS_EISDIR({
+      message: `${src} is a directory (not copied)`,
+      path: src,
+      syscall: 'cp',
+      errno: EISDIR,
+      code: 'EISDIR',
+    });
+  } else if (srcStat.isFile() ||
+            srcStat.isCharacterDevice() ||
+            srcStat.isBlockDevice()) {
+    return onFile(srcStat, destStat, src, dest, opts);
+  } else if (srcStat.isSymbolicLink()) {
+    return onLink(destStat, src, dest, opts);
+  }
+  throw errorForSpecialFile(srcStat.isSocket() ? 'socket' : srcStat.isFIFO() ? 'fifo' : 'unknown', dest);
+}
+
+function errorForSpecialFile(kind, dest) {
+  const info = { path: dest, syscall: 'cp', errno: EINVAL, code: 'EINVAL' };
+  if (kind === 'socket') {
+    return new ERR_FS_CP_SOCKET({ message: `cannot copy a socket file: ${dest}`, ...info });
+  }
+  if (kind === 'fifo') {
+    return new ERR_FS_CP_FIFO_PIPE({ message: `cannot copy a FIFO pipe: ${dest}`, ...info });
+  }
+  return new ERR_FS_CP_UNKNOWN({ message: `cannot copy an unknown file type: ${dest}`, ...info });
+}
+
+function onFile(srcStat, destStat, src, dest, opts) {
+  if (!destStat) return _copyFile(srcStat, src, dest, opts);
+  return mayCopyFile(srcStat, src, dest, opts);
+}
+
+async function mayCopyFile(srcStat, src, dest, opts) {
+  if (opts.force) {
+    await unlink(dest);
+    return _copyFile(srcStat, src, dest, opts);
+  } else if (opts.errorOnExist) {
+    throw new ERR_FS_CP_EEXIST({
+      message: `${dest} already exists`,
+      path: dest,
+      syscall: 'cp',
+      errno: EEXIST,
+      code: 'EEXIST',
+    });
+  }
+}
+
+async function _copyFile(srcStat, src, dest, opts) {
+  await copyFile(src, dest, opts.mode);
+  if (opts.preserveTimestamps) {
+    return handleTimestampsAndMode(srcStat.mode, src, dest);
+  }
+  return setDestMode(dest, srcStat.mode);
+}
+
+async function handleTimestampsAndMode(srcMode, src, dest) {
+  // Make sure the file is writable before setting the timestamp
+  // otherwise open fails with EPERM when invoked with 'r+'
+  // (through utimes call)
+  if (fileIsNotWritable(srcMode)) {
+    await makeFileWritable(dest, srcMode);
+  }
+  return setDestTimestampsAndMode(srcMode, src, dest);
+}
+
+function fileIsNotWritable(srcMode) {
+  return (srcMode & 0o200) === 0;
+}
+
+function makeFileWritable(dest, srcMode) {
+  return setDestMode(dest, srcMode | 0o200);
+}
+
+async function setDestTimestampsAndMode(srcMode, src, dest) {
+  await setDestTimestamps(src, dest);
+  return setDestMode(dest, srcMode);
+}
+
+function setDestMode(dest, srcMode) {
+  return chmod(dest, srcMode);
+}
+
+async function setDestTimestamps(src, dest) {
+  // The initial srcStat.atime cannot be trusted
+  // because it is modified by the read(2) system call
+  // (See https://nodejs.org/api/fs.html#fs_stat_time_values)
+  const updatedSrcStat = await stat(src);
+  return utimes(dest, updatedSrcStat.atime, updatedSrcStat.mtime);
+}
+
+async function onDir(srcStat, destStat, src, dest, opts) {
+  if (!destStat) return mkDirAndCopy(srcStat.mode, src, dest, opts);
+  if (opts.errorOnExist && !opts.force) {
+    throw new ERR_FS_CP_EEXIST({
+      message: `${dest} already exists`,
+      path: dest,
+      syscall: 'cp',
+      errno: EEXIST,
+      code: 'EEXIST',
+    });
+  }
+  await copyDir(src, dest, opts);
+  if (opts.preserveTimestamps) {
+    await setDestTimestamps(src, dest);
+  }
+}
+
+async function mkDirAndCopy(srcMode, src, dest, opts) {
+  // A destination directory that does not exist yet is filled in one thread
+  // pool request by the walk fs.cpSync() uses, unless a filter has to run per
+  // entry, links inside the tree must be dereferenced, or the permission model
+  // has to check each path. Copying into an existing tree keeps the per-entry
+  // walk below and its rules for what may already be there.
+  if (!opts.filter && !opts.dereference && !permission.isEnabled()) {
+    // Creates dest itself, with the mode of src.
+    return copyDirNative(src, dest, opts);
+  }
+  await mkdir(dest);
+  await copyDir(src, dest, opts);
+  if (opts.preserveTimestamps) {
+    await setDestTimestamps(src, dest);
+  }
+  return setDestMode(dest, srcMode);
+}
+
+function copyDirNative(src, dest, opts) {
+  return new Promise((resolve, reject) => {
+    const job = new fsBinding.CpDirJob(src, dest, opts.force, opts.dereference, opts.errorOnExist,
+                                       opts.verbatimSymlinks, opts.preserveTimestamps, opts.mode);
+    // Sockets, FIFOs and unknown entries come back as (kind, path) so that
+    // they reject with the same errors as the walk above.
+    job.ondone = (err, specialFile, specialFilePath) => {
+      if (specialFile !== undefined) {
+        err = errorForSpecialFile(specialFile, specialFilePath);
+      }
+      if (err != null) {
+        if (ErrorCaptureStackTrace !== undefined) ErrorCaptureStackTrace(err, copyDirNative);
+        reject(err);
+      } else {
+        resolve();
+      }
+    };
+    job.run();
+  });
+}
+
+async function copyDir(src, dest, opts) {
+  const dir = await opendir(src);
+
+  for await (const { name } of dir) {
+    const srcItem = join(src, name);
+    const destItem = join(dest, name);
+    const { destStat, skipped } = await checkPaths(srcItem, destItem, opts);
+    if (!skipped) await getStatsForCopy(destStat, srcItem, destItem, opts);
+  }
+}
+
+async function onLink(destStat, src, dest, opts) {
+  let resolvedSrc = await readlink(src);
+  if (!opts.verbatimSymlinks && !isAbsolute(resolvedSrc)) {
+    resolvedSrc = resolve(dirname(src), resolvedSrc);
+  }
+  const srcIsDir = fsBinding.internalModuleStat(src) === 1;
+  const symlinkType = srcIsDir ? 'dir' : 'file';
+  if (!destStat) {
+    return symlink(resolvedSrc, dest, symlinkType);
+  }
+  let resolvedDest;
+  try {
+    resolvedDest = await readlink(dest);
+  } catch (err) {
+    // Dest exists and is a regular file or directory,
+    // Windows may throw UNKNOWN error. If dest already exists,
+    // fs throws error anyway, so no need to guard against it here.
+    if (err.code === 'EINVAL' || err.code === 'UNKNOWN') {
+      return symlink(resolvedSrc, dest, symlinkType);
+    }
+    throw err;
+  }
+  if (!isAbsolute(resolvedDest)) {
+    resolvedDest = resolve(dirname(dest), resolvedDest);
+  }
+
+  if (srcIsDir && isSrcSubdir(resolvedSrc, resolvedDest)) {
+    throw new ERR_FS_CP_EINVAL({
+      message: `cannot copy ${resolvedSrc} to a subdirectory of self ` +
+            `${resolvedDest}`,
+      path: dest,
+      syscall: 'cp',
+      errno: EINVAL,
+      code: 'EINVAL',
+    });
+  }
+  // Do not copy if src is a subdir of dest since unlinking
+  // dest in this case would result in removing src contents
+  // and therefore a broken symlink would be created.
+  const srcStat = await stat(src);
+  if (srcStat.isDirectory() && isSrcSubdir(resolvedDest, resolvedSrc)) {
+    throw new ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY({
+      message: `cannot overwrite ${resolvedDest} with ${resolvedSrc}`,
+      path: dest,
+      syscall: 'cp',
+      errno: EINVAL,
+      code: 'EINVAL',
+    });
+  }
+  return copyLink(resolvedSrc, dest, symlinkType);
+}
+
+async function copyLink(resolvedSrc, dest, symlinkType) {
+  await unlink(dest);
+  return symlink(resolvedSrc, dest, symlinkType);
+}
+
+module.exports = {
+  areIdentical,
+  cpFn,
+  isSrcSubdir,
+};
+
+},
+"internal/fs/cp/cp-sync": function(module, exports, require, primordials, internalBinding, process) {
+'use strict';
+
+// This file is a modified version of the fs-extra's copySync method.
+
+const fsBinding = internalBinding('fs');
+const { isSrcSubdir } = require('internal/fs/cp/cp');
+const { codes: {
+  ERR_FS_CP_EEXIST,
+  ERR_FS_CP_EINVAL,
+  ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY,
+  ERR_INVALID_RETURN_VALUE,
+} } = require('internal/errors');
+const {
+  os: {
+    errno: {
+      EEXIST,
+      EINVAL,
+    },
+  },
+} = internalBinding('constants');
+const {
+  chmodSync,
+  copyFileSync,
+  lstatSync,
+  mkdirSync,
+  opendirSync,
+  readlinkSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  utimesSync,
+} = require('fs');
+const {
+  dirname,
+  isAbsolute,
+  join,
+  resolve,
+} = require('path');
+const { isPromise } = require('util/types');
+
+function cpSyncFn(src, dest, opts) {
+  // Warn about using preserveTimestamps on 32-bit node
+  if (opts.preserveTimestamps && process.arch === 'ia32') {
+    const warning = 'Using the preserveTimestamps option in 32-bit ' +
+      'node is not recommended';
+    process.emitWarning(warning, 'TimestampPrecisionWarning');
+  }
+  if (opts.filter) {
+    const shouldCopy = opts.filter(src, dest);
+    if (isPromise(shouldCopy)) {
+      throw new ERR_INVALID_RETURN_VALUE('boolean', 'filter', shouldCopy);
+    }
+    if (!shouldCopy) return;
+  }
+
+  fsBinding.cpSyncCheckPaths(src, dest, opts.dereference, opts.recursive);
+
+  return getStats(src, dest, opts);
+}
+
+function getStats(src, dest, opts) {
+  // TODO(@anonrig): Avoid making two stat calls.
+  const statSyncFn = opts.dereference ? statSync : lstatSync;
+  const srcStat = statSyncFn(src);
+  const destStat = statSyncFn(dest, { bigint: true, throwIfNoEntry: false });
+
+  if (srcStat.isDirectory() && opts.recursive) {
+    return onDir(srcStat, destStat, src, dest, opts);
+  } else if (srcStat.isFile() ||
+           srcStat.isCharacterDevice() ||
+           srcStat.isBlockDevice()) {
+    return onFile(srcStat, destStat, src, dest, opts);
+  } else if (srcStat.isSymbolicLink()) {
+    return onLink(destStat, src, dest, opts.verbatimSymlinks);
+  }
+
+  // It is not possible to get here because all possible cases are handled above.
+  const assert = require('internal/assert');
+  assert.fail('Unreachable code');
+}
+
+function onFile(srcStat, destStat, src, dest, opts) {
+  if (!destStat) return copyFile(srcStat, src, dest, opts);
+
+  if (opts.force) {
+    return fsBinding.cpSyncOverrideFile(src, dest, opts.mode, opts.preserveTimestamps);
+  }
+
+  if (opts.errorOnExist) {
+    throw new ERR_FS_CP_EEXIST({
+      message: `${dest} already exists`,
+      path: dest,
+      syscall: 'cp',
+      errno: EEXIST,
+      code: 'EEXIST',
+    });
+  }
+}
+
+function copyFile(srcStat, src, dest, opts) {
+  copyFileSync(src, dest, opts.mode);
+  if (opts.preserveTimestamps) handleTimestamps(srcStat.mode, src, dest);
+  return setDestMode(dest, srcStat.mode);
+}
+
+function handleTimestamps(srcMode, src, dest) {
+  // Make sure the file is writable before setting the timestamp
+  // otherwise open fails with EPERM when invoked with 'r+'
+  // (through utimes call)
+  if (fileIsNotWritable(srcMode)) makeFileWritable(dest, srcMode);
+  return setDestTimestamps(src, dest);
+}
+
+function fileIsNotWritable(srcMode) {
+  return (srcMode & 0o200) === 0;
+}
+
+function makeFileWritable(dest, srcMode) {
+  return setDestMode(dest, srcMode | 0o200);
+}
+
+function setDestMode(dest, srcMode) {
+  return chmodSync(dest, srcMode);
+}
+
+function setDestTimestamps(src, dest) {
+  // The initial srcStat.atime cannot be trusted
+  // because it is modified by the read(2) system call
+  // (See https://nodejs.org/api/fs.html#fs_stat_time_values)
+  const updatedSrcStat = statSync(src);
+  return utimesSync(dest, updatedSrcStat.atime, updatedSrcStat.mtime);
+}
+
+// TODO(@anonrig): Move this function to C++.
+function onDir(srcStat, destStat, src, dest, opts) {
+  if (!destStat) return copyDir(src, dest, opts, true, srcStat.mode);
+  if (opts.errorOnExist && !opts.force) {
+    throw new ERR_FS_CP_EEXIST({
+      message: `${dest} already exists`,
+      path: dest,
+      syscall: 'cp',
+      errno: EEXIST,
+      code: 'EEXIST',
+    });
+  }
+  return copyDir(src, dest, opts);
+}
+
+function copyDir(src, dest, opts, mkDir, srcMode) {
+  if (!opts.filter) {
+    // The caller didn't provide a js filter function, in this case
+    // we can run the whole function faster in C++
+    // TODO(dario-piotrowicz): look into making cpSyncCopyDir also accept the potential filter function
+    return fsBinding.cpSyncCopyDir(src, dest,
+                                   opts.force,
+                                   opts.dereference,
+                                   opts.errorOnExist,
+                                   opts.verbatimSymlinks,
+                                   opts.preserveTimestamps);
+  }
+
+  if (mkDir) {
+    mkdirSync(dest);
+  }
+
+  const dir = opendirSync(src);
+
+  try {
+    let dirent;
+
+    while ((dirent = dir.readSync()) !== null) {
+      const { name } = dirent;
+      const srcItem = join(src, name);
+      const destItem = join(dest, name);
+      let shouldCopy = true;
+
+      if (opts.filter) {
+        shouldCopy = opts.filter(srcItem, destItem);
+        if (isPromise(shouldCopy)) {
+          throw new ERR_INVALID_RETURN_VALUE('boolean', 'filter', shouldCopy);
+        }
+      }
+
+      if (shouldCopy) {
+        getStats(srcItem, destItem, opts);
+      }
+    }
+  } finally {
+    dir.closeSync();
+
+    if (opts.preserveTimestamps) {
+      setDestTimestamps(src, dest);
+    }
+    if (srcMode !== undefined) {
+      setDestMode(dest, srcMode);
+    }
+  }
+}
+
+// TODO(@anonrig): Move this function to C++.
+function onLink(destStat, src, dest, verbatimSymlinks) {
+  let resolvedSrc = readlinkSync(src);
+  if (!verbatimSymlinks && !isAbsolute(resolvedSrc)) {
+    resolvedSrc = resolve(dirname(src), resolvedSrc);
+  }
+  const srcIsDir = fsBinding.internalModuleStat(src) === 1;
+  const symlinkType = srcIsDir ? 'dir' : 'file';
+  if (!destStat) {
+    return symlinkSync(resolvedSrc, dest, symlinkType);
+  }
+  let resolvedDest;
+  try {
+    resolvedDest = readlinkSync(dest);
+  } catch (err) {
+    // Dest exists and is a regular file or directory,
+    // Windows may throw UNKNOWN error. If dest already exists,
+    // fs throws error anyway, so no need to guard against it here.
+    if (err.code === 'EINVAL' || err.code === 'UNKNOWN') {
+      return symlinkSync(resolvedSrc, dest, symlinkType);
+    }
+    throw err;
+  }
+  if (!isAbsolute(resolvedDest)) {
+    resolvedDest = resolve(dirname(dest), resolvedDest);
+  }
+
+  if (srcIsDir && isSrcSubdir(resolvedSrc, resolvedDest)) {
+    throw new ERR_FS_CP_EINVAL({
+      message: `cannot copy ${resolvedSrc} to a subdirectory of self ` +
+          `${resolvedDest}`,
+      path: dest,
+      syscall: 'cp',
+      errno: EINVAL,
+      code: 'EINVAL',
+    });
+  }
+  // Prevent copy if src is a subdir of dest since unlinking
+  // dest in this case would result in removing src contents
+  // and therefore a broken symlink would be created.
+  if (statSync(dest).isDirectory() && isSrcSubdir(resolvedDest, resolvedSrc)) {
+    throw new ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY({
+      message: `cannot overwrite ${resolvedDest} with ${resolvedSrc}`,
+      path: dest,
+      syscall: 'cp',
+      errno: EINVAL,
+      code: 'EINVAL',
+    });
+  }
+  return copyLink(resolvedSrc, dest, symlinkType);
+}
+
+function copyLink(resolvedSrc, dest, symlinkType) {
+  unlinkSync(dest);
+  return symlinkSync(resolvedSrc, dest, symlinkType);
+}
+
+module.exports = { cpSyncFn };
+
+}
+    };
+    const cache = { __proto__: null };
+    function require(name) {
+        if (ObjectPrototypeHasOwnProperty(cache, name)) return cache[name].exports;
+        if (name === 'fs') return platform.fs;
+        if (name === 'fs/promises') return platform.fs.promises;
+        if (name === 'path') return platform.path;
+        if (name === 'util') return platform.util;
+        if (name === 'util/types') return platform.types;
+        if (name === 'internal/errors') return platform.values.errors;
+        if (name === 'internal/assert') return platform.getAssert();
+        if (name === 'internal/process/permission') return platform.permission;
+        if (!ObjectPrototypeHasOwnProperty(moduleFactories, name))
+            throw new Error('Unimplemented cp dependency: ' + name);
+        const module = { exports: {} };
+        cache[name] = module;
+        moduleFactories[name](module, module.exports, require, primordials, internalBinding, process);
+        return module.exports;
+    }
+    function internalBinding(name) {
+        if (name === 'fs') return fsBinding;
+        if (name === 'constants') return platform.constants;
+        throw new Error('Unimplemented cp binding: ' + name);
+    }
+    let cpFn, cpSyncFn;
+    function lazyLoadCp() {
+  if (cpFn === undefined) {
+    ({ cpFn } = require('internal/fs/cp/cp'));
+    cpFn = require('util').callbackify(cpFn);
+    ({ cpSyncFn } = require('internal/fs/cp/cp-sync'));
+  }
+}
+
+
+    function makeCallback(cb) {
+  validateFunction(cb, 'cb');
+
+  return (...args) => ReflectApply(cb, this, args);
+}
+
+
+    function publicAPIs() {
+        function cp(src, dest, options, callback) {
+  if (typeof options === 'function') {
+    callback = options;
+    options = undefined;
+  }
+  callback = makeCallback(callback);
+  options = validateCpOptions(options);
+  src = getValidatedPath(src, 'src');
+  dest = getValidatedPath(dest, 'dest');
+  lazyLoadCp();
+  cpFn(src, dest, options, callback);
+}
+
+/**
+ * Synchronously copies `src` to `dest`. `src` can be a file, directory, or
+ * symlink. The contents of directories will be copied recursively.
+ * @param {string | URL} src
+ * @param {string | URL} dest
+ * @param {object} [options]
+ * @returns {void}
+ */
+function cpSync(src, dest, options) {
+  options = validateCpOptions(options);
+  src = getValidatedPath(src, 'src');
+  dest = getValidatedPath(dest, 'dest');
+  lazyLoadCp();
+  cpSyncFn(src, dest, options);
+}
+
+
+        return { cp, cpSync };
+    }
+    let cpPromises;
+    function lazyLoadCpPromises() {
+  return cpPromises ??= require('internal/fs/cp/cp').cpFn;
+}
+
+
+    function promiseAPIs() {
+        async function cp(src, dest, options) {
+  options = validateCpOptions(options);
+  src = getValidatedPath(src, 'src');
+  dest = getValidatedPath(dest, 'dest');
+  return lazyLoadCpPromises()(src, dest, options);
+}
+
+
+        return { cp };
+    }
+    return { api: publicAPIs(), promises: promiseAPIs(), binding: fsBinding };
+}
+
 // Complete pinned logical/native realpath and readlink public owners. Native
 // byte results come from real libc operations and actual queued FS requests.
 function _createNodeRealpathPlatform(platform) {

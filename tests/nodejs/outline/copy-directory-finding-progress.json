@@ -1,0 +1,134 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem-contracts.md",
+    "findingIds": [
+      "FS-006",
+      "FS-008",
+      "FS-016"
+    ],
+    "supportingDocuments": [
+      "tests/nodejs/audit/filesystem.md",
+      "tests/nodejs/audit/filesystem-requirements.json"
+    ],
+    "relatedFamilies": [
+      "filesystem",
+      "async",
+      "values",
+      "engine"
+    ],
+    "scope": "Recursive cp/public aliases and native job owner subset;not full finding or public API closure"
+  },
+  "sourceImplemented": [
+    "Pinned public cp/cpSync/promises.cp filters/validation/errors and distinct sync/async traversal over real POSIX ownership",
+    "Selected unchanged recursive native walk/path algorithms;only V8-facing preflight/overwrite errors adapted to owned records",
+    "Actual CpDirJob class/private state/default trigger/frame/native lifecycle and weak inactive/strong scheduled ownership with copied native paths/material claims",
+    "Allfive normal production forwarders,public bootstrap routes,staged C++20 unit and guarded engine registrations/resource info over146",
+    "Current StatWatcher/build unit and prior backing/Worker/lazy/TLS/VM hooks retained by additive0117 rebase"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-copy-directory-source-r1/report.json",
+    "sha256": "ebf55541cfc31d3ed846c2367171bd29d183e582197be25d164ab65ab8dbb784",
+    "guardedInputs": 711,
+    "wholeNodeReferences": 9,
+    "engineFiles": 2,
+    "scope": "Actual recursive-copy production/fixture inputs and production adapter control,new recursive copy unit staged/compiled,exact nine Node refs,root current bootstrap parse and five adapter forwarders. Not production SpiderMonkey/GC/realm/guest/four-host conformance; existing recovered-callback mismatch remains nonpass."
+  },
+  "componentComparisons": {
+    "report": ".context/copy-directory-agent/controls-final/report.json",
+    "sha256": "94ce8f72801d75b6cb4e0a2e20286d32a5cef57f45c9231f55c2dfc55965c6cc",
+    "matchingGroups": 16,
+    "nonpassingGroups": 1,
+    "driverExitCode": 1,
+    "rerunThisSlice": false,
+    "scope": "Existing exact native/portable worker component and native dependency comparisons. Recovered callback-throw missesAfter;retained as actual implementation nonpass,not accepted limit"
+  },
+  "upstreamControls": {
+    "report": ".context/copy-directory-agent/upstream/report.json",
+    "sha256": "e48b7ddc7c71b2c2067d52ecf992e49c6ff72a229ace1397ce1d2a4b52e33eda",
+    "unchangedFiles": 2,
+    "variantsPerFile": 2,
+    "rerunThisSlice": false,
+    "scope": "Existing unchanged late-destination/overwrite controls in native/component modes with explicit native per-entry dependencies;not guest/JSAPI"
+  },
+  "affectedControls": {
+    "report": ".context/node26-copy-directory-affected-r1.json",
+    "sha256": "d370bd6901d91d11e55fee7446c9764d928cdd9ceb4f99c5c2714685f6291da6",
+    "passed": 31,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "17existing sync/callback/promise frontend native-dependency checks and14package-source checks;not production recursive cp JSAPI/guest proof"
+  },
+  "packageChecks": {
+    "report": ".context/node26-copy-directory-affected-r1.json",
+    "sha256": "d370bd6901d91d11e55fee7446c9764d928cdd9ceb4f99c5c2714685f6291da6",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package-source checks within31aggregate,not extra passes"
+  },
+  "privateHandoff": {
+    "report": ".context/copy-directory-agent/identities.json",
+    "sha256": "380ffc80afaad21316fbb1e6ccb412b5840853ca5e7e0173adce9187c05b15ce",
+    "sealSha256": "5d9548dc64f790afbfc37f8c60ac3859530eb9870350273215a7b2838a55dc5d",
+    "scope": "Immutable142source proposal24newfiles/6integrationfiles/2enginefiles;rootadditive147rebase over146"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/copy-directory-agent/controls-final/report.json",
+      "sha256": "94ce8f72801d75b6cb4e0a2e20286d32a5cef57f45c9231f55c2dfc55965c6cc",
+      "kind": "shared-recovered-callback-lifecycle",
+      "reason": "Target emits after following recovered callback throw;component omits it. Both child exits0 but driver exits1 for trace mismatch. Shared recovery/native ID stack implementation remains required"
+    },
+    {
+      "report": ".context/node26-copy-directory-integration-r1.log",
+      "sha256": "65a884916dec3dd7029ab3e6241ff191b72fe34238d893c27a3a9518f7d05e67",
+      "kind": "root-hash-precondition-error",
+      "reason": "Root incorrectly inferred empty test from hash prefix;assertion failed before any source mutation. Full1519-byte real forwarding control retained unchanged"
+    },
+    {
+      "report": ".context/node26-copy-directory-integration-r2.log",
+      "sha256": "db8fc6b3ddd2dd2a3d07a08ffddd8cf2fd4f33bdcb0244a9e1ec12e31ce28e53",
+      "kind": "root-old-build-EOF-context",
+      "reason": "Old142moz.build EOF conflicts with145stat-poll unit;exact newcpunit appended additively and priorunit retained"
+    },
+    {
+      "report": ".context/node26-copy-directory-source-initial-nonpass.log",
+      "sha256": "d6d5048d3ee01dae429a2de63e5f310e548cc00d373c6dc4a3e811c6bbeb112f",
+      "kind": "root-component-include-layout",
+      "reason": "Normal unity rewrites to shell/header paths;root flat fixture lacked shell include root. Added real staged-header include layout,not production header edits or suppressed diagnostics"
+    },
+    {
+      "report": ".context/copy-directory-agent/controls-initial/report.json",
+      "sha256": "c26bacf477b5f88c061c6f70504cc8f4e27c7f709d4f3a04d9bab83e29a7549a",
+      "kind": "original-component-controls",
+      "reason": "Original link expectation/fixture failures preserved under original identities"
+    },
+    {
+      "report": ".context/copy-directory-agent/controls-r3/report.json",
+      "sha256": "c753d582a64c42413cd339f6a8631eb1c4143197617354498e6f28e73a530a4f",
+      "kind": "original-intermediate-component-controls",
+      "reason": "Original nonpasses remain distinct from final16matching/1nonpass evidence"
+    },
+    {
+      "report": ".context/copy-directory-agent/default-mode-nonpass/report.json",
+      "sha256": "8606ce25f821a55985fec1d9d8ec6922dfc60e404b8f014af9fe0c8fab1de2c8",
+      "kind": "original-default-options-gap",
+      "reason": "Initial native/component omitted-option failure retained;final default-mode correction recorded separately"
+    }
+  ],
+  "remaining": [
+    "Shared process uncaught recovery/native execution-stack/after-hook ownership;handled callbackThrow remains nonpass",
+    "Actual SpiderMonkey class/JSAPI/GC/weak ownership/realm/OOM/interrupt/frame/teardown and retained-memory projection validation",
+    "Actual guest VFS/backend byte paths,timestamps,permissions,mode/reflink,partial effects and all API/error/stack/lifecycle edges",
+    "FS006/008/016/public recursive copy closure,all19family completion and identified-artifact four-host conformance"
+  ],
+  "at": "2026-11-06T15:06:58.820814+00:00",
+  "recipeRevision": 147,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

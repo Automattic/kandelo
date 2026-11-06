@@ -1,0 +1,42 @@
+{
+  "target": "Node.js v26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/fs.js": {
+      "path": "upstream/copy-directory/lib/fs.js",
+      "sha256": "21e9604151bcdfdacec9ec6e127e8ba906fb1b4e9415fd0de3221b7e92a08ef3"
+    },
+    "lib/internal/fs/promises.js": {
+      "path": "upstream/copy-directory/lib/internal/fs/promises.js",
+      "sha256": "bdb9f9c75509dbaade2ef68e7d8b1c6fff345f356b1459c8969696d48180ea49"
+    },
+    "lib/internal/fs/cp/cp.js": {
+      "path": "upstream/copy-directory/lib/internal/fs/cp/cp.js",
+      "sha256": "8c385c05f80346a580dac0b755f73a0f34034d14c9eeed2cce6149448f411a8e"
+    },
+    "lib/internal/fs/cp/cp-sync.js": {
+      "path": "upstream/copy-directory/lib/internal/fs/cp/cp-sync.js",
+      "sha256": "6a24c5f51d450e1d1b22deeac5f72cdd4e39d34f04fa995a11dfe230acb524f3"
+    },
+    "lib/internal/fs/utils.js": {
+      "path": "upstream/copy-directory/lib/internal/fs/utils.js",
+      "sha256": "8f4f44388934c9fd281a122122f667b1a92d41f9e558bfd45a83c9aff49f061b"
+    },
+    "src/node_file.cc": {
+      "path": "upstream/copy-directory/src/node_file.cc",
+      "sha256": "33e4be5acc25b44ba4f532564220a721b645416da4e9fa26d58e14011c66a450"
+    },
+    "src/api/exceptions.cc": {
+      "path": "upstream/copy-directory/src/api/exceptions.cc",
+      "sha256": "36cd3250e4c7a957a32548d403b5e9e4c3014bc4a13adf17f69d5e30a9fa8ce5"
+    },
+    "src/node_errors.h": {
+      "path": "upstream/copy-directory/src/node_errors.h",
+      "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8"
+    },
+    "src/util.cc": {
+      "path": "upstream/copy-directory/src/util.cc",
+      "sha256": "d5ff5ddf59fea718016f5028ec54661ea8f92e37070d82c7dae2e39ab1e91172"
+    }
+  }
+}
