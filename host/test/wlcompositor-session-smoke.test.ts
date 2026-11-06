@@ -6,6 +6,9 @@
  *   - wlclient-test as the session connects through WAYLAND_DISPLAY, gets a
  *     maximized window, takes a key and a click, and exits 0; the compositor
  *     exits 0 with it.
+ *   - `kwldemo --dialog` as the session maps a dialog (minimum size equal to
+ *     maximum size); the compositor centers it at its own size instead of
+ *     maximizing it, and the dialog takes a click and a key.
  *   - `dash -c 'exit 3'` as the session never connects; the compositor still
  *     reaps it and exits 3.
  *
@@ -18,8 +21,9 @@ import { tryResolveBinary } from "../src/binary-resolver";
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
+const kwldemoBin = tryResolveBinary("programs/kwldemo.wasm");
 const dashBin = tryResolveBinary("programs/dash.wasm");
-const hasBinaries = !!compositorBin && !!clientBin && !!dashBin;
+const hasBinaries = !!compositorBin && !!clientBin && !!kwldemoBin && !!dashBin;
 
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
@@ -101,6 +105,53 @@ describe("wlcompositor — a program on the command line is the session", () => 
 
         expect(await withTimeout(compExit, 25_000, dump), dump()).toBe(0);
         expect(out.value).toContain("CLIENT_OK");
+        expect(out.value).toContain("SESSION_EXIT status=0");
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    90_000,
+  );
+
+  it.skipIf(!hasBinaries)(
+    "centers a dialog window at its own size instead of maximizing it",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const kwldemoBytes = loadBytes(kwldemoBin!);
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+        execProgramBytes: { [kwldemoBin!]: kwldemoBytes },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+        const compExit = host.spawn(
+          compositorBytes, ["wlcompositor", kwldemoBin!, "--dialog"], {});
+
+        await waitFor(out, "KWLDEMO_READY\n", 20_000, dump);
+        const dialog = /DIALOG "kwldemo" x=(\d+) y=(\d+) w=(\d+) h=(\d+)/.exec(out.value);
+        expect(dialog, dump()).not.toBeNull();
+        const [x, y, w, h] = dialog!.slice(1).map(Number);
+        expect(w).toBe(320);
+        expect(x).toBe(Math.floor((CANVAS_W - w) / 2));
+        expect(y).toBe(Math.floor((CANVAS_H - h) / 2));
+
+        host.injectInputEvent(1, EV_ABS, ABS_X, CANVAS_W / 2);
+        host.injectInputEvent(1, EV_ABS, ABS_Y, CANVAS_H / 2);
+        host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(1, EV_KEY, BTN_LEFT, 1);
+        host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_A, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+
+        expect(await withTimeout(compExit, 25_000, dump), dump()).toBe(0);
+        expect(out.value).toContain("KWLDEMO_OK");
         expect(out.value).toContain("SESSION_EXIT status=0");
       } finally {
         await host.destroy().catch(() => {});

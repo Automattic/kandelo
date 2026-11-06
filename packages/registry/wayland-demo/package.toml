@@ -73,6 +73,12 @@ wasm = "wlpaint.wasm"
 name = "klauncher"
 wasm = "klauncher.wasm"
 
+# The file selection dialog of zenity, for programs that ask the desktop for
+# a file (rfd's Linux backend runs `zenity --file-selection`).
+[[outputs]]
+name = "zenity"
+wasm = "zenity.wasm"
+
 [[outputs]]
 name = "notify-send"
 wasm = "notify-send.wasm"

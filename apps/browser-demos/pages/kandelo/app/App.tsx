@@ -508,7 +508,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
         )}
 
         <LazyDownloadToasts downloads={lazyDownloads} />
-        <ExchangeToasts />
+        <ExchangeToasts machineTitle={desc.title} />
         {exchangePicker.input}
         {surface.status === "running" && audioActive && audioState !== "running" && (
           <AudioStatusToast

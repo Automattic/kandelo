@@ -1,7 +1,7 @@
 /**
  * The Kandelo exchange userland on the Node host: kxchgd (the agent the
- * kernel starts on demand), its rules, the catch-all `99-save` handler, and
- * kandelo-publish, from the kandelo-exchange package.
+ * kernel starts on demand), its rules, the catch-all `99-save` handler,
+ * kandelo-publish and xdg-open, from the kandelo-exchange package.
  *
  * The image holds the same exchange entries as the base rootfs (MANIFEST,
  * images/rootfs/): the `exchange` group with maker in it, exchange.conf
@@ -21,6 +21,7 @@ const kxchgd = binary("kxchgd");
 const save = binary("exchange-save");
 const publish = binary("kandelo-publish");
 const helper = binary("kandelo-exchange");
+const xdgOpen = binary("xdg-open");
 const built = Boolean(kxchgd && save && publish && helper);
 const rootfs = fileURLToPath(new URL("../../images/rootfs", import.meta.url));
 const helloWasm = fileURLToPath(new URL("../../examples/hello.wasm", import.meta.url));
@@ -160,6 +161,41 @@ describe("Kandelo exchange userland", () => {
       expect(outputs["report.txt"]).toEqual({ kind: "stored", mime: "text/plain", text: "a report" });
       expect(outputs["hello.txt"]?.kind).toBe("stream");
       expect(outputs["hello.txt"]?.text).toMatch(/^Hello/);
+    } finally {
+      listening.abort();
+      await host.destroy();
+    }
+  }, 60_000);
+
+  it.skipIf(!built || !xdgOpen)("publishes links as text/uri-list outputs with xdg-open", async () => {
+    const host = new NodeKernelHost({ rootfsImage: await exchangeImage() });
+    const listening = new AbortController();
+    try {
+      await host.init();
+      const outputs: { name: string; mime?: string; text: string }[] = [];
+      host.exchange.onOutput(
+        async (output) => {
+          outputs.push({ name: output.name, mime: output.mimeType, text: await new Response(output.read()).text() });
+        },
+        { signal: listening.signal },
+      );
+      const bytes = readFileSync(xdgOpen!);
+      const program = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      const run = (...args: string[]) => host.spawn(program.slice(0), ["xdg-open", ...args]);
+
+      expect(await run("https://example.com/")).toBe(0);
+      const deadline = Date.now() + 20_000;
+      while (outputs.length < 1 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+      expect(outputs).toEqual([
+        { name: expect.stringMatching(/^link-\d+\.uri$/), mime: "text/uri-list", text: "https://example.com/\r\n" },
+      ]);
+      expect(await run("/etc/passwd")).toBe(3);
+      expect(await run()).toBe(1);
+      expect(await run("--foo")).toBe(1);
+      expect(await run("https://example.com/\nfoo")).toBe(1);
+
+      listening.abort();
+      expect(await run("mailto:foo@example.com")).toBe(4);
     } finally {
       listening.abort();
       await host.destroy();

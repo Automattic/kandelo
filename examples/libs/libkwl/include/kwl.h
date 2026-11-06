@@ -75,6 +75,11 @@ struct kwl_event {
  * NULL on failure. */
 struct kwl_window *kwl_window_create(const char *title, int w, int h);
 
+/* Map a dialog: a toplevel whose minimum and maximum size are both its own
+ * size, as kwl_window_create maps it. A kiosk compositor shows such a window
+ * centered at that size instead of maximizing it, as cage does. */
+struct kwl_window *kwl_dialog_create(const char *title, int w, int h);
+
 /* Stacking layers for a shell component, bottom-most first (the
  * zwlr_layer_shell_v1 layers). */
 enum kwl_layer {

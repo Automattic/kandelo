@@ -17,6 +17,9 @@
  *   4. a host-injected key A → KWL_TEXT "a" → GOT_TEXT.
  *   5. once both arrived: KWLDEMO_OK, disconnect, exit 0.
  *
+ * `kwldemo --dialog` maps the same window with kwl_dialog_create(), which
+ * the kiosk session gate uses to see a dialog centered, not maximized.
+ *
  * The window size equals the test's input-canvas size so the compositor's
  * unclipped cursor centre falls inside the button (see the plan's Phase-2
  * watch-items).
@@ -42,10 +45,13 @@ static int in_button(int x, int y) {
            y >= BTN_Y && y < BTN_Y + BTN_H;
 }
 
-int main(void) {
-    struct kwl_window *win = kwl_window_create("kwldemo", WIN_W, WIN_H);
+int main(int argc, char **argv) {
+    int dialog = argc > 1 && strcmp(argv[1], "--dialog") == 0;
+    struct kwl_window *win = dialog
+        ? kwl_dialog_create("kwldemo", WIN_W, WIN_H)
+        : kwl_window_create("kwldemo", WIN_W, WIN_H);
     if (!win) {
-        fprintf(stderr, "kwl_window_create failed\n");
+        fprintf(stderr, "kwl window create failed\n");
         return 1;
     }
 

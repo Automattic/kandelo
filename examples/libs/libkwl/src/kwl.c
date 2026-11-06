@@ -714,7 +714,8 @@ static int kwl_open_buffers(struct kwl_window *win) {
 
 /* ---- public API -------------------------------------------------------- */
 
-struct kwl_window *kwl_window_create(const char *title, int w, int h) {
+static struct kwl_window *kwl_toplevel_create(const char *title, int w, int h,
+                                              int dialog) {
     if (w <= 0 || h <= 0) { errno = EINVAL; return NULL; }
     struct kwl_window *win = kwl_open();
     if (!win) return NULL;
@@ -755,6 +756,13 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
     kwl_fit_to_output(win);
     if (kwl_open_buffers(win) != 0) goto fail;
 
+    /* A dialog pins its final size; it takes effect with the first buffer
+     * commit, the one that maps the window. */
+    if (dialog) {
+        xdg_toplevel_set_min_size(win->toplevel, win->w, win->total_h);
+        xdg_toplevel_set_max_size(win->toplevel, win->w, win->total_h);
+    }
+
     /* Decorate both buffers once (skipped under SSD, tb_h 0); the app only
      * ever draws the content. */
     if (win->tb_h > 0) {
@@ -768,6 +776,14 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
 fail:
     kwl_window_destroy(win);
     return NULL;
+}
+
+struct kwl_window *kwl_window_create(const char *title, int w, int h) {
+    return kwl_toplevel_create(title, w, h, 0);
+}
+
+struct kwl_window *kwl_dialog_create(const char *title, int w, int h) {
+    return kwl_toplevel_create(title, w, h, 1);
 }
 
 struct kwl_window *kwl_layer_create(const char *ns,

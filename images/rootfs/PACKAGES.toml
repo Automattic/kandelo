@@ -520,8 +520,9 @@ binary = "programs/wasm32/posix-utils-lite/xgettext.wasm"
 path = "/usr/bin/xgettext"
 aliases = ["/bin/xgettext"]
 
-# Kandelo exchange: the agent the kernel starts on demand, its helpers, and
-# the catch-all `99-save` handler (see docs/architecture.md).
+# Kandelo exchange: the agent the kernel starts on demand, its helpers, the
+# catch-all `99-save` handler, and xdg-open, which hands links to the page
+# (see docs/architecture.md).
 [[packages]]
 name = "kandelo-exchange"
 
@@ -540,6 +541,10 @@ path = "/usr/bin/kandelo-publish"
 [[packages.outputs]]
 binary = "programs/wasm32/kandelo-exchange/exchange-save.wasm"
 path = "/usr/libexec/kandelo/exchange-save"
+
+[[packages.outputs]]
+binary = "programs/wasm32/kandelo-exchange/xdg-open.wasm"
+path = "/usr/bin/xdg-open"
 
 # getfattr and setfattr, for shell handlers that read or set exchange
 # attributes (MIME types, provenance, batch status).

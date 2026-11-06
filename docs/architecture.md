@@ -3222,6 +3222,9 @@ to do with. It is independent of drag and drop; the design is
   streams to end-of-file, and names collisions `name (2).ext`.
   `kandelo-exchange` runs a command in a session, acknowledges batches and
   manages rules; `kandelo-publish` publishes stored and streamed outputs.
+  `xdg-open` publishes an `http`, `https` or `mailto` URI as a
+  `text/uri-list` output named `link-<pid>.uri` and exits 0; it exits 3 for
+  any other argument and 4 when the publish fails, as in xdg-utils.
   `<kandelo/exchange.h>` spells the paths, attribute names and session and
   publish helpers, and the `attr` package's `getfattr` and `setfattr` let
   shell handlers read and set attributes.
