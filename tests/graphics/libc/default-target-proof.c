@@ -50,10 +50,17 @@ int main(int argc,char **argv) {
     glClearColor(.4f,.8f,.2f,1);glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_NO_ERROR);
     pixel(153,51,102);
     assert(eglMakeCurrent(d,a,a,context));pixel(102,204,51);
-    /* Selecting a user target permanently ends this narrow default proof. */
-    glBindFramebuffer(GL_FRAMEBUFFER,17);glBindFramebuffer(GL_FRAMEBUFFER,0);assert(glGetError()==GL_NO_ERROR);
+    /* A nonzero target must still use its own completeness, even after zero
+     * was locally proven. Returning to zero may rearm its independent proof;
+     * treating that as an "ever default" bit would hide the incomplete FBO. */
+    glBindFramebuffer(GL_FRAMEBUFFER,17);assert(glGetError()==GL_NO_ERROR);
+    assert(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT);
+    glClear(GL_COLOR_BUFFER_BIT);
+    assert(glGetError()==GL_INVALID_FRAMEBUFFER_OPERATION && glGetError()==GL_NO_ERROR);
+    glBindFramebuffer(GL_FRAMEBUFFER,0);assert(glGetError()==GL_NO_ERROR);
     start=_wpk_gl_device_requests();glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_NO_ERROR);
-    assert(_wpk_gl_device_requests()==start+1);
+    assert(_wpk_gl_device_requests()==start+(after?0u:1u));
+    pixel(102,204,51);
     assert(eglMakeCurrent(d,EGL_NO_SURFACE,EGL_NO_SURFACE,context));assert(glGetError()==GL_NO_ERROR);
     glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_INVALID_FRAMEBUFFER_OPERATION && glGetError()==GL_NO_ERROR);
     assert(eglMakeCurrent(d,a,a,context));glClear(GL_COLOR_BUFFER_BIT);pixel(102,204,51);
@@ -61,5 +68,5 @@ int main(int argc,char **argv) {
     assert(eglMakeCurrent(d,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
     assert(eglDestroyContext(d,context) && eglDestroySurface(d,a) && eglDestroySurface(d,b));
     assert(eglTerminate(d) && eglReleaseThread());
-    puts("PASS default target errors, split draw/read and conservative fallback");return 0;
+    puts("PASS default target errors, split draw/read and zero rearm");return 0;
 }

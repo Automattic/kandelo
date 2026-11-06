@@ -1,45 +1,25 @@
 /**
- * Native-divergence audit (Stage A1 of the GL predict-then-execute plan).
+ * Native-divergence audit for the GL predict-then-execute contract (D-48).
+ * Host validation decides guest acceptance; native errors verify that model.
  *
- * WHY THIS EXISTS. The host still decides whether many guest GL commands
- * were accepted by asking the native renderer: it calls WebGL, then
- * `getError()`, a synchronous round trip to the browser's GPU process. The
- * plan (maintainer decision D-48) makes the host's own GLES 2.0 validation
- * authoritative instead, as a native driver's user-mode validation is, and
- * turns native errors into an audit signal. Before any production path can
- * stop asking, every place where the host does not yet know the outcome has
- * to be found. This module finds them by running the real workloads (dEQP,
- * compositors) with every native call checked against the host's
- * prediction.
+ * Record mode checks every native method so an inventory can identify the
+ * offending call. Fatal mode defers accepted guest work to the physical
+ * submitted-batch sample: an immediate oracle would put synchronous GPU
+ * round trips back into the path whose behavior the audit must exercise.
+ * Exact error, native-decided and private bookkeeping checks stay immediate.
+ * Before those transitions, held flags retain their original submission token
+ * so an older observation cannot poison new work or disappear at a boundary.
+ * Nested calls share their outer physical submission and error ownership.
  *
- * WHAT IT DOES. When enabled (test-only, never by default), every WebGL 2
- * context created in this realm is instrumented: after each native method
- * call the audit reads native `getError()` immediately and compares the
- * result with the host's prediction for that call. The default prediction
- * is "accepted": a call the host issues without saying otherwise is one the
- * host has validated (guest command) or owns outright (replay, restore,
- * presentation, cleanup). Where the host still leaves the decision to the
- * native renderer, the gap table in native-predictions.ts says so, keyed by
- * the guest op, query or kernel import and the native method, so the audit
- * reports those as known prediction gaps rather than as surprises. A call
- * site can also state a prediction directly (`withNativePrediction`,
- * `predictNextNativeCall`). OUT_OF_MEMORY and CONTEXT_LOST_WEBGL are the
- * genuinely unpredictable boundaries (D-50, context loss); they are
- * recorded but are never divergences.
+ * Fatal divergence is reported and latched with its process, session and
+ * batch; batch sampling does not invent a particular failing operation.
+ * Native OOM and context loss retain their documented reset boundaries.
+ * Record mode continues to collect findings rather than asserting acceptance.
  *
- * PRODUCTION BEHAVIOR IS UNCHANGED. Errors the audit reads are queued and
- * handed back to the host's own `getError()` calls in GL flag semantics
- * (each distinct flag reported once until read), so checked call sites,
- * muxer error capture and guest glGetError replies see what they would
- * have seen. Only the order of two different pending flags can differ,
- * which ES 2.0 section 2.5 leaves unspecified. With the audit off nothing
- * is instrumented and the hooks below are a single boolean test.
- *
- * MODES. "fatal" is the D-49 audit policy: a divergence is reported, then
- * latched as a fatal host fault naming the op, process, session and batch.
- * "record" reports every divergence and continues, so one run can produce
- * the complete divergence list a fatal run would stop at the first entry
- * of.
+ * Observed flags are queued with GL flag semantics for the normal checked
+ * paths. Reading them for diagnostics must not swallow guest-visible errors.
+ * No context is instrumented by default; these hooks are diagnostic controls,
+ * not a substitute for the production per-context recovery policy.
  */
 import * as O from "./ops.js";
 import { nativePredictionGap, type NativePrediction } from "./native-predictions.js";

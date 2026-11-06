@@ -25514,3 +25514,39 @@ changed no source or products and is preserved separately. Neither this
 consumer selection nor the normal build replaces full dEQP, desktop,
 browser-memory, POSIX, benchmark or physical latency acceptance. B1 and the
 complete preview remain incomplete; no stage or final requirement is reduced.
+
+## B1 consumer contract assertions, 2026-11-06
+
+R522 causally reviewed all42 failures in the original R519 result. Each of
+its30 native-OOM cases had already completed the guest successfully, consumed
+one actually injected native error, preserved the healthy peer and retired
+all native program objects before explicit guest exit. Its sole batch OOM
+record matched the context reset's process, session and batch. The12 default
+target failures were the obsolete extra-request assertion alone. The
+original failed run and per-case judgment remain preserved.
+
+The corrected controls require exactly one fatal OOM batch observation with
+no invented operation, matching the sole reset and its original import owner.
+Fault injectors still call the real native method before injecting the flag;
+original draw counts and program/null-use counts remain observed. The default
+target test now proves that an incomplete nonzero framebuffer still fails
+before rebinding zero rearms local default validation, then checks rendered
+readback and exact request counts. No runtime acceptance or error handling
+was relaxed. The audit's leading Why comment now distinguishes record-mode
+per-call inventory from fatal-mode batch sampling; its executable body is
+byte-identical to the prior source.
+
+`graphics-b1-consumer-assertions-r522-r2-1106-094529-95b7` passed3m33:
+all72 cases from the three affected complete browser specs passed on all3
+engines, both pointer widths and production/fatal modes, with zero skips,
+flaky results or retries. All28 Node tests in7 complete files passed57s.
+Both full app compiler contexts (112 browser/24 Node roots) and a separate
+strict compiler over all3 affected specs plus helper passed without source
+cuts. Normal product/tool identities and frozen source checks passed.
+
+Exact commands, patch SHA256, original42-case judgment, all72 new result
+identities and the Why review are in
+`.context/graphics-b1-consumer-assertions-r522-runs/`. This focused repair is
+not a passing replacement for the complete1074-case browser inventory;
+that integrated rerun remains required, along with all other B1 and final
+acceptance. No new preview, ABI change or performance claim follows.

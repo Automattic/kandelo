@@ -5,6 +5,7 @@ import {expect,test} from "@playwright/test";
 import {resolveBinary} from "../../../host/src/binary-resolver";
 import {compileSdkFixture} from "../../../host/test/support/compile-sdk-fixture";
 import {KandeloImageFs} from "../../../images/vfs/lib/kandelo-image-fs";
+import {expectSubmittedBatchOom} from "./support/gl-batch-oom-diagnostic";
 import {installBrowserMemoryBoundaryProbe,memoryBoundaryFailures} from "./support/browser-memory-boundary";
 import {installProgramLossProbe} from "./support/gl-program-loss";
 
@@ -60,6 +61,7 @@ for(const mode of ["submit","retire","peer-select"] as const) for(const arch of 
     expect(result.beforeExit.live).toBe(0);expect(result.beforeExit.deleted).toBe(result.beforeExit.created);
     expect(result.beforeExit.injections).toBe(1);expect(result.beforeExit.errors).toBe(1);
     expect(result.native.injections).toBe(1);expect(result.native.errors).toBe(1);
+    expect(result.native.nullUses).toBeGreaterThan(0);expect(result.native.uses).toBeGreaterThanOrEqual(result.native.nullUses);
     expect(result.native.created).toBeGreaterThan(0);expect(result.native.deleted).toBe(result.native.created);expect(result.native.live).toBe(0);
     const resets=result.diagnostics.filter((d:any)=>d.source==="gl-context-reset");expect(resets).toHaveLength(1);
     expect(resets[0].message).toContain("OUT_OF_MEMORY");expect(resets[0].message).toMatch(/pid [0-9]+ session [0-9]+ batch [0-9]+/);
@@ -67,7 +69,7 @@ for(const mode of ["submit","retire","peer-select"] as const) for(const arch of 
     expect(auditRows.filter((r:any)=>r.kind==="divergence")).toEqual([]);
     if(audit){
       expect(auditRows.some((r:any)=>r.cause==="instrumented")).toBe(true);
-      expect(auditRows.some((r:any)=>r.cause==="out-of-memory"&&r.op==="OP_USE_PROGRAM_JOURNAL"&&r.call==="useProgram(null)")).toBe(true);
+      expectSubmittedBatchOom(auditRows,resets[0]);
     }
     expect(result.diagnostics.filter((d:any)=>!["gl-audit","gl-context-reset"].includes(d.source))).toEqual([]);
     expect(errors).toEqual([]);expect(await memoryBoundaryFailures(page)).toEqual([]);

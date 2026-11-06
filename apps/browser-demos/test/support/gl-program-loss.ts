@@ -13,15 +13,15 @@ export async function installProgramLossProbe(page:Page):Promise<void> {
         const bootstrap=`
 const WorkerBase=${JSON.stringify(entry)},OrdinaryWorker=globalThis.Worker;
 globalThis.Worker=class extends OrdinaryWorker{constructor(url,options){super(new URL(String(url),WorkerBase),options);}};
-const live=new Set(),pending=new WeakSet();let armed=false,created=0,deleted=0,injections=0,errors=0;
+const live=new Set(),pending=new WeakSet();let armed=false,created=0,deleted=0,injections=0,errors=0,uses=0,nullUses=0;
 const proto=WebGL2RenderingContext.prototype,create=proto.createProgram,remove=proto.deleteProgram,use=proto.useProgram,error=proto.getError;
 proto.createProgram=function(...xs){const p=Reflect.apply(create,this,xs);if(p){created++;live.add(p);}return p;};
 proto.deleteProgram=function(p){Reflect.apply(remove,this,[p]);if(p&&live.delete(p))deleted++;};
-proto.useProgram=function(p){Reflect.apply(use,this,[p]);if(armed&&p===null){armed=false;pending.add(this);injections++;}};
+proto.useProgram=function(p){Reflect.apply(use,this,[p]);uses++;if(p===null)nullUses++;if(armed&&p===null){armed=false;pending.add(this);injections++;}};
 proto.getError=function(){if(pending.delete(this)){errors++;return 0x505;}return Reflect.apply(error,this,[]);};
 addEventListener('message',event=>{if(event.data?.__programLossControl){const port=event.data.__programLossControl;
 port.onmessage=event=>{const request=event.data;if(request.command==='arm')armed=true;
-port.postMessage({id:request.id,armed,created,deleted,live:live.size,injections,errors});};port.start();}});
+port.postMessage({id:request.id,armed,created,deleted,live:live.size,injections,errors,uses,nullUses});};port.start();}});
 `;
         const blob=URL.createObjectURL(new Blob([bootstrap,"\nimport ",JSON.stringify(entry),";"],{type:"text/javascript"}));
         urls.push(blob);super(blob,options);

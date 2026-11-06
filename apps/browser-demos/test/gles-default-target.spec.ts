@@ -43,7 +43,7 @@ for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"f
     writeFileSync(test.info().outputPath("guest-result.json"),JSON.stringify({arch,audit,version:browser.version(),...result},null,2));
     expect(result.status,JSON.stringify(result)).toBe(0);
     expect(result.stdout).toContain("DEFAULT_TARGET_REQUESTS commands=32 requests=0");
-    expect(result.stdout).toContain("PASS default target errors, split draw/read and conservative fallback");
+    expect(result.stdout).toContain("PASS default target errors, split draw/read and zero rearm");
     expect(result.stderr).toBe("");
     const auditRows=result.diagnostics.filter((d:any)=>d.source==="gl-audit").map((d:any)=>JSON.parse(d.message));
     expect(auditRows.filter((r:any)=>r.kind==="divergence")).toEqual([]);

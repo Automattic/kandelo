@@ -5,6 +5,7 @@ import {expect,test} from "@playwright/test";
 import {resolveBinary} from "../../../host/src/binary-resolver";
 import {compileSdkFixture} from "../../../host/test/support/compile-sdk-fixture";
 import {KandeloImageFs} from "../../../images/vfs/lib/kandelo-image-fs";
+import {expectSubmittedBatchOom} from "./support/gl-batch-oom-diagnostic";
 import {installBrowserMemoryBoundaryProbe,memoryBoundaryFailures} from "./support/browser-memory-boundary";
 import {installOwnedDrawResetProbe} from "./support/gl-owned-draw-reset";
 
@@ -72,7 +73,7 @@ for(const mode of ["vbo","inline"] as const) for(const arch of ["wasm32","wasm64
     expect(auditRows.filter((r:any)=>r.kind==="divergence")).toEqual([]);
     if(audit){
       expect(auditRows.some((r:any)=>r.cause==="instrumented")).toBe(true);
-      expect(auditRows.some((r:any)=>r.cause==="out-of-memory"&&r.op===(mode==="vbo"?"OP_DRAW_PREPARED_SNAPSHOTS":"OP_DRAW_PREPARED_INLINE"))).toBe(true);
+      expectSubmittedBatchOom(auditRows,resets[0]);
     }
     expect(result.diagnostics.filter((d:any)=>!["gl-audit","gl-context-reset"].includes(d.source))).toEqual([]);
     expect(errors).toEqual([]);expect(await memoryBoundaryFailures(page)).toEqual([]);
