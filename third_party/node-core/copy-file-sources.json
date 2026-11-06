@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "target": "Node.js v26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "public": {
+      "path": "upstream/path-metadata/lib/fs.js",
+      "sha256": "21e9604151bcdfdacec9ec6e127e8ba906fb1b4e9415fd0de3221b7e92a08ef3"
+    },
+    "promises": {
+      "path": "upstream/path-metadata/lib/internal/fs/promises.js",
+      "sha256": "bdb9f9c75509dbaade2ef68e7d8b1c6fff345f356b1459c8969696d48180ea49"
+    },
+    "native": {
+      "path": "upstream/path-metadata/src/node_file.cc",
+      "sha256": "33e4be5acc25b44ba4f532564220a721b645416da4e9fa26d58e14011c66a450"
+    },
+    "util": {
+      "path": "upstream/path-metadata/src/util.cc",
+      "sha256": "d5ff5ddf59fea718016f5028ec54661ea8f92e37070d82c7dae2e39ab1e91172"
+    },
+    "uv": {
+      "path": "upstream/path-metadata/deps/uv/src/unix/fs.c",
+      "sha256": "895d46c60b30e12249ed6a6696a184fcc594fccaefb008ddb3a3b6a694f0388b"
+    },
+    "uv-internal": {
+      "path": "upstream/copy-file/deps/uv/src/unix/internal.h",
+      "sha256": "959e3ce94dd0a1c12f090f40aac1f0cc9287b199eff4ed6dd9e2e944963a06ff"
+    },
+    "uv-core": {
+      "path": "upstream/copy-file/deps/uv/src/unix/core.c",
+      "sha256": "18bfd5f2045417f8ace5d76e222bf7441b31ead5fc2cbaf6225965e0afea8767"
+    }
+  },
+  "selections": {
+    "public-callback": {
+      "source": "public",
+      "start": "function copyFile(src, dest, mode, callback) {",
+      "length": 455,
+      "sha256": "c6d0436c897664686d054642821fc3c10082243ea05d473b0490de4dc22ff18a"
+    },
+    "public-sync": {
+      "source": "public",
+      "start": "function copyFileSync(src, dest, mode) {",
+      "length": 292,
+      "sha256": "31f5c7793a43c65f83c30e81f137586bc81dfcc7ec4c179e5c6969473c313aa6"
+    },
+    "shared-makeCallback": {
+      "source": "public",
+      "start": "function makeCallback(cb) {",
+      "length": 112,
+      "sha256": "9136b5d12943d80471ec75860102496a0bf916fd54289943f3ac10950c073117"
+    },
+    "shared-vfsVoid": {
+      "source": "public",
+      "start": "function vfsVoid(promise, callback) {",
+      "length": 162,
+      "sha256": "e282bf98df103db5991dae00f87429ab2485ecc375c183b9480c75d7287040b6"
+    },
+    "promise-copyFile": {
+      "source": "promises",
+      "start": "async function copyFile(src, dest, mode) {",
+      "length": 426,
+      "sha256": "bb4ffd3ee10fc565cb69ae98117ffa2e734a7d2ac2b3f7d84b7ec386c00560b2"
+    },
+    "shared-handleError": {
+      "source": "promises",
+      "start": "function handleErrorFromBinding(error) {",
+      "length": 130,
+      "sha256": "27447320d89711e70bee64140cafb9395944ebb5ec1303bc1d9aa3b8615f77b5"
+    }
+  }
+}

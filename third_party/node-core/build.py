@@ -904,6 +904,7 @@ for marker, content in [
         raise ValueError('Review path metadata marker: ' + marker)
     metadata_adapter = metadata_adapter.replace(marker, content)
 bundle += (root / 'fs-system-errors-adapter.js').read_text() + '\n' + metadata_adapter + '\n'
+bundle += runpy.run_path(str(root / 'generate-copy-file.py'))['generate'](root) + '\n'
 
 realpath_spec = manifest['realpathPlatform']
 realpath_sources = {}

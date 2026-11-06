@@ -1,0 +1,223 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem-contracts.md",
+    "findingIds": [
+      "FS-013",
+      "FS-016"
+    ],
+    "retainedRows": [
+      {
+        "rowIndex": 814,
+        "id": "fs.copyFileSync"
+      },
+      {
+        "rowIndex": 9879,
+        "id": "fs.copyFile"
+      },
+      {
+        "rowIndex": 10034,
+        "id": "fs.copyFile.prototype"
+      },
+      {
+        "rowIndex": 10035,
+        "id": "fs.copyFileSync.prototype"
+      },
+      {
+        "rowIndex": 10201,
+        "id": "fs.constants.UV_FS_COPYFILE_EXCL"
+      },
+      {
+        "rowIndex": 10202,
+        "id": "fs.constants.COPYFILE_EXCL"
+      },
+      {
+        "rowIndex": 10203,
+        "id": "fs.constants.UV_FS_COPYFILE_FICLONE"
+      },
+      {
+        "rowIndex": 10204,
+        "id": "fs.constants.COPYFILE_FICLONE"
+      },
+      {
+        "rowIndex": 10205,
+        "id": "fs.constants.UV_FS_COPYFILE_FICLONE_FORCE"
+      },
+      {
+        "rowIndex": 10206,
+        "id": "fs.constants.COPYFILE_FICLONE_FORCE"
+      },
+      {
+        "rowIndex": 10246,
+        "id": "fs.[doc] fs.md `fsPromises.copyFile(src, dest[, mode])` @1305"
+      },
+      {
+        "rowIndex": 10282,
+        "id": "fs.[doc] fs.md `fs.copyFile(src, dest[, mode], callback)` @2846"
+      },
+      {
+        "rowIndex": 10344,
+        "id": "fs.[doc] fs.md `fs.copyFileSync(src, dest[, mode])` @6040"
+      },
+      {
+        "rowIndex": 10529,
+        "id": "fs/promises.copyFile"
+      },
+      {
+        "rowIndex": 10660,
+        "id": "fs/promises.constants.UV_FS_COPYFILE_EXCL"
+      },
+      {
+        "rowIndex": 10661,
+        "id": "fs/promises.constants.COPYFILE_EXCL"
+      },
+      {
+        "rowIndex": 10662,
+        "id": "fs/promises.constants.UV_FS_COPYFILE_FICLONE"
+      },
+      {
+        "rowIndex": 10663,
+        "id": "fs/promises.constants.COPYFILE_FICLONE"
+      },
+      {
+        "rowIndex": 10664,
+        "id": "fs/promises.constants.UV_FS_COPYFILE_FICLONE_FORCE"
+      },
+      {
+        "rowIndex": 10665,
+        "id": "fs/promises.constants.COPYFILE_FICLONE_FORCE"
+      },
+      {
+        "rowIndex": 10689,
+        "id": "vfs.VirtualFileSystem.prototype.copyFileSync"
+      },
+      {
+        "rowIndex": 10764,
+        "id": "vfs.VirtualProvider.prototype.copyFile"
+      },
+      {
+        "rowIndex": 10765,
+        "id": "vfs.VirtualProvider.prototype.copyFileSync"
+      },
+      {
+        "rowIndex": 10838,
+        "id": "vfs.ComposableProvider.prototype.copyFileSync"
+      },
+      {
+        "rowIndex": 10839,
+        "id": "vfs.ComposableProvider.prototype.copyFile"
+      },
+      {
+        "rowIndex": 10900,
+        "id": "vfs.RealFSProvider.prototype.copyFileSync"
+      },
+      {
+        "rowIndex": 10901,
+        "id": "vfs.RealFSProvider.prototype.copyFile"
+      },
+      {
+        "rowIndex": 11062,
+        "id": "vfs.[returned VirtualFileSystem].promises.copyFile"
+      }
+    ],
+    "relatedFamilies": [
+      "filesystem",
+      "async",
+      "workers"
+    ],
+    "scope": "Descriptor copy/public-wrapper prerequisites;not complete API/finding/family closure"
+  },
+  "sourceImplemented": [
+    "Pinned public sync/callback/promise wrappers over bounded descriptor owner and shared native FSReq queue",
+    "Atomic destination O_EXCL,inode identity before truncation,metadata/close/unlink ownership and actual clone failures",
+    "Zero-sized-directory actual fd type rejection without changing metadata or error precedence"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-copy-file-source-r1/report.json",
+    "sha256": "805e7fe5321260233177288337396afd413a858e509173a804341c49aade654f",
+    "selectedIdentities": 26,
+    "completeReferences": 7,
+    "selectedSections": 6,
+    "guardedInputs": 628,
+    "scope": "Seven whole pinned references,six selected public sections,source declarations,generation/bootstrap syntax,native unity ordering and exact engine registration patch composition;guest C++/117\u2013127source uncompiled."
+  },
+  "frontendAndAffected": {
+    "report": ".context/node26-copy-file-frontend-r1.json",
+    "sha256": "f14661bfbc256f2444f3042402ce98fa9596b89028321b3b32cd164786a092cb",
+    "newPassed": 6,
+    "affectedPassed": 29,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Public JS wrappers/affected FS owners over actual native dependencies,not candidate JSAPI"
+  },
+  "portableNative": {
+    "report": ".context/node26-copy-file-portable-r1/report.json",
+    "sha256": "b566f9b7d2d6536db80110c8f8c553aff2d96e822c1916a6ed5eb178b66a834f",
+    "zeroDirectoryPassed": 20,
+    "controls": 43,
+    "passed": 42,
+    "failed": 1,
+    "scope": "Portable descriptor owner over host fds;zero-directory controls transparently expose guest-like directory stat size. Retains native Darwin directory errno mismatch,not guest JSAPI/four-host/sanitizer validation."
+  },
+  "packageChecks": {
+    "report": ".context/node26-copy-file-package-r1.json",
+    "sha256": "47b73c61d7430020e494f926791bb91d65a36b0e25e306bd26e7d5c15324df31",
+    "passed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "628guarded package/source inputs,not public API conformance"
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-copy-file-upstream-r1/report.json",
+    "sha256": "4db3b1a5197b9c3f5fdd16acdbf048c483b350abd19cacc87ca71368c91fabd4",
+    "files": 2,
+    "candidatePassed": 2,
+    "nativePassed": 2,
+    "failed": 0,
+    "scope": "Two complete unchanged upstream files in candidate/native modes. Candidate substitutes pinned public copyFile JS wrappers only;fs operations/requests remain actual native26 dependencies. Does not exercise candidate portable fd owner or SpiderMonkey JSAPI/guest/four-host compatibility."
+  },
+  "privateAgentEvidence": {
+    "report": ".context/filesystem-copy-agent/REPORT-zero-directory.md",
+    "sha256": "02c8e0159f55ec964b378cc9442865ea411b71036999de93b4dd94b5540b4392",
+    "scope": "Sealed original/v2 identities,baseline reproduction20fixed controls,prior43matrix nonpass/native truncation timeouts/sanitizer nonpass retained separately"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-copy-file-portable-r1/report.json",
+      "sha256": "b566f9b7d2d6536db80110c8f8c553aff2d96e822c1916a6ed5eb178b66a834f",
+      "kind": "directory-source-errno",
+      "reason": "EISDIR versus pinned Darwin ENOTSUP;not accepted exclusion"
+    },
+    {
+      "report": ".context/filesystem-copy-agent/native-truncation.log",
+      "sha256": "f30719edfc1fc40a9e04231cec55e94bf7ce02e1b5f45eee40aa1f9a37188b01",
+      "kind": "native-observed-timeouts",
+      "reason": "Two actually truncated source copies timed out;candidate EOF/zero-write guards remain unresolved parity differences"
+    },
+    {
+      "report": ".context/filesystem-copy-agent/validation-03-sanitized.log",
+      "sha256": "6192ca92dd45678560647ff8b7bd121a4a3973decb1e68f8598a76ef560bdf48",
+      "kind": "sanitizer-nonpass",
+      "reason": "Compiled helper produced no output and was killed,no established cause"
+    },
+    {
+      "report": ".context/node26-copy-file-source-r1-missing-staged-header.log",
+      "sha256": "ae9c4dab76f82b722d3ab8ea2d3e04fdfb84604542756c165a0ec22c4fb03447",
+      "kind": "source-fixture-failure",
+      "reason": "Missing fixture stage header corrected by mirroring recipe copy/generation,no production assertion change"
+    }
+  ],
+  "remaining": [
+    "Compile117\u2013127guest source;accepted116stale;real guest copy/queue/path/ref/GC/shutdown/OOM/realm/four-host behavior pending",
+    "Resolve directory errno,concurrent-shrink/zero-progress contract differences;validate actual clone/backend/error/permission branches",
+    "All other audited filesystem/core APIs and public conformance remain partial"
+  ],
+  "at": "2026-11-06T00:50:29.332981+00:00",
+  "recipeRevision": 127,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

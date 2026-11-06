@@ -46,6 +46,7 @@ export default {
       'test/node-argon2-platform.test.ts',
       'test/node-performance-timeline.test.ts',
       'test/node-loop-utilization.test.ts',
+      'test/node-copy-file.test.ts',
       'test/node-path-metadata.test.ts',
       'test/path-metadata-nofollow.test.ts',
       'test/node-readline-controls.test.ts',

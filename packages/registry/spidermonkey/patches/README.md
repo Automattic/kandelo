@@ -474,3 +474,13 @@ Node ELU arithmetic and the nodeTiming loopStart/idleTime getters. Clock errors
 stay visible. Other milestones, loop counters, GC/profiler producers and the
 parent-side Worker.performance contract remain separate implementation gaps.
 No browser host clocks or fixed measurements are substituted.
+
+### 0105: descriptor-owned filesystem copies
+
+Register sync and queued copyFile operations over real source/destination fds,
+bounded byte transfers and existing FSReq ownership. Exclusive creation uses
+the destination open; inode identity precedes truncation and cleanup follows
+the pinned libuv policy. Actual directory type rejects zero-sized directories.
+Reflink force fails when the platform lacks the operation. This registration
+does not establish guest or four-host conformance; directory errno and
+concurrent-truncation differences remain unresolved.

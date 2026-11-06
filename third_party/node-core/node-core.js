@@ -39821,6 +39821,110 @@ async function link(existingPath, newPath) {
     return { api: publicAPIs(), promises: promiseAPIs() };
 }
 
+// Pinned public copyFile wrappers over real native descriptor/queue ownership.
+function _createNodeCopyFile(platform) {
+    'use strict';
+    const { ErrorCaptureStackTrace, ReflectApply, PromisePrototypeThen, PromiseReject,
+        Symbol, MathTrunc, NumberIsFinite, TypeError, RangeError, ObjectDefineProperty } = _createNodePrimordials();
+    const { validateFunction } = platform.values.validators;
+    const { getValidatedPath } = platform.utils;
+    const { FSReqCallback, vfsState, makeError } = platform.truncation;
+    const kUsePromises = Symbol('copyfile_use_promises');
+    function copyMode(mode) {
+        if (mode === null || mode === undefined) return 0;
+        let error;
+        if (typeof mode !== 'number') {
+            error = new TypeError('mode must be int32 or null/undefined');
+            ObjectDefineProperty(error, 'code', { __proto__: null, value: 'ERR_INVALID_ARG_TYPE', enumerable: true, writable: true, configurable: true });
+        } else if (!NumberIsFinite(mode)) {
+            error = new RangeError('mode is out of range');
+        } else {
+            mode = MathTrunc(mode);
+            if (mode >= 0 && mode <= 7) return mode;
+            error = new RangeError('mode is out of range: >= 0 && <= 7');
+        }
+        if (typeof mode === 'number') ObjectDefineProperty(error, 'code', {
+            __proto__: null, value: 'ERR_OUT_OF_RANGE', enumerable: true, writable: true, configurable: true });
+        throw error;
+    }
+    const binding = {
+        copyFile(src, dest, mode, request) {
+            mode = copyMode(mode);
+            if (request !== undefined) return platform.native.fsCopyFile(src, dest, mode,
+                request === kUsePromises ? makeError : request);
+            const status = platform.native.fsCopyFileSync(src, dest, mode);
+            if (status < 0) throw makeError(status, 'copyfile', src, dest);
+        },
+    };
+    function makeCallback(cb) {
+  validateFunction(cb, 'cb');
+
+  return (...args) => ReflectApply(cb, this, args);
+}
+function vfsVoid(promise, callback) {
+  if (promise === undefined) return false;
+  PromisePrototypeThen(promise, () => callback(null), callback);
+  return true;
+}
+function handleErrorFromBinding(error) {
+  if (ErrorCaptureStackTrace !== undefined) ErrorCaptureStackTrace(error, handleErrorFromBinding);
+  return PromiseReject(error);
+}
+    function publicAPIs() {
+        function copyFile(src, dest, mode, callback) {
+  if (typeof mode === 'function') {
+    callback = mode;
+    mode = 0;
+  }
+
+  const h = vfsState.handlers;
+  if (h !== null && vfsVoid(h.copyFile(src, dest, mode), callback)) return;
+
+  src = getValidatedPath(src, 'src');
+  dest = getValidatedPath(dest, 'dest');
+  callback = makeCallback(callback);
+
+  const req = new FSReqCallback();
+  req.oncomplete = callback;
+  binding.copyFile(src, dest, mode, req);
+}
+function copyFileSync(src, dest, mode) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const result = h.copyFileSync(src, dest, mode);
+    if (result !== undefined) return;
+  }
+  binding.copyFile(
+    getValidatedPath(src, 'src'),
+    getValidatedPath(dest, 'dest'),
+    mode,
+  );
+}
+        return { copyFile, copyFileSync };
+    }
+    function promiseAPIs() {
+        async function copyFile(src, dest, mode) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const promise = h.copyFile(src, dest, mode);
+    if (promise !== undefined) { await promise; return; }
+  }
+  return await PromisePrototypeThen(
+    binding.copyFile(
+      getValidatedPath(src, 'src'),
+      getValidatedPath(dest, 'dest'),
+      mode,
+      kUsePromises,
+    ),
+    undefined,
+    handleErrorFromBinding,
+  );
+}
+        return { copyFile };
+    }
+    return { api: publicAPIs(), promises: promiseAPIs() };
+}
+
 // Complete pinned logical/native realpath and readlink public owners. Native
 // byte results come from real libc operations and actual queued FS requests.
 function _createNodeRealpathPlatform(platform) {

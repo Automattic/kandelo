@@ -1730,11 +1730,7 @@ const fs = (() => {
     }
 
     function copyFileSync(src, dest, mode) {
-        const data = readFileSync(src);
-        if (mode && (mode & constants.COPYFILE_EXCL) && existsSync(dest)) {
-            _throwErrno(17, 'copyfile', dest); // EEXIST
-        }
-        writeFileSync(dest, data);
+        return _nodeCopyFile.api.copyFileSync(...arguments);
     }
 
     function symlinkSync(target, linkpath) {
@@ -2281,6 +2277,12 @@ const _nodePathMetadata = _createNodePathMetadata({
 });
 Object.assign(fs, _nodePathMetadata.api);
 Object.assign(fs.promises, _nodePathMetadata.promises);
+const _nodeCopyFile = _createNodeCopyFile({
+    native: _nodeNative, values: _nodeValues, utils: _nodeFsStats,
+    truncation: _nodeFsTruncation,
+});
+Object.assign(fs, _nodeCopyFile.api);
+Object.assign(fs.promises, _nodeCopyFile.promises);
 const _nodeReaddirPlatform = _createNodeReaddirPlatform({
     fs, Buffer, process, path, values: _nodeValues, types: util.types,
     utils: _nodeFsStats, truncation: _nodeFsTruncation, native: _nodeNative,

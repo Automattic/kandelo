@@ -542,6 +542,8 @@
         fsVectorPromise(writing, fd, buffers, position, makeError) { return native.fsVectorPromise(writing, fd, buffers, position, makeError); },
         fsStatPromise(pathOrFd, bigint, request, follow, throwIfNoEntry) { return native.fsStatPromise(pathOrFd, bigint, request, follow, throwIfNoEntry); },
         fsStatSync(pathOrFd, follow, bigint) { return native.fsStatSync(pathOrFd, follow, bigint); },
+        fsCopyFileSync(src, dest, mode) { return native.fsCopyFileSync(src, dest, mode); },
+        fsCopyFile(src, dest, mode, request) { return native.fsCopyFile(src, dest, mode, request); },
         fsRmSync(path, retries, recursive, delay) { return native.fsRmSync(path, retries, recursive, delay); },
         fsScandir(path, request, prototype) { return native.fsScandir(path, request, prototype); },
         fsReaddirSync(path, recursive, withTypes, convert) { return native.fsReaddirSync(path, recursive, withTypes, convert); },

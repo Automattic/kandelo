@@ -294,6 +294,7 @@ host/test/node-cipher-platform.test.ts	source-only
 host/test/node-compat-builtin-exports.test.ts	prepared-product
 host/test/node-compression-binding.test.ts	source-only
 host/test/node-console-platform.test.ts	source-only
+host/test/node-copy-file.test.ts	source-only
 host/test/node-core-compat.test.ts	prepared-product
 host/test/node-crypto-random-sync.test.ts	source-only
 host/test/node-diagnostics-channels.test.ts	source-only

@@ -1,5 +1,16 @@
 # Broad implementation review
 
+Source127 routes filesystem copyFile sync/callback/promise wrappers through a
+bounded descriptor owner and the existing real FSReq queue. Actual O_EXCL,
+inode checks before truncation,metadata/cleanup and S_IFDIR rejection replace
+the whole-buffer copy.35frontend and12package checks pass;two unchanged
+upstream files pass in both native-dependency modes. The portable owner passes
+20zero-directory controls;its43-case matrix retains1directory errno mismatch.
+Guest117–127source is uncompiled;accepted116is stale. All19families remain
+partial;overall suites/full rebuild remain deferred. See
+[copy ownership and open differences](copy-file-implementation-dependencies.md).
+
+
 Source126 adds real asymmetric JWK import/export over ncrypto/OpenSSL owners,
 including RSA multi-prime,EC,OKP/AKP,private/public relation checks and native
 own-property definitions. Eight new and61affected frontend controls and12package

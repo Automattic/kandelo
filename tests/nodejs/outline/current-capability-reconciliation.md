@@ -1,5 +1,16 @@
 # Current public-contract reconciliation
 
+Source127 routes filesystem copyFile sync/callback/promise wrappers through a
+bounded descriptor owner and the existing real FSReq queue. Actual O_EXCL,
+inode checks before truncation,metadata/cleanup and S_IFDIR rejection replace
+the whole-buffer copy.35frontend and12package checks pass;two unchanged
+upstream files pass in both native-dependency modes. The portable owner passes
+20zero-directory controls;its43-case matrix retains1directory errno mismatch.
+Guest117–127source is uncompiled;accepted116is stale. All19families remain
+partial;overall suites/full rebuild remain deferred. See
+[copy ownership and open differences](copy-file-implementation-dependencies.md).
+
+
 Source126 adds real asymmetric JWK import/export over ncrypto/OpenSSL owners,
 including RSA multi-prime,EC,OKP/AKP,private/public relation checks and native
 own-property definitions. Eight new and61affected frontend controls and12package
@@ -200,7 +211,7 @@ of the APIs, overloads, inherited members, symbols and open questions.
 | Values | pinned URL/path/byte-path/HTTP-option helpers over shared parser and platform owners; generic native Error location policy; pinned AssertionError/Myers diff and shared validator/error/color/primordial owners; values/util/UV/dotenv/MIME/Buffer/path owners and full querystring/punycode algorithms with saved-frame load-origin source; pinned util/StringDecoder owners and callable Buffer/shared aligned pool/permanent storage/zero-fill source | Private worker marks have a source owner and focused environment evidence; remaining Buffer/backing-store/realm/CLI/error/descriptor edges, remaining util/URL/IDNA/encoding, complete errors/brands/descriptors and guest byte/origin/loader/warning conformance |
 | Async | Pinned public AsyncHook/createHook algorithms over real symbol/array/count registry,nested mutation publication and native destroy tracking;ordinary public metadata/root resource;existing frame/ID/resource/tick/job callback owners | Promise activation/removal and ALS CLI path,full native resource/provider/default-trigger mapping,GC/destroy/rejection/fatal/worker/realm/loop/cancellation/ref integration and guest/four-host conformance remain open |
 | Streams | stream/fd-stream platform adapters and shared pinned StringDecoder public/byte-state owner | Socket/TTY/file subclasses, backing-store transfer, fd reuse/retirement, pipeline/adapter lifecycle/errors and guest decoder integration |
-| Filesystem | Real hard-link,temporary-directory,logical/native realpath/readlink and full glob owners now join pinned file jobs/handles,Dir/readdir/Dirent,metadata,removal and sync/callback/promise byte algorithms | Guest cursor/GC/ref/OOM/realm and fd/byte-path/backend integration;complete watchers/VFS/metadata/permissions,timestamp precision and actual statfs capacity;FS-022 raw host paths remain open |
+| Filesystem | Real bounded descriptor/queued copyFile owners with atomic exclusive open and actual zero-size directory type handling;hard-link,temporary-directory,logical/native realpath/readlink and full glob owners join pinned file jobs/handles,Dir/readdir/Dirent,metadata,removal and sync/callback/promise byte algorithms | Guest117–127uncompiled;copy directory errno and concurrent-shrink/zero-progress differences unresolved;cursor/GC/ref/OOM/realm and fd/byte-path/backend integration;complete watchers/VFS/metadata/permissions,timestamp precision and actual statfs capacity;FS-022 raw host paths remain open |
 | Processes | bootstrap process/ChildProcess, process-clock/state/usage validation and explicit absent numeric providers, dotenv/child-wait, pinned OS frontend with native POSIX state, unchanged weak finalization/lazy descriptor and Refable dispatch; actual linked dependency versions with read-only/configurable version descriptors; native live environment virtual Object/property hooks and inherited-receiver policy | Complete environment prototype/constructor/keys/warnings/GC/JIT/clone and worker/TZ/CLI behavior, fatal/rejection/GC/exit/worker/resource reference integration, signal/IPC and exceptional wait/close policy, measurements, permissions and OS metadata; guest lifecycle/mask/parent/env conformance pending |
 | Network | native address/rule state, pinned BlockList/SocketAddress and live TCP consumers; queued lookup, actual c-ares channels/record JSAPI/external-completion source and libc/kernel/host routes | Guest rule/clone/worker integration, full Socket/Server controls/lifecycle, Resolver configuration/permission/JSAPI lifecycle integration and datagram owners; source/native controls are not guest conformance |
 | HTTP | Pinned outgoing headers/full IncomingMessage and unchanged common parser callbacks; actual Node-vendored llhttp/private GC-owned response framing, strict/insecure/relaxed limits, interim/HEAD/upgrade/CONNECT source; unconditional pooled replay and same-feed leftover reuse removed | Synchronous native-to-JS callback/reentry/byte/memory/error/EOF integration, OutgoingMessage/request framing, idle bytes/public Agent/TLS pool keys, servers/request parsing and HTTP/2; guest/four-host lifecycle remains unvalidated |

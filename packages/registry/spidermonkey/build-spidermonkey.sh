@@ -358,6 +358,7 @@ cp "$REPO_ROOT/third_party/node-core/hkdf-operations.h" "$SRC_DIR/js/src/shell/k
 cp "$REPO_ROOT/third_party/node-core/http-parser.h" "$SRC_DIR/js/src/shell/kandelo-node-http-parser.h"
 cp "$REPO_ROOT/third_party/node-core/kdf-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-kdf-operations.h"
 cp "$REPO_ROOT/third_party/node-core/path-metadata-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-path-metadata-operations.h"
+cp "$REPO_ROOT/third_party/node-core/copy-file-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-copy-file-operations.h"
 cp "$REPO_ROOT/third_party/node-core/write-file-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-write-file-operations.h"
 cp "$REPO_ROOT/third_party/node-core/key-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-key-operations.h"
 cp "$REPO_ROOT/third_party/node-core/cipher-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-cipher-operations.h"

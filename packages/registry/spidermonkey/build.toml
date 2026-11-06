@@ -36,6 +36,12 @@ inputs = [
   "third_party/node-core/upstream/http-incoming/lib/_http_incoming.js",
   "third_party/node-core/licenses/on-exit-leak-free.txt",
   "third_party/node-core/fs-system-errors-adapter.js",
+  "third_party/node-core/copy-file-adapter.js",
+  "third_party/node-core/copy-file-operations.h",
+  "third_party/node-core/native-copy-file.cpp",
+  "third_party/node-core/generate-copy-file.py",
+  "third_party/node-core/copy-file-sources.json",
+  "third_party/node-core/upstream/copy-file",
   "third_party/node-core/path-metadata-adapter.js",
   "third_party/node-core/path-metadata-operations.h",
   "third_party/node-core/native-path-metadata.cpp",
@@ -492,4 +498,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 126
+revision = 127
