@@ -103,8 +103,8 @@ arbitrary raw TCP/UDP sockets.
 See [POSIX status](docs/posix-status.md) for supported behavior and
 [WebAssembly limitations](docs/wasm-limitations.md) for platform boundaries.
 Browser APIs and file image formats can change: pin your Kandelo revision and
-rebuild programs and images when their program binary interface (ABI) changes. See
-[API stability](docs-site/reference/api-stability.md).
+rebuild programs and images when their application binary interface (ABI)
+changes. See [API stability](docs-site/reference/api-stability.md).
 
 ## Learn more
 

@@ -47,10 +47,10 @@ Set `KANDELO_SOURCE_CACHE_ROOT` to an absolute path if you need an isolated
 cache. There is no remote prebuilt-binary fallback or separate fetch step.
 See [Package Management](docs/package-management.md) for cache details.
 
-After changing kernel code, run setup before runtime tests. After changing
-libc inputs, also rebuild the test programs with `scripts/build-programs.sh`
-inside the dev shell. Updating libc alone does not refresh programs already
-linked against it.
+After changing kernel code, run `./run.sh setup` before runtime tests. After
+changing libc inputs, run `./run.sh setup --all` to refresh linked package
+programs, then `scripts/build-programs.sh` for test fixtures inside the dev
+shell. Updating libc alone does not refresh programs already linked against it.
 
 ## Compile and run a C program
 

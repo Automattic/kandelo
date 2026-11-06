@@ -70,6 +70,9 @@ Package-system tests that validate registry tooling rather than a specific
 package live in [`../tests/package-system/`](../tests/package-system/). Root
 [`../examples/`](../examples/) is reserved for small kernel and SDK examples.
 
-To build a package, run `./run.sh build <name>` from the repository root.
+`./run.sh build <target>` accepts the targets shown by `./run.sh list`.
+For other registry packages, run
+`scripts/dev-shell.sh cargo xtask build-deps resolve <name>` from the
+repository root to build or reuse their cached outputs.
 See the [Porting Guide](../docs/porting-guide.md) for adding software and
 [Package Management](../docs/package-management.md) for recipes and caching.
