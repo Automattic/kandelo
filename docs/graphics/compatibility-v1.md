@@ -86,6 +86,18 @@ and complete required stage/application/conformance and measurement checks.
 Ordinary decoder CPU cost and total desktop instrumentation overhead remain
 unmeasured. These results do not establish native feel or a complete B1 preview.
 
+During the normal application build, R511 retired only six inactive native
+Cargo debug caches, after checking live jobs and open files. The retained
+catalog records their file sizes, executable hashes and unchanged source
+status. Sources, patches, results, release tools, SDKs and guest/kernel/image
+products remain available. The retired caches total30,484,431,814 logical
+bytes; observed free space rose from70,819,344,384 to88,266,874,880 bytes
+while other builds continued. That difference is a net observation, not an
+exact physical reclamation measurement. Replaying their native Cargo tests
+requires rebuilding the caches; the old executable paths are not preserved.
+The full normal producer and existing preview were left running. This is
+build-storage maintenance, not additional runtime or B1 acceptance evidence.
+
 ## Prepared draws and cold cleanup custody, 2026-11-05 (R472–R493)
 
 The guest now connects action13's cold executable/sampling authority to owned
