@@ -2173,6 +2173,15 @@ dock, and `accept` filters that picker. They are hints only; the guest's
 rules stay the authority. The retired `ingest` block is refused with a
 message pointing here, never silently ignored.
 
+The dock's "Download files" button opens a dialog that lists the running
+machine's filesystem and saves one file to the user's disk, through
+`showSaveFilePicker` where the browser has it and `<a download>`
+otherwise. It opens in the home of the account `/etc/kandelo/exchange.conf`
+names, where `~/Downloads` holds the files sent in, and at `/` on a machine
+without one. It reads through `KernelHost` as the Inspector does, so it
+needs no agent in the machine and sees every file the kernel holds, not
+only what a guest account may read.
+
 A profile may also declare up to four dock buttons that replace the machine's
 foreground program. The browser UI shows them on the display surface's dock,
 before the exchange button:

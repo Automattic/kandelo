@@ -106,6 +106,8 @@ export type DockLayoutState = {
 export const Dock: React.FC<{
   /** Open the file picker that sends files to the machine (Kandelo exchange). */
   onSendFiles?: () => void;
+  /** Open the dialog that saves a file from the machine's filesystem. */
+  onDownloadFiles?: () => void;
   networkPhase?: SessionPhase;
   onOpenNetwork?: () => void;
   /** Keep only the header buttons, at full width. */
@@ -138,6 +140,7 @@ export const Dock: React.FC<{
   onLayoutChange?: (layout: DockLayoutState) => void;
 }> = ({
   onSendFiles,
+  onDownloadFiles,
   networkPhase = "offline",
   onOpenNetwork,
   minimal = false,
@@ -434,6 +437,21 @@ export const Dock: React.FC<{
                 >
                   <svg viewBox="0 0 16 16" aria-hidden="true">
                     <path d="M8 11V3M5 6l3-3 3 3" />
+                    <path d="M3 10v2.5h10V10" />
+                  </svg>
+                </button>
+              )}
+              {onDownloadFiles && (
+                <button
+                  type="button"
+                  className="kdock-header-btn"
+                  aria-label="Download files from this machine"
+                  title="Download files from this machine"
+                  data-testid="machine-download-files"
+                  onClick={onDownloadFiles}
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 3v8M5 8l3 3 3-3" />
                     <path d="M3 10v2.5h10V10" />
                   </svg>
                 </button>
