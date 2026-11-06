@@ -65,6 +65,16 @@ describe("Node core declared verification inputs", () => {
     expect(result.report.missingDeclaredInputs).toEqual([`${core}/adapter.js`]);
   });
 
+
+  it("rejects an undeclared separate C++ owner even without a unity include", () => {
+    const root = fixture();
+    put(root, `${core}/independent-owner.cc`, "// Separate production compilation unit\n");
+    put(root, recipe, `inputs = ["${core}/sources.json", "${core}/generate-native-embedding.py", "${core}/native-test.cpp", "${core}/adapter.js", "${core}/LICENSE", "${core}/upstream", "${build}"]\n`);
+    const result = check(root);
+    expect(result.status).toBe(1);
+    expect(result.report.missingDeclaredInputs).toEqual([`${core}/independent-owner.cc`]);
+  });
+
   it("rejects a missing reference even when the parent directory is declared", () => {
     const root = fixture();
     rmSync(join(root, `${core}/upstream/path.js`));
@@ -125,6 +135,23 @@ describe("Node core declared verification inputs", () => {
     const result = check(root);
     expect(result.status).toBe(1);
     expect(result.report.missingDeclaredInputs).toEqual([`${core}/extra.txt`]);
+  });
+
+
+  it("keys every nested input of a staged vendor directory", () => {
+    const root = fixture();
+    put(root, `${core}/vendor/include/a.h`, "// Declared header\n");
+    put(root, `${core}/vendor/src/b.c`, "// Undeclared compilation input\n");
+    put(root, build, 'cp -R "$REPO_ROOT/third_party/node-core/vendor" "$output"\n');
+    const inputs = [`${core}/sources.json`, `${core}/adapter.js`, `${core}/generate-native-embedding.py`,
+      `${core}/native-test.cpp`, `${core}/LICENSE`, `${core}/upstream`, `${core}/vendor/include/a.h`, build];
+    put(root, recipe, `inputs = ${JSON.stringify(inputs)}\n`);
+    const result = check(root);
+    expect(result.status).toBe(1);
+    expect(result.report.missingDeclaredInputs).toEqual([`${core}/vendor/src/b.c`]);
+    inputs.push(`${core}/vendor`);
+    put(root, recipe, `inputs = ${JSON.stringify(inputs)}\n`);
+    expect(check(root).status).toBe(0);
   });
 
   it("rejects a stale bundle without regenerating the checkout", () => {

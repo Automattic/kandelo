@@ -1,5 +1,16 @@
 # Node core compatibility target
 
+Source134 adds real HDR/statistics/sliding-window histogram owners, unchanged
+pinned public wrappers, native queued QRDE completion and packet-owned clone
+material, together with process-owned retained-memory accounting. It preserves
+one physical allocation across aliases,queues,cache/work and context retirement.
+Root403portable rows+27imports and403NAPI public rows+75edges pass,as do48affected
+frontend and14package checks. Four focused components compile through the SDK.
+Actual engine JSAPI,clone/GC/VM behavior and four-host conformance remain open;
+ELD is a separate pending source integration. All19families remain partial.
+See [histogram integration and limits](../../../tests/nodejs/outline/histogram-retained-memory-integration.md).
+
+
 Source133 adds a native per-context default-trigger owner, separate from
 captured frames and execution IDs, and routes AsyncResource, ticks and existing
 FS/DNS/codec constructors through it. Production adapter forwarders are covered

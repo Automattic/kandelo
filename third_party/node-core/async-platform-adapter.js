@@ -231,6 +231,13 @@ function _createNodeAsyncPlatform(platform) {
         return record;
     }
     function lifecycle(kind, resource, capturedFrame) {
+        if (kind === 'callback:zero') {
+            // Pinned InternalCallbackScope({0,0}) pushes its actual execution
+            // resource/default frame without manufacturing an AsyncWrap ID.
+            setState(ObjectFreeze({ __proto__: null, frame: undefined,
+                id: 0, triggerId: 0, resource }));
+            return;
+        }
         const record = nativeResource(resource);
         if (kind === 'promise:init' || kind === 'task:init' || kind === 'native:init') {
             emit('init', [record.id, record.nativeType ?? (record.isPromise ? 'PROMISE' : 'Microtask'), record.triggerId, resource], record.isPromise);

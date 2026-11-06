@@ -2231,7 +2231,8 @@ const _nodeClonePlatform = _createNodeClonePlatform({
     native: _nodeNative, values: _nodeValues,
     getDOMException: () => _nodeEventPlatform.dom.DOMException,
     getWebIDL: () => _nodeEventPlatform.require('internal/webidl'),
-    getModule: name => name === 'internal/blob' ? _nodeBodyData :
+    getModule: name => name === 'internal/histogram' ? _nodeHistogram :
+        name === 'internal/blob' ? _nodeBodyData :
         name === 'internal/file' ? _nodeFilePlatform :
         name === 'internal/blocklist' || name === 'internal/socketaddress' ? _nodeAddressRules.require(name) :
         _nodeStreamPlatform.require(name),
@@ -3462,9 +3463,14 @@ const _nodeAddressRules = _createNodeAddressRules({
     native: _nodeNative, values: _nodeValues, inspection: _nodeInspection,
     clone: _nodeClonePlatform, URLParse: _nodeWebPlatform.URL.parse.bind(_nodeWebPlatform.URL),
 });
+const _nodeHistogram = _createNodeHistogramPlatform({
+    native: _nodeNative, values: _nodeValues, types: util.types, util,
+    cloneProtocol: _nodeClonePlatform.protocol,
+});
 const _nodePerformance = _createNodePerformanceObserverPlatform({
     native: _nodeNative, values: _nodeValues, process, util, setImmediate: timers.setImmediate,
     event: _nodeEventPlatform, structuredClone: _nodeClonePlatform.protocol.structuredClone,
+    histogram: _nodeHistogram,
 });
 const _nodeDnsPlatform = _createNodeDnsLookupPlatform({
     native: _nodeNative, values: _nodeValues, process, Buffer, ip: _nodeNetworkIP,

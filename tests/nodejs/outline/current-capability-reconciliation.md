@@ -1,5 +1,16 @@
 # Current public-contract reconciliation
 
+Source134 adds real HDR/statistics/sliding-window histogram owners, unchanged
+pinned public wrappers, native queued QRDE completion and packet-owned clone
+material, together with process-owned retained-memory accounting. It preserves
+one physical allocation across aliases,queues,cache/work and context retirement.
+Root403portable rows+27imports and403NAPI public rows+75edges pass,as do48affected
+frontend and14package checks. Four focused components compile through the SDK.
+Actual engine JSAPI,clone/GC/VM behavior and four-host conformance remain open;
+ELD is a separate pending source integration. All19families remain partial.
+See [histogram integration and limits](histogram-retained-memory-integration.md).
+
+
 Source133 adds a native per-context default-trigger owner, separate from
 captured frames and execution IDs, and routes AsyncResource, ticks and existing
 FS/DNS/codec constructors through it. Production adapter forwarders are covered
@@ -287,7 +298,7 @@ of the APIs, overloads, inherited members, symbols and open questions.
 | Terminal | Pinned shared/callback/promise readline,history/key/cursor owners plus120actual borrowed terminal-mode leases and window queries | Full public TTY/stdio classes,signals/resize/drain,Unicode width,persistence/permissions/REPL and guest lifecycle/stream/symbol conformance |
 | Workers | Real process/thread-shared lock manager,transactional receiver delivery,dual-Promise/callback lifetime and fair provider dispatch in129source;actual thread/context/input/error/join owners,connected packets,115broadcast registry/shared native weak clone marks and124per-context loop measurement source | Receiver victim-array indexed insertion fixed in131source;guest validation pending;native lazy-data descriptors/global Navigator alias remain missing;guest117–129uncompiled;complete endpoint/host transfer/context movement,thread routing,Worker options/stdio/shared environment/resources/ref/failure/termination and parent-side performance/GC/realm/four-host evidence |
 | Compression | pinned codec/archive/iterable JS and native contexts; actual shared/growable queue leases and synchronous resizable codec/CRC/dictionary spans compiled in112 | Ordinary async resizable/transfer/pre-existing pin ownership; complete modes/options/iterators/files and native cleanup/cancellation/accounting; retained gzip OS-byte comparison mismatches and complete four-host evidence |
-| Observability | Pinned Console/diagnostics/TCP/DNS producers,Performance timeline/entry/observer/resource/timerify algorithms and process-origin clock;124real per-context loop-start/idle owner and complete pinned ELU arithmetic | Compile/validate actual loop hooks;other milestones/counters/histograms/GC/network producers,stack/inspector/global/realm/stream integration,public tracing/reporting and complete four-host conformance |
+| Observability | Pinned Console/diagnostics/TCP/DNS producers,Performance timeline/entry/observer/resource/timerify and process-origin clock;124real loop-start/idle and ELU arithmetic;134real HDR/statistics/window owners,public histogram wrappers,queued QRDE,packet clone material and shared retained-memory ledger | Combined117–134engine uncompiled;actual JSAPI/GC/VM/clone/cancellation/pressure and realm retirement remain open;ELD producer integration pending;other milestones/counters/GC/network producers,inspector,tracing/reporting and four-host conformance incomplete |
 | Engine | generic native Error location policy across registered root/worker contexts and VM realms; VM compiler, actual ordinary DONT_CONTEXTIFY globals, per-runtime chained security-callback owners and partial nominal GC budget | Complete ordinary sandbox exotic behavior, context metadata/deadlines/modules/cache/microtasks, inspector, heap measurements and worker/guest integration |
 | Testing | Full pinned Test/Suite/harness/utils execution owners; actual native-frame caller location route and source-derived default option state, mock/reporter owners | Guest execution/async/fatal/phase/context/cleanup integration; discovery/run/CLI/isolation, snapshots/module mocks, measured coverage/benchmarks and complete lifecycle |
 | Native integration | SQLite scalar/aggregate/window registrations and GC-traced native callback/parent/accumulator owners compiled in113; real SQLite statement/iterator/column/limit/defensive/session/change-set and rooted synchronous callback owners, native virtual limits and actual activation | Statement close/dispose/serialization; complete scalar/aggregate/window error/reentry/GC policy, authorizer/virtual-table callbacks; complete limits/reflection/storage/GC/realm/accounting, tag cache/backup/extensions, FFI/WASI/SEA/addons/embedding and ABI/loader |

@@ -21,11 +21,12 @@ class KandeloCallbackHost {
   JSAutoRealm realm_;
   RootedValue frame_, prior_;
   js::shell::KandeloNativeAsyncState* lifetime_;
+  bool zeroIds_;
  public:
-  KandeloCallbackHost(JSContext* cx, HandleObject resource, HandleValue frame)
+  KandeloCallbackHost(JSContext* cx, HandleObject resource, HandleValue frame, bool zeroIds = false)
       : cx_(cx), resource_(cx, resource), realm_(cx, resource),
         frame_(cx, frame), prior_(cx, cx->kandeloAsyncContext()),
-        lifetime_(js::shell::KandeloGetNativeAsyncState(cx)) {
+        lifetime_(js::shell::KandeloGetNativeAsyncState(cx)), zeroIds_(zeroIds) {
     if (lifetime_) lifetime_->Retain();
   }
   ~KandeloCallbackHost() { if (lifetime_) lifetime_->Release(); }
@@ -33,8 +34,9 @@ class KandeloCallbackHost {
   unsigned& Depth() { return lifetime_->callbackDepth; }
   bool Stopping() const { return GetShellContext(cx_)->quitting; }
   bool HasError() const { return cx_->isExceptionPending(); }
-  bool Before() { return cx_->notifyKandeloAsyncLifecycle("before", resource_, frame_); }
-  bool After() { return cx_->notifyKandeloAsyncLifecycle("after", resource_, frame_); }
+  bool Before() { return cx_->notifyKandeloAsyncLifecycle(
+      zeroIds_ ? "callback:zero" : "before", resource_, frame_); }
+  bool After() { return zeroIds_ || cx_->notifyKandeloAsyncLifecycle("after", resource_, frame_); }
   void Restore() { cx_->kandeloAsyncContext() = prior_; }
   bool Checkpoint() { return KandeloPerformCallbackCheckpoint(cx_); }
 };
@@ -44,6 +46,18 @@ class KandeloNativeCallbackScope {
  public:
   KandeloNativeCallbackScope(JSContext* cx, HandleObject resource, HandleValue frame)
       : host_(cx, resource, frame), scope_(host_) {}
+  bool Enter() { return scope_.Enter(); }
+  bool Stopped() const { return scope_.Stopped(); }
+  bool Close() { return scope_.Close(); }
+};
+// InternalCallbackScope with IDs {0,0}: a real plain execution resource and
+// default frame, no AsyncWrap lifecycle, shared depth/retirement/checkpoint.
+class KandeloNativeInternalCallbackScope {
+  KandeloCallbackHost host_;
+  kandelo::async::CallbackScope<KandeloCallbackHost> scope_;
+ public:
+  KandeloNativeInternalCallbackScope(JSContext* cx, HandleObject resource)
+      : host_(cx, resource, UndefinedHandleValue, true), scope_(host_) {}
   bool Enter() { return scope_.Enter(); }
   bool Stopped() const { return scope_.Stopped(); }
   bool Close() { return scope_.Close(); }

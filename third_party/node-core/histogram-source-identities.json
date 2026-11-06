@@ -1,0 +1,27 @@
+{
+  "version": "26.13.0",
+  "source": {
+    "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+    "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+    "tag": "v26.13.0",
+    "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
+  },
+  "files": {
+    "src/histogram.h": "66bee7d06bf4a2423f67860c3dd94490a87ba098bb02fddda9ea945f6a8a04a8",
+    "src/histogram-inl.h": "841742646b64b0171e903e1af5dd414c6f1d1bf01668524a217c8f98150a4841",
+    "src/histogram.cc": "e79ac3b14457338718b8d15f0b338a78e534d3f0a3fca06a71c3a403ce067038",
+    "lib/internal/histogram.js": "16c2c72f457397cb21048bf0e096117bbf03758b2dc964b47c91c90a79846a9c",
+    "deps/histogram/BUILD.gn": "6377af514981cbd179a473bfa9f88bd328fe7e0ed6af63f8f4cf5b0f7cfb58ca",
+    "deps/histogram/unofficial.gni": "b0564bf9aa5207a7f1ef77c2dad8079db574b755edfb7a98addf9712d0964a21",
+    "deps/histogram/README.md": "d2e96b8fd7fe1bc2b548319dd26ce3c0313c17ee70faa34bf8fa06cc0bd88e06",
+    "deps/histogram/histogram.gyp": "fc6bc0ef2b5e30d6047d8b931074d2624ca7e4fe7e89cce901927bfa8af65f54",
+    "deps/histogram/LICENSE.txt": "c124afa369aae960fa33f6944c82e161e482f2e998d6f07b37ae2c018f3c6c69",
+    "deps/histogram/src/hdr_histogram.c": "625d32b7c803a2dfa266346285adf4df7f01095e5c0989a38de0f323f116b083",
+    "deps/histogram/src/hdr_histogram_internal.h": "f5359942566670b3ea508bfe8d8241891d962a534325d03609ebed824c9dda20",
+    "deps/histogram/src/hdr_malloc.h": "c0276a0f70647af8655486e9a657e527b6254c1f49671f64417d5080154291ae",
+    "deps/histogram/src/hdr_tests.h": "eb32d7c5babc520fb5378928cc065c95bea39958c8f763c984671525bde35d9f",
+    "deps/histogram/src/hdr_atomic.h": "107ebeff765194ef15675cece0c776dfc43df3d92fc7d23b774dce23a1bdc57e",
+    "deps/histogram/include/hdr/hdr_histogram_version.h": "4d81e818cd3475b941545a41c2eb2010e388351b9e550f6b3213eeb02a856bc3",
+    "deps/histogram/include/hdr/hdr_histogram.h": "b310368071ea66a06ead0c4ec6484de3a33fd684a771797622f222e2bc5f821b"
+  }
+}

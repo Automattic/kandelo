@@ -17,7 +17,7 @@ import tomllib
 CORE = 'third_party/node-core'
 RECIPE = 'packages/registry/spidermonkey/build.toml'
 BUILD = 'packages/registry/spidermonkey/build-spidermonkey.sh'
-PRODUCTION_SUFFIXES = {'.js', '.cpp', '.h', '.py', '.json'}
+PRODUCTION_SUFFIXES = {'.js', '.cpp', '.cc', '.h', '.py', '.json'}
 
 
 def repository_path(value):
@@ -40,6 +40,23 @@ def inspect(repo):
         if not path.resolve().is_relative_to(repo) or not path.is_file():
             raise ValueError(f'Missing or escaping {reason}: {relative}')
         required.setdefault(relative, set()).add(reason)
+
+    def require_tree(relative, reason):
+        relative = repository_path(relative)
+        path = repo / relative
+        if not path.resolve().is_relative_to(repo) or not path.is_dir():
+            raise ValueError(f'Missing or escaping {reason}: {relative}')
+        # Directory staging consumes every nested input, including headers that
+        # have no literal reference in the embedding generator or manifest.
+        for child in sorted(path.rglob('*')):
+            if not child.resolve().is_relative_to(repo):
+                raise ValueError(f'Escaping {reason}: {child.relative_to(repo)}')
+            if child.is_symlink() and child.is_dir():
+                raise ValueError(f'Review linked directory in {reason}: {child.relative_to(repo)}')
+            if child.is_file():
+                require(str(child.relative_to(repo)), reason)
+            elif not child.is_dir():
+                raise ValueError(f'Missing {reason}: {child.relative_to(repo)}')
 
     # All root production owners are conservative inputs, including helpers
     # used through computed names that a literal-read scan would miss.
@@ -95,7 +112,10 @@ def inspect(repo):
     require(BUILD, 'engine build script')
     shell = (repo / BUILD).read_text()
     for relative in re.findall(r'\$REPO_ROOT/(third_party/node-core/[^"\s$]+)', shell):
-        require(relative, 'literal engine build input')
+        if (repo / relative).is_dir():
+            require_tree(relative, 'literal engine build input')
+        else:
+            require(relative, 'literal engine build input')
 
     recipe = tomllib.loads((repo / RECIPE).read_text())
     inputs = recipe['inputs']

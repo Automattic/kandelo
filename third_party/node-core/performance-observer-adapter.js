@@ -105,8 +105,9 @@ function _createNodePerformanceObserverPlatform(platform) {
     const api = { performance, Performance, PerformanceMark, PerformanceMeasure, PerformanceResourceTiming,
         PerformanceObserver, PerformanceObserverEntryList, PerformanceEntry: entryModule.exports.PerformanceEntry,
         timerify: require('internal/perf/timerify'), eventLoopUtilization: require('internal/perf/event_loop_utilization').eventLoopUtilization };
-    for (const name of ['monitorEventLoopDelay', 'createHistogram', 'createSlidingWindowHistogram', 'importHistogram'])
-        api[name] = function() { return unavailable('performance ' + name + ' native ownership'); };
+    api.monitorEventLoopDelay = function() { return unavailable('performance monitorEventLoopDelay native scheduling'); };
+    for (const name of ['createHistogram', 'createSlidingWindowHistogram', 'importHistogram'])
+        api[name] = platform.histogram[name];
     modules.set('perf_hooks', api);
     /* NODE_PERFORMANCE_REPLACEABLE_GLOBAL */
     function installGlobals(target) {

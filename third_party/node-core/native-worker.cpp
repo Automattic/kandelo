@@ -49,7 +49,10 @@ static void KandeloCaptureWorkerException(JSContext* cx) {
   JS_ClearPendingException(cx);
   try {
     auto packet = std::make_shared<KandeloPortPacket>();
-    if (packet->content->data.write(cx, error, UndefinedHandleValue, KandeloMessageClonePolicy())) owner->error = std::move(packet);
+    if (packet->content->data.write(cx, error, UndefinedHandleValue, KandeloMessageClonePolicy())) {
+      packet->content->AccountMemory(); packet->AdoptMemory(KandeloNativeMemoryOwner(cx));
+      KandeloFlushNativeMemory(cx); owner->error = std::move(packet);
+    }
     else { JS_ClearPendingException(cx); owner->failure = "Worker exception could not be cloned"; }
   } catch (...) { JS_ClearPendingException(cx); owner->failure = "Worker exception allocation failed"; }
 }
@@ -111,7 +114,8 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
     auto input = bootstrap ? std::move(kandeloCurrentWorker->bootstrap) : std::move(kandeloCurrentWorker->input);
     if (!input) { JS_ReportErrorASCII(cx, "Worker environment already consumed"); return false; }
     if (input->consumed.exchange(true)) return cx->reportKandeloCloneError("Worker input already consumed");
-    auto clear = mozilla::MakeScopeExit([&] { input->content.reset(); });
+    input->AdoptMemory(KandeloNativeMemoryOwner(cx));
+    auto clear = mozilla::MakeScopeExit([&] { input->ClearContent(); KandeloFlushNativeMemory(cx); });
     RootedValue config(cx);
     if (!input->content->data.read(cx, &config, KandeloMessageClonePolicy()) || !config.isObject()) return false;
     if (!bootstrap) { args.rval().set(config); return true; }
@@ -138,6 +142,8 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
     auto owner = std::make_shared<KandeloWorkerControl>(JS_GetParentRuntime(cx), kandeloWorkerNextId.fetch_add(1), JS_GetGCParameter(cx, JSGC_MAX_BYTES));
     owner->input = std::move(packet);
     owner->bootstrap = std::move(bootstrap);
+    owner->input->ReleaseMemory(); owner->bootstrap->ReleaseMemory();
+    KandeloFlushNativeMemory(cx);
     auto pair = KandeloPortEndpoint::Pair(); owner->parentPort = pair.first; owner->childPort = pair.second;
     // Public Worker ref state owns liveness. Its private parent port never
     // independently keeps an unreferenced Worker alive in the parent loop.

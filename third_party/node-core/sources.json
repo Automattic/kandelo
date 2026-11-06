@@ -5253,5 +5253,13 @@
       }
     },
     "scope": "Pinned shared native string-byte primitives;public Buffer unchanged,private crypto consumers/JWK forwarding,not guest JSAPI conformance"
+  },
+  "histogramBindingPlatform": {
+    "sources": {
+      "publicWrapper": {
+        "path": "upstream/histogram-reference/lib/internal/histogram.js",
+        "sha256": "16c2c72f457397cb21048bf0e096117bbf03758b2dc964b47c91c90a79846a9c"
+      }
+    }
   }
 }

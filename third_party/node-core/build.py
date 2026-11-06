@@ -1552,6 +1552,13 @@ random_job_adapter = random_job_adapter.replace('/* NODE_RANDOM_ASYNC_MODE */', 
 random_job_adapter = random_job_adapter.replace('/* NODE_RANDOM_JOB_FUNCTIONS */', '\n'.join(selected_platform_section(random_jobs, name) for name in random_jobs['selections']))
 bundle += random_job_adapter + '\n'
 
+histogram_spec = manifest['histogramBindingPlatform']
+histogram_wrapper = selected_platform_source(histogram_spec, 'publicWrapper')
+histogram_adapter = (root / 'histogram-platform-adapter.js').read_text()
+if histogram_adapter.count('/* NODE_HISTOGRAM_PUBLIC_WRAPPER */') != 1:
+    raise ValueError('Review histogram public wrapper marker')
+bundle += histogram_adapter.replace('/* NODE_HISTOGRAM_PUBLIC_WRAPPER */', histogram_wrapper) + '\n'
+
 perf_spec = manifest['performanceObserverPlatform']
 performance = (root / 'performance-observer-adapter.js').read_text()
 body = selected_platform_section(perf_spec, 'observerBody')

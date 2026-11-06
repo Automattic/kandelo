@@ -1,5 +1,21 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/generate-histogram-owner.py",
+  "third_party/node-core/histogram-source-identities.json",
+  "third_party/node-core/histogram-binding.h",
+  "third_party/node-core/histogram-native.cpp",
+  "third_party/node-core/histogram-clone.cpp",
+  "third_party/node-core/histogram-platform-adapter.js",
+  "third_party/node-core/histogram-owner.h",
+  "third_party/node-core/histogram-owner-inl.h",
+  "third_party/node-core/histogram-owner.cc",
+  "third_party/node-core/histogram-portability.h",
+  "third_party/node-core/histogram-work.h",
+  "third_party/node-core/histogram-window.h",
+  "third_party/node-core/histogram-window.cc",
+  "third_party/node-core/upstream/histogram-reference",
+  "third_party/node-core/native-retained-memory.h",
+  "third_party/node-core/native-retained-memory.cpp",
   "packages/registry/spidermonkey/build-spidermonkey.sh",
   "packages/registry/spidermonkey/node-compat/adapter.js",
   "packages/registry/spidermonkey/node-compat/suffix.js",
@@ -509,4 +525,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 133
+revision = 134

@@ -1,0 +1,113 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/performance-contracts.md",
+    "requirements": "tests/nodejs/audit/performance-requirements.json",
+    "findingIds": [],
+    "relatedFamilies": [
+      "observability",
+      "async",
+      "workers",
+      "engine",
+      "values"
+    ],
+    "scope": "Actual histogram/shared-memory prerequisite;not full perf/clone/realm/host/API closure"
+  },
+  "sourceImplemented": [
+    "Real pinned HDR/statistics/QRDE/window owners and unchanged full public wrapper over actual native material",
+    "Shared allocation ledger/pending ownership/owner-thread tenured primary-environment projections and native queue/broadcast/worker claims",
+    "Own inference-array elements,generic zero-ID callback fence and rooted/wrapped VM resolver with actual completion lifetime",
+    "Exact source/build staging,explicit native adapter forwarding and separate C11/C++20 units"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-histogram-source-r1/report.json",
+    "sha256": "580203b98780ddeefca038125cb8ef445ab9e2a0e673d22b3197be577b4012de",
+    "guardedInputs": 671,
+    "wholeReferences": 16,
+    "scope": "Portable real histogram/shared retained-memory source,exact public wrapper and current107additive engine/moz.build source checks,root callback wrapping and declared staging only. Actual engine JSAPI/GC/clone/VM/ELD/four-host conformance remains uncompiled/unvalidated."
+  },
+  "frontendAndAffected": {
+    "report": ".context/node26-histogram-frontend-r1.json",
+    "sha256": "35fb731453f9b78d5a91e9bf091292be2e204f91f116e07bfe99ba55b60acf91",
+    "newGroups": 2,
+    "affectedPassed": 46,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Production adapter and frontend/native dependency controls,not JSAPI runtime"
+  },
+  "nativeControls": {
+    "report": ".context/node26-histogram-controls-r1/report.json",
+    "sha256": "ff0e2ef24d76030e0b304fc9baff391a30cde744b1d8b8bff181a0d5d75a809f",
+    "portableRows": 403,
+    "imports": 27,
+    "publicRows": 403,
+    "publicEdges": 75,
+    "nativeThreadCycles": 16000,
+    "scope": "Root portable HDR/native ledger and actual NAPI dependency adapter;not production JSAPI/GC/clone/ELD/four-host conformance"
+  },
+  "reviewControls": {
+    "report": ".context/node26-histogram-review-controls-r1/report.json",
+    "sha256": "089f87cf03fb57c62c76201263b84ede101253b3bdd81694d95aa194673ec734",
+    "commands": 6,
+    "scope": "Actual numeric comparison,portable callback policy,NAPI/native own-element and native-reference callback observations;not production JSAPI/GC/VM runtime conformance"
+  },
+  "targetComponents": {
+    "report": ".context/node26-histogram-target-r1/report.json",
+    "sha256": "9174e177d2bfdbf42f6170ce498325ca375b9c3a41528bd998ac85ed0a61add6",
+    "objects": 4,
+    "scope": "Four actual SDK Wasm component objects:unchanged HDR C11,real histogram/window C++20 and native allocation/claim/binding consumer;not full linking,production JSAPI or runtime acceptance"
+  },
+  "packageChecks": {
+    "report": ".context/node26-histogram-package-r2.json",
+    "sha256": "35d12db728e5b8929de671dcdd3ea1613efa8181fee7fa4e10e4078b7389812f",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "671declared inputs and two new negative closure controls;not API conformance"
+  },
+  "privateHandoff": {
+    "report": ".context/histogram-owner-agent/review-fixes/slice-two/report.json",
+    "sha256": "5390aacb61778e0b6523ed7a64ab394f72b41d44419157b81bd1c35b25a2ccdd",
+    "sealSha256": "f599d751a3a872643367f0bbe79333ae3eda5fc0c27663530cbd43817d65ed83",
+    "scope": "Frozen source/evidence identities verified;root controls rerun against actual integration"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-histogram-integration-r1.log",
+      "sha256": "1e98dbbb00678c19f5d5ad17a986ddd65ebf52cab7cdd587a48f28bbe1854bf1",
+      "kind": "source-patch-context",
+      "reason": "Old registration hunk missing existing cipher binding;final additive patch preserves current preimage"
+    },
+    {
+      "report": ".context/node26-histogram-source-r1.log",
+      "sha256": "65eec492491c26d1a7d49f6b37bf63f237062119f98b2d468ef29adfdf734d74",
+      "kind": "source-input-guard",
+      "reason": "Guard treated staged directory as file;now enumerates nested inputs"
+    },
+    {
+      "report": ".context/node26-histogram-package-r1.json",
+      "sha256": "e620c6208702a48e515cfdb771bdb7b6e162acb82583abcca856ea7ac03e8f95",
+      "kind": "package-source-check",
+      "reason": "12pass/1fail initial input guard,not runtime regression"
+    },
+    {
+      "report": ".context/histogram-owner-agent/review-fixes/slice-two/handoff.md",
+      "sha256": "b81080f68440dba62930e80ed3e3a764c08926557553b4bfd50512417a431f7d",
+      "kind": "retained-prior-nonpasses",
+      "reason": "Original sanitizer timeout/nonpass and earlier fixture failures preserved,not accepted exclusions"
+    }
+  ],
+  "remaining": [
+    "Compile actual combined117\u2013134engine/JSAPI and validate clone/GC/VM/pressure/callback/shutdown paths across4hosts",
+    "Integrate sealed ELD producer/default-trigger/clone phases with current108while preserving loop fairness/idle",
+    "Continue VM modules,Worker startup/lazy-data prerequisites and UDP original-backing leases;all19families partial"
+  ],
+  "at": "2026-11-06T03:24:51.493159+00:00",
+  "recipeRevision": 134,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

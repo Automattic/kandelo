@@ -1,0 +1,78 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4052,6 +4052,7 @@
+       JS_FN("getOpenSSLVersion", KandeloNativeOpenSSLVersion, 0, 0),
+       JS_FN("timingSafeEqual", (KandeloCryptoGuard<KandeloNativeTimingSafeEqual>), 2, 0),
+       JS_FN("keyOperation", (KandeloCryptoGuard<KandeloNativeKeyOperation>), 2, 0),
++      JS_FN("histogramOperation", KandeloNativeHistogramOperation, 2, 0),
+       JS_FN("cipherOperation", (KandeloCryptoGuard<KandeloNativeCipherOperation>), 1, 0),
+       JS_FN("incrementalHash", KandeloNativeIncrementalHash, 1, 0),
+       JS_FN("dirOperation", KandeloNativeDirOperation, 1, 0),
+@@ -5398,6 +5399,7 @@
+ // Drain only this context's ticks/jobs; never dispatch another native work
+ // item, timer, socket or async destroy before the request retirement fence.
+ static bool KandeloPerformCallbackCheckpoint(JSContext* cx) {
++  KandeloFlushNativeMemory(cx);
+   if (!IsKandeloNodeMode()) return true;
+   ShellContext* sc = GetShellContext(cx);
+   while (!sc->quitting) {
+@@ -5429,6 +5431,7 @@
+   bool beforeExitEmittedForIdle = false;
+   kandelo::node_loop::ProviderRotation providerRotation;
+   while (true) {
++    KandeloFlushNativeMemory(cx);
+     if (sc->quitting) return;
+     if (IsKandeloNodeMode()) {
+       double ticks;
+@@ -8813,6 +8816,8 @@
+     }
+
+     JSAutoRealm ar(cx, global);
++    KandeloNativeMemoryEnvironmentScope nativeMemory(cx, global);
++    if (!nativeMemory.Ready()) break;
+
+     JS::ConstUTF8CharsZ path(processWideModuleLoadPath.get(),
+                              strlen(processWideModuleLoadPath.get()));
+@@ -8888,6 +8893,8 @@
+         ShellGlobalKind::WindowProxy, true));
+     if (!global) { input->failure = "Could not initialize Worker global"; return; }
+     JSAutoRealm realm(cx, global);
++    KandeloNativeMemoryEnvironmentScope nativeMemory(cx, global);
++    if (!nativeMemory.Ready()) { input->failure = "Could not initialize Worker native memory owner"; return; }
+     JS::ConstUTF8CharsZ path(processWideModuleLoadPath.get(), strlen(processWideModuleLoadPath.get()));
+     RootedString moduleLoadPath(cx, JS_NewStringCopyUTF8Z(cx, path));
+     sc->moduleLoader = js::MakeUnique<ModuleLoader>();
+@@ -16712,6 +16719,7 @@
+   KandeloShutdownNativeWork(this);
+   KandeloShutdownChildWatches(cx_);
+   KandeloShutdownPorts(cx_);
++  KandeloShutdownHistograms(cx_);
+   KandeloShutdownNativeAsync(this);
+   markObservers.reset();
+   if (cx_) {
+@@ -16780,6 +16788,8 @@
+     }
+
+     JSAutoRealm ar(cx, glob);
++    KandeloNativeMemoryEnvironmentScope nativeMemory(cx, glob);
++    if (!nativeMemory.Ready()) return EXIT_FAILURE;
+
+     ShellContext* sc = GetShellContext(cx);
+     if (!sc->moduleLoader && !InitModuleLoader(cx, *op)) {
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -68,3 +68,14 @@
+ # requirement on the shell embedding that consumes them.
+ SOURCES += ["js.cpp"]
+ SOURCES["js.cpp"].flags += ["-std=c++20"]
++
++# The portable owner retains the unchanged Node-vendored HDR C library.
++LOCAL_INCLUDES += ["histogram-vendor/include"]
++SOURCES += [
++    "histogram-owner.cc",
++    "histogram-window.cc",
++    "histogram-vendor/src/hdr_histogram.c",
++]
++SOURCES["histogram-owner.cc"].flags += ["-std=c++20"]
++SOURCES["histogram-window.cc"].flags += ["-std=c++20"]
++SOURCES["histogram-vendor/src/hdr_histogram.c"].flags += ["-std=c11"]

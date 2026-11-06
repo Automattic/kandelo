@@ -375,6 +375,7 @@ cp "$REPO_ROOT/third_party/node-core/sqlite-limit-names.h" "$SRC_DIR/js/src/shel
 python3 "$REPO_ROOT/third_party/node-core/generate-sqlite-constants.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-sqlite-constants.h"
 cp "$REPO_ROOT/third_party/node-core/callback-scope.h" "$SRC_DIR/js/src/shell/kandelo-node-callback-scope.h"
+cp "$REPO_ROOT/third_party/node-core/native-retained-memory.h" "$SRC_DIR/js/src/shell/native-retained-memory.h"
 cp "$REPO_ROOT/third_party/node-core/removal-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-removal-operations.h"
 cp "$REPO_ROOT/third_party/node-core/directory-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-directory-operations.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-fs-constants.py" \
@@ -394,6 +395,13 @@ python3 "$REPO_ROOT/third_party/node-core/generate-native-encoding.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-native-encoding.h"
 python3 "$REPO_ROOT/third_party/node-core/stage-string-bytes.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-string-bytes.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-histogram-owner.py" --check
+for histogram_source in histogram-binding.h histogram-portability.h histogram-owner.h histogram-owner-inl.h histogram-work.h histogram-window.h histogram-owner.cc histogram-window.cc; do
+    cp "$REPO_ROOT/third_party/node-core/$histogram_source" "$SRC_DIR/js/src/shell/$histogram_source"
+done
+# Repeated staging must not nest the vendor tree or retain stale headers.
+rm -rf "$SRC_DIR/js/src/shell/histogram-vendor"
+cp -R "$REPO_ROOT/third_party/node-core/upstream/histogram-reference/deps/histogram" "$SRC_DIR/js/src/shell/histogram-vendor"
 python3 "$REPO_ROOT/third_party/node-core/generate-native-embedding.py" \
     --shell-dir "$SRC_DIR/js/src/shell"
 

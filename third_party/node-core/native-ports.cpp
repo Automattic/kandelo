@@ -9,11 +9,46 @@
 #include <vector>
 namespace {
 struct KandeloPortMessageData {
-  JSAutoStructuredCloneBuffer data{JS::StructuredCloneScope::SameProcess, nullptr, nullptr};
+  KandeloHistogramCloneData histogramData;
+  kandelo::memory::Allocation retained{sizeof(KandeloPortMessageData)};
+  JSAutoStructuredCloneBuffer data{JS::StructuredCloneScope::SameProcess,
+      &KandeloHistogramCloneCallbacks, &histogramData};
+  void AccountMemory() noexcept {
+    retained.Resize(sizeof(*this) + data.sizeOfExcludingThis(moz_malloc_size_of));
+  }
 };
 struct KandeloPortPacket {
   std::shared_ptr<KandeloPortMessageData> content;
   std::atomic<bool> enqueued{false}, consumed{false};
+  kandelo::memory::Allocation retained{sizeof(KandeloPortPacket)};
+  kandelo::memory::Claims memoryClaims;
+  std::mutex ownershipMutex;
+  void AdoptMemory(const kandelo::memory::AccountHandle& account) {
+    std::lock_guard lock(ownershipMutex);
+    // Allocate all claim nodes before committing ownership. No JS/root belongs
+    // in a cross-thread packet. Failed adoption leaves prior claims intact.
+    kandelo::memory::Claims claims;
+    claims.Reserve(content ? content->histogramData.histograms.size() + 3 : 1);
+    auto add = [&](const kandelo::memory::RecordHandle& record) {
+      claims.Add(record, account);
+    };
+    add(retained.Handle());
+    if (content) {
+      add(content->retained.Handle()); add(content->histogramData.retained.Handle());
+      for (const auto& histogram : content->histogramData.histograms) add(histogram->RetainedAllocation());
+    }
+    memoryClaims.Commit(claims); AccountClaims();
+  }
+  void AccountClaims() noexcept {
+    retained.Resize(sizeof(*this) + memoryClaims.MaterialBytes());
+  }
+  void ReleaseMemory() noexcept {
+    std::lock_guard lock(ownershipMutex); memoryClaims.Clear(); AccountClaims();
+  }
+  void ClearContent() noexcept {
+    std::lock_guard lock(ownershipMutex);
+    memoryClaims.Clear(); content.reset(); AccountClaims();
+  }
   KandeloPortPacket() : content(std::make_shared<KandeloPortMessageData>()) {}
   explicit KandeloPortPacket(std::shared_ptr<KandeloPortMessageData> content)
       : content(std::move(content)) {}
@@ -33,6 +68,9 @@ static const JSClass KandeloPortPacketClass = {"KandeloMessagePacket",
   JSCLASS_HAS_RESERVED_SLOTS(1) | JSCLASS_FOREGROUND_FINALIZE, &KandeloPortPacketClassOps};
 static bool KandeloPortPacketObject(JSContext* cx, KandeloPortPacketHandle packet,
                                     MutableHandleValue result) {
+  auto account = KandeloNativeMemoryOwner(cx);
+  if (!account) { JS_ReportErrorASCII(cx, "Message packet has no registered native memory environment"); return false; }
+  packet->AdoptMemory(account); KandeloFlushNativeMemory(cx);
   auto handle = std::make_unique<KandeloPortPacketHandle>(std::move(packet));
   RootedObject object(cx, JS_NewObject(cx, &KandeloPortPacketClass));
   if (!object) return false;
@@ -61,9 +99,10 @@ static bool KandeloNativeSerializeMessage(JSContext* cx, unsigned argc, Value* v
     RootedValue wrapper(cx);
     // Allocate its opaque owner before serialization can detach backing stores.
     if (!KandeloPortPacketObject(cx, packet, &wrapper)) return false;
-    if (!packet->content->data.write(cx, args.get(0), args.get(1), KandeloMessageClonePolicy())) {
-      packet->content.reset(); return false;
-    }
+    const bool written = packet->content->data.write(cx, args.get(0), args.get(1), KandeloMessageClonePolicy());
+    packet->content->AccountMemory();
+    if (!written) { packet->ClearContent(); KandeloFlushNativeMemory(cx); return false; }
+    packet->AdoptMemory(KandeloNativeMemoryOwner(cx)); KandeloFlushNativeMemory(cx);
     args.rval().set(wrapper); return true;
   } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
 }
@@ -75,8 +114,11 @@ static bool KandeloNativeDeserializeMessage(JSContext* cx, unsigned argc, Value*
   // No lock is held over deserializer hooks, which may reenter JS or collect.
   if (packet->consumed.exchange(true))
     return cx->reportKandeloCloneError("Message packet has already been consumed");
-  auto clear = mozilla::MakeScopeExit([&] { packet->content.reset(); });
-  return packet->content->data.read(cx, args.rval(), KandeloMessageClonePolicy());
+  auto clear = mozilla::MakeScopeExit([&] { packet->ClearContent(); KandeloFlushNativeMemory(cx); });
+  try {
+    packet->AdoptMemory(KandeloNativeMemoryOwner(cx));
+    return packet->content->data.read(cx, args.rval(), KandeloMessageClonePolicy());
+  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
 }
 using KandeloPortEndpoint = kandelo::ports::Endpoint<KandeloPortPacket>;
 using KandeloBroadcastRegistry = kandelo::ports::BroadcastRegistry<KandeloPortPacket>;
@@ -178,9 +220,12 @@ static bool KandeloPortDispatch(JSContext* cx, unsigned argc, Value* vp) {
     if (packet->enqueued.exchange(true) || packet->consumed.load())
       return cx->reportKandeloCloneError("Message packet has already been published or consumed");
     auto discard = mozilla::MakeScopeExit([&] {
-      packet->consumed.store(true); packet->content.reset();
+      packet->consumed.store(true); packet->ClearContent();
     });
     if (endpoint->IsClosed()) { args.rval().setUndefined(); return true; }
+    // Publish no source-context claim nodes to another thread. The packet's
+    // native ledger records remain live/pending throughout queue ownership.
+    packet->ReleaseMemory();
     if (owner->broadcast) {
       bool hasTransferables;
       if (!JS_StructuredCloneHasTransferables(packet->content->data.data(), &hasTransferables)) {
@@ -202,6 +247,7 @@ static bool KandeloPortDispatch(JSContext* cx, unsigned argc, Value* vp) {
     }
     const bool sent = endpoint->Send(packet);
     if (sent) discard.release();
+    KandeloFlushNativeMemory(cx);
     args.rval().setBoolean(sent); return true;
   }
   if (!strcmp(operation.get(), "receive")) {

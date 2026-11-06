@@ -479,6 +479,7 @@
         digestNames() { return native.digestNames(); },
         getOpenSSLVersion() { return native.getOpenSSLVersion(); },
         timingSafeEqual(a, b) { return native.timingSafeEqual(a, b); },
+        histogramOperation(...args) { return native.histogramOperation(...args); },
         port(operation, owner, value) { return native.port(operation, owner, value); },
         locks(...args) { return native.locks(...args); },
         serializeMessage(value, transfer) {
@@ -490,8 +491,7 @@
         cloneValue(value, transfer) {
             // Keep the engine's structured-clone graph, cycles and byte views;
             // the unrelated global JSON fallback cannot clone stream chunks.
-            const policy = { scope: 'SameProcess', SharedArrayBuffer: 'allow' };
-            return deserializeValue(serializeValue(value, transfer, policy), policy);
+            return native.deserializeMessage(native.serializeMessage(value, transfer));
         },
         isPromise: value => native.isPromise(value),
         isNativeError: Error.isError,

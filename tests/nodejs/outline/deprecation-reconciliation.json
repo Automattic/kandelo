@@ -8,10 +8,10 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "ff4e7eaad4e489e61987a55fc0e07cf1df1656f11977b58de098dced6321a75d",
+    "packages/registry/node-compat/bootstrap.js": "9c59e8a79ea844f809d75094f08a45b09b5e2ec0c8d93315c0406412f40aa831",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
-    "third_party/node-core/async-platform-adapter.js": "386d32ee42997b4b34d565d14f5fa0ec12a8177786902a19621d3f9a50ea6427",
+    "third_party/node-core/async-platform-adapter.js": "94571bdb312f00d9bd7d1553a271fd30c9ba7f3d43c74d0ff3258c1aad2d5fe4",
     "third_party/node-core/buffer-bytes-adapter.js": "b73d5e43885582c9d25be752d8c4211a796b904412d2b824be4162e7b3dbd68a",
     "third_party/node-core/buffer-codecs-adapter.js": "de9373d9f1ab96f82dc3f9087a7d4e5a66db9cf997f83986ac14076f0ae9a552",
     "third_party/node-core/buffer-constructor-adapter.js": "2074bd8ba330ce3450d65bc6b09a965c85679adc6a33c79bfd409d5149375da1",
@@ -45,6 +45,7 @@
     "third_party/node-core/fs-system-errors-adapter.js": "d2541bb65fa772be497d54bdea11f4192fb1b6934ef48c6e0397328b04418ffa",
     "third_party/node-core/fs-truncate-adapter.js": "b105c3f2ea94641e68fc06fe1fb0deb12941236c9b3b42b5a25563f08612071b",
     "third_party/node-core/glob-platform-adapter.js": "db8ba8a6b4d51421e8c865f0218807c73959efb5cdc6e8c693b9f41a737fdb44",
+    "third_party/node-core/histogram-platform-adapter.js": "4447d727f6acd1b3ae181c5e5e87c68c5c19882bc77bd7105cdfe16186f2d454",
     "third_party/node-core/http-headers-adapter.js": "5182557ede72bf494f031b34417f5ae0bef123f9528c14e823578cb5f05f082b",
     "third_party/node-core/http-incoming-adapter.js": "6dedb3fe1773cfd0c6a804db0482d131533be15f8babf934287da3638edbd44a",
     "third_party/node-core/http-parser-platform-adapter.js": "4332ba101c1be45b11027021a380815c77cc3ddb7475e0aa2781aa06ef073751",
@@ -62,7 +63,7 @@
     "third_party/node-core/package-reader-adapter.js": "5b1c6cea7421a956779a24692850b3b2a3a212ff5973dc7e4f1c9f009e1819ce",
     "third_party/node-core/path-metadata-adapter.js": "788bcb3366e71d515a6642cb9f428ec37185b10754be6f69b8e39755b632fa5a",
     "third_party/node-core/path-platform-adapter.js": "ea6f20759e080a0128db19ee90913e5a0cecc07b94da5751c121db1706886c88",
-    "third_party/node-core/performance-observer-adapter.js": "cd5034712acdb5e5a544d06c746e3d44d1ee83a56aafe4c1e5f0cf068ad9f8ec",
+    "third_party/node-core/performance-observer-adapter.js": "120b13c5b62673b2c1e96ccafe3953bd514627717096b010cb48973ccca104cd",
     "third_party/node-core/ports-platform-adapter.js": "78ce9062fe07a24fff35326eea22b461d84b32beab78edd50547e79e3d97fedf",
     "third_party/node-core/process-clock-adapter.js": "f88ea5cdc9890104bf5ff8075a586cad55da60f41bfafebdb9de199748baaeca",
     "third_party/node-core/process-lifetime-adapter.js": "c10aa4e4f2c8e1701f5fd6d6958cf32ec6870070d46e9f33b7b5ca7947f16fff",
@@ -2355,7 +2356,7 @@
       "selectedAdapterLiteralOccurrences": [
         {
           "path": "packages/registry/node-compat/bootstrap.js",
-          "line": 2935
+          "line": 2936
         }
       ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",
