@@ -269,6 +269,16 @@ seen in the source, and callbacks registered with standard APIs (`atexit`,
 `pthread_create`, `sigaction`, ...). The format is described at the top of
 `KandeloCallTypes.cpp`.
 
+The AST collector preserves compiler diagnostics on invalid recovery trees.
+A semantic initializer list may contain a missing expression after Clang has
+reported an error. Such an entry names no referenced function and has an
+unknown origin; it is not proof that a callback slot is empty. The collector
+keeps visiting the tree without dereferencing that absent expression. Focused
+regression controls compare diagnostics against uninstrumented Clang and valid
+native LLVM IR/facts against the previous collector:
+`scripts/dev-shell.sh python3 sdk/test/compiler-facts-recovery.py`.
+These controls do not establish Wasm object or runtime conformance.
+
 The facts travel inside each object as a Wasm custom section named
 `kandelo.calltypes`, so they follow the object through static archives and
 caches. wasm-ld concatenates the sections of every linked object in input

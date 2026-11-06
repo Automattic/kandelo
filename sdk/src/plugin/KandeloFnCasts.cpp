@@ -393,6 +393,9 @@ private:
   }
 
   static const FunctionDecl *referencedFn(const Expr *E) {
+    // A semantic initializer list can have a missing entry after Sema
+    // diagnoses an invalid initializer. There is no function to reference.
+    if (!E) return nullptr;
     E = E->IgnoreParenCasts();
     if (const auto *U = dyn_cast<UnaryOperator>(E); U && U->getOpcode() == UO_AddrOf)
       E = U->getSubExpr()->IgnoreParenCasts();
@@ -762,6 +765,9 @@ private:
 
   // Function origins of a function-pointer-typed expression.
   std::vector<std::string> fnOrigins(const Expr *E) {
+    // Match sources(): a missing recovery initializer has unknown origin,
+    // rather than a known function or a proof that the slot is empty.
+    if (!E) return {"*"};
     if (const FunctionDecl *FD = refFn(E)) return {"@fn:" + name(FD)};
     if (const FunctionType *FT = fnPtr(E->IgnoreParenImpCasts()->getType())) return {"@ty:" + mangleType(QualType(FT, 0))};
     return {"*"};

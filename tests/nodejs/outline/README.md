@@ -1,5 +1,11 @@
 # Node 26 core implementation outline
 
+The separate SDK recovery slice keeps recipe142 and fixes diagnosed invalid
+initializer handling in Kandelo's compiler-facts collector. Thirteen native
+component controls pass;normal SDK/musl/package freshness must refresh before
+the next engine build. See [SDK recovery scope](sdk-recovery-integration.md).
+
+
 Source142 adds actual eager TLS trust-context ownership, completion-time
 verification and Promise-realm admission over current141. Focused OpenSSL/TCP
 and affected source controls pass; production JSAPI and current four-host

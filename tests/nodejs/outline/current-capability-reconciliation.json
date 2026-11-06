@@ -769,7 +769,7 @@
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
-        "node": "not established for new candidate",
+        "node": "Actual SDKnativecomponent13checks pass,baseline6crashes retained;validfocusedhostIR/facts unchanged. NormalSDK/musl freshness and currentguest/Wasm/four-hostacceptance pending.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"

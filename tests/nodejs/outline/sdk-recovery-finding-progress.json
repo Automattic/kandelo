@@ -1,0 +1,74 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "native-integration",
+      "engine"
+    ],
+    "scope": "Shared compiler-facts prerequisite exposed by engine127;not public core/API closure"
+  },
+  "sourceImplemented": [
+    "Missing recovery initializer names no referenced function and preserves unknown origin",
+    "All non-null expression analysis remains unchanged;diagnosed sources retain actual failures",
+    "Normal global SDK/plugin/musl/package input freshness changes;no progress-only engine recipe bump"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-sdk-recovery-source-r1/report.json",
+    "sha256": "a4cbda7a3850733c474b7ecf1ff4ae7d943df953791d8874eab5d85b22a8410d",
+    "guardedInputs": 692,
+    "scope": "Exact sealed SDK recovery-null source/test and source142core input identities;normal source-global SDK/plugin/musl/package keys require refresh. Current SDK driver/plugin cache and musl receipts not rebuilt/restamped. No guest/full engine/Wasm objects/four-host proof."
+  },
+  "nativeDependencyControls": {
+    "report": ".context/node26-sdk-recovery-report-r1.json",
+    "sha256": "c46cdd9c07ff75e9e0fdf6514d9113e53a2f4f515e45c22411ec7f52927b27cf",
+    "passed": 13,
+    "failed": 0,
+    "baselineCrashCases": 6,
+    "exactDiagnosticCases": 12,
+    "validNativeIRFactsByteIdentical": true,
+    "scope": "Native SDK plugin component and syntax-only wasm recovery AST; native host LLVM IR/facts. No guest object/runtime or broad SDK rebuild."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tls-context-affected-r1.json",
+    "sha256": "3b7c2c56420980d81878410692c01e48154593634115678fe3347b5703156c7d",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Historical source142core package/source checks before SDK integration;no new package checks or SDK/cache/artifact freshness proof"
+  },
+  "privateHandoff": {
+    "report": ".context/calltypes-recovery-agent/handoff.json",
+    "sha256": "9bedeac066103273ad7b9b7a1dc1dd3989ab874924236dcfa45f1b48c075efe5",
+    "sourceIdentitiesSha256": "9efea37dd4901298dc4d40c87a93db624f566b2bd85c2b03fcbadbd33d4b1dda",
+    "scope": "Exact six source/comment line proposal integrated;original engine127crash/LLVMtooling misselection and component baselines retained"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/calltypes-recovery-agent/original-crash-excerpt.log",
+      "sha256": "d84edd8ab9037e70b1cbb94c7a507e0d2e798605c93b6b38dd9c09072a22d313",
+      "kind": "engine127original-compile-failure",
+      "reason": "Separate Linux-header error and null recovery AST crash retained;complete engine not replayed here"
+    },
+    {
+      "report": ".context/node26-sdk-recovery-report-r1.json",
+      "sha256": "c46cdd9c07ff75e9e0fdf6514d9113e53a2f4f515e45c22411ec7f52927b27cf",
+      "kind": "baseline-component-crashes",
+      "reason": "Six real baseline recovery crashes;fixed collector retains exact diagnostics on all12cases. These are before controls,not passing guest behavior"
+    }
+  ],
+  "remaining": [
+    "NormalSDKdriver/plugin-cache/musl freshness and selected dependent package refresh before current engine compilation",
+    "Full current engine translation unit/build and Wasm fact/object/fork/runtime validation",
+    "All19families/currentfour-hostconformance remain partial/unestablished"
+  ],
+  "at": "2026-11-06T06:33:31.552681+00:00",
+  "recipeRevision": 142,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
