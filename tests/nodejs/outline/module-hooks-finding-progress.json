@@ -1,0 +1,82 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/loading.md",
+    "findingIds": [
+      "L-006",
+      "L-007",
+      "L-009"
+    ],
+    "relatedFamilies": [
+      "loading",
+      "engine",
+      "values"
+    ],
+    "scope": "Real synchronous CJS hooks/source/cache ownership; ESM/async loader and other finding requirements remain open"
+  },
+  "sourceImplemented": [
+    "Unchanged pinned registration/ModuleHooks/chains/context/result validation/disposal over actual CJS resolver/load/compiler owners",
+    "Execute real supplied CJS/JSON source and builtin replacements, preserve synthetic URL records and source decoding",
+    "Own resolution cache by actual Module cache/parent-directory/failure transaction; preserve existing Bun asset path",
+    "Declare two real source inputs and update current source routes/selected owning identities without closing audit observations"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-module-hooks153-source-r1/report.json",
+    "sha256": "56ada76c32bc49fcdf5bb4c2b6544628d13367018001b46b84f2446cbe2b3930",
+    "guardedInputs": 718,
+    "scope": "Exact sealed CJS hook/loader/compiler source integration, normal bundle/input/bootstrap generation and syntax. Native VM/filesystem/builtins remain explicit component dependencies, not guest/four-host evidence."
+  },
+  "packageChecks": {
+    "report": ".context/node26-module-hooks153-affected-r1.json",
+    "sha256": "0998bb09bcf7e56fd8a13624023dc336e1981f242e5832d827165785f041411a",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package-source checks within36test run;22loader components counted separately"
+  },
+  "nativeDifferential": {
+    "report": ".context/node26-module-hooks153-controls-r1/report.json",
+    "sha256": "9f466337c3ac32f7667560819a7a1aee7a9a72be8064d5604229da9d772c61a3",
+    "passed": 17,
+    "failed": 0,
+    "scope": "Actual generated pinned hook/record/policy plus bootstrap loader/compiler source over pinned native VM, filesystem, URL, Buffer and native builtins as explicit dependencies; no product setup, guest, engine JSAPI or four-host validation."
+  },
+  "affectedComponents": {
+    "report": ".context/node26-module-hooks153-affected-r1.json",
+    "sha256": "0998bb09bcf7e56fd8a13624023dc336e1981f242e5832d827165785f041411a",
+    "passed": 22,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing8record+8wrapper+6syntax tests over explicit native dependencies; separate14package checks"
+  },
+  "upstreamControls": {
+    "report": ".context/module-hooks-agent/upstream-final/report.json",
+    "sha256": "2a668e544ad88a788948ea200529f5652fd6c4e0353ed460fd21d260942a70d4",
+    "passed": 14,
+    "failed": 0,
+    "reused": true,
+    "exactCurrentSourceIdentities": true,
+    "scope": "Unchanged upstream synchronous CJS hook assertions executed through actual candidate loader and pinned native VM/filesystem/builtin dependencies. Native upstream common/fixtures dependency supplies process/mustCall accounting. Not standalone product/guest/four-host conformance."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/module-hooks-agent/controls-01/report.json",
+      "sha256": "ace72bea64c735447b93188c028121cbf4aafcd580d8af8cd8604ef5eb17ce93",
+      "kind": "initial-hook-cache-and-fixture",
+      "reason": "Original failed source/cache/fixture observations remain in sealed history; subsequent exact owner/fixture corrections documented"
+    }
+  ],
+  "remaining": [
+    "Actual ESM hook consumers/supplied-source execution and async module.register/loader-worker ownership remain implementation gaps",
+    "Other L-009 APIs, TypeScript/addons/preload/CLI/cache/namespace/source-map and broader loading findings remain open",
+    "Actual Kandelo compiler/realm/FS/backend semantics and current identified-artifact four-host conformance remain unvalidated"
+  ],
+  "at": "2026-11-06T18:06:38.834798+00:00",
+  "recipeRevision": 153,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

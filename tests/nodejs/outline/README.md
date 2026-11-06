@@ -1,5 +1,10 @@
 # Node 26 core implementation outline
 
+Source153 integrates real synchronous CommonJS customization hooks and source/
+cache ownership. Seventeen native comparison groups,22 existing loader tests
+and14 package-source tests pass. ESM/async loader and four-host gaps remain.
+See [hook implementation scope](module-hooks-integration.md).
+
 Source152 preserves actual ReadFile allocation capacity through the native
 worker and USER_OWNED backing handoff. Source/staging and fourteen package
 checks pass; production JSAPI and four-host conformance remain open. See

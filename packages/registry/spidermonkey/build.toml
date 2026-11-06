@@ -1,5 +1,7 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/module-hooks-platform-adapter.js",
+  "third_party/node-core/upstream/customization-hooks.js",
   "third_party/node-core/copy-directory-operations.h",
   "third_party/node-core/copy-directory-operations.cc",
   "third_party/node-core/native-copy-directory.cpp",
@@ -580,4 +582,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 152
+revision = 153

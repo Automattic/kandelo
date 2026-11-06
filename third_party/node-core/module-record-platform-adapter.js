@@ -6,17 +6,17 @@ function _createNodeModuleRecords(platform) {
     const { ArrayIsArray, ArrayPrototypeFilter, ArrayPrototypeIncludes, ArrayPrototypeIndexOf, ArrayPrototypeJoin,
         ArrayPrototypePush, ArrayPrototypePushApply, ArrayPrototypeMap, ArrayPrototypeSlice, ArrayPrototypeSplice, ArrayPrototypeUnshift,
         ArrayPrototypeUnshiftApply, Boolean, ObjectCreate, ObjectDefineProperty,
-        ObjectGetOwnPropertyDescriptor, ReflectApply, ReflectSet, Proxy, SafeWeakMap, SafeWeakSet,
+        ObjectGetOwnPropertyDescriptor, ReflectApply, ReflectSet, Proxy, SafeWeakMap, SafeWeakSet, SafeSet, SafeMap,
         StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeEndsWith,
         StringPrototypeIndexOf, StringPrototypeSlice, StringPrototypeSplit,
         StringPrototypeStartsWith, JSONParse, ObjectKeys, RegExpPrototypeExec, Error } = primordials;
     const path = platform.path, process = platform.process;
     const { validateString } = platform.values.validators;
-    const { codes: { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_INVALID_MODULE_SPECIFIER, ERR_METHOD_NOT_IMPLEMENTED } } = platform.values.errors;
+    const { codes: { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_INVALID_MODULE_SPECIFIER, ERR_UNKNOWN_BUILTIN_MODULE, ERR_UNKNOWN_MODULE_FORMAT, ERR_METHOD_NOT_IMPLEMENTED } } = platform.values.errors;
     const { setOwnProperty, getDeprecationWarningEmitter, emitExperimentalWarning } = platform.values.util;
     const { URL, pathToFileURL, fileURLToPath, isURL } = platform.url;
     const { kEmptyObject } = platform.values.util;
-    const { getCjsConditions, getLazy } = platform.policy;
+    const { getCjsConditions, getCjsConditionsArray, getLazy } = platform.policy;
     const { hasPackageMap, packageMapResolve } = platform.policy.maps;
     const shouldReportRequiredModules = getLazy(() => process.env.WATCH_REPORT_DEPENDENCIES);
     function require(name) {
@@ -27,7 +27,7 @@ function _createNodeModuleRecords(platform) {
     const debug = platform.debug;
     const assert = platform.values.require('internal/assert');
     const CHAR_FORWARD_SLASH = 47, CHAR_BACKWARD_SLASH = 92, CHAR_COLON = 58, CHAR_DOT = 46;
-    const loaderMethods = { getResolutionRoot: platform.getResolutionRoot, realpathSync: platform.realpath };
+    const loaderMethods = { readFileSync: platform.read, getResolutionRoot: platform.getResolutionRoot, realpathSync: platform.realpath };
     const packageJsonReader = platform.packages;
     const _stat = filename => platform.stat(filename);
     const safeGetenv = platform.safeGetenv;
@@ -35,6 +35,8 @@ function _createNodeModuleRecords(platform) {
     const firstParents = new SafeWeakMap(), lastParents = new SafeWeakMap();
     const urls = new SafeWeakMap(), entries = new SafeWeakSet();
     const sourcePaths = new SafeWeakMap();
+    const sources = new SafeWeakMap();
+    const relativeResolveCache = new SafeMap();
     const formats = new SafeWeakMap(), compiledExports = new SafeWeakMap();
     let modulePaths = [];
     let isPreloading = false, requireDepth = 0;
@@ -50,13 +52,13 @@ function _createNodeModuleRecords(platform) {
         return Module._load(request, parent, entries.has(parent) || isMain);
     }
     function lazyModule() { return Module; }
-    function lazyCJSLoader() {
-        return { resolveForCJSWithHooks(request, parent, isMain, options) {
-            // Resolution hooks have no owner yet; this path is the ordinary
-            // current resolver, with real lookup options passed through.
-            return platform.resolve(request, parent, options.requireResolveOptions);
-        } };
-    }
+    const hooks = _createNodeModuleHooks(platform);
+    const { resolveHooks, loadHooks, resolveWithHooks, loadWithHooks, validateLoadStrict,
+        convertCJSFilenameToURL, convertURLToCJSFilename } = hooks;
+    function lazyCJSLoader() { return { resolveForCJSWithHooks }; }
+    function loadBuiltinModule(name) { return { exports: platform.loadBuiltin(name) }; }
+    /* NODE_CJS_HOOK_RESOLVE */
+    /* NODE_CJS_HOOK_LOAD */
     /* NODE_MODULE_RECORDS */
     /* NODE_MODULE_REQUIRE */
     /* NODE_MODULE_LOOKUP */
@@ -67,11 +69,11 @@ function _createNodeModuleRecords(platform) {
     Module.globalPaths = [];
     /* NODE_MODULE_WRAPPERS */
     /* NODE_MODULE_PACKAGES */
-    function loadSource(module, filename) { return { source: platform.read(filename) }; }
     /* NODE_MODULE_JSON */
     Module._extensions['.js'] = function(module, filename) {
-        const content = platform.read(filename);
-        return platform.loadJavaScript(module, filename, content);
+        const initialFormat = platform.initialFormat(filename);
+        const { source, format } = loadSource(module, filename, initialFormat);
+        return platform.loadJavaScript(module, filename, source, format, sources.has(module));
     };
     Module._extensions['.node'] = function(module, filename) {
         return platform.loadNative(module, filename);
@@ -127,8 +129,38 @@ function _createNodeModuleRecords(platform) {
     }
     // The ordinary guest filesystem has no experimental Node VFS mount here.
     // Activation of that VFS and its resolution roots remains a separate owner.
+    Module.registerHooks = hooks.registerHooks;
     Module._initPaths();
     return { Module, make, create, cached, failed, getRequireStack, notFound,
+        resolve: (request, parent, isMain = false, options = kEmptyObject) =>
+            resolveForCJSWithHooks(request, parent, isMain, options),
+        loadBuiltin: loadBuiltinWithHooks,
+        // Node's per-parent-directory cache belongs to the same actual record
+        // transaction. A cache hit bypasses hooks; eviction reruns resolution.
+        cachedResolution(parent, request) {
+            const directory = parent && relativeResolveCache.get(parent.path);
+            const filename = directory?.[request];
+            if (filename === undefined) return undefined;
+            const module = Module._cache[filename];
+            if (module !== undefined) return { module };
+            delete directory[request];
+        },
+        rememberResolution(parent, request, filename) {
+            if (!parent) return;
+            let directory = relativeResolveCache.get(parent.path);
+            if (directory === undefined) {
+                directory = ObjectCreate(null); relativeResolveCache.set(parent.path, directory);
+            }
+            directory[request] = filename;
+        },
+        forgetResolution(parent, request) {
+            const directory = parent && relativeResolveCache.get(parent.path);
+            if (directory !== undefined && directory !== null) delete directory[request];
+        },
+        prepare(module, result, loadResult) {
+            urls.set(module, result.url); formats.set(module, loadResult?.format ?? result.format);
+            if (loadResult !== undefined) sources.set(module, loadResult.source);
+        },
         packageMain: (directory, request) => tryPackage(directory, ObjectKeys(Module._extensions), false, request),
         originalPath: module => sourcePaths.get(module),
         setFormat: (module, format) => formats.set(module, format),

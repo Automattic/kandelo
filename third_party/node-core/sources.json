@@ -5286,5 +5286,46 @@
         "sha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b"
       }
     }
+  },
+  "moduleHooks": {
+    "source": {
+      "path": "upstream/customization-hooks.js",
+      "upstreamPath": "lib/internal/modules/customization_hooks.js",
+      "sha256": "a45d0dac3c700cd9e420dd3ee9b39ac88fb3562b11a584aceeffff4d52e3bbc5"
+    },
+    "cjs": {
+      "source": {
+        "path": "upstream/module-records/lib/internal/modules/cjs/loader.js",
+        "upstreamPath": "lib/internal/modules/cjs/loader.js",
+        "sha256": "67b2bdc0180626e308aa6dca723696398b5db965b44e2df6060762b6d4f6a199"
+      },
+      "sections": {
+        "resolveDefault": {
+          "start": "function wrapResolveFilename(",
+          "length": 1175,
+          "sha256": "2f3d300070793a77bb7a180447d1a81bebbb7a1a81661153168d72a88b8649ee"
+        },
+        "resolve": {
+          "start": "function resolveForCJSWithHooks(",
+          "length": 2685,
+          "sha256": "3f96098fa73eaf518f44aeb40863b466cdd028a1293dfddb02f173f922c28312"
+        },
+        "loadDefault": {
+          "start": "function defaultLoadImpl(",
+          "length": 1407,
+          "sha256": "bc2dce19908bad08b7b796d86917208be3c56d12363c1729278da3b033bf7208"
+        },
+        "loadBuiltin": {
+          "start": "function loadBuiltinWithHooks(",
+          "length": 1015,
+          "sha256": "bb82dd511ed4bf95759ec6d9052c59e3aaa6fc1632036740a4eb81063770ca66"
+        },
+        "loadSource": {
+          "start": "function loadSource(",
+          "length": 1066,
+          "sha256": "cf09530188fd2945aeab652f436dd7fc0975d8b2576c544470eaeea8cafbc843"
+        }
+      }
+    }
   }
 }

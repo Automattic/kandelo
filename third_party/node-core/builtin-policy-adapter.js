@@ -15,6 +15,7 @@ function _createNodeBuiltinPolicy(platform) {
     BuiltinModule.allowOptionGatedBuiltins(platform.getOptionValue);
     return {
         normalizeRequirableId: BuiltinModule.normalizeRequirableId,
+        canBeRequiredByUsers: BuiltinModule.canBeRequiredByUsers,
         canBeRequiredWithoutScheme: BuiltinModule.canBeRequiredWithoutScheme,
         isBuiltin: BuiltinModule.isBuiltin,
         getAllBuiltinModuleIds: BuiltinModule.getAllBuiltinModuleIds,

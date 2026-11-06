@@ -13,7 +13,7 @@ if (a < 0 || b < a) throw Error('Missing actual module source boundaries');
 exports.create = function create(options = {}) {
   const files = options.files;
   const warnings = [];
-  const processBoundary = { platform: process.platform, execPath: process.execPath,
+  const processBoundary = { platform: process.platform, execPath: process.execPath, moduleLoadList: process.moduleLoadList,
     env: process.env, cwd: () => options.cwd || process.cwd(), mainModule: undefined,
     emitWarning: (...args) => warnings.push(args) };
   const values = factories.values({ process: processBoundary, Buffer, util, inspection: util,
@@ -37,7 +37,7 @@ exports.create = function create(options = {}) {
     if (!id.startsWith('node:') && id !== 'module' && id !== 'process') Object.defineProperty(builtinModules, id, {
       enumerable: true, configurable: true, get: () => require('node:' + id) });
   }
-  const context = vm.createContext({ path, Buffer, process: processBoundary, fs: { ...fs, readFileSync: read, realpathSync: name => files ? name : fs.realpathSync(name) },
+  const context = vm.createContext({ path, Buffer, TextDecoder, TextEncoder, process: processBoundary, fs: { ...fs, readFileSync: read, realpathSync: name => files ? name : fs.realpathSync(name) },
     url: require('node:url'), _nodeWebPlatform: { URL }, _nodeValues: values,
     _nodeFsTruncation: { vfsState: { handlers: null } },
     _createNodeModuleRecords: factories.records, _createNodePackageReader: factories.packages,

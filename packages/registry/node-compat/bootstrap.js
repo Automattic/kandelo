@@ -5194,6 +5194,7 @@ const _nodePackagePolicy = _createNodePackagePolicy({
 });
 const _nodeModuleRecords = _createNodeModuleRecords({
     path, process, values: _nodeValues, packages: _nodePackageReader, policy: _nodePackagePolicy,
+    TextDecoder: globalThis.TextDecoder,
     stat(filename) { const [stat, errno] = os.stat(filename); return errno === 0 ? ((stat.mode & 0o170000) === 0o40000 ? 1 : 0) : errno; },
     preserveSymlinks: _nodeNative.cliOptions?.preserveSymlinks === true,
     preserveSymlinksMain: _nodeNative.cliOptions?.preserveSymlinksMain === true,
@@ -5211,16 +5212,14 @@ const _nodeModuleRecords = _createNodeModuleRecords({
         return undefined;
     },
     normalizeBuiltin: id => _nodeBuiltinPolicy.normalizeRequirableId(id),
+    canBeRequiredByUsers: id => _nodeBuiltinPolicy.canBeRequiredByUsers(id),
+    loadBuiltin: id => _builtinModules[id],
+    initialFormat: filename => _nodeModuleSyntax.initialCommonJsFormat(filename),
     resolveFile: (request, basedir, paths) => _resolveFile(request, basedir, paths),
     realpath: filename => _moduleRealpath(filename),
     load: (request, parent, entry) => _loadCommonJsModule(request, parent, entry),
-    resolve(request, parent, options) {
-        const filename = Module._resolveFilename(request, parent, false, options);
-        const builtin = _nodeBuiltinPolicy.normalizeRequirableId(request);
-        return { filename, url: builtin === undefined ? url.pathToFileURL(filename).href : 'node:' + builtin };
-    },
     read: filename => fs.readFileSync(filename, 'utf8'),
-    loadJavaScript: (module, filename, content) => _loadCommonJsJavaScript(module, filename, content),
+    loadJavaScript: (module, filename, content, format, hookSource) => _loadCommonJsJavaScript(module, filename, content, format, hookSource),
     compile: (module, content, filename, format) => _compileCommonJsModule(module, content, filename, format),
     loadNative(module, filename) {
         if (typeof process.dlopen !== 'function')
@@ -5394,9 +5393,12 @@ function _compileCommonJsModule(mod, source, filename, format) {
     return _moduleApply(wrappedFn, exports, [exports, require, mod, filename, dirname]);
 }
 
-function _loadCommonJsJavaScript(mod, filename, source) {
-    const format = _nodeModuleSyntax.commonJsFormat(filename, source);
+function _loadCommonJsJavaScript(mod, filename, source, loadedFormat, hookSource = false) {
+    const format = loadedFormat ?? _nodeModuleSyntax.commonJsFormat(filename, source);
     if (format === 'module') {
+        // The native ESM entry accepts filenames, not supplied source. Never
+        // discard transformed source by silently rereading the original file.
+        if (hookSource) throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('synchronous module hook ESM source execution');
         _nodeModuleRecords.setFormat(mod, format);
         // Keep the existing lexical native ESM registry key; its URL/static
         // async-graph/cache admission policy remains a separate owning gap.
@@ -5409,18 +5411,31 @@ function _loadCommonJsJavaScript(mod, filename, source) {
 function _loadCommonJsModule(id, parent, entry = false) {
     _nodeValues.validators.validateString(id, 'id');
     if (id === '') throw new _nodeValues.errors.codes.ERR_INVALID_ARG_VALUE('id', id, 'must be a non-empty string');
-    const name = _nodeResolveBuiltinId(id);
-    if (name !== undefined) {
-        // node: always selects the builtin; ordinary ids honor public cache overrides.
-        if (!id.startsWith('node:') && Module._cache[name] !== undefined)
-            return _nodeModuleRecords.cached(parent, Module._cache[name]);
-        return _builtinModules[name];
-    }
-    const resolvedPath = Module._resolveFilename(id, parent, entry);
-    // Filename policy already selected canonical versus preserved identity.
+    const previous = _nodeModuleRecords.cachedResolution(parent, id);
+    if (previous !== undefined) return _nodeModuleRecords.cached(parent, previous.module);
+    const resolution = _nodeModuleRecords.resolve(id, parent, entry);
+    const resolvedPath = resolution.filename;
     const resolved = resolvedPath;
-    if (Module._cache[resolved] !== undefined)
+    let resultFromHook;
+    const loadBuiltin = name => {
+        const result = _nodeModuleRecords.loadBuiltin(name, resolution.url, resolution.format);
+        resultFromHook = result.resultFromHook;
+        return result;
+    };
+    if (id === resolution.url && id.startsWith('node:')) {
+        const name = _nodeBuiltinPolicy.normalizeRequirableId(id);
+        if (name !== undefined) {
+            const result = loadBuiltin(name);
+            if (resultFromHook === undefined) return result.builtinExports;
+        }
+    }
+    if (resultFromHook === undefined && Module._cache[resolved] !== undefined)
         return _nodeModuleRecords.cached(parent, Module._cache[resolved]);
+    const name = _nodeBuiltinPolicy.normalizeRequirableId(resolved);
+    if (resultFromHook === undefined && name !== undefined && !resolved.startsWith('node:')) {
+        const result = loadBuiltin(name);
+        if (resultFromHook === undefined) return result.builtinExports;
+    }
 
     // Preserve the separately owned Claude/npm/Bun asset branch; ordinary Node
     // records below have their own real Module/cache/extension transaction.
@@ -5458,6 +5473,8 @@ function _loadCommonJsModule(id, parent, entry = false) {
     }
     const isMain = entry && (!parent || resolved === parent.filename || resolved === _moduleRealpath(parent.filename));
     const mod = _nodeModuleRecords.create(resolved, parent, isMain, resolvedPath);
+    _nodeModuleRecords.prepare(mod, resolution, resultFromHook);
+    _nodeModuleRecords.rememberResolution(parent, id, resolved);
     Module._cache[resolved] = mod;
     if (isMain) {
         mod.id = '.'; _mainModule = mod; process.mainModule = mod;
@@ -5466,6 +5483,7 @@ function _loadCommonJsModule(id, parent, entry = false) {
         mod.load(resolved);
     } catch (error) {
         delete Module._cache[resolved];
+        _nodeModuleRecords.forgetResolution(parent, id);
         _nodeModuleRecords.failed(isMain ? null : parent, mod);
         throw error;
     }

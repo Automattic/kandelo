@@ -51030,6 +51030,457 @@ module.exports = {
         getCjsConditions, getCjsConditionsArray, getConditionsSet, getLazy };
 }
 
+// Unmodified synchronous customization-hook policy over actual loader owners.
+function _createNodeModuleHooks(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const module = { exports: {} };
+    function require(name) {
+        if (name === 'internal/bootstrap/realm') return { BuiltinModule: {
+            normalizeRequirableId: platform.normalizeBuiltin,
+            canBeRequiredByUsers: platform.canBeRequiredByUsers,
+        } };
+        if (name === 'path') return platform.path;
+        if (name === 'internal/url') return platform.url;
+        if (name === 'internal/encoding') return { TextDecoder: platform.TextDecoder };
+        return platform.values.require(name);
+    }
+    (function(module, exports, require, primordials) {
+        'use strict';
+
+const {
+  ArrayPrototypeFindIndex,
+  ArrayPrototypePush,
+  ArrayPrototypeSplice,
+  ObjectAssign,
+  ObjectFreeze,
+  StringPrototypeSlice,
+  StringPrototypeStartsWith,
+  Symbol,
+  SymbolDispose,
+} = primordials;
+const {
+  isAnyArrayBuffer,
+  isArrayBufferView,
+} = require('internal/util/types');
+
+const { BuiltinModule } = require('internal/bootstrap/realm');
+const {
+  ERR_INVALID_RETURN_PROPERTY_VALUE,
+} = require('internal/errors').codes;
+const { validateFunction } = require('internal/validators');
+const { isAbsolute } = require('path');
+const { pathToFileURL, fileURLToPath } = require('internal/url');
+
+let debug = require('internal/util/debuglog').debuglog('module_hooks', (fn) => {
+  debug = fn;
+});
+
+/**
+ * @typedef {import('internal/modules/cjs/loader.js').Module} Module
+ * @typedef {((
+ *   specifier: string,
+ *   context: Partial<ModuleResolveContext>,
+ * ) => ModuleResolveResult)
+ * } NextResolve
+ * @typedef {((
+ *   specifier: string,
+ *   context: ModuleResolveContext,
+ *   nextResolve: NextResolve,
+ * ) => ModuleResolveResult)
+ * } ResolveHook
+ * @typedef {((
+ *   url: string,
+ *   context: Partial<ModuleLoadContext>,
+ * ) => ModuleLoadResult)
+ * } NextLoad
+ * @typedef {((
+ *   url: string,
+ *   context: ModuleLoadContext,
+ *   nextLoad: NextLoad,
+ * ) => ModuleLoadResult)
+ * } LoadHook
+ */
+
+// Use arrays for better insertion and iteration performance, we don't care
+// about deletion performance as much.
+
+/** @type {ResolveHook[]} */
+const resolveHooks = [];
+/** @type {LoadHook[]} */
+const loadHooks = [];
+const hookId = Symbol('kModuleHooksIdKey');
+let nextHookId = 0;
+
+class ModuleHooks {
+  /**
+   * @param {ResolveHook|undefined} resolve User-provided hook.
+   * @param {LoadHook|undefined} load User-provided hook.
+   */
+  constructor(resolve, load) {
+    this[hookId] = Symbol(`module-hook-${nextHookId++}`);
+    // Always initialize all hooks, if it's unspecified it'll be an owned undefined.
+    this.resolve = resolve;
+    this.load = load;
+
+    if (resolve) {
+      ArrayPrototypePush(resolveHooks, this);
+    }
+    if (load) {
+      ArrayPrototypePush(loadHooks, this);
+    }
+
+    ObjectFreeze(this);
+  }
+
+  /**
+   * Deregister the hook instance.
+   */
+  deregister() {
+    const id = this[hookId];
+    let index = ArrayPrototypeFindIndex(resolveHooks, (hook) => hook[hookId] === id);
+    if (index !== -1) {
+      ArrayPrototypeSplice(resolveHooks, index, 1);
+    }
+    index = ArrayPrototypeFindIndex(loadHooks, (hook) => hook[hookId] === id);
+    if (index !== -1) {
+      ArrayPrototypeSplice(loadHooks, index, 1);
+    }
+  }
+};
+
+ModuleHooks.prototype[SymbolDispose] = ModuleHooks.prototype.deregister;
+
+/**
+ * TODO(joyeecheung): taken an optional description?
+ * @param {{ resolve?: ResolveHook, load?: LoadHook }} hooks User-provided hooks
+ * @returns {ModuleHooks}
+ */
+function registerHooks(hooks) {
+  const { resolve, load } = hooks;
+  if (resolve) {
+    validateFunction(resolve, 'hooks.resolve');
+  }
+  if (load) {
+    validateFunction(load, 'hooks.load');
+  }
+  return new ModuleHooks(resolve, load);
+}
+
+/**
+ * @param {string} filename
+ * @returns {string}
+ */
+function convertCJSFilenameToURL(filename) {
+  if (!filename) { return filename; }
+  let normalizedId = filename;
+  if (StringPrototypeStartsWith(filename, 'node:')) {
+    normalizedId = StringPrototypeSlice(filename, 5);
+  }
+  if (BuiltinModule.canBeRequiredByUsers(normalizedId)) {
+    return `node:${normalizedId}`;
+  }
+  // Handle the case where filename is neither a path, nor a built-in id,
+  // which is possible via monkey-patching.
+  if (isAbsolute(filename)) {
+    return pathToFileURL(filename).href;
+  }
+  return filename;
+}
+
+/**
+ * @param {string} url
+ * @returns {string}
+ */
+function convertURLToCJSFilename(url) {
+  if (!url) { return url; }
+  const builtinId = BuiltinModule.normalizeRequirableId(url);
+  if (builtinId) {
+    return builtinId;
+  }
+  if (StringPrototypeStartsWith(url, 'file://')) {
+    return fileURLToPath(url);
+  }
+  return url;
+}
+
+/**
+ * Convert a list of hooks into a function that can be used to do an operation through
+ * a chain of hooks. If any of the hook returns without calling the next hook, it
+ * must return shortCircuit: true to stop the chain from continuing to avoid
+ * forgetting to invoke the next hook by mistake.
+ * @param {ModuleHooks[]} hooks A list of hooks whose last argument is `nextHook`.
+ * @param {'load'|'resolve'} name Name of the hook in ModuleHooks.
+ * @param {Function} defaultStep The default step in the chain.
+ * @param {Function} validate A function that validates and sanitize the result returned by the chain.
+ * @param {object} mergedContext
+ * @returns {any}
+ */
+function buildHooks(hooks, name, defaultStep, validate, mergedContext) {
+  let lastRunIndex = hooks.length;
+  /**
+   * Helper function to wrap around invocation of user hook or the default step
+   * in order to fill in missing arguments or check returned results.
+   * Due to the merging of the context, this must be a closure.
+   * @param {number} index Index in the chain. Default step is 0, last added hook is 1,
+   *   and so on.
+   * @param {Function} userHookOrDefault Either the user hook or the default step to invoke.
+   * @param {Function|undefined} next The next wrapped step. If this is the default step, it's undefined.
+   * @returns {Function} Wrapped hook or default step.
+   */
+  function wrapHook(index, userHookOrDefault, next) {
+    return function nextStep(arg0, context) {
+      lastRunIndex = index;
+      if (context && context !== mergedContext) {
+        ObjectAssign(mergedContext, context);
+      }
+      const hookResult = userHookOrDefault(arg0, mergedContext, next);
+      if (lastRunIndex > 0 && lastRunIndex === index && !hookResult.shortCircuit) {
+        throw new ERR_INVALID_RETURN_PROPERTY_VALUE('true', name, 'shortCircuit',
+                                                    hookResult.shortCircuit);
+      }
+      return validate(arg0, mergedContext, hookResult);
+    };
+  }
+  const chain = [wrapHook(0, defaultStep)];
+  for (let i = 0; i < hooks.length; ++i) {
+    const wrappedHook = wrapHook(i + 1, hooks[i][name], chain[i]);
+    ArrayPrototypePush(chain, wrappedHook);
+  }
+  return chain[chain.length - 1];
+}
+
+/**
+ * @typedef {object} ModuleResolveResult
+ * @property {string} url Resolved URL of the module.
+ * @property {string|undefined} format Format of the module.
+ * @property {ImportAttributes|undefined} importAttributes Import attributes for the request.
+ * @property {boolean|undefined} shortCircuit Whether the next hook has been skipped.
+ */
+
+/**
+ * Validate the result returned by a chain of resolve hook.
+ * @param {string} specifier Specifier passed into the hooks.
+ * @param {ModuleResolveContext} context Context passed into the hooks.
+ * @param {ModuleResolveResult} result Result produced by resolve hooks.
+ * @returns {ModuleResolveResult}
+ */
+function validateResolve(specifier, context, result) {
+  const { url, format, importAttributes } = result;
+  if (typeof url !== 'string') {
+    throw new ERR_INVALID_RETURN_PROPERTY_VALUE(
+      'a URL string',
+      'resolve',
+      'url',
+      url,
+    );
+  }
+
+  if (format && typeof format !== 'string') {
+    throw new ERR_INVALID_RETURN_PROPERTY_VALUE(
+      'a string',
+      'resolve',
+      'format',
+      format,
+    );
+  }
+
+  if (importAttributes && typeof importAttributes !== 'object') {
+    throw new ERR_INVALID_RETURN_PROPERTY_VALUE(
+      'an object',
+      'resolve',
+      'importAttributes',
+      importAttributes,
+    );
+  }
+
+  return {
+    __proto__: null,
+    url,
+    format,
+    importAttributes,
+  };
+}
+
+/**
+ * @typedef {object} ModuleLoadResult
+ * @property {string|undefined} format Format of the loaded module.
+ * @property {string|ArrayBuffer|TypedArray} source Source code of the module.
+ * @property {boolean|undefined} shortCircuit Whether the next hook has been skipped.
+ */
+
+/**
+ * Validate the result returned by a chain of load hook.
+ * @param {string} url URL passed into the hooks.
+ * @param {ModuleLoadContext} context Context passed into the hooks.
+ * @param {ModuleLoadResult} result Result produced by load hooks.
+ * @returns {ModuleLoadResult}
+ */
+function validateLoadStrict(url, context, result) {
+  validateSourceStrict(url, context, result);
+  validateFormat(url, context, result);
+  return result;
+}
+
+function validateLoadSloppy(url, context, result) {
+  validateSourcePermissive(url, context, result);
+  validateFormat(url, context, result);
+  return result;
+}
+
+function validateSourceStrict(url, context, result) {
+  const { source, format } = result;
+  // To align with module.register(), the load hooks are still invoked for
+  // the builtins even though the default load step only provides null as source,
+  // and any source content for builtins provided by the user hooks are ignored.
+  if (!StringPrototypeStartsWith(url, 'node:') &&
+    typeof result.source !== 'string' &&
+      !isAnyArrayBuffer(source) &&
+      !isArrayBufferView(source) &&
+      format !== 'addon') {
+    throw new ERR_INVALID_RETURN_PROPERTY_VALUE(
+      'a string, an ArrayBuffer, or a TypedArray',
+      'load',
+      'source',
+      source,
+    );
+  }
+}
+
+function validateSourcePermissive(url, context, result) {
+  const { source, format } = result;
+  if (format === 'commonjs' && source == null) {
+    // Accommodate the quirk in defaultLoad used by asynchronous loader hooks
+    // which sets source to null for commonjs.
+    // See: https://github.com/nodejs/node/issues/57327#issuecomment-2701382020
+    return;
+  }
+  validateSourceStrict(url, context, result);
+}
+
+function validateFormat(url, context, result) {
+  const { format } = result;
+  if (typeof format !== 'string' && format !== undefined) {
+    throw new ERR_INVALID_RETURN_PROPERTY_VALUE(
+      'a string',
+      'load',
+      'format',
+      format,
+    );
+  }
+}
+
+class ModuleResolveContext {
+  /**
+   * Context for the resolve hook.
+   * @param {string|undefined} parentURL Parent URL.
+   * @param {ImportAttributes|undefined} importAttributes Import attributes.
+   * @param {string[]} conditions Conditions.
+   */
+  constructor(parentURL, importAttributes, conditions) {
+    this.parentURL = parentURL;
+    this.importAttributes = importAttributes;
+    this.conditions = conditions;
+    // TODO(joyeecheung): a field to differentiate between require and import?
+  }
+};
+
+class ModuleLoadContext {
+  /**
+   * Context for the load hook.
+   * @param {string|undefined} format URL.
+   * @param {ImportAttributes|undefined} importAttributes Import attributes.
+   * @param {string[]} conditions Conditions.
+   */
+  constructor(format, importAttributes, conditions) {
+    this.format = format;
+    this.importAttributes = importAttributes;
+    this.conditions = conditions;
+  }
+};
+
+let decoder;
+/**
+ * Load module source for a url, through a hooks chain if it exists.
+ * @param {string} url
+ * @param {string|undefined} originalFormat
+ * @param {ImportAttributes|undefined} importAttributes
+ * @param {string[]} conditions
+ * @param {(url: string, context: ModuleLoadContext) => ModuleLoadResult} defaultLoad
+ * @param {(url: string, context: ModuleLoadContext, result: ModuleLoadResult) => ModuleLoadResult} validateLoad
+ * @returns {ModuleLoadResult}
+ */
+function loadWithHooks(url, originalFormat, importAttributes, conditions, defaultLoad, validateLoad) {
+  debug('loadWithHooks', url, originalFormat);
+  const context = new ModuleLoadContext(originalFormat, importAttributes, conditions);
+  if (loadHooks.length === 0) {
+    return defaultLoad(url, context);
+  }
+
+  const runner = buildHooks(loadHooks, 'load', defaultLoad, validateLoad, context);
+
+  const result = runner(url, context);
+  const { source, format } = result;
+  if (!isAnyArrayBuffer(source) && !isArrayBufferView(source)) {
+    return result;
+  }
+
+  switch (format) {
+    // Text formats:
+    case undefined:
+    case 'module':
+    case 'commonjs':
+    case 'json':
+    case 'module-typescript':
+    case 'commonjs-typescript':
+    case 'typescript': {
+      decoder ??= new (require('internal/encoding').TextDecoder)();
+      result.source = decoder.decode(source);
+      break;
+    }
+    default:
+      break;
+  }
+  return result;
+}
+
+/**
+ * Resolve module request to a url, through a hooks chain if it exists.
+ * @param {string} specifier
+ * @param {string|undefined} parentURL
+ * @param {ImportAttributes|undefined} importAttributes
+ * @param {string[]} conditions
+ * @param {(specifier: string, context: ModuleResolveContext) => ModuleResolveResult} defaultResolve
+ * @returns {ModuleResolveResult}
+ */
+function resolveWithHooks(specifier, parentURL, importAttributes, conditions, defaultResolve) {
+  debug('resolveWithHooks', specifier, parentURL, importAttributes);
+  const context = new ModuleResolveContext(parentURL, importAttributes, conditions);
+  if (resolveHooks.length === 0) {
+    return defaultResolve(specifier, context);
+  }
+
+  const runner = buildHooks(resolveHooks, 'resolve', defaultResolve, validateResolve, context);
+
+  return runner(specifier, context);
+}
+
+module.exports = {
+  convertCJSFilenameToURL,
+  convertURLToCJSFilename,
+  loadHooks,
+  loadWithHooks,
+  registerHooks,
+  resolveHooks,
+  resolveWithHooks,
+  validateLoadStrict,
+  validateLoadSloppy,
+};
+
+    })(module, module.exports, require, primordials);
+    return module.exports;
+}
+
 // Actual CommonJS record/graph/require owners. Private native parent fields
 // are held in WeakMaps, not observable stand-in Symbols on public modules.
 function _createNodeModuleRecords(platform) {
@@ -51038,17 +51489,17 @@ function _createNodeModuleRecords(platform) {
     const { ArrayIsArray, ArrayPrototypeFilter, ArrayPrototypeIncludes, ArrayPrototypeIndexOf, ArrayPrototypeJoin,
         ArrayPrototypePush, ArrayPrototypePushApply, ArrayPrototypeMap, ArrayPrototypeSlice, ArrayPrototypeSplice, ArrayPrototypeUnshift,
         ArrayPrototypeUnshiftApply, Boolean, ObjectCreate, ObjectDefineProperty,
-        ObjectGetOwnPropertyDescriptor, ReflectApply, ReflectSet, Proxy, SafeWeakMap, SafeWeakSet,
+        ObjectGetOwnPropertyDescriptor, ReflectApply, ReflectSet, Proxy, SafeWeakMap, SafeWeakSet, SafeSet, SafeMap,
         StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeEndsWith,
         StringPrototypeIndexOf, StringPrototypeSlice, StringPrototypeSplit,
         StringPrototypeStartsWith, JSONParse, ObjectKeys, RegExpPrototypeExec, Error } = primordials;
     const path = platform.path, process = platform.process;
     const { validateString } = platform.values.validators;
-    const { codes: { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_INVALID_MODULE_SPECIFIER, ERR_METHOD_NOT_IMPLEMENTED } } = platform.values.errors;
+    const { codes: { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_INVALID_MODULE_SPECIFIER, ERR_UNKNOWN_BUILTIN_MODULE, ERR_UNKNOWN_MODULE_FORMAT, ERR_METHOD_NOT_IMPLEMENTED } } = platform.values.errors;
     const { setOwnProperty, getDeprecationWarningEmitter, emitExperimentalWarning } = platform.values.util;
     const { URL, pathToFileURL, fileURLToPath, isURL } = platform.url;
     const { kEmptyObject } = platform.values.util;
-    const { getCjsConditions, getLazy } = platform.policy;
+    const { getCjsConditions, getCjsConditionsArray, getLazy } = platform.policy;
     const { hasPackageMap, packageMapResolve } = platform.policy.maps;
     const shouldReportRequiredModules = getLazy(() => process.env.WATCH_REPORT_DEPENDENCIES);
     function require(name) {
@@ -51059,7 +51510,7 @@ function _createNodeModuleRecords(platform) {
     const debug = platform.debug;
     const assert = platform.values.require('internal/assert');
     const CHAR_FORWARD_SLASH = 47, CHAR_BACKWARD_SLASH = 92, CHAR_COLON = 58, CHAR_DOT = 46;
-    const loaderMethods = { getResolutionRoot: platform.getResolutionRoot, realpathSync: platform.realpath };
+    const loaderMethods = { readFileSync: platform.read, getResolutionRoot: platform.getResolutionRoot, realpathSync: platform.realpath };
     const packageJsonReader = platform.packages;
     const _stat = filename => platform.stat(filename);
     const safeGetenv = platform.safeGetenv;
@@ -51067,6 +51518,8 @@ function _createNodeModuleRecords(platform) {
     const firstParents = new SafeWeakMap(), lastParents = new SafeWeakMap();
     const urls = new SafeWeakMap(), entries = new SafeWeakSet();
     const sourcePaths = new SafeWeakMap();
+    const sources = new SafeWeakMap();
+    const relativeResolveCache = new SafeMap();
     const formats = new SafeWeakMap(), compiledExports = new SafeWeakMap();
     let modulePaths = [];
     let isPreloading = false, requireDepth = 0;
@@ -51082,13 +51535,187 @@ function _createNodeModuleRecords(platform) {
         return Module._load(request, parent, entries.has(parent) || isMain);
     }
     function lazyModule() { return Module; }
-    function lazyCJSLoader() {
-        return { resolveForCJSWithHooks(request, parent, isMain, options) {
-            // Resolution hooks have no owner yet; this path is the ordinary
-            // current resolver, with real lookup options passed through.
-            return platform.resolve(request, parent, options.requireResolveOptions);
-        } };
+    const hooks = _createNodeModuleHooks(platform);
+    const { resolveHooks, loadHooks, resolveWithHooks, loadWithHooks, validateLoadStrict,
+        convertCJSFilenameToURL, convertURLToCJSFilename } = hooks;
+    function lazyCJSLoader() { return { resolveForCJSWithHooks }; }
+    function loadBuiltinModule(name) { return { exports: platform.loadBuiltin(name) }; }
+    function wrapResolveFilename(specifier, parent, isMain, options) {
+  const filename = Module._resolveFilename(specifier, parent, isMain, options).toString();
+  return { __proto__: null, url: undefined, format: undefined, filename };
+}
+
+/**
+ * See resolveForCJSWithHooks.
+ * @param {string} specifier
+ * @param {Module|undefined} parent
+ * @param {boolean} isMain
+ * @param {ResolveFilenameOptions} options
+ * @returns {{url?: string, format?: string, parentURL?: string, filename: string}}
+ */
+function defaultResolveImplForCJSLoading(specifier, parent, isMain, options) {
+  // For backwards compatibility, when encountering requests starting with node:,
+  // throw ERR_UNKNOWN_BUILTIN_MODULE on failure or return the normalized ID on success
+  // without going into Module._resolveFilename.
+  let normalized;
+  if (StringPrototypeStartsWith(specifier, 'node:')) {
+    normalized = BuiltinModule.normalizeRequirableId(specifier);
+    if (!normalized) {
+      throw new ERR_UNKNOWN_BUILTIN_MODULE(specifier);
     }
+    return { __proto__: null, url: specifier, format: 'builtin', filename: normalized };
+  }
+  return wrapResolveFilename(specifier, parent, isMain, options);
+}
+
+function resolveForCJSWithHooks(specifier, parent, isMain, internalOptions) {
+  const { requireResolveOptions, shouldSkipModuleHooks } = internalOptions;
+  const defaultResolveImpl = requireResolveOptions ?
+    wrapResolveFilename : defaultResolveImplForCJSLoading;
+  // Fast path: no hooks, just return simple results.
+  if (!resolveHooks.length || shouldSkipModuleHooks) {
+    return defaultResolveImpl(specifier, parent, isMain, requireResolveOptions);
+  }
+
+  // Slow path: has hooks, do the URL conversions and invoke hooks with contexts.
+  let parentURL;
+  if (parent) {
+    if (!urls.get(parent) && parent.filename) {
+      urls.set(parent, convertCJSFilenameToURL(parent.filename));
+    }
+    parentURL = urls.get(parent);
+  }
+
+  // This is used as the last nextResolve for the resolve hooks.
+  function defaultResolve(specifier, context) {
+    // TODO(joyeecheung): parent and isMain should be part of context, then we
+    // no longer need to use a different defaultResolve for every resolution.
+    // In the hooks, context.conditions is passed around as an array, but internally
+    // the resolution helpers expect a SafeSet. Do the conversion here.
+    let conditionSet;
+    const conditions = context.conditions;
+    if (conditions !== undefined && conditions !== getCjsConditionsArray()) {
+      if (!ArrayIsArray(conditions)) {
+        throw new ERR_INVALID_ARG_VALUE('context.conditions', conditions,
+                                        'expected an array');
+      }
+      conditionSet = new SafeSet(conditions);
+    } else {
+      conditionSet = getCjsConditions();
+    }
+
+    const result = defaultResolveImpl(specifier, parent, isMain, {
+      __proto__: null,
+      paths: requireResolveOptions?.paths,
+      conditions: conditionSet,
+    });
+    // If the default resolver does not return a URL, convert it for the public API.
+    result.url ??= convertCJSFilenameToURL(result.filename);
+
+    // Remove filename because it's not part of the public API.
+    // TODO(joyeecheung): maybe expose it in the public API to avoid re-conversion for users too.
+    return { __proto__: null, url: result.url, format: result.format };
+  }
+
+  const resolveResult = resolveWithHooks(specifier, parentURL, /* importAttributes */ undefined,
+                                         getCjsConditionsArray(), defaultResolve);
+  const { url, format } = resolveResult;
+  // Convert the URL from the hook chain back to a filename for internal use.
+  const filename = convertURLToCJSFilename(url);
+  const result = { __proto__: null, url, format, filename, parentURL };
+  debug('resolveForCJSWithHooks', specifier, parent?.id, isMain, shouldSkipModuleHooks, '->', result);
+  return result;
+}
+
+    function defaultLoadImpl(filename, format) {
+  switch (format) {
+    case undefined:
+    case null:
+    case 'module':
+    case 'commonjs':
+    case 'json':
+    case 'module-typescript':
+    case 'commonjs-typescript':
+    case 'typescript': {
+      return loaderMethods.readFileSync(filename, 'utf8');
+    }
+    case 'builtin':
+      return null;
+    default:
+      // URL is not necessarily necessary/available - convert it on the spot for errors.
+      throw new ERR_UNKNOWN_MODULE_FORMAT(format, convertCJSFilenameToURL(filename));
+  }
+}
+
+/**
+ * Construct a last nextLoad() for load hooks invoked for the CJS loader.
+ * @param {string} url URL passed from the hook.
+ * @param {string} filename Filename inferred from the URL.
+ * @returns {(url: string, context: ModuleLoadContext) => ModuleLoadResult}
+ */
+function getDefaultLoad(url, filename) {
+  return function defaultLoad(urlFromHook, context) {
+    // If the url is the same as the original one, save the conversion.
+    const isLoadingOriginalModule = (urlFromHook === url);
+    const filenameFromHook = isLoadingOriginalModule ? filename : convertURLToCJSFilename(urlFromHook);
+    const source = defaultLoadImpl(filenameFromHook, context.format);
+    // Format from context is directly returned, because format detection should only be
+    // done after the entire load chain is completed.
+    return { source, format: context.format };
+  };
+}
+
+function loadBuiltinWithHooks(id, url, format) {
+  let resultFromHook;
+  if (loadHooks.length) {
+    url ??= `node:${id}`;
+    debug('loadBuiltinWithHooks ', loadHooks.length, id, url, format);
+    // TODO(joyeecheung): do we really want to invoke the load hook for the builtins?
+    resultFromHook = loadWithHooks(url, format || 'builtin', /* importAttributes */ undefined,
+                                   getCjsConditionsArray(), getDefaultLoad(url, id), validateLoadStrict);
+    if (resultFromHook.format && resultFromHook.format !== 'builtin') {
+      debug('loadBuiltinWithHooks overriding module', id, url, resultFromHook);
+      // Format has been overridden, return result for the caller to continue loading.
+      return { builtinExports: undefined, resultFromHook };
+    }
+  }
+
+  // No hooks or the hooks have not overridden the format. Load it as a builtin module and return the
+  // exports.
+  const mod = loadBuiltinModule(id);
+  return { builtinExports: mod.exports, resultFromHook: undefined };
+}
+
+function loadSource(mod, filename, formatFromNode) {
+  if (formats.get(mod) === undefined) {
+    formats.set(mod, formatFromNode);
+  }
+  // If the module was loaded before, just return.
+  if (sources.get(mod) !== undefined) {
+    return { source: sources.get(mod), format: formats.get(mod) };
+  }
+
+  // Fast path: no hooks, just load it and return.
+  if (!loadHooks.length) {
+    const source = defaultLoadImpl(filename, formatFromNode);
+    return { source, format: formatFromNode };
+  }
+
+  if (urls.get(mod) === undefined) {
+    urls.set(mod, convertCJSFilenameToURL(filename));
+  }
+
+  const defaultLoad = getDefaultLoad(urls.get(mod), filename);
+  const loadResult = loadWithHooks(urls.get(mod), formats.get(mod), /* importAttributes */ undefined,
+                                   getCjsConditionsArray(), defaultLoad, validateLoadStrict);
+  // Reset the module properties with load hook results.
+  if (loadResult.format !== undefined) {
+    formats.set(mod, loadResult.format);
+  }
+  sources.set(mod, loadResult.source);
+  return { source: sources.get(mod), format: formats.get(mod) };
+}
+
     function isPendingDeprecation() {
   return getOptionValue('--pending-deprecation') &&
     !getOptionValue('--no-deprecation');
@@ -51712,7 +52339,6 @@ function tryExtensions(basePath, exts, isMain) {
 }
 
 
-    function loadSource(module, filename) { return { source: platform.read(filename) }; }
     function stripBOM(content) {
   if (StringPrototypeCharCodeAt(content) === 0xFEFF) {
     content = StringPrototypeSlice(content, 1);
@@ -51733,8 +52359,9 @@ Module._extensions['.json'] = function(module, filename) {
 
 
     Module._extensions['.js'] = function(module, filename) {
-        const content = platform.read(filename);
-        return platform.loadJavaScript(module, filename, content);
+        const initialFormat = platform.initialFormat(filename);
+        const { source, format } = loadSource(module, filename, initialFormat);
+        return platform.loadJavaScript(module, filename, source, format, sources.has(module));
     };
     Module._extensions['.node'] = function(module, filename) {
         return platform.loadNative(module, filename);
@@ -52175,8 +52802,38 @@ function createEsmNotFoundErr(request, path) {
     }
     // The ordinary guest filesystem has no experimental Node VFS mount here.
     // Activation of that VFS and its resolution roots remains a separate owner.
+    Module.registerHooks = hooks.registerHooks;
     Module._initPaths();
     return { Module, make, create, cached, failed, getRequireStack, notFound,
+        resolve: (request, parent, isMain = false, options = kEmptyObject) =>
+            resolveForCJSWithHooks(request, parent, isMain, options),
+        loadBuiltin: loadBuiltinWithHooks,
+        // Node's per-parent-directory cache belongs to the same actual record
+        // transaction. A cache hit bypasses hooks; eviction reruns resolution.
+        cachedResolution(parent, request) {
+            const directory = parent && relativeResolveCache.get(parent.path);
+            const filename = directory?.[request];
+            if (filename === undefined) return undefined;
+            const module = Module._cache[filename];
+            if (module !== undefined) return { module };
+            delete directory[request];
+        },
+        rememberResolution(parent, request, filename) {
+            if (!parent) return;
+            let directory = relativeResolveCache.get(parent.path);
+            if (directory === undefined) {
+                directory = ObjectCreate(null); relativeResolveCache.set(parent.path, directory);
+            }
+            directory[request] = filename;
+        },
+        forgetResolution(parent, request) {
+            const directory = parent && relativeResolveCache.get(parent.path);
+            if (directory !== undefined && directory !== null) delete directory[request];
+        },
+        prepare(module, result, loadResult) {
+            urls.set(module, result.url); formats.set(module, loadResult?.format ?? result.format);
+            if (loadResult !== undefined) sources.set(module, loadResult.source);
+        },
         packageMain: (directory, request) => tryPackage(directory, ObjectKeys(Module._extensions), false, request),
         originalPath: module => sourcePaths.get(module),
         setFormat: (module, format) => formats.set(module, format),
@@ -93564,7 +94221,7 @@ function _createNodeModuleSyntax(platform) {
             return platform.native.moduleSyntax('wrap', records.Module.wrap(source), filename);
         return platform.native.moduleSyntax('compile', platform.normalizeSource(source), filename);
     }
-    return { contains, commonJsFormat, esmFormat, entryIsModule, compile };
+    return { contains, commonJsFormat, initialCommonJsFormat, esmFormat, entryIsModule, compile };
 }
 
 // Pinned KeyObject/CryptoKey wrappers over actual private engine key owners.
@@ -103523,6 +104180,7 @@ class BuiltinModule {
     BuiltinModule.allowOptionGatedBuiltins(platform.getOptionValue);
     return {
         normalizeRequirableId: BuiltinModule.normalizeRequirableId,
+        canBeRequiredByUsers: BuiltinModule.canBeRequiredByUsers,
         canBeRequiredWithoutScheme: BuiltinModule.canBeRequiredWithoutScheme,
         isBuiltin: BuiltinModule.isBuiltin,
         getAllBuiltinModuleIds: BuiltinModule.getAllBuiltinModuleIds,

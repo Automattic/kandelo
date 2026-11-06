@@ -35,5 +35,5 @@ function _createNodeModuleSyntax(platform) {
             return platform.native.moduleSyntax('wrap', records.Module.wrap(source), filename);
         return platform.native.moduleSyntax('compile', platform.normalizeSource(source), filename);
     }
-    return { contains, commonJsFormat, esmFormat, entryIsModule, compile };
+    return { contains, commonJsFormat, initialCommonJsFormat, esmFormat, entryIsModule, compile };
 }

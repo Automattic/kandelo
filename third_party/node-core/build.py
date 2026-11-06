@@ -1185,7 +1185,41 @@ for name, marker in [('JAVASCRIPT','JS'),('WASM','WASM')]:
     if match is None: raise ValueError('Review extensionless protocol tag: ' + name)
     policy_adapter = policy_adapter.replace('/* NODE_PACKAGE_POLICY_FORMAT_' + marker + ' */', match[1])
 bundle += policy_adapter + '\n'
+hook_spec = manifest['moduleHooks']
+hook_raw = (root / hook_spec['source']['path']).read_bytes()
+if hashlib.sha256(hook_raw).hexdigest() != hook_spec['source']['sha256']:
+    raise ValueError('Synchronous customization hook source identity mismatch')
+hook_adapter = (root / 'module-hooks-platform-adapter.js').read_text()
+hook_marker = '/* NODE_MODULE_CUSTOMIZATION_HOOKS */'
+if hook_adapter.count(hook_marker) != 1:
+    raise ValueError('Review synchronous customization hook module marker')
+bundle += hook_adapter.replace(hook_marker, hook_raw.decode()) + '\n'
+hook_sections = filesystem_sections(hook_spec['cjs'])
+# Engine-private fields remain unobservable WeakMap owners on real Module records.
+hook_adaptations = {
+    'resolve': [('parent[kURL] = convertCJSFilenameToURL(parent.filename);',
+                 'urls.set(parent, convertCJSFilenameToURL(parent.filename));'),
+                ('parent[kURL]', 'urls.get(parent)')],
+    'loadSource': [('mod[kFormat] = formatFromNode;', 'formats.set(mod, formatFromNode);'),
+                   ('mod[kURL] = convertCJSFilenameToURL(filename);',
+                    'urls.set(mod, convertCJSFilenameToURL(filename));'),
+                   ('mod[kFormat] = loadResult.format;', 'formats.set(mod, loadResult.format);'),
+                   ('mod[kModuleSource] = loadResult.source;', 'sources.set(mod, loadResult.source);'),
+                   ('mod[kFormat]', 'formats.get(mod)'), ('mod[kURL]', 'urls.get(mod)'),
+                   ('mod[kModuleSource]', 'sources.get(mod)')],
+}
+for name, changes in hook_adaptations.items():
+    for old, new in changes:
+        if old not in hook_sections[name]:
+            raise ValueError('Review synchronous hook private-field adaptation: ' + name)
+        hook_sections[name] = hook_sections[name].replace(old, new)
 record_adapter = (root / 'module-record-platform-adapter.js').read_text()
+for marker, names in [('CJS_HOOK_RESOLVE', ['resolveDefault', 'resolve']),
+                      ('CJS_HOOK_LOAD', ['loadDefault', 'loadBuiltin', 'loadSource'])]:
+    key = '/* NODE_' + marker + ' */'
+    if record_adapter.count(key) != 1:
+        raise ValueError('Review synchronous CJS hook marker: ' + key)
+    record_adapter = record_adapter.replace(key, '\n'.join(hook_sections[name] for name in names))
 for marker, section in [('SELF','self'),('RESOLVE','resolveFilename'),('FINALIZE','finalize'),('WATCH','watch')]:
     key = '/* NODE_MODULE_POLICY_' + marker + ' */'
     if record_adapter.count(key) != 1: raise ValueError('Review record policy marker: ' + key)
