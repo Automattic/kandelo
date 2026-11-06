@@ -41,8 +41,12 @@ use is bounded. The detailed controls below preserve measurement scope.
 The required memory/lifecycle gate passes on revision 39 in 20m20s: all
 18 browser cases, 239 ownership checks, seven boundary checks, three Node
 and seven Bun teardown cases, with no skipped/failed cases. The full
-revision-39 visible UI is running. Final crash persistence, all-engine service recovery/draining,
-sustained comparisons and quiet nine-suite measurements remain open.
+revision-39 embedded-PHP UI passes all 18 cases. The six all-engine service
+recovery/draining cases also pass in 4m44s. The gallery's separate FPM image
+returns HTTP 500 during a WebKit post save; that failed control is retained,
+and a same-image FPM control plus guest-log diagnostic are running. Final
+crash persistence, sustained comparisons and quiet nine-suite measurements
+remain open.
 The target supports cooperative
 signals, fatal Go tracebacks, shared libc cgo syscall dispatch, callbacks,
 worker retirement, and host heap safepoints. The latest eight-line runtime
@@ -53,10 +57,11 @@ standard library, dependency, kernel, or ABI patch.
 Current C signal/I/O conformance passes 89 cases on Node and 89 on
 Chromium, with two existing skips per host and no failures/timeouts.
 Both hosts use the same admitted kernel/rootfs bytes and host sources.
-Related stop/continue host suites pass 185/185. Earlier pinned source
-`29e2118` also passes the cgo-enabled upstream Node `os` inventory
-(224 top-level tests/examples, 21 skips); that historical result remains
-scoped to its recorded source, not the entire upstream Go test suite.
+Related stop/continue host suites pass 185/185. On final source `5834adc`,
+the available upstream Node `os` inventory passes in both plain and cgo
+modes: 224 top-level tests/examples pass and 21 existing skips per mode,
+with empty guest stderr and host diagnostics. This is not the entire
+upstream Go test suite.
 
 The dated entries below retain the evidence and failures behind this
 checkpoint. These results do not establish complete Go/POSIX conformance,
@@ -69,8 +74,8 @@ production readiness, a physical-memory plateau, or superiority over PHP-FPM.
    The terminal-channel wake fix has a fail-before/pass-after regression
    and real service repetitions. The exact waiter order behind the
    original intermittent dinit retirement was not captured.
-2. Complete browser PHP draining and retirement for Caddy on WebKit.
-   Reduce or explain the workload memory use behind the observed native
+2. Browser PHP draining and retirement for Caddy on WebKit are complete.
+   Continue bounding the workload memory use behind the observed native
    content-process kill; a same-URL reload is distinct from a Go exit.
 3. Finish the full visible login, editor, post/template-save, and crash
    recovery workflows on the rebuilt revision-39 cohort. Resolve the earlier intermittent
@@ -498,6 +503,113 @@ build also pass. No forced GC, reload, replacement context, memory-ceiling
 increase or app fallback is used to make the gate pass. The WordPress
 switch case uses the ordinary MariaDB/FPM profile; it does not replace the
 separate embedded-PHP service and persistence workflows.
+
+### Final-artifact embedded-PHP browser services — 2026-11-06
+
+`frankenphp-rev39-final-browser-services-1106-151849-5524` passes all six
+classic/Caddy cases across Chromium, Firefox and WebKit in 4m44s. These use
+the admitted revision-39 image and real two-thread startup logs, login and
+editor HTTP, OPcache artifacts, forty request-churn iterations, twenty
+editor burst rounds, ten concurrent editor requests, held-PHP draining and
+cooperative machine retirement. Caddy recovers after intentional guest
+SIGKILL. No profiler, forced GC or increased memory ceiling is used.
+Evidence: `.context/frankenphp-browser-image-xBUp9o/`.
+
+All eighteen embedded-PHP visible UI cases also pass in the broader
+`frankenphp-rev39-full-visible-ui-1106-145144-d0e1` run: both profiles,
+all three engines, login/editor health, post writes and genuine home
+template saves. That broader batch is not a full pass: its gallery FPM
+control returns HTTP 500 when creating a post on WebKit. Inspection shows
+the gallery FPM shortcut selects `browser-wordpress-family`, whereas the
+embedded-PHP profiles select `browser-wordpress`. The comparison fixture
+now uses the exact WordPress image's ordinary FPM profile and captures
+guest logs on failure. A same-image control run and a separate diagnostic
+of the failing family-image case are pending; changing image selection
+does not establish the cause of the earlier HTTP 500.
+
+The original broader UI batch finishes at 25 passed / two failed (39m22s).
+Both failures are gallery FPM/WebKit: HTTP 500 on post creation and an
+editor canvas that never appears. The latter's failure diagnostic waits
+on the missing iframe until the 720-second overall test timeout; the
+diagnostic is now bounded to five seconds without weakening the editor
+assertion. The separate family-image post diagnostic passes in 47s, so
+the HTTP 500 is intermittent and remains unexplained. Two earlier private
+diagnostic launches fail before running tests because of duplicate
+Playwright packages and then an ESM directory import; the final diagnostic
+uses the same app-owned Playwright module and passes. These setup failures
+are not guest execution results.
+
+### Final-runtime upstream os inventory — 2026-11-06
+
+`go-final-upstream-os-1106-153022-49e0` passes in 1m27s. With image-backed
+`/tmp`, both plain Go and cgo pass 224 top-level tests/examples from the
+available upstream `os` inventory (215 tests and nine examples), with the
+same 21 existing top-level skips and empty guest stderr/host diagnostics.
+The runtime source is `5834adc`; the plain executable and pwd helper match
+the recorded 159-case browser-gate hashes, and the cgo executable is newly
+built, normally fork-instrumented and ABI-stamped. Evidence and exact
+program/kernel hashes: `.context/go-final-upstream-os-sW1b6c/`.
+This replaces reliance on the older `29e2118` result for this inventory;
+it does not establish full upstream runtime conformance.
+
+### Preview navigation and persistence evidence — 2026-11-06
+
+The exact-image FPM control finishes at eight passed / one failed
+(`wordpress-rev39-exact-image-fpm-ui-1106-152616-08b0`, 13m06s).
+Its Chromium template case remains on the dashboard after entering the
+editor URL, with no editor HTTP request in the navigation record and clean
+PHP-FPM/nginx service logs. A focused browser reproduction demonstrates
+that a late iframe load overwrites an actively edited dock address. It
+fails before the fix with `/destination.html` replaced by `/late.html`,
+including with the production autofocus behavior enabled. Two earlier
+fixture launches fail at setup (missing React preamble, then an iframe
+response missing the dev server's isolation headers); they do not establish
+the navigation defect.
+
+The generic preview UI now preserves an active address draft, avoids
+stealing focus on a delayed iframe load, and resumes location tracking
+after commit. Six focused navigation/commit cases pass across Chromium,
+Firefox and WebKit in 4.6s (`preview-address-draft-after-1106-154904-a69a`).
+The broader WordPress UI batch must now repeat with application and fixture
+sources frozen. The HTTP 500 from the original gallery FPM post case is
+not reproduced by one standalone run followed by five fresh WebKit repeats
+(all pass, 47s and 3m27s); its cause remains unknown.
+
+The first final-image persistence batch finishes at 11 passed / one failed
+in 22m55s (`frankenphp-rev39-final-persistence-1106-152202-238d`). The last
+WebKit Caddy/library case loses its page-local composer observation before
+the intentional restart. While this test was active, an agent edit to the
+imported preview fixture caused Vite to log a page reload at 15:43:57.
+This invalidates the run's page-local observation evidence; do not relax
+the ownership assertion or call that case a pass. New diagnostics retain
+worker records before assertions and main-document lifecycle events outside
+the page. Repeat the batch without watched-source edits and retain native
+browser stderr. Evidence: `.context/frankenphp-final-persistence-XmH0pJ/`.
+
+### Ten-minute WebKit Caddy traffic — 2026-11-06
+
+The default-two-thread revision-39 Caddy service completes ten minutes of
+WordPress HTTP traffic, editor bursts, deliberate guest crash/restart,
+held-response draining, cooperative machine retirement and thirty seconds
+of observation after destruction. `frankenphp-rev39-webkit-ten-minute-soak-1106-153514-6b8d`
+passes in 12m13s. The browser exits normally; no inspector profiler,
+forced GC, reload, memory-ceiling increase or replacement context is used.
+This host fixture uses the static trap-test page, without Vite's HMR client,
+so the separate preview-fixture reload does not invalidate its execution.
+Fifty external UTC phase/memory records are retained, with unavailable guest
+metrics absent after destruction. All 39 periodic traffic samples report
+511 MiB combined kernel/guest linear memory and eight Caddy guest threads;
+the last periodic count is 1,127 successful requests. These snapshots do not
+measure the engine's native footprint. This establishes the bounded workload,
+not an indefinite native-memory plateau. Evidence:
+`.context/frankenphp-final-webkit-soak-lRA5Zy/`.
+
+The same-image RSS harness also completes four Node/Chromium stack runs
+with fifteen-second traffic intervals in 3m52s
+(`wordpress-rev39-rss-harness-smoke-1106-152840-5575`). Both native sampling
+paths return actual values, and service/startup/log checks pass. It ran
+under concurrent functional testing and supports no latency or throughput
+comparison. Raw evidence: `.context/wordpress-current-stack-I65rGh/`.
 
 ### Standalone Caddy and byte ownership review — 2026-11-06
 

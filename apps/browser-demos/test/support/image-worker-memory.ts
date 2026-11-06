@@ -1,4 +1,4 @@
-import { expect, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 
 interface ImageWorkerMemory {
   role: "composer" | "codec";
@@ -73,6 +73,11 @@ export async function imageWorkerMemory(page: Page, expectComposer: boolean): Pr
   const state = await page.evaluate(() => (window as Window & {
     kandeloImageMemory?: { records: ImageWorkerMemory[]; dropped: number };
   }).kandeloImageMemory);
+  // Keep the observation even when an ownership assertion fails. A reload
+  // resets the page-local observer; do not lose that evidence on failure.
+  await test.info().attach(`image-worker-memory-${expectComposer ? "installation" : "recovery"}`, {
+    body: JSON.stringify({ url: page.url(), state }), contentType: "application/json",
+  });
   expect(state, "image worker observer must be installed").toBeDefined();
   expect(state!.dropped).toBe(0);
   const records = state!.records;

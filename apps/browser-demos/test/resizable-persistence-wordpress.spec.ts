@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
@@ -61,6 +61,15 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
       await context.addInitScript(() => { window.confirm = () => true; });
       await observeImageWorkerMemory(context);
       const page = observationPage;
+      const lifecyclePath = testInfo.outputPath("page-lifecycle.jsonl");
+      const recordLifecycle = (event: string, detail?: string) => appendFileSync(lifecyclePath,
+        `${JSON.stringify({ recordedAt: new Date().toISOString(), event, url: page.url(), detail })}\n`);
+      page.on("domcontentloaded", () => recordLifecycle("main document loaded"));
+      page.on("crash", () => recordLifecycle("page crashed"));
+      page.on("pageerror", error => recordLifecycle("page error", String(error)));
+      page.on("console", message => {
+        if (message.type() === "error") recordLifecycle("console error", message.text().slice(0, 4000));
+      });
       const resolvedTarget = await machineUrl(page, profile, {
         search: {
           experimentalPersistence: `wordpress-${crypto.randomUUID()}`,

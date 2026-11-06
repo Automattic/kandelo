@@ -106,10 +106,14 @@ nginx/PHP-FPM for comparison.
 The generated services allow 30 seconds before forced termination. Classic
 HTTP shutdown and Caddy's configured grace period allow 20 seconds to drain
 requests before PHP cleanup. Actual request-draining validation on the final
-image passes in Node, Chromium, and Firefox. Heavy WebKit workloads have
-reloaded after the content process exceeded its memory limit. Intermittent
-Node machine retirement also remains under investigation. The implementation
-checkpoint records these open release gates and each test's exact scope.
+image passes in Node and all three browser engines with the two-thread
+default, including listener closure, complete held responses and cooperative
+machine retirement. Caddy also recovers after intentional guest SIGKILL.
+The earlier intermittent Node retirement exposed a terminal-wakeup defect;
+the corrected path passes the full final-image browser memory/lifecycle
+gate. Larger six-thread WebKit workloads can still exceed the content-process
+memory limit. The implementation log records the exact scopes and remaining
+sustained-load and persistence gates.
 
 These profiles use the classic PHP request lifecycle and file-cache-only
 OPcache. They do not provide a persistent WordPress PHP worker or a full-page

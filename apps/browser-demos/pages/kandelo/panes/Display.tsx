@@ -241,7 +241,11 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
                 if (state) window.requestAnimationFrame(() => window.requestAnimationFrame(() => previewRendered(host, state)));
               }
             } catch { /* An inaccessible document cannot prove rendered readiness. */ }
-            if (autoFocus) iframeRef.current?.focus();
+            // A delayed load must not take focus from a dock field or dialog
+            // the user started editing while the previous document loaded.
+            if (autoFocus && (document.activeElement === document.body || document.activeElement === frame)) {
+              frame?.focus();
+            }
           }}
         />
       ) : (
@@ -282,13 +286,22 @@ const WebPreviewDockControls: React.FC<{
   onReload: () => void;
 }> = ({ baseUrl, path, ready, pendingRequests, loading, message, onNavigate, onReload, origin, onChangeTarget }) => {
   const [draftPath, setDraftPath] = React.useState(path);
+  const editingDraft = React.useRef(false);
   const loadingTitle = loading
     ? `Waiting for the preview document (${pendingRequests} pending requests)`
     : undefined;
 
   React.useEffect(() => {
-    setDraftPath(path);
+    // Frame location updates can arrive between typing and Enter. Keep the
+    // user's active draft until it is committed or the field loses focus.
+    if (!editingDraft.current) setDraftPath(path);
   }, [path]);
+
+  const commitDraft = (value: string) => {
+    if (!ready) return;
+    editingDraft.current = false;
+    onNavigate(value);
+  };
 
   return (
     <form
@@ -296,7 +309,7 @@ const WebPreviewDockControls: React.FC<{
       title={ready ? undefined : message ?? "Starting service"}
       onSubmit={(event) => {
         event.preventDefault();
-        if (ready) onNavigate(draftPath);
+        commitDraft(draftPath);
       }}
     >
       <button
@@ -321,13 +334,22 @@ const WebPreviewDockControls: React.FC<{
       <input
         className="kweb-urlbar-input"
         value={draftPath}
-        onChange={(event) => setDraftPath(event.currentTarget.value)}
+        onChange={(event) => {
+          editingDraft.current = true;
+          setDraftPath(event.currentTarget.value);
+        }}
         onKeyDown={(event) => {
           if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
           event.preventDefault();
-          if (ready) onNavigate(event.currentTarget.value);
+          if (ready) {
+            commitDraft(event.currentTarget.value);
+            event.currentTarget.blur();
+          }
         }}
-        onBlur={() => setDraftPath((value) => /^https?:\/\//i.test(value) ? value : normalizePreviewPath(value, baseUrl))}
+        onBlur={() => {
+          editingDraft.current = false;
+          setDraftPath((value) => /^https?:\/\//i.test(value) ? value : normalizePreviewPath(value, baseUrl));
+        }}
         disabled={!ready}
         spellCheck={false}
         enterKeyHint="go"

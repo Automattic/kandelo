@@ -1,5 +1,5 @@
 import { expect, type Page, type Request } from "@playwright/test";
-import { gotoInPreviewViaDock, gotoMachine, machineAppPrefix } from "./support/kandelo-machine";
+import { gotoInPreviewViaDock, machineUrl, machineAppPrefix } from "./support/kandelo-machine";
 import { clickDockTool } from "./support/dock";
 import { test } from "./support/persistent-page";
 import { saveWordPressTemplateHeading } from "./support/wordpress-editor";
@@ -8,6 +8,42 @@ import { saveWordPressTemplateHeading } from "./support/wordpress-editor";
 // backing store. Use the same persistent profile fixture as OPFS tests.
 
 const soakSeconds = Number(process.env.KANDELO_FRANKENPHP_SOAK_SECONDS ?? "20");
+
+async function gotoWordPressMachine(page: Page, profile: string, baseURL: string | undefined) {
+  // The gallery's FPM shortcut owns a separate family image. Keep this
+  // control on the exact image under test, using its ordinary FPM profile.
+  if (!baseURL) throw new Error("WordPress UI tests require a preview base URL");
+  const url = new URL(await machineUrl(page, "wordpress-frankenphp-caddy"), baseURL);
+  url.searchParams.set("profile", profile);
+  await page.goto(url.href, { waitUntil: "domcontentloaded" });
+}
+
+test.afterEach(async ({ page }, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus) return;
+  const files = testInfo.title.startsWith("WordPress SQLite")
+    ? ["php-fpm.log", "nginx.log"]
+    : [testInfo.title.includes("+ Caddy") ? "frankenphp-caddy.log" : "frankenphp-classic.log"];
+  try {
+    const inspector = page.getByRole("dialog", { name: "Internals", exact: true });
+    if (!await inspector.isVisible()) await clickDockTool(page, "Internals", { timeout: 2_000 });
+    await inspector.getByRole("tab", { name: "VFS" }).click({ timeout: 2_000 });
+    for (const segment of ["var", "log"]) {
+      await inspector.locator(".ktable tr", {
+        has: page.locator("td", { hasText: new RegExp(`^${segment}/$`) }),
+      }).click({ timeout: 2_000 });
+    }
+    for (const file of files) {
+      await inspector.locator(".ktable tr", {
+        has: page.locator("td", { hasText: file }),
+      }).click({ timeout: 2_000 });
+      const body = await inspector.locator(".kinternals-surface pre").last().textContent({ timeout: 2_000 });
+      await testInfo.attach(file, { body: body ?? "", contentType: "text/plain" });
+      // The file inspector leaves the directory listing available.
+    }
+  } catch (error) {
+    await testInfo.attach("guest-log-inspection-error", { body: String(error), contentType: "text/plain" });
+  }
+});
 
 async function probeWorkerEventLoops(page: Page) {
   return Promise.all(page.workers().map(async worker => ({
@@ -26,7 +62,7 @@ for (const demo of [
   // The same image's nginx/PHP-FPM profile is a control for browser and VFS load.
   { profile: "wordpress-sqlite", title: "WordPress SQLite", serviceLog: "nginx.log" },
 ] as const) {
-  test(`${demo.title} serves the preinstalled site, admin, and site editor`, async ({ page, context }) => {
+  test(`${demo.title} serves the preinstalled site, admin, and site editor`, async ({ page, context, baseURL }) => {
     test.setTimeout(Math.max(720_000, (soakSeconds + 480) * 1000));
     test.skip(process.env.KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS !== "1", "Build and project WordPress, then set KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS=1");
     const browserDiagnostics: string[] = [];
@@ -40,7 +76,7 @@ for (const demo of [
       pendingRequests.delete(request);
       browserDiagnostics.push(`requestfailed: ${request.method()} ${request.url()} ${request.failure()?.errorText ?? "unknown"}`);
     });
-    await gotoMachine(page, demo.profile);
+    await gotoWordPressMachine(page, demo.profile, baseURL);
     if (browserDiagnostics.some((diagnostic) => diagnostic.startsWith("pageerror:"))) {
       throw new Error(`WordPress page failed to load: ${browserDiagnostics.join("\n")}`);
     }
@@ -172,10 +208,10 @@ for (const demo of [
     await expect(page.locator('.kdock-status-text[data-status="error"]')).toHaveCount(0);
   });
 
-  test(`${demo.title} persists authenticated post edits`, async ({ page }) => {
+  test(`${demo.title} persists authenticated post edits`, async ({ page, baseURL }) => {
     test.setTimeout(300_000);
     test.skip(process.env.KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS !== "1", "Build and project WordPress, then set KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS=1");
-    await gotoMachine(page, demo.profile);
+    await gotoWordPressMachine(page, demo.profile, baseURL);
     const frame = page.frameLocator(`iframe[title="${demo.title}"]`);
     await expect(frame.locator("body")).toContainText("WordPress on Kandelo", { timeout: 240_000 });
     await expect(page.getByRole("button", { name: "Shortcuts", exact: true })).toBeVisible({ timeout: 30_000 });
@@ -254,7 +290,7 @@ for (const demo of [
     await expect(page.locator('.kdock-status-text[data-status="error"]')).toHaveCount(0);
   });
 
-  test(`${demo.title} saves a template from the site editor`, async ({ page }) => {
+  test(`${demo.title} saves a template from the site editor`, async ({ page, baseURL }) => {
     test.setTimeout(720_000);
     test.skip(process.env.KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS !== "1", "Build and project WordPress, then set KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS=1");
     const navigation: string[] = [];
@@ -277,14 +313,14 @@ for (const demo of [
       pendingRequests.delete(request);
       if (request.isNavigationRequest()) record(`failed ${request.url()}: ${request.failure()?.errorText ?? "unknown"}`);
     });
-    await gotoMachine(page, demo.profile);
+    await gotoWordPressMachine(page, demo.profile, baseURL);
     const frame = page.frameLocator(`iframe[title="${demo.title}"]`);
     const reportNavigationFailure = async (stage: string, error: unknown): Promise<never> => {
       const state = await frame.locator("body").evaluate(() => ({
         url: location.href,
         controller: navigator.serviceWorker.controller?.scriptURL ?? null,
         text: document.body.innerText.slice(0, 2000),
-      })).catch((cause) => ({ error: String(cause) }));
+      }), undefined, { timeout: 5_000 }).catch((cause) => ({ error: String(cause) }));
       const pending = [...pendingRequests].map(([request, started]) =>
         `${Date.now() - started}ms ${request.method()} ${request.url()}`);
       const detail = `${stage}: ${String(error)}\npreview=${JSON.stringify(state)}` +
