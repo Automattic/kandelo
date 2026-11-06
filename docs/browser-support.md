@@ -3726,6 +3726,13 @@ and descendants created by replacing an approved file with a directory receive
 HTTP 403. Production builds emit ordinary bundled assets and do not expose the
 local package cache.
 
+Each development server owns a private dependency-optimizer directory beneath
+its configured Vite cache root. Concurrent servers can select different
+dependency graphs, so one must not replace the optimized modules another is
+still serving. The directory is removed on server close or process exit.
+The browser regression opens both servers and checks that closing one preserves
+the other's module responses and releases only the closed server's cache.
+
 With `WASM_POSIX_RESOLUTION_POLICY=source-only-v1`, the browser build also
 requires `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT` to be a normalized canonical
 absolute directory. Its fixed

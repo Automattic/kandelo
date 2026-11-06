@@ -334,6 +334,31 @@ Durable copies of traces, error contexts, screenshots, console and status:
 `.context/terminal-wake-browser-memory-failed/`.
 Screenshot: `.context/browser-memory-doom-failure.png`.
 
+### Development dependency-cache ownership — 2026-11-06
+
+Vite development servers now allocate private optimizer-cache directories
+through ordinary configuration and remove their own directory on close or
+process exit. This prevents independent servers from sharing mutable
+optimized-module storage. Production builds and package admission are
+unchanged.
+
+The focused browser regression runs two servers against one project with
+different dependency transformations, fetches their modules in fresh browser
+contexts, and closes each server independently. Chromium, Firefox and WebKit
+pass all three cases in 7.4 seconds. Before the fix, the cache-ownership
+assertion fails because both servers select the same directory. The small
+fixture does not reproduce the exact React export corruption; the real
+application rerun remains necessary. Evidence: `.context/vite-cache-after.log`;
+before: `.context/vite-cache-before-native-options.log`.
+
+The full memory/lifecycle gate is rerunning in
+`frankenphp-cache-isolated-browser-memory-1106-123943-2fad` on port 5447.
+The earlier port-5417 server still holds its old image snapshot. A fresh
+normal `./run.sh browser` is preparing the current cohort on port 5451 as
+`frankenphp-current-cohort-preview-1106-124155-06e7`; its identity and real
+Chromium/Firefox UI verification are separate pending checks. No rebuilt
+preview URL is claimed verified until both succeed.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task.
 

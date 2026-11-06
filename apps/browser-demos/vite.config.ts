@@ -46,6 +46,7 @@ import { createProxySessionTransport } from "../../host/src/networking/cors-prox
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
 import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
+import { devServerCache } from "./vite/dev-server-cache";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -1106,6 +1107,7 @@ export default defineConfig(() => {
       alias: browserRepositoryAliases(repoRoot),
     },
     plugins: [
+      devServerCache(),
       rejectUncontrolledComputerRoutes(base),
       vfsProductsPlugin(base),
       react(),
