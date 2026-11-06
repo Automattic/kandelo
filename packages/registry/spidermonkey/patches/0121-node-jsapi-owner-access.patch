@@ -1,0 +1,11 @@
+--- a/js/src/vm/KandeloBackingStore.cpp
++++ b/js/src/vm/KandeloBackingStore.cpp
+@@ -9,0 +10 @@
++#include "js/SharedArrayBuffer.h"
+@@ -39,0 +41,3 @@
++  const size_t exposedCapacity = buffer->isResizable()
++      ? buffer->as<ResizableArrayBufferObject>().maxByteLength()
++      : buffer->byteLength();
+@@ -42 +46 @@
+-      allocation->Capacity() < buffer->maxByteLength()) {
++      allocation->Capacity() < exposedCapacity) {

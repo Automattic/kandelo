@@ -1,5 +1,10 @@
 # Broad implementation review
 
+Source151 corrects production VM/backing API compilation errors exposed by
+the actual source150 targeted build. Source and fourteen package checks pass;
+the normal engine retry is still required. See [compilation correction
+scope](engine-api-integration.md). Current four-host conformance is unestablished.
+
 The normal targeted engine149 build failed an actual Mozilla sorted-list gate.
 Source150 fixes three build lists; the unchanged upstream validator accepts
 41checked lists and14package-source checks pass. No current engine/runtime

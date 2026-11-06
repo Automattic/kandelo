@@ -1,0 +1,61 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/engine-contracts.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "engine",
+      "values",
+      "workers",
+      "filesystem",
+      "compression"
+    ],
+    "scope": "Actual compiler prerequisite for audited VM/backing source; no public API closure"
+  },
+  "sourceImplemented": [
+    "Use declared actual-object realm API and correctly qualified rooted arrays without removing guards or changing callback flow",
+    "Preserve complete resizable/fixed capacity verification and include real shared-buffer API declaration in additive engine0121"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-engine-api151-source-r1/report.json",
+    "sha256": "cefff0da1d309efa4fc52189701d9ca419376c52b68a2987095e76fbdabe9483",
+    "guardedInputs": 715,
+    "scope": "Pinned Mozilla source/API-declaration and exact source-correction checks, normal bundle freshness/input coverage and shell syntax. Corrects observed production compile errors but does not prove new C++ compile, runtime or four-host conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-engine-api151-affected-r1.json",
+    "sha256": "a46227f69fe39d82adbd9c1ba1474a08d17ce261aa77d271b85e969143e8fa5b",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing unchanged package-source checks only; no runtime acceptance"
+  },
+  "targetedEngineFailure": {
+    "report": ".context/node26-engine150-failure-final/report.json",
+    "sha256": "76f98616fc1e3255afc2ade7cb8230722430dbc355adb5c181fe6dc907b70f33",
+    "revision": 150,
+    "exitCode": 1,
+    "scope": "Normal targeted production C++ build; own native VM/engine backing API compile errors; frozen source unchanged; no accepted current artifact"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-engine150-failure-final/output.log",
+      "sha256": "648a4fd4e636c838f0ae7ca20dd5e8a303c14915e5c8779f1b923788a84b2c20",
+      "kind": "production-C++-compile",
+      "reason": "Actual native/engine errors retained, including compiler error limit; source correction is not a new compilation pass"
+    }
+  ],
+  "remaining": [
+    "Rerun targeted normal engine build for source151; compiler may expose further errors after these first failures",
+    "Integrate reviewed source proposals in focused commits, preserving source/component/guest scopes and separate kernel ABI decisions",
+    "Complete all nineteen family implementations and identified-artifact conformance across four hosts; full product/overall suites remain deferred"
+  ],
+  "at": "2026-11-06T17:53:50.173257+00:00",
+  "recipeRevision": 151,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

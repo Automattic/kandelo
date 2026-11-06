@@ -231,7 +231,7 @@ static bool KandeloVmModuleDispatch(JSContext* cx, const char* operation,
       RootedValue value(cx);
       if (!JS_GetElement(cx, input, i, &value)) return false;
       RootedObject dependency(cx, KandeloVmModuleOwner(cx, value));
-      if (!dependency || dependency->realm() != owner->realm())
+      if (!dependency || JS::GetObjectRealmOrNull(dependency) != JS::GetObjectRealmOrNull(owner))
         return KandeloVmModuleRaise(cx, "ERR_VM_MODULE_DIFFERENT_CONTEXT", "Linked modules must use the same context");
       RootedValue saved(cx, ObjectValue(*dependency));
       if (!JS_DefineElement(cx, snapshot, i, saved, JSPROP_ENUMERATE)) return false;
@@ -374,7 +374,7 @@ bool KandeloVmModuleResolve(JSContext* cx, HandleValue privateValue,
   RootedObject owner(cx, KandeloVmPrivateModule(privateValue));
   *handled = !!owner;
   if (!owner) return true;
-  if (owner->realm() != cx->realm())
+  if (JS::GetObjectRealmOrNull(owner) != cx->realm())
     return KandeloVmModuleRaise(cx, "ERR_VM_MODULE_DIFFERENT_CONTEXT", "Linked modules must use the same context");
   Rooted<ModuleObject*> record(cx, KandeloVmModuleRecord(owner));
   const auto linksValue = JS::GetReservedSlot(owner, VmLinks);
@@ -388,7 +388,7 @@ bool KandeloVmModuleResolve(JSContext* cx, HandleValue privateValue,
     RootedValue linked(cx);
     if (!JS_GetElement(cx, links, i, &linked)) return false;
     RootedObject dependency(cx, KandeloVmModuleOwner(cx, linked));
-    if (!dependency || dependency->realm() != owner->realm()) return false;
+    if (!dependency || JS::GetObjectRealmOrNull(dependency) != JS::GetObjectRealmOrNull(owner)) return false;
     result.set(KandeloVmModuleRecord(dependency)); return true;
   }
   return KandeloVmModuleRaise(cx, "ERR_VM_MODULE_LINK_FAILURE", "Module request is not in the linked VM graph");
@@ -398,13 +398,13 @@ bool KandeloVmModuleMetadata(JSContext* cx, HandleValue privateValue,
   RootedObject owner(cx, KandeloVmPrivateModule(privateValue));
   *handled = !!owner;
   if (!owner) return true;
-  if (owner->realm() != cx->realm())
+  if (JS::GetObjectRealmOrNull(owner) != cx->realm())
     return KandeloVmModuleRaise(cx, "ERR_VM_MODULE_DIFFERENT_CONTEXT", "Linked modules must use the same context");
   RootedValue callback(cx), referrer(cx), ignored(cx);
   if (!KandeloVmModuleRegistryValue(cx, owner, "initializeImportMeta", &callback)) return false;
   if (callback.isUndefined()) return true;
   if (!KandeloVmModuleRegistryValue(cx, owner, "callbackReferrer", &referrer)) return false;
-  RootedValueArray<2> arguments(cx);
+  JS::RootedValueArray<2> arguments(cx);
   arguments[0].setObject(*meta); arguments[1].set(referrer);
   if (!JS_WrapValue(cx, &callback)) return false;
   for (size_t i = 0; i < 2; i++) if (!JS_WrapValue(cx, arguments[i])) return false;
@@ -416,7 +416,7 @@ bool KandeloVmModuleDynamic(JSContext* cx, HandleValue privateValue,
   RootedObject owner(cx, KandeloVmPrivateModule(privateValue));
   *handled = !!owner;
   if (!owner) return true;
-  if (owner->realm() != cx->realm())
+  if (JS::GetObjectRealmOrNull(owner) != cx->realm())
     return KandeloVmModuleRaise(cx, "ERR_VM_MODULE_DIFFERENT_CONTEXT", "Linked modules must use the same context");
   RootedValue callback(cx), referrer(cx), returned(cx);
   if (!KandeloVmModuleRegistryValue(cx, owner, "importModuleDynamically", &callback)) return false;
@@ -434,7 +434,7 @@ bool KandeloVmModuleDynamic(JSContext* cx, HandleValue privateValue,
     SetFunctionNativeReserved(fn, 0, ObjectValue(*promise));
     SetFunctionNativeReserved(fn, 1, ObjectValue(*owner));
   }
-  RootedValueArray<4> arguments(cx);
+  JS::RootedValueArray<4> arguments(cx);
   arguments[0].setString(moduleRequest->specifier()); arguments[1].set(referrer);
   arguments[2].setObject(*attributes); arguments[3].setInt32(3);
   if (!JS_WrapValue(cx, &callback)) return false;
