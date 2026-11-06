@@ -25713,3 +25713,46 @@ command, source identities and outputs are in
 `.context/graphics-native-freeciv-r543-runs/console-test-r7/`. This changes
 only acceptance-test configuration and assertions, not Freeciv or its recipe.
 It does not resolve the browser startup/interaction failures above.
+
+### 2026-11-06 portable browser-runner readiness and complete libc baseline
+
+R536's browser libc startup error was a runner defect, not a kernel result.
+The normal Vite process printed ready in1948ms, but its colored stdout was
+`Local\x1b[22m:` rather than the literal `Local:` that the runner awaited.
+The independent R550 normal-config probe preserved that output and failed
+its own120s literal-marker deadline. Neither deadline was increased.
+
+A shared bounded stdout matcher now strips terminal controls after joining
+chunks. libc, SQLite and MariaDB browser runners use it; partial markers
+and split escape sequences survive transport boundaries without retaining
+unbounded logs. This is portable Node tooling, with no macOS-specific
+launcher or product change. Focused controls cover the original colored
+marker miss, every split position, missing markers, OSC exclusion, sticky
+readiness and bounded history.
+
+`graphics-vite-ready-r552-r1-1106-132130-4a66` passed18s: those controls, strict
+types for all three runners, an actual Chromium libc `functional/string`
+program under `FORCE_COLOR=1` (exit0), and frozen source/normal-product hashes.
+Patch SHA256:
+`961fa60a21d95e85d607519776d6e107a813da66d08ea20618ff92325faece77`.
+Integration repeats of controls, strict runner types and whitespace passed6s
+in `graphics-vite-ready-integration-r553-1106-133131-3b97`. This does not
+establish full SQLite/MariaDB suite acceptance.
+
+The complete frozen browser libc baseline then passed4m12s:
+`graphics-browser-libc-full-r552-1106-132549-7dd9`, using all324 unchanged
+normal R494/SDK binaries and the same324 case identities as R536. Chromium
+reported307 PASS and17 canonical XFAIL, with zero FAIL/XPASS/ERROR/TIMEOUT,
+no duplicate/missing/extra cases, runner exit0 and full input integrity0.
+There was no retry/filtering or binary rebuild. The normal per-case30s
+timeout and context reload policy remained unchanged. The original R536
+324 startup errors remain failed evidence.
+
+The initial private expected-list extractor could stop at a parenthesis in
+a shell comment. A separate comment-safe extraction of the authoritative
+arrays preserved both judgments and produced identical per-case verdicts;
+the potentially omitted `setjmp_legacy` is absent from these324 binaries.
+Raw results, command, hashes and both accounting judgments remain in
+`.context/graphics-browser-ready-r552-runs/full-libc-r2/` and
+`full-libc-r3-accounting/`. This is the normal pre-ownership-fix baseline,
+not final-tree libc acceptance after the pending B1 resource changes.

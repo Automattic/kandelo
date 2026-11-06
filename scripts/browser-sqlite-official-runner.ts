@@ -5,6 +5,8 @@ import { createServer } from "node:net";
 import { resolve } from "node:path";
 import { chromium, type Browser } from "playwright";
 
+import { ViteStartupOutput } from "./vite-startup-output";
+
 const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const BROWSER_DIR = resolve(REPO_ROOT, "apps/browser-demos");
 const VFS_IMAGE = resolve(BROWSER_DIR, "public/sqlite-test.vfs.zst");
@@ -73,6 +75,7 @@ async function startViteServer(port: number): Promise<ChildProcess> {
       },
     );
     let started = false;
+    const startupOutput = new ViteStartupOutput();
     const timeout = setTimeout(() => {
       if (!started) {
         proc.kill();
@@ -82,7 +85,7 @@ async function startViteServer(port: number): Promise<ChildProcess> {
     proc.stdout!.on("data", (data: Buffer) => {
       const text = data.toString();
       process.stderr.write(`[vite] ${text}`);
-      if (!started && text.includes("Local:")) {
+      if (!started && startupOutput.push(text)) {
         started = true;
         clearTimeout(timeout);
         setTimeout(() => resolvePromise(proc), 500);
