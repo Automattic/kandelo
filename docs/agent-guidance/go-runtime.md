@@ -732,6 +732,14 @@ RSS samples; an earlier round's retained pages must not be attributed to a
 later stack. Chromium samples sum process RSS and can double-count shared
 pages, so keep that quantity distinct from unique physical footprint.
 
+Record `/proc/<pid>/status` thread counts alongside module-cache and guest
+memory snapshots. Zero `threadCompiles` counts the host cache's compile
+calls; it does not measure what an engine retains after transferring a
+module to each thread. Preserve native process measurements outside the
+page so a content-process kill does not erase the evidence. Inspect actual
+Wasm section sizes before proposing debug stripping; do not assume a large
+module contains DWARF or remove names needed for failure diagnostics.
+
 For Node diagnostics, record process RSS and, on macOS, physical footprint;
 V8's `--print-wasm-offheap-memory-size` is useful for an exit-time compiled
 module sample, not a running-service memory plateau. Guard large runs against

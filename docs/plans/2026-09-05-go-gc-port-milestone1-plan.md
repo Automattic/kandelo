@@ -18,6 +18,7 @@ WordPress revision 37 builds through the normal source union: 184/184
 nodes, all 11 products, and the published-consumer check pass in 19m56s.
 The image is 79,330,377 bytes with SHA-256
 `79c47b29053245fc4a295af30dfa41a1ea655b7515ec1654b9460fc2a15c1beb`.
+This image predates the declared RSS-tool cohort now being rebuilt.
 The normal Kandelo web app is running on loopback port 5417 and serves those
 exact bytes. The preview URL and HTTP identity record are in
 `.context/frankenphp-preview-artifacts.json`.
@@ -185,6 +186,33 @@ crash-recovery fixture. It must preserve a published post, exact uploaded
 PNG, and saved site-template heading with the original image source
 disabled. These new cases are not yet run. Optional browser-host memory
 samples now also retain ordinary `/proc/<pid>/status` thread counts.
+
+### Terminal wake: broader verification — 2026-11-06
+
+SpiderMonkey revision 16 and its Node adapter build successfully in the
+cohort retry, clearing the Python version conflict. The retry then reaches
+normal image assembly; coherent final publication is still pending.
+
+- The seven browser memory-boundary checks pass, including nested protocol
+  declarations and tiny views retaining whole shared memories:
+  `.context/terminal-wake-browser-boundary.log`.
+- The host build, including declarations, passes:
+  `.context/terminal-wake-host-build.log`.
+- `npm run test:teardown:engines` passes 3/3 Node and 7/7 Bun checks with
+  no skips. This supplements the 239 source-only memory/ownership checks;
+  it does not establish the complete repeated browser-switching gate.
+  Evidence: `.context/terminal-wake-node-bun.log`.
+- Job `terminal-wake-c-conformance-1106-104757-0c5b` passes 89 Sortix
+  signal/I/O cases on Node and 89 on Chromium, with two existing skips
+  each and no failures, errors, or timeouts. Its normally published,
+  isolated projection and runtime identities are recorded at
+  `.context/current-c-conformance-hnjFsx/artifacts.json`.
+- Playwright collects all nine visible WordPress cases and eight
+  persistence cases in the expanded Chromium inventory. Collection is
+  not evidence that those browser workflows ran.
+
+No speed, physical-memory plateau, WebKit kill fix, complete Go/POSIX
+conformance, or production-readiness claim follows from these checks.
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task.
