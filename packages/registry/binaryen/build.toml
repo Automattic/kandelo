@@ -1,0 +1,11 @@
+script_path = "packages/registry/binaryen/build-binaryen.sh"
+inputs = [
+  "packages/registry/binaryen/build-binaryen.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "sdk/activate.sh",
+  "sdk/cmake/Platform/Kandelo.cmake",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

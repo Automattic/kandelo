@@ -19,20 +19,10 @@ function loadBytes(path: string): ArrayBuffer {
 
 async function runCase(script: string): Promise<{ code: number; out: string; err: string }> {
   const bashBin = resolve(repoRoot, "packages/registry/bash/bin/bash.wasm");
-  const coreutilsBin = resolve(repoRoot, "packages/registry/coreutils/bin/coreutils.wasm");
   let out = "";
   let err = "";
-  const execPrograms: Record<string, string> = {
-    "/bin/bash": bashBin,
-    "/bin/sh": bashBin,
-  };
-  for (const n of ["cat", "wc", "sort", "echo", "ls", "printf", "head", "tail"]) {
-    execPrograms[`/bin/${n}`] = coreutilsBin;
-    execPrograms[`/usr/bin/${n}`] = coreutilsBin;
-  }
   const host = new NodeKernelHost({
     maxWorkers: 8,
-    execPrograms,
     onStdout: (_pid, data) => { out += Buffer.from(data).toString("utf8"); },
     onStderr: (_pid, data) => { err += Buffer.from(data).toString("utf8"); },
   });

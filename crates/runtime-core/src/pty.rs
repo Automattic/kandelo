@@ -19,6 +19,7 @@ const PTY_BUF_CAPACITY: usize = 4096;
 ///   master write → line discipline → slave read  (input: keyboard → program)
 ///   slave write  → output processing → master read (output: program → screen)
 pub struct PtyPair {
+    pub index: u32,
     /// Persistent devpts metadata initialized from the creator's effective
     /// credentials. In the absence of a separately configured tty group, the
     /// creator's effective GID is the authoritative tty-group source.
@@ -42,6 +43,7 @@ pub struct PtyPair {
 impl PtyPair {
     fn new(owner_uid: u32, owner_gid: u32) -> Self {
         PtyPair {
+            index: u32::MAX,
             owner_uid,
             owner_gid,
             mode: DEFAULT_SLAVE_MODE,
@@ -80,6 +82,9 @@ impl PtyPair {
     /// Echo bytes are appended to the output buffer (master read side).
     pub fn process_master_input(&mut self, byte: u8) -> Option<u32> {
         let byte = self.terminal.translate_input_byte(byte)?;
+        let old_input = self.input_buf.len() + self.terminal.cooked_buffer.len();
+        let old_eof = self.terminal.eof_pending();
+        let old_output = self.output_buf.len();
         let was_readable = self.slave_has_data();
         let had_output = self.master_has_data();
         let opost = self.terminal.c_oflag & crate::terminal::OPOST != 0;
@@ -124,6 +129,15 @@ impl PtyPair {
             }
         }
 
+        if self.input_buf.len() + self.terminal.cooked_buffer.len() > old_input
+            || !old_eof && self.terminal.eof_pending()
+        {
+            crate::epoll::notify(crate::epoll::Source::Pty(self.index, false), 0x41);
+        }
+        if self.output_buf.len() > old_output {
+            crate::epoll::notify(crate::epoll::Source::Pty(self.index, true), 0x41);
+        }
+
         if (!was_readable && self.slave_has_data()) || (!had_output && self.master_has_data()) {
             crate::wakeup::push_pty_readiness();
         }
@@ -156,6 +170,7 @@ impl PtyPair {
             }
         }
         if was_canonical != will_be_canonical {
+            crate::epoll::notify(crate::epoll::Source::Pty(self.index, false), 0x41);
             crate::wakeup::push_pty_readiness();
         }
     }
@@ -207,6 +222,9 @@ impl PtyPair {
     /// Write from the slave side. Does output processing (OPOST) and puts
     /// data into the output buffer for the master to read.
     pub fn slave_write(&mut self, data: &[u8]) -> usize {
+        if !data.is_empty() {
+            crate::epoll::notify(crate::epoll::Source::Pty(self.index, true), 0x41);
+        }
         if !data.is_empty() && !self.master_has_data() {
             crate::wakeup::push_pty_readiness();
         }
@@ -262,7 +280,9 @@ pub fn alloc_pty(owner_uid: u32, owner_gid: u32) -> Option<usize> {
     let table = get_table();
     for (i, slot) in table.iter_mut().enumerate() {
         if slot.is_none() {
-            *slot = Some(PtyPair::new(owner_uid, owner_gid));
+            let mut pair = PtyPair::new(owner_uid, owner_gid);
+            pair.index = i as u32;
+            *slot = Some(pair);
             return Some(i);
         }
     }

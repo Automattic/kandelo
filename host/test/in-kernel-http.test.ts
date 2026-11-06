@@ -1,3 +1,4 @@
+import { MessageChannel } from "node:worker_threads";
 /**
  * External HTTP request interface — prototype test.
  *
@@ -91,6 +92,30 @@ describe.skipIf(!tinyServerPath)("external HTTP request interface", () => {
     }
   }, 30_000);
 
+  it("routes HTTP through a Kandelo peer and preserves the local listener path", async () => {
+    const server = new NodeKernelHost({ maxWorkers: 4 });
+    const client = new NodeKernelHost({ maxWorkers: 4 });
+    try {
+      await Promise.all([server.init(), client.init()]);
+      await server.hostRemoteNetwork();
+      const { port1, port2 } = new MessageChannel();
+      await Promise.all([
+        server.attachRemotePeer({ port: port1, maxPayload: 1200, maxControlBytes: 65536 }),
+        client.joinRemoteNetwork({ port: port2, maxPayload: 1200, maxControlBytes: 65536 }),
+      ]);
+      for (const [destination, hostname, path] of [[server, "host", "/remote-peer"], [client, undefined, "/local-listener"]] as const) {
+        const exit = destination.spawn(loadWasm(tinyServerPath!), ["tiny-http-server", "8086"]);
+        await expect.poll(() => destination.pickListenerTarget(8086), { timeout: 10_000 }).not.toBeNull();
+        const response = await client.fetchInKernel(8086, { method: "GET", url: path, headers: { Host: "host" }, body: null }, { hostname, timeoutMs: 10_000 });
+        expect(response.status).toBe(200);
+        expect(JSON.parse(new TextDecoder().decode(response.body)).path).toBe(path);
+        expect(await exit).toBe(0);
+      }
+      await client.leaveRemoteNetwork();
+      await expect(client.fetchInKernel(8086, { method: "GET", url: "/", headers: {}, body: null }, { hostname: "host" })).rejects.toThrow(/No Kandelo network session/);
+    } finally { await Promise.all([server.destroy(), client.destroy()]); }
+  }, 45_000);
+
   it("rejects with a clear error when no listener is bound on the port", async () => {
     const host = new NodeKernelHost({ maxWorkers: 4 });
     await host.init();
@@ -105,6 +130,31 @@ describe.skipIf(!tinyServerPath)("external HTTP request interface", () => {
       await host.destroy().catch(() => {});
     }
   }, 15_000);
+
+  it("receives an early server response while a request exceeds the TCP pipe capacity", async () => {
+    let listening!: () => void;
+    const ready = new Promise<void>(resolve => { listening = resolve; });
+    const host = new NodeKernelHost({
+      maxWorkers: 4,
+      onStderr: (_pid, bytes) => {
+        if (new TextDecoder().decode(bytes).includes("tiny-http-server: listening")) listening();
+      },
+    });
+    await host.init();
+    try {
+      const exited = host.spawn(loadWasm(tinyServerPath!), ["tiny-http-server", "8086"]);
+      await ready;
+      const response = await host.fetchInKernel(8086, {
+        method: "POST", url: "/large", headers: { Host: "kernel.local" },
+        body: new Uint8Array(300_000),
+      }, { timeoutMs: 5000 });
+      expect(response.status).toBe(200);
+      expect(JSON.parse(new TextDecoder().decode(response.body)).path).toBe("/large");
+      expect(await exited).toBe(0);
+    } finally {
+      await host.destroy();
+    }
+  }, 30_000);
 });
 
 describe("buildRawHttpRequest / parseRawHttpResponse", () => {

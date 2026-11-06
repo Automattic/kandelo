@@ -1,6 +1,6 @@
 // KandeloCallTypes: an out-of-tree LLVM pass plugin (clang -fpass-plugin),
 // built and loaded by the Kandelo SDK for every C/C++ compile
-// (sdk/src/lib/calltypes-plugin.ts, docs/sdk-guide.md "Compiler facts").
+// (crates/kandelo-cc/src/plugin.rs, docs/sdk-guide.md "Compiler facts").
 //
 // It gives wasm-fork-instrument source-level facts about calls without
 // changing the code that ships (docs/plans/2026-10-02-fork-sinks.md).
@@ -965,11 +965,18 @@ struct EmitPass : PassInfoMixin<EmitPass> {
 
 } // namespace
 
-extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
-  return {LLVM_PLUGIN_API_VERSION, "KandeloCallTypes", "0.3", [](PassBuilder &PB) {
-            PB.registerPipelineStartEPCallback(
-                [](ModulePassManager &MPM, OptimizationLevel) { MPM.addPass(TagPass()); });
-            PB.registerOptimizerLastEPCallback(
-                [](ModulePassManager &MPM, OptimizationLevel, ThinOrFullLTOPhase) { MPM.addPass(EmitPass()); });
-          }};
+// Schedule the two passes. The plugin library registers them for
+// -fpass-plugin; compiled into clang (KANDELO_CALLTYPES_STATIC), the Clang
+// half registers them when `-add-plugin kandelo-fncasts` activates it.
+void kandeloRegisterCallTypesPasses(PassBuilder &PB) {
+  PB.registerPipelineStartEPCallback(
+      [](ModulePassManager &MPM, OptimizationLevel) { MPM.addPass(TagPass()); });
+  PB.registerOptimizerLastEPCallback(
+      [](ModulePassManager &MPM, OptimizationLevel, ThinOrFullLTOPhase) { MPM.addPass(EmitPass()); });
 }
+
+#ifndef KANDELO_CALLTYPES_STATIC
+extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
+  return {LLVM_PLUGIN_API_VERSION, "KandeloCallTypes", "0.3", kandeloRegisterCallTypesPasses};
+}
+#endif

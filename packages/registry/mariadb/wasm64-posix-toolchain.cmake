@@ -72,7 +72,7 @@ set(CMAKE_NM "${LLVM_NM}" CACHE FILEPATH "NM")
 # --- HAND-MAINTAINED MIRROR OF THE SDK LINK CONTRACT. IT HAS DRIFTED. ---
 #
 # The flags below are a hand-copied mirror of the SDK's compile/link contract
-# (sdk/src/lib/flags.ts, plus the conditional branches in sdk/src/bin/cc.ts),
+# (crates/kandelo-cc/src/flags.rs, plus the conditional branches in crates/kandelo-cc/src/driver.rs),
 # wasm64 arch aside. This file did not previously say so at all. Nothing keeps
 # the copy in step with the original, and it is behind today.
 #
@@ -108,7 +108,7 @@ set(CMAKE_NM "${LLVM_NM}" CACHE FILEPATH "NM")
 # this drift. A missing flag is an SDK change; re-mirror deliberately, or do
 # the wrapper port.
 #
-# --- Compiler flags (mirror sdk/src/lib/flags.ts COMPILE_FLAGS) ---
+# --- Compiler flags (mirror crates/kandelo-cc/src/flags.rs COMPILE_FLAGS) ---
 set(WASM64_FLAGS
   "--target=wasm64-unknown-unknown"
   "-matomics"
@@ -125,7 +125,7 @@ set(CMAKE_CXX_FLAGS_INIT "${WASM64_FLAGS_STR} -nostdinc++ -isystem ${WASM_POSIX_
 
 # Executables may leave undefined only the imports the host supplies:
 # libc/glue/kandelo-host-imports.txt, generated from
-# shared::abi::HOST_ENV_IMPORTS (same contract as sdk/src/lib/flags.ts).
+# shared::abi::HOST_ENV_IMPORTS (same contract as crates/kandelo-cc/src/flags.rs).
 if(DEFINED ENV{WASM_POSIX_GLUE_DIR})
   set(_KANDELO_GLUE_DIR "$ENV{WASM_POSIX_GLUE_DIR}")
 else()
@@ -136,7 +136,7 @@ if(NOT EXISTS "${_KANDELO_HOST_IMPORTS}")
   message(FATAL_ERROR "Link allowance not found at ${_KANDELO_HOST_IMPORTS}")
 endif()
 
-# --- Linker flags (mirror sdk/src/lib/flags.ts LINK_FLAGS; see the drift
+# --- Linker flags (mirror crates/kandelo-cc/src/flags.rs LINK_FLAGS; see the drift
 # --- note above the compiler flags) ---
 set(WASM64_LINK_FLAGS
   "-nostdlib"
@@ -272,12 +272,10 @@ set(GNUTLS_LIBRARY "GNUTLS_LIBRARY-NOTFOUND" CACHE FILEPATH "" FORCE)
 set(GNUTLS_INCLUDE_DIR "GNUTLS_INCLUDE_DIR-NOTFOUND" CACHE PATH "" FORCE)
 set(OPENSSL_FOUND FALSE CACHE BOOL "" FORCE)
 
-# --- Curses/terminfo stubs ---
-set(CURSES_FOUND TRUE CACHE BOOL "Curses found (stub)" FORCE)
-set(CURSES_LIBRARY "${WASM_POSIX_SYSROOT}/lib/libc.a" CACHE FILEPATH "Curses library (stub)" FORCE)
-set(CURSES_INCLUDE_PATH "${WASM_POSIX_SYSROOT}/include" CACHE PATH "Curses include path" FORCE)
-set(CURSES_HAVE_CURSES_H FALSE CACHE BOOL "" FORCE)
-set(CURSES_HAVE_NCURSES_H FALSE CACHE BOOL "" FORCE)
+# Keep terminal-library selection identical to wasm32: a real target library,
+# compiled from the declared ncurses-source dependency under this recipe's roots.
+set(CURSES_LIBRARY "$ENV{WASM_POSIX_MARIADB_TERMINFO_PREFIX}/lib/libtinfow.a" CACHE FILEPATH "Target terminfo" FORCE)
+set(CURSES_INCLUDE_PATH "$ENV{WASM_POSIX_MARIADB_TERMINFO_PREFIX}/include/ncursesw" CACHE PATH "Target curses headers" FORCE)
 
 # --- PCRE2 paths ---
 set(PCRE2_INCLUDE_DIR "${WASM_POSIX_SYSROOT}/include" CACHE PATH "PCRE2 include dir" FORCE)

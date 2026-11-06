@@ -1,0 +1,21 @@
+=== closed 80b3c0544395 ===
+ReachingPlan {
+    activations: {
+        0,
+    },
+    control_reachable: {
+        0,
+    },
+    tail_sites: {},
+}
+
+=== external 80b3c0544395 ===
+ReachingPlan {
+    activations: {
+        0,
+    },
+    control_reachable: {
+        0,
+    },
+    tail_sites: {},
+}

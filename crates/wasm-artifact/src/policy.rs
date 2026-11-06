@@ -23,7 +23,8 @@ use crate::facts::{read_artifact_facts, ArtifactFacts};
 pub struct ArtifactPolicy<'a> {
     /// The ABI epoch the artifact must declare, when the caller knows it.
     pub expected_abi: Option<u32>,
-    /// The 32-byte digest of `hash(abi/snapshot.json + ABI_VERSION)`.
+    /// The 32-byte program digest (`ABI_VERSION` plus the snapshot's program
+    /// surface; see `xtask` `local_abi_identity`).
     ///
     /// WHY this exists beside `expected_abi`: the ABI *number* can be identical
     /// across a structural change that regenerated the snapshot, so the number
@@ -172,7 +173,7 @@ pub fn describe_facts_policy_failures(
         // metadata was found, so naming 12 would assert something false: that
         // the reader recognized ABI 12 fork surface, which it has no tables to
         // recognize.
-        let epoch = wasm_posix_shared::ABI_VERSION.to_string();
+        let epoch = wasm_posix_program_abi::ABI_VERSION.to_string();
         report.failures.push(format!(
             "contains ABI {epoch} wasm-fork-instrument metadata, imports, or exports"
         ));

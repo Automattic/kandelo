@@ -3,7 +3,7 @@
 # pass half, and KandeloFnCasts.cpp, the Clang AST half) into one shared
 # library: build.sh <output-file>.
 #
-# The SDK runs this on demand (sdk/src/lib/calltypes-plugin.ts) and caches
+# The SDK runs this on demand (crates/kandelo-cc/src/plugin.rs) and caches
 # the result under a key derived from these sources and the LLVM identity;
 # run it directly only to debug the build. It needs the dev shell
 # (scripts/dev-shell.sh): the plugin must be compiled against the headers of

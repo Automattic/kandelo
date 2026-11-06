@@ -1,8 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import {
-  imageOwnedRuntimeUrlMapper,
-  imageOwnedRuntimeUrlTable,
-} from "../../apps/browser-demos/lib/init/image-owned-runtime-urls";
+import { resolveImageOwnedLazyAsset } from "../../host/src/vfs/vfs-asset-group-reference";
 import {
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
@@ -10,73 +8,91 @@ import {
 import { SHELL_LAZY_ARCHIVE_SPECS, SHELL_LAZY_DATA_ARCHIVE_SPECS } from "../../images/vfs/scripts/shell-lazy-archives";
 
 /**
- * Shell lazy deployment URL closure: every token the shell image can DECLARE is
- * one a deployment can SERVE.
+ * Lazy deployment URL closure: every address the rootfs and shell images can
+ * DECLARE is one a deployment can SERVE.
  *
- * The deployment does not rewrite the image's lazy URLs: a build-time address
- * in the image is the canonical address, and the deployment maps it when it
- * fetches (the image's deferred half belongs to the kernel, so the host does
- * not write it). The closure is therefore asked of the MAPPING, which needs no
- * filesystem and covers every declared token rather than the ones a fixture
- * happened to register.
+ * The deployment does not rewrite the image's lazy addresses, and it keeps no
+ * table of them: the kernel worker resolves each address to its package
+ * member under the deployment's lazy-asset directory (an asset group in
+ * production, the dev server's route in development). So the closure is a
+ * property of that rule, checked here for every declared address, with no
+ * filesystem.
  */
-describe("shell lazy deployment URL closure", () => {
-  const AUTHORITY = {
-    deploymentBase: "/a/",
-    directoryUrl: "https://demo.invalid/a/assets-group/",
-    manifestUrl: "https://demo.invalid/a/assets-group/manifest.json",
-  };
+const DIRECTORY = "https://demo.invalid/a/assets-group/";
 
-  it("maps every declared shell token before product boot", () => {
-    const table = imageOwnedRuntimeUrlTable();
-    for (const spec of SHELL_LAZY_BINARY_SPECS) {
-      const token = shellLazyPlaceholderUrl(spec);
-      expect(table[token], `${spec.id} declares ${token}, which nothing serves`)
-        .toBeTruthy();
+/** The package-mirror path a resolver path names; `programs/x` is wasm32. */
+function member(resolverPath: string): string {
+  return resolverPath.replace(/^programs\/(?!wasm32\/|wasm64\/)/, "programs/wasm32/");
+}
+
+function rootfsLazyAddresses(): string[] {
+  // Every rootfs output is lazy except those marked eager; each lazy one is
+  // recorded as `binaries/<binary>` (images/rootfs/PACKAGES.toml
+  // `lazy_url_prefix`).
+  const mapping = readFileSync(new URL("../../images/rootfs/PACKAGES.toml", import.meta.url), "utf8");
+  const addresses: string[] = [];
+  for (const block of mapping.split(/^\[\[packages\]\]$/m).slice(1)) {
+    if (/^install\s*=\s*"eager"/m.test(block.split(/^\[\[packages\.outputs\]\]$/m)[0]!)) continue;
+    for (const match of block.matchAll(/^\s*binary\s*=\s*"([^"]+)"/gm)) {
+      addresses.push(`binaries/${match[1]!}`);
     }
+  }
+  return addresses;
+}
+
+describe("lazy deployment URL closure", () => {
+  it("serves every shell lazy file at its package member", () => {
+    for (const spec of SHELL_LAZY_BINARY_SPECS) {
+      expect(
+        resolveImageOwnedLazyAsset(DIRECTORY, shellLazyPlaceholderUrl(spec)),
+        `${spec.id} declares ${shellLazyPlaceholderUrl(spec)}`,
+      ).toBe(`${DIRECTORY}assets/${member(spec.resolverPath)}`);
+    }
+  });
+
+  it("serves every shell lazy archive at its package member", () => {
     for (const spec of [...SHELL_LAZY_ARCHIVE_SPECS, ...SHELL_LAZY_DATA_ARCHIVE_SPECS]) {
       expect(
-        table[spec.archiveUrl],
-        `${spec.id} declares ${spec.archiveUrl}, which nothing serves`,
-      ).toBeTruthy();
+        resolveImageOwnedLazyAsset(DIRECTORY, spec.archiveUrl),
+        `${spec.id} declares ${spec.archiveUrl}`,
+      ).toBe(`${DIRECTORY}assets/${member(spec.resolverPath)}`);
     }
   });
 
-  it("maps them under an asset-group deployment too", () => {
-    // The other deployment shape: resolved against a manifest directory rather
-    // than read from a build-time table. Both must cover the same tokens, or a
-    // demo works in one deployment and not the other.
-    const map = imageOwnedRuntimeUrlMapper(AUTHORITY);
-    for (const spec of [...SHELL_LAZY_ARCHIVE_SPECS, ...SHELL_LAZY_DATA_ARCHIVE_SPECS]) {
-      const member = spec.resolverPath.replace(
-        /^programs\/(?!wasm32\/)/,
-        "programs/wasm32/",
-      );
-      expect(map(spec.archiveUrl)).toBe(
-        `https://demo.invalid/a/assets-group/assets/${member}`,
+  it("serves every rootfs lazy output at its package member", () => {
+    const addresses = rootfsLazyAddresses();
+    expect(addresses).toContain("binaries/programs/wasm32/bash.wasm");
+    expect(addresses).not.toContain("binaries/programs/wasm32/login.wasm");
+    for (const address of addresses) {
+      expect(resolveImageOwnedLazyAsset(DIRECTORY, address), address).toBe(
+        `${DIRECTORY}assets/${address.slice("binaries/".length)}`,
       );
     }
   });
 
-  it("maps the file-type database in ordinary and grouped deployments", () => {
-    const token = "binaries/programs/wasm32/file/file-magic.lite";
-    expect(imageOwnedRuntimeUrlTable()[token]).toBeTruthy();
-    expect(imageOwnedRuntimeUrlMapper(AUTHORITY)(token)).toBe(
-      "https://demo.invalid/a/assets-group/assets/programs/wasm32/file/file-magic.lite",
-    );
-  });
-
-  it("rejects unknown build-time file and archive tokens", () => {
-    const map = imageOwnedRuntimeUrlMapper(AUTHORITY);
+  it("leaves addresses outside the grammar to the deployment's base URL", () => {
     for (const unknown of [
       "binaries/programs/wasm32/../escape.wasm",
       "kandelo-lazy:programs/../escape.wasm",
       "not-a-known-archive.zip",
+      "vim.zip",
+      "kandelo-lazy:programs/wasm32",
       "https://elsewhere.invalid/grep.wasm",
       "",
     ]) {
-      expect(() => map(unknown), `${JSON.stringify(unknown)} must be refused`)
-        .toThrow();
+      expect(resolveImageOwnedLazyAsset(DIRECTORY, unknown), JSON.stringify(unknown))
+        .toBeNull();
+    }
+  });
+
+  it("refuses a directory that is not a plain directory URL", () => {
+    for (const directory of [
+      "https://demo.invalid/a/assets-group",
+      "https://demo.invalid/a/assets-group/?x=1",
+      "https://demo.invalid/a/assets-group/#part",
+    ]) {
+      expect(() => resolveImageOwnedLazyAsset(directory, "kandelo-lazy:programs/vim.zip"), directory)
+        .toThrow(/directory is invalid/);
     }
   });
 });

@@ -31,7 +31,7 @@ import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
 import { zeroCapacityStatfs } from "../statfs";
 import { ST_NOSUID } from "../vfs/types";
 import { AT_FLAGS, OPEN_FLAGS } from "../generated/abi";
-import { NativeMetadataOverlay } from "./native-metadata";
+import { NativeMetadataOverlay, nativeEntryInode } from "./native-metadata";
 
 const UTIME_NOW = 0x3fffffff;
 const UTIME_OMIT = 0x3ffffffe;
@@ -559,7 +559,7 @@ export class NodePlatformIO implements PlatformIO {
 
   readdir(
     handle: number,
-  ): { name: string; type: number; ino: number } | null {
+  ): { name: string; type: number; ino: number | bigint } | null {
     let dir = this.dirHandles.get(handle);
     if (!dir) {
       // The cursor is opened on first use: a directory handle is an anchor,
@@ -579,7 +579,7 @@ export class NodePlatformIO implements PlatformIO {
     else if (entry.isSocket()) dtype = 12; // DT_SOCK
     else if (entry.isCharacterDevice()) dtype = 2; // DT_CHR
     else if (entry.isBlockDevice()) dtype = 6; // DT_BLK
-    return { name: entry.name, type: dtype, ino: 0 };
+    return { name: entry.name, type: dtype, ino: nativeEntryInode(dir.path, entry.name) };
   }
 
 

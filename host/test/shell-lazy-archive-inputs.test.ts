@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { zipSync } from "fflate";
@@ -572,7 +572,7 @@ describe("declared shell lazy-archive inputs", () => {
     "indexes and hashes the exact resolved $id bundle bytes once",
     (spec) => {
       const expected = archiveFor(spec);
-      const path = writeArchive(spec.archiveUrl, expected);
+      const path = writeArchive(basename(spec.resolverPath), expected);
       const calls: Array<[string, string]> = [];
       const resolve = (resolverPath: string, dependency: string): string => {
         calls.push([resolverPath, dependency]);
@@ -610,7 +610,7 @@ describe("declared shell lazy-archive inputs", () => {
     const bytes = zipSync({
       [spec.requiredMember]: new TextEncoder().encode(".TH LSOF 8\n"),
     });
-    const path = writeArchive(spec.archiveUrl, bytes);
+    const path = writeArchive(basename(spec.resolverPath), bytes);
     const fs = KandeloImageFs.create();
 
     const archive = registerDeclaredShellLazyArchive(fs, spec, () => path);
@@ -634,7 +634,7 @@ describe("declared shell lazy-archive inputs", () => {
     const bytes = zipSync({
       "share/man/man8/other.8": new TextEncoder().encode(".TH OTHER 8\n"),
     });
-    const path = writeArchive(spec.archiveUrl, bytes);
+    const path = writeArchive(basename(spec.resolverPath), bytes);
     const fs = KandeloImageFs.create();
 
     expect(() =>
@@ -661,7 +661,7 @@ describe("declared shell lazy-archive inputs", () => {
   it("rejects a valid ZIP from the wrong bundle before changing the VFS", () => {
     const vim = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "vim-browser-bundle")!;
     const nethack = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "nethack-browser-bundle")!;
-    const wrongPath = writeArchive(nethack.archiveUrl, archiveFor(nethack));
+    const wrongPath = writeArchive(basename(nethack.resolverPath), archiveFor(nethack));
     const fs = KandeloImageFs.create();
 
     expect(() =>
@@ -676,7 +676,7 @@ describe("declared shell lazy-archive inputs", () => {
   it("reports a corrupt declared output as an invalid lazy ZIP", () => {
     const spec = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "vim-browser-bundle")!;
     const corruptPath = writeArchive(
-      spec.archiveUrl,
+      basename(spec.resolverPath),
       new Uint8Array([1, 2, 3]),
     );
 

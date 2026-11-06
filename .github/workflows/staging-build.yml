@@ -279,7 +279,7 @@ jobs:
             set -euo pipefail
             PACKAGE_STAGING_REQUIRED="${{ needs.change-scope.outputs.package_staging_required }}"
 
-            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
+            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/program-abi/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
             # WHY: a published immutable release cannot be reused by a later
@@ -1220,7 +1220,7 @@ jobs:
         # matrix-overlay path used by first runs and partial staging releases.
         run: |
           set -euo pipefail
-          ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
+          ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/program-abi/src/lib.rs | awk '{print $4}')
           EXPECTED="$RUNNER_TEMP/staging-expected.json"
           BLOCKED="$RUNNER_TEMP/staging-publication-blockers.json"
           bash scripts/dev-shell.sh env \

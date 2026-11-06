@@ -28,12 +28,14 @@ export const browserRootfsModuleSpecifier = "@rootfs-vfs";
  * page), so a build that cannot supply it cannot boot a machine.
  */
 export const browserImageModule32ModuleSpecifier = "@kandelo-image-module32-wasm";
+export const browserPositionedImageModule32ModuleSpecifier = "@kandelo-image-module-positioned32-wasm";
 export const browserPagesVfsProductsModuleSpecifier =
   "virtual:kandelo-pages-vfs-products";
 
 export const browserVirtualModuleCapabilities = Object.freeze({
   [browserKernelModuleSpecifier]: "kernel-wasm",
   [browserImageModule32ModuleSpecifier]: "kandelo-image-module32-wasm",
+  [browserPositionedImageModule32ModuleSpecifier]: "kandelo-image-module-positioned32-wasm",
   [browserPagesVfsProductsModuleSpecifier]: "pages-vfs-products",
   [browserRootfsModuleSpecifier]: "rootfs-vfs",
 });

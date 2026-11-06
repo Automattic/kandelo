@@ -197,11 +197,13 @@ export function validateKernelHostAdapterManifest(
         `does not match host ABI version ${ABI_VERSION}`,
     );
   }
-  if (manifest.requiredHostAdapterVersion > HOST_ADAPTER_VERSION) {
+  // The kernel-host version is exact: the kernel and host ship together, and
+  // a kernel-host-only change bumps it without bumping ABI_VERSION.
+  if (manifest.requiredHostAdapterVersion !== HOST_ADAPTER_VERSION) {
     throw new Error(
-      `kernel requires host adapter version ` +
-        `${manifest.requiredHostAdapterVersion}, but this host supports ` +
-        `${HOST_ADAPTER_VERSION}`,
+      `kernel was built for kernel-host version ` +
+        `${manifest.requiredHostAdapterVersion}, but this host is ` +
+        `${HOST_ADAPTER_VERSION}; rebuild the kernel and host together`,
     );
   }
 

@@ -50,7 +50,7 @@ fn source_fixture() -> SourceFixture {
     );
     for path in [
         "scripts/dev-shell.sh",
-        "scripts/run-local-build.sh",
+        "scripts/setup.sh",
         "scripts/install-local-binary.sh",
         "scripts/wasm-artifact-guards.sh",
         "scripts/build-musl.sh",

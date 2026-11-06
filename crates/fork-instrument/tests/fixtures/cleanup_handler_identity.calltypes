@@ -1,0 +1,20 @@
+#kandelo-calltypes	5
+M	a.c
+F	cleanup	0
+T	cleanup	A
+D	cleanup	0	0
+F	caller	0
+R	cleanup	cleanup
+C	caller	0	_pthread_cleanup_pop
+D	caller	0	1
+#kandelo-calltypes	5
+M	b.c
+F	cleanup	0
+T	cleanup	B
+C	cleanup	0	kernel_fork
+D	cleanup	0	1
+#kandelo-calltypes	5
+M	pthread_cleanup_pop.c
+F	_pthread_cleanup_pop	1
+S	_pthread_cleanup_pop	0	->	icall	A
+D	_pthread_cleanup_pop	1	1

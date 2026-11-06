@@ -41,6 +41,7 @@ import {
   PROCESS_STATE_EXITED,
   SOCKET_SCM_RIGHTS,
   SOCKET_SOL_SOCKET,
+  WAKEUP_EVENT_RECORD_BYTES,
 } from "../src/generated/abi";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
@@ -575,7 +576,10 @@ describe("kernel-owned large transfer reservation protocol", () => {
   ] as const)(
     "%s drains all deferred PTY chunks before followers without lending callback authority",
     async (_name, pointerWidth) => {
-      const harness = makeTransferHarness(pointerWidth, 16);
+      // PTY input also drains kernel wakeup events through this same region
+      // (256 records), so that buffer is the smallest faithful capacity.
+      const capacity = 256 * WAKEUP_EVENT_RECORD_BYTES;
+      const harness = makeTransferHarness(pointerWidth, capacity);
       const order: string[] = [];
       const writtenBytes: number[][] = [];
       let readCount = 0;
@@ -610,7 +614,7 @@ describe("kernel-owned large transfer reservation protocol", () => {
         harness.kernelBytes[Number(pointer)] = 0x7a;
         return 1;
       });
-      const input = Uint8Array.from({ length: 17 }, (_, index) => index + 1);
+      const input = Uint8Array.from({ length: capacity + 1 }, (_, index) => index + 1);
 
       harness.gate.invokeKernelExport("outer", () => {
         harness.worker.ptyMasterWrite(7, input);
@@ -625,11 +629,11 @@ describe("kernel-owned large transfer reservation protocol", () => {
       await Promise.resolve();
 
       expect(writtenBytes).toEqual([
-        Array.from({ length: 16 }, (_, index) => index + 1),
-        [17],
+        Array.from({ length: capacity }, (_, index) => (index + 1) & 0xff),
+        [(capacity + 1) & 0xff],
       ]);
       expect(order).toEqual([
-        "write:16",
+        `write:${capacity}`,
         "write:1",
         "read",
         "callback",

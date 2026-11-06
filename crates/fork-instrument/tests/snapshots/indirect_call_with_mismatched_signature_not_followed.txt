@@ -1,0 +1,27 @@
+=== closed 3401b1b20104 ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+    },
+    control_reachable: {
+        0,
+        1,
+    },
+    tail_sites: {},
+}
+
+=== external 3401b1b20104 ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+    },
+    tail_sites: {},
+}

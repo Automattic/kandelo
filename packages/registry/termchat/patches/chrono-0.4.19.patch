@@ -1,0 +1,33 @@
+# Kandelo is a Unix Wasm target: use the Unix implementation, not
+# the browser-only stub as well. Upstream target-selection portability fix.
+--- a/src/sys.rs
++++ b/src/sys.rs
+@@ -16,7 +16,7 @@
+ 
+ use std::time::{SystemTime, UNIX_EPOCH};
+ 
+-#[cfg(any(target_arch = "wasm32", target_env = "sgx"))]
++#[cfg(any(all(target_arch = "wasm32", not(unix)), target_env = "sgx"))]
+ #[path = "sys/stub.rs"]
+ mod inner;
+ 
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -99,14 +99,14 @@
+ std = []
+ unstable-locales = ["pure-rust-locales", "alloc"]
+ wasmbind = ["wasm-bindgen", "js-sys"]
+-[target."cfg(all(target_arch = \"wasm32\", not(any(target_os = \"emscripten\", target_os = \"wasi\"))))".dependencies.js-sys]
++[target."cfg(all(target_arch = \"wasm32\", not(unix), not(any(target_os = \"emscripten\", target_os = \"wasi\"))))".dependencies.js-sys]
+ version = "0.3"
+ optional = true
+ 
+-[target."cfg(all(target_arch = \"wasm32\", not(any(target_os = \"emscripten\", target_os = \"wasi\"))))".dependencies.wasm-bindgen]
++[target."cfg(all(target_arch = \"wasm32\", not(unix), not(any(target_os = \"emscripten\", target_os = \"wasi\"))))".dependencies.wasm-bindgen]
+ version = "0.2"
+ optional = true
+-[target."cfg(all(target_arch = \"wasm32\", not(any(target_os = \"emscripten\", target_os = \"wasi\"))))".dev-dependencies.wasm-bindgen-test]
++[target."cfg(all(target_arch = \"wasm32\", not(unix), not(any(target_os = \"emscripten\", target_os = \"wasi\"))))".dev-dependencies.wasm-bindgen-test]
+ version = "0.3"
+ [target."cfg(windows)".dependencies.winapi]
+ version = "0.3.0"

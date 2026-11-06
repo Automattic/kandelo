@@ -57,7 +57,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        ABI="$(grep -oE 'ABI_VERSION: u32 = [0-9]+' crates/shared/src/lib.rs | awk '{print $4}')"
+        ABI="$(grep -oE 'ABI_VERSION: u32 = [0-9]+' crates/program-abi/src/lib.rs | awk '{print $4}')"
         PACKAGE="${{ inputs.package }}"
         ARCH="${{ inputs.arch }}"
         CACHE_KEY_SHA="${{ inputs.cache-key-sha }}"

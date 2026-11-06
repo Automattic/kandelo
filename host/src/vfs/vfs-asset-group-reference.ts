@@ -8,42 +8,57 @@ export function validateVfsAssetGroupRelativePath(value: unknown): string {
   return value;
 }
 
-/** Normalize the complete legacy reference grammar carried by product images. */
+/**
+ * The package member a product image's lazy address names.
+ *
+ * Every address is self-describing: `binaries/programs/<path>` (the rootfs's
+ * lazy outputs) or `kandelo-lazy:programs/<path>` (the shell's lazy files and
+ * archives), where `programs/<path>` is the package-mirror path and a path
+ * without an architecture is wasm32. The result is the member's asset-group
+ * path, `assets/programs/<arch>/<path>`. No address is special-cased by name,
+ * so adding an image entry never needs an edit here.
+ */
 export function normalizeImageOwnedLazyReference(reference: string): string {
-  const binaryPrefix = "binaries/programs/wasm32/";
-  if (reference.startsWith(binaryPrefix)) {
-    const path = reference.slice(binaryPrefix.length);
+  for (const prefix of ["binaries/programs/", "kandelo-lazy:programs/"]) {
+    if (!reference.startsWith(prefix)) continue;
+    const path = reference.slice(prefix.length);
     validateVfsAssetGroupRelativePath(path);
-    return `assets/programs/wasm32/${path}`;
-  }
-  const lazyPrefix = "kandelo-lazy:programs/";
-  if (reference.startsWith(lazyPrefix)) {
-    const path = reference.slice(lazyPrefix.length);
-    validateVfsAssetGroupRelativePath(path);
-    return `assets/programs/wasm32/${path}`;
-  }
-  if (reference === "espeak-ng-data.zip") {
-    return "assets/programs/wasm32/espeak-ng/espeak-ng-data.zip";
-  }
-  if (reference === "kandelo-desktop-data.zip") {
-    return "assets/programs/wasm32/wayland-demo/kandelo-desktop-data.zip";
-  }
-  if (reference === "love-examples.zip") {
-    return "assets/programs/wasm32/love/share/love-examples.zip";
-  }
-  if (
-    reference === "ca-certificates.zip" ||
-    reference === "vim.zip" || reference === "freeciv.zip" || reference === "nethack.zip" ||
-    reference === "ruby.zip" || reference === "python.zip" ||
-    reference === "node.zip" || reference === "perl.zip" ||
-    reference === "composer.zip" ||
-    reference === "man.zip" || reference === "coreutils-docs.zip" ||
-    reference === "lsof-docs.zip" ||
-    reference === "kandelo-sdk.zip"
-  ) {
-    return `assets/programs/wasm32/${reference}`;
+    const arch = path.split("/", 1)[0];
+    const member = arch === "wasm32" || arch === "wasm64" ? path : `wasm32/${path}`;
+    if (member.split("/").length < 2) break;
+    return `assets/programs/${member}`;
   }
   throw new Error("Image-owned lazy runtime reference is invalid");
+}
+
+/**
+ * The URL under `directory` that serves an address a product image records,
+ * or `null` when the address is outside the image-owned grammar.
+ *
+ * `directory` is where the deployment serves package members: an asset
+ * group's directory in production, a dev-server route in development. Each
+ * address normalizes to its member path (`assets/programs/wasm32/...`), so
+ * no deployment needs a table naming every lazy file an image might carry.
+ */
+export function resolveImageOwnedLazyAsset(
+  directory: string,
+  reference: string,
+): string | null {
+  let member: string;
+  try {
+    member = normalizeImageOwnedLazyReference(reference);
+  } catch {
+    return null;
+  }
+  const base = new URL(directory);
+  if (!base.pathname.endsWith("/") || base.search !== "" || base.hash !== "") {
+    throw new Error("Image-owned lazy asset directory is invalid");
+  }
+  const resolved = new URL(member, base);
+  if (resolved.origin !== base.origin || !resolved.pathname.startsWith(base.pathname)) {
+    throw new Error("Image-owned lazy asset escaped its directory");
+  }
+  return resolved.href;
 }
 
 function isSafeRelativePath(value: unknown): value is string {

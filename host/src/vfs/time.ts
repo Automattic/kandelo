@@ -35,13 +35,17 @@ export class NodeTimeProvider implements TimeProvider {
 
 export class BrowserTimeProvider implements TimeProvider {
   clockGettime(clockId: number): { sec: number; nsec: number } {
+    const ms = performance.now();
     if (clockId === 1 || clockId === 2 || clockId === 3 || clockId === 7) {
       // CLOCK_MONOTONIC / CPU-time clocks / CLOCK_BOOTTIME
-      const ms = performance.now();
       return { sec: Math.floor(ms / 1000), nsec: Math.floor((ms % 1000) * 1_000_000) };
     }
-    // CLOCK_REALTIME
-    const now = Date.now();
-    return { sec: Math.floor(now / 1000), nsec: (now % 1000) * 1_000_000 };
+    // CLOCK_REALTIME: the same high-resolution timer plus the wall-clock
+    // time it started at, as NodeTimeProvider does with hrtime. Date.now()
+    // counts whole milliseconds, so two readings a few microseconds apart
+    // were equal while CLOCK_MONOTONIC had already moved.
+    const wallMs = performance.timeOrigin + ms;
+    const sec = Math.floor(wallMs / 1000);
+    return { sec, nsec: Math.min(999_999_999, Math.floor((wallMs - sec * 1000) * 1_000_000)) };
   }
 }

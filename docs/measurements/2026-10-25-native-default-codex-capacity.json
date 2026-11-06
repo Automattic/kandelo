@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "date_utc": "2026-10-25",
+  "source_commit": "1db42bf6f56b77d79e6ced707d188eb6d543cbe0",
+  "source_snapshot": {
+    "files": 208,
+    "patch_empty": true,
+    "private_directory": ".context/native-default-build/"
+  },
+  "cargo_profile": "instrumenter",
+  "binary_sha256": "57b22a4dfaa72a595c3ffbacc8ff0ddeec5a54ec645be861cf09bfc507d58006",
+  "cli_sha256": "021f22d9cc097ea3c52092d0232520fac4e1c586301938f338f70af346cc9f47",
+  "input": {
+    "bytes": 284605220,
+    "sha256": "17b829246d2396cf73f60d3dee8fea1b64dbbae8b96b0825d7228ce288ef7e42"
+  },
+  "output": {
+    "bytes": 246465071,
+    "sha256": "a0310b790bb90acc1661cff69bc75fbf138ce5675da780e8e29d1d9db1188e0f",
+    "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
+    "data_sha256": "23dc62254d667427322745aa51b73682787e685d370665de878f8e4a174662ca",
+    "identical_to_previous_successful_native_output": true
+  },
+  "measurement": {
+    "elapsed_s": 517.6234727080446,
+    "physical_lifetime_peak_bytes": 543786232,
+    "rust_requested_peak_bytes": 451872941,
+    "compiler_facts_used": true
+  },
+  "guard": {
+    "physical_bytes": 17179869184,
+    "deadline_s": 1800,
+    "returncode": 0,
+    "stop_reason": null
+  },
+  "specialization_cache": {
+    "policy": "clamp(4 * original function-body bytes, 16 MiB, 64 MiB), allocated on demand",
+    "allowed_bytes": 67108864,
+    "peak_charged_bytes": 67108864,
+    "hits": 1114850,
+    "misses": 362066,
+    "evictions": 86862
+  },
+  "scope": [
+    "input snapshot",
+    "native analysis",
+    "emission",
+    "feature declaration",
+    "serial WebAssembly validation",
+    "atomic publication",
+    "checksums"
+  ],
+  "excluded": [
+    "Binaryen",
+    "independent Node compilation",
+    "browser execution",
+    "guest or Codex execution"
+  ],
+  "background": "No own build/test work or other agent build/test jobs running. An idle peer Vite/PHP preview remained. macOS Spotlight indexing used about 1.2 CPU cores at preflight; ordinary apps/services remained active. This is a capacity run, not a paired throughput benchmark.",
+  "private_evidence": ".context/native-codex-default-20261025/",
+  "host": {
+    "cpu": "Apple M5 Max",
+    "cpu_cores": 18,
+    "physical_memory_bytes": 51539607552,
+    "macos": "27.0.1"
+  },
+  "started_utc": "2026-10-25 05:27:20 UTC"
+}

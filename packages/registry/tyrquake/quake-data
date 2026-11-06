@@ -1,0 +1,29 @@
+#!/bin/sh
+# Reused by the ordinary Quake demo and the network activity. The original
+# shareware distribution is supplied intact; extraction runs inside the guest.
+set -eu
+source_id="$1"
+archive="$2"
+base="$3"
+mkdir -p "$base/id1"
+case "$source_id" in
+    shareware)
+        echo 'quake: extracting shareware data from quake106.zip...' >&2
+        cd "$base"
+        unzip -o "$archive" >/dev/null
+        lha xf resource.1 >/dev/null
+        src="$(find "$base" -iname pak0.pak | head -n1)"
+        [ -n "$src" ] || { echo 'quake: archive contained no pak0.pak' >&2; exit 1; }
+        [ "$src" = "$base/id1/pak0.pak" ] || cp "$src" "$base/id1/pak0.pak"
+        ;;
+    librequake)
+        # Retain the full lite release, including all documentation/notices.
+        unzip -o "$archive" -d "$base" >/dev/null
+        rmdir "$base/id1"
+        mv "$base/lite/id1" "$base/id1"
+        ;;
+    openquartz) unzip -o "$archive" -d "$base/id1" >/dev/null ;;
+    file) cp "$archive" "$base/id1/pak0.pak" ;;
+    *) echo 'quake-data: unknown game data source' >&2; exit 2 ;;
+esac
+[ -s "$base/id1/pak0.pak" ] || { echo 'quake: game data preparation failed' >&2; exit 1; }

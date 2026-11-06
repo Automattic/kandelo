@@ -1,0 +1,29 @@
+=== closed d53a11ea556b ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        4,
+    },
+    control_reachable: {
+        0,
+        2,
+        4,
+    },
+    tail_sites: {},
+}
+
+=== external d53a11ea556b ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        4,
+    },
+    control_reachable: {
+        0,
+        2,
+        4,
+    },
+    tail_sites: {},
+}

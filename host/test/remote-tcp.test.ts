@@ -50,6 +50,18 @@ describe('bounded remote TCP', () => {
     const p = pair(10000,123); const {client,server}=p.connect(); p.setAdmission(false);
     errno(() => client.send(new Uint8Array(1000),0),11); expect(client.readiness() & NET_READINESS.SEND_READY).toBe(0); p.setAdmission(true); expect(client.send(new Uint8Array(1000),0)).toBe(123); p.drain(); expect(server.recv(1000,0)).toHaveLength(123);
   });
+  it('retains a link write notification across blocked-to-writable admission between observations', () => {
+    const p = pair(); const {client} = p.connect();
+    const ready = client.readiness();
+    const writeClock = client.readinessGeneration!(1);
+    const readClock = client.readinessGeneration!(0);
+    p.setAdmission(false);
+    errno(() => client.send(new Uint8Array([1]), 0), 11);
+    p.setAdmission(true); p.a.writable();
+    expect(client.readiness()).toBe(ready);
+    expect(client.readinessGeneration!(1)).toBeGreaterThan(writeClock);
+    expect(client.readinessGeneration!(0)).toBe(readClock);
+  });
   it('delivers admitted DATA before FIN, allows replies after EOF, and implements read shutdown', () => {
     const {connect,drain} = pair(); const {client,server}=connect(); client.send(new Uint8Array([1,2,3]),0); client.shutdown(1); drain();
     expect(server.recv(99,0)).toEqual(new Uint8Array([1,2,3])); expect(server.recv(99,0)).toHaveLength(0);

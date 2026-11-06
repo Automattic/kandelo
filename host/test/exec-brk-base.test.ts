@@ -28,7 +28,7 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 
 // Read the kernel's expected ABI version from `libc/glue/abi_constants.h`,
 // which `scripts/check-abi-version.sh` keeps in sync with
-// `crates/shared/src/lib.rs::ABI_VERSION`.
+// `crates/program-abi/src/lib.rs::ABI_VERSION`.
 function readKernelAbiVersion(): number {
   const header = readFileSync(join(findRepoRoot(), "libc/glue/abi_constants.h"), "utf-8");
   const m = header.match(/#define\s+WASM_POSIX_ABI_VERSION\s+(\d+)u?/);

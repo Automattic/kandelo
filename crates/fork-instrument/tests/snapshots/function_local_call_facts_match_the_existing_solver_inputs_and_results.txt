@@ -1,0 +1,51 @@
+=== effective 08f1338c335f ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [
+                    2,
+                ],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)
+
+=== untyped 08f1338c335f ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [
+                    2,
+                ],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)

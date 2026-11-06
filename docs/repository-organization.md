@@ -10,6 +10,8 @@ Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes ar
 |------|------|--------------|
 | `crates/runtime-core/` | Engine-independent POSIX subsystems: syscalls, process table, fd tables, filesystems, signals, sockets, PTY, devices | Worker lifecycle, browser APIs, package builds |
 | `crates/kernel/` | Wasm exports and host-import adapter around runtime-core | Independent POSIX implementations, package builds |
+| `crates/program-abi/` | Program ABI version and artifact declarations consumed by the fork instrumenter | Kernel-host-only metadata |
+| `crates/shared/` | Platform contracts and re-exports of program ABI declarations | Fork instrumentation implementation |
 | `host/src/` | TypeScript host runtime shared by Node.js and browser environments | Browser demo UI |
 | `apps/browser-demos/` | Vite app, demo pages, Kandelo web UI, app-local helpers | Core browser host runtime |
 | `apps/signalling/` | Portable PHP piplet, Spacefast database-backed signalling, and server tests | Guest socket semantics, RTC data transport |
@@ -77,6 +79,7 @@ Package behavior tests live with the package so future CI can map changes to rel
 | `packages/registry/<name>/test/` | Behavior of a specific ported package |
 | `tests/package-system/` | Package registry and binary-fetching automation |
 | `tests/test-artifacts/` | Shared host/kernel test artifact ownership manifests |
+| `tests/baselines/` | Failure/anomaly evidence and provenance; not test expectations |
 | `tests/libc/`, `tests/posix/`, `tests/sortix/` | External conformance suites and overlays |
 | `apps/browser-demos/test/` | Browser app and demo-page integration behavior |
 

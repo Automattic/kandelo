@@ -1,0 +1,12 @@
+kind = "source"
+name = "ncurses-source"
+version = "6.5"
+
+[source]
+url = "https://invisible-mirror.net/archives/ncurses/ncurses-6.5.tar.gz"
+sha256 = "136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6"
+provider = "archive"
+
+[license]
+spdx = "X11"
+url = "https://invisible-island.net/ncurses/ncurses-license.html"

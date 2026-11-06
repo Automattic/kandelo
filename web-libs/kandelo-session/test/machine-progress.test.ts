@@ -42,6 +42,21 @@ describe("LiveKernelHost machine progress", () => {
     expect(host.getMachineProgress()).toEqual(loadingImage());
   });
 
+  it("keeps decompression separate and copies its counters", () => {
+    const host = new LiveKernelHost({ status: "booting" });
+    const progress = loadingImage({
+      operation: "download",
+      decompression: { completed: 8192, status: "loading" },
+    });
+    host.setMachineProgress(progress);
+    progress.decompression!.completed = 0;
+    const stored = host.getMachineProgress()!;
+    expect(stored.completed).toBe(1024);
+    expect(stored.decompression?.completed).toBe(8192);
+    stored.decompression!.completed = 1;
+    expect(host.getMachineProgress()?.decompression?.completed).toBe(8192);
+  });
+
   it("carries teardown progress in processes", () => {
     const host = new LiveKernelHost({ status: "running" });
     host.setMachineProgress(unloading());

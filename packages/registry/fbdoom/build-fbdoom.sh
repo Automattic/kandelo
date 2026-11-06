@@ -194,3 +194,6 @@ echo "==> fbdoom.wasm built."
 cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary fbdoom "$OUT_BIN" fbdoom.wasm
+install_local_runtime_file fbdoom "$HERE/sessions.json" sessions.json
+
+install_local_runtime_file fbdoom "${HERE}/doom-activity" doom-activity

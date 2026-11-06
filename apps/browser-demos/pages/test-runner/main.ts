@@ -6,11 +6,13 @@
  * and returns { exitCode, stdout, stderr, hostDiagnostics }.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { writeVfsBinary } from "@host/vfs/image-helpers";
 import type { HostDiagnostic } from "@host/host-diagnostic";
 import type { WasmModuleCacheStats } from "@host/wasm-module-cache";
 import type { BrowserCorsProxyConfig } from "@host/networking/browser-cors-proxy";
 import pcmAudioWorkletUrl from "@host/audio/pcm-audio-worklet.js?url";
 import {
+  createEmptyBuildFs,
   createBuildFsWithEtc,
   finalizeKernelOwnedImage,
   settleWebKitReclaim,
@@ -352,6 +354,7 @@ async function init() {
     timeoutMs = 30_000,
     options?: {
       dataFiles?: DataFile[];
+      seedEtc?: boolean;
       cwd?: string;
       env?: string[];
       ptyInput?: PtyInput;
@@ -368,7 +371,9 @@ async function init() {
     // Assemble the test image (exec binaries + /etc + any data files) in a
     // transient build FS, then hand ownership to the kernel worker so the main
     // thread holds no VFS SharedArrayBuffer across the per-test loop.
-    const buildFs = await createBuildFsWithEtc();
+    const buildFs = options?.seedEtc === false
+      ? await createEmptyBuildFs()
+      : await createBuildFsWithEtc();
     execBinarySupport?.populate(buildFs);
     if (options?.dataFiles) {
       for (const file of options.dataFiles) {
@@ -387,13 +392,7 @@ async function init() {
         const fileData = file.useWasmBytes
           ? new Uint8Array(wasmBytes)
           : new Uint8Array(file.data!);
-        const fd = buildFs.open(
-          file.path,
-          0x241 /* O_WRONLY|O_CREAT|O_TRUNC */,
-          0o755,
-        );
-        buildFs.write(fd, fileData, null, fileData.length);
-        buildFs.close(fd);
+        writeVfsBinary(buildFs, file.path, fileData, 0o755);
       }
     }
     const vfsImage = await finalizeKernelOwnedImage(buildFs);

@@ -19,6 +19,7 @@ import type { KernelHost } from "./kernel-host";
 export type DockActionPhase = "stopping" | "starting" | "done";
 
 export interface RunDemoDockActionOptions {
+  terminalPath?: string;
   /**
    * Awaited before the next step, so a caller can attach to the terminal in
    * `starting` and see the command's first line of output.
@@ -42,21 +43,26 @@ export async function runDemoDockAction(
   options: RunDemoDockActionOptions = {},
 ): Promise<void> {
   const { onPhase = () => {}, stopTimeoutMs = 10_000, stop } = options;
+  if (options.terminalPath !== undefined && options.terminalPath !== "/dev/pts/0" && !stop) {
+    throw new Error("A non-primary activity terminal requires its own stop handler");
+  }
   await onPhase("stopping");
   if (stop) await stop();
   else await host.interruptShellForeground({ timeoutMs: stopTimeoutMs });
-  await onPhase("starting");
   // Like the machine's own command, the restart is usually a long-lived
   // foreground program: resolve on the PTY write, not on a later prompt.
-  await host.dispatchShellCommand(action.restart);
+  await host.dispatchShellCommand(action.restart, {
+    ...(options.terminalPath === undefined ? {} : { path: options.terminalPath }),
+    beforeWrite: () => onPhase("starting"),
+  });
   await onPhase("done");
 }
 
 /**
  * What the action's program says it is doing, read from the machine's
- * terminal output. The display is dark between Ctrl+C and the replacement's
- * first frame (for a download that is most of a minute), so the UI shows the
- * program's own words rather than a spinner that knows nothing.
+ * terminal output. Preparation can take a while before the next program
+ * draws. An ownerless display returns to the terminal, where the script's
+ * own output remains visible; a selected stage can show these status lines.
  *
  * The convention is the one Unix tools already use: a program prefixes its
  * status lines with its own name (`scummvm-play: Verifying…`). Only
@@ -127,8 +133,9 @@ export function shellPromptReturned(output: string): boolean {
 export async function followShellOutput(
   host: KernelHost,
   onText: (text: string) => void,
+  terminalPath = "/dev/pts/0",
 ): Promise<() => void> {
-  const pty = await host.attachPty("/dev/pts/0");
+  const pty = await host.attachPty(terminalPath);
   const decoder = new TextDecoder();
   let replayingHistory = true;
   const off = pty.onData((bytes) => {

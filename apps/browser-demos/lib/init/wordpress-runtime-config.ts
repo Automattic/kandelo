@@ -1,4 +1,4 @@
-export type WordPressDatabaseKind = "sqlite" | "mariadb";
+export type WordPressDatabaseKind = "sqlite" | "mariadb" | "selectable";
 
 export const WORDPRESS_CONFIG_INIT_SCRIPT = `# wp-config.php is rendered into the VFS by the browser host before dinit starts.
 : "\${WP_APP_PATH:=/computer}"
@@ -18,6 +18,24 @@ if ( defined( 'WP_SITEURL' ) ) {
 `;
 
 function dbConfig(kind: WordPressDatabaseKind): string {
+  if (kind === "selectable") {
+    return `$kandelo_site_backend = $_SERVER['KANDELO_WORDPRESS_BACKEND'] ?? getenv('KANDELO_WORDPRESS_BACKEND');
+$kandelo_backend = $kandelo_site_backend ?: trim((string) @file_get_contents('/etc/kandelo/wordpress-backend'));
+if ($kandelo_site_backend) {
+    if (!in_array($kandelo_backend, array('sqlite', 'mariadb'), true)) {
+        throw new RuntimeException('Unknown WordPress site backend.');
+    }
+    define('WP_CONTENT_DIR', '/var/lib/wordpress-sites/' . $kandelo_backend . '/wp-content');
+}
+if ($kandelo_backend === 'sqlite') {
+${dbConfig("sqlite")}
+} elseif ($kandelo_backend === 'mariadb') {
+${dbConfig("mariadb")}
+} else {
+    throw new RuntimeException('The WordPress database backend has not been selected.');
+}
+unset($kandelo_backend, $kandelo_site_backend);`;
+  }
   if (kind === "mariadb") {
     return [
       "define('DB_NAME', 'wordpress');",
@@ -34,7 +52,7 @@ function dbConfig(kind: WordPressDatabaseKind): string {
     "define('DB_PASSWORD', '');",
     "define('DB_HOST', '');",
     "",
-    "define('DB_DIR', __DIR__ . '/wp-content/database/');",
+    "define('DB_DIR', (defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : __DIR__ . '/wp-content') . '/database/');",
     "define('DB_FILE', 'wordpress.db');",
   ].join("\n");
 }
@@ -105,19 +123,22 @@ define('WP_DEBUG_LOG', true);
 define('WP_DEBUG_DISPLAY', false);
 @ini_set('display_errors', '0');
 
-$kandelo_proto = '@@PROTO@@';
+$kandelo_is_forwarded = isset($_SERVER['HTTP_X_FORWARDED_HOST'])
+    || isset($_SERVER['HTTP_X_FORWARDED_PREFIX']);
+$kandelo_proto = $kandelo_is_forwarded ? '@@PROTO@@'
+    : ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http');
 // The service worker forwards this machine's public prefix
 // (e.g. /computer/humble-chestnut-cove) on every bridged request via
 // X-Forwarded-Prefix. Build WP_HOME/WP_SITEURL from it so WordPress emits links
-// under the machine's own prefix. The static @@APP_PATH@@ is only a fallback for
-// a direct, non-bridged request; using it while bridged would make WP_HOME
-// disagree with the routed prefix and double the segment
-// (/computer/<name>/app/).
+// under the machine’s own prefix. Configured path/protocol fallbacks apply
+// to forwarded requests. A direct client uses the server root and its actual
+// request scheme, independently of the browser preview’s HTTPS origin.
 $kandelo_forwarded_prefix = isset($_SERVER['HTTP_X_FORWARDED_PREFIX'])
     ? $_SERVER['HTTP_X_FORWARDED_PREFIX']
     : '';
 $kandelo_app_path = rtrim(
-    $kandelo_forwarded_prefix !== '' ? $kandelo_forwarded_prefix : '@@APP_PATH@@',
+    $kandelo_forwarded_prefix !== '' ? $kandelo_forwarded_prefix
+        : (isset($_SERVER['HTTP_X_FORWARDED_HOST']) ? '@@APP_PATH@@' : '/'),
     '/'
 );
 $kandelo_host = $_SERVER['HTTP_X_FORWARDED_HOST'] ?? $_SERVER['HTTP_HOST'] ?? 'localhost';
@@ -133,6 +154,9 @@ if ($kandelo_proto === 'https') {
 $kandelo_site_url = $kandelo_proto . '://' . $kandelo_host . $kandelo_app_path;
 define('WP_HOME', $kandelo_site_url);
 define('WP_SITEURL', $kandelo_site_url);
+if (defined('WP_CONTENT_DIR') && !defined('WP_CONTENT_URL')) {
+    define('WP_CONTENT_URL', $kandelo_site_url . '/wp-content');
+}
 
 define('WP_HTTP_BLOCK_EXTERNAL', true);
 define('DISABLE_WP_CRON', true);

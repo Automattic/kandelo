@@ -24,19 +24,20 @@ outside the interactive shell.
 
 | Command | Purpose |
 |---------|---------|
-| `./run.sh setup` | Prepare the SDK, supported packages, root filesystem, and host runtime |
+| `./run.sh setup` | Prepare the SDK, browser-required packages, root filesystem, and host runtime |
+| `./run.sh setup --all` | Also build every supported package, including test-only packages |
 | `./run.sh browser` | Build/reuse browser images and start the development server |
 | `./run.sh run <example>` | Run a Node.js demo, such as `shell`, `nginx`, or `wordpress` |
 | `./run.sh build <target>` | Build a kernel, package, or image, such as `kernel`, `php`, or `shell-vfs` |
 | `./run.sh rebuild <target>` | Force a target to rebuild |
 | `./run.sh clean <target>` | Remove a target's outputs and products that depend on it |
-| `./run.sh local-build [--json]` | Build supported packages and images; optionally print JSON |
+| `./run.sh local-build [--json]` | Build packages needed by the browser and images; add `--all` for all supported packages |
 | `./run.sh local-build --plan` | Preview cached nodes, work to do, and an estimated duration |
 | `./run.sh cache-gc` | Preview unused cache entries; add `--apply` to remove them |
 | `./run.sh list` | List build targets, examples, and test suites |
 
 Setup checks both musl sysroots: the target's C headers and libraries.
-It rebuilds missing or stale C libraries, builds the supported package set, and
+It rebuilds missing or stale C libraries, builds the required packages, and
 installs the root and host npm dependencies. The supported set and its
 exclusions are in `packages/sets/local-supported.toml`.
 
@@ -65,7 +66,7 @@ and runs the exact file you compiled.
 
 The shell provides this checkout's SDK commands, so no global `npm link` is
 needed. See the [SDK Guide](docs/sdk-guide.md) for C++, wasm64, compiler
-flags, and local npm packaging. For Rust guests, including `std`, see the
+flags, and the native SDK driver. For Rust guests, including `std`, see the
 [Rust SDK guide](sdk/rust/README.md).
 
 Programs using `fork()` or fork-based helpers need instrumentation after
@@ -104,16 +105,16 @@ For changes to the binary interface between programs and the kernel, follow
 
 ## Prepare to run tests
 
-Initialize the test submodules, run setup, and build test fixtures:
+Initialize the test submodules, build all supported packages, and build test fixtures:
 
 ```bash
 git submodule update --init --recursive
-./run.sh setup
+./run.sh setup --all
 scripts/dev-shell.sh bash scripts/build-programs.sh
 ```
 
-Test fixtures are small programs used by the runtime tests. Setup builds the
-supported packages; the fixture script builds additional test programs.
+Test fixtures are small programs used by the runtime tests. Setup with `--all`
+builds the supported packages; the fixture script builds additional test programs.
 A test that needs an excluded package or dormant image may also need that
 recipe built through the package resolver.
 
@@ -146,11 +147,12 @@ scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh sortix
 | `browser` | Browser runtime and UI behavior with Playwright |
 | `libc`, `posix`, `sortix` | C library and POSIX behavior against external test suites |
 
-For SDK wrappers and the ABI snapshot:
+For the SDK driver and ABI snapshot, inside the development shell:
 
 ```bash
-scripts/dev-shell.sh bash -c 'cd sdk && npm ci && npm test'
-scripts/dev-shell.sh bash scripts/check-abi-version.sh
+host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+cargo test -p kandelo-cc --target "$host_target"
+bash scripts/check-abi-version.sh
 ```
 
 For shared-memory ownership, audio, graphics lifecycle, image composition,

@@ -1,3 +1,4 @@
+import { notifyReadiness, readinessGeneration } from "./readiness-generation";
 /**
  * TLS-MITM Network Backend for browser environments.
  *
@@ -96,6 +97,7 @@ function appendHttpResponse(conn: HttpConnectionState, piece: Uint8Array): void 
     ? conn.responseBuf.subarray(conn.responseOffset)
     : new Uint8Array(0);
   conn.responseBuf = concatBuffers(unread, piece);
+  if (piece.length) notifyReadiness(conn, 0);
   conn.responseOffset = 0;
 }
 
@@ -539,6 +541,7 @@ export class TlsNetworkBackend implements NetworkIO {
 
     if (conn.kind === "tls") {
       conn.closed = true;
+      notifyReadiness(conn);
       conn.tls.close().catch(() => {});
     }
     this.connections.delete(handle);
@@ -579,6 +582,7 @@ export class TlsNetworkBackend implements NetworkIO {
           if (done) break;
           if (value && value.length > 0) {
             conn.clientDownstreamBuf = concatBuffers(conn.clientDownstreamBuf, value);
+            if (value.length) notifyReadiness(conn, 0);
           }
         }
       } catch {
@@ -589,6 +593,7 @@ export class TlsNetworkBackend implements NetworkIO {
         // races the async encryption pump: recv() could observe conn.closed
         // with an empty buffer and return a premature 0-byte EOF.
         conn.closed = true;
+      notifyReadiness(conn);
       }
     })();
 
@@ -613,6 +618,7 @@ export class TlsNetworkBackend implements NetworkIO {
     this.startHandshake(handle, conn).catch((err) => {
       conn.error = err;
       conn.closed = true;
+      notifyReadiness(conn);
     });
   }
 
@@ -645,6 +651,7 @@ export class TlsNetworkBackend implements NetworkIO {
         conn.error = err;
       }
       conn.closed = true;
+      notifyReadiness(conn);
     });
   }
 
@@ -664,6 +671,7 @@ export class TlsNetworkBackend implements NetworkIO {
       // Ignore write errors on closed connections (e.g. SSL_shutdown close_notify)
       if (!conn.closed) {
         conn.closed = true;
+      notifyReadiness(conn);
       }
     });
 
@@ -894,10 +902,12 @@ export class TlsNetworkBackend implements NetworkIO {
         }
         if (conn.requestGeneration !== generation) return;
         conn.fetchDone = true;
+        notifyReadiness(conn, 0);
       } catch (e) {
         if (conn.requestGeneration !== generation) return;
         conn.fetchError = e as Error;
         conn.fetchDone = true;
+        notifyReadiness(conn, 0);
       }
     };
 
@@ -939,6 +949,11 @@ export class TlsNetworkBackend implements NetworkIO {
    * Report what each transport makes observable. No POSIX readiness decision
    * is made here — `runtime_core::net_readiness` makes it.
    */
+  readinessGeneration(handle: number, direction: number): bigint {
+    const conn = this.connections.get(handle);
+    return conn ? readinessGeneration(conn, direction) : -1n;
+  }
+
   readiness(handle: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });

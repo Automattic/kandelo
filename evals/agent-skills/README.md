@@ -6,20 +6,24 @@ day can use them too.
 
 ## 1. Does the skill help at all? (`run.py`)
 
-`run.py` gives Claude the same read-only porting tasks twice:
+`run.py` gives Claude the same read-only tasks (porting a package, registering
+a runtime workaround, preparing the weekly upstream filing pass) twice:
 once with the skills on, and once with them off. It then scores each answer
 against a short checklist in `tasks.json` of facts a correct answer must
 mention.
 
 ```bash
-python3 evals/agent-skills/run.py              # 2 tasks x 2 arms x 3 reps, Sonnet
+python3 evals/agent-skills/run.py              # all tasks x 2 arms x 3 reps, Sonnet
 python3 evals/agent-skills/run.py --reps 1     # quick check
 ```
 
 - **Isolation:** only project settings load, so your personal hooks and plugins don't skew the result.
 - **Read the score first, then the cost.** A cheaper answer that misses checks is not a win.
 - **Read the saved answers** (the path is printed) before trusting a score. A regex match is not proof the advice is right.
-- **When to run it:** a full run is 12 sessions, about $2 on Sonnet. Run it when a skill changes, not in CI.
+- **When to run it:** run when a skill changes, not in CI. The default
+  runs every task in `tasks.json` in both arms, three times each. Cost
+  grows with that inventory; use `--tasks id,id` and `--reps 1` to scope
+  a quick check instead of assuming a fixed session count or budget.
 - **Adding a skill?** Add tasks for it to `tasks.json` and its name to `SKILLS` in `run.py`. Keep it only if it wins here.
 
 ## 2. Is it helping me? (`skill-impact.py`)
@@ -60,6 +64,15 @@ people reading this feedback catch advice that is well formed and still wrong.
 
 ## What this has decided so far
 
+A waiting skill was tried and removed before landing. Advice checks cost
+more with it enabled and did not establish incremental waiting benefits
+over the shared guidance. Both arms saw the updated CLAUDE.md, and some
+skill-off sessions still read the skill file. The retained changes are
+the core waiting guidance, CLI hints and retry regression tests. The
+experiment and its limitations are recorded in
+`evals/build-waiting/README.md`, tool 1a. Its six scenarios were removed
+from this skill-on/off runner, since no waiting skill remains to toggle.
+
 A second skill for diagnosing build failures was tried and removed. Over 3
 runs per task it cost about 20% more than no skill ($0.11 versus $0.09 per
 run) and was no more correct (0.93 versus 0.96 on the checklist). Build
@@ -68,3 +81,17 @@ found the first error just as well.
 
 The porting skill stayed: $0.13 versus $0.24 per run, half the turns, and a
 checklist score of 1.00 versus 0.97.
+
+The runtime-workaround skill (`tracking-runtime-workarounds`) stayed after
+its first eval. Two runs of one rep each, on the registry already in the
+repo, scored 1.00 versus 1.00 and 1.00 versus 1.00 on registering a
+workaround, and 1.00 versus 0.00 and 0.75 versus 0.00 on preparing the
+weekly filing pass. Without the skill, the agent described the pass from
+`CLAUDE.md` and never opened the registry README, so it named none of the
+real commands; with the skill, it named all of them. The porting tasks
+stayed at 1.00 with the skill on. The one missed check with the skill on
+was a regex miss: the answer said not to file in other words. The
+registration task shows no score difference because `CLAUDE.md` already
+carries the rule; the skill's answers were more concrete (template path,
+an existing entry to extend, the cache-key consequence of editing libc
+glue). This is a small sample, so rerun it when the skill changes.

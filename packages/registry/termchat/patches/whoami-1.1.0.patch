@@ -1,0 +1,53 @@
+# Select Unix user/account APIs for Unix Wasm targets, and exclude the
+# browser-only dependency graph. Report Kandelo without claiming Linux.
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -27,9 +27,9 @@
+ 
+ [features]
+ default = []
+-[target."cfg(target_arch = \"wasm32\")".dependencies.wasm-bindgen]
++[target."cfg(all(target_arch = \"wasm32\", not(unix)))".dependencies.wasm-bindgen]
+ version = "0.2"
+ 
+-[target."cfg(target_arch = \"wasm32\")".dependencies.web-sys]
++[target."cfg(all(target_arch = \"wasm32\", not(unix)))".dependencies.web-sys]
+ version = "0.3"
+ features = ["Navigator", "HtmlDocument", "Document", "Window"]
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -183,13 +183,13 @@
+ mod windows;
+ #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+ use self::windows as native;
+-#[cfg(target_arch = "wasm32")]
++#[cfg(all(target_arch = "wasm32", not(unix)))]
+ mod wasm;
+-#[cfg(target_arch = "wasm32")]
++#[cfg(all(target_arch = "wasm32", not(unix)))]
+ use self::wasm as native;
+-#[cfg(not(any(target_os = "windows", target_arch = "wasm32")))]
++#[cfg(all(unix, not(target_os = "windows")))]
+ mod unix;
+-#[cfg(not(any(target_os = "windows", target_arch = "wasm32")))]
++#[cfg(all(unix, not(target_os = "windows")))]
+ use self::unix as native;
+ 
+ /// Get the user's username.
+--- a/src/unix.rs
++++ b/src/unix.rs
+@@ -462,6 +462,7 @@
+ }
+ 
+ #[cfg(not(any(
++    target_os = "kandelo",
+     target_os = "macos",
+     target_os = "freebsd",
+     target_os = "dragonfly",
+@@ -523,3 +524,6 @@
+         index: Some(true),
+     }
+ }
++
++#[cfg(target_os = "kandelo")]
++pub fn platform() -> Platform { Platform::Unknown("Kandelo".into()) }

@@ -106,7 +106,7 @@ describe("ordinary guest UDP state in dedicated Node kernel workers", () => {
     } finally { await machine.destroy(); }
   }, 30_000);
 
-  const fbdoom = tryResolveBinary("programs/fbdoom.wasm");
+  const fbdoom = tryResolveBinary("programs/fbdoom/fbdoom.wasm");
   it.skipIf(!fbdoom)("finds a Doom server on another computer through the session's LAN search", async () => {
     let searchOutput = "", serverOutput = "";
     const image = await minimalImage();

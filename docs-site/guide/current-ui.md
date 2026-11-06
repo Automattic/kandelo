@@ -10,7 +10,9 @@ The public Kandelo UI is available at:
 https://automattic.github.io/kandelo/
 ```
 
-It boots prebuilt machines in the browser using `kernel.wasm`, package artifacts, and VFS images. The first screen lets users boot a preset, paste a Kandelo URL, or bring a VFS image.
+It boots computers from filesystem images in the browser. Open **Library**
+to create or reopen a computer, then use **Activities** to start installed
+apps without rebooting it.
 
 ## Requirements
 
@@ -22,7 +24,9 @@ Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-The GitHub Pages deployment uses a service worker to add the required isolation headers. If the page reports that `SharedArrayBuffer` is unavailable, clear site data and reload. A stale service worker can keep old behavior alive.
+The static deployment uses a service worker to add the required isolation
+headers. Reload if an old worker is still active. Clearing site data also
+removes local computers; export important files before doing so.
 
 ## Local Development
 
@@ -42,28 +46,37 @@ http://127.0.0.1:5401/
 at its validated source-only projection. Prefer it to launching Vite directly,
 which omits that build and selection step.
 
-## Gallery Presets
+## Computers and Activities
 
-The current UI ships local gallery presets such as:
+Choose **Library → New computer**, then an image: **Base Shell**, **Web Stack**,
+or **WordPress**. Give it a name and choose temporary or saved storage.
+Library reopens, renames, keeps, and deletes local computers. A computer's
+`?computer=<UUID>` URL reopens its own filesystem on reload; it is not a
+shareable copy of that filesystem.
 
-- Bare shell
-- Node.js
-- nginx
-- nginx + PHP
-- WordPress SQLite
-- WordPress MariaDB
-- fbDOOM
-- TyrQuake
-- Freeciv
-- LÖVE games
+Temporary computers also use browser disk storage. They become eligible for
+cleanup after 24 hours without opening them. Keep one through Library to
+retain it. Image-backed files persist; scratch mounts such as `/tmp` reset
+on reboot. Browser storage is not a backup.
 
-When a user launches a preset, the UI selects a VFS image, boots the kernel, starts the configured process, and presents the relevant surfaces:
+::: warning Experimental persistence
+Saved computers from this release will not work in the next release.
+Export important files before updating Kandelo. Transactional software
+upgrades are not implemented yet.
+:::
 
-- terminal
-- web preview for HTTP demos
-- syslog and process internals
-- VFS browser
-- framebuffer, mouse, keyboard, and audio for demos that expose those devices
+**Activities** starts installed programs on the running computer. Independent
+apps can run together; an app that needs a display or managed website port
+already in use stops the conflicting activity first. **Web** and **Graphics**
+switch between the website preview and graphical display without restarting
+their programs. Terminal, file browsing, and process information remain
+available from the dock.
+
+Web Stack includes nginx, PHP/Adminer, Python Notes, Ruby Todo, and a Redis
+voting board. Games and tools such as Doom, Quake, Freeciv, and LÖVE are
+activities on the base shell. See
+[computer storage and retention](https://github.com/Automattic/kandelo/blob/main/docs/browser-support.md#computer-library-and-retention)
+for the full storage behavior.
 
 The base shell also has PHP CLI and Composer. Each command downloads its
 deferred executable or archive on first use. Composer enables its required
@@ -84,11 +97,16 @@ The host serving the image must allow the browser to fetch it from a cross-origi
 
 ## Script-Carrying Share Links
 
-The dock's Share button turns the current machine into a link that also runs a shell script when opened. Type a script into the dialog's editor and copy the URL; the script travels in the URL's `#k1=` fragment as a size-capped, checksum-verified payload.
+**More → Share setup…** creates a link with startup settings and an optional
+shell script. It shares starting inputs, not the current filesystem or a
+network invitation. The script travels in the URL's `#k1=` fragment as a
+size-capped, checksum-verified payload.
 
 When someone opens the link, the machine boots, the script's full contents are printed in the terminal, and it then runs in the initial shell — bash on images that ship it. The script file is left in place at `/run/kandelo/inputs/script/kandelo-link.sh`, writable, so the visitor can inspect, edit, and re-run it. Opening the Share dialog on a machine booted from such a link pre-fills the editor with the inherited script, so a received link can be tweaked and re-shared.
 
-Scripts run without a confirmation prompt because every machine in the current UI is ephemeral: closing the tab discards everything, so a link can affect only its own session. A malformed or oversized link fragment fails with a visible error instead of booting. Launching a different machine from the gallery drops the fragment, so a script never follows you to another machine.
+Scripts currently run without a confirmation step. A malformed or oversized
+fragment fails with a visible error. Selecting a different computer drops
+the fragment; it does not carry that script into the selected computer.
 
 ## External Software
 
@@ -107,19 +125,19 @@ service worker HTTP bridge lets browser requests reach guest web servers.
 
 ### Network Sessions
 
-Open the dock's network panel on a running computer and create a session.
-Its invite link names the machine image and profile and opens the recipient's
-panel; the recipient clicks **Join** to connect. The host forwards IPv4 UDP
-and TCP between members. Leaving or booting another machine ends that
-computer's participation; when the host leaves, the session ends for everyone.
-Invite links do not carry the startup-script fragment from a Share link.
+Open the dock's network panel to create an invitation. Choose an installed
+activity, such as termchat or a multiplayer game, or share a plain network
+room. Packages supply the activity's setup and join steps. The host forwards
+IPv4 UDP and TCP between members. Leaving or replacing a hosted room
+disconnects its members; their programs keep running. See
+[package-declared sessions](https://github.com/Automattic/kandelo/blob/main/docs/package-sessions.md).
 
 Doom's **LAN game** dock menu can host a private game or join one in the
 session. Its waiting room shows joined players; the host can press Space
 to start early or Esc to quit. Quake's multiplayer menus can discover session
 peers. Freeciv's **Multiplayer** dock menu can host a server or join the
-session host; it uses a direct connection because multicast discovery does
-not reach peer machines. See [Freeciv multiplayer](https://github.com/Automattic/kandelo/blob/main/docs/freeciv.md#multiplayer).
+session host; its launcher uses a direct TCP connection rather than depending
+on discovery. See [Freeciv multiplayer](https://github.com/Automattic/kandelo/blob/main/docs/freeciv.md#multiplayer).
 These are LAN links, not arbitrary internet UDP access. The default connection setup
 uses STUN without a TURN relay, so some network layouts cannot connect.
 Current guest-session validation covers Chromium; Firefox/WebKit guest

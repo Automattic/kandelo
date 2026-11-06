@@ -10,6 +10,25 @@ import { NET_READINESS } from "../src/generated/abi";
 const MSG_PEEK = 0x0002;
 
 describe("LocalVirtualNetwork", () => {
+  it("routes multicast once per remote kernel receive domain and retires bindings", () => {
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
+    const sender = net.attachMachine({ id: "a", address: [10, 88, 0, 1] });
+    const receiver = net.attachMachine({ id: "b", address: [10, 88, 0, 2] });
+    const group = new Uint8Array([238, 255, 0, 1]);
+    const received: UdpDatagram[] = [];
+    const target = { kernelReceiver: "process-100", receive: (d: UdpDatagram) => { received.push(d); return 0; } };
+    expect(receiver.bindUdp("first", new Uint8Array(4), 5877, target)).toBe(0);
+    expect(receiver.bindUdp("second", new Uint8Array(4), 5877, target)).toBe(0);
+    expect(sender.udpSourceAddress(group)).toEqual(new Uint8Array([10, 88, 0, 1]));
+    const packet = { srcAddr: new Uint8Array(4), srcPort: 6000, dstAddr: group, dstPort: 5877, data: new Uint8Array([42]) };
+    expect(sender.sendDatagram(packet)).toBe(0);
+    expect(received).toHaveLength(1);
+    expect(received[0].srcAddr).toEqual(new Uint8Array([10, 88, 0, 1]));
+    receiver.unbindUdp("first"); receiver.unbindUdp("second");
+    expect(sender.sendDatagram(packet)).toBe(0);
+    expect(received).toHaveLength(1);
+  });
+
   it("resolves bounded legacy numeric IPv4 forms and valid DNS aliases", () => {
     const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const backend = net.attachMachine({

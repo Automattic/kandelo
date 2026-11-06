@@ -35,6 +35,35 @@ Run it under the normal suite environment as well as in isolation. A legacy
 mirror fixture and a source-only fixture intentionally admit different
 files; inherited settings must not change which contract a test exercises.
 
+SourceOnly admits only its selected package projection. Standalone local
+fixtures such as `fbtest.wasm` and `epoll-pwait-sigmask.wasm` can therefore
+be present on disk yet unavailable through `tryResolveBinary` under that
+policy. Run the broad host inventory with its normal resolver environment,
+and run SourceOnly consumer checks separately. If a targeted SourceOnly run
+skips a local fixture, rerun it under the normal policy; the skip is not
+evidence for the fixture's runtime behavior.
+
+Also check the canonical image when switching back to the ordinary Node
+runner. `resolveRootfsArtifact()` tries `rootfs.vfs.zst` before the program
+package request, so an older `host/wasm/rootfs.vfs.zst` can take precedence
+over a fresh SourceOnly projection. Refresh it with
+`scripts/dev-shell.sh bash scripts/build-rootfs.sh` before the broad host
+run. For a lazy artifact size mismatch, check the selected image and
+executable identities and repair stale inputs. Do not relax size checks
+or substitute unrelated executable bytes.
+
+A spec must not skip because a binary or image the supported build produces
+is missing. Missing supported output is a build defect: fail with the reason,
+as `gotoMachineOrSkip` and `gotoApp` in
+`apps/browser-demos/test/support/kandelo-machine.ts` do. Keep skips for
+documented optional content, such as network-fetched data or a product
+outside `packages/sets/local-supported.toml`.
+
+The kernel-memory ownership audit excludes the fork instrumenter's offline
+JavaScript fixtures and `scripts/check-fork-memory-artifact.ts`: they create
+private synthetic module memories, never views into a live kernel. Production
+host sources, other scripts, and browser runtime fixtures remain in scope.
+
 Keep authored-source audits separate from generated reports and private
 worktrees. Exclude those evidence directories explicitly while retaining
 production source. Report authorized deferred tests and unsupported cases
@@ -46,6 +75,32 @@ proxy session can copy the browser's `Headers` object. Check final URLs,
 header values, credentials, and referrer policy; copies do not replay a
 test subclass's `append` calls. Preserve checks for dropped fields and
 the order of repeated values.
+
+## Recorded failures and anomalies
+
+`tests/baselines/` keeps failure evidence, not test allowances. See its
+[recording workflow](../../tests/baselines/README.md). Record failures,
+expected failures, unexpected passes, skips, timeouts, runner errors and
+intermittent results; omit ordinary passes and success counters. Store each
+main run or targeted rerun separately; never replace unrelated evidence
+with a partial report. Existing conformance expectation lists still own
+accepted failures and reasons.
+
+Consult recorded failures before repeating an expensive main run. Compare
+names, reasons, host, command and recorded commit; a known name alone does
+not establish the same defect. If the evidence is insufficient, rerun only
+the relevant failures on main through the normal build path. Historical
+results must be described as historical. Records never turn a failed run
+green, and there is no freshness check or merge requirement.
+
+Use `KANDELO_TEST_REPORT_DIR` inside the dev shell to record JSON and
+console output from each normal Vitest/browser suite process. Keep the
+recorded exit code: JSON alone can omit Vitest unhandled errors.
+Keep raw logs and record provenance: commit, date, selection/command,
+host/runtime versions and load when available. Do not fill unknown historical
+fields from today's environment. Treat load-related failures as anomalies
+to investigate. Preserve observed retry outcomes and report mixed outcomes
+as intermittent; do not select a favorable retry and call it a pass.
 
 ## Validation scope and suite selection
 
@@ -60,6 +115,7 @@ Core validation surface:
 |---|---|---|
 | Workspace Rust tests | `cargo test --workspace --exclude xtask --target <host-target>` | Any change under `crates/`: kernel, fork-instrument, shared, wasm-local-root-spill, and future workspace crates. `--target` is required because the default wasm32 target has no host runner; xtask has its own always-run suite. |
 | Package-system automation tests | `cargo test -p xtask --target <host-target>` | `tools/xtask/**` changes: package resolver, binaries-dir placement, cache/output artifact validation, archive staging + canonical filename |
+| Runtime workaround repros | `scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh runtime-workarounds` | Whether each confirmed outside defect still reproduces (registry: `tests/runtime-workarounds/`). Run it in the dev shell: the Bun repros judge the dev shell's pinned Bun version. |
 | Host integration tests | `cd host && npx vitest run` | Host/runtime behavior |
 | Browser app/runtime tests | `cd apps/browser-demos && npx playwright test --grep-invert "@slow" --project=chromium` | Browser host, UI, demo, service worker, VFS image behavior |
 | Browser native filesystem contracts | `cd apps/browser-demos && npx playwright test test/native-rootfs-lazy.spec.ts test/rootfs-inspection.spec.ts --project=chromium --project=firefox --project=webkit` | Native lazy fetch/read/exec and live filesystem inspection, including Safari/WebKit |
@@ -67,20 +123,44 @@ Core validation surface:
 | musl libc-test | `scripts/run-libc-tests.sh` | libc, syscall, and kernel semantic changes |
 | Open POSIX Test Suite | `scripts/run-posix-tests.sh` | POSIX API behavior |
 | Sortix os-test | `scripts/run-sortix-tests.sh --all` | Broad POSIX/kernel regression coverage |
+| Browser conformance | `scripts/run-browser-libc-tests.sh`, `scripts/run-browser-posix-tests.sh`, `scripts/run-browser-sortix-tests.sh --all` | The same suites through the browser host (Chromium) |
 | ABI snapshot | `bash scripts/check-abi-version.sh` | ABI-adjacent changes |
+
+The browser conformance wrappers start their own Vite server on a free
+loopback port each run, so concurrent worktrees do not collide; set
+`KANDELO_BROWSER_TEST_RUNNER_PORT` only to pin one (a pinned port that is
+taken fails the run), inside `scripts/dev-shell.sh bash -c '...'`, since the
+dev shell does not pass it through. A section whose browser runner cannot start counts
+every test in it as an ERROR and fails the run;
+`scripts/test-browser-runner-accounting.sh` checks that for all three
+wrappers. The Node and browser Sortix runners share their expected
+failures, failure reasons and expectation lookup through
+`scripts/sortix-expectations.sh`, so an XPASS or a test that fails on one
+host only is a host divergence to explain, not a list to edit.
 
 For CI-shaped local runs, prefer:
 
 ```bash
-bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-workspace|cargo-xtask|vitest|browser|libc|posix|sortix> [group]
+bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-workspace|cargo-xtask|runtime-workarounds|vitest|browser|libc|posix|sortix> [group]
 ```
 
-When adding a Vitest file, update `scripts/ci-vitest-evidence-classes.tsv`.
-The runner checks that every enabled file appears exactly once before it
-starts the suite. Mark tests that need built package programs or images as
-`prepared-product`; use `source-only` only when source and the current ABI
-test fixtures are sufficient. This keeps a passing source check from being
-mistaken for validation of an older package binary.
+When adding, deleting, or renaming a Vitest file, update
+`scripts/ci-vitest-evidence-classes.tsv` in the same change: add a row, delete
+the row, or move the row to the new path and keep its class. Rows stay in byte
+order (`LC_ALL=C sort`). Mark tests that need built package programs or images
+as `prepared-product`; use `source-only` only when source and the current ABI
+test fixtures are sufficient. A `source-only` test must not import
+`host/src/binary-resolver.ts` or a `prepared-product` test, even indirectly.
+This keeps a passing source check from being mistaken for validation of an
+older package binary.
+
+`bash scripts/check-vitest-evidence-classes.sh` checks the registry in both
+directions: every row names an existing test file, and every file a
+CI-shaped Vitest run collects has exactly one row. Each failure names the file
+and says whether to delete, move, or add a row. Every `ci-run-test-suite.sh
+vitest` group runs this check before any test, and
+`tests/package-system/vitest-evidence-classes.test.ts` runs it inside a plain
+`npx vitest run`.
 
 The optional group reproduces CI's deterministic suite partitions. Vitest
 accepts `1/2`, `2/2`, or `resource-isolated`; libc accepts
@@ -115,11 +195,12 @@ builds the host, and runs:
 - The host memory-authority audit, memory budgets, bounded device buffers,
   futex retirement, exit-trap, generation, and teardown regressions;
   blocked-worker/pthread lifecycle checks on Node/V8 and Bun/JavaScriptCore.
-- Four Doom → Quake → Freeciv → LÖVE → WordPress cycles in each of Chromium,
-  Firefox, and WebKit, in one page per engine with the constrained memory
-  profile. Games must render and reach running audio through trusted
-  activation. WordPress must serve Hello world. Reloads, runtime errors,
-  forced teardown, unreviewed shared worker messages, and main-thread
+- Four Doom → Quake → Freeciv → LÖVE → tmux → WordPress cycles in each of
+  Chromium, Firefox, and WebKit, in one page per engine with the constrained
+  memory profile. Games must render and reach running audio through trusted
+  activation. Tmux must run two pane shells and leave a detached server
+  alive for machine teardown. WordPress must serve Hello world. Reloads,
+  runtime errors, forced teardown, unreviewed shared worker messages, and main-thread
   shared Wasm allocations fail the test.
 
 This gate owns its browser server; set `KANDELO_PLAYWRIGHT_PORT` if the
@@ -139,6 +220,13 @@ and live owners matter; low RSS alone does not establish reclamation. The
 protocol type audit covers declared payloads; the runtime probe covers
 actual messages, including dynamically typed RPC results. Neither replaces
 tests that prove device storage is independent of guest memory.
+
+Use a trusted keyboard gesture followed by an audio-state assertion for
+switching fixtures. The production shell handles trusted keydown as well as
+pointerdown. Awaiting a click on its transient Enable toast can instead wait
+for a button that the pointerdown activation has already removed. Preserve
+the running-state assertion, unchanged deadlines and actual audio consumers;
+do not substitute an autoplay override or a direct page-side resume call.
 
 
 Playwright WebKit is useful coverage, but is not native iOS Safari evidence.
@@ -184,10 +272,61 @@ the measurement window or limits. The Node spawn-churn test uses 256
 children with unchanged 2 MiB-per-child and 64 MiB late-growth limits.
 See [the window calibration](../measurements/2026-10-20-process-memory-rss-window.md).
 
+## Playwright storage on macOS
+
+The browser-demos Playwright configuration gives WebKit a
+run-owned CoreFoundation home. WebKit's OPFS data can otherwise land in
+`~/Library/WebKit/org.webkit.Playwright/WebsiteData`, outside the temporary
+profile passed to `launchPersistentContext`. Removing that profile alone
+does not reclaim those bytes. The run-owned home stays stable across browser
+restarts in the same run and is removed after normal suite teardown.
+Use owned persistent contexts for OPFS tests and inherit the project's launch
+environment, as the existing persistence suites do. In the pinned macOS
+WebKit runner, a new nonpersistent context can reject even
+`navigator.storage.getDirectory()` with an `UnknownError`; a subsequent
+cleanup request can then stall. Diagnose the fixture's storage access before
+attributing that failure to filesystem recovery or masking it with retries.
+Firefox's separate home-directory workaround is unchanged: macOS privacy
+protection can reject traversal of its standard user directories, even in
+an isolated home. Do not bypass those protections with a blanket sweeper.
+
+WebKit also creates `FileSystemWritableStream*` staging copies in the macOS
+temporary directory's
+`com.apple.WebKit.Networking+org.webkit.Playwright` subdirectory. These are
+file contents, not diagnostic logs. Changing `TMPDIR` does not redirect this
+Darwin-managed directory; see
+[WebKit's temporary-file implementation](https://github.com/WebKit/WebKit/blob/main/Source/WTF/wtf/cocoa/FileSystemCocoa.mm).
+Teardown removes only matching regular,
+single-linked, current-user files absent from the pre-run inventory. It
+refuses cleanup while a Playwright WebKit process is running, checks open
+descriptors with the macOS system `lsof`, and rechecks file identity before
+unlinking. Inspection failures leave the files untouched and emit a warning.
+It never sweeps the whole shared directory or the existing global data store.
+
+Set `KANDELO_PLAYWRIGHT_KEEP_STORAGE=1` inside the dev shell to retain a run
+for diagnosis. For a one-shot command, pass it after the environment boundary:
+`scripts/dev-shell.sh env KANDELO_PLAYWRIGHT_KEEP_STORAGE=1 ...`.
+Do not change the shared dev-shell keep-list just for this browser-runner
+option: that script is a declared toolchain input to every package cache key.
+A killed
+runner cannot execute teardown, and concurrent WebKit runs may defer cleanup;
+retained roots and preexisting shared-directory files need separate, explicit
+inspection before removal. Do not delete an active browser's profile or OPFS
+store to reclaim test space. This housekeeping does not change Kandelo's
+persistence, durability or crash-recovery semantics.
+
+`npm run test:unit` includes the cleanup safety tests. On macOS, run
+`npx playwright test test/playwright-storage.spec.ts --project=webkit` to
+check real OPFS writes and strict reopen in the isolated home. That regression
+is explicitly macOS/WebKit-only; other platforms and engines skip it.
+
 ## Waiting on long builds and suites
 
-`./run.sh setup`, `local-build`, full Vitest, and the conformance suites can
-run for more than 10 minutes. Full builds include compilation, fork
+`./run.sh setup`, `local-build`, `build-musl.sh`, `build-programs.sh`, and
+`xtask bootstrap` can run for more than 10 minutes, as can full Vitest,
+Playwright, dEQP/graphics CTS, POSIX/libc-test/Sortix suites and benchmarks.
+The same waiting rules apply to a peer workspace's build.
+Full builds include compilation, fork
 instrumentation, and artifact verification; their duration depends on
 package cache reuse. In August and September 2026, agents spent about 12%
 of their input tokens on poll turns and on cache rewrites after long blocking
@@ -202,7 +341,7 @@ turns. For anything longer:
 
 ```bash
 scripts/agent-job start -- ./run.sh setup   # prints a job id (run.sh enters the dev shell itself)
-scripts/agent-job wait <id>      # blocks on the job's PID for up to 9 min; exit 124 = still running, run it again
+scripts/agent-job wait <id>      # up to 9 min; repeat only on the still-running wait-window notice
 scripts/agent-job status [<id>]  # elapsed vs usual duration, local-build progress, live processes
 scripts/agent-job result <id>    # exit status, [suite-health] lines, log tail
 ```
@@ -223,13 +362,19 @@ and the rest ran outside the dev shell from the repo root. If a vitest job
 log's ` RUN  v… <path>` line names the repo root instead of `.../host`, the
 run used the wrong config and toolchain, and its results are invalid.
 
-- **Waiting:** repeat `agent-job wait <id>` in the foreground until it
-  returns the job's status. That is one turn per 9 minutes, never a
-  `sleep`/`tail` poll. If an agent client yields a running terminal session,
-  resume that session to collect the result. An interactive main session may
-  instead run `agent-job wait <id> --timeout 0` in the background and use a
-  completion notification. A headless session or subagent must not end its
-  turn while waiting: it stops there, and the result is lost.
+- **Waiting:** choose by session type. An interactive main session runs
+  `scripts/agent-job wait <id> --timeout 0` once with the Bash tool's
+  `run_in_background` and acts on its single completion notification.
+  Never write Monitor, `until`, or `sleep` loops over status files or
+  `agent-job list`; expiring waiters create re-arm turns. A headless
+  session or subagent repeats foreground `agent-job wait <id>` until it
+  returns the job's status. Repeat only when the wait-window notice says
+  `agent-job: still running`. Exit 124 alone is ambiguous: a finished
+  command can itself exit 124 (for example, when killed by `timeout`).
+  `FAILED (exit 124)` is a completed failure, not a retry. It must not end
+  its turn while waiting: it stops there, and the result is lost. If an
+  agent client yields a running terminal session, resume that session to
+  collect the result.
 - **Subagents** must not wait on whole-tree builds or full suites. A
   subagent's prompt cache expires after 5 minutes, so every long blocking
   call rewrites its whole context. Build what a subagent needs before
@@ -240,9 +385,28 @@ run used the wrong config and toolchain, and its results are invalid.
   `./run.sh …`, not under `scripts/dev-shell.sh`, which drops the events
   variable. `./run.sh local-build --plan` previews a build (cache hits,
   nodes to build, estimated time) before you start it.
+  Use `status` for a specific progress question, not as a periodic waiter.
 - **Locked runs:** `agent-job start` refuses a second locked run (vitest,
-  `run.sh test`, `ci-run-test-suite.sh`, `npm ci`, setup, local-build) in the
-  same worktree while one is running. Those runs race each other.
+  prepare-browser, `run.sh test`, `ci-run-test-suite.sh`, `npm ci`, setup,
+  local-build) in the same worktree while one is running. In particular,
+  Vitest and prepare-browser race on program-index generation; serialize
+  them and respect the refusal.
+- **Stable inputs:** never mutate a tree while a job validates it. Mixed
+  inputs invalidate evidence and can break program-index publication.
+  Finish or stop the job before editing, then validate the final tree.
+- **Browser server:** always choose a free worktree-specific
+  `KANDELO_PLAYWRIGHT_PORT` for Playwright suites. `reuseExistingServer`
+  can otherwise silently attach to another tree's server on a shared port.
+- **Suite environment:** `scripts/dev-shell.sh` clears outer variables
+  outside its keep-list. Export suite variables inside `bash -c` when
+  they must reach a test. `KANDELO_PLAYWRIGHT_PORT` is explicitly kept;
+  exporting it inside is also safe:
+
+  ```bash
+  scripts/agent-job start -- scripts/dev-shell.sh bash -c 'export KANDELO_PLAYWRIGHT_PORT=5197; cd apps/browser-demos && npx playwright test'
+  ```
+
+  Choose a free port for this worktree; 5197 is only an example.
 - **Another workspace's build:** waiting on a build that another worktree
   (another Conductor workspace) is running is supported, and `agent-job` is
   the tool for it. Do not hand-roll a `kill -0 <pid>`, `pgrep`, or `sleep`
@@ -267,20 +431,32 @@ run used the wrong config and toolchain, and its results are invalid.
     on build inputs. Once a peer's build finishes, your own run reuses
     whatever it built from the same inputs, so the closer its commit is
     to yours, the more your run can reuse.
+    A peer's result alone does not validate your tree; run your own build
+    or suite through the normal path after it finishes.
   - **`--peer <text>` never guesses.** When no running job's command
     contains `<text>`, or more than one does, it lists the candidates on
     stderr and exits 2; then wait on one by id. A job that itself exits
     2 also makes `wait` exit 2, so read the output.
+  - **Pin retries to the resolved job id.** If a selector wait times out,
+    use the id printed in `waiting on <id>` or the `resume with:` command.
+    Never repeat `--peer`: the original can finish before the next call,
+    so the selector can match a replacement job or miss the original's
+    recorded result. Wait by id to retain that job's outcome.
   - The locked-run check is per worktree: a peer's `local-build` does not
     stop yours from starting. Choosing to wait on it is the agent's call.
 - **Before a suite**, `npx tsx scripts/check-artifact-closures.ts` reports
   any program package whose artifact closure would fail to resolve with
   "Package artifact closure is incomplete". It takes about 3 s once warm, and
   saves the minutes a suite would spend reaching the same error.
+- **Results:** `agent-job result <id>` gives the final exit status, log
+  tail and `[suite-health]` lines. A LOST result means the run failed to
+  record completion; it is not a pass. Search the saved log around
+  relevant errors rather than reading it whole.
 - **Every Vitest run** ends with a `[suite-health]` line. When many files
   fail to load, it groups them by the missing thing, so one line replaces
   scrolling hundreds of failure blocks. `WARN` means part of the suite did
-  not run (a load error or zero tests).
+  not run (a load error or zero tests). Check discovered/run/skipped
+  counts: zero tests or load failures cannot support a passing-suite claim.
 - **Optional guard hook:** `.claude/hooks/wait-guard.py` denies the costly
   patterns as they happen. It blocks `sleep`-then-`tail` poll turns,
   `pgrep -f` waiters, and subagents running whole-tree builds or full
@@ -321,17 +497,21 @@ part of the task. Build what is missing:
    If `libc/musl` exists but is not a valid checkout (a stray dir from a partial
    build blocks the clone), reset it: `rm -rf libc/musl && git submodule update
    --init libc/musl`.
-2. **Kernel wasm + host + rootfs + musl sysroot** — `./run.sh setup`
+2. **Kernel wasm + host + rootfs + musl sysroot** — `./run.sh setup --all`
    checks both musl sysroots, rebuilding missing, stale, or altered core
    outputs and refreshing the graphics archives, then builds the
-   kernel, supported package graph, and the rootfs, producing
+   kernel, every supported package, and the rootfs, producing
    `local-binaries/source-only-v1/kernel.wasm` (the binary resolver prefers
    the published tree over `binaries/`) and `host/wasm/rootfs.vfs.zst`.
    The default rootfs records lazy-file sizes from that same published
    tree, including the programs' ABI-contract stamps:
    ```bash
-   ./run.sh setup
+   scripts/dev-shell.sh ./run.sh setup --all
    ```
+   Without `--all`, setup builds only what the VFS products and the browser
+   app demand, which is enough for `./run.sh browser` but leaves out the
+   test-only packages the suites load (wasm64 libraries, the libevent and
+   MariaDB test programs, `dash`, ...). `./run.sh test` builds `--all` itself.
    To check just the wasm32 core SDK after editing libc inputs:
    ```bash
    scripts/dev-shell.sh bash scripts/build-musl.sh --ensure --core-only
@@ -347,7 +527,7 @@ part of the task. Build what is missing:
    (cd host && npm ci)
    ```
 4. **Package artifacts the suites load** — program `.wasm` files and VFS
-   images. Setup source-builds the supported graph declared in
+   images. `setup --all` source-builds the supported graph declared in
    `packages/sets/local-supported.toml` into `local-binaries/source-only-v1/`.
    It does not build excluded packages or dormant standalone images such as
    `mariadb-vfs` and `perl-vfs`. If a selected test loads one, resolve that

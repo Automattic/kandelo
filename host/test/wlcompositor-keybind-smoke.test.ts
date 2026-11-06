@@ -341,9 +341,8 @@ describe("wlcompositor — config-file keybind engine", () => {
   // its key is pressed (CTRL+K=clock, CTRL+P=paint, CTRL+Return=terminal). This
   // gates that a CTRL exec bind actually spawns a NEW client — the keybind
   // engine dispatches ACT_EXEC → posix_spawnp, and the spawned client connects
-  // (count bumps). Under raw NodePlatformIO a spawn needs both legs:
-  // execProgramBytes feeds the preflight its program bytes, and the kernel's
-  // authoritative target stat reaches the same real host path. The bind's
+  // (count bumps). Under raw NodePlatformIO the kernel resolves the target
+  // through the real host path. The bind's
   // exec command lives in the compositor's 64-byte `param` buffer, so the
   // target is a short /tmp symlink to the resolver-cached client wasm.
   it.skipIf(!hasBinaries)(
@@ -366,7 +365,6 @@ describe("wlcompositor — config-file keybind engine", () => {
       const host = new NodeKernelHost({
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
-        execProgramBytes: { [execTarget]: clientBytes },
       });
       const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
 

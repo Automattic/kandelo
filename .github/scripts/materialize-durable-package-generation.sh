@@ -211,7 +211,7 @@ case "$projection_schema" in
     ;;
 esac
 grep -Fxq "pub const ABI_VERSION: u32 = $abi_version;" \
-  "$CONSUMER_ROOT/crates/shared/src/lib.rs" || {
+  "$CONSUMER_ROOT/crates/program-abi/src/lib.rs" || {
   echo "materialize-durable-package-generation: consumer checkout declares a different ABI" >&2
   exit 1
 }

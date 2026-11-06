@@ -7,7 +7,7 @@
  * Supported suites:
  *   - "syscall-io": pipe/file throughput and syscall latency
  *   - "process-lifecycle": hello start, fork, clone
- *   - "spawn-scratch": ordinary/large spawn and retained scratch capacity
+ *   - "spawn-scratch": ordinary and large spawn requests
  *   - "wordpress": nginx + PHP-FPM boot with WordPress page load
  *   - "mariadb-aria": MariaDB with Aria engine
  *   - "mariadb-innodb": MariaDB with InnoDB engine
@@ -23,6 +23,7 @@ import {
 import { writeVfsFile } from "../../lib/init/vfs-utils";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 import { collectSpawnScratchEvidence } from "../../../../benchmarks/spawn-scratch-evidence";
+import { readImageFileBytes } from "../../../../benchmarks/read-image-file";
 
 // Micro-benchmark wasm URLs (always built by scripts/build-programs.sh)
 import pipeWasmUrl from "../../../../benchmarks/wasm/pipe-throughput.wasm?url";
@@ -92,21 +93,7 @@ async function fetchWasm(url: string): Promise<ArrayBuffer> {
 }
 
 async function readVfsBytes(fs: KandeloImageFs, path: string): Promise<ArrayBuffer> {
-  // No `ensureMaterialized`. That asked a filesystem to fetch a deferred file
-  // before reading it, which a BUILD-time image has no notion of: it holds what
-  // it was given, and anything deferred is deferred for the kernel to fetch
-  // later, not for this page. `stat` by path rather than `fstat` by descriptor
-  // for the same reason — the path is right here, and the bridge describes an
-  // image rather than a live filesystem with open-file state.
-  const size = fs.stat(path).size;
-  const fd = fs.open(path, 0, 0);
-  try {
-    const buf = new Uint8Array(size);
-    fs.read(fd, buf, 0, buf.length);
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-  } finally {
-    fs.close(fd);
-  }
+  return readImageFileBytes(fs, path);
 }
 
 async function readVfsText(fs: KandeloImageFs, path: string): Promise<string> {
@@ -162,7 +149,6 @@ async function runProgramWithExecMap(
 ): Promise<{
   exitCode: number;
   stdout: string;
-  spawnScratchCapacity: number;
   kernelMemoryPages: number;
 }> {
   let stdout = "";
@@ -185,7 +171,6 @@ async function runProgramWithExecMap(
     return {
       exitCode,
       stdout,
-      spawnScratchCapacity: await kernel.getSpawnScratchCapacity(),
       kernelMemoryPages: await kernel.getKernelMemoryPages(),
     };
   } finally {
@@ -282,7 +267,6 @@ async function runSpawnScratch(): Promise<Record<string, number>> {
   if (spawn.exitCode !== 0) throw new Error(`spawn-bench failed: ${spawn.stdout}`);
   return collectSpawnScratchEvidence({
     stdout: spawn.stdout,
-    retainedCapacity: spawn.spawnScratchCapacity,
     kernelMemoryPages: spawn.kernelMemoryPages,
   });
 }

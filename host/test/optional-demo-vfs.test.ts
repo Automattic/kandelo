@@ -64,7 +64,7 @@ describe("optional demo VFS imports", () => {
     delete importers[OPTIONAL_DEMO_VFS_PATHS.lamp.relPaths[0]];
 
     await expect(resolveOptionalDemoVfsUrl("lamp", importers)).rejects.toThrow(
-      "lamp.vfs.zst is not built. Run: ./run.sh fetch",
+      "lamp.vfs.zst is not built. Run: ./run.sh local-build",
     );
     expect(calls.lamp).not.toHaveBeenCalled();
     expect(calls.wordpress).not.toHaveBeenCalled();

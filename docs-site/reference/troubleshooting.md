@@ -14,7 +14,8 @@ Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-If you use the public GitHub Pages UI and still see this failure, clear site data and reload so the service worker can update.
+Reload so the service worker can update. Clearing site data also removes
+local computers; export important files before doing so.
 
 ## A Direct VFS URL Does Not Boot
 

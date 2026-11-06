@@ -2,7 +2,9 @@ kind = "program"
 name = "nethack"
 version = "3.6.7"
 kernel_abi = 7
-depends_on = ["ncurses@6.5"]
+# NetHack builds inside a Kandelo machine (build-nethack.sh): the kernel and
+# the build image are the machine it runs in.
+depends_on = ["ncurses@6.5", "kernel@0.1.0", "kandelo-build-image@0.1.0"]
 
 [source]
 url = "https://www.nethack.org/download/3.6.7/nethack-367-src.tgz"

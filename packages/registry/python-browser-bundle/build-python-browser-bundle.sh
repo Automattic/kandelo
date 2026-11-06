@@ -3,7 +3,7 @@
 # Build the browser lazy-archive bundle for CPython. Reshapes the cpython
 # package's python.wasm + python-runtime.zip into a root-relative
 # python.zip (bin/python3 + bin/python + lib/python3.13/…). Consumers see
-# the bare zip at programs/wasm32/python.zip.
+# the bare zip at programs/wasm32/python-browser-bundle/python.zip.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -34,3 +34,5 @@ export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary python-browser-bundle "$archive" python.zip
+
+install_local_runtime_file python-browser-bundle "${SCRIPT_DIR}/sessions.json" sessions.json

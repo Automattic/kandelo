@@ -603,24 +603,21 @@ function hasWasmMagic(src: Uint8Array): boolean {
     src[3] === 0x6d;
 }
 
+// [RUNTIME-WORKAROUND: WEBKIT-TEXTDECODER-WRAPPER-CRASH] One decoder for
+// every Wasm name: binaries such as PHP export about 22,000 names, and a
+// TextDecoder per name made each process start create thousands of DOM
+// wrappers. WebKit's page process crashed in cacheWrapper<TextDecoder>
+// during those bursts. The cause is suspected, not a confirmed WebKit
+// defect: there is no standalone reduction (docs/browser-support.md, "WebKit
+// page-process crash while creating TextDecoders"). decode() without
+// `stream` keeps no state.
+const WASM_NAME_DECODER = new TextDecoder();
+
 function readName(src: Uint8Array, pos: number): [string, number] {
   const [len, lenBytes] = readULEB128(src, pos);
   pos += lenBytes;
-  const name = new TextDecoder().decode(src.subarray(pos, pos + len));
+  const name = WASM_NAME_DECODER.decode(src.subarray(pos, pos + len));
   return [name, pos + len];
-}
-
-function containsAscii(src: Uint8Array, needle: string): boolean {
-  if (needle.length === 0) return true;
-  const bytes = new TextEncoder().encode(needle);
-  outer:
-  for (let i = 0; i <= src.length - bytes.length; i++) {
-    for (let j = 0; j < bytes.length; j++) {
-      if (src[i + j] !== bytes[j]) continue outer;
-    }
-    return true;
-  }
-  return false;
 }
 
 /**
@@ -2414,7 +2411,8 @@ export function readWasmCustomSectionNames(programBytes: ArrayBuffer): string[] 
 
 /**
  * Custom-section name carrying the 32-byte ABI-contract digest
- * (`hash(abi/snapshot.json + ABI_VERSION)`) a wasm artifact was built against.
+ * (`ABI_VERSION` plus the program surface of abi/snapshot.json) a wasm
+ * artifact was built against.
  * Stamped by the local-build engine (`tools/xtask/src/build_stamp.rs`,
  * `ABI_CONTRACT_SECTION`) onto every program — kernel, userspace, and every
  * guest. The host reads the kernel's own stamp at init and compares each
@@ -2464,8 +2462,17 @@ function abiContractDigestsEqual(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
+/**
+ * Asyncify-instrumented means exporting the transform's entry points. A byte
+ * scan would also match a mere mention, and the kernel itself carries the
+ * word in the artifact checker it links.
+ */
 export function wasmContainsLegacyAsyncify(programBytes: ArrayBuffer): boolean {
-  return containsAscii(new Uint8Array(programBytes), "asyncify_");
+  try {
+    return readWasmExportNames(programBytes).some((name) => name.startsWith("asyncify_"));
+  } catch {
+    return false;
+  }
 }
 
 export function wasmImportsKernelFork(programBytes: ArrayBuffer): boolean {
@@ -2525,9 +2532,9 @@ export function describeWasmArtifactPolicyFailures(
 
   // ABI-contract digest gate (Stage 3): the ABI version NUMBER can coincide
   // across a structural ABI change that regenerated abi/snapshot.json. The
-  // 32-byte contract digest binds hash(abi/snapshot.json + ABI_VERSION), so a
-  // guest built against a different snapshot is caught even when the numbers
-  // match. Warn-then-enforce during rollout: an UNSTAMPED (legacy) guest warns
+  // 32-byte contract digest binds ABI_VERSION plus the snapshot's program
+  // surface, so a guest built against a different program surface is caught
+  // even when the numbers match. Warn-then-enforce during rollout: an UNSTAMPED (legacy) guest warns
   // once and passes; a STAMPED-but-mismatched guest fails hard.
   if (
     options.expectedAbiContractDigest !== undefined &&
@@ -2631,6 +2638,7 @@ export function describeWasmArtifactPolicyFailures(
     requireForkInstrumentation &&
     (hasForkArtifactSurface || importNames.includes("kernel.kernel_fork"))
   ) {
+    const failureCount = failures.length;
     try {
       failures.push(
         ...describeForkArtifactContractFailures(readWasmForkArtifactFacts(programBytes)),
@@ -2640,6 +2648,13 @@ export function describeWasmArtifactPolicyFailures(
         `cannot validate ABI 43 fork-artifact contract: ${
           error instanceof Error ? error.message : String(error)
         }`,
+      );
+    }
+    if (failures.length > failureCount) {
+      failures.push(
+        "Fork instrumentation is versioned but not stable across Kandelo releases. " +
+          "Rebuild user-built forking programs with the current Kandelo SDK, " +
+          "or install a compatible package update. Automatic re-instrumentation is unavailable.",
       );
     }
   }
@@ -2760,7 +2775,7 @@ export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
       const [exportCount, countBytes] = readULEB128(src, pos); pos += countBytes;
       for (let i = 0; i < exportCount; i++) {
         const [nameLen, nameLenBytes] = readULEB128(src, pos); pos += nameLenBytes;
-        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen)); pos += nameLen;
+        const name = WASM_NAME_DECODER.decode(src.subarray(pos, pos + nameLen)); pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readULEB128(src, pos); pos += idxBytes;
         if (kind === 3 && name === "__heap_base") {
@@ -2840,7 +2855,7 @@ function extractI32ConstFunctionExport(
       const [exportCount, countBytes] = readULEB128(src, pos); pos += countBytes;
       for (let i = 0; i < exportCount; i++) {
         const [nameLen, nameLenBytes] = readULEB128(src, pos); pos += nameLenBytes;
-        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen)); pos += nameLen;
+        const name = WASM_NAME_DECODER.decode(src.subarray(pos, pos + nameLen)); pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readULEB128(src, pos); pos += idxBytes;
         if (kind === 0 && name === exportName) {

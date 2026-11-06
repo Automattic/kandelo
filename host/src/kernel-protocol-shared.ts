@@ -50,15 +50,14 @@ export interface GetKernelMemoryPagesRequestMessage {
   requestId: number;
 }
 
-/** Read the kernel worker's compiled-module cache counters. */
-export interface GetWasmModuleCacheStatsRequestMessage {
-  type: "get_wasm_module_cache_stats";
+export interface GetStorageMetadataMemoryUsageRequestMessage {
+  type: "get_storage_metadata_memory_usage";
   requestId: number;
 }
 
-/** Read the retained capacity of the kernel-owned large-spawn region. */
-export interface GetSpawnScratchCapacityRequestMessage {
-  type: "get_spawn_scratch_capacity";
+/** Read the kernel worker's compiled-module cache counters. */
+export interface GetWasmModuleCacheStatsRequestMessage {
+  type: "get_wasm_module_cache_stats";
   requestId: number;
 }
 
@@ -120,6 +119,7 @@ export interface KmsAttachStatsMessage {
 export interface InitErrorMessage {
   type: "init_error";
   error: string;
+  recovery?: "no-valid-overlay-generation";
 }
 
 /** The dedicated kernel instance is poisoned and has stopped permanently. */
@@ -271,7 +271,9 @@ export interface WakeBlockedWritersMessage {
 export interface HttpRequestMessage {
   type: "http_request";
   requestId: number;
-  /** Port the in-kernel server is listening on. */
+  /** Omit hostname for a local injected listener; otherwise use the Kandelo session network. */
+  hostname?: string;
+  /** Port the server is listening on. */
   port: number;
   request: HttpRequest;
   /** Optional timeout in ms (default 60_000). */
@@ -288,6 +290,15 @@ export interface WriteVfsFileMessage {
   path: string;
   data: Uint8Array;
   mode: number;
+}
+
+/** Read a bounded positioned range from a regular file in the live VFS. */
+export interface ReadVfsFileRangeMessage {
+  type: "read_vfs_file_range";
+  requestId: number;
+  path: string;
+  offset: number;
+  length: number;
 }
 
 /**

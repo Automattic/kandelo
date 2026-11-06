@@ -18,6 +18,7 @@ package_archive_changed_files() {
     -e '^tools/mkrootfs/(bin|src)/' \
     -e '^tools/mkrootfs/(package(-lock)?\.json|tsconfig\.json)$' \
     -e '^crates/fork-instrument/(Cargo\.toml|src/)' \
+    -e '^crates/kandelo-cc/(Cargo\.toml|src/)' \
     -e '^libc/(glue|musl-overlay)(/|$)' \
     -e '^libc/musl($|/)' \
     -e '^images/vfs/' \
@@ -25,7 +26,7 @@ package_archive_changed_files() {
     -e '^\.github/actions/(exact-main-package-rebuild|package-archive-build|package-toolchain|fetch-submodules|download-run-artifacts)/' \
     -e '^\.github/scripts/download-dependency-artifacts\.sh$' \
     -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules|package(-lock)?\.json|host/package(-lock)?\.json|sdk/package(-lock)?\.json|tools/mkrootfs/package(-lock)?\.json)$' \
-    -e '^scripts/(build-fork-instrument-tool|build-musl|check-libcxx-toolchain-version|dev-shell|install-local-binary|install-overlay-headers|run-wasm-fork-instrument)\.sh$' \
+    -e '^scripts/(build-fork-instrument-tool|build-kandelo-cc|build-musl|calltypes-plugin|check-libcxx-toolchain-version|dev-shell|install-local-binary|install-overlay-headers|run-wasm-fork-instrument)\.sh$' \
     | grep -vE \
       -e '^packages/registry/[^/]+/(demo|test)(/|$)' \
     || true)
@@ -90,7 +91,7 @@ kernel_runtime_changed_files() {
     -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
     -e '^scripts/browser-memory64-example-fixtures\.(sh|txt)$' \
     -e '^scripts/check-browser-memory64-example-fixtures\.ts$' \
-    -e '^scripts/(build-musl|build-libcxx|build-programs|check-abi-version|check-libcxx-toolchain-version|ci-check-browser-assets|ci-run-test-suite|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests)\.sh$' \
+    -e '^scripts/(build-musl|build-libcxx|build-programs|check-abi-version|check-libcxx-toolchain-version|check-vitest-evidence-classes|ci-check-browser-assets|ci-run-test-suite|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests)\.sh$' \
     -e '^scripts/(abi-staging-pages-(producer(-fixture)?|readiness)(\.test)?\.ts|abi-staging-product-(browser|node)-evidence(\.test)?\.ts|abi-staging-product-input-sources\.ts|check-pages-vfs-product-registry(\.test)?\.mjs|test-abi-staging-(mini-lifecycle|pages-atomic|product-authority)\.sh|vfs-product-catalog(\.test)?\.mjs)$' \
     -e '^examples/run-example\.ts$' \
     || true

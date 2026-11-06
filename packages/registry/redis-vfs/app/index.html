@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What next? · Redis voting board</title>
+<style>
+  :root { color-scheme: light; font: 16px/1.5 system-ui,sans-serif; color: #232d29; background: #f5f3eb; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: clamp(20px,5vw,64px); }
+  main { max-width: 820px; margin: auto; }
+  .eyebrow { color: #58685e; text-transform: uppercase; font-size: .75rem; letter-spacing: .15em; font-weight: 700; }
+  h1 { font-size: clamp(2.5rem,7vw,4.5rem); letter-spacing: -.06em; line-height: 1.05; margin: 18px 0; }
+  .intro { max-width: 510px; color: #58685e; margin-bottom: 30px; }
+  form { display: flex; gap: 10px; margin-bottom: 24px; }
+  input { flex: 1; min-width: 0; border: 1px solid #bec8bf; border-radius: 8px; background: #fffefa; padding: 13px; font: inherit; }
+  button { cursor: pointer; font: inherit; font-weight: 650; border: 0; border-radius: 8px; background: #245d43; color: white; padding: 12px 18px; }
+  button:hover { background: #194632; }
+  button:focus-visible,input:focus-visible { outline: 3px solid #d99c38; outline-offset: 3px; }
+  button:disabled { opacity: .5; cursor: wait; }
+  ol { list-style: none; padding: 0; display: grid; gap: 12px; }
+  li { display: flex; align-items: center; gap: 18px; padding: 18px; border: 1px solid #d6ddd3; border-radius: 12px; background: #fffefa; }
+  .idea { flex: 1; overflow-wrap: anywhere; font-weight: 600; }
+  .vote { min-width: 80px; display: grid; background: #e5eee2; color: #245d43; padding: 8px 14px; }
+  .vote:hover { background: #d2e3cc; }
+  .count { font-size: 1.4rem; }
+  .vote-label { font-size: .75rem; }
+  #status { color: #58685e; min-height: 1.5em; font-size: .85rem; }
+  #status[data-error] { color: #a22f26; }
+  footer { border-top: 1px solid #d6ddd3; margin-top: 32px; padding-top: 16px; color: #58685e; font-size: .82rem; }
+  code { color: #245d43; }
+  nav { display: flex; gap: 20px; align-items: center; margin-bottom: 24px; }
+  a { color: #245d43; text-underline-offset: 3px; }
+  a:focus-visible { outline: 3px solid #d99c38; outline-offset: 3px; }
+</style>
+<main>
+  <div class="eyebrow">Redis × PHP × Kandelo</div>
+  <nav aria-label="Redis demo"><strong>Voting board</strong><a href="./admin/?dashboard=redis&amp;tab=console">Explore Redis</a></nav>
+  <h1>What should we do next?</h1>
+  <p class="intro">Pitch an idea. Give your favorites a boost. Share this activity from Kandelo’s network menu to decide together.</p>
+  <form aria-label="Add an idea">
+    <input name="idea" aria-label="Your idea" placeholder="How about…" maxlength="80" required autocomplete="off">
+    <button type="submit">Add idea</button>
+  </form>
+  <p id="status" role="status">Connecting to the board…</p>
+  <ol aria-label="Ideas"></ol>
+  <footer>Give as many votes as you like. Updates appear automatically. This board lasts while its host machine is running. <a href="./admin/?dashboard=redis&amp;tab=console">Explore Redis with phpCacheAdmin</a>: try <code>HGETALL board:ideas</code> or <code>ZRANGE board:votes 0 -1 WITHSCORES</code>.</footer>
+</main>
+<script>
+  const list = document.querySelector('ol');
+  const status = document.querySelector('#status');
+  const form = document.querySelector('form');
+  const input = form.elements.idea;
+  let updating = null;
+  const cards = new Map();
+  async function request(body) {
+    const response = await fetch('./api', body ? {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    } : { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'The board is unavailable.');
+    return data;
+  }
+  function show(data) {
+    const ids = new Set();
+    for (const idea of data.ideas) {
+      ids.add(idea.id);
+      let card = cards.get(idea.id);
+      if (!card) {
+        card = document.createElement('li');
+        card.innerHTML = '<span class="idea"></span><button class="vote" type="button"><span class="count"></span><span class="vote-label">Vote ↑</span></button>';
+        card.querySelector('button').addEventListener('click', () => update({ action: 'vote', id: idea.id }));
+        cards.set(idea.id, card);
+      }
+      card.querySelector('.idea').textContent = idea.title;
+      card.querySelector('.count').textContent = idea.votes;
+      card.querySelector('button').setAttribute('aria-label', 'Vote for ' + idea.title);
+      // Keep focused controls attached during the regular refresh when the
+      // ranking has not changed.
+      const position = Array.from(ids).length - 1;
+      if (list.children[position] !== card) list.insertBefore(card, list.children[position] || null);
+    }
+    for (const [id, card] of cards) if (!ids.has(id)) { card.remove(); cards.delete(id); }
+    status.textContent = 'Live board · ' + data.ideas.length + ' ideas';
+    delete status.dataset.error;
+  }
+  async function update(body) {
+    while (updating) {
+      if (!body) return;
+      await updating;
+    }
+    const job = (async () => {
+      if (body) document.querySelectorAll('button').forEach(button => button.disabled = true);
+      try {
+        show(await request(body));
+        if (body?.action === 'add') input.value = '';
+      } catch (error) { status.textContent = error.message; status.dataset.error = ''; }
+      finally { document.querySelectorAll('button').forEach(button => button.disabled = false); }
+    })();
+    updating = job;
+    await job;
+    updating = null;
+  }
+  form.addEventListener('submit', event => { event.preventDefault(); update({ action: 'add', title: input.value }); });
+  async function refresh() {
+    if (!document.hidden) await update();
+    setTimeout(refresh, 1500);
+  }
+  refresh();
+</script>
+</html>

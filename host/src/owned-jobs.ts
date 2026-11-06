@@ -23,16 +23,19 @@ export class OwnedJobs {
     root: number; members: Set<number>; pendingDetach: Set<number>; family: Set<number>; cleaned: boolean; failure: Error | null; exitCode: number | null;
     reason: 'cancelled' | 'timed_out' | null;
     chunks: Array<{ stream: 'stdout' | 'stderr'; bytes: Uint8Array }>;
-    start: number; end: number; timer: ReturnType<typeof setTimeout>;
+    start: number; end: number; timer: ReturnType<typeof setTimeout> | undefined;
   }>();
   private owners = new Map<number, string>();
   constructor(private kill: (pid: number) => void, private retainedBytes = 256 * 1024, private reap: (pids: ReadonlySet<number>) => void = () => {}, private fail: (error: unknown) => void = () => {}) {}
 
   create(id: string, pid: number, timeoutMs: number) {
-    if (!id || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 0x7fff_ffff) throw new Error('INVALID_JOB_OPTIONS');
+    if (!id || !Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 0x7fff_ffff) throw new Error('INVALID_JOB_OPTIONS');
     if (this.jobs.has(id)) throw new Error('Job ID already exists');
     if (this.jobs.size >= 64) throw new Error('Job capacity reached (64 per computer)');
-    const timer = setTimeout(() => this.cancel(id, 'timed_out'), timeoutMs);
+    // Interactive activities last until the person closes/replaces them.
+    // Zero removes only the deadline; explicit cancellation still owns and
+    // drains the complete family, including descendants created during exit.
+    const timer = timeoutMs === 0 ? undefined : setTimeout(() => this.cancel(id, 'timed_out'), timeoutMs);
     this.jobs.set(id, { root: pid, members: new Set([pid]), pendingDetach: new Set([pid]), family: new Set([pid]), cleaned: false, failure: null, exitCode: null, reason: null, chunks: [], start: 0, end: 0, timer });
     this.owners.set(pid, id);
   }
@@ -86,7 +89,8 @@ export class OwnedJobs {
   }
   output(pid: number, stream: 'stdout' | 'stderr', bytes: Uint8Array) {
     const id = this.owners.get(pid);
-    if (!id || !bytes.length) return;
+    if (!id) return false;
+    if (!bytes.length) return true;
     const job = this.jobs.get(id)!;
     job.chunks.push({ stream, bytes: bytes.slice() });
     job.end += bytes.length;
@@ -99,6 +103,7 @@ export class OwnedJobs {
       job.start += drop;
       excess -= drop;
     }
+    return true;
   }
   cancel(id: string, reason: 'cancelled' | 'timed_out' = 'cancelled') {
     const job = this.require(id);

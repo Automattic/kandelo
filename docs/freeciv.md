@@ -96,6 +96,15 @@ music sets are not bundled.
 
 ## Multiplayer
 
+The Network panel’s optional **Freeciv game** activity creates a room and
+starts the host server/client in one action. Guests open the activity link,
+choose their own player name, and join. This also works from the bare shell;
+the declared KMS display is prepared before launch. Use **Already running**
+only when a multiplayer server is already listening on this hosting machine.
+Configure the game in Freeciv’s native lobby. See [package sessions](package-sessions.md).
+
+The original manual procedure remains available:
+
 1. Open the **Network** panel and create a network session.
 2. In the Freeciv machine's **Multiplayer** menu, choose **Host a game**.
 3. Share the network session's invitation link with the other players.
@@ -121,9 +130,8 @@ and waits for them when the game is closed or restarted. The standard
 client and server wrappers are also available as `freeciv`,
 `freeciv-sdl2`, and `freeciv-server`.
 
-Freeciv's LAN discovery uses IPv4 multicast. Kandelo's current multicast
-delivery does not reach other peer machines, so the wrappers select the
-upstream `--Announce none` option and use direct TCP connections.
+The launchers use upstream’s `--Announce none` option and direct TCP
+connections, so joining does not depend on the discovery list.
 Browser clients connect to servers on Kandelo peer machines; public native
 Freeciv servers require outbound raw TCP, which the browser host does not
 provide.
@@ -195,6 +203,12 @@ explicit `--` GUI argument block overrides the fullscreen default.
 ## Display and input ownership
 
 The image declares Kandelo's generic `presentation.displayScale: 1.5`.
+The package's host and join activity launches declare `displayScale: 1.5`
+as well, so starting Freeciv from the shell's activity menu gets the same
+readable monitor as the demo. The launcher applies this through the generic
+KMS display host before starting the client; it does not change fonts or
+Freeciv arguments. A reused display pane is remeasured before launch, and
+retiring the activity or replacing its computer clears the launch override.
 This selects a readable virtual monitor from the pane's CSS size,
 independently of browser density. At a 1440×810 CSS display, Freeciv sees
 960×540 pixels at both 1× and 2× density. Its unmodified fonts, bitmap art,

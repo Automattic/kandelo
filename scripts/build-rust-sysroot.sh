@@ -37,11 +37,12 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIBC_UPSTREAM="$REPO_ROOT/sdk/rust/libc-upstream"      # rust-lang/libc, pinned to the version std uses
 LIBC_PATCH="$REPO_ROOT/sdk/rust/libc-kandelo.patch"    # kandelo delta only
 STD_OVERLAY="$REPO_ROOT/sdk/rust/std-overlay"
+STD_PATCH="$REPO_ROOT/sdk/rust/std-kandelo.patch"
 
 OUT_DIR="${KANDELO_RUST_DIR:-$HOME/.kandelo/rust}"
 MYSYS="$OUT_DIR/sysroot"
 WRAP="$OUT_DIR/rustc-kandelo"
-FORK_LIBC="$OUT_DIR/libc-kandelo"                       # assembled = upstream + patch (not committed)
+FORK_LIBC="$MYSYS/libc-kandelo"                        # assembled = upstream + patch (not committed)
 
 # One build per output directory at a time. WHY: callers run this
 # concurrently (rust-std and rust-c-interop are separate Vitest files, and
@@ -76,7 +77,7 @@ REAL_RUSTC="$REALSYS/bin/rustc"
 STAMP="$OUT_DIR/.inputs-sha256"
 input_digest() {
   {
-    cat "$0" "$LIBC_PATCH" "$REPO_ROOT/sdk/rust/wasm32-unknown-kandelo-std.json"
+    cat "$0" "$LIBC_PATCH" "$STD_PATCH" "$REPO_ROOT/sdk/rust/wasm32-unknown-kandelo-std.json"
     git -C "$LIBC_UPSTREAM" rev-parse HEAD
     git -C "$LIBC_UPSTREAM" diff HEAD
     if [ -d "$STD_OVERLAY" ]; then
@@ -85,6 +86,7 @@ input_digest() {
     fi
     "$REAL_RUSTC" -vV
     echo "$REALSYS"
+    printf '%s\n' "${RUSTFLAGS:-}" "${CARGO_ENCODED_RUSTFLAGS:-}"
   } | shasum -a 256 | cut -d' ' -f1
 }
 DIGEST="$(input_digest)"
@@ -94,19 +96,6 @@ if [ -x "$WRAP" ] && [ -d "$MYSYS/lib/rustlib/wasm32-unknown-kandelo-std/lib" ] 
   exit 0
 fi
 rm -f "$STAMP"
-
-echo "==> Assembling forked libc = upstream + kandelo overlay -> $FORK_LIBC"
-mkdir -p "$OUT_DIR"
-rm -rf "$FORK_LIBC"
-cp -R "$LIBC_UPSTREAM" "$FORK_LIBC"
-rm -rf "$FORK_LIBC/.git"
-chmod -R u+w "$FORK_LIBC"
-# git apply fails loudly if the patch no longer matches the pinned upstream
-# (e.g. after a libc version bump) — the truthful signal to refresh the delta.
-( cd "$FORK_LIBC" && git apply "$LIBC_PATCH" ) || {
-  echo "libc overlay patch did not apply cleanly against $LIBC_UPSTREAM; refresh sdk/rust/libc-kandelo.patch for the pinned libc version" >&2
-  exit 1
-}
 
 echo "==> Assembling sysroot at $MYSYS (from $REALSYS)"
 rm -rf "$MYSYS"
@@ -119,6 +108,20 @@ for entry in "$REALSYS"/lib/rustlib/*; do
 done
 cp -RL "$REALSYS/lib/rustlib/src" "$MYSYS/lib/rustlib/src"
 chmod -R u+w "$MYSYS/lib/rustlib/src"
+
+# Cargo hashes std dependencies relative to the sysroot. Keeping the fork
+# inside it avoids an absolute build-directory identity in crate metadata.
+echo "==> Assembling forked libc = upstream + kandelo overlay -> $FORK_LIBC"
+cp -R "$LIBC_UPSTREAM" "$FORK_LIBC"
+rm -rf "$FORK_LIBC/.git"
+chmod -R u+w "$FORK_LIBC"
+( cd "$FORK_LIBC" && git apply "$LIBC_PATCH" ) || {
+  echo "libc overlay patch did not apply cleanly against $LIBC_UPSTREAM; refresh sdk/rust/libc-kandelo.patch for the pinned libc version" >&2
+  exit 1
+}
+# Preserve the documented path used by existing Cargo patch configurations.
+rm -rf "$OUT_DIR/libc-kandelo"
+ln -s sysroot/libc-kandelo "$OUT_DIR/libc-kandelo"
 
 LIB_MANIFEST="$MYSYS/lib/rustlib/src/rust/library/Cargo.toml"
 [ -f "$LIB_MANIFEST" ] || { echo "no library/Cargo.toml in rust-src" >&2; exit 1; }
@@ -155,6 +158,8 @@ if [ -d "$STD_OVERLAY" ]; then
 else
   echo "==> No std overlay yet ($STD_OVERLAY absent) — skipping"
 fi
+
+patch --fuzz=0 -d "$MYSYS/lib/rustlib/src/rust/library" -p1 < "$STD_PATCH"
 
 echo "==> Writing rustc wrapper $WRAP"
 mkdir -p "$OUT_DIR"

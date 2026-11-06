@@ -15,12 +15,23 @@ const fixturePaths = {
   wasm64: resolve(repoRoot, "examples/select_signal_test.wasm64.wasm"),
 };
 
+test.use({ trace: "retain-on-failure" });
+
 test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", async ({
   browserName,
+  browser,
   page,
   baseURL,
-}) => {
+}, testInfo) => {
   test.setTimeout(180_000);
+  const diagnostics: string[] = [];
+  const record = (message: string) => diagnostics.push(`${Date.now()} ${message}`);
+  page.on("console", (message) => record(`console ${message.type()}: ${message.text()}`));
+  page.on("pageerror", (error) => record(`pageerror: ${error.stack ?? error.message}`));
+  page.on("crash", () => record("page crash"));
+  page.on("close", () => record("page close"));
+  const disconnected = () => record("browser disconnected");
+  browser.on("disconnected", disconnected);
   expect(baseURL).toBeTruthy();
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
 
@@ -41,6 +52,7 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
       const sigterm = 15;
 
       const run = async (bytes: number[], arch: string) => {
+        console.info(`select-signal ${arch}: start`);
         let stdout = "";
         let stderr = "";
         let markerBuffer = "";
@@ -152,12 +164,15 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
           maxWorkers: 4,
           onStdout: (data: Uint8Array) => {
             const text = decoder.decode(data, { stream: true });
+            console.info(`select-signal ${arch}: stdout ${JSON.stringify(text)}`);
             stdout += text;
             markerBuffer += text;
             parseMarkers();
           },
           onStderr: (data: Uint8Array) => {
-            stderr += decoder.decode(data, { stream: true });
+            const text = decoder.decode(data, { stream: true });
+            console.error(`select-signal ${arch}: stderr ${JSON.stringify(text)}`);
+            stderr += text;
           },
         });
         try {
@@ -171,6 +186,7 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
               resolvePid();
             } },
           );
+          console.info(`select-signal ${arch}: exit ${exitCode}`);
           await injectionChain;
           stdout += decoder.decode();
           stderr += decoder.decode();
@@ -187,6 +203,7 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
           };
         } finally {
           await kernel.destroy();
+          console.info(`select-signal ${arch}: destroyed`);
         }
       };
 
@@ -206,7 +223,14 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
       wasm32Bytes: Array.from(readFileSync(fixturePaths.wasm32)),
       wasm64Bytes: Array.from(readFileSync(fixturePaths.wasm64)),
     },
-  );
+  ).finally(async () => {
+    record(`evaluate settled: pageClosed=${page.isClosed()} browserConnected=${browser.isConnected()}`);
+    browser.off("disconnected", disconnected);
+    await testInfo.attach("select-signal-lifecycle", {
+      body: diagnostics.join("\n"),
+      contentType: "text/plain",
+    });
+  });
 
   const assertMatrix = (matrix: typeof result.wasm32) => {
     expect(matrix.injectionFailure).toBeUndefined();

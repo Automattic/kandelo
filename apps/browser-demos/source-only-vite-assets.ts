@@ -38,6 +38,12 @@ interface RetainedSourceOnlyAsset {
 export interface SourceOnlyViteAssets {
   resolve(relPath: string): string;
   tryResolve(relPath: string): string | null;
+  /**
+   * The dev-server path that serves `relPath`'s pinned snapshot, or `null`
+   * when the projection does not own it. Valid once the dev server's config
+   * has resolved.
+   */
+  servePath(relPath: string): string | null;
   plugin(): Plugin;
   dispose(): void;
 }
@@ -324,6 +330,8 @@ export function createSourceOnlyViteAssets(
   const absentRelPaths = new Set<string>();
   const byVirtualId = new Map<string, RetainedSourceOnlyAsset>();
   const byPublicPath = new Map<string, RetainedSourceOnlyAsset>();
+  // The dev server's base, once a serving plugin instance has resolved it.
+  let serveBase: string | null = null;
   let snapshotRoot: string | null = null;
   let retainedBytes = 0;
   let initialBatchCaptured = false;
@@ -429,9 +437,25 @@ export function createSourceOnlyViteAssets(
   }
 
 
+  function publish(asset: RetainedSourceOnlyAsset, base: string): string {
+    const publicPath =
+      `${base}${PUBLIC_PREFIX}/${asset.sha256}/` +
+      encodeURIComponent(basename(asset.relPath));
+    byPublicPath.set(publicPath, asset);
+    return publicPath;
+  }
+
   return {
     resolve: retain,
     tryResolve: tryRetain,
+    servePath(relPath: string): string | null {
+      if (serveBase === null) {
+        throw new Error("SourceOnly Vite asset served before dev config resolution");
+      }
+      const virtualId = tryRetain(relPath);
+      const asset = virtualId === null ? undefined : byVirtualId.get(virtualId);
+      return asset === undefined ? null : publish(asset, serveBase);
+    },
     dispose,
     plugin(): Plugin {
       let config: ResolvedConfig | null = null;
@@ -440,6 +464,7 @@ export function createSourceOnlyViteAssets(
         enforce: "pre",
         configResolved(resolved) {
           config = resolved;
+          if (resolved.command === "serve") serveBase = resolved.base;
         },
         resolveId(source) {
           if (source.startsWith(MODULE_PREFIX)) {
@@ -465,11 +490,7 @@ export function createSourceOnlyViteAssets(
             throw new Error("SourceOnly Vite asset loaded before config resolution");
           }
           if (config.command === "serve") {
-            const publicPath =
-              `${config.base}${PUBLIC_PREFIX}/${asset.sha256}/` +
-              encodeURIComponent(basename(asset.relPath));
-            byPublicPath.set(publicPath, asset);
-            return `export default ${JSON.stringify(publicPath)};`;
+            return `export default ${JSON.stringify(publish(asset, config.base))};`;
           }
           const referenceId = this.emitFile({
             type: "asset",

@@ -58,7 +58,7 @@ behavior the default and turns any remaining leak into a loud build failure.
   directories of every transitive dependency (`compose_pkgconfig_path`). It
   does not touch `PKG_CONFIG_PATH`, `PKG_CONFIG_LIBDIR`, `PKG_CONFIG` or
   `PKG_CONFIG_SYSROOT_DIR`, so the dev shell's values reach the script.
-- The SDK ships `wasm32posix-pkg-config` (`sdk/src/bin/pkg-config.ts`). It
+- The SDK ships `wasm32posix-pkg-config` (`crates/kandelo-cc/src/tools.rs`). It
   sets `PKG_CONFIG_LIBDIR` to the sysroot and filters the caller's
   `PKG_CONFIG_PATH`. The filter (`isWasmPosixPath`) keeps any path that
   merely *contains* `kandelo/` or `/sysroot/`, which also matches every
@@ -68,8 +68,8 @@ behavior the default and turns any remaining leak into a loud build failure.
 - About 40 package scripts use pkg-config; about 10 call
   `wasm32posix-pkg-config` or set `PKG_CONFIG`. The rest rely on upstream
   configure finding `pkg-config` on `PATH`, which is the host one.
-- The SDK compiler wrappers (`sdk/src/bin/cc.ts`, `c++.ts`, flag parsing in
-  `sdk/src/lib/flags.ts`) already parse `-I`, `-isystem`, `-L` and friends
+- The SDK compiler wrappers (`crates/kandelo-cc/src/driver.rs`, `c++.ts`, flag parsing in
+  `crates/kandelo-cc/src/flags.rs`) already parse `-I`, `-isystem`, `-L` and friends
   but do not inspect their values.
 
 ## Design
@@ -91,7 +91,7 @@ When xtask runs a package build script it will:
    pkgconfig directories plus `WASM_POSIX_DEP_PKG_CONFIG_PATH` (the declared
    transitive dependencies), and set `PKG_CONFIG_PATH` to empty. Remove
    `PKG_CONFIG_SYSROOT_DIR` (our `.pc` files carry absolute prefixes; see the
-   comment in `sdk/src/bin/pkg-config.ts`).
+   comment in `crates/kandelo-cc/src/tools.rs`).
 3. **Keep host pkg-config available by an explicit name.** Some recipes build
    native host tools (generators, a host interpreter) and legitimately need
    host libraries. Expose the dev shell's original `pkg-config` and its

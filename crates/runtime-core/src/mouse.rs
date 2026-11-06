@@ -79,6 +79,10 @@ fn queue() -> &'static mut VecDeque<u8> {
 /// [`MAX_QUEUED_BYTES`] the oldest packet is dropped to make room. The
 /// caller cannot tell — same behavior as Linux mousedev.
 pub fn inject_event(dx: i32, dy: i32, buttons: u32) {
+    crate::epoll::notify(
+        crate::epoll::Source::Device(crate::syscalls::VirtualDevice::Mice.host_handle()),
+        0x41,
+    );
     let dx_i8 = dx.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
     let dy_i8 = dy.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
 

@@ -319,7 +319,7 @@ describe("kernel TID authority", () => {
       await flushCloneContinuation();
 
       expect(harness.notifyThreadExit).toHaveBeenCalledOnce();
-      expect(harness.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID);
+      expect(harness.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID, 0);
       expect(readCloneCompletion(harness.channel)).toEqual({
         status: CHANNEL_STATUS_COMPLETE,
         retVal: -1,
@@ -397,7 +397,7 @@ describe("kernel TID authority", () => {
       await flushCloneContinuation();
 
       expect(harness.notifyThreadExit).toHaveBeenCalledOnce();
-      expect(harness.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID);
+      expect(harness.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID, 0);
       expect(readCloneCompletion(harness.channel)).toEqual({
         status: CHANNEL_STATUS_COMPLETE,
         retVal: -1,
@@ -417,7 +417,7 @@ describe("kernel TID authority", () => {
       harness.dispatch();
       await flushCloneContinuation();
 
-      expect(harness.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID);
+      expect(harness.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID, 0);
       expect(readCloneCompletion(harness.channel)).toEqual({
         status: CHANNEL_STATUS_COMPLETE,
         retVal: -1,

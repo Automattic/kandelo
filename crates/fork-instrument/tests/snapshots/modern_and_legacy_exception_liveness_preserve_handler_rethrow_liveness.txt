@@ -1,0 +1,116 @@
+=== references 1650e6e3b322 ===
+[
+    ReferenceAnalysis {
+        function: 0,
+        locals: {},
+        landings: [],
+    },
+    ReferenceAnalysis {
+        function: 1,
+        locals: {
+            0: externref,
+        },
+        landings: [
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 1,
+                    offset: 54,
+                },
+                kind: Direct(
+                    0,
+                ),
+                arguments: [],
+                results: [],
+                carryovers: [],
+                carryovers_exact: true,
+                has_reference_callee: false,
+                live_on_normal_return: {},
+                live_on_any_successor: {
+                    0,
+                },
+                definitely_null_before: {},
+                reachable: true,
+            },
+        ],
+    },
+    ReferenceAnalysis {
+        function: 2,
+        locals: {
+            0: externref,
+            1: externref,
+        },
+        landings: [
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 2,
+                    offset: 71,
+                },
+                kind: Direct(
+                    0,
+                ),
+                arguments: [],
+                results: [],
+                carryovers: [],
+                carryovers_exact: true,
+                has_reference_callee: false,
+                live_on_normal_return: {},
+                live_on_any_successor: {
+                    0,
+                    1,
+                },
+                definitely_null_before: {},
+                reachable: true,
+            },
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 2,
+                    offset: 75,
+                },
+                kind: Direct(
+                    0,
+                ),
+                arguments: [],
+                results: [],
+                carryovers: [],
+                carryovers_exact: true,
+                has_reference_callee: false,
+                live_on_normal_return: {
+                    0,
+                },
+                live_on_any_successor: {
+                    0,
+                },
+                definitely_null_before: {},
+                reachable: true,
+            },
+        ],
+    },
+    ReferenceAnalysis {
+        function: 3,
+        locals: {
+            0: exnref,
+        },
+        landings: [
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 3,
+                    offset: 101,
+                },
+                kind: Direct(
+                    0,
+                ),
+                arguments: [],
+                results: [],
+                carryovers: [],
+                carryovers_exact: true,
+                has_reference_callee: false,
+                live_on_normal_return: {},
+                live_on_any_successor: {},
+                definitely_null_before: {
+                    0,
+                },
+                reachable: true,
+            },
+        ],
+    },
+]

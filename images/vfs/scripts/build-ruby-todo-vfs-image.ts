@@ -1,3 +1,4 @@
+import { installImageSessions } from "./image-session-files";
 /**
  * Build a bootable VFS image for the Ruby + Roda + SQLite todo demo.
  *
@@ -129,6 +130,7 @@ export async function buildRubyTodoVfsImage(
 
   writeTrackedDemoConfig(fs, "packages/registry/ruby/ruby-todo-demo.json");
 
+  installImageSessions(fs, "ruby-todo-vfs");
   await saveImage(fs, inputs.outputPath, {
     wasmArtifactPolicies: [RUBY_WASM_ARTIFACT_POLICY],
   });

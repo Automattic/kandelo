@@ -50,7 +50,7 @@ const OPTIONAL_DEMO_VFS_IMPORTERS = {
 /**
  * Whether this checkout has actually materialized the image for an optional
  * demo product. The gallery lists every roster entry either way; this is what
- * lets it say "not built yet — run ./run.sh fetch" before the click instead
+ * lets it say "not built yet — run ./run.sh local-build" before the click instead
  * of throwing after it.
  */
 export function optionalDemoVfsIsBuilt(
@@ -78,6 +78,6 @@ export async function resolveOptionalDemoVfsUrl(
       const importer = importers[relPath];
       if (importer) return importer();
     }
-    throw new Error(`${source.label} is not built. Run: ./run.sh fetch`);
+    throw new Error(`${source.label} is not built. Run: ./run.sh local-build`);
   });
 }

@@ -1,3 +1,4 @@
+import { installImageSessions } from "./image-session-files";
 /**
  * Build a fully-bootable VFS image for the nginx demo. The image starts from
  * shell.vfs.zst, then adds dinit as the first user process, nginx, the nginx
@@ -155,6 +156,7 @@ export async function buildNginxVfsImage(
   ], { binaries: inputs.dinit });
   writeTrackedDemoConfig(fs, "packages/registry/nginx/nginx-demo.json");
 
+  installImageSessions(fs, "nginx-vfs");
   await saveShellDerivedVfsImage(fs, inputs.outputPath);
 }
 

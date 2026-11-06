@@ -271,7 +271,9 @@
   --k-shell-prompt: #f5bd55;
   --k-shell-dim: #cdbbcb;
   --k-shell-selection: rgba(245, 189, 85, 0.30);
-  --k-shell-ansi-black: #8a7c98;
+  /* ANSI black is ink on colored TUI backgrounds (for example tmux's
+     green status line), rather than a muted foreground on the shell. */
+  --k-shell-ansi-black: #241b2c;
   --k-shell-ansi-red: #ff7f73;
   --k-shell-ansi-green: #a9d878;
   --k-shell-ansi-yellow: #f5bd55;

@@ -3,7 +3,7 @@ name = "kandelo-sdk-browser-bundle"
 version = "21.1.7"
 kernel_abi = 47
 arches = ["wasm32"]
-depends_on = ["clang@21.1.7", "libcxx@21.1.7"]
+depends_on = ["clang@21.1.7", "libcxx@21.1.7", "kandelo-cc@0.1.0", "binaryen@126"]
 
 [source]
 url = "https://github.com/Automattic/kandelo"
@@ -11,7 +11,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 provider = "repository"
 
 [license]
-spdx = "Apache-2.0 WITH LLVM-exception AND MIT"
+spdx = "Apache-2.0 WITH LLVM-exception AND MIT AND GPL-2.0-or-later"
 url = "https://github.com/Automattic/kandelo"
 
 [build]

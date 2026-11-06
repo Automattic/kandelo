@@ -1,0 +1,29 @@
+=== closed b3379c98ab1e ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+    },
+    tail_sites: {},
+}
+
+=== external b3379c98ab1e ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+    },
+    tail_sites: {},
+}

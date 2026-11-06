@@ -1,7 +1,7 @@
 kind = "program"
 name = "nginx-vfs"
 version = "0.1.0"
-kernel_abi = 41
+kernel_abi = 52
 depends_on = [
   "shell@0.1.0",
   "nginx@1.24.0",

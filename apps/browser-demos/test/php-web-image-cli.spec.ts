@@ -12,15 +12,7 @@ for (const { profile, title, pageText } of [
   { profile: "wordpress-mariadb", title: "WordPress MariaDB", pageText: /WordPress on Kandelo|Hello world/i },
   { profile: "nginx-php", title: "nginx + PHP", pageText: /Kandelo SQLite demo/i },
 ]) {
-  test(`${profile} runs PHP in its unprivileged terminal while FPM serves pages`, async ({ page, browserName }) => {
-    // On the WordPress machines, WebKit's garbage collector can deadlock
-    // after a few terminal commands, and WebKit's page process can crash
-    // while creating a TextDecoder. Both are host/WebKit defects, not PHP
-    // behavior. Remove this skip when the fix for issue #1562 lands.
-    test.fixme(
-      browserName === "webkit" && profile.startsWith("wordpress-"),
-      "WebKit GC deadlock and TextDecoder crash: https://github.com/Automattic/kandelo/issues/1562",
-    );
+  test(`${profile} runs PHP in its unprivileged terminal while FPM serves pages`, async ({ page }) => {
     test.setTimeout(300_000);
     await gotoMachine(page, profile);
     // Wait for the boot-to-web transition before selecting the terminal,
@@ -66,7 +58,7 @@ for (const { profile, title, pageText } of [
     expect(response.status).toBe(200);
     expect(response.body).toMatch(pageText);
     // Switching surfaces must preserve the live document and its navigation.
-    await page.getByRole("button", { name: "Demo", exact: true }).click();
+    await page.getByRole("button", { name: "Web", exact: true }).click();
     await expect(preview).toBeVisible();
     await expect.poll(previewText, { timeout: 30_000 }).toMatch(pageText);
   });

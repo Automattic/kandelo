@@ -16,6 +16,7 @@ describe("negErrno", () => {
   it("preserves numeric backend and Node errno values", () => {
     expect(negErrno({ code: -28 })).toBe(-28);
     expect(negErrno({ code: 28 })).toBe(-28);
+    expect(negErrno({ code: "ENOSPC" })).toBe(-28);
     expect(negErrno({ errno: -2 })).toBe(-2);
   });
 

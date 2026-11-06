@@ -5,7 +5,7 @@
 kind = "program"
 name = "python-browser-bundle"
 version = "3.13.3"
-kernel_abi = 41
+kernel_abi = 52
 depends_on = ["cpython@3.13.3"]
 
 [source]
@@ -24,3 +24,7 @@ script_path = "packages/registry/python-browser-bundle/build-python-browser-bund
 name = "python"
 wasm = "python.zip"
 fork_instrumentation = "disabled"
+
+[[runtime_files]]
+artifact = "sessions.json"
+guest_path = "/usr/share/kandelo/sessions/python-browser-bundle.json"

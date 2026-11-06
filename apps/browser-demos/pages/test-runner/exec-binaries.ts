@@ -1,4 +1,5 @@
 import type { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
+import { writeVfsBinary } from "@host/vfs/image-helpers";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
 import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
@@ -40,10 +41,7 @@ function writeFileToFs(
   path: string,
   data: ArrayBuffer,
 ): void {
-  const bytes = new Uint8Array(data);
-  const fd = fs.open(path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
-  fs.write(fd, bytes, null, bytes.length);
-  fs.close(fd);
+  writeVfsBinary(fs, path, new Uint8Array(data), 0o755);
 }
 
 /** Populate VFS with actual executable binaries and symlinks for exec. */

@@ -366,6 +366,16 @@ test("checks registered VFS build targets without owning non-VFS prerequisites",
 
 test("keeps canonical resolution ahead of legacy fallback for every Pages product", () => {
   withTempDir((directory) => {
+    for (const activation of ["activate(productId)", "activatePositioned(productId, stagingDirectory)"]) {
+      const missingActivation = copyBrowserSources(directory, (source, contents) => {
+        if (!source.endsWith("live-setup.ts")) return contents;
+        return contents.replace(`CANONICAL_PAGES_VFS_LOADER.${activation}`, "untrustedLoader.activate(productId)");
+      });
+      assert.throws(
+        () => checkPagesVfsProductRegistry({ ...paths, browserSources: missingActivation }),
+        /canonical on-demand Pages product loader/i,
+      );
+    }
     const reordered = copyBrowserSources(directory, (source, contents) => {
       if (!source.endsWith("vite.config.ts")) return contents;
       return contents.replace(

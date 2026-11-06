@@ -1,0 +1,22 @@
+kind = "program"
+name = "wordpress-family-vfs"
+version = "0.1.0"
+kernel_abi = 55
+depends_on = ["lamp@0.1.0", "wordpress@7.0", "service-activity-tools@0.1.0"]
+
+[source]
+provider = "repository"
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/wordpress-family-vfs/build.sh"
+
+[[outputs]]
+name = "wordpress-family-vfs"
+wasm = "wordpress-family-vfs.vfs.zst"
+fork_instrumentation = "disabled"

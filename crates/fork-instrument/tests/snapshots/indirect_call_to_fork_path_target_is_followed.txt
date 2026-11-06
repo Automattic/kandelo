@@ -1,0 +1,29 @@
+=== closed 5d75bae81888 ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+    },
+    tail_sites: {},
+}
+
+=== external 5d75bae81888 ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+    },
+    tail_sites: {},
+}

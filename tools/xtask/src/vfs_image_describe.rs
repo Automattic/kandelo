@@ -244,18 +244,27 @@ fn spell_source_path(bytes: &[u8]) -> String {
     }
 }
 
-/// Read the deferred set from whichever carrier the image uses.
+/// Read the deferred set from the image's `SDEF` section.
 ///
-/// SDEF is preferred when present because it is the section the kernel's
-/// loader treats as authoritative; KLZY is read otherwise. An image carrying both is not an error here -- SDEF wins
-/// and the carrier is reported, so a comparison can see the disagreement
-/// rather than having it silently resolved.
+/// An image carrying a `KLZY` section is refused, as the kernel's loader
+/// refuses it: that reader was removed on 2026-10-02 (nothing has written the
+/// section since the TypeScript writer was deleted), so such an image is a
+/// stale artifact to rebuild, not something to describe as if it loaded.
 fn read_deferred<S: kandelo_image_fs::BlockSource>(
     fs: &KandeloImageFs<S>,
     image: &[u8],
 ) -> Result<(BTreeMap<u32, Deferred>, BTreeMap<u32, u64>, &'static str), String> {
     let mut out = BTreeMap::new();
     let mut archives = BTreeMap::new();
+
+    if kandelo_image_fs::kernel_lazy_section(image)
+        .map_err(|e| format!("KLZY: {e:?}"))?
+        .is_some()
+    {
+        return Err("image carries a KLZY section, which the kernel no longer reads \
+                    and refuses at load; rebuild the image"
+            .to_string());
+    }
 
     if let Some(section) = fs.deferred_section().map_err(|e| format!("SDEF: {e:?}"))? {
         for record in &section.records {
@@ -280,32 +289,6 @@ fn read_deferred<S: kandelo_image_fs::BlockSource>(
         return Ok((out, archives, "sdef"));
     }
 
-    if let Some(section) = kandelo_image_fs::kernel_lazy_section(image).map_err(|e| format!("KLZY: {e:?}"))? {
-        let linkage = runtime_core::klzy::decode_kernel_lazy_linkage(section)
-            .map_err(|e| format!("KLZY decode: {e:?}"))?;
-        for file in &linkage.files {
-            out.insert(
-                file.ino,
-                Deferred {
-                    path: String::new(),
-                    real_size: file.size,
-                    // KLZY is the kernel-facing subset and carries no fetch
-                    // description, so the digest covers what it does carry.
-                    // The URL and integrity fields live in the trailing lazy
-                    // JSON, which this description does not compare.
-                    payload_sha256: hex(&Sha256::digest(
-                        format!("klzy:{}:{}", file.archive_id, file.source_path).as_bytes(),
-                    )),
-                    archive_id: Some(file.archive_id),
-                    source_path: Some(file.source_path.clone()),
-                },
-            );
-        }
-        for archive in &linkage.archives {
-            archives.insert(archive.archive_id, archive.archive_bytes);
-        }
-        return Ok((out, archives, "klzy"));
-    }
 
     Ok((out, archives, "none"))
 }

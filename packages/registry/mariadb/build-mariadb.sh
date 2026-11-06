@@ -288,6 +288,47 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 
 echo "==> libcxx resolved at $LIBCXX_PREFIX (projected into $SYSROOT)"
 
+# Build only the terminal library from a declared, architecture-independent
+# source dependency. MariaDB supports wasm32 and wasm64; the separate ncurses
+# program package currently supports wasm32 only. Keep this private, just as
+# the PCRE2 source build below, rather than using a host library or libc stubs.
+if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1" ]; then
+    TERMINFO_SOURCE_DIR="$(kandelo_package_source_dependency_dir ncurses-source)"
+else
+    TERMINFO_SOURCE_DIR="${WASM_POSIX_DEP_NCURSES_SOURCE_SRC_DIR:-}"
+    [ -n "$TERMINFO_SOURCE_DIR" ] || TERMINFO_SOURCE_DIR="$(resolve_dep ncurses-source)"
+fi
+[ -f "$TERMINFO_SOURCE_DIR/configure" ] || {
+    echo "ERROR: ncurses-source is missing configure" >&2
+    exit 1
+}
+TERMINFO_BUILD_DIR="$BUILD_STATE_ROOT/terminfo-build"
+export WASM_POSIX_MARIADB_TERMINFO_PREFIX="$BUILD_STATE_ROOT/terminfo-install"
+mkdir -p "$TERMINFO_BUILD_DIR"
+(
+    cd "$TERMINFO_BUILD_DIR"
+    CC="${WASM_ARCH}posix-cc" CXX="${WASM_ARCH}posix-c++" \
+        AR="${WASM_ARCH}posix-ar" RANLIB="${WASM_ARCH}posix-ranlib" \
+        CFLAGS=-O2 cf_cv_working_poll=yes cf_cv_ar_flags=-curvD \
+        "$TERMINFO_SOURCE_DIR/configure" \
+        --host="$WASM_ARCH-unknown-none" \
+        --prefix="$WASM_POSIX_MARIADB_TERMINFO_PREFIX" \
+        --without-cxx --without-cxx-binding --without-ada --without-tests \
+        --without-progs --without-manpages --without-shared --without-debug \
+        --with-termlib --enable-widec --disable-db-install \
+        --with-build-cc="$HOST_CC_COMMAND" --with-pkg-config=no --enable-pc-files=no \
+        --with-default-terminfo-dir=/usr/share/terminfo \
+        --with-terminfo-dirs=/usr/share/terminfo --disable-stripping \
+        > configure.log 2>&1 || { tail -60 configure.log >&2; exit 1; }
+    make -j"$NPROC" > build.log 2>&1 || { tail -60 build.log >&2; exit 1; }
+    make install > install.log 2>&1 || { tail -60 install.log >&2; exit 1; }
+)
+# The bundled readline adds CURSES_INCLUDE_PATH for its own objects, while
+# client/mysql.cc includes curses.h through the normal target include path.
+# Project these real dependency headers into this recipe's private sysroot.
+cp -R "$WASM_POSIX_MARIADB_TERMINFO_PREFIX/include/." "$SYSROOT/include/"
+cp -R "$WASM_POSIX_MARIADB_TERMINFO_PREFIX/include/ncursesw/." "$SYSROOT/include/"
+
 PCRE2_PREFIX="${WASM_POSIX_DEP_PCRE2_DIR:-}"
 if [ -n "$PCRE2_PREFIX" ]; then
     for path in \
@@ -397,6 +438,8 @@ cd "$CROSS_BUILD_DIR"
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
+# The bundled line editor must reference terminfo's PC/BC/UP globals.
+# NEED_EXTERN_PC is its existing portability selector for that ownership.
 cmake "$SRC_DIR" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
@@ -405,7 +448,7 @@ cmake "$SRC_DIR" \
     -DIMPORT_EXECUTABLES="$HOST_BUILD_DIR/import_executables.cmake" \
     \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG" \
+    -DCMAKE_C_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG -DNEED_EXTERN_PC=1" \
     -DCMAKE_CXX_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG" \
     \
     -DWITH_UNIT_TESTS=OFF \
@@ -463,6 +506,18 @@ cmake "$SRC_DIR" \
     2>&1 | tail -40
 
 echo "==> CMake configuration complete. Starting build..."
+
+# Build the client first, including its terminal headers and link closure,
+# before spending time on the server. WITH_EDITLINE=bundled selects the
+# upstream GPLv2-compatible line editor; real target terminfo backs it.
+echo "==> Building interactive mariadb client..."
+MARIADB_CLIENT_LOG="$CROSS_BUILD_DIR/build-mariadb-client.log"
+if make -j"$NPROC" mariadb > "$MARIADB_CLIENT_LOG" 2>&1; then
+    tail -10 "$MARIADB_CLIENT_LOG"
+else
+    tail -60 "$MARIADB_CLIENT_LOG" >&2
+    exit 1
+fi
 
 # Build mysqld. Capture full output to a log so a failed build doesn't
 # bury the actual diagnostic in `tail -N`. Show the tail on success and
@@ -536,6 +591,8 @@ else
     exit 1
 fi
 
+cp "$CROSS_BUILD_DIR/client/mariadb" "$INSTALL_DIR/bin/mariadb.wasm"
+
 # --- Install mysqltest ---
 MYSQLTEST_BIN="$CROSS_BUILD_DIR/client/mariadb-test"
 if [ -f "$MYSQLTEST_BIN" ]; then
@@ -600,6 +657,10 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
         WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
         install_local_binary mariadb "$INSTALL_DIR/bin/mariadbd.wasm" mariadbd.wasm
+    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
+        WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
+        install_local_binary mariadb "$INSTALL_DIR/bin/mariadb.wasm" mariadb.wasm
     [ -f "$INSTALL_DIR/bin/mysqltest.wasm" ] && \
         WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
             WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
@@ -617,6 +678,8 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
 else
     WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
         install_local_binary mariadb "$INSTALL_DIR/bin/mariadbd.wasm" mariadbd.wasm
+    WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
+        install_local_binary mariadb "$INSTALL_DIR/bin/mariadb.wasm" mariadb.wasm
     [ -f "$INSTALL_DIR/bin/mysqltest.wasm" ] && \
         WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
             install_local_binary mariadb "$INSTALL_DIR/bin/mysqltest.wasm" mysqltest.wasm || true

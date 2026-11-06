@@ -109,3 +109,7 @@ echo "==> quake.wasm built (VID=$QUAKE_VID_TARGET IN=$QUAKE_IN_TARGET SND=$QUAKE
 cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary tyrquake "$OUT_BIN" quake.wasm
+
+install_local_runtime_file tyrquake "${HERE}/sessions.json" sessions.json
+install_local_runtime_file tyrquake "${HERE}/quake-data" quake-data
+install_local_runtime_file tyrquake "${HERE}/quake-activity" quake-activity

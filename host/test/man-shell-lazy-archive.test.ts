@@ -44,10 +44,11 @@ const haveShellImage = existsSync(shellImagePath);
 const haveArchives = archivePaths.every(existsSync);
 const available = haveKernel && haveShellImage && haveArchives;
 
-// Offline binding base. `shell.vfs.zst`'s lazy-archive entries store bare,
-// image-relative URLs (e.g. "man.zip") that `rootfsLazyUrlBase` rewrites to
-// an absolute canonical HTTPS URL before the closed, in-memory lazy fetcher
-// is consulted — no request ever leaves the process.
+// Offline binding base. `shell.vfs.zst`'s lazy archives record their
+// package-mirror path (e.g. "kandelo-lazy:programs/wasm32/man.zip"), which
+// `rootfsLazyAssetDirectory` resolves to `<base>assets/programs/wasm32/man.zip`
+// before the closed, in-memory lazy fetcher is consulted. No request ever
+// leaves the process.
 const LAZY_URL_BASE = "https://kandelo.invalid/";
 
 function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -62,7 +63,7 @@ function closedLazyAsset(name: string): ClosedLazyAsset {
     readFileSync(join(sourceOnlyProgramsDir, name)),
   );
   return {
-    url: `${LAZY_URL_BASE}${name}`,
+    url: `${LAZY_URL_BASE}assets/programs/wasm32/${name}`,
     sha256: createHash("sha256").update(bytes).digest("hex"),
     size: bytes.byteLength,
     bytes,
@@ -126,6 +127,7 @@ async function runManCommand(
     // `.zst` product bytes are handed over exactly as built.
     rootfsImage: shellImageBytes,
     rootfsLazyUrlBase: LAZY_URL_BASE,
+    rootfsLazyAssetDirectory: LAZY_URL_BASE,
     rootfsLazyAssets: ARCHIVE_NAMES.map(closedLazyAsset),
     onStdout: (_pid, bytes) => {
       stdout += new TextDecoder().decode(bytes);

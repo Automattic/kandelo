@@ -70,6 +70,24 @@ describe("remote UDP wire", () => {
 });
 
 describe("worker-owned remote UDP segment over native Node ports", () => {
+  it("forwards multicast between joiners once per destination machine without echo", async () => {
+    const server = host(); const first = await join(server); const second = await join(server);
+    const heard: UdpDatagram[][] = [[], [], []];
+    const machines = [server, first.peer, second.peer];
+    for (const [i, machine] of machines.entries()) {
+      for (const id of ["one", "two"]) expect(machine.bindUdp(id, any, 9000, {
+        kernelReceiver: "process-100", receive: (d) => { heard[i].push(d); return 0; },
+      })).toBe(0);
+    }
+    await waitBindings(first.peer, 6); await waitBindings(second.peer, 6);
+    const dstAddr = new Uint8Array([238, 255, 0, 1]);
+    expect(first.peer.udpSourceAddress(dstAddr)).toEqual(ip(2));
+    expect(first.peer.sendDatagram({ ...packet(2), dstAddr })).toBe(0);
+    await vi.waitFor(() => expect(heard.map(a => a.length)).toEqual([1, 0, 1]));
+    expect(server.sendDatagram({ ...packet(1), dstAddr })).toBe(0);
+    await vi.waitFor(() => expect(heard.map(a => a.length)).toEqual([1, 1, 2]));
+  });
+
   it("selects its actual interface for segment routes and rejects absent external UDP routes", async () => {
     const server = host();
     const { peer } = await join(server);

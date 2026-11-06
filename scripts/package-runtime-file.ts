@@ -54,6 +54,40 @@ function requireRegularXtask(path: string): string {
   throw new Error(`Prepared xtask is not a regular file: ${path}`);
 }
 
+/**
+ * Pick the xtask binary's path out of `cargo build --message-format=json*`
+ * stdout. Non-JSON lines (the dev shell's banner) are skipped.
+ */
+export function cargoBuiltXtaskExecutable(messages: string): string {
+  let executable: string | undefined;
+  for (const line of messages.split("\n")) {
+    if (!line.startsWith("{")) continue;
+    let message: {
+      reason?: unknown;
+      target?: { name?: unknown; kind?: unknown };
+      executable?: unknown;
+    };
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (
+      message.reason === "compiler-artifact"
+      && message.target?.name === "xtask"
+      && Array.isArray(message.target.kind)
+      && message.target.kind.includes("bin")
+      && typeof message.executable === "string"
+    ) {
+      executable = message.executable;
+    }
+  }
+  if (executable === undefined) {
+    throw new Error("cargo build -p xtask reported no xtask executable");
+  }
+  return executable;
+}
+
 function prepareRuntimeMetadataXtask(repoRoot: string): string {
   const explicit = process.env.WASM_POSIX_XTASK_BIN;
   if (explicit !== undefined) {
@@ -67,13 +101,11 @@ function prepareRuntimeMetadataXtask(repoRoot: string): string {
   }
 
   const target = hostTarget(repoRoot);
-  const xtaskPath = join(
-    repoRoot,
-    "target",
-    target,
-    "release",
-    process.platform === "win32" ? "xtask.exe" : "xtask",
-  );
+  // WHY: ask cargo where it wrote the binary instead of assuming
+  // <repoRoot>/target. xtask local-build exports a private CARGO_TARGET_DIR
+  // into every package recipe, and cargo honors it, so the fresh binary lands
+  // there. A hard-coded repo path fails in a fresh worktree and silently runs
+  // a stale binary from an earlier `./run.sh setup` in an old one.
   const cargoArgs = [
     "build",
     "--release",
@@ -82,6 +114,7 @@ function prepareRuntimeMetadataXtask(repoRoot: string): string {
     "--target",
     target,
     "--quiet",
+    "--message-format=json-render-diagnostics",
   ];
   const inDevShell = process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined;
   const command = inDevShell ? "cargo" : "bash";
@@ -92,7 +125,12 @@ function prepareRuntimeMetadataXtask(repoRoot: string): string {
   // declared host archiver and makes native Cargo build scripts fall back to
   // ambient platform tools. Cargo's incremental build is the current-source
   // attestation; CI can instead provide the exact prepared binary below.
-  execFileSync(command, args, { cwd: repoRoot, encoding: "utf8" });
+  const messages = execFileSync(command, args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const xtaskPath = cargoBuiltXtaskExecutable(messages);
   preparedRuntimeMetadataXtask = {
     repoRoot,
     xtaskPath: requireRegularXtask(xtaskPath),

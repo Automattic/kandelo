@@ -3,6 +3,7 @@
 // runtime, so a correctly-built overlay can still be invisible.
 
 import { expect, test } from "@playwright/test";
+import { configureNewComputer } from "./support/computer-library";
 
 const appUrl = (path: string): string => {
   const baseUrl = process.env.KANDELO_TEST_BASE_URL;
@@ -52,11 +53,8 @@ test("a machine switch shows teardown then load progress @slow", async ({
     }, 50);
   });
 
-  await page.getByRole("button", { name: /^(New|Launch new computer)$/ })
-    .first().click();
-  await page.locator("tr.kgal-row").first().waitFor();
-  await page.locator('tr.kgal-row:not([data-current="true"])')
-    .filter({ hasText: /Node\.js/i }).first().click();
+  await configureNewComputer(page, "node");
+  await page.getByRole("button", { name: "Create and boot", exact: true }).click();
 
   await expect(page.locator(".kmprogress-card")).toBeVisible({ timeout: 30_000 });
 

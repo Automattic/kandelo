@@ -1,0 +1,77 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Kandelo-shaped worker lifecycle: grow a shared memory while exited thread workers are terminated</title>
+<pre id="out"></pre>
+<script>
+// Standalone reproduction; nothing here comes from Kandelo, but the worker
+// topology mirrors Kandelo's browser host. Serve this directory with
+// Cross-Origin-Opener-Policy: same-origin and
+// Cross-Origin-Embedder-Policy: require-corp.
+//
+// Every Worker is a module Worker, as Kandelo's are. The page starts ONE
+// dedicated "kernel" Worker (faithful-kernel.js). The
+// kernel owns each process's shared WebAssembly.Memory (16 MiB initial,
+// 1 GiB maximum) and creates, as nested Workers that are never reused:
+//   - one process worker (faithful-process.js) with one instance of the
+//     memory, which grows it from Wasm and asks the kernel to grow it from
+//     JavaScript (brk/mmap);
+//   - a few pthread workers at a time (faithful-thread.js), each with one
+//     instance of the memory. A thread runs briefly, reports quiescence, and
+//     the kernel terminates it at once and starts the next one.
+// When the memory is full the process exits: the kernel terminates its
+// workers and starts a new process with a fresh memory.
+//
+// A web content process crash is the defect (crash_is_reproduced = true).
+// Surviving the run is not-reproduced, provided enough grows and thread
+// teardowns happened; otherwise inconclusive.
+//
+// Query parameters:
+//   idle=1      ablation: exited threads stay idle until their process exits
+//   retain=1    ablation: each thread keeps its instance reachable until its
+//               worker is terminated
+//   pregrow=1   ablation: each memory is grown to its maximum before any
+//               thread starts; nothing grows afterwards
+//   threads=3   concurrent threads per process
+//   processMs=2000  lifetime of a process that never fills (pregrow)
+//   seconds=60  run length
+const params = new URLSearchParams(location.search);
+const config = {
+  idleThreads: params.get('idle') === '1',
+  pregrow: params.get('pregrow') === '1',
+  retain: params.get('retain') === '1',
+  threads: Number(params.get('threads') ?? '3'),
+  processMs: Number(params.get('processMs') ?? '2000'),
+  seconds: Number(params.get('seconds') ?? '60'),
+};
+const MIN_TEARDOWNS = 500;
+const MIN_GROWS = config.pregrow ? 0 : 1000;
+const out = document.getElementById('out');
+const log = (line) => { out.textContent += line + '\n'; };
+const describe = (s) => `${JSON.stringify(config)}; processes ${s.processes}, threads started ${s.threadsStarted}, ` +
+  `thread workers terminated ${s.threadsTerminated}, kernel JS grows ${s.jsGrows}, Wasm grows ${s.wasmGrows}`;
+
+function main() {
+  if (typeof SharedArrayBuffer === 'undefined' || !crossOriginIsolated) {
+    return Promise.resolve({ verdict: 'inconclusive', details: 'page is not cross-origin isolated' });
+  }
+  return new Promise((resolve) => {
+    const kernel = new Worker('faithful-kernel.js', { type: 'module' });
+    kernel.onerror = (event) => resolve({ verdict: 'inconclusive', details: `kernel worker error: ${event.message}` });
+    kernel.onmessage = ({ data }) => {
+      if (data.type === 'stats') { log(describe(data.stats)); return; }
+      const s = data.stats;
+      const grows = s.jsGrows + s.wasmGrows;
+      if (s.threadsTerminated < MIN_TEARDOWNS || grows < MIN_GROWS) {
+        resolve({ verdict: 'inconclusive', details: `sanity check failed (need >= ${MIN_TEARDOWNS} thread teardowns, >= ${MIN_GROWS} grows): ${describe(s)}` });
+      } else {
+        resolve({ verdict: 'not-reproduced', details: `page survived: ${describe(s)}` });
+      }
+    };
+    kernel.postMessage(config);
+  });
+}
+main().then(
+  (verdict) => { window.__reproVerdict = verdict; log(`${verdict.verdict}: ${verdict.details}`); },
+  (error) => { window.__reproVerdict = { verdict: 'inconclusive', details: `repro failed: ${error}` }; log(String(error)); },
+);
+</script>

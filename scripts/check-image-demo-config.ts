@@ -61,7 +61,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // That false-positive risk is accepted: this checker only gates the tracked
 // files in this repository.
 const KNOWN_PROFILE_KEYS = [
-  "presentation", "assets", "guide", "ingest", "dockActions",
+  "presentation", "assets", "guide", "exchange", "dockActions",
   "identity", "runtime", "init", "web", "display",
 ];
 
@@ -162,14 +162,18 @@ export const COMPOSED_TRACKED_SOURCES = new Set<string>([
 /**
  * Every other tracked source bakes verbatim into exactly one built image
  * (one `writeTrackedDemoConfig(fs, relPath)` call site each — see
- * images/vfs/scripts/build-*-vfs-image.ts). This maps the tracked path to
+ * images/vfs/scripts/build-*-vfs-image.ts and build-image-families.ts). This maps the tracked path to
  * that image's `programs/<architecture>/<output>` artifact path, i.e. the
  * relPath `tryResolveBinary` / `snapshotSourceOnlyBinary` expect. Adding a
- * tenth tracked source without adding it here (or to
+ * new tracked source without adding it here (or to
  * COMPOSED_TRACKED_SOURCES) is a hard failure in `checkBakedEqualsTracked`
  * rather than a silent skip — see the "not classified" check below.
  */
 export const SINGLE_SOURCE_IMAGE_ARTIFACTS: Record<string, string> = {
+  "packages/registry/web-stack-vfs/demo.json": "programs/wasm32/web-stack-vfs.vfs.zst",
+  "packages/registry/wordpress-family-vfs/demo.json":
+    "programs/wasm32/wordpress-family-vfs.vfs.zst",
+  "packages/registry/redis-vfs/redis-demo.json": "programs/wasm32/redis-vfs.vfs.zst",
   "packages/registry/nginx/nginx-demo.json": "programs/wasm32/nginx-vfs.vfs.zst",
   "packages/registry/nginx/nginx-php-demo.json": "programs/wasm32/nginx-php-vfs.vfs.zst",
   "packages/registry/nginx-python-vfs/nginx-python-demo.json":

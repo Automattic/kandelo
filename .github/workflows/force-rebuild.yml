@@ -258,7 +258,7 @@ jobs:
             bash -c '
             set -euo pipefail
 
-            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
+            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/program-abi/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
             # force-rebuild always targets the durable, undated tag.

@@ -22,6 +22,8 @@ use wasmparser::{
 };
 
 const SECTION: &str = "target_features";
+mod writer;
+pub use writer::write_declared_features;
 
 /// Rewrite `module` so its `target_features` section declares every feature
 /// the module uses, keeping every entry it already had.

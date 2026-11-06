@@ -1,13 +1,22 @@
+import type {
+  ExchangeNotificationsMessage,
+  ExchangeRangeMessage,
+  ExchangeRangeRequestMessage,
+  ExchangeRequestMessage,
+} from "./exchange-host";
 import type { RemoteSegmentInit } from "./networking/remote-segment-port";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
+import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
+import type { OpfsFileReference } from "./vfs/opfs-file-reference";
+import type { StagedRootfsImageProgress } from "./vfs/staged-rootfs-image";
 export type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
-  GetSpawnScratchCapacityRequestMessage,
   EnumProcsRequestMessage,
   ReadProcMapsRequestMessage,
   SetSyscallTraceMessage,
@@ -39,6 +48,7 @@ export type {
   WakeBlockedWritersMessage,
   HttpRequestMessage,
   WriteVfsFileMessage,
+  ReadVfsFileRangeMessage,
   ProcEventMessage,
   AttachRemotePeerMessage,
   RemoteNetworkSnapshotMessage,
@@ -50,8 +60,8 @@ import type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
-  GetSpawnScratchCapacityRequestMessage,
   EnumProcsRequestMessage,
   ReadProcMapsRequestMessage,
   SetSyscallTraceMessage,
@@ -83,6 +93,7 @@ import type {
   WakeBlockedWritersMessage,
   HttpRequestMessage,
   WriteVfsFileMessage,
+  ReadVfsFileRangeMessage,
   ProcEventMessage,
   AttachRemotePeerMessage,
   RemoteNetworkSnapshotMessage,
@@ -164,6 +175,13 @@ export interface InitMessage {
    * them into the image.
    */
   vfsImage: Uint8Array;
+  /** Positioned OPFS source in place of `vfsImage`; opened by the kernel worker. */
+  opfsImage?: OpfsFileReference;
+  opfsImageIntegrity?: OpfsImageIntegrity;
+  rootfsPersistentImageBinding?: import("./vfs/image-integrity").PersistentImageReadBinding;
+  experimentalFixedPersistenceName?: string;
+  experimentalResizablePersistenceName?: string;
+  requireExistingRootfsPersistence?: boolean;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
@@ -178,9 +196,19 @@ export interface InitMessage {
    * transport policy, so it travels as data. A table rather than a resolver,
    * because the deployment knows every asset it serves without asking the
    * image what it contains. An address the table does not carry is resolved
-   * against `lazyUrlBase`, or fetched as written.
+   * through `lazyAssetDirectory`, then against `lazyUrlBase`, or fetched as
+   * written.
    */
   lazyUrlMap?: Readonly<Record<string, string>>;
+  /**
+   * Where this deployment serves package members (an absolute URL ending in
+   * `/`): an asset group's directory, or the dev server's lazy-asset route.
+   * Every address in the image-owned grammar (`binaries/programs/...` or
+   * `kandelo-lazy:programs/...`, each naming its package-mirror path)
+   * resolves to its member path under it, so the deployment needs no table listing what the
+   * image carries. The image itself records each body's size and SHA-256.
+   */
+  lazyAssetDirectory?: string;
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
   closedLazyAssets?: ClosedLazyAsset[];
   workerEntryUrl: string;
@@ -190,6 +218,8 @@ export interface InitMessage {
     maxMemoryPages: number;
     /** Ceiling for the kernel's own wasm address space, in 64 KiB pages. */
     kernelMaxPages: number;
+    rootfsMetadataBytes?: number;
+    maxVfsFileReadBytes?: number;
     /** Identifier of the runtime memory profile these budgets came from. */
     memoryProfileId: string;
     /**
@@ -199,6 +229,9 @@ export interface InitMessage {
     maxProcessMemoryBytes: number;
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;
+    /** Bytes Kandelo exchange's `work/` and `outbox/` may hold. */
+    exchangeByteLimit?: number;
+    exchangeActivation?: "on-demand" | "off";
     env: string[];
     /** Forwarded to KernelConfig.enableSyscallLog — log every syscall. */
     enableSyscallLog?: boolean;
@@ -406,8 +439,23 @@ export interface ClipboardGuestWaitMessage {
   timeoutMs?: number;
 }
 
+export interface ExportRootfsImageToFileMessage {
+  type: "export_rootfs_image_to_file";
+  requestId: number;
+  file: OpfsFileReference;
+  reportProgress?: boolean;
+}
+
+export interface RootfsImageExportProgressMessage {
+  type: "rootfs_image_export_progress";
+  requestId: number;
+  progress: StagedRootfsImageProgress;
+}
+
 export type MainToKernelMessage =
   | InitMessage
+  | ExchangeRequestMessage
+  | ExchangeRangeMessage
   | AttachRemotePeerMessage
   | RemoteNetworkSnapshotMessage
   | RemoteNetworkHostMessage
@@ -417,11 +465,13 @@ export type MainToKernelMessage =
   | SpawnMessage
   | TerminateProcessMessage
   | ReadVfsFileMessage
+  | ReadVfsFileRangeMessage
   | ReadVfsDirMessage
   | StatVfsPathMessage
   | WriteVfsFileMessage
   | UnlinkVfsFileMessage
   | ExportRootfsImageMessage
+  | ExportRootfsImageToFileMessage
   | ClipboardOfferMessage
   | ClipboardGuestWaitMessage
   | AppendStdinDataMessage
@@ -443,8 +493,8 @@ export type MainToKernelMessage =
   | RegisterPtyOutputMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetStorageMetadataMemoryUsageRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
-  | GetSpawnScratchCapacityRequestMessage
   | MouseInjectMessage
   | InputEventInjectMessage
   | InputEventBatchInjectMessage
@@ -588,6 +638,8 @@ export interface VfsChangeMessage {
 
 export type KernelToMainMessage =
   | ReadyMessage
+  | ExchangeRangeRequestMessage
+  | ExchangeNotificationsMessage
   | { type: "audio_activity" }
   | InitErrorMessage
   | KernelFatalMessage
@@ -607,6 +659,7 @@ export type KernelToMainMessage =
   | HttpBridgePendingMessage
   | LazyDownloadMessage
   | DestroyProgressMessage
+  | RootfsImageExportProgressMessage
   | VfsChangeMessage;
 
 export interface WatchVfsChangesMessage {

@@ -1,14 +1,17 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import { test } from "./support/persistent-page";
 import { gotoMachine, gotoMachineOrSkip, previewFrame } from "./support/kandelo-machine";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures, memoryBoundaryRealmId } from "./support/browser-memory-boundary";
 import { QUAKE_ZIP_URL } from "../../../web-libs/kandelo-session/src/demo-guides";
+import { expectRunningMachineAudio } from "./support/machine-audio";
+import { configureNewComputer, currentComputerMetadata } from "./support/computer-library";
 
 async function launch(page: Page, title: string, profile: string): Promise<void> {
-  await page.getByRole("button", { name: "New", exact: true }).click();
-  await page.locator(".kgal-row", {
-    has: page.locator(".kgal-machine-title", { hasText: title }),
-  }).getByRole("button", { name: "Launch", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`profile=${profile}(?:&|$)`), { timeout: 240_000 });
+  await configureNewComputer(page, profile);
+  await page.getByLabel("Computer name", { exact: true }).fill(title);
+  await page.getByRole("button", { name: "Create and boot", exact: true }).click();
+  await expect(page).toHaveURL(/computer=[0-9a-f-]{36}(?:&|$)/, { timeout: 240_000 });
+  await expect.poll(async () => (await currentComputerMetadata(page)).profileId, { timeout: 240_000 }).toBe(profile);
   expect(new URL(page.url()).searchParams.get("memoryProfile")).toBe("constrained");
   await expect(page.locator(".kmprogress-card")).toHaveCount(0, { timeout: 240_000 });
 }
@@ -17,15 +20,7 @@ async function expectGameFrame(page: Page): Promise<void> {
   const canvas = page.locator("canvas.kframebuffer-canvas").first();
   await expect(canvas).toBeVisible({ timeout: 180_000 });
   await expect(page.locator('[data-audio-active="true"]')).toHaveCount(1, { timeout: 180_000 });
-  // Guest audio backpressure can block the first rendered frame. Activate
-  // through the production control before waiting for pixels, as a user can.
-  await expect.poll(async () => {
-    const state = await page.locator('[data-audio-state]').getAttribute("data-audio-state");
-    if (state !== "running" && await page.locator(".kpcm-audio-enable").isVisible()) {
-      await page.locator(".kpcm-audio-enable").click();
-    }
-    return page.locator('[data-audio-state]').getAttribute("data-audio-state");
-  }, { timeout: 30_000 }).toBe("running");
+  await expectRunningMachineAudio(page);
   await expect.poll(() => canvas.evaluate((el: HTMLCanvasElement) => {
     const bytes = el.getContext("2d")!.getImageData(0, 0, el.width, el.height).data;
     const colors = new Set<number>();
@@ -37,7 +32,31 @@ async function expectGameFrame(page: Page): Promise<void> {
   }), { timeout: 180_000 }).toBeGreaterThan(8);
 }
 
-test("@slow framebuffer games, Freeciv, LÖVE and WordPress survive repeated constrained-budget switches", async ({ page }) => {
+async function leaveDetachedTmuxSession(page: Page, cycle: number): Promise<void> {
+  const screen = () => page.locator(".xterm-rows:visible").textContent();
+  const input = page.locator(".xterm-helper-textarea:visible");
+  const command = async (text: string) => {
+    await input.focus();
+    await page.keyboard.type(text);
+    await page.keyboard.press("Enter");
+  };
+  await expect.poll(screen, { timeout: 120_000 }).toMatch(/kandelo\$/);
+  await command("tmux new-session -s memory");
+  await expect.poll(screen, { timeout: 30_000 }).toContain("[memory]");
+  await command(`printf 'TMUX_%s\\n' 'MEMORY_LEFT_${cycle}'`);
+  await expect.poll(screen, { timeout: 20_000 }).toContain(`TMUX_MEMORY_LEFT_${cycle}`);
+  await page.keyboard.press("Control+b");
+  await page.keyboard.type("%");
+  await command(`printf 'TMUX_%s\\n' 'MEMORY_RIGHT_${cycle}'`);
+  await expect.poll(screen, { timeout: 20_000 }).toContain(`TMUX_MEMORY_RIGHT_${cycle}`);
+  await page.keyboard.press("Control+b");
+  await page.keyboard.type("d");
+  await expect.poll(screen, { timeout: 10_000 }).toContain("[detached (from session memory)]");
+  // Leave the real server and both pane shells alive. Switching machines
+  // must release them through normal host teardown in this same page realm.
+}
+
+test("@slow framebuffer games, Freeciv, LÖVE, tmux and WordPress survive repeated constrained-budget switches", async ({ page }) => {
   test.setTimeout(900_000);
   const required = process.env.KANDELO_MEMORY_SWITCH_REQUIRED === "1";
   // This follows the same external-data boundary as the Quake demo spec.
@@ -71,24 +90,20 @@ test("@slow framebuffer games, Freeciv, LÖVE and WordPress survive repeated con
     await launch(page, "Freeciv", "freeciv");
     await expect(page.locator(".kmodeset-canvas")).toBeVisible({ timeout: 180_000 });
     await expect(page.locator('[data-audio-active="true"]')).toHaveCount(1, { timeout: 180_000 });
-    await expect.poll(async () => {
-      if (await page.locator(".kpcm-audio-enable").isVisible()) await page.locator(".kpcm-audio-enable").click();
-      return page.locator('[data-audio-state]').getAttribute("data-audio-state");
-    }, { timeout: 60_000 }).toBe("running");
+    await expectRunningMachineAudio(page, 60_000);
     await expect.poll(async () => Number(await page.locator(".kmodeset-surface").getAttribute("data-kms-present-count")),
       { timeout: 180_000 }).toBeGreaterThan(0);
     await launch(page, "LÖVE games", "love");
     const loveCanvas = page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
     await expect(loveCanvas).toBeVisible({ timeout: 180_000 });
     await expect(page.locator('[data-audio-active="true"]')).toHaveCount(1, { timeout: 180_000 });
-    await expect.poll(async () => {
-      if (await page.locator(".kpcm-audio-enable").isVisible()) await page.locator(".kpcm-audio-enable").click();
-      return page.locator('[data-audio-state]').getAttribute("data-audio-state");
-    }, { timeout: 60_000 }).toBe("running");
+    await expectRunningMachineAudio(page, 60_000);
     const loveFlips = () => page.locator("body").innerText().then(text =>
       Number(text.match(/(\d+)\s*flips\s*·/i)?.[1] ?? -1));
     const initialFlips = await loveFlips();
     await expect.poll(loveFlips, { timeout: 60_000 }).toBeGreaterThan(initialFlips + 5);
+    await launch(page, "Bare shell", "shell");
+    await leaveDetachedTmuxSession(page, cycle);
     await launch(page, "WordPress MariaDB", "wordpress-mariadb");
     await expect(previewFrame(page, "WordPress MariaDB").locator("body"))
       .toContainText(/Hello world/i, { timeout: 240_000 });

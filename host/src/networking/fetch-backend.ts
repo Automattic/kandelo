@@ -1,3 +1,4 @@
+import { notifyReadiness, readinessGeneration } from "./readiness-generation";
 import type { NetworkAddress, NetworkIO, UdpReceiveTarget } from "../types";
 import { EgressLink, SyntheticHostAddresses } from "./egress-link";
 import { NET_READINESS } from "../generated/abi";
@@ -160,9 +161,11 @@ export class FetchNetworkBackend implements NetworkIO {
 
         conn.responseBuf = formatHttpResponse(response.status, response.statusText, response.headers, await response.arrayBuffer());
         conn.fetchDone = true;
+        notifyReadiness(conn, 0);
       } catch (e) {
         conn.fetchError = e as Error;
         conn.fetchDone = true;
+        notifyReadiness(conn, 0);
       }
     };
 
@@ -211,6 +214,11 @@ export class FetchNetworkBackend implements NetworkIO {
    * Report what a `fetch` promise's settlement makes observable. No POSIX
    * readiness decision is made here — `runtime_core::net_readiness` makes it.
    */
+  readinessGeneration(handle: number, direction: number): bigint {
+    const conn = this.connections.get(handle);
+    return conn ? readinessGeneration(conn, direction) : -1n;
+  }
+
   readiness(handle: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });

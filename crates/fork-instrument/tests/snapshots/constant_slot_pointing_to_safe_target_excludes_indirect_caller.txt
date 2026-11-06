@@ -1,0 +1,27 @@
+=== closed 361384a172a2 ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+    },
+    control_reachable: {
+        0,
+        2,
+    },
+    tail_sites: {},
+}
+
+=== external 361384a172a2 ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        2,
+        3,
+    },
+    tail_sites: {},
+}

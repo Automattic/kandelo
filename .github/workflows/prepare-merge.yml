@@ -1024,7 +1024,7 @@ jobs:
             fi
             echo "merge_base_sha=$MERGE_BASE_SHA" >> "$GITHUB_OUTPUT"
 
-            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
+            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/program-abi/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
             CANONICAL_TAG="binaries-abi-v${ABI}"
@@ -2483,7 +2483,7 @@ jobs:
             fi
           }
           verify_canonical_source
-          ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
+          ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/program-abi/src/lib.rs | awk '{print $4}')
           EXPECTED="$RUNNER_TEMP/prepare-expected.json"
           BLOCKED="$RUNNER_TEMP/prepare-publication-blockers.json"
           bash scripts/dev-shell.sh env \

@@ -21,7 +21,12 @@ export type MountSetIdCapability =
 export interface DirEntry {
   name: string;
   type: number;
-  ino: number;
+  /**
+   * The entry's file serial number (POSIX `d_ino`): the `st_ino` lstat
+   * reports for it. Zero reads as a deleted entry to readers such as bash's
+   * glob, which skip it.
+   */
+  ino: number | bigint;
 }
 
 export interface FileSystemBackend {

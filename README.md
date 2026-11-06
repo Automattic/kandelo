@@ -5,8 +5,8 @@ software — shells, editors, web servers, databases, and games — in a browser
 or Node.js. Programs use POSIX, the standard Unix interfaces for files,
 processes, pipes, signals, and sockets, to work together.
 
-**[Try Kandelo in your browser](https://kandelo.dev/)** — pick a machine from
-its gallery. Nothing to install.
+**[Try Kandelo in your browser](https://kandelo.dev/)** — open the Library
+to create a computer. Nothing to install.
 
 Kandelo is experimental. POSIX conformance is the goal; some interfaces are
 incomplete or limited by WebAssembly and browser security rules.
@@ -43,14 +43,29 @@ git submodule update --init libc/musl sdk/rust/libc-upstream
 ```
 
 Open the URL printed by the server, normally <http://127.0.0.1:5401>.
-The first setup downloads tools and builds the supported software from source.
+The first setup downloads tools and builds the software needed by the browser.
 Later runs reuse cached builds. Run `./run.sh setup` again after pulling changes.
+For full test preparation, use `./run.sh setup --all`; see [Contributing](CONTRIBUTING.md).
 
 The development server supplies the browser isolation settings Kandelo needs.
 For custom hosting, see [Browser Support](docs/browser-support.md#directory-scoped-production-hosting).
 
 To change Kandelo, run tests, or compile a C program, start with
 [Contributing](CONTRIBUTING.md).
+
+## Using the browser
+
+The **Library** creates and reopens computers from Base Shell, Web Stack, or
+WordPress images. **Activities** starts installed apps on the running computer
+without rebooting it. Apps share that computer's files and processes.
+
+Computers use browser disk storage by default. Temporary computers may be
+cleaned up after 24 hours without opening them; keep one through Library to
+retain it. Browser storage is not a backup.
+
+**Persistence is experimental:** saved computers from this release will not
+work in the next release. Export important files before updating Kandelo.
+See [computer storage and retention](docs/browser-support.md#computer-library-and-retention).
 
 ## How it works
 
@@ -88,7 +103,7 @@ arbitrary raw TCP/UDP sockets.
 See [POSIX status](docs/posix-status.md) for supported behavior and
 [WebAssembly limitations](docs/wasm-limitations.md) for platform boundaries.
 Browser APIs and file image formats can change: pin your Kandelo revision and
-rebuild programs and images when the binary interface (ABI) changes. See
+rebuild programs and images when their program binary interface (ABI) changes. See
 [API stability](docs-site/reference/api-stability.md).
 
 ## Learn more

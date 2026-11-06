@@ -51,7 +51,10 @@ const supportablePosixUtilities = [
   "yacc",
 ];
 
-const existingPackageUtilities = new Set(["awk", "cmp", "diff", "find", "tabs", "tput", "xargs"]);
+// Utilities a real package supplies (lex is flex, yacc is Berkeley yacc).
+const existingPackageUtilities = new Set([
+  "awk", "cmp", "diff", "find", "lex", "tabs", "tput", "xargs", "yacc",
+]);
 
 function quotedValues(text: string): string[] {
   return [...text.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
@@ -88,5 +91,15 @@ describe("rootfs package composition", () => {
       .filter((utility) => !outputs.has(utility));
 
     expect(missing).toEqual([]);
+  });
+
+  it("installs yacc and lex from the real generators", () => {
+    // posix-utils-lite's placeholders wrote a parser that parsed nothing and
+    // reported success; the rootfs must not ship them again.
+    const text = readFileSync(resolve(repoRoot, "images/rootfs/PACKAGES.toml"), "utf8");
+    expect(text).toContain('binary = "programs/wasm32/yacc.wasm"\npath = "/usr/bin/yacc"');
+    expect(text).toContain('binary = "programs/wasm32/flex.wasm"\npath = "/usr/bin/flex"');
+    expect(text).toMatch(/aliases = \[[^\]]*"\/usr\/bin\/lex"/);
+    expect(text).not.toMatch(/posix-utils-lite\/(yacc|lex)\.wasm/);
   });
 });

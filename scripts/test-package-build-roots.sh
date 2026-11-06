@@ -940,9 +940,9 @@ grep -F "artifact must be a portable relative path" "$err" >/dev/null ||
 
 bash "$REPO_ROOT/scripts/test-graphics-pkgconfig.sh"
 bash "$REPO_ROOT/scripts/test-install-local-binary-noninteractive.sh"
+bash "$REPO_ROOT/scripts/test-install-original-program.sh"
 bash "$REPO_ROOT/scripts/test-build-programs-abi-stamp.sh"
 bash "$REPO_ROOT/scripts/test-gnu-recipe-source-handoff.sh"
-bash "$REPO_ROOT/scripts/test-local-build-prerequisites.sh"
 bash "$REPO_ROOT/scripts/test-install-local-generation.sh"
 
 # Every exact-shell registry recipe must enter through this tested root
@@ -979,9 +979,18 @@ if grep -F 'git clone' "$dinit_script" >/dev/null; then
     fail "dinit build still clones instead of consuming resolver-verified source"
 fi
 
-grep -F 'make -j1 CC=cc LD=cc -C util makedefs dgn_comp lev_comp dlb recover' \
-    "$REPO_ROOT/packages/registry/nethack/build-nethack.sh" >/dev/null ||
-    fail "NetHack host generators do not override ambient parallel MAKEFLAGS"
+# NetHack compiles and runs its generators inside a Kandelo machine, so the
+# build machine's recipe must not compile anything itself.
+nethack_script="$REPO_ROOT/packages/registry/nethack/build-nethack.sh"
+if grep -En '^[[:space:]]*(make|cc|clang|wasm32posix-cc)[[:space:]]' \
+    "$nethack_script" >/dev/null; then
+    fail "NetHack recipe compiles on the build machine"
+fi
+grep -F 'kandelo_guest_build --workspace "$SRC_DIR"' "$nethack_script" >/dev/null ||
+    fail "NetHack recipe does not build inside a Kandelo machine"
+grep -F 'make -j"$JOBS" CC=cc LINK=cc -C src nethack' \
+    "$REPO_ROOT/packages/registry/nethack/build-nethack-guest.sh" >/dev/null ||
+    fail "NetHack guest build does not compile the game with the guest compiler"
 
 for package in lsof modeset netcat; do
     if grep -F 'scripts/run-wasm-fork-instrument.sh' \

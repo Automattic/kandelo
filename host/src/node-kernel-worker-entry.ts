@@ -9,15 +9,35 @@ import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/r
  *
  * Protocol (see node-kernel-protocol.ts):
  *   Main → Worker: init, spawn, append_stdin_data, set_stdin_data,
- *                  pty_write, pty_resize, terminate_process, destroy,
- *                  resolve_exec_response
+ *                  pty_write, pty_resize, terminate_process, destroy
  *   Worker → Main: ready, response, exit, stdout, stderr, host_diagnostic,
- *                  pty_output, resolve_exec, lazy_download
+ *                  pty_output, lazy_download
  */
 import { parentPort } from "node:worker_threads";
-import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  createReadStream,
+  existsSync,
+  ftruncateSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  opendirSync,
+  readSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { DeferredByteSpool } from "./vfs/deferred-byte-spool";
+import { openNodeDeferredByteStorage } from "./vfs/node-deferred-byte-storage";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CAPTURED_STDIO,
@@ -33,10 +53,16 @@ import type {
   ForkBorrowedReplayWorkspace,
   ForkContinuationContext,
   ResolvedSpawnProgram,
-  SpawnCandidateResolution,
   ThreadChannelAttachment,
 } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
+import { OverlayStorageFile } from "./vfs/overlay-storage";
+import { parseSealedGenerationSlot } from "./vfs/overlay-generation-seal";
+import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
+import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
+import { collectBootOverlayGenerations, compactOverlayGenerationForBoot, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
+import { UnconfirmedOverlayActivationError } from "./vfs/overlay-generation-activation";
+import { OverlayGenerationMetadata } from "./vfs/overlay-generation-metadata";
 import {
   VirtualPlatformIO,
   NodeTimeProvider,
@@ -48,6 +74,7 @@ import {
 import * as rootImage from "./vfs/root-image-facts";
 import type { LazyFetch } from "./vfs/lazy-download-event";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
+import { NodeImageReader } from "./vfs/node-image-reader";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { MountConfig } from "./vfs/types";
 import type { MountSpec } from "./vfs/default-mounts";
@@ -56,20 +83,21 @@ import {
   createClosedLazyAssetSourceFetcher,
 } from "./vfs/closed-lazy-assets";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
+import { OfflineEgressBackend } from "./networking/offline-egress-backend";
 import { NodeLazyAssetResolver } from "./node-lazy-asset-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
-import type {
-  PreparedExecLaunchPlan,
-  PreparedExecLaunchRequest,
+import {
+  PreparedExecTargetError,
+  spawnFailureMessage,
+  type PreparedExecLaunchPlan,
+  type PreparedExecLaunchRequest,
 } from "./exec-target";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import {
-  describeWasmArtifactPolicyFailures,
   detectPtrWidth,
-  extractAbiVersion,
   extractHeapBase,
   isWasmModuleBytes,
 } from "./constants";
@@ -151,7 +179,9 @@ import type {
   HttpRequestMessage,
 } from "./node-kernel-protocol";
 import { OwnedJobs } from "./owned-jobs";
-import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
+import { formatHostErrorDiagnostic } from "./host-diagnostic";
+import { closeKernelRealmStorageAsync, kernelRealmDestroyResult } from "./kernel-realm-destroy";
+import { StorageCloseLedger } from "./storage-close-ledger";
 import { createDestroyProgressReporter } from "./destroy-progress-reporter";
 import {
   configureRootfsOverlayFromImage,
@@ -161,6 +191,7 @@ import {
   isRootfsMissingFileError,
   readRootfsFileWithRetry,
   readNamespaceFileWithRetry,
+  readNamespaceFileRangeWithRetry,
   retireSupersededExecGeneration,
   signalFromExitStatus,
   type ProcessGenerationOwnership,
@@ -177,6 +208,11 @@ const port = parentPort;
 // --- State ---
 
 let kernelWorker: CentralizedKernelWorker;
+let persistentOverlay: PersistentOverlayStorage | null = null;
+let persistentOverlayIndex: PersistentOverlayStorage | null = null;
+let liveOverlayCompactor: LiveOverlayCompactor | null = null;
+let overlayGenerationMetadata: OverlayGenerationMetadata | null = null;
+let persistentOverlayLock: import("node:sqlite").DatabaseSync | null = null;
 let pcmDriver: NodePcmDriver | null = null;
 let workerAdapter: NodeWorkerAdapter;
 let maxPages: number = DEFAULT_MAX_PAGES;
@@ -209,14 +245,13 @@ const processMemoryRetirementPressureHook =
   createProcessMemoryRetirementPressureHook(
     reclamationMeasurementPressure,
   );
-let execPrograms: Record<string, string> = {};
-let execProgramBytes: Record<string, ArrayBuffer> = {};
 let vfsExecIO: PlatformIO | null = null;
 /** The transport this boot resolves the `/` image's deferred addresses
  *  through: a closed-asset bundle, a closed-asset source, or the dev fallback
  *  in `buildVirtualPlatformIO`. Handed to the kernel's rootfs in `handleInit`
  *  as the fetcher behind `host_fetch_deferred`. */
 let rootfsLazyFetcher: LazyFetch | undefined;
+let deferredByteSpool: DeferredByteSpool | undefined;
 /** Canonical mount points of the host filesystems mounted beneath the
  *  kernel-owned `/` (session-seed trees, extra host mounts). Handed to the
  *  kernel's rootfs so it does not claim their paths. */
@@ -228,8 +263,10 @@ let injectedExecWorkerConstructionFailure = false;
 /** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
+let nodeImageReader: NodeImageReader | null = null;
 const ENOEXEC = 8;
-// [JSC-TERMINATE-ATOMICS-WAIT-LEAK] destroy-time drain bounds; see handleDestroy.
+// [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+// Destroy-time drain bounds; see handleDestroy.
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;
@@ -554,10 +591,6 @@ function reportRetainedProcessGeneration(
   }
 }
 
-// Exec resolution: request ID → resolver
-let execResolveId = 0;
-const pendingExecResolves = new Map<number, (bytes: ArrayBuffer | null) => void>();
-
 // --- Helpers ---
 
 /**
@@ -671,7 +704,7 @@ const ownedJobs = new OwnedJobs(pid => {
 });
 
 function post(msg: KernelToMainMessage) {
-  if (msg.type === "stdout" || msg.type === "stderr") ownedJobs.output(msg.pid, msg.type, msg.data);
+  if ((msg.type === "stdout" || msg.type === "stderr") && ownedJobs.output(msg.pid, msg.type, msg.data)) return;
   if (msg.type === "exit") ownedJobs.exited(msg.pid, msg.status);
   port.postMessage(msg);
 }
@@ -679,9 +712,7 @@ function post(msg: KernelToMainMessage) {
 function terminatePoisonedKernelWorker(error: Error): void {
   if (kernelFatalReported) return;
   kernelFatalReported = true;
-  const detail = error.stack
-    ? `${error.message}\n${error.stack}`
-    : error.message;
+  const detail = formatHostErrorDiagnostic(error);
   try {
     try {
       reportHostDiagnostic({
@@ -717,7 +748,9 @@ function terminatePoisonedKernelWorker(error: Error): void {
         void thread.worker.terminate().catch(() => {});
       }
     }
-    cleanupSessionDir();
+    void cleanupSessionDir().catch(error => {
+      console.warn("[node-kernel-worker] fatal storage cleanup failed", error);
+    });
     queueMicrotask(() => process.exit(1));
   }
 }
@@ -783,24 +816,6 @@ function bufferToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return out;
 }
 
-function resolveExecLocal(path: string): ArrayBuffer | null {
-  const owned = Object.prototype.hasOwnProperty.call(execProgramBytes, path)
-    ? execProgramBytes[path]
-    : undefined;
-  if (owned !== undefined) {
-    // WHY: process-worker launch transfers its program buffer. Preserve the
-    // worker-lifetime snapshot by lending a fresh copy to every execution.
-    return owned.slice(0);
-  }
-  const mapped = Object.prototype.hasOwnProperty.call(execPrograms, path)
-    ? execPrograms[path]
-    : undefined;
-  if (mapped && existsSync(mapped)) {
-    const bytes = readFileSync(mapped);
-    return bufferToArrayBuffer(bytes);
-  }
-  return null;
-}
 
 async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
   // The kernel owns `/`, so it is the source of exec bytes for every path it
@@ -822,66 +837,7 @@ async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
   }
 }
 
-async function resolveExec(path: string): Promise<ArrayBuffer | null> {
-  const local = resolveExecLocal(path);
-  if (local) return local;
 
-  const vfs = await readExecFromVfs(path);
-  if (vfs) return vfs;
-
-  // Ask main thread to resolve
-  const requestId = ++execResolveId;
-  return new Promise<ArrayBuffer | null>((resolve) => {
-    pendingExecResolves.set(requestId, resolve);
-    post({ type: "resolve_exec", requestId, path });
-  });
-}
-
-const MAX_SHEBANG_DEPTH = 4;
-
-function parseShebang(bytes: ArrayBuffer): { interpreter: string; arg?: string } | null {
-  const view = new Uint8Array(bytes);
-  if (view.length < 2 || view[0] !== 0x23 || view[1] !== 0x21) return null;
-  let end = 2;
-  while (end < view.length && view[end] !== 0x0a && end < 4096) end++;
-  const line = new TextDecoder().decode(view.subarray(2, end)).replace(/\r$/, "").trim();
-  if (!line) return null;
-  const match = line.match(/^(\S+)(?:\s+(.*))?$/);
-  if (!match) return null;
-  return { interpreter: match[1], arg: match[2] };
-}
-
-async function resolveExecutableForLaunch(
-  path: string,
-  argv: string[],
-  depth = 0,
-): Promise<SpawnCandidateResolution | null> {
-  if (depth > MAX_SHEBANG_DEPTH) return null;
-  const bytes = await resolveExec(path);
-  if (!bytes) return null;
-
-  const shebang = parseShebang(bytes);
-  if (!shebang) {
-    if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
-    const artifactFailures = describeWasmArtifactPolicyFailures(bytes, {
-      expectedAbi: kernelWorker.getKernelAbiVersion(),
-    });
-    if (artifactFailures.length > 0) return { errno: ENOEXEC };
-    const declaredAbi = extractAbiVersion(bytes);
-    if (declaredAbi !== null && declaredAbi !== kernelWorker.getKernelAbiVersion()) {
-      return { errno: ENOEXEC };
-    }
-    return { programBytes: bytes, argv };
-  }
-
-  const scriptArgv = [
-    shebang.interpreter,
-    ...(shebang.arg ? [shebang.arg] : []),
-    path,
-    ...argv.slice(1),
-  ];
-  return resolveExecutableForLaunch(shebang.interpreter, scriptArgv, depth + 1);
-}
 
 // --- Init ---
 
@@ -892,17 +848,18 @@ async function resolveExecutableForLaunch(
  * a lazy read awaits its pinned path before reading bytes.
  * A failed URL rethrows only when fetched, so latent bad assets do not abort boot.
  */
-function createRepoLazyAssetFetcher(): (url: string) => Promise<Response> {
-  return async (url: string) => {
-    if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
+function createRepoLazyAssetFetcher(): LazyFetch {
+  return async (url, init) => {
+    if (/^https?:\/\//.test(url)) return globalThis.fetch(url, init);
     const path = url.startsWith("file://")
       ? fileURLToPath(url)
       : await repoLazyAssetResolver!.resolve(url);
     if (!existsSync(path)) return new Response(null, { status: 404 });
-    const bytes = new Uint8Array(readFileSync(path));
-    return new Response(bytes, {
+    const size = statSync(path).size;
+    const body = Readable.toWeb(createReadStream(path, { signal: init?.signal ?? undefined }));
+    return new Response(body as ReadableStream<Uint8Array>, {
       status: 200,
-      headers: { "content-length": String(bytes.byteLength) },
+      headers: { "content-length": String(size) },
     });
   };
 }
@@ -914,7 +871,7 @@ function createRepoLazyAssetFetcher(): (url: string) => Promise<Response> {
  * `cleanupSessionDir` on `destroy`.
  */
 async function buildVirtualPlatformIO(
-  rootfsImage: ArrayBuffer,
+  rootfsImage: ArrayBuffer | undefined,
   rootfsMountSpec?: MountSpec[],
   extraMounts?: Array<{
     mountPoint: string;
@@ -934,7 +891,7 @@ async function buildVirtualPlatformIO(
   try {
     specMounts = await resolveForNodeKernelSession(
       rootfsMountSpec ?? DEFAULT_MOUNT_SPEC,
-      new Uint8Array(rootfsImage),
+      rootfsImage === undefined ? new Uint8Array() : new Uint8Array(rootfsImage),
       bootSessionDir,
       sessionSeedTrees,
       (extraMounts ?? []).map((mount) => mount.mountPoint),
@@ -943,7 +900,7 @@ async function buildVirtualPlatformIO(
     // WHY: imported-seal rejection occurs before scratch setup, but the Node
     // worker already owns its per-boot session directory. Release that
     // ownership before surfacing the failed initialization.
-    cleanupSessionDir();
+    await cleanupSessionDir();
     throw error;
   }
   const extras: MountConfig[] = (extraMounts ?? []).map((m) => ({
@@ -980,31 +937,61 @@ async function buildVirtualPlatformIO(
 
 let repoLazyAssetResolver: NodeLazyAssetResolver | undefined;
 
-function cleanupSessionDir(): void {
-  void repoLazyAssetResolver?.close();
-  repoLazyAssetResolver = undefined;
-  if (sessionDir) {
-    try {
-      rmSync(sessionDir, { recursive: true, force: true });
-    } catch {
-      // WHY: a graceful/fatal worker path must attempt cleanup, but native
-      // handles can transiently retain files and abrupt process termination
-      // cannot run this hook. Never treat this best-effort cleanup as the
-      // ownership proof; private inode creation before ready is that proof.
+let sessionCleanup: Promise<void> | undefined;
+const storageCloseLedger = new StorageCloseLedger();
+
+function cleanupSessionDir(): Promise<void> {
+  sessionCleanup ??= closeKernelRealmStorageAsync([
+    () => { overlayGenerationMetadata?.dispose(); overlayGenerationMetadata = null; },
+    () => kernelWorker?.disposeRootfsDeferredTransport(),
+    async () => { await deferredByteSpool?.close(); deferredByteSpool = undefined; },
+    async () => { await repoLazyAssetResolver?.close(); repoLazyAssetResolver = undefined; },
+    () => { persistentOverlay?.close(); persistentOverlay = null; },
+    () => { persistentOverlayIndex?.close(); persistentOverlayIndex = null; },
+    () => { nodeImageReader?.close(); nodeImageReader = null; },
+    async () => { await storageCloseLedger.beginRetirement(); storageCloseLedger.closeAll(); },
+  ]).then(() => {
+    persistentOverlayLock?.close();
+    persistentOverlayLock = null;
+    if (sessionDir) {
+      try {
+        rmSync(sessionDir, { recursive: true, force: true });
+      } catch {
+        // WHY: a graceful/fatal worker path must attempt cleanup, but native
+        // handles can transiently retain files and abrupt process termination
+        // cannot run this hook. Never treat this best-effort cleanup as the
+        // ownership proof; private inode creation before ready is that proof.
+      }
     }
-  }
-  sessionDir = null;
-  vfsExecIO = null;
-  rootImage.forget();
-  rootfsLazyFetcher = undefined;
-  rootfsForeignPrefixes = [];
+    sessionDir = null;
+    vfsExecIO = null;
+    rootImage.forget();
+    rootfsLazyFetcher = undefined;
+    rootfsForeignPrefixes = [];
+  });
+  return sessionCleanup;
 }
 
 const remoteSegmentRuntime = new RemoteSegmentRuntime();
 
 async function handleInit(msg: InitMessage) {
+  processMemoryCreators.assertOpen("kernel initialization");
   initReady = false;
   injectedExecWorkerConstructionFailure = false;
+  if (msg.rootfsImageFile !== undefined) {
+    if (msg.rootfsImage !== undefined) {
+      throw new Error("rootfs image cannot have both file and in-memory sources");
+    }
+    if (msg.rootfsPersistentImageBinding !== undefined && msg.rootfsImageIntegrity !== undefined) {
+      throw new Error("persistent image binding cannot be combined with whole-image integrity metadata");
+    }
+    nodeImageReader = NodeImageReader.open(msg.rootfsImageFile, msg.rootfsImageIntegrity, msg.rootfsPersistentImageBinding !== undefined);
+  } else if (msg.rootfsImageIntegrity !== undefined) {
+    throw new Error("rootfs image file integrity requires a file source");
+  } else if (msg.rootfsPersistentImageBinding !== undefined) {
+    throw new Error("persistent image binding requires a file source");
+  }
+  const hasRootfsImage = msg.rootfsImage !== undefined || nodeImageReader !== null;
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   processMemoryAllocator = new ProcessMemoryAllocator({
@@ -1019,14 +1006,12 @@ async function handleInit(msg: InitMessage) {
     ),
     retirementPressureHook: processMemoryRetirementPressureHook,
   });
-  execPrograms = msg.execPrograms ?? {};
-  execProgramBytes = msg.execProgramBytes ?? {};
   workerAdapter = new NodeWorkerAdapter();
-  if (!msg.rootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
+  if (!hasRootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
     throw new Error("sessionSeedTrees requires rootfsImage");
   }
 
-  const io: PlatformIO = msg.rootfsImage
+  const io: PlatformIO = hasRootfsImage
     ? await buildVirtualPlatformIO(
       msg.rootfsImage,
       msg.rootfsMountSpec,
@@ -1036,9 +1021,14 @@ async function handleInit(msg: InitMessage) {
       msg.rootfsLazyAssetSources,
     )
     : new NodePlatformIO();
-  vfsExecIO = msg.rootfsImage ? io : null;
+  vfsExecIO = hasRootfsImage ? io : null;
+  if (msg.enableTcpNetwork && msg.offlineEgressLink) {
+    throw new Error("enableTcpNetwork and offlineEgressLink are exclusive: a machine has one egress link");
+  }
   if (msg.enableTcpNetwork) {
     io.network = new TcpNetworkBackend();
+  } else if (msg.offlineEgressLink) {
+    io.network = new OfflineEgressBackend();
   }
   // The session network wraps the configured backend (or none) for the
   // machine's life, so a session can start or end under running programs.
@@ -1051,6 +1041,9 @@ async function handleInit(msg: InitMessage) {
       maxWorkers: msg.config.maxWorkers,
       dataBufferSize: msg.config.dataBufferSize ?? 65536,
       useSharedMemory: msg.config.useSharedMemory ?? true,
+      kernelMaxPages: msg.config.kernelMaxPages,
+      rootfsMetadataBytes: msg.config.rootfsMetadataBytes,
+      maxVfsFileReadBytes: msg.config.maxVfsFileReadBytes,
       defaultThreadSlots,
       enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG,
       imageBuildDeterminism: msg.config.imageBuildDeterminism,
@@ -1098,7 +1091,7 @@ async function handleInit(msg: InitMessage) {
           : processMemoryCreators.run(
               "a fork process Worker",
               () => launch(),
-            )).catch(error => { if (!processes.has(childPid)) { ownedJobs.exited(childPid, 127); ownedJobs.detached(childPid); } throw error; });
+            ));
       },
       onExec: async (request) => {
         const creatorAdmission = processMemoryCreators.acquire(
@@ -1179,13 +1172,19 @@ async function handleInit(msg: InitMessage) {
           throw error;
         }
       },
-      onResolveSpawn: handlePosixSpawnResolve,
       onSpawn: (parentPid, childPid, program, envp) => {
         ownedJobs.inherit(parentPid, childPid);
         return processMemoryCreators.run(
           "a posix_spawn process Worker",
           () => handlePosixSpawn(parentPid, childPid, program, envp),
-        ).catch(error => { if (!processes.has(childPid)) { ownedJobs.exited(childPid, 127); ownedJobs.detached(childPid); } throw error; });
+        );
+      },
+      onChildLaunchRolledBack: childPid => {
+        // Rust has removed the failed child; a retained Worker still blocks
+        // completion until its exact generation has detached.
+        if (processes.has(childPid)) return;
+        ownedJobs.exited(childPid, 127);
+        ownedJobs.detached(childPid);
       },
       onClone: (attachment) => processMemoryCreators.run(
         "a pthread Worker",
@@ -1215,27 +1214,55 @@ async function handleInit(msg: InitMessage) {
 
   // The kernel owns `/`: hand it the boot image and the byte pipe for what the
   // image does not carry before `init` loads them.
-  let finalizeRootfsTransport: (() => void) | undefined;
+  let finalizeRootfsTransport: (() => Map<string, number>) | undefined;
   if (rootImage.has()) {
-    const rootfsContainer = new Uint8Array(msg.rootfsImage!);
+    const reader = nodeImageReader;
+    const rootfsContainer = msg.rootfsImage === undefined
+      ? null
+      : new Uint8Array(msg.rootfsImage);
+    if (msg.experimentalFixedPersistencePath !== undefined || msg.experimentalResizablePersistencePath !== undefined) {
+      if (sessionDir === null) throw new Error("Persistent rootfs byte storage requires a session directory");
+      deferredByteSpool = await DeferredByteSpool.open(() => openNodeDeferredByteStorage(sessionDir!), kernelWorker.rootfsTransportMetadataBudget());
+    }
     finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
-      imageRead: imageReadFromContainer(rootfsContainer),
-      imageBytes: rootfsContainer,
+      imageRead: reader === null
+        ? imageReadFromContainer(rootfsContainer!)
+        : (at, destination) => reader.readAt(at, destination),
+      imageLength: reader?.length ?? rootfsContainer!.byteLength,
+      persistentImageBinding: msg.rootfsPersistentImageBinding,
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootImage.nosuid(),
       lazyFetcher: rootfsLazyFetcher,
+      deferredByteSpool,
       lazyUrlBase: msg.rootfsLazyUrlBase,
+      lazyAssetDirectory: msg.rootfsLazyAssetDirectory,
     });
   }
 
+  // Kandelo exchange: range requests for offered sources and the kernel's
+  // notifications go to the main thread, which owns the sources and leases.
+  kernelWorker.setExchangeHandlers({
+    requestRange: (source, offset, length) => {
+      post({ type: "exchange_range_request", source, offset, length });
+    },
+    onNotifications: (notifications) => {
+      post({ type: "exchange_notifications", notifications });
+    },
+  });
+  if (msg.config.exchangeActivation !== undefined) {
+    kernelWorker.setExchangeActivation(msg.config.exchangeActivation);
+  }
+  if (msg.config.exchangeByteLimit !== undefined) {
+    kernelWorker.setExchangeByteLimit(msg.config.exchangeByteLimit);
+  }
   await kernelWorker.init(msg.kernelWasmBytes);
-  finalizeRootfsTransport?.();
+  const rootfsResourceLimits = finalizeRootfsTransport?.();
   if (rootImage.has() && msg.rootfsLazyAssets === undefined && msg.rootfsLazyAssetSources === undefined) {
     // Read metadata after native validation, outside a Wasm import callback.
     // Freshness checking still starts only on the first lazy read, off-thread.
     repoLazyAssetResolver = new NodeLazyAssetResolver(
-      [...kernelWorker.rootfsLazyResourceLimits().keys()].filter(
+      [...(rootfsResourceLimits?.keys() ?? [])].filter(
         (url) => !/^[a-z][a-z0-9+.-]*:/i.test(url),
       ),
     );
@@ -1253,7 +1280,110 @@ async function handleInit(msg: InitMessage) {
   });
   await pcmDriver.prepare(pcmTransport);
 
+  const persistencePath = msg.experimentalResizablePersistencePath ?? msg.experimentalFixedPersistencePath;
+  if (msg.requireExistingRootfsPersistence && persistencePath === undefined) {
+    throw new Error("requireExistingRootfsPersistence requires a journal path");
+  }
+  if (persistencePath !== undefined) {
+    const path = persistencePath;
+    const resizable = msg.experimentalResizablePersistencePath !== undefined;
+    if (!isAbsolute(path) || basename(path) === "." || basename(path) === "..") {
+      throw new Error("rootfs persistence path must be an absolute file path");
+    }
+    const lockPath = `${path}.lock`;
+    const lockStat = lstatSync(lockPath, { throwIfNoEntry: false });
+    if (lockStat !== undefined && (!lockStat.isFile() || lockStat.nlink !== 1)) {
+      throw new Error(`rootfs persistence has a legacy or invalid lock at ${lockPath}; verify its owner has stopped before removing it`);
+    }
+    const sqliteModuleName = "node:sqlite";
+    const { DatabaseSync }: typeof import("node:sqlite") = await import(sqliteModuleName);
+    const lock = new DatabaseSync(lockPath, { timeout: 0 });
+    try {
+      lock.exec("BEGIN EXCLUSIVE");
+      persistentOverlayLock = lock;
+      const backend = new HostFileSystem(dirname(path));
+      overlayGenerationMetadata = new OverlayGenerationMetadata(kernelWorker.rootfsTransportMetadataBudget());
+      const files = {
+        metadata: overlayGenerationMetadata,
+        activationCodec: kernelWorker.overlayActivationCodec(),
+        sealCodec: kernelWorker.overlaySealCodec(),
+        *listSlots() {
+          const prefix = `${basename(path)}.`;
+          const directory = opendirSync(dirname(path));
+          try {
+            for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+              const name = entry.name;
+              if (!name.startsWith(prefix)) continue;
+              const match = /^(g[0-9]+)\.(?:journal|index|seal)$/.exec(name.slice(prefix.length));
+              if (match !== null) {
+                if (parseSealedGenerationSlot(match[1]!) === null) {
+                  throw new Error("persistent overlay generation slot is invalid");
+                }
+                yield match[1]!;
+              }
+            }
+          } finally { directory.closeSync(); }
+        },
+        open: async (slot, file, create) => {
+          const name = slot === "legacy" ? file === "journal" ? basename(path) : `${basename(path)}.${file}`
+            : `${basename(path)}.${slot}.${file}`;
+          if (!create && !existsSync(join(dirname(path), name))) return null;
+          return OverlayStorageFile.open(backend, `/${name}`, create, true, storageCloseLedger);
+        },
+        remove: async (slot, file) => {
+          try {
+            unlinkSync(slot === "legacy" ? file === "journal" ? path : `${path}.${file}` : `${path}.${slot}.${file}`);
+          } catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+          }
+        },
+      } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
+      const selected = await enableBestOverlayGeneration(
+        files,
+        (storage, index, checkpointEnd) => {
+          if (resizable) kernelWorker.enableResizableRootfsPersistence(storage, index, checkpointEnd);
+          else kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd);
+        },
+        msg.requireExistingRootfsPersistence,
+        (source, target, index) => kernelWorker.convertUnindexedRootfsPersistence(source, target, index, resizable),
+        (error) => {
+          post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `conversion cleanup failed: ${error}` });
+        },
+      );
+      const handoff = {
+        memoryPressure: () => kernelWorker.rootfsJournalStateMemory().pressure,
+        prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
+        checkpoint: (index: PersistentOverlayStorage) => kernelWorker.checkpointPreparedRootfsPersistence(index),
+        activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
+        cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
+        fail: (error: UnconfirmedOverlayActivationError) => kernelWorker.failPersistenceWriter(error),
+      };
+      const recovered = await collectBootOverlayGenerations(selected, files, (error) => {
+        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `generation retirement failed: ${error}` });
+      });
+      const active = await compactOverlayGenerationForBoot(recovered, files, handoff, (error) => {
+        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `boot compaction deferred (ENOSPC): ${error}` });
+      });
+      persistentOverlay = active.journal;
+      persistentOverlayIndex = active.index ?? null;
+      persistentOverlayLock = lock;
+      processMemoryCreators.assertOpen("persistent compactor initialization");
+      liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {
+        persistentOverlay = next.journal;
+        persistentOverlayIndex = next.index ?? null;
+      }, (error) => {
+        if (error instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(error);
+        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${error}` });
+      });
+    } catch (error) {
+      if (persistentOverlayLock !== lock) lock.close();
+      throw error;
+    }
+  }
+
+  processMemoryCreators.assertOpen("kernel readiness");
   initReady = true;
+  liveOverlayCompactor?.start();
   post({ type: "ready" });
 }
 
@@ -1301,156 +1431,176 @@ async function handleSpawn(msg: SpawnMessage) {
       );
       return;
     }
-    const programBytes = msg.programBytes ??
-      await readExecFromVfs(msg.programPath!);
-    if (programBytes === null) {
-      respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
-      return;
+    let suppliedProgram: { bytes: ArrayBuffer; module: WebAssembly.Module } | undefined;
+    if (msg.programBytes !== undefined) {
+      if (!isWasmModuleBytes(msg.programBytes)) {
+        respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
+        return;
+      }
+      const module = await compileTopLevelProgram(msg.requestId, msg.programBytes);
+      if (!module) return;
+      suppliedProgram = { bytes: msg.programBytes, module };
     }
-    if (!isWasmModuleBytes(programBytes)) {
-      respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
-      return;
-    }
-    const programModule = await compileTopLevelProgram(
-      msg.requestId,
-      programBytes,
-    );
-    if (!programModule) return;
 
     const pid = await retryKernelEntryResult(() => kernelWorker.createProcess(
       msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
     ));
     createdPid = pid;
     if (msg.ownedJob) ownedJobs.create(msg.ownedJob.id, pid, msg.ownedJob.timeoutMs);
-    const ptrWidth = detectPtrWidth(programBytes);
-    const {
-      memory,
-      memoryLease,
-      layout,
-      threadAllocator,
-    } = await createFreshProcessMemory(pid, programBytes, ptrWidth);
-    createdMemoryLease = memoryLease;
-    const channelOffset = layout.channelOffset;
+    await retryKernelEntryResult(() => kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid }));
+    if (msg.cwd) await retryKernelEntryResult(() => kernelWorker.setCwd(pid, msg.cwd!));
 
-    // Launch continuations resume on the host event loop, where an active
-    // kernel export may legitimately own the entry gate. registerProcess
-    // rejects reentrant ingress rather than deferring, so retry on a later
-    // host turn instead of turning contention into a launch failure.
-    await retryKernelEntryResult(() =>
-      kernelWorker.registerProcess(pid, memory, [channelOffset], {
-        ptrWidth,
-        argv: msg.argv,
-        env: msg.env ?? [],
-        brkBase: layout.brkBase,
-        mmapBase: layout.mmapBase,
-        maxAddr: layout.maxAddr,
-      }));
-    createdMemoryRegistered = true;
+    const startProgram = async (
+      programBytes: ArrayBuffer,
+      programModule: WebAssembly.Module,
+      argv: string[],
+      committedSecureExec?: boolean,
+    ): Promise<number> => {
+      const ptrWidth = detectPtrWidth(programBytes);
+      const {
+        memory,
+        memoryLease,
+        layout,
+        threadAllocator,
+      } = await createFreshProcessMemory(pid, programBytes, ptrWidth);
+      createdMemoryLease = memoryLease;
+      const channelOffset = layout.channelOffset;
 
-    kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
-    // Same contention as registerProcess above: the gate can still hold
-    // work another launch queued (its host stdin pipe install, for one), and
-    // the query rejects rather than defers. Retry on a later host turn.
-    const secureExec = await retryKernelEntryResult(() =>
-      kernelWorker.processSecureExec(pid));
-    if (msg.cwd) {
-      // Another launch can queue ingress during the awaited secure-exec query.
-      // A refused cwd setup queued no work, so retry before starting this guest.
-      await retryKernelEntryResult(() => kernelWorker.setCwd(pid, msg.cwd!));
-    }
+      // Launch continuations resume on the host event loop, where an active
+      // kernel export may legitimately own the entry gate. registerProcess
+      // rejects reentrant ingress rather than deferring, so retry on a later
+      // host turn instead of turning contention into a launch failure.
+      await retryKernelEntryResult(() =>
+        kernelWorker.registerProcess(pid, memory, [channelOffset], {
+          ptrWidth,
+          argv,
+          env: msg.env ?? [],
+          brkBase: layout.brkBase,
+          mmapBase: layout.mmapBase,
+          maxAddr: layout.maxAddr,
+        }));
+      createdMemoryRegistered = true;
 
-    if (msg.maxAddr != null) {
-      kernelWorker.setMaxAddr(pid, msg.maxAddr);
-    }
+      // Same contention as registerProcess above: the gate can still hold
+      // work another launch queued (its host stdin pipe install, for one), and
+      // the query rejects rather than defers. Retry on a later host turn.
+      const secureExec = committedSecureExec ?? await retryKernelEntryResult(() =>
+        kernelWorker.processSecureExec(pid));
 
-    if (msg.pty) {
-      const ptyIdx = await retryKernelEntryResult(() => kernelWorker.setupPty(pid));
-      ptyByPid.set(pid, ptyIdx);
-      // Apply initial winsize before the wasm program starts. Without this,
-      // the program's first TIOCGWINSZ returns the kernel default (80x24)
-      // and TUI renderers (ink, blessed) cache the wrong width before the
-      // post-spawn pty_resize lands, causing redraw corruption.
-      if (msg.ptyCols != null && msg.ptyRows != null) {
-        kernelWorker.ptySetWinsize(ptyIdx, msg.ptyRows, msg.ptyCols);
+      if (msg.maxAddr != null) {
+        kernelWorker.setMaxAddr(pid, msg.maxAddr);
       }
-      kernelWorker.onPtyOutput(ptyIdx, (data: Uint8Array) => {
-        post({ type: "pty_output", pid, data });
-      });
-    } else {
-      // fd 0 becomes a kernel pipe the host writes into, so children that
-      // inherit it share the stream (and read offset) as POSIX requires.
-      kernelWorker.installHostStdinPipe(pid);
-      if (msg.stdin) {
-        const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
-        kernelWorker.setStdinData(pid, stdinData);
-      }
-    }
 
-    const externrefGeneration = externrefProcessOwner.startGeneration(pid);
-    createdExternrefGeneration = externrefGeneration;
-    let worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
-    const forkHostImports = forkHostImportOwnerRuntime.createWorker({
-      pid,
-      generationId: externrefGeneration.id,
-      authorizeSender: () => {
-        const current = processes.get(pid);
-        if (
-          !current
-          || current.worker !== worker
-          || current.externrefGeneration !== externrefGeneration
-        ) {
-          throw new Error(`stale fork host-import sender for pid=${pid}`);
+      // What the process runs, before it runs: the kernel keeps it open as the
+      // image's executable (`/proc/<pid>/exe`). A program the host holds as
+      // bytes is a handle onto those bytes, never a kernel copy.
+      if (committedSecureExec === undefined) {
+        const attached = await retryKernelEntryResult(() => kernelWorker.attachProgram(
+          pid, { bytes: new Uint8Array(programBytes), name: argv[0] || "program" },
+        ));
+        if (attached < 0) throw new Error(`spawn: the kernel refused pid ${pid}'s executable (errno ${-attached})`);
+      }
+
+      if (msg.pty) {
+        const ptyIdx = await retryKernelEntryResult(() => kernelWorker.setupPty(pid));
+        ptyByPid.set(pid, ptyIdx);
+        // Apply initial winsize before the wasm program starts. Without this,
+        // the program's first TIOCGWINSZ returns the kernel default (80x24)
+        // and TUI renderers (ink, blessed) cache the wrong width before the
+        // post-spawn pty_resize lands, causing redraw corruption.
+        if (msg.ptyCols != null && msg.ptyRows != null) {
+          kernelWorker.ptySetWinsize(ptyIdx, msg.ptyRows, msg.ptyCols);
         }
-      },
-    });
-    createdForkHostImports = forkHostImports;
-    const initData: CentralizedWorkerInitMessage = {
-      type: "centralized_init",
-      pid,
-      programBytes,
-      programModule,
-      memory,
-      channelOffset,
-      secureExec,
-      externrefGenerationId: externrefGeneration.id,
-      forkHostImports: forkHostImports.init,
-      env: msg.env,
-      argv: msg.argv,
-      ptrWidth,
-      kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
-      kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+        kernelWorker.onPtyOutput(ptyIdx, (data: Uint8Array) => {
+          post({ type: "pty_output", pid, data });
+        });
+      } else {
+        // fd 0 becomes a kernel pipe the host writes into, so children that
+        // inherit it share the stream (and read offset) as POSIX requires.
+        kernelWorker.installHostStdinPipe(pid);
+        if (msg.stdin) {
+          const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
+          kernelWorker.setStdinData(pid, stdinData);
+        }
+      }
+
+      const externrefGeneration = externrefProcessOwner.startGeneration(pid);
+      createdExternrefGeneration = externrefGeneration;
+      let worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
+      const forkHostImports = forkHostImportOwnerRuntime.createWorker({
+        pid,
+        generationId: externrefGeneration.id,
+        authorizeSender: () => {
+          const current = processes.get(pid);
+          if (
+            !current
+            || current.worker !== worker
+            || current.externrefGeneration !== externrefGeneration
+          ) {
+            throw new Error(`stale fork host-import sender for pid=${pid}`);
+          }
+        },
+      });
+      createdForkHostImports = forkHostImports;
+      const initData: CentralizedWorkerInitMessage = {
+        type: "centralized_init",
+        pid,
+        programBytes,
+        programModule,
+        memory,
+        channelOffset,
+        secureExec,
+        externrefGenerationId: externrefGeneration.id,
+        forkHostImports: forkHostImports.init,
+        env: msg.env,
+        argv,
+        ptrWidth,
+        kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+        kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+      };
+
+      // A constructor may expose Memory to a partially created Worker before it
+      // throws, so any failure from this point uses forced retirement.
+      workerCreationAttempted = true;
+      worker = workerAdapter.createWorker(initData);
+      createdWorker = worker;
+      bindForkHostImports(worker, forkHostImports);
+      createdGeneration = {
+        memory,
+        memoryLease,
+        workerQuiescence: createWorkerQuiescence(),
+        execRetirement: createWorkerQuiescence(),
+        programBytes,
+        programModule,
+        worker,
+        channelOffset,
+        ptrWidth,
+        secureExec,
+        layout,
+        threadAllocator,
+        externrefGeneration,
+      };
+      processes.set(pid, createdGeneration);
+
+      installProcessWorkerListeners(worker, pid);
+      createdMemoryLease = undefined;
+      createdPid = undefined;
+      createdExternrefGeneration = undefined;
+      createdForkHostImports = undefined;
+
+      respond(msg.requestId, pid);
+      return 0;
     };
-
-    // A constructor may expose Memory to a partially created Worker before it
-    // throws, so any failure from this point uses forced retirement.
-    workerCreationAttempted = true;
-    worker = workerAdapter.createWorker(initData);
-    createdWorker = worker;
-    bindForkHostImports(worker, forkHostImports);
-    createdGeneration = {
-      memory,
-      memoryLease,
-      workerQuiescence: createWorkerQuiescence(),
-      execRetirement: createWorkerQuiescence(),
-      programBytes,
-      programModule,
-      worker,
-      channelOffset,
-      ptrWidth,
-      secureExec,
-      layout,
-      threadAllocator,
-      externrefGeneration,
-    };
-    processes.set(pid, createdGeneration);
-
-    installProcessWorkerListeners(worker, pid);
-    createdMemoryLease = undefined;
-    createdPid = undefined;
-    createdExternrefGeneration = undefined;
-    createdForkHostImports = undefined;
-
-    respond(msg.requestId, pid);
+    if (msg.programPath !== undefined) {
+      const result = await kernelWorker.launchInitialPath(pid, msg.programPath, msg.argv, msg.env ?? [], async (request) => ({
+        onCommitFailure: () => {},
+        startAfterCommit: () => startProgram(request.targetBytes, request.targetModule, request.argv,
+          kernelWorker.takeCommittedExecSecureExec(pid)),
+      }));
+      if (result < 0) throw new PreparedExecTargetError("initial program commit failed", -result);
+    } else {
+      await startProgram(suppliedProgram!.bytes, suppliedProgram!.module, msg.argv);
+    }
   } catch (e) {
     createdForkHostImports?.close();
     if (createdExternrefGeneration) {
@@ -1494,7 +1644,7 @@ async function handleSpawn(msg: SpawnMessage) {
       }
     }
     if (createdPid !== undefined && !processes.has(createdPid)) ownedJobs.abandon(createdPid);
-    respondError(msg.requestId, String(e));
+    respondError(msg.requestId, spawnFailureMessage(e, msg.programPath));
   } finally {
     releaseMutation?.();
   }
@@ -1778,7 +1928,7 @@ async function handleVfork(
       programModule: parentInfo.programModule,
       memory: parentMemory,
       channelOffset: childChannelOffset,
-      secureExec: kernelWorker.processSecureExec(childPid),
+      secureExec: await retryKernelEntryResult(() => kernelWorker.processSecureExec(childPid)),
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
       isForkChild: true,
@@ -2152,7 +2302,7 @@ async function handleOrdinaryFork(
       programModule: parentInfo.programModule,
       memory: childMemory,
       channelOffset: childChannelOffset,
-      secureExec: kernelWorker.processSecureExec(childPid),
+      secureExec: await retryKernelEntryResult(() => kernelWorker.processSecureExec(childPid)),
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
       isForkChild: true,
@@ -2745,31 +2895,9 @@ async function handleExec(
 }
 
 /**
- * Pre-flight resolver for SYS_SPAWN. Side-effect-free: looks up program
- * bytes for `path` through the spawn-only execPrograms/main-thread fallback
- * and follows shebangs. Compilation is deferred to the shared worker's
- * isolated candidate snapshot. Exec never enters this resolver: its bytes
- * come only from the retained kernel target. Returns null on ENOENT and
- * `{ errno }` when the located target cannot be launched.
- *
- * `handleSpawn` in `host/src/kernel-worker.ts` calls this BEFORE
- * `kernel_spawn_process` so that file_actions (which the kernel runs
- * inside `spawn_child`) never execute on a doomed PATH iteration —
- * see the POSIX "exactly once" rule.
- */
-async function handlePosixSpawnResolve(
-  path: string,
-  argv: string[],
-): Promise<SpawnCandidateResolution | null> {
-  return resolveExecutableForLaunch(path, argv);
-}
-
-/**
  * Launch a worker for a SYS_SPAWN child whose program is derived from the
- * exact target already committed by the shared worker. The earlier resolver
- * was only side-effect-free candidate preflight; a changed child CWD, fd
- * table, or credential view selects and recompiles the final bytes before this
- * callback. This phase only allocates Memory, registers, and launches.
+ * exact target already committed by the shared worker. This phase only
+ * allocates Memory, registers, and launches.
  */
 async function handlePosixSpawn(
   parentPid: number,
@@ -3261,8 +3389,9 @@ async function finishProcessExit(
     // termination is in flight those duplicate exits still need channel
     // completions, otherwise the worker can park in Atomics.wait with no
     // registered listener left to wake it.
-    // Required by JSC/Bun as well as Safari; V8 benefits from the same exact
-    // terminal fence instead of relying on forced Worker termination.
+    // Required where the terminate leak is present (Bun today); V8 benefits
+    // from the same exact terminal fence instead of relying on forced Worker
+    // termination.
     try {
       await kernelWorker.killBlockedProcessForTeardown(pid);
     } catch (error) {
@@ -3361,11 +3490,14 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 
   // Parity note: the browser host wakes the target to a cooperative exit
   // before this hard terminate (killBlockedProcessForTeardown in
-  // browser-kernel-worker-entry.ts's handleTerminateProcess). Node does not
-  // need it — on V8 `Worker.terminate()` reaps a worker parked in
-  // `Atomics.wait`, so terminating a blocked process worker directly frees its
-  // thread. That reap is the real platform boundary: only JavaScriptCore
-  // (Safari, Bun) leaks the thread, which is why the wake is browser-only. See
+  // browser-kernel-worker-entry.ts's handleTerminateProcess). This handler
+  // does not: it terminates the process's workers directly. On Node.js (V8)
+  // `Worker.terminate()` reaps a worker parked in `Atomics.wait`, so that
+  // frees the thread. Under Bun, which reproduces the
+  // JSC-TERMINATE-ATOMICS-WAIT-LEAK defect, a blocked process killed here
+  // still leaks its worker: a known gap in this host, not covered by the
+  // workaround. Destroy and normal process-exit teardown in this file do
+  // wake blocked workers first. See
   // docs/jsc-terminate-atomics-wait-workaround.md.
 
   // Terminate thread workers
@@ -3443,44 +3575,45 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 // --- Destroy ---
 
 async function performDestroy() {
+  await liveOverlayCompactor?.stop();
+  liveOverlayCompactor = null;
   await repoLazyAssetResolver?.close();
-  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
-  // is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+  // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+  // WORKAROUND, remove when the engine bug is fixed; see
+  // docs/jsc-terminate-atomics-wait-workaround.md.
   //
-  // On JSC-based runtimes, `Worker.terminate()` cannot free a worker parked in
-  // Atomics.wait on its syscall channel — the state every blocked process/thread
-  // worker sits in — so terminating them directly leaks their threads + committed
-  // memory. This host entry backs BOTH Node.js (V8) and Bun (JSC); on Bun the
-  // leak is live, so we must first wake every blocked worker into a cooperative
-  // exit (killAllBlockedForTeardown queues SIGKILL + EINTR; the guest glue runs
-  // kernel_exit → wasm trap → the worker idles → terminate() reclaims it). This
-  // is harmless on V8, so we do it unconditionally rather than sniff the engine,
-  // matching the browser host (which does the same and is likewise a no-op cost
-  // on Chrome/V8). Phases mirror browser-kernel-worker-entry.ts performDestroy.
+  // Where the defect is present, `Worker.terminate()` cannot free a worker
+  // parked in Atomics.wait on its syscall channel — the state every blocked
+  // process/thread worker sits in — so terminating them directly leaks their
+  // threads + committed memory. This host entry backs BOTH Node.js (V8) and
+  // Bun; on Bun 1.3.3 the leak reproduces, so we must first wake every blocked
+  // worker into a cooperative exit (killAllBlockedForTeardown queues SIGKILL +
+  // EINTR; the guest glue runs kernel_exit → wasm trap → the worker idles →
+  // terminate() reclaims it). This is harmless on V8, so we do it
+  // unconditionally rather than sniff the engine, matching the browser host
+  // (which does the same and is likewise a no-op cost on Chrome/V8). Phases
+  // mirror browser-kernel-worker-entry.ts performDestroy.
   const destroyProgress = createDestroyProgressReporter((event) =>
     post({ type: "destroy_progress", event }),
   );
-  let woken = new Set<number>();
-  try { woken = await kernelWorker.killAllBlockedForTeardown(); } catch (e) {
-    console.error(`[node-kernel-worker] killAllBlockedForTeardown failed: ${e}`);
+  let retiringPids = new Set<number>();
+  try { retiringPids = await kernelWorker.beginKernelTeardown(); } catch (e) {
+    console.error(`[node-kernel-worker] beginKernelTeardown failed: ${e}`);
   }
-  destroyProgress.startDraining(woken.size);
-  // Drain only for the pids we woke — a process we did not wake (e.g. one
-  // already exited via a sibling thread) never posts {exit} and is
-  // force-terminated below instead of waited on.
+  destroyProgress.startDraining(retiringPids.size);
   const drainDeadline = Date.now() + DESTROY_KILL_DRAIN_TIMEOUT_MS;
   const liveWokenCount = () => {
     let live = 0;
-    for (const pid of woken) if (processes.has(pid)) live++;
+    for (const pid of retiringPids) if (processes.has(pid)) live++;
     return live;
   };
   let liveWoken = liveWokenCount();
   while (liveWoken > 0 && Date.now() < drainDeadline) {
-    destroyProgress.drained(woken.size - liveWoken);
+    destroyProgress.drained(retiringPids.size - liveWoken);
     await new Promise((r) => setTimeout(r, DESTROY_KILL_DRAIN_POLL_MS));
     liveWoken = liveWokenCount();
   }
-  destroyProgress.drained(woken.size - liveWoken);
+  destroyProgress.drained(retiringPids.size - liveWoken);
   if (liveWoken > 0) {
     console.warn(`[node-kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
   }
@@ -3572,6 +3705,15 @@ async function performDestroy() {
   pcmDriver = null;
   remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
+  let persistenceSyncFailure: string | undefined;
+  if (persistentOverlay !== null) {
+    try {
+      kernelWorker.syncRootfsPersistence();
+    } catch (error) {
+      persistenceSyncFailure = `rootfs persistence shutdown sync failed: ${error}`;
+      console.error(persistenceSyncFailure);
+    }
+  }
   if (gracefulDetachComplete) {
     try {
       processMemoryAllocator.clear();
@@ -3590,24 +3732,30 @@ async function performDestroy() {
       "fallback",
     );
   }
-  cleanupSessionDir();
-  return kernelRealmDestroyResult(gracefulDetachComplete);
+  await cleanupSessionDir();
+  return kernelRealmDestroyResult(gracefulDetachComplete, persistenceSyncFailure);
 }
 
 async function handleDestroy(msg: { requestId: number }) {
-  // WHY: message and syscall callbacks overlap across awaits. The shared gate
-  // closes admission synchronously, drains every creator that entered first,
-  // and runs this terminal sweep only once. The outer worker-realm termination
-  // remains the bounded fallback if an admitted creator does not finish.
-  const destroy = processMemoryCreators.closeAndRunAfterDrain(
-    performDestroy,
-  );
-  // Pending lazy exec reads may hold a creator token. Cancel their resolver
-  // after closing admission, before waiting for that token to drain.
-  const resolverClosed = repoLazyAssetResolver?.close();
-  const result = await destroy;
-  await resolverClosed;
-  respond(msg.requestId, result);
+  try {
+    initReady = false;
+    // WHY: message and syscall callbacks overlap across awaits. The shared gate
+    // closes admission synchronously, drains every creator that entered first,
+    // and runs this terminal sweep only once. The outer worker-realm termination
+    // remains the bounded fallback if an admitted creator does not finish.
+    const destroy = processMemoryCreators.closeAndRunAfterDrain(
+      performDestroy,
+    );
+    deferredByteSpool?.cancelTransfers();
+    // Pending lazy exec reads may hold a creator token. Cancel their resolver
+    // after closing admission, before waiting for that token to drain.
+    const resolverClosed = repoLazyAssetResolver?.close();
+    const result = await destroy;
+    await resolverClosed;
+    respond(msg.requestId, result);
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
 }
 
 // --- PTY ---
@@ -3670,14 +3818,16 @@ function handleInjectConnection(
 
 async function handleHttpRequest(msg: HttpRequestMessage) {
   try {
-    const response = await kernelWorker.sendHttpRequest(
-      msg.port,
-      msg.request,
-      {
-        timeoutMs: msg.timeoutMs,
-        maxResponseBytes: msg.maxResponseBytes,
-      },
-    );
+    const options = {
+      timeoutMs: msg.timeoutMs,
+      maxResponseBytes: msg.maxResponseBytes,
+    };
+    // A hostname names a machine on the Kandelo network; without one the
+    // request is for this machine. Call each directly: binding kernelWorker
+    // into a free function would let it escape the entry root.
+    const response = msg.hostname === undefined
+      ? await kernelWorker.sendHttpRequest(msg.port, msg.request, options)
+      : await remoteSegmentRuntime.fetchHttp(msg.hostname, msg.port, msg.request, options);
     respond(msg.requestId, response);
   } catch (e) {
     respondError(msg.requestId, String(e));
@@ -3698,6 +3848,29 @@ async function handleClipboardGuestWait(
     );
   } catch (error) {
     respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleExchangeRequest(
+  msg: Extract<MainToKernelMessage, { type: "exchange_request" }>,
+) {
+  if (!initReady) {
+    respondError(msg.requestId, "exchange requires an initialized kernel");
+    return;
+  }
+  try {
+    respond(msg.requestId, await kernelWorker.exchangeRequest(msg.request));
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function handleExchangeRange(msg: Extract<MainToKernelMessage, { type: "exchange_range" }>) {
+  if (!initReady) return;
+  if (msg.bytes !== undefined) {
+    kernelWorker.exchangeFulfillRange(msg.source, msg.offset, msg.requested, msg.bytes);
+  } else {
+    kernelWorker.exchangeFailRange(msg.source, msg.errno);
   }
 }
 
@@ -3749,6 +3922,66 @@ async function handleExportRootfsImage(
   }
 }
 
+async function handleExportRootfsImageToFile(
+  msg: Extract<MainToKernelMessage, { type: "export_rootfs_image_to_file" }>,
+) {
+  if (!rootImage.has()) {
+    respondError(msg.requestId, "rootfs export requires a VFS-backed kernel");
+    return;
+  }
+  if (!initReady) {
+    respondError(msg.requestId, "rootfs export requires an initialized kernel");
+    return;
+  }
+  try {
+    const integrity = await rootfsSnapshotGate.runSnapshot(async () => {
+      if (processes.size !== 0 || processTeardowns.size !== 0) {
+        throw new Error("rootfs export requires a quiescent kernel with no live or tearing-down processes");
+      }
+      const file = openSync(msg.path, "wx+", 0o600);
+      try {
+        const integrity = writeAndVerifyRootfsImage(
+          (visit) => kernelWorker.rootfsExportContainerVisitBorrowed(visit),
+          {
+            writeAllAt(offset, bytes) {
+              let written = 0;
+              while (written < bytes.byteLength) {
+                const count = writeSync(file, bytes, written, bytes.byteLength - written, offset + written);
+                if (count <= 0 || count > bytes.byteLength - written) {
+                  throw new Error("rootfs export file write made no progress");
+                }
+                written += count;
+              }
+            },
+            readExactAt(offset, bytes) {
+              let read = 0;
+              while (read < bytes.byteLength) {
+                const count = readSync(file, bytes, read, bytes.byteLength - read, offset + read);
+                if (count <= 0 || count > bytes.byteLength - read) {
+                  throw new Error("rootfs export file read made no progress");
+                }
+                read += count;
+              }
+            },
+            setSize: (length) => ftruncateSync(file, length),
+            flush: () => fsyncSync(file),
+            getSize: () => fstatSync(file).size,
+          },
+        );
+        closeSync(file);
+        return integrity;
+      } catch (error) {
+        try { closeSync(file); } catch {}
+        try { unlinkSync(msg.path); } catch {}
+        throw error;
+      }
+    });
+    respond(msg.requestId, integrity);
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function handleReadVfsFile(
   msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
 ) {
@@ -3779,6 +4012,27 @@ async function handleReadVfsFile(
         error instanceof Error ? error.message : String(error),
       );
     }
+  } finally {
+    releaseMutation?.();
+  }
+}
+
+async function handleReadVfsFileRange(
+  msg: Extract<MainToKernelMessage, { type: "read_vfs_file_range" }>,
+) {
+  if (!rootImage.has()) {
+    respond(msg.requestId, null);
+    return;
+  }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    releaseMutation = rootfsSnapshotGate.beginMutation("read or materialize a rootfs file range");
+    const data = await readNamespaceFileRangeWithRetry(kernelWorker, msg.path, msg.offset, msg.length);
+    if (data === null) respond(msg.requestId, null);
+    else respondTransferredBytes(msg.requestId, data);
+  } catch (error) {
+    if (isRootfsMissingFileError(error)) respond(msg.requestId, null);
+    else respondError(msg.requestId, error instanceof Error ? error.message : String(error));
   } finally {
     releaseMutation?.();
   }
@@ -3845,6 +4099,7 @@ function handleWriteVfsFile(
       msg.data,
       msg.mode & FILE_MODES.S_MODE_BITS,
     );
+    kernelWorker.syncRootfsPersistence();
     respond(msg.requestId, true);
   } catch (error) {
     respondError(
@@ -3874,13 +4129,27 @@ port.on("message", (msg: MainToKernelMessage) => {
   if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError)) return;
   switch (msg.type) {
     case "init":
-      void handleInit(msg).catch((error) => {
-        cleanupSessionDir();
+      void processMemoryCreators.run("kernel initialization", async () => {
+        try {
+          await handleInit(msg);
+        } catch (error) {
+          if (error instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(error);
+          try {
+            await cleanupSessionDir();
+          } catch (cleanupError) {
+            throw new AggregateError([error, cleanupError], `kernel initialization cleanup failed: ${cleanupError}`);
+          }
+          throw error;
+        }
+      }).catch((error) => {
         remoteSegmentRuntime.close();
         initReady = false;
         post({
           type: "init_error",
           error: error instanceof Error ? error.message : String(error),
+          ...(error instanceof NoValidOverlayGenerationError
+            ? { recovery: "no-valid-overlay-generation" as const }
+            : {}),
         });
       });
       break;
@@ -3952,14 +4221,26 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "export_rootfs_image":
       void handleExportRootfsImage(msg);
       break;
+    case "export_rootfs_image_to_file":
+      void handleExportRootfsImageToFile(msg);
+      break;
     case "clipboard_offer":
       void handleClipboardOffer(msg);
+      break;
+    case "exchange_request":
+      void handleExchangeRequest(msg);
+      break;
+    case "exchange_range":
+      handleExchangeRange(msg);
       break;
     case "clipboard_guest_wait":
       void handleClipboardGuestWait(msg);
       break;
     case "read_vfs_file":
       void handleReadVfsFile(msg);
+      break;
+    case "read_vfs_file_range":
+      void handleReadVfsFileRange(msg);
       break;
     case "read_vfs_dir":
       void handleReadVfsDir(msg);
@@ -4035,6 +4316,17 @@ port.on("message", (msg: MainToKernelMessage) => {
       }
       break;
     }
+    case "get_storage_metadata_memory_usage": {
+      try {
+        post({ type: "response", requestId: msg.requestId,
+          result: kernelWorker.rootfsTransportMetadataBudget().snapshot() });
+      } catch (err) {
+        post({ type: "response", requestId: msg.requestId,
+          result: undefined,
+          error: (err as Error)?.message ?? String(err) });
+      }
+      break;
+    }
     case "get_wasm_module_cache_stats":
       post({
         type: "response",
@@ -4042,23 +4334,6 @@ port.on("message", (msg: MainToKernelMessage) => {
         result: kernelWorker.wasmModules.stats(),
       });
       break;
-    case "get_spawn_scratch_capacity": {
-      try {
-        post({
-          type: "response",
-          requestId: msg.requestId,
-          result: kernelWorker.getSpawnScratchCapacity(),
-        });
-      } catch (err) {
-        post({
-          type: "response",
-          requestId: msg.requestId,
-          result: undefined,
-          error: (err as Error)?.message ?? String(err),
-        });
-      }
-      break;
-    }
     case "enum_procs": {
       // Snapshot the kernel's process table for the Inspector → Procs tab.
       // Mirrors the Browser-side handler in browser-kernel-worker-entry.ts.
@@ -4103,14 +4378,6 @@ port.on("message", (msg: MainToKernelMessage) => {
           result: undefined,
           error: (err as Error)?.message ?? String(err),
         });
-      }
-      break;
-    }
-    case "resolve_exec_response": {
-      const resolve = pendingExecResolves.get(msg.requestId);
-      if (resolve) {
-        pendingExecResolves.delete(msg.requestId);
-        resolve(msg.programBytes);
       }
       break;
     }

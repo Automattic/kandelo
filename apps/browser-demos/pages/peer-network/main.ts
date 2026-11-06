@@ -7,9 +7,9 @@ import { createNetworkInvite, answerNetworkInvite, attachNetworkBridge } from ".
 import { postSessionOffer, postSessionAnswer, readSession, validSessionName, SESSION_NAME_RULE, waitForSessionAnswer } from "../../lib/peer-signalling";
 import { createBuildFsWithEtc, finalizeKernelOwnedImage } from "../../lib/kernel-owned-boot";
 import kernelUrl from "@kernel-wasm?url";
-import ncUrl from "@binaries/programs/wasm32/nc.wasm?url";
-import doomUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
-import quakeUrl from "@binaries/programs/wasm32/quake.wasm?url";
+import ncUrl from "@binaries/programs/wasm32/netcat/nc.wasm?url";
+import doomUrl from "@binaries/programs/wasm32/fbdoom/fbdoom.wasm?url";
+import quakeUrl from "@binaries/programs/wasm32/tyrquake/quake.wasm?url";
 import unzipUrl from "@binaries/programs/wasm32/unzip.wasm?url";
 import phpUrl from "@binaries/programs/wasm32/php/php.wasm?url";
 import curlUrl from "@binaries/programs/wasm32/curl.wasm?url";

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 #
 # Shared checks for wasm artifacts that enter resolver-visible locations.
-# Asyncify is retired in this repo; any wasm still exporting or naming
-# `asyncify_*` is a stale fork-continuation artifact, regardless of ABI
-# metadata.
+# Asyncify is retired in this repo; any wasm still exporting `asyncify_*`
+# is a stale fork-continuation artifact, regardless of ABI metadata.
 
 _WASM_ARTIFACT_GUARDS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -13,18 +12,50 @@ wasm_is_binary() {
     [ "$(od -An -tx1 -N4 "$path" 2>/dev/null | tr -d ' \n')" = "0061736d" ]
 }
 
+# Print the module's exported `asyncify_*` names, one per line.
+#
+# WHY exports and not a byte search: the retired transform is identified by
+# what it exports (docs/fork-instrumentation.md). Searching the bytes also
+# refused programs that only contain the text, such as Binaryen's wasm-opt,
+# which implements the transform. The repository instrumenter reads the
+# export section; run-wasm-fork-instrument.sh rebuilds it when its sources
+# changed, and honors WASM_POSIX_FORK_INSTRUMENT.
+_wasm_legacy_asyncify_exports() {
+    # The tool's own diagnostics (including a failed rebuild of the tool)
+    # are shown only when it fails, so a refusal names its cause.
+    local errors status=0
+    errors="$(mktemp)"
+    bash "$_WASM_ARTIFACT_GUARDS_DIR/run-wasm-fork-instrument.sh" \
+        --legacy-asyncify-exports "$1" 2>"$errors" || status=$?
+    [ "$status" -eq 0 ] || cat "$errors" >&2
+    rm -f "$errors"
+    return "$status"
+}
+
+# Returns 0 when the module exports `asyncify_*`, 1 when it does not, and 2
+# when its exports could not be read.
 wasm_has_legacy_asyncify() {
     wasm_is_binary "${1:-}" || return 1
-    grep -a -q 'asyncify_' "$1" 2>/dev/null
+    local names
+    names="$(_wasm_legacy_asyncify_exports "$1")" || return 2
+    [ -n "$names" ]
 }
 
 wasm_require_no_legacy_asyncify() {
-    local path="${1:-}"
-    if wasm_has_legacy_asyncify "$path"; then
-        echo "ERROR: refusing legacy Asyncify wasm artifact: $path" >&2
-        echo "       Rebuild it with scripts/run-wasm-fork-instrument.sh for fork-capable binaries." >&2
-        return 1
-    fi
+    local path="${1:-}" status=0
+    wasm_has_legacy_asyncify "$path" || status=$?
+    case "$status" in
+        0)
+            echo "ERROR: refusing legacy Asyncify wasm artifact: $path" >&2
+            echo "       Rebuild it with scripts/run-wasm-fork-instrument.sh for fork-capable binaries." >&2
+            return 1
+            ;;
+        1) return 0 ;;
+        *)
+            echo "ERROR: could not read the exports of $path to check for legacy Asyncify" >&2
+            return 1
+            ;;
+    esac
 }
 
 # Remove the compiler facts fork instrumentation reads (`kandelo.calltypes`
@@ -56,7 +87,7 @@ wasm_drop_compiler_facts() {
 # Reject unresolved imports in the namespaces Kandelo reserves for itself
 # unless the host deliberately implements that exact API. The approved names
 # are the generated host-import allowance (libc/glue/kandelo-host-imports.txt,
-# from HOST_ENV_IMPORTS in crates/shared/src/lib.rs) — the same list the SDK
+# from HOST_ENV_IMPORTS in crates/program-abi/src/lib.rs) — the same list the SDK
 # links against — so the guard and the linker cannot disagree. Executables
 # linked by the SDK already fail on any other undefined symbol; this guard
 # still covers artifacts linked some other way, and side modules, which link
@@ -166,7 +197,7 @@ wasm_require_approved_reserved_env_imports() {
 wasm_current_abi_version() {
     local repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
     sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);/\1/p' \
-        "$repo_root/crates/shared/src/lib.rs" | head -1
+        "$repo_root/crates/program-abi/src/lib.rs" | head -1
 }
 
 # Run a producer into awk without inheriting either errexit or pipefail from
@@ -1482,10 +1513,12 @@ wasm_require_target_aware_exec_authority() {
     wasm_require_exports "$path" \
         kernel_exec_target_prepare \
         kernel_spawn_exec_target_prepare \
+        kernel_spawn_exec_target_prepare_handle \
         kernel_exec_target_size \
         kernel_exec_target_read \
         kernel_exec_target_cancel \
         kernel_exec_commit \
+        kernel_initial_exec_commit \
         kernel_publish_spawn_child \
         kernel_spawn_exec_commit &&
         wasm_reject_exports "$path" \

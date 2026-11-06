@@ -21,11 +21,18 @@ smaller ceilings. V8 and SpiderMonkey reserve address space lazily, so a
 ceiling that is invisible on Chrome, Firefox, and Node can still make Safari
 fail. Before adding or raising any ceiling, ask what it costs on the engine
 that charges it, and check whether the ceiling can even be reached. The
-machine's filesystem lives in the kernel's linear memory (the in-kernel rootfs
-and tmpfs; see `docs/architecture.md`, "Filesystem"), so the kernel's ceiling
-is also the ceiling on everything guests write and every lazy file they pull
-in (1 GiB under the desktop profile, 768 MiB under the constrained one). A
-write past it fails with `ENOSPC` rather than aborting the kernel. Host
+machine's filesystem metadata and caches live in the kernel's linear memory
+(see `docs/architecture.md`, "Filesystem"). Ephemeral rootfs/tmpfs content
+also remains resident, but experimental persistent image data uses positioned
+host storage and bounded Rust caches; its logical capacity and file lengths
+can exceed the kernel's address-space ceiling. Do not equate image capacity
+with resident memory or grow a host buffer to the image's logical size. The
+kernel ceiling remains 1 GiB under the desktop profile and 768 MiB under the
+constrained one. Logical disk exhaustion and host storage quota are `ENOSPC`;
+explicit memory-admission refusal is `ENOMEM`. Preserve the actual failure
+instead of reporting quota, corruption or stale-generation fallback for every
+resource error. Aggregate storage-memory acceptance is still tracked in
+`docs/persistence-durability.md`; individual cache limits do not establish it. Host
 budgets live in
 `host/src/runtime-memory-profile.ts`; when a budget forces a smaller address
 space than a caller asked for, report the reduction rather than applying it
@@ -192,6 +199,17 @@ holds, and `host_fetch_deferred(uri, ...)` fetches bytes the image only names
 (lazy files and lazy archives), answering `EAGAIN` while a fetch is in flight.
 The host never decodes the image into a filesystem of its own.
 `docs/abi-versioning.md` ("ABI 49") lists the import set.
+
+The kernel decides what an exec or `posix_spawn` runs; the host instantiates
+it. `kernel_spawn_process` reads the spawn request from the caller's memory
+and refuses a target a launch could not run before any file action;
+`kernel_exec_target_admit` says whether a retained target is a `#!` script or
+a program runnable under this ABI; `kernel_exec_commit` sets the new image's
+pointer width. Do not add host code that parses a spawn request or an exec
+target to make one of those decisions. The one remaining host check is the
+fork-instrumentation contract in `describeWasmArtifactPolicyFailures`, which
+stays in TypeScript until the fork work brings its decoders into
+`crates/wasm-artifact`. `docs/abi-versioning.md` ("ABI 51") lists the exports.
 
 Worker protocols are contracts. Spawn, fork, exec, clone, exit, terminate,
 thread exit, crash, syscall trace, PTY, framebuffer, audio, network, VFS, and

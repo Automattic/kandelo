@@ -1,3 +1,6 @@
+import { SessionDependencyPeer, DEPENDENCY_CHANNEL } from "../../../web-libs/kandelo-session/src/session-dependency-peer";
+import { MAX_DEPENDENCY_BYTES, type OfferedDependency } from "../../../web-libs/kandelo-session/src/session-dependencies";
+import { ACTIVITY_CHANNEL, SessionActivityPeer, activityOffersMessage } from "../../../web-libs/kandelo-session/src/session-activity-peer";
 /**
  * Network sessions between Kandelo computers: create one, share its link,
  * join one from a link, and leave.
@@ -8,12 +11,14 @@
  * this module only matches computers through the signalling server and
  * carries each WebRTC link's bytes to the worker. Every computer keeps its
  * own machine; nothing about either machine's state crosses the link
- * except ordinary guest packets.
+ * except guest packets, host activity offers and explicitly published dependencies.
  */
 import type { RemoteSegmentPeer } from "@host/networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "@host/networking/remote-segment-runtime";
 import type { PeerConnection } from "../../../web-libs/kandelo-session/src/peer-connection";
 import * as signalling from "./peer-signalling";
+import { decodeSessionInvitation } from "../../../web-libs/kandelo-session/src/session-invitation";
+import type { SessionOffer } from "../../../web-libs/kandelo-session/src/package-sessions";
 
 /** A running machine's session controls, as BrowserKernel provides them. */
 export interface SessionMachine {
@@ -52,7 +57,7 @@ export interface SessionState {
   /** The session's human-readable name. */
   name: string | null;
   room: string | null;
-  /** The link that lets another computer join. Only the host shares it. */
+  /** The link that lets another computer join. Any connected member can share it. */
   link: string | null;
   error: string | null;
   /** The kernel worker's own words for why a session ended, when it did. */
@@ -63,6 +68,9 @@ export interface SessionState {
    */
   roomClosed: boolean;
   snapshot: RemoteSessionSnapshot | null;
+  /** Only the room host publishes joinable activities. Null until received. */
+  remoteActivities?: SessionOffer[] | null;
+  activityError?: string | null;
 }
 
 /** The members a session admits, the hosting computer included. */
@@ -75,12 +83,16 @@ const NAME_MAX = 64;
 const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /** The room and display name a shared link carries, if it carries one. */
-export function sessionInvitation(href: string): { room: string; name: string } | null {
+export function sessionInvitation(href: string): { room: string; name: string; offer?: SessionOffer } | null {
   const url = new URL(href);
   const room = url.searchParams.get("network");
-  if (!room || !signalling.validRoomToken(room)) return null;
+  const offer = decodeSessionInvitation(url.hash);
+  if (!room || !signalling.validRoomToken(room)) {
+    if (offer) throw new Error("An activity invitation requires a valid network room");
+    return null;
+  }
   const name = (url.searchParams.get("networkName") ?? "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, NAME_MAX);
-  return { room, name: name || "Network session" };
+  return { room, name: name || "Network session", ...(offer ? { offer } : {}) };
 }
 
 /**
@@ -119,6 +131,28 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 export class NetworkSessionController {
   private state: SessionState = { phase: "offline", name: null, room: null, link: null, error: null, errorDetail: null, roomClosed: false, snapshot: null };
   private joined = false;
+  private readonly dependencyPeers = new Map<PeerConnection, SessionDependencyPeer>();
+  private sharedDependencies = new Map<string, Uint8Array>();
+  private sharedActivities: SessionOffer[] = [];
+  private readonly activityPeers = new Map<PeerConnection, SessionActivityPeer>();
+
+  publishActivities(offers: SessionOffer[]): void {
+    if (this.joined) throw new Error("Only the hosting computer can advertise activities");
+    activityOffersMessage(offers);
+    if (JSON.stringify(offers) === JSON.stringify(this.sharedActivities)) return;
+    this.sharedActivities = structuredClone(offers);
+    for (const peer of this.activityPeers.values()) peer.publish();
+  }
+
+  publishDependencies(files: Map<string, Uint8Array>): void {
+    if (files.size > 2 || [...files.values()].some(bytes => bytes.length > MAX_DEPENDENCY_BYTES)) throw new Error("Too much activity data");
+    this.sharedDependencies = new Map(files);
+  }
+  receiveDependency(content: OfferedDependency, signal: AbortSignal, progress: (received: number) => void): Promise<Uint8Array> {
+    const peer = this.dependencyPeers.values().next().value;
+    if (!peer || !this.joined) throw new Error("Connect to the hosting computer before receiving activity data");
+    return peer.receive(content, signal, progress);
+  }
   private readonly listeners = new Set<(state: SessionState) => void>();
   private generation = 0;
   private hostKey: string | null = null;
@@ -228,18 +262,26 @@ export class NetworkSessionController {
         await this.api.answerRoomJoin(server, room, key, request.join, answered.answer);
         const link = await withTimeout(answered.connected, LINK_CONNECT_TIMEOUT_MS, "the joining computer did not connect");
         if (generation !== this.generation) { link.close(); return; }
-        await this.adopt(link, (bridge) => machine.attachRemotePeer(bridge.peer));
+        await this.adopt(link, (bridge) => machine.attachRemotePeer(bridge.peer), true);
       } finally { this.cancels.delete(answered.cancel); }
     } catch (error) {
       if (generation === this.generation) console.warn(`[network session] a computer could not join: ${describe(error)}`);
     }
   }
 
-  private adopt(link: PeerConnection, attach: (bridge: NetworkBridge) => Promise<unknown>): Promise<unknown> {
+  private adopt(link: PeerConnection, attach: (bridge: NetworkBridge) => Promise<unknown>, hosting = false): Promise<unknown> {
     let bridge: NetworkBridge;
     try { bridge = this.transport.bridge(link); } catch (error) { link.close(); throw error; }
+    const channel = link.channels.get(DEPENDENCY_CHANNEL);
+    if (channel) this.dependencyPeers.set(link, new SessionDependencyPeer(channel, () => this.sharedDependencies));
+    const activityChannel = link.channels.get(ACTIVITY_CHANNEL);
+    const generation = this.generation;
+    if (activityChannel) this.activityPeers.set(link, new SessionActivityPeer(activityChannel, hosting,
+      () => this.sharedActivities,
+      offers => { if (generation === this.generation && !hosting) this.set({ remoteActivities: offers, activityError: null }); },
+      message => { if (generation === this.generation && !hosting) this.set({ remoteActivities: [], activityError: message }); }));
     this.links.add(link); this.bridges.add(bridge);
-    link.onClose(() => { this.links.delete(link); this.bridges.delete(bridge); bridge.close(); });
+    link.onClose(() => { this.dependencyPeers.get(link)?.dispose(); this.dependencyPeers.delete(link); this.activityPeers.get(link)?.dispose(); this.activityPeers.delete(link); this.links.delete(link); this.bridges.delete(bridge); bridge.close(); });
     return attach(bridge).catch((error) => { bridge.close(); link.close(); throw error; });
   }
 
@@ -249,7 +291,7 @@ export class NetworkSessionController {
     try {
       if (!this.api.validRoomToken(room)) throw new Error("This network link is not valid.");
       const { machine, server } = this.requirements();
-      this.set({ phase: "joining", room, name, link: null, error: null, errorDetail: null, roomClosed: false });
+      this.set({ phase: "joining", room, name, link: null, error: null, errorDetail: null, roomClosed: false, remoteActivities: null, activityError: null });
       const hosted = await this.api.readRoom(server, room);
       this.set({ name: hosted.name });
       const invite = await this.transport.createInvite();
@@ -265,7 +307,7 @@ export class NetworkSessionController {
       } finally { this.cancels.delete(invite.cancel); }
       if (generation !== this.generation) return;
       this.joined = true;
-      this.set({ phase: "connected" });
+      this.set({ phase: "connected", link: sessionLink(this.pageHref(), room, this.state.name ?? name) });
       this.pollSnapshot(generation);
     } catch (error) {
       if (generation === this.generation) {
@@ -311,6 +353,10 @@ export class NetworkSessionController {
 
   private async teardown(): Promise<void> {
     this.generation++;
+    for (const peer of this.dependencyPeers.values()) peer.dispose();
+    for (const peer of this.activityPeers.values()) peer.dispose();
+    this.activityPeers.clear(); this.sharedActivities = [];
+    this.dependencyPeers.clear(); this.sharedDependencies.clear();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers = [];
     for (const cancel of this.cancels) cancel();
@@ -328,6 +374,6 @@ export class NetworkSessionController {
   async leave(): Promise<void> {
     await this.teardown();
     this.joined = false;
-    this.set({ phase: "offline", name: null, room: null, link: null, error: null, errorDetail: null, roomClosed: false, snapshot: null });
+    this.set({ phase: "offline", name: null, room: null, link: null, error: null, errorDetail: null, roomClosed: false, snapshot: null, remoteActivities: null, activityError: null });
   }
 }

@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { imageOwnedRuntimeUrlTable } from "../../apps/browser-demos/lib/init/image-owned-runtime-urls";
+import { tryResolveBinaries } from "../src/binary-resolver";
+import { resolveImageOwnedLazyAsset } from "../src/vfs/vfs-asset-group-reference";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveRootfsArtifact } from "./support/rootfs-artifact";
 
@@ -13,7 +14,11 @@ const rootfsImage = tryResolveRootfsArtifact()?.selectedPath;
  * Every address the SHIPPED image records is one this deployment can serve.
  *
  * Nothing rewrites the image: it keeps its canonical addresses and the
- * deployment maps them when it fetches.
+ * kernel worker maps each one, by rule, to its package member under the
+ * deployment's lazy-asset directory (`resolveImageOwnedLazyAsset`). The dev
+ * route and the production asset group both serve that member from what the
+ * binary resolver publishes, so an address is servable exactly when it maps
+ * and its member resolves.
  *
  * The product question is the one worth
  * asking: does every canonical rootfs executable actually resolve? The shell,
@@ -28,6 +33,7 @@ const rootfsImage = tryResolveRootfsArtifact()?.selectedPath;
  * image's deferred half, so the assertions are about real deferred entries.
  */
 describe.skipIf(rootfsImage === undefined)("rootfs lazy assets resolve", () => {
+  const directory = "https://kandelo.invalid/lazy/";
   const deferredAddresses = (): string[] => {
     const fs = KandeloImageFs.create();
     fs.loadImage(new Uint8Array(readFileSync(rootfsImage!)));
@@ -36,15 +42,25 @@ describe.skipIf(rootfsImage === undefined)("rootfs lazy assets resolve", () => {
   };
 
   it("maps every address the image records, bash, ps and pgrep included", () => {
-    const table = imageOwnedRuntimeUrlTable();
     const addresses = deferredAddresses();
     expect(addresses.length, "the image must carry deferred files").toBeGreaterThan(0);
 
-    const unmapped = addresses.filter((uri) => table[uri] === undefined);
+    const unmapped = addresses.filter(
+      (uri) => resolveImageOwnedLazyAsset(directory, uri) === null,
+    );
     expect(
       unmapped,
-      "every address the image records must be one this deployment serves; "
+      "every address the image records must be in the image-owned grammar; "
         + "an address no deployment can serve is a BUILD-time defect",
+    ).toEqual([]);
+
+    const members = addresses.map((uri) =>
+      resolveImageOwnedLazyAsset(directory, uri)!.slice(`${directory}assets/`.length)
+    );
+    const resolved = tryResolveBinaries(members);
+    expect(
+      members.filter((_, i) => resolved[i] === null),
+      "every member the image references must be published by the package graph",
     ).toEqual([]);
 
     // Named by path rather than by count, so a rootfs that grows does not
@@ -61,17 +77,21 @@ describe.skipIf(rootfsImage === undefined)("rootfs lazy assets resolve", () => {
     ]) {
       const entry = files.find((f) => f.path === path);
       expect(entry, `${path} must be a deferred file in the shipped image`).toBeDefined();
-      expect(table[entry!.uri], `${path} must resolve for this deployment`).toBeTruthy();
+      expect(
+        resolveImageOwnedLazyAsset(directory, entry!.uri),
+        `${path} must resolve for this deployment`,
+      ).toBeTruthy();
     }
   });
 
   it("maps to somewhere other than the address itself, or nothing was deployed", () => {
-    const table = imageOwnedRuntimeUrlTable();
     for (const uri of deferredAddresses()) {
-      // The whole point of the table is that a build-time reference becomes a
-      // served asset URL. A mapping to the identical string would pass the
-      // check above while serving nothing.
-      expect(table[uri], `${uri} maps to itself`).not.toBe(uri);
+      // The whole point of the rule is that a build-time reference becomes a
+      // served asset URL inside the directory. A mapping to the identical
+      // string would pass the check above while serving nothing.
+      const url = resolveImageOwnedLazyAsset(directory, uri);
+      expect(url, `${uri} maps to itself`).not.toBe(uri);
+      expect(url!.startsWith(directory), `${uri} leaves the directory`).toBe(true);
     }
   });
 });

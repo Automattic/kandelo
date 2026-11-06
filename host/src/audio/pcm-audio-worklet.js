@@ -18,7 +18,7 @@ function loadU32(words, index) {
 }
 
 function readU64(words, seqIndex, loIndex, hiIndex) {
-  for (;;) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     const before = loadU32(words, seqIndex);
     if (before & 1) continue;
     const lo = loadU32(words, loIndex);
@@ -28,6 +28,7 @@ function readU64(words, seqIndex, loIndex, hiIndex) {
       return (BigInt(hi) << 32n) | BigInt(lo);
     }
   }
+  return null;
 }
 
 function writeU64(words, seqIndex, loIndex, hiIndex, value) {
@@ -56,7 +57,7 @@ export class KandeloPcmProcessor extends WorkletBase {
     this.sourcePhase = 0;
     this.lastError = "";
     this.port.onmessage = event => {
-      if (event.data?.type === "release") {
+      if (event.data?.type === "detach") {
         this.closed = true;
         this.words = null;
         this.ring = null;
@@ -65,8 +66,12 @@ export class KandeloPcmProcessor extends WorkletBase {
           this.connection.close();
           this.connection = null;
         }
-        this.port.postMessage({ type: "released" });
-      } else if (event.data?.type === "attach" && !this.closed) {
+        this.port.postMessage({ type: "detached" });
+      } else if (event.data?.type === "attach") {
+        if (this.closed || this.connection !== null) {
+          event.data.port.close();
+          return;
+        }
         this.connection = event.data.port;
         this.connection.onmessage = message => {
           if (!this.closed) this.attachTransport(message.data);
@@ -153,6 +158,7 @@ export class KandeloPcmProcessor extends WorkletBase {
       l.consumerHi,
     );
     const discard = readU64(this.words, l.discardSeq, l.discardLo, l.discardHi);
+    if (producer === null || consumer === null || discard === null) return true;
     if (discard > consumer) consumer = discard > producer ? producer : discard;
     const initialConsumer = consumer;
     this.activeCapacityBytes = activeCapacityBytes;

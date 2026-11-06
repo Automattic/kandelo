@@ -1,4 +1,10 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -35,6 +41,7 @@ describe("package runtime-file closure metadata", () => {
       "php/zip.so",
       "php/intl.so",
       "php/icu.dat",
+      "php/sessions.json",
     ]);
   }, 120_000);
 
@@ -88,6 +95,71 @@ printf '%s\\n' '${metadata()}'
         process.env.PATH = savedPath ?? "";
       } else {
         delete process.env.PATH;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs the xtask cargo built when CARGO_TARGET_DIR redirects output", () => {
+    // xtask local-build exports a private CARGO_TARGET_DIR into every package
+    // recipe (the shell package reaches this code from build-shell.sh). Real
+    // cargo honors it, so the built xtask is NOT under <repo>/target; a fresh
+    // worktree has nothing there and a stale one holds an older binary.
+    const root = mkdtempSync(join(tmpdir(), "kandelo-runtime-metadata-"));
+    const repo = join(root, "repo");
+    const bin = join(root, "bin");
+    const recipeTarget = join(root, "recipe-cargo-target");
+    mkdirSync(repo);
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "rustc"),
+      "#!/bin/sh\nprintf 'rustc fake\\nhost: fake-host-target\\n'\n",
+    );
+    // Behaves like cargo for this purpose: output follows CARGO_TARGET_DIR,
+    // and artifact JSON is emitted only when --message-format=json* asks.
+    writeFileSync(
+      join(bin, "cargo"),
+      `#!/bin/sh
+set -eu
+json=0
+for arg in "$@"; do
+  case "$arg" in --message-format=json*) json=1 ;; esac
+done
+out="\${CARGO_TARGET_DIR:-$PWD/target}/fake-host-target/release"
+/bin/mkdir -p "$out"
+/bin/cat > "$out/xtask" <<'XTASK'
+#!/bin/sh
+printf '%s\\n' '${metadata()}'
+XTASK
+/bin/chmod 755 "$out/xtask"
+if [ "$json" = 1 ]; then
+  printf '{"reason":"compiler-artifact","package_id":"path+file:///x/tools/xtask#0.1.0","target":{"kind":["bin"],"name":"xtask"},"executable":"%s"}\\n' "$out/xtask"
+  printf '{"reason":"build-finished","success":true}\\n'
+fi
+`,
+    );
+    chmodSync(join(bin, "rustc"), 0o755);
+    chmodSync(join(bin, "cargo"), 0o755);
+    const names = [
+      "WASM_POSIX_XTASK_BIN",
+      "KANDELO_DEV_SHELL_TOOL_PATH",
+      "CARGO_TARGET_DIR",
+      "PATH",
+    ] as const;
+    const saved = new Map(
+      names.map((name) => [name, process.env[name]] as const),
+    );
+    delete process.env.WASM_POSIX_XTASK_BIN;
+    process.env.KANDELO_DEV_SHELL_TOOL_PATH = bin;
+    process.env.CARGO_TARGET_DIR = recipeTarget;
+    process.env.PATH = bin;
+    try {
+      expect(readPackageRuntimeFileContract(repo, "php", "icu.dat"))
+        .toMatchObject({ artifact: "icu.dat", mirrorPath: "php/icu.dat" });
+    } finally {
+      for (const [name, value] of saved) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
       }
       rmSync(root, { recursive: true, force: true });
     }

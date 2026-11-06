@@ -2,6 +2,34 @@
 
 This document covers Kandelo's performance measurement tools: a runtime syscall profiler for detailed per-syscall analysis, and a benchmark suite for repeatable cross-host comparisons.
 
+## Fork instrumenter package comparisons
+
+Use the SDK's original linked Wasm, preserving compiler facts and instruction
+offsets. Capture it before instrumentation or any later Binaryen pass. Record
+package versions, source hashes and the link recipe. The current instrumenter
+has one native implementation; archived Walrus comparisons are recorded in
+[the package comparison report](measurements/2026-10-25-native-instrumentation-comparison.md).
+Reproducing those historical comparisons requires the source commit recorded
+in that report.
+
+For current memory and cache measurements, build the `memory_comparison`
+example with the host `instrumenter` profile through `scripts/dev-shell.sh`.
+Its native-only command measures immutable input snapshot, transform,
+validation, publication and checksums, excluding Binaryen and guest execution:
+
+```bash
+scripts/dev-shell.sh target/aarch64-apple-darwin/instrumenter/examples/memory_comparison \
+  measure instrument .context/package-inputs/bash.wasm .context/bash-native.wasm
+```
+
+`scripts/profile-fork-instrument-cache.py` compares cache budgets using fresh
+serial processes, separate cache diagnostics and independent Node compilation
+and artifact checks. Use a new output directory and an otherwise quiet macOS
+machine. Physical-memory measurements use the OS lifetime peak; requested Rust
+allocations are reported separately. The default guard is 16 GiB and the
+per-process deadline is 30 minutes. These subsystem measurements do not measure
+package build time or Node/browser application performance.
+
 ## Syscall Profiler
 
 The host runtime includes a built-in syscall profiler that measures every syscall handled by the kernel worker. It is zero-cost when disabled — no data structures are allocated and no timing code runs.
@@ -84,13 +112,12 @@ Build the kernel and benchmark programs:
 scripts/dev-shell.sh bash scripts/build-programs.sh
 ```
 
-`./run.sh setup` provisions the musl sysroot for you on a fresh
-checkout. If a sysroot already exists and you changed
-`libc/musl-overlay` or `libc/glue`, `setup` only re-syncs headers —
-rebuild it explicitly first:
+`./run.sh setup` provisions and checks both musl sysroots. The normal product
+build does not create the unpacked local WordPress tree consumed by the Node
+benchmark. Prepare that additional input in each comparison checkout:
 
 ```bash
-scripts/dev-shell.sh bash scripts/build-musl.sh
+scripts/dev-shell.sh bash packages/registry/wordpress/setup.sh
 ```
 
 Some suites require additional binaries:
@@ -101,11 +128,30 @@ Some suites require additional binaries:
 | `process-lifecycle` | Base sysroot + benchmark programs |
 | `spawn-scratch` | Benchmark programs; supplies both executables and uses an empty VFS |
 | `erlang-ring` | Pre-built Erlang binary |
-| `wordpress` | Pre-built PHP, nginx, WordPress |
-| `mariadb` | Pre-built MariaDB |
+| `wordpress` | PHP and unpacked WordPress for Node; the WordPress VFS image for browser |
+| `mariadb-aria`, `mariadb-innodb` | wasm32 MariaDB programs; MariaDB VFS image for browser |
+| `mariadb-aria-64`, `mariadb-innodb-64` | wasm64 MariaDB programs; wasm64 MariaDB VFS image for browser |
+
+The standalone MariaDB benchmark images are not selected by ordinary browser
+product setup. Prepare both architectures through the package resolver:
+
+```bash
+scripts/dev-shell.sh bash -c '
+  target="$(rustc -vV | sed -n "s/^host: //p")"
+  for arch in wasm32 wasm64; do
+    cargo run -q -p xtask --target "$target" -- build-deps resolve \
+      mariadb-vfs --arch "$arch" --binaries-dir "$PWD/binaries" || exit
+  done
+'
+```
+
+Browser benchmark extraction completes positive short reads in at most
+64 KiB windows and fails on premature EOF or invalid progress. The returned
+whole executable is caller-owned input to compilation, not filesystem cache
+memory. A zero-filled unread suffix must never be timed as a valid program.
 
 Application benchmark suites fail if their required binaries are not found. A
-missing artifact means the suite did not measure its workload; build or fetch
+missing artifact means the suite did not measure its workload; build
 the prerequisite before running it.
 
 ### Running Benchmarks
@@ -274,14 +320,12 @@ exited normally with status zero.
 | `spawn_large_wire_bytes` | bytes | Complete deterministic large-spawn wire size asserted by both host wrappers |
 | `spawn_large_first_ms` | ms | First spawn with an 84,386-byte complete wire blob |
 | `spawn_large_repeat_ms` | ms | Mean of five subsequent 84,386-byte spawns in the same kernel |
-| `spawn_scratch_retained_bytes` | bytes | Rust-owned spawn scratch capacity retained after the workload |
 | `spawn_scratch_kernel_bytes` | bytes | Kernel WebAssembly memory size after the workload |
 
 For this workload, post-run kernel memory is also peak kernel memory only
-because WebAssembly memory grows monotonically and cannot shrink. Likewise,
-post-run Rust `Vec<u8>` capacity is the retained scratch high-water mark because
-the kernel keeps that reusable allocation and does not shrink it between
-spawns. These are properties of the measured implementation, not a general
+because WebAssembly memory grows monotonically and cannot shrink. The kernel
+reads each spawn request straight from the caller's memory (ABI 51), so there
+is no retained spawn scratch to report. These are properties of the measured implementation, not a general
 claim that a final sample can substitute for peak-memory instrumentation.
 
 #### erlang-ring
@@ -384,8 +428,11 @@ removed after the run.
 Build requirements: `cmake` and the `wasm32posix-cc` / `wasm64posix-cc` SDK
 supplied through the declared development shell. The build is a two-phase
 cross-compilation (host build for code generators, then wasm cross-compile).
-The wasm64 build uses `-O1` instead of `-O2` to avoid an LLVM 21 wasm64 backend
-miscompilation in table-lookup sign-extension. A missing declared tool is a
+The wasm64 build uses `-O1` instead of `-O2` because of a suspected, unverified
+LLVM 21 wasm64 backend miscompilation in table-lookup sign-extension (no
+standalone reduction yet; see the registry entry
+[`LLVM-WASM64-O2-TABLE-SIGNEXT-MISCOMPILE`](../tests/runtime-workarounds/LLVM-WASM64-O2-TABLE-SIGNEXT-MISCOMPILE/entry.md)).
+A missing declared tool is a
 reported environment block, not permission to use an undeclared host binary.
 
 #### Checkout location does not change the numbers

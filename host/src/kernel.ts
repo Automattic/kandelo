@@ -28,12 +28,14 @@ import type {
   StatfsResult,
 } from "./types";
 import { checkedHostFileOffset } from "./file-offset";
+import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
 import { isHostAppendContractError } from "./append-contract";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry } from "./webgl/registry";
+import { getCanvasWebGl2Context } from "./webgl/canvas-context";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
@@ -50,6 +52,7 @@ import {
   STRUCT_SIZE_WASM_POLL_FD,
   STRUCT_SIZE_WASM_STAT,
   STRUCT_SIZE_WASM_STATFS,
+  STATFS_FLAGS,
   STRUCT_SIZE_WPK_DRM_MODE_MODEINFO,
   WASM_DIRENT_INO_OFFSET,
   WASM_DIRENT_NAME_LENGTH_OFFSET,
@@ -57,6 +60,7 @@ import {
   WASM_POLL_FD_EVENTS_OFFSET,
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
+  CH_ERRNO, CH_RETURN, CH_STATUS, CHANNEL_STATUS_COMPLETE,
 } from "./generated/abi";
 import { bindForeignTexture } from "./webgl/foreign-texture";
 import { blitPresentTarget, ensurePresentTarget } from "./webgl/present-target";
@@ -106,6 +110,12 @@ export function getWasmPosixKernelRuntimeAccess(
 }
 
 const MAX_U64 = (1n << 64n) - 1n;
+/**
+ * The first host handle a program image is held by (see `#programImages`):
+ * far above any handle a `PlatformIO` backend allocates, and still a safe
+ * integer.
+ */
+const PROGRAM_IMAGE_HANDLE_BASE = 2 ** 48;
 const intrinsicApply = Reflect.apply;
 const intrinsicBigInt = BigInt;
 const intrinsicNumber = Number;
@@ -153,6 +163,7 @@ const intrinsicTypedArrayByteLength = Object.getOwnPropertyDescriptor(
   "byteLength",
 )!.get!;
 const IntrinsicUint8Array = Uint8Array;
+const intrinsicUint8ArrayFill = Uint8Array.prototype.fill;
 const IntrinsicInt32Array = Int32Array;
 const IntrinsicDataView = DataView;
 const IntrinsicWasmMemory = WebAssembly.Memory;
@@ -172,9 +183,9 @@ const intrinsicDataViewSetUint16 = DataView.prototype.setUint16;
 const intrinsicDataViewSetUint32 = DataView.prototype.setUint32;
 const intrinsicAtomicsCompareExchange = Atomics.compareExchange;
 const intrinsicAtomicsLoad = Atomics.load;
-const intrinsicAtomicsNotify = Atomics.notify;
 const intrinsicAtomicsStore = Atomics.store;
 const intrinsicAtomicsWait = Atomics.wait;
+const intrinsicAtomicsNotify = Atomics.notify;
 const intrinsicReflectConstruct = Reflect.construct;
 const intrinsicObjectCreate = Object.create;
 const intrinsicObjectDefineProperty = Object.defineProperty;
@@ -751,7 +762,6 @@ export interface KmsDisplaySize {
 export interface KernelCallbacks {
   onAlarm?: (seconds: number) => number;
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
-  onWaitpid?: (targetPid: number, options: number) => void;
   onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
   /** Packed IPv4 source in network byte order, or a negative errno. */
   onUdpSourceAddress?: (destination: [number, number, number, number]) => number;
@@ -890,6 +900,15 @@ export class WasmPosixKernel {
   /** Evict only the transport resource rejected by native validation. */
   #rootfsDeferredInvalidator: ((uri: string) => void) | undefined;
   /**
+   * Kandelo exchange input bytes, by source id. Fills `dest` from `offset`
+   * and returns the count, `-EAGAIN` while the bytes are being fetched from
+   * the side that offered the source, or another negative errno. Until the
+   * worker installs one, a read is `EIO`: no source was ever offered.
+   */
+  #exchangeSourceProvider:
+    | ((source: bigint, offset: bigint, dest: Uint8Array) => number)
+    | undefined = undefined;
+  /**
    * Raw VFS image byte window. The Rust kernel parses the `/` image itself — it
    * mounts the image's own filesystem, walks it, and reads its deferred-file
    * section — so the host never builds or encodes a tree. The host resolves no
@@ -900,7 +919,12 @@ export class WasmPosixKernel {
   #rootfsImageProvider:
     | ((offset: bigint, dest: Uint8Array) => number)
     | undefined = undefined;
-  private waitpidSab: SharedArrayBuffer | null = null;
+  #persistentOverlayStorage: PersistentOverlayStorage | null = null;
+  #persistentOverlayTargetStorage: PersistentOverlayStorage | null = null;
+  #persistentOverlayCompactionStorage: PersistentOverlayStorage | null = null;
+  #reportedStorageReadFailure = false;
+  #storageReadStaging: Uint8Array | null = null;
+  #storageReadStagingInUse = false;
   /**
    * A backend directory iterator may already have advanced before the host
    * bridge discovers that it cannot marshal the returned entry into Wasm
@@ -909,7 +933,7 @@ export class WasmPosixKernel {
    */
   private pendingDirectoryEntries = new Map<
     number,
-    { name: string; type: number; ino: number }
+    { name: string; type: number; ino: number | bigint }
   >();
   /**
    * Extra host-handle ownership held by regular-file MAP_SHARED backings.
@@ -1044,13 +1068,7 @@ export class WasmPosixKernel {
       attachedCrtc = crtc;
     }
     if (!b.canvas) return;
-    const ctx = b.canvas.getContext("webgl2", {
-      antialias: false,
-      premultipliedAlpha: false,
-      depth: true,
-      stencil: true,
-      preserveDrawingBuffer: true,
-    }) as WebGL2RenderingContext | null;
+    const ctx = getCanvasWebGl2Context(b.canvas);
     if (ctx) {
       // Mirror main-forward.ts: enable the WebGL2 float extensions so
       // RGBA16F framebuffers are renderable and float textures accept
@@ -1121,6 +1139,50 @@ export class WasmPosixKernel {
   }
 
   /**
+   * Programs the HOST supplied as bytes (`spawn(programBytes)`), held as host
+   * file handles the kernel keeps as the running image's executable
+   * (`kernel_process_attach_exe_handle`, `Process::exe` in the kernel).
+   *
+   * WHY A HANDLE, NOT A COPY: such a program has no file in the namespace,
+   * yet the kernel must keep the object a process runs (so `/proc/self/exe`
+   * opens it, and the fork module reads the program's fork sections through
+   * it). Copying the bytes into kernel memory would cost a whole program per
+   * distinct program -- node.wasm is tens of megabytes -- in a memory that
+   * never shrinks. A handle onto the bytes this worker already holds costs
+   * nothing: the kernel reads it through `host_pread` one request at a time,
+   * like any host file, and closes it (`host_close`) when the last
+   * description of it goes, which is when the entry here is dropped.
+   *
+   * Handles come from a range no `PlatformIO` backend issues, so no host file
+   * can be mistaken for a program image or the reverse.
+   */
+  readonly #programImages = new Map<number, Uint8Array>();
+  #nextProgramImageHandle = PROGRAM_IMAGE_HANDLE_BASE;
+
+  /**
+   * Hold `bytes` as a program image and return the host handle the kernel
+   * reads it by. The bytes are referenced, never copied; they must not change
+   * while a process can read them, which is what an immutable program buffer
+   * already promises.
+   */
+  registerProgramImage(bytes: Uint8Array): bigint {
+    const handle = this.#nextProgramImageHandle++;
+    this.#programImages.set(handle, bytes);
+    return intrinsicBigInt(handle);
+  }
+
+  discardUnclaimedProgramImage(handle: bigint): void {
+    if (!this.#programImages.delete(Number(handle))) {
+      throw new Error("Program image handle is not owned by this registration");
+    }
+  }
+
+  /** How many program images the kernel still holds (tests only). */
+  get heldProgramImageCount(): number {
+    return this.#programImages.size;
+  }
+
+  /**
    * Install the deferred-resource byte provider.
    * See {@link WasmPosixKernel.prototype} `#rootfsDeferredProvider`.
    */
@@ -1139,11 +1201,30 @@ export class WasmPosixKernel {
     this.#rootfsDeferredInvalidator = invalidator;
   }
 
+  /** Install the Kandelo exchange source byte provider. */
+  setExchangeSourceProvider(
+    provider: ((source: bigint, offset: bigint, dest: Uint8Array) => number) | undefined,
+  ): void {
+    this.#exchangeSourceProvider = provider;
+  }
+
   /** Install the raw VFS image byte window. */
   setRootfsImageProvider(
     provider: (offset: bigint, dest: Uint8Array) => number,
   ): void {
     this.#rootfsImageProvider = provider;
+  }
+
+  setPersistentOverlayStorage(storage: PersistentOverlayStorage | null): void {
+    this.#persistentOverlayStorage = storage;
+  }
+
+  setPersistentOverlayTargetStorage(storage: PersistentOverlayStorage | null): void {
+    this.#persistentOverlayTargetStorage = storage;
+  }
+
+  setPersistentOverlayCompactionStorage(storage: PersistentOverlayStorage | null): void {
+    this.#persistentOverlayCompactionStorage = storage;
   }
 
   constructor(
@@ -1632,10 +1713,6 @@ export class WasmPosixKernel {
     return this.sharedPipes;
   }
 
-  registerWaitpidSab(sab: SharedArrayBuffer): void {
-    this.waitpidSab = sab;
-  }
-
   /**
    * Load and instantiate the kernel Wasm module exactly once.
    *
@@ -1854,6 +1931,28 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
+        host_exchange_source_read: (
+          sourceLo: number,
+          sourceHi: number,
+          offsetLo: number,
+          offsetHi: number,
+          bufPtr: KernelPointer,
+          bufLen: number,
+        ): number => {
+          try {
+            return this.#hostExchangeSourceRead(
+              u64FromWords(sourceLo, sourceHi),
+              u64FromWords(offsetLo, offsetHi),
+              this.#rustLentKernelDestination(
+                bufPtr,
+                bufLen,
+                "host_exchange_source_read destination",
+              ),
+            );
+          } catch {
+            return -14; // EFAULT
+          }
+        },
         host_discard_deferred: (uriPtr: KernelPointer, uriLen: number): void => {
           this.#rootfsDeferredInvalidator?.(this.#readComponentFromMemory(uriPtr, uriLen));
         },
@@ -1897,6 +1996,102 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
+        },
+        host_overlay_len: (): bigint => {
+          const storage = this.#persistentOverlayStorage;
+          if (storage === null) return -38n;
+          try { return BigInt(storage.len()); } catch (error) { return BigInt(negErrno(error)); }
+        },
+        host_overlay_read: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayStorage;
+          if (storage === null) return -38;
+          try {
+            const destination = this.#rustLentKernelDestination(ptr, len, "host_overlay_read destination");
+            return this.#readOverlayIntoDestination("overlay", storage, offset, destination);
+          } catch (error) {
+            this.#reportStorageReadFailure("overlay read", offset, len, error);
+            return negErrno(error);
+          }
+        },
+        host_overlay_write: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayStorage;
+          if (storage === null) return -38;
+          try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
+          catch (error) { return negErrno(error); }
+        },
+        host_overlay_flush: (): number => {
+          const storage = this.#persistentOverlayStorage;
+          if (storage === null) return -38;
+          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+        },
+        host_overlay_truncate: (length: bigint): number => {
+          const storage = this.#persistentOverlayStorage;
+          if (storage === null) return -38;
+          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
+        },
+        host_overlay_target_len: (): bigint => {
+          const storage = this.#persistentOverlayTargetStorage;
+          if (storage === null) return -38n;
+          try { return BigInt(storage.len()); } catch (error) { return BigInt(negErrno(error)); }
+        },
+        host_overlay_target_read: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayTargetStorage;
+          if (storage === null) return -38;
+          try {
+            const destination = this.#rustLentKernelDestination(ptr, len, "host_overlay_target_read destination");
+            return this.#readOverlayIntoDestination("overlay target", storage, offset, destination);
+          } catch (error) {
+            this.#reportStorageReadFailure("overlay target read", offset, len, error);
+            return negErrno(error);
+          }
+        },
+        host_overlay_target_write: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayTargetStorage;
+          if (storage === null) return -38;
+          try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
+          catch (error) { return negErrno(error); }
+        },
+        host_overlay_target_flush: (): number => {
+          const storage = this.#persistentOverlayTargetStorage;
+          if (storage === null) return -38;
+          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+        },
+        host_overlay_target_truncate: (length: bigint): number => {
+          const storage = this.#persistentOverlayTargetStorage;
+          if (storage === null) return -38;
+          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
+        },
+        host_overlay_compaction_len: (): bigint => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38n;
+          try { return BigInt(storage.len()); } catch (error) { return BigInt(negErrno(error)); }
+        },
+        host_overlay_compaction_read: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38;
+          try {
+            const destination = this.#rustLentKernelDestination(ptr, len, "host_overlay_compaction_read destination");
+            return this.#readOverlayIntoDestination("overlay compaction", storage, offset, destination);
+          } catch (error) {
+            this.#reportStorageReadFailure("overlay compaction read", offset, len, error);
+            return negErrno(error);
+          }
+        },
+        host_overlay_compaction_write: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38;
+          try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
+          catch (error) { return negErrno(error); }
+        },
+        host_overlay_compaction_flush: (): number => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38;
+          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+        },
+        host_overlay_compaction_truncate: (length: bigint): number => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38;
+          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
         },
         host_pwrite: (
           handle: bigint,
@@ -2188,26 +2383,6 @@ export class WasmPosixKernel {
             dir, namePtr, nameLen, atimeSec, atimeNsec, mtimeSec, mtimeNsec, flags,
           );
         },
-        host_waitpid: (pid: number, options: number, statusPtr: KernelPointer): number => {
-          const hasStatus = typeof statusPtr === "bigint"
-            ? statusPtr !== 0n
-            : statusPtr !== 0;
-          try {
-            return this.#hostWaitpid(
-              pid,
-              options,
-              hasStatus
-                ? this.#rustLentKernelDestination(
-                    statusPtr,
-                    4,
-                    "host_waitpid status destination",
-                  )
-                : null,
-            );
-          } catch {
-            return -14; // EFAULT
-          }
-        },
         host_net_connect: (handle: number, addrPtr: KernelPointer, addrLen: number, port: number): number => {
           return this.#hostNetConnect(handle, addrPtr, addrLen, port);
         },
@@ -2229,6 +2404,10 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
+        },
+        host_net_readiness_generation: (handle: number, direction: number): bigint => {
+          try { return this.io.network?.readinessGeneration?.(handle, direction) ?? -1n; }
+          catch { return -1n; }
         },
         host_net_readiness: (handle: number): number => {
           return this.#hostNetReadiness(handle);
@@ -2296,9 +2475,6 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
-        },
-        host_futex_wake: (addr: KernelPointer, count: number): number => {
-          return this.#hostFutexWake(addr, count);
         },
         host_is_thread_worker: (): number => {
           return this.isThreadWorker ? 1 : 0;
@@ -2879,6 +3055,23 @@ export class WasmPosixKernel {
             return -14;
           }
         },
+        // Kernel-published wait result (crates/kernel `publish_transfer_directly`):
+        // the same writes and wake as the worker's own publication.
+        host_publish_wait_completion: (pid: number, channel: bigint, ret: bigint, errno: number): number => {
+          const procMem = this.callbacks.getProcessMemory?.(pid);
+          if (!procMem) return -3; // ESRCH: the kernel queues it for the worker instead
+          try {
+            const base = checkedWasmImportMemoryRange(procMem, channel, CH_ERRNO + 4, 8, "host_publish_wait_completion channel", true).pointer;
+            const buffer = wasmMemoryBuffer(procMem), view = new IntrinsicDataView(buffer);
+            intrinsicApply(intrinsicDataViewSetBigInt64, view, [base + CH_RETURN, ret, true]);
+            intrinsicApply(intrinsicDataViewSetUint32, view, [base + CH_ERRNO, errno, true]);
+            const status = new IntrinsicInt32Array(buffer, base + CH_STATUS, 1);
+            intrinsicApply(intrinsicAtomicsStore, Atomics, [status, 0, CHANNEL_STATUS_COMPLETE]);
+            return intrinsicApply(intrinsicAtomicsNotify, Atomics, [status, 0, 1]) >= 0 ? 0 : -14;
+          } catch {
+            return -14;
+          }
+        },
         // `addr` arrives as a BigInt and is checked at width 8 for the same
         // reason as `host_proc_write_bytes` above.
         host_proc_read_bytes: (
@@ -3139,6 +3332,9 @@ export class WasmPosixKernel {
   #hostClose(handle: bigint): number {
     const h = intrinsicNumber(handle);
 
+    // The kernel released the last description of a program image.
+    if (this.#programImages.delete(h)) return 0;
+
     // Check shared pipe registry
     const entry = this.sharedPipes.get(h);
     if (entry) {
@@ -3220,6 +3416,41 @@ export class WasmPosixKernel {
    * does not interpret it, and relaying it is not a decision that it may be
    * fetched — that decision belongs to the provider that goes and fetches.
    */
+  #hostExchangeSourceRead(
+    source: bigint,
+    offset: bigint,
+    destination: RustLentKernelDestination,
+  ): number {
+    const provider = this.#exchangeSourceProvider;
+    if (provider === undefined) {
+      return -5; // EIO: no exchange source was ever offered here.
+    }
+    const capacity = destination.capacity;
+    let staged: Uint8Array;
+    try {
+      staged = new IntrinsicUint8Array(capacity);
+    } catch {
+      return -12; // ENOMEM
+    }
+    let result: number;
+    try {
+      result = provider(source, offset, staged);
+    } catch {
+      return -5; // EIO: the provider violated its byte-source contract.
+    }
+    if (!Number.isSafeInteger(result) || result > capacity) {
+      return -5; // EIO
+    }
+    if (result > 0) {
+      try {
+        this.#writeKernelBytes(destination, subarrayUint8Array(staged, 0, result));
+      } catch {
+        return -14; // EFAULT
+      }
+    }
+    return result;
+  }
+
   #hostFetchDeferred(
     uri: string,
     offset: bigint,
@@ -3276,21 +3507,65 @@ export class WasmPosixKernel {
     offset: bigint,
     destination: RustLentKernelDestination,
   ): number {
+    if (this.#rootfsImageProvider === undefined) return -38;
+    return this.#withStorageReadStaging("image", offset, destination.capacity,
+      staged => this.#hostImageReadWithStaging(offset, destination, staged));
+  }
+
+  #withStorageReadStaging(stage: string, offset: bigint, capacity: number, read: (bytes: Uint8Array) => number): number {
+    if (this.#storageReadStagingInUse) return -5;
+    this.#storageReadStagingInUse = true;
+    try {
+      let bytes: Uint8Array;
+      try {
+        if (capacity <= 64 * 1024) {
+          let scratch = this.#storageReadStaging;
+          if (scratch === null || intrinsicApply(intrinsicTypedArrayByteLength, scratch, []) !== 64 * 1024) {
+            scratch = new IntrinsicUint8Array(64 * 1024);
+            this.#storageReadStaging = scratch;
+          }
+          intrinsicApply(intrinsicUint8ArrayFill, scratch, [0]);
+          const backing = intrinsicApply(intrinsicTypedArrayBuffer, scratch, []) as ArrayBufferLike;
+          bytes = new IntrinsicUint8Array(backing, 0, capacity);
+        } else {
+          bytes = new IntrinsicUint8Array(capacity);
+        }
+      } catch (error) {
+        this.#reportStorageReadFailure(`${stage} staging allocation`, offset, capacity, error);
+        return -12;
+      }
+      return read(bytes);
+    } finally {
+      this.#storageReadStagingInUse = false;
+    }
+  }
+
+  #readOverlayIntoDestination(stage: string, storage: PersistentOverlayStorage, offset: bigint, destination: RustLentKernelDestination): number {
+    return this.#withStorageReadStaging(stage, offset, destination.capacity, bytes => {
+      storage.readExactAt(offset, bytes);
+      if (intrinsicApply(intrinsicTypedArrayByteLength, bytes, []) !== destination.capacity) {
+        throw new KernelScratchError("persistent storage detached its read destination", 5);
+      }
+      this.#writeKernelBytes(destination, bytes);
+      return 0;
+    });
+  }
+
+  #hostImageReadWithStaging(
+    offset: bigint,
+    destination: RustLentKernelDestination,
+    staged: Uint8Array,
+  ): number {
     const provider = this.#rootfsImageProvider;
     if (provider === undefined) {
       return -38; // ENOSYS
     }
     const destinationCapacity = destination.capacity;
-    let staged: Uint8Array;
-    try {
-      staged = new IntrinsicUint8Array(destinationCapacity);
-    } catch {
-      return -12; // ENOMEM
-    }
     let result: number;
     try {
       result = provider(offset, staged);
-    } catch {
+    } catch (error) {
+      this.#reportStorageReadFailure("image provider", offset, destinationCapacity, error);
       return -5; // EIO: the provider violated its byte-source contract.
     }
     if (!Number.isSafeInteger(result) || result > destinationCapacity) {
@@ -3303,13 +3578,21 @@ export class WasmPosixKernel {
       try {
         this.#writeKernelBytes(
           destination,
-          subarrayUint8Array(staged, 0, result),
+          new IntrinsicUint8Array(intrinsicApply(intrinsicTypedArrayBuffer, staged, []) as ArrayBufferLike, 0, result),
         );
       } catch {
         return -14; // EFAULT
       }
     }
     return result;
+  }
+
+  #reportStorageReadFailure(stage: string, offset: bigint, capacity: number, error: unknown): void {
+    if (this.#reportedStorageReadFailure) return;
+    this.#reportedStorageReadFailure = true;
+    try {
+      console.warn(`[Kernel storage read] ${stage} failed at byte ${offset} for ${capacity} bytes: ${String(error).slice(0, 2000)}`);
+    } catch {}
   }
 
   /**
@@ -3358,6 +3641,17 @@ export class WasmPosixKernel {
       }
       return result;
     };
+
+    const image = this.#programImages.get(h);
+    if (image !== undefined) {
+      // The kernel owns a regular file's cursor and reads it positioned.
+      if (offset === null) return -29; // ESPIPE
+      const at = intrinsicNumber(offset);
+      if (!intrinsicNumberIsSafeInteger(at) || at < 0) return -22; // EINVAL
+      const n = Math.max(0, Math.min(destinationCapacity, image.byteLength - at));
+      if (n > 0) staged.set(image.subarray(at, at + n));
+      return publish(n);
+    }
 
     if (offset === null) {
       // Check shared pipe registry
@@ -3635,6 +3929,17 @@ export class WasmPosixKernel {
     destination: RustLentKernelDestination,
   ): number {
     const h = Number(handle);
+
+    const image = this.#programImages.get(h);
+    if (image !== undefined) {
+      // A read-only regular file with no name anywhere (`nlink` 0) and no
+      // identity to share a page cache on (`ino` 0: see `StatResult.ino`).
+      this.#writeStatToMemory(destination, {
+        dev: 0, ino: 0, mode: 0o100555, nlink: 0, uid: 0, gid: 0,
+        size: image.byteLength, atimeMs: 0, mtimeMs: 0, ctimeMs: 0,
+      });
+      return 0;
+    }
 
     try {
       const stat = this.io.fstat(h);
@@ -3962,6 +4267,15 @@ export class WasmPosixKernel {
     handle: bigint,
     destination: RustLentKernelDestination,
   ): number {
+    const image = this.#programImages.get(Number(handle));
+    if (image !== undefined) {
+      this.#writeStatfsToMemory(destination, {
+        type: 0x4b505247, bsize: 4096, blocks: Math.ceil(image.byteLength / 4096),
+        bfree: 0, bavail: 0, files: 1, ffree: 0, fsid: 0,
+        namelen: 0, frsize: 4096, flags: 1 | STATFS_FLAGS.ST_NOSUID,
+      });
+      return 0;
+    }
     if (!this.io.fstatfs) return -38; // ENOSYS
     try {
       const statfs = this.io.fstatfs(Number(handle));
@@ -3991,95 +4305,6 @@ export class WasmPosixKernel {
     } catch (e) {
       return negErrno(e);
     }
-  }
-
-  /**
-   * host_waitpid(pid, options, status_ptr) -> i32
-   * Returns child pid on success, negative errno on error.
-   * Writes wait status to status_ptr.
-   */
-  #hostWaitpid(
-    pid: number,
-    options: number,
-    statusDestination: RustLentKernelDestination | null,
-  ): number {
-    // The import boundary mints this token before either wait backend can
-    // consume child state. Publication rechecks the current Memory generation.
-    // If we have a waitpid callback + SAB, use blocking host delegation
-    if (this.waitpidSab && this.callbacks.onWaitpid) {
-      const view = new IntrinsicInt32Array(this.waitpidSab);
-      intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 0, 0]);
-      intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 1, 0]);
-      intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 2, 0]);
-
-      this.callbacks.onWaitpid(pid, options);
-
-      // Block until host signals completion
-      intrinsicApply(intrinsicAtomicsWait, Atomics, [view, 0, 0]);
-
-      const resultPid = intrinsicApply(
-        intrinsicAtomicsLoad,
-        Atomics,
-        [view, 1],
-      ) as number;
-      const resultStatus = intrinsicApply(
-        intrinsicAtomicsLoad,
-        Atomics,
-        [view, 2],
-      ) as number;
-
-      if (resultPid < 0) {
-        return resultPid; // negative errno
-      }
-
-      if (statusDestination !== null) {
-        const bytes = new IntrinsicUint8Array(4);
-        dataViewSetInt32(
-          new IntrinsicDataView(typedArrayBuffer(bytes)),
-          0,
-          resultStatus,
-          true,
-        );
-        try {
-          this.#writeKernelBytes(
-            statusDestination,
-            bytes,
-          );
-        } catch {
-          return -14; // EFAULT
-        }
-      }
-      return resultPid;
-    }
-
-    // Fallback to PlatformIO
-    if (!this.io.waitpid) {
-      return -10; // -ECHILD
-    }
-    let result: { pid: number; status: number };
-    try {
-      result = this.io.waitpid(pid, options);
-    } catch {
-      return -10; // -ECHILD
-    }
-    if (statusDestination !== null) {
-      const bytes = new IntrinsicUint8Array(4);
-      dataViewSetInt32(
-        new IntrinsicDataView(typedArrayBuffer(bytes)),
-        0,
-        result.status,
-        true,
-      );
-      try {
-        this.#writeKernelBytes(
-          statusDestination,
-          bytes,
-        );
-      } catch {
-        return -14; // EFAULT
-      }
-    }
-    return result.pid;
   }
 
   /**
@@ -5187,34 +5412,6 @@ export class WasmPosixKernel {
     } catch (e: any) {
       if (e?.errno === 11) return -11; // -EAGAIN — kernel-worker retries
       return negErrno(e);
-    }
-  }
-
-  #hostFutexWake(addr: KernelPointer, count: number): number {
-    if (!this.#memory) return 0;
-    let index: number;
-    try {
-      const range = checkedWasmImportMemoryRange(
-        this.#memory,
-        addr,
-        4,
-        this.#kernelPtrWidth,
-        "host_futex_wake word",
-      );
-      if (range.pointer % 4 !== 0) return -22; // EINVAL
-      index = range.pointer / 4;
-    } catch {
-      return -14; // EFAULT
-    }
-    const i32view = new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory));
-    try {
-      return intrinsicApply(
-        intrinsicAtomicsNotify,
-        Atomics,
-        [i32view, index, count],
-      ) as number;
-    } catch {
-      return -22; // EINVAL
     }
   }
 

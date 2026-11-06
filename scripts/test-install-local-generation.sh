@@ -55,7 +55,7 @@ metadata_source="$work/metadata-source.wasm"
 metadata_runtime="$work/metadata-runtime.dat"
 mkdir -p "$metadata_tools" "$metadata_repo/scripts" "$metadata_repo/libc/glue"
 cp "$REPO_ROOT/scripts/install-local-binary.sh" "$metadata_repo/scripts/"
-cp "$REPO_ROOT/scripts/wasm-artifact-guards.sh" "$metadata_repo/scripts/"
+package_test_copy_artifact_guards "$REPO_ROOT" "$metadata_repo"
 cp "$REPO_ROOT/libc/glue/kandelo-host-imports.txt" "$metadata_repo/libc/glue/"
 printf '\000asm\001\000\000\000' >"$metadata_source"
 printf 'metadata runtime\n' >"$metadata_runtime"
@@ -213,7 +213,7 @@ legacy_source="$work/legacy-source.wasm"
 mkdir -p "$fake_repo/scripts" \
     "$fake_repo/local-binaries/programs/wasm32" "$fake_bin"
 cp "$REPO_ROOT/scripts/install-local-binary.sh" "$fake_repo/scripts/"
-cp "$REPO_ROOT/scripts/wasm-artifact-guards.sh" "$fake_repo/scripts/"
+package_test_copy_artifact_guards "$REPO_ROOT" "$fake_repo"
 cp "$fetched/bin/python.wasm" "$legacy_canonical"
 cp "$source_dir/python.wasm" "$legacy_source"
 ln -s "$legacy_canonical" \
@@ -419,7 +419,8 @@ done
 for required in \
     gencat.wasm \
     pthread_channel_reuse_test.wasm \
-    wait_lifecycle_test.wasm; do
+    wait_lifecycle_test.wasm \
+    orphan_reparent_test.wasm; do
     : >"$composed_repo/examples/$required"
 done
 memory64_sources="$(

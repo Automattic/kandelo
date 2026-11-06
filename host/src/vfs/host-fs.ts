@@ -30,7 +30,7 @@ import {
   NativePositionedWriteHandles,
   openNativeBackingFile,
 } from "../native-positioned-write";
-import { NativeMetadataOverlay } from "../platform/native-metadata";
+import { NativeMetadataOverlay, nativeEntryInode } from "../platform/native-metadata";
 import { backendPathconf } from "../pathconf";
 import {
   DIRENT_TYPES,
@@ -742,7 +742,7 @@ export class HostFileSystem implements FileSystemBackend {
       dtype = DIRENT_TYPES.DT_CHR;
     else if (entry.isBlockDevice()) dtype = DIRENT_TYPES.DT_BLK;
 
-    return { name: entry.name, type: dtype, ino: 0 };
+    return { name: entry.name, type: dtype, ino: nativeEntryInode(dir.path, entry.name) };
   }
 
   closedir(handle: number): void {

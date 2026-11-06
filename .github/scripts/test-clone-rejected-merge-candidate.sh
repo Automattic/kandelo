@@ -56,7 +56,7 @@ git -C "$SOURCE" push --quiet "$REMOTE" "$HEAD_SHA:refs/pull/1/head"
 BUNDLE="$TMP_ROOT/synthesized-merge.bundle"
 git -C "$SOURCE" bundle create "$BUNDLE" refs/heads/synthesized-merge
 git clone --quiet --branch main "$REMOTE" "$CHECKOUT"
-mkdir -p "$CHECKOUT/.github/scripts" "$CHECKOUT/crates/shared/src" \
+mkdir -p "$CHECKOUT/.github/scripts" "$CHECKOUT/crates/program-abi/src" \
   "$CHECKOUT/packages/registry"
 cp "$SCRIPT_DIR/clone-rejected-merge-candidate.sh" \
   "$SCRIPT_DIR/verify-merge-candidate.sh" \
@@ -83,7 +83,7 @@ printf 'draft\n'
 EOF
 chmod +x "$CHECKOUT/.github/scripts/package-release-lifecycle.sh"
 printf 'pub const ABI_VERSION: u32 = 39;\n' \
-  > "$CHECKOUT/crates/shared/src/lib.rs"
+  > "$CHECKOUT/crates/program-abi/src/lib.rs"
 CLONE="$CHECKOUT/.github/scripts/clone-rejected-merge-candidate.sh"
 
 SOURCE_TAG=merge-candidate-abi-v39-pr-1-run-2-attempt-1

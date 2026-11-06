@@ -1,8 +1,9 @@
-# Claude — local state stays private; shared agent skills and opt-in hooks
-# are checked in.
+# Claude — local state stays private; shared agent skills, opt-in hooks and
+# the shared project settings (which turn off AI attribution) are checked in.
 .claude/*
 !.claude/skills/
 !.claude/hooks/
+!.claude/settings.json
 
 # Build artifacts
 /target
@@ -54,7 +55,7 @@ node_modules/
 # Wasm binaries are build artifacts. The kernel wasm lives under
 # binaries/ (fetched) or local-binaries/ (locally built); test
 # fixtures under host/test/fixtures/ are produced by the vitest
-# global-setup from .wat sources. Nothing tracked under git.
+# global-setup from .wat sources.
 *.wasm
 
 # VFS images are build artifacts produced by
@@ -176,5 +177,5 @@ programs/rust/*/target/
 programs/rust/*/Cargo.lock
 programs/rust/*/*/Cargo.lock
 
-# The SDK's compiler plugin, built on first use (sdk/src/lib/calltypes-plugin.ts).
+# The SDK's compiler plugin, built on first use (crates/kandelo-cc/src/plugin.rs).
 /sdk/.build/

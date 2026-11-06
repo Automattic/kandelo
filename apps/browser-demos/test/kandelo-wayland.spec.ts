@@ -1,17 +1,7 @@
+import { setInternalsOpen } from "./support/dock";
 import { expect, test, type Page } from "@playwright/test";
+import { gotoApp } from "./support/kandelo-machine";
 
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
 
 /**
  * Show the Internals syslog, the demo canvas, or the machine's terminal.
@@ -20,11 +10,8 @@ async function gotoOrSkip(page: Page, path: string) {
  * demo or the terminal means closing it — its popover would otherwise sit
  * over the pane and intercept pointer events — and selecting that view.
  */
-async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
-  const internals = page.getByRole("button", { name: "Internals", exact: true });
-  await internals.waitFor({ state: "visible", timeout: 30_000 });
-  const open = (await internals.getAttribute("aria-pressed")) === "true";
-  if (open !== (label === "Internals")) await internals.click();
+async function openSurface(page: Page, label: "Internals" | "Graphics" | "Terminal") {
+  await setInternalsOpen(page, label === "Internals");
   if (label !== "Internals") {
     const view = page
       .getByLabel("Computer views")
@@ -53,8 +40,13 @@ async function terminalText(page: Page): Promise<string> {
 
 /** Show the terminal and wait until `pattern` appears in it. */
 async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
-  await openSurface(page, "Terminal");
-  await expect.poll(() => terminalText(page), { timeout }).toMatch(pattern);
+  // Select the terminal on every read: when a program starts presenting, the
+  // app hands the view to its display (#1551), and a hidden xterm keeps its
+  // old rows in the DOM.
+  await expect.poll(async () => {
+    await openSurface(page, "Terminal");
+    return terminalText(page);
+  }, { timeout }).toMatch(pattern);
 }
 
 // A command the host could not run, or wldesktop reporting that a program
@@ -237,7 +229,7 @@ async function readDesktopDims(page: Page): Promise<void> {
  *      windows dominate the size delta), while legit clock-animation
  *      variance stays within ~3% — so the 90% cut cleanly separates them.
  *
- * Skips (via gotoOrSkip) when the binaries aren't built — Vite fails the
+ * Fails (via gotoApp) when the binaries aren't published — Vite fails the
  * `?url` import and shows an error overlay.
  *
  * The machine is selected with `?profile=wayland` against the default shell
@@ -253,7 +245,7 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   // The Wayland desktop is not listed in the gallery (Omarchy is the
   // desktop shown there), but the shell image still declares it, so it
   // boots by profile.
-  await gotoOrSkip(page, "/?profile=wayland");
+  await gotoApp(page, "/?profile=wayland");
 
   // The desktop boot is heavy (four wasm programs + a forkpty'd shell).
   // The image declares one command, /usr/local/bin/wldesktop, which brings
@@ -297,7 +289,7 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
     .not.toBe(0);
 
   // The KMS/Modeset pane bridges card0 to an OffscreenCanvas.
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   const canvas = canvasLocator(page);
   await expect(canvas).toBeVisible({ timeout: 30_000 });
 
@@ -419,7 +411,7 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   // narrow grid, and wlterm (fitted to half the width, from x=90) and the
   // just-dragged wlclock both sit above wlpaint in the z-order. Only past
   // their right edges does a press reach wlpaint at all.
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   const paintX = DESKTOP_W - 840;
   const paintBottom = DESKTOP_H - 16;
   const pFrom = await desktopPoint(page, paintX + 400, paintBottom - 240);
@@ -450,7 +442,7 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   // PNG size. A frame the pump blitted mid-composite (the PAGE_FLIP
   // scanout-latch regression) is missing windows and compresses ~30%
   // smaller; legit clock-animation variance stays within ~3%.
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   const flickerSizes: number[] = [];
   for (let i = 0; i < 120; i++) {
     flickerSizes.push((await canvas.screenshot()).byteLength);

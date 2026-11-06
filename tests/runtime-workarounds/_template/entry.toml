@@ -1,0 +1,66 @@
+# Copy this directory to tests/runtime-workarounds/<ID>/ and fill it in.
+# See ../README.md. Unknown fields are errors.
+
+# Upper case, hyphenated, prefixed by the runtime or tool; equals the
+# directory name.
+id = "ENGINE-SHORT-DESCRIPTION"
+# "bug" (violates a specification or documented behavior) or "gap" (a
+# specified or announced feature not shipped yet).
+kind = "bug"
+# suspected | confirmed | reported | fixed-upstream | retired.
+# Start at "suspected" unless a standalone repro judges itself.
+status = "suspected"
+# Affected engines, runtimes or tools, for example ["webkit", "bun"]. Names:
+# a repro target (chromium, firefox, webkit, node, bun, clang, wasm-ld,
+# wasm-opt, rustc) or a released browser recorded by hand (safari,
+# ios-safari, chrome, firefox-stable). Toolchain entries use the tool's name
+# (clang, wasm-opt), not the project's (llvm, binaryen).
+runtimes = ["webkit"]
+# One line.
+summary = "What the runtime does wrong, in one line"
+# "human-only" (default) or "agents-allowed"; the latter needs
+# reports_channel naming the upstream's sanctioned channel.
+reports = "human-only"
+
+# One [[repro]] table per reproduction (a script cannot run in a browser,
+# a page cannot run in Bun or Node); no two may share a target. Absent, or
+# self_judging = false (an evidence page the suite never runs), while
+# suspected.
+[[repro]]
+# "browser-page" (sets window.__reproVerdict) or "script" (prints a
+# REPRO-VERDICT line).
+kind = "browser-page"
+# A file under repro/.
+entry = "repro.html"
+# chromium, firefox, webkit, node, bun, clang, wasm-ld, wasm-opt, rustc.
+targets = ["webkit"]
+self_judging = false
+# Optional: attempts = 1, min_reproduced = 1, timeout_seconds = 120,
+# crash_is_reproduced = false.
+
+# One record per affected runtime (listed in `runtimes`), version and OS.
+# Controls that never had the defect go in entry.md, not here.
+# source = "suite" when the driver produced it; released = false for
+# Playwright builds. runtime uses the same names as `runtimes`; native Safari
+# is "safari" (released = true), never "webkit". os is macos, linux or
+# windows.
+# [[observed]]
+# runtime = "webkit"
+# version = "26.6"
+# os = "macos"
+# reproduced = true
+# date = 2026-10-22
+# source = "suite"
+# released = false
+
+# Filled in after a person files the report.
+# [[upstream]]
+# project = "WebKit"
+# url = "https://bugs.webkit.org/show_bug.cgi?id=..."
+# filed = 2026-10-22
+# filed_by = "name"
+
+# Sites that cannot carry a tag comment.
+# [[sites_without_tags]]
+# path = "path/to/tracked/file.json"
+# note = "What this site does for the workaround."

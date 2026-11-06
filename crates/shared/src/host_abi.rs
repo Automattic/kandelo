@@ -361,10 +361,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE), required)]
     ),
     entry!(
-        Syscall::Nanosleep as u32,
-        [desc!(0, In, fixed!(WASM_TIMESPEC_SIZE), required)]
-    ),
-    entry!(
         Syscall::GetEnv as u32,
         [
             desc!(
@@ -627,10 +623,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE), nullable)]
     ),
     entry!(
-        Syscall::ClockNanosleep as u32,
-        [desc!(2, In, fixed!(WASM_TIMESPEC_SIZE), required)]
-    ),
-    entry!(
         Syscall::Utimensat as u32,
         [
             desc!(1, In, cstring!(), nullable),
@@ -709,13 +701,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, InOut, kernel_dereferenced!(), nullable)]
     ),
     entry!(
-        Syscall::Wait4 as u32,
-        [
-            desc!(1, Out, fixed!(4), nullable),
-            desc!(3, Out, fixed!(WASM_RUSAGE_WIRE_SIZE), nullable),
-        ]
-    ),
-    entry!(
         Syscall::Getaddrinfo as u32,
         [
             desc!(
@@ -750,27 +735,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
             fixed!(kernel_scratch_wire::SIGNAL_MASK_BYTES),
             required
         )]
-    ),
-    entry!(
-        extra_syscalls::SYS_RT_SIGTIMEDWAIT,
-        [
-            desc!(
-                0,
-                In,
-                fixed!(kernel_scratch_wire::SIGNAL_MASK_BYTES),
-                required
-            ),
-            desc!(
-                1,
-                Out,
-                process_layout!(
-                    process_layout::rt_sigqueueinfo::WASM32_SIZE,
-                    process_layout::rt_sigqueueinfo::WASM64_SIZE
-                ),
-                nullable
-            ),
-            desc!(2, In, fixed!(WASM_TIMESPEC_SIZE), nullable),
-        ]
     ),
     entry!(
         extra_syscalls::SYS_SIGALTSTACK,
@@ -944,21 +908,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(
         extra_syscalls::SYS_MKNODAT,
         [desc!(1, In, cstring!(), required)]
-    ),
-    entry!(
-        extra_syscalls::SYS_WAITID,
-        [
-            desc!(
-                2,
-                Out,
-                process_layout!(
-                    process_layout::rt_sigqueueinfo::WASM32_SIZE,
-                    process_layout::rt_sigqueueinfo::WASM64_SIZE
-                ),
-                required
-            ),
-            desc!(4, Out, fixed!(WASM_RUSAGE_WIRE_SIZE), nullable),
-        ]
     ),
     entry!(
         extra_syscalls::SYS_COPY_FILE_RANGE,
@@ -1167,6 +1116,95 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         extra_syscalls::SYS_SHMCTL,
         [desc!(2, InOut, kernel_dereferenced!(), nullable)]
     ),
+    // Extended attributes. Names are bounded like Linux XATTR_NAME_MAX, with
+    // ERANGE for an over-long name. Value and list buffers may be null when
+    // their size is 0, which asks for the size alone.
+    entry!(
+        extra_syscalls::SYS_FGETXATTR,
+        [
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+            desc!(2, Out, arg!(3), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_FLISTXATTR,
+        [
+            desc!(1, Out, arg!(2), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_FREMOVEXATTR,
+        [
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_FSETXATTR,
+        [
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+            desc!(2, In, arg!(3), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_GETXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+            desc!(2, Out, arg!(3), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_LISTXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, Out, arg!(2), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_LGETXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+            desc!(2, Out, arg!(3), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_LLISTXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, Out, arg!(2), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_LREMOVEXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_LSETXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+            desc!(2, In, arg!(3), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_REMOVEXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_SETXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+            desc!(2, In, arg!(3), nullable),
+        ]
+    ),
     entry!(
         extra_syscalls::SYS_SIGNALFD,
         [desc!(
@@ -1289,6 +1327,74 @@ mod tests {
     }
 
     #[test]
+    fn xattr_syscalls_marshal_paths_names_values_and_lists() {
+        use extra_syscalls::*;
+        let name = cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE);
+        for nr in [
+            SYS_GETXATTR,
+            SYS_LGETXATTR,
+            SYS_SETXATTR,
+            SYS_LSETXATTR,
+            SYS_REMOVEXATTR,
+            SYS_LREMOVEXATTR,
+            SYS_LISTXATTR,
+            SYS_LLISTXATTR,
+        ] {
+            let path = find(nr).args[0];
+            assert_eq!((path.arg_index, path.size), (0, cstring!()), "path of {nr}");
+            assert!(path.required);
+        }
+        for (nr, index) in [
+            (SYS_GETXATTR, 1),
+            (SYS_LGETXATTR, 1),
+            (SYS_FGETXATTR, 1),
+            (SYS_SETXATTR, 1),
+            (SYS_LSETXATTR, 1),
+            (SYS_FSETXATTR, 1),
+            (SYS_REMOVEXATTR, 1),
+            (SYS_LREMOVEXATTR, 1),
+            (SYS_FREMOVEXATTR, 1),
+        ] {
+            let arg = find(nr)
+                .args
+                .iter()
+                .find(|arg| arg.arg_index == index)
+                .expect("xattr name descriptor");
+            assert_eq!(arg.size, name, "name of {nr}");
+            assert!(arg.required);
+        }
+        for (nr, direction) in [
+            (SYS_GETXATTR, SyscallArgDirection::Out),
+            (SYS_LGETXATTR, SyscallArgDirection::Out),
+            (SYS_FGETXATTR, SyscallArgDirection::Out),
+            (SYS_SETXATTR, SyscallArgDirection::In),
+            (SYS_LSETXATTR, SyscallArgDirection::In),
+            (SYS_FSETXATTR, SyscallArgDirection::In),
+        ] {
+            let value = find(nr)
+                .args
+                .iter()
+                .find(|arg| arg.arg_index == 2)
+                .expect("xattr value descriptor");
+            assert_eq!((value.direction, value.size), (direction, arg!(3)), "value of {nr}");
+            assert!(value.nullable);
+        }
+        for (nr, index) in [(SYS_LISTXATTR, 1), (SYS_LLISTXATTR, 1), (SYS_FLISTXATTR, 1)] {
+            let list = find(nr)
+                .args
+                .iter()
+                .find(|arg| arg.arg_index == index)
+                .expect("xattr list descriptor");
+            assert_eq!(
+                (list.direction, list.size),
+                (SyscallArgDirection::Out, arg!(index + 1)),
+                "list of {nr}"
+            );
+            assert!(list.nullable);
+        }
+    }
+
+    #[test]
     fn pointer_nullability_is_explicit_and_exhaustive() {
         let mut actual_nullable = Vec::new();
         for entry in SYSCALL_ARG_DESCRIPTORS {
@@ -1357,17 +1463,12 @@ mod tests {
             (Syscall::ClockGetres as u32, 1),
             (Syscall::Utimensat as u32, 1),
             (Syscall::Utimensat as u32, 2),
-            (Syscall::Wait4 as u32, 1),
-            (Syscall::Wait4 as u32, 3),
-            (extra_syscalls::SYS_RT_SIGTIMEDWAIT, 1),
-            (extra_syscalls::SYS_RT_SIGTIMEDWAIT, 2),
             (extra_syscalls::SYS_SIGALTSTACK, 0),
             (extra_syscalls::SYS_SIGALTSTACK, 1),
             (extra_syscalls::SYS_SETITIMER, 2),
             (extra_syscalls::SYS_TIMERFD_SETTIME, 3),
             (extra_syscalls::SYS_PRLIMIT64, 2),
             (extra_syscalls::SYS_PRLIMIT64, 3),
-            (extra_syscalls::SYS_WAITID, 4),
             (extra_syscalls::SYS_COPY_FILE_RANGE, 1),
             (extra_syscalls::SYS_COPY_FILE_RANGE, 3),
             (extra_syscalls::SYS_SPLICE, 1),
@@ -1403,6 +1504,16 @@ mod tests {
             (extra_syscalls::SYS_MSGCTL, 2),
             (extra_syscalls::SYS_SEMCTL, 3),
             (extra_syscalls::SYS_SHMCTL, 2),
+            // An xattr value or list buffer is legally null with size 0.
+            (extra_syscalls::SYS_FGETXATTR, 2),
+            (extra_syscalls::SYS_FLISTXATTR, 1),
+            (extra_syscalls::SYS_FSETXATTR, 2),
+            (extra_syscalls::SYS_GETXATTR, 2),
+            (extra_syscalls::SYS_LISTXATTR, 1),
+            (extra_syscalls::SYS_LGETXATTR, 2),
+            (extra_syscalls::SYS_LLISTXATTR, 1),
+            (extra_syscalls::SYS_LSETXATTR, 2),
+            (extra_syscalls::SYS_SETXATTR, 2),
             (Syscall::Sendmsg as u32, 1),
             (Syscall::Recvmsg as u32, 1),
             (Syscall::Writev as u32, 1),
@@ -1483,45 +1594,6 @@ mod tests {
             }
         );
         assert!(getrusage.required);
-
-        let wait4 = find(Syscall::Wait4 as u32).args;
-        assert_eq!(
-            wait4[1].size,
-            SyscallArgSize::Fixed {
-                size: WASM_RUSAGE_WIRE_SIZE,
-            }
-        );
-
-        let sigtimedwait = find(extra_syscalls::SYS_RT_SIGTIMEDWAIT).args;
-        assert_eq!(
-            sigtimedwait[1].size,
-            SyscallArgSize::ProcessLayout {
-                wasm32_size: process_layout::rt_sigqueueinfo::WASM32_SIZE,
-                wasm64_size: process_layout::rt_sigqueueinfo::WASM64_SIZE,
-            }
-        );
-        assert!(sigtimedwait[1].nullable);
-
-        let waitid = find(extra_syscalls::SYS_WAITID).args;
-        assert_eq!(waitid[0].arg_index, 2);
-        assert_eq!(waitid[0].direction, SyscallArgDirection::Out);
-        assert_eq!(
-            waitid[0].size,
-            SyscallArgSize::ProcessLayout {
-                wasm32_size: process_layout::rt_sigqueueinfo::WASM32_SIZE,
-                wasm64_size: process_layout::rt_sigqueueinfo::WASM64_SIZE,
-            }
-        );
-        assert!(waitid[0].required);
-        assert_eq!(waitid[1].arg_index, 4);
-        assert_eq!(waitid[1].direction, SyscallArgDirection::Out);
-        assert_eq!(
-            waitid[1].size,
-            SyscallArgSize::Fixed {
-                size: WASM_RUSAGE_WIRE_SIZE,
-            }
-        );
-        assert!(waitid[1].nullable);
 
         let getaddrinfo = find(Syscall::Getaddrinfo as u32).args;
         assert_eq!(getaddrinfo[1].arg_index, 1);

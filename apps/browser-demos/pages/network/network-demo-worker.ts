@@ -15,7 +15,7 @@ import type { WorkerHandle } from "@host/worker-adapter";
 import kernelWasmUrl from "@kernel-wasm?url";
 import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "@host/worker-entry-browser.ts?worker&url";
-import ncWasmUrl from "@binaries/programs/wasm32/nc.wasm?url";
+import ncWasmUrl from "@binaries/programs/wasm32/netcat/nc.wasm?url";
 import curlWasmUrl from "@binaries/programs/wasm32/curl.wasm?url";
 import {
   createPagesVfsProductLoader,
@@ -246,7 +246,7 @@ async function runProgram(
   const rootfsImage = maybeDecompressImage(artifacts.rootfs);
   configureRootfsOverlayFromImage(kernelWorker, {
     imageRead: imageReadFromContainer(rootfsImage),
-    imageBytes: rootfsImage,
+    imageLength: rootfsImage.byteLength,
     foreignPrefixes: [],
     nosuid: false,
     lazyFetcher: (url) => fetch(url),

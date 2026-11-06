@@ -19,6 +19,7 @@ LLVM_MAJOR="${WASM_POSIX_DEP_VERSION%%.*}"
 ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 LIBCXX_DIR="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
+ZLIB_DIR="${WASM_POSIX_DEP_ZLIB_DIR:-}"
 
 LLVM_SRC_DIR="$WORK_DIR/llvm-project-${LLVM_MAJOR}"
 HOST_BUILD_DIR="$WORK_DIR/build-host-tablegen-${LLVM_MAJOR}"
@@ -45,6 +46,11 @@ if [ -z "$LIBCXX_DIR" ] && [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
   LIBCXX_DIR="$(cd "$REPO_ROOT" && cargo run -q -p xtask --target "$HOST_TARGET" -- build-deps resolve libcxx --arch wasm32)"
 fi
 [ -f "$LIBCXX_DIR/lib/libc++.a" ] || { echo "ERROR: libcxx dependency missing" >&2; exit 1; }
+if [ -z "$ZLIB_DIR" ] && [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+  HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+  ZLIB_DIR="$(cd "$REPO_ROOT" && cargo run -q -p xtask --target "$HOST_TARGET" -- build-deps resolve zlib --arch wasm32)"
+fi
+[ -f "$ZLIB_DIR/lib/libz.a" ] || { echo "ERROR: zlib dependency missing" >&2; exit 1; }
 
 # Overlay the declared libcxx dependency into a private regular-file sysroot.
 # The shared SDK and sealed dependency trees remain inputs in both modes.
@@ -67,6 +73,28 @@ echo "==> Applying LLVM portability and wasm-only driver patches..."
 for p in "$SCRIPT_DIR"/patches/*.patch; do
   patch -p1 -d "$LLVM_SRC_DIR" < "$p"
 done
+
+# --- The KandeloCallTypes compiler plugin, compiled into clang ---
+# Every compile through the SDK records compiler facts for fork
+# instrumentation with this plugin (docs/sdk-guide.md, "Compiler facts for
+# fork instrumentation"). The build machine's clang loads it as a shared
+# library; this clang cannot load native libraries, so the same sources are
+# built into it with KANDELO_CALLTYPES_STATIC. Activating the plugin
+# (`-add-plugin kandelo-fncasts`, which the SDK driver passes) then also
+# schedules its LLVM passes, at the point -fpass-plugin would.
+PLUGIN_DIR="$LLVM_SRC_DIR/clang/tools/driver/kandelo-calltypes"
+mkdir -p "$PLUGIN_DIR"
+cp "$REPO_ROOT/sdk/src/plugin/KandeloCallTypes.cpp" "$REPO_ROOT/sdk/src/plugin/KandeloFnCasts.cpp" "$PLUGIN_DIR/"
+cat >> "$LLVM_SRC_DIR/clang/tools/driver/CMakeLists.txt" <<'PLUGIN_EOF'
+
+# Kandelo: the KandeloCallTypes compiler plugin, compiled into clang
+# (packages/registry/clang/build-clang.sh).
+target_sources(clang PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/kandelo-calltypes/KandeloCallTypes.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/kandelo-calltypes/KandeloFnCasts.cpp)
+target_compile_definitions(clang PRIVATE KANDELO_CALLTYPES_STATIC)
+target_link_libraries(clang PRIVATE LLVMPasses LLVMDemangle clangAST)
+PLUGIN_EOF
 
 # --- Host tablegen: prefer dev-shell LLVM, else build from source ---
 find_host_tool() {
@@ -134,7 +162,9 @@ cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/llvm" -B "$BUILD_DIR" \
   -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
   -DLLVM_ENABLE_ASSERTIONS=OFF -DLLVM_ENABLE_BACKTRACES=OFF -DLLVM_ENABLE_DIA_SDK=OFF \
   -DLLVM_ENABLE_EH=OFF -DLLVM_ENABLE_RTTI=OFF -DLLVM_ENABLE_THREADS=OFF \
-  -DLLVM_ENABLE_PIC=OFF -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF \
+  -DLLVM_ENABLE_PIC=OFF -DLLVM_ENABLE_ZSTD=OFF \
+  -DLLVM_ENABLE_ZLIB=FORCE_ON -DZLIB_INCLUDE_DIR="$ZLIB_DIR/include" \
+  -DZLIB_LIBRARY="$ZLIB_DIR/lib/libz.a" \
   -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_TERMINFO=OFF -DLLVM_ENABLE_LIBEDIT=OFF \
   -DLLVM_ENABLE_LIBCXX=ON -DLLVM_BUILD_LLVM_DYLIB=OFF -DLLVM_LINK_LLVM_DYLIB=OFF \
   -DBUILD_SHARED_LIBS=OFF -DCLANG_ENABLE_ARCMT=OFF \

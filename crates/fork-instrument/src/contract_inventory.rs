@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result, bail};
 use std::fmt::{self, Write};
-use wasm_posix_shared::abi::{
+use wasm_posix_program_abi::abi::{
     ABI_KERNEL_EXPORT, WPK_FORK_CAPABILITIES_SECTION, WPK_FORK_EXPORT_ABORT_BEGIN,
     WPK_FORK_EXPORT_ABORT_END, WPK_FORK_EXPORT_REWIND_BEGIN, WPK_FORK_EXPORT_REWIND_END,
     WPK_FORK_EXPORT_STATE, WPK_FORK_EXPORT_UNWIND_BEGIN, WPK_FORK_EXPORT_UNWIND_END,
@@ -419,6 +419,33 @@ pub fn reserved_env_imports(bytes: &[u8]) -> Result<Vec<ReservedEnvImport>> {
         }
     }
     Ok(reserved)
+}
+
+/// Export names beginning with `asyncify_`, in declaration order.
+///
+/// WHY exports and not bytes: the retired Asyncify transform is identified by
+/// what it exports (`asyncify_start_unwind` and its siblings,
+/// docs/fork-instrumentation.md). A byte search also matched programs that
+/// only contain the text, such as Binaryen's wasm-opt, which implements the
+/// transform, and refused to install them.
+pub fn legacy_asyncify_exports(bytes: &[u8]) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for payload in Parser::new(0).parse_all(bytes) {
+        if let Payload::ExportSection(exports) =
+            payload.context("parsing wasm structure for legacy Asyncify exports")?
+        {
+            for export in exports {
+                let export = export.context("parsing export section")?;
+                if export.name.starts_with("asyncify_") {
+                    if export.name.bytes().any(|byte| matches!(byte, b'\n' | b'\r')) {
+                        bail!("export name contains a line separator");
+                    }
+                    names.push(export.name.to_string());
+                }
+            }
+        }
+    }
+    Ok(names)
 }
 
 #[derive(Debug, Default, Clone, Copy)]

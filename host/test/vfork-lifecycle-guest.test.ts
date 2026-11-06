@@ -131,10 +131,21 @@ describe("production vfork lifecycle", () => {
       expect(result.exitCode, result.stderr).toBe(0);
       expect(result.stderr).toBe("");
       expect(result.hostDiagnostics).toEqual([]);
+      // Only causal order is asserted. The main thread prints
+      // MAIN_RELEASED_CHILD after the write that releases the child, so the
+      // child's exit and the caller's resume can race that print; both
+      // necessarily follow MAIN_SIBLING_RAN and precede MAIN_JOINED_CALLER.
       expectOrdered(result.stdout, [
         "THREAD_BEFORE_VFORK",
         "MAIN_SIBLING_RAN",
         "MAIN_RELEASED_CHILD",
+        "MAIN_JOINED_CALLER",
+        "MAIN_REAPED_CHILD",
+        "PASS: VFORK_FROM_THREAD",
+      ]);
+      expectOrdered(result.stdout, [
+        "THREAD_BEFORE_VFORK",
+        "MAIN_SIBLING_RAN",
         "CHILD_THREAD_EXIT",
         "THREAD_CALLER_RESUMED",
         "MAIN_JOINED_CALLER",

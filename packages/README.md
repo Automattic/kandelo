@@ -58,8 +58,9 @@ for those limits and [Freeciv](../docs/freeciv.md) for its client/server guide.
   PR should be able to trigger these paths without treating the change as a
   host/runtime change.
 - `sets/local-supported.toml` selects the packages and browser products built
-  by `./run.sh setup` and `./run.sh local-build`. It also records excluded
-  packages and dormant products.
+  by the local build. `./run.sh setup` and `./run.sh local-build` build what
+  the browser and images need; add `--all` to build every supported package.
+  The set also records excluded packages and dormant products.
 
 Shared host/kernel test artifact inventories live under
 [`../tests/test-artifacts/`](../tests/test-artifacts/), not in the package

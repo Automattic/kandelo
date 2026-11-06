@@ -192,7 +192,7 @@ NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 # fork instrumentation"). This recipe drives clang directly, so ask the SDK
 # for the plugin built for this exact compiler and pass the SDK's flags. The
 # plugin leaves the code unchanged.
-CALLTYPES_PLUGIN="$(node --experimental-strip-types "$REPO_ROOT/sdk/src/lib/calltypes-plugin.ts" "$LLVM_CLANG")"
+CALLTYPES_PLUGIN="$(bash "$REPO_ROOT/scripts/calltypes-plugin.sh" "$LLVM_CLANG")"
 CALLTYPES_FLAGS="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang $CALLTYPES_PLUGIN -Xclang -add-plugin -Xclang kandelo-fncasts -fpass-plugin=$CALLTYPES_PLUGIN"
 
 # LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF: with

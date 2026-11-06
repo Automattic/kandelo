@@ -1,0 +1,36 @@
+kind = "program"
+name = "binaryen"
+# Must equal the host SDK's Binaryen (pkgs.binaryen in flake.nix), so
+# wasm-opt inside Kandelo produces the same bytes as the build machine's.
+version = "126"
+kernel_abi = 50
+depends_on = ["libcxx@21.1.7"]
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/WebAssembly/binaryen/archive/refs/tags/version_126.tar.gz"
+sha256 = "f1c53762abae21cb6bc3e55d4e96d4ca4ea261f83a51d2aa47abc75d60e683e7"
+provider = "archive"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/WebAssembly/binaryen/blob/version_126/LICENSE"
+
+[build]
+script_path = "packages/registry/binaryen/build-binaryen.sh"
+
+[[outputs]]
+name = "wasm-opt"
+wasm = "wasm-opt.wasm"
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.20"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

@@ -3,12 +3,15 @@
 Repo-local build and artifact utilities. Prefer `./run.sh` for ordinary builds;
 it routes work through these commands. Key subcommands:
 
-- `bootstrap` — provision SDK prerequisites and build the supported graph,
-  rootfs, and host (`./run.sh setup`).
+- `bootstrap` — provision SDK prerequisites and build the browser/image
+  dependencies, rootfs, and host (`./run.sh setup`); `setup --all` also
+  builds test-only supported packages.
 - `local-build` — plan or run the content-addressed package/VFS-product graph.
 - `clean`, `cache-gc`, `verify-fresh` — remove selected build outputs, collect
   unused cache generations, or check artifact freshness.
 - `vfs` — inspect the canonical VFS product catalog and consumer selections.
+- `test-failures <conformance|vitest|playwright> <report> <context.json>`
+  — import failures and anomalies as JSON. See [failure evidence](../../tests/baselines/README.md).
 - `dump-abi` — regenerate `abi/snapshot.json` from authoritative sources.
 - `check-package-imports [--require-startup] <wasm>...` — audit process
   imports against shared host declarations and the current SDK's typed

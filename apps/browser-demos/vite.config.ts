@@ -16,10 +16,13 @@ import {
   sourceOnlyBinaryRoot,
   tryResolveBinary,
   tryResolveBinaries,
+  resolveIndependentBinaries,
+  withProgramIndexFreshness,
 } from "../../host/src/binary-resolver";
 import { browserBinariesImports } from "./browser-binary-imports.mjs";
 import {
   browserImageModule32ModuleSpecifier,
+  browserPositionedImageModule32ModuleSpecifier,
   browserKernelModuleSpecifier,
   browserRepositoryAliases,
   browserRootfsModuleSpecifier,
@@ -42,6 +45,7 @@ import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
 import { createProxySessionTransport } from "../../host/src/networking/cors-proxy-session";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
+import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -360,6 +364,7 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
   const KERNEL = browserKernelModuleSpecifier;
   const ROOTFS = browserRootfsModuleSpecifier;
   const IMAGE_MODULE32 = browserImageModule32ModuleSpecifier;
+  const POSITIONED_IMAGE_MODULE32 = browserPositionedImageModule32ModuleSpecifier;
   return {
     name: "resolve-kernel-artifacts-alias",
     enforce: "pre",
@@ -399,6 +404,17 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
           "kandelo_image_module32.wasm not found. Run " +
             "`scripts/dev-shell.sh bash crates/kandelo-image-module/build-wasm.sh`.\n" +
             `  Looked at: ${local}\n  Looked at: ${hosted}`,
+        );
+      }
+      if (pathPart === POSITIONED_IMAGE_MODULE32) {
+        if (sourceOnlyViteAssets !== null) {
+          return sourceOnlyViteAssets.resolve("kandelo_image_module_positioned32.wasm");
+        }
+        const resolved = tryResolveBinary("kandelo_image_module_positioned32.wasm");
+        if (resolved) return access.approve(resolved) + query;
+        this.error(
+          "kandelo_image_module_positioned32.wasm not found. Run " +
+            "`scripts/dev-shell.sh bash crates/kandelo-image-module/build-wasm.sh`.",
         );
       }
       if (pathPart === ROOTFS) {
@@ -652,7 +668,9 @@ function resolveBinariesAlias(
       this.error(
         `Browser binary ${request.relPath} not found, or every candidate is stale. ` +
           `Looked at:\n  ${local}\n  ${fetched}\n` +
-          `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`,
+          `./run.sh local-build publishes every output of the packages in ` +
+          `packages/sets/local-supported.toml; local test fixtures come from ` +
+          `scripts/build-programs.sh.`,
       );
     },
     transform(code, id) {
@@ -745,6 +763,87 @@ function injectGitRevision(): Plugin {
         ? `<a class="sidebar-revision" href="${commitUrl}" target="_blank" rel="noopener">rev: ${shortRev}</a>`
         : `<span class="sidebar-revision">rev: ${shortRev}</span>`;
       return html.replace("</nav>", `  ${tag}\n  </nav>`);
+    },
+  };
+}
+
+/**
+ * Test-server-only: silence the speakers while Web Audio keeps running.
+ *
+ * WHY here: Playwright mutes Chromium with `--mute-audio` and Firefox with
+ * `media.volume_scale`, but WebKit has no launch flag or preference that
+ * mutes output, so WebKit runs played demo audio out loud. The page itself is
+ * the only place left to mute it. This rewires every connection into a
+ * realtime `AudioContext.destination` so it passes through one gain-0 node per
+ * context. Worklets, analysers, PCM checks, context state and the autoplay
+ * policy all behave exactly as in the product; only the final output is zero.
+ * It applies in every browser, so the three engines run the same graph.
+ *
+ * WHY the test web server, never the product: it is gated on
+ * `KANDELO_BROWSER_TEST_MUTE_AUDIO=1`, which only playwright.config.ts sets
+ * for the dev server it starts, and `apply: "serve"` keeps it out of every
+ * build even if the variable leaks. A reused external server or a sealed
+ * production preview does not get it; those WebKit runs are audible.
+ *
+ * The edge is moved after the original `connect` returns, rather than its
+ * target swapped beforehand, so a spec probe that wrapped `connect` earlier
+ * (Playwright init scripts run before this script) still sees the real
+ * destination. Such an own `connect` override on a node prototype is wrapped
+ * too, since it captured the unwrapped method.
+ */
+function muteBrowserTestAudio(): Plugin {
+  const script = `(() => {
+  if (typeof AudioNode === "undefined") return;
+  const nativeConnect = AudioNode.prototype.connect;
+  const nativeDisconnect = AudioNode.prototype.disconnect;
+  // Keyed by context, not destination: in WebKit a lookup keyed by
+  // context.destination missed between a connect and a later disconnect
+  // (likely a collected and recreated wrapper), leaving a second, unconnected
+  // gain node. The page holds its context, so that key stays put.
+  const mutes = new WeakMap();
+  const muteFor = (dest) =>
+    dest instanceof AudioDestinationNode && dest.context instanceof AudioContext
+      ? mutes.get(dest.context) ?? (() => {
+        const mute = dest.context.createGain();
+        mute.gain.value = 0;
+        nativeConnect.call(mute, dest);
+        mutes.set(dest.context, mute);
+        return mute;
+      })()
+      : null;
+  const wrap = (proto) => {
+    const connect = proto.connect;
+    proto.connect = function (dest, ...rest) {
+      const result = connect.call(this, dest, ...rest);
+      const mute = muteFor(dest);
+      if (mute !== null && this !== mute) {
+        try { nativeDisconnect.call(this, dest, ...rest); } catch { return result; }
+        nativeConnect.call(this, mute, ...rest);
+      }
+      return result;
+    };
+  };
+  wrap(AudioNode.prototype);
+  for (const name of Object.getOwnPropertyNames(globalThis)) {
+    if (!name.endsWith("Node")) continue;
+    const proto = globalThis[name]?.prototype;
+    if (proto instanceof AudioNode && Object.hasOwn(proto, "connect")) wrap(proto);
+  }
+  // disconnect(destination) must find the edge where it now lives. Pass the
+  // arguments through untouched otherwise: disconnect() and disconnect(0)
+  // are different overloads.
+  AudioNode.prototype.disconnect = function (...args) {
+    const mute = args.length > 0 ? muteFor(args[0]) : null;
+    if (mute !== null && this !== mute) args[0] = mute;
+    return nativeDisconnect.apply(this, args);
+  };
+})();`;
+  return {
+    name: "mute-browser-test-audio",
+    apply: "serve",
+    transformIndexHtml() {
+      if (process.env.KANDELO_BROWSER_TEST_MUTE_AUDIO !== "1") return [];
+      return [{ tag: "script", children: script, injectTo: "head-prepend" }];
     },
   };
 }
@@ -922,6 +1021,8 @@ const demoInputs = {
   "sqlite-test": path.resolve(__dirname, "pages/sqlite-test/index.html"),
   benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
   "php-test": path.resolve(__dirname, "pages/php-test/index.html"),
+  "program-compatibility-test": path.resolve(__dirname, "pages/program-compatibility-test/index.html"),
+  "program-policy-test": path.resolve(__dirname, "pages/program-policy-test/index.html"),
   // The perl, python, ruby, erlang, texlive, and redis demos are not bundled
   // into this static build while their slow builds live in package sources.
   // The demo app exposes only repository-defined gallery entries.
@@ -932,11 +1033,11 @@ function sourceOnlyDemoInputs<T extends Record<string, string>>(
 ): T {
   if (configuredSourceOnlyRoot === null) return selected;
   const unsupported = Object.keys(selected).filter(
-    (name) => !(name in defaultDemoInputs) && name !== "peer-network",
+    (name) => !(name in defaultDemoInputs) && name !== "peer-network" && name !== "program-compatibility-test" && name !== "program-policy-test",
   );
   if (unsupported.length > 0) {
     throw new Error(
-      "SourceOnly browser builds admit only the root main, kandelo, network, and peer-network inputs; " +
+      "SourceOnly browser builds admit only the root main, kandelo, network, peer-network, program-compatibility-test, and program-policy-test inputs; " +
         `these inputs still depend on ambient build outputs: ${unsupported.join(", ")}`,
     );
   }
@@ -975,6 +1076,36 @@ export default defineConfig(() => {
     plugins: [
       vfsProductsPlugin(base),
       react(),
+      muteBrowserTestAudio(),
+      // Before the SourceOnly store, and like it `enforce: "pre"`: the
+      // store's middleware answers the pinned path this route rewrites a
+      // lazy-asset request to, so this one must run first.
+      devLazyAssets({
+        servePath: sourceOnlyViteAssets === null
+          ? batchedFsServePath({
+            projectionPath: path.resolve(
+              repoRoot,
+              "local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json",
+            ),
+            identity: (file) => {
+              try {
+                const metadata = fs.statSync(file);
+                return `${metadata.size}:${metadata.mtimeMs}`;
+              } catch {
+                return null;
+              }
+            },
+            listMembers: (file) =>
+              (JSON.parse(fs.readFileSync(file, "utf8")) as {
+                nodes: { members: { mirrorPath: string }[] }[];
+              }).nodes.flatMap((node) => node.members.map((member) => member.mirrorPath)),
+            resolveBatch: (relPaths) =>
+              withProgramIndexFreshness(() => resolveIndependentBinaries(relPaths)),
+            resolveOne: tryResolveBinary,
+            approve: (file) => binaryDevAccess.approve(file),
+          })
+          : (relPath) => sourceOnlyViteAssets.servePath(relPath),
+      }),
       ...(sourceOnlyViteAssets === null
         ? []
         : [sourceOnlyViteAssets.plugin()]),

@@ -13,6 +13,7 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -481,6 +482,290 @@ static int test_wait4_lifecycle(void)
     errno = 0;
     if (waitpid(pid, &status, WNOHANG | WUNTRACED) != -1 || errno != ECHILD) {
         fprintf(stderr, "post-reap wait did not return ECHILD: errno=%d\n", errno);
+        return -1;
+    }
+    return 0;
+}
+
+/* Two threads parked in waitpid() on the same child: the kernel re-polls
+ * both when the child exits, in park order. The first consumes the exit; the
+ * second, decided in the same pass, now has no matching child (ECHILD) rather
+ * than staying parked forever. */
+struct shared_wait_ctx {
+    pid_t child;
+    atomic_int ready;
+    pid_t result;
+    int error;
+    int status;
+};
+
+static void *shared_wait_thread(void *opaque)
+{
+    struct shared_wait_ctx *ctx = opaque;
+    atomic_store_explicit(&ctx->ready, 1, memory_order_release);
+    errno = 0;
+    ctx->result = waitpid(ctx->child, &ctx->status, 0);
+    ctx->error = errno;
+    return NULL;
+}
+
+static int test_parked_waiters_share_one_exit(void)
+{
+    int gate[2];
+    if (pipe(gate) != 0)
+        return fail("shared-wait pipe");
+    pid_t pid = fork();
+    if (pid < 0)
+        return fail("shared-wait fork");
+    if (pid == 0) {
+        close(gate[1]);
+        char byte;
+        if (read(gate[0], &byte, 1) != 1)
+            _exit(121);
+        _exit(23);
+    }
+    close(gate[0]);
+
+    struct shared_wait_ctx ctx[2];
+    pthread_t threads[2];
+    for (int i = 0; i < 2; i++) {
+        memset(&ctx[i], 0, sizeof(ctx[i]));
+        ctx[i].child = pid;
+        atomic_init(&ctx[i].ready, 0);
+        if (pthread_create(&threads[i], NULL, shared_wait_thread, &ctx[i]) != 0)
+            return fail("shared-wait pthread_create");
+        while (!atomic_load_explicit(&ctx[i].ready, memory_order_acquire))
+            usleep(1000);
+    }
+    /* Give both a chance to park before the exit. */
+    usleep(50000);
+    if (release_child(gate[1]) != 0)
+        return -1;
+    for (int i = 0; i < 2; i++) {
+        if (pthread_join(threads[i], NULL) != 0)
+            return fail("shared-wait pthread_join");
+    }
+    int reaped = 0;
+    int echild = 0;
+    for (int i = 0; i < 2; i++) {
+        if (ctx[i].result == pid && WIFEXITED(ctx[i].status) &&
+            WEXITSTATUS(ctx[i].status) == 23)
+            reaped++;
+        else if (ctx[i].result == -1 && ctx[i].error == ECHILD)
+            echild++;
+    }
+    if (reaped != 1 || echild != 1) {
+        fprintf(stderr,
+            "shared wait: results %d/%d errno %d/%d (want one reap, one ECHILD)\n",
+            (int)ctx[0].result, (int)ctx[1].result, ctx[0].error, ctx[1].error);
+        return -1;
+    }
+    return 0;
+}
+
+/* A parent parked in waitpid(-pgid) whose only matching child leaves the
+ * group: the kernel re-polls the wait on the setpgid and answers ECHILD. */
+static int test_group_wait_follows_setpgid(void)
+{
+    int go[2];
+    int done[2];
+    if (pipe(go) != 0 || pipe(done) != 0)
+        return fail("pgid-wait pipes");
+    pid_t pid = fork();
+    if (pid < 0)
+        return fail("pgid-wait fork");
+    if (pid == 0) {
+        close(go[1]);
+        close(done[0]);
+        char byte;
+        /* Start in the parent's group (fork inherits it); leave it for a
+         * group of our own once the parent is parked on waitpid(0). */
+        if (read(go[0], &byte, 1) != 1)
+            _exit(121);
+        if (setpgid(0, 0) != 0)
+            _exit(122);
+        if (write(done[1], "x", 1) != 1)
+            _exit(123);
+        /* Stay alive (not waitable) until the parent closes `go`. */
+        (void)read(go[0], &byte, 1);
+        _exit(0);
+    }
+    close(go[0]);
+    close(done[1]);
+    struct shared_wait_ctx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.child = 0; /* waitpid(0, ...): any child in the caller's group */
+    atomic_init(&ctx.ready, 0);
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, shared_wait_thread, &ctx) != 0)
+        return fail("pgid-wait pthread_create");
+    while (!atomic_load_explicit(&ctx.ready, memory_order_acquire))
+        usleep(1000);
+    usleep(50000);
+    if (write(go[1], "x", 1) != 1)
+        return fail("pgid-wait release");
+    char byte;
+    if (read(done[0], &byte, 1) != 1)
+        return fail("pgid-wait child setpgid");
+    if (pthread_join(thread, NULL) != 0)
+        return fail("pgid-wait pthread_join");
+    if (ctx.result != -1 || ctx.error != ECHILD) {
+        fprintf(stderr, "pgid wait: result=%d errno=%d (want ECHILD)\n",
+            (int)ctx.result, ctx.error);
+        return -1;
+    }
+    close(go[1]);
+    close(done[0]);
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "pgid-wait child exit mismatch: status=%#x\n", status);
+        return -1;
+    }
+    return 0;
+}
+
+/* The kernel announces a child's exit (SIGCHLD) before any wait can report
+ * it, so a caught SIGCHLD's handler has always run by the time waitpid()
+ * returns that exit -- whether the parent was already parked when the child
+ * exited or the child won the race. */
+static int test_exit_races_parked_wait(void)
+{
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = count_sigchld;
+    action.sa_flags = SA_RESTART;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGCHLD, &action, NULL) != 0)
+        return fail("race sigaction");
+    for (int round = 0; round < 20; round++) {
+        sigchld_count = 0;
+        pid_t pid = fork();
+        if (pid < 0)
+            return fail("race fork");
+        if (pid == 0)
+            _exit(round & 0x7f);
+        int status = 0;
+        pid_t got = waitpid(pid, &status, 0);
+        if (got != pid || !WIFEXITED(status) ||
+            WEXITSTATUS(status) != (round & 0x7f) || sigchld_count != 1) {
+            fprintf(stderr,
+                "exit race round %d: got=%d status=%#x sigchld=%d\n",
+                round, (int)got, status, (int)sigchld_count);
+            return -1;
+        }
+    }
+    action.sa_handler = SIG_DFL;
+    action.sa_flags = 0;
+    if (sigaction(SIGCHLD, &action, NULL) != 0)
+        return fail("race restore");
+    return 0;
+}
+
+/* SA_NOCLDWAIT and SIG_IGN: the kernel reaps exiting children itself, so a
+ * parked wait for them ends in ECHILD once none is left. With SA_NOCLDWAIT
+ * and a handler, SIGCHLD is still sent (Linux; POSIX leaves it open). */
+static int test_nocldwait_autoreap(void)
+{
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = count_sigchld;
+    action.sa_flags = SA_NOCLDWAIT;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGCHLD, &action, NULL) != 0)
+        return fail("nocldwait sigaction");
+    sigchld_count = 0;
+    for (int i = 0; i < 2; i++) {
+        pid_t pid = fork();
+        if (pid < 0)
+            return fail("nocldwait fork");
+        if (pid == 0) {
+            usleep(20000 * (i + 1));
+            _exit(0);
+        }
+    }
+    int status = 0;
+    errno = 0;
+    pid_t got;
+    do {
+        got = waitpid(-1, &status, 0);
+    } while (got == -1 && errno == EINTR);
+    if (got != -1 || errno != ECHILD || sigchld_count < 1) {
+        fprintf(stderr, "SA_NOCLDWAIT: got=%d errno=%d sigchld=%d\n",
+            (int)got, errno, (int)sigchld_count);
+        return -1;
+    }
+
+    action.sa_handler = SIG_IGN;
+    action.sa_flags = 0;
+    if (sigaction(SIGCHLD, &action, NULL) != 0)
+        return fail("sig_ign sigaction");
+    pid_t pid = fork();
+    if (pid < 0)
+        return fail("sig_ign fork");
+    if (pid == 0)
+        _exit(0);
+    errno = 0;
+    do {
+        got = waitpid(pid, &status, 0);
+    } while (got == -1 && errno == EINTR);
+    if (got != -1 || errno != ECHILD) {
+        fprintf(stderr, "SIG_IGN SIGCHLD left a zombie: got=%d errno=%d\n",
+            (int)got, errno);
+        return -1;
+    }
+
+    action.sa_handler = SIG_DFL;
+    if (sigaction(SIGCHLD, &action, NULL) != 0)
+        return fail("nocldwait restore");
+    return 0;
+}
+
+/* A child's exit generates SIGCHLD in the parent, whose default action is to
+ * ignore it. An ignored signal must not end a parked sleep or wait: POSIX
+ * gives EINTR only when a handler ran. The parent sleeps 300 ms while its
+ * child exits after 20 ms, and the sleep must run to completion;
+ * then a parked waitpid must return the child, not EINTR. */
+static int test_ignored_sigchld_does_not_interrupt(void)
+{
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = SIG_DFL;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGCHLD, &action, NULL) != 0)
+        return fail("ignored-sigchld sigaction");
+    pid_t pid = fork();
+    if (pid < 0)
+        return fail("ignored-sigchld fork");
+    if (pid == 0) {
+        usleep(20000);
+        _exit(0);
+    }
+    struct timespec req = {0, 300000000L};
+    struct timespec rem = {-1, -1};
+    if (nanosleep(&req, &rem) != 0) {
+        fprintf(stderr, "default SIGCHLD interrupted nanosleep: errno=%d\n", errno);
+        return -1;
+    }
+    int status = 0;
+    pid_t got = waitpid(pid, &status, 0);
+    if (got != pid || !WIFEXITED(status)) {
+        fprintf(stderr, "waitpid after sleep: got=%d errno=%d\n", (int)got, errno);
+        return -1;
+    }
+
+    pid = fork();
+    if (pid < 0)
+        return fail("ignored-sigchld second fork");
+    if (pid == 0) {
+        usleep(20000);
+        _exit(3);
+    }
+    errno = 0;
+    got = waitpid(pid, &status, 0);
+    if (got != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 3) {
+        fprintf(stderr, "parked waitpid with default SIGCHLD: got=%d errno=%d\n",
+            (int)got, errno);
         return -1;
     }
     return 0;
@@ -1462,6 +1747,16 @@ int main(int argc, char **argv)
         return 10;
     if (test_caught_sigcont_precedes_stop_boundary_return() != 0)
         return 11;
+    if (test_parked_waiters_share_one_exit() != 0)
+        return 14;
+    if (test_group_wait_follows_setpgid() != 0)
+        return 15;
+    if (test_exit_races_parked_wait() != 0)
+        return 16;
+    if (test_nocldwait_autoreap() != 0)
+        return 17;
+    if (test_ignored_sigchld_does_not_interrupt() != 0)
+        return 18;
     puts("WAIT_LIFECYCLE_PASS");
     return 0;
 #endif

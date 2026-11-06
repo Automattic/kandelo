@@ -1,3 +1,4 @@
+import { notifyReadiness, readinessGeneration } from "./readiness-generation";
 import type { NetworkAddress, TcpConnectionPeer, TcpListenTarget } from '../types';
 import { NET_READINESS } from '../generated/abi';
 import { REMOTE_TCP_DATA_BYTES, REMOTE_TCP_WINDOW_BYTES, TCP_FRAME, validateRemoteTcpFrame, type RemoteTcpFrame } from './remote-tcp-codec';
@@ -62,7 +63,7 @@ export class RemoteTcpEngine {
   maxData(remote: Uint8Array): number { return Math.max(0, Math.min(REMOTE_TCP_DATA_BYTES, this.router.maxData(remote))); }
   canSend(destination: Uint8Array): boolean { return this.router.canSend?.(destination) ?? true; }
   fatal(reason: string): void { this.router.failed(reason); }
-  writable(): void { for (const peer of [...this.streams.values()]) peer.flushControls(); }
+  writable(): void { for (const peer of [...this.streams.values()]) peer.linkWritable(); }
   receive(frame: RemoteTcpFrame): void {
     validateRemoteTcpFrame(frame);
     if (!frame.destination.addr.every((v, i) => v === this.address[i])) throw new Error('TCP frame addressed to a different machine');
@@ -146,7 +147,12 @@ class RemoteTcpPeer implements TcpConnectionPeer {
     }
     this.maybeRetire();
   }
+  linkWritable(): void {
+    this.flushControls();
+    notifyReadiness(this, 1);
+  }
   receive(frame: RemoteTcpFrame): void {
+    notifyReadiness(this, frame.kind === TCP_FRAME.data || frame.kind === TCP_FRAME.fin ? 0 : 1);
     if (this.error) return;
     if (frame.kind === TCP_FRAME.reset || frame.kind === TCP_FRAME.refuse) { this.setError(frame.kind === TCP_FRAME.reset ? 104 : frame.value); return; }
     if (frame.kind === TCP_FRAME.accept) {
@@ -207,6 +213,7 @@ class RemoteTcpPeer implements TcpConnectionPeer {
    * Report this stream's observable facts. No POSIX readiness decision is
    * made here — `runtime_core::net_readiness` makes it.
    */
+  readinessGeneration(direction: number): bigint { return readinessGeneration(this, direction); }
   readiness(): number {
     // A reset or failed connect takes the stream down in both directions.
     if (this.error) {
@@ -232,6 +239,7 @@ class RemoteTcpPeer implements TcpConnectionPeer {
       this.readClosed = true; this.clearReceive(); this.control(TCP_FRAME.readStop);
     }
     if ((how === 1 || how === 2) && !this.writeClosed) { this.writeClosed = true; this.control(TCP_FRAME.fin); }
+    notifyReadiness(this);
   }
   close(): void {
     if (this.error || this.orphaned) return;
@@ -250,10 +258,10 @@ class RemoteTcpPeer implements TcpConnectionPeer {
   disconnected(forceReset = false): void {
     // An orderly peer close must preserve bytes already followed by its FIN.
     if (forceReset || !this.remoteOrderlyClose) this.setError(this.connected ? 104 : 113);
-    else { this.remoteReadClosed = true; this.controls.length = 0; this.retire(); }
+    else { this.remoteReadClosed = true; this.controls.length = 0; this.retire(); notifyReadiness(this); }
   }
   private setError(errno: number): void {
-    this.error = errno; this.buffer = new Uint8Array(0); clearTimeout(this.timer); this.controls.length = 0; this.clearReceive(); this.retire();
+    notifyReadiness(this); this.error = errno; this.buffer = new Uint8Array(0); clearTimeout(this.timer); this.controls.length = 0; this.clearReceive(); this.retire();
   }
   private clearReceive(): void { this.readOffset = 0; this.receiveBytes = 0; }
   private maybeRetire(): void { if (this.orphaned && this.remoteFin && this.finSent && !this.controls.length) this.retire(); }

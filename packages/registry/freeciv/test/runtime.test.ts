@@ -13,7 +13,7 @@ import {
   SHELL_LAZY_ARCHIVE_SPECS,
 } from "../../../../images/vfs/scripts/shell-lazy-archives";
 
-const bundle = tryResolveBinary("programs/wasm32/freeciv.zip");
+const bundle = tryResolveBinary("programs/wasm32/freeciv-browser-bundle/freeciv.zip");
 const encoder = new TextEncoder();
 const env = [
   "HOME=/home/maker", "USER=maker", "LANG=C.UTF-8", "TERM=dumb",
@@ -26,6 +26,8 @@ async function boot() {
   for (const path of ["/tmp", "/etc", "/usr", "/home/maker"]) {
     ensureDirRecursive(fs, path);
   }
+  // The server runs as uid 1000 and saves its game here.
+  fs.chown("/home/maker", 1000, 1000);
   const spec = SHELL_LAZY_ARCHIVE_SPECS.find((spec) => spec.id === "freeciv")!;
   const archive = registerDeclaredShellLazyArchive(fs, spec, () => bundle!);
   let output = "";
@@ -34,9 +36,13 @@ async function boot() {
   };
   const host = new NodeKernelHost({
     rootfsImage: await fs.saveImage(),
+    // The archive records its package-mirror path, which the lazy-asset
+    // directory resolves to
+    // `<directory>assets/programs/wasm32/freeciv-browser-bundle/freeciv.zip`.
     rootfsLazyUrlBase: "https://freeciv.test/",
+    rootfsLazyAssetDirectory: "https://freeciv.test/",
     rootfsLazyAssets: [{
-      url: "https://freeciv.test/freeciv.zip",
+      url: "https://freeciv.test/assets/programs/wasm32/freeciv-browser-bundle/freeciv.zip",
       bytes: archive.bytes,
       sha256: archive.integrity.sha256,
       size: archive.bytes.byteLength,
@@ -56,8 +62,7 @@ describe.skipIf(!bundle)("Freeciv package runtime", () => {
         const { exit } = await host.spawnFromVfs(
           `/usr/libexec/freeciv/${name}.wasm`,
           [`freeciv-${name}`, "--version"],
-          { env, uid: 1000, gid: 1000, cwd: "/home/maker",
-            ownedJob: { id: `freeciv-version-${name}`, timeoutMs: 30_000 } },
+          { env, uid: 1000, gid: 1000, cwd: "/home/maker" },
         );
         expect(await exit, output()).toBe(0);
       }
@@ -79,8 +84,7 @@ describe.skipIf(!bundle)("Freeciv package runtime", () => {
         ["freeciv-server", "--Announce", "none", "--bind", "127.0.0.1", "--port", String(port),
           "--exit-on-end", "--saves", "/home/maker", ...extra],
         { env, uid: 1000, gid: 1000, cwd: "/home/maker",
-          stdin: encoder.encode(stdin),
-          ownedJob: { id: `freeciv-server-${extra.length}`, timeoutMs: 60_000 } },
+          stdin: encoder.encode(stdin) },
       );
       expect(await exit, output()).toBe(0);
     };

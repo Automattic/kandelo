@@ -118,14 +118,15 @@ When already inside `scripts/dev-shell.sh bash`, run the build commands
 directly:
 
 ```bash
-./run.sh setup                # Provision SDKs; build fork tool, supported graph, rootfs, and host
+./run.sh setup                # Provision sysroot(s)/SDK, then build fork-instrument tool, kernel wasm, the packages the VFS products and browser app demand, rootfs, and TypeScript host
+./run.sh setup --all          # The same, building every supported package (test-suite fixtures included)
 bash scripts/build-musl.sh --ensure  # Check wasm32 musl inputs and installed core outputs
 scripts/build-programs.sh    # Rebuild test/example C programs
 ```
 
 `./run.sh setup` checks both musl sysroots for changed inputs and altered or
 missing installed core outputs. Package build entry points check core
-freshness before computing cache identities. After editing libc, run setup
+freshness before computing cache identities. After editing libc, run `setup --all`
 before Vitest or conformance tests to refresh package programs, then run
 `scripts/build-programs.sh` for example/test fixtures; a fresh libc alone
 does not make previously linked programs current.
@@ -142,12 +143,12 @@ validate." The full sequence (see `validation.md` for detail):
 ```bash
 git submodule update --init --recursive           # musl, Rust libc, libc-test, os-test
 # if libc/musl exists but is a stray partial dir: rm -rf libc/musl && git submodule update --init libc/musl
-./run.sh setup                                    # Check SDKs; build supported graph, rootfs, and host
+./run.sh setup --all                              # Check SDKs; build supported packages, rootfs, and host
 scripts/dev-shell.sh bash scripts/build-programs.sh # local-binaries/{programs,test-fixtures}/ that Vitest loads
 ```
 
 There is no fetch step: binary resolution is local-first, and
-`scripts/fetch-binaries.sh` no longer exists. Setup builds the supported graph
+`scripts/fetch-binaries.sh` no longer exists. `setup --all` builds the supported graph
 in `packages/sets/local-supported.toml`; a suite that loads an excluded or
 dormant image recipe may also need that recipe resolved through the normal
 package resolver. See the validation guide for artifact prerequisites and
@@ -246,6 +247,12 @@ rewriting another contributor's branch, inspect the original commits with
   committer. Set `--author` explicitly when reconstructing a commit.
 - For materially combined work, retain the primary author and add accurate
   `Co-authored-by:` trailers; do not demote the primary author to a trailer.
+- Attribution credits people. Never add a `Co-authored-by:` trailer, a
+  "Generated with" line, or similar credit for an AI model, agent, or coding
+  tool (Claude, ChatGPT, Codex, Copilot, and so on), in commits or PR
+  descriptions. The checked-in `.claude/settings.json` sets Claude Code's
+  `attribution` to empty so it adds none; other clients must omit it
+  themselves.
 - Before force-pushing, verify patch and author preservation with
   `git range-diff` and `git log --format=fuller`. If provenance is ambiguous,
   reconstruct it from the original commits and PR timeline instead of guessing.

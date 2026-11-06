@@ -157,7 +157,7 @@ export function assertTerminalCommandResult(
 
 async function terminalText(page: Page): Promise<string> {
   return page
-    .locator(".xterm-rows")
+    .locator(".kshell-host:visible .xterm-rows")
     .first()
     .evaluate((node) => node.textContent ?? "");
 }
@@ -198,7 +198,7 @@ async function runTerminalProtocol(
   if (await input.count()) {
     await input.focus();
   } else {
-    await page.locator(".kshell-host").first().click();
+    await page.locator(".kshell-host:visible").first().click();
   }
   await page.keyboard.insertText(protocol.command);
   await page.waitForTimeout(250);

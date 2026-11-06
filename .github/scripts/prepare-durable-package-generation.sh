@@ -97,7 +97,7 @@ if { [[ "$SOURCE_TAG" =~ ^binaries-abi-v ]] &&
   exit 2
 fi
 grep -Fxq "pub const ABI_VERSION: u32 = $EXPECTED_ABI;" \
-  "$AUTHORITY_ROOT/crates/shared/src/lib.rs" || {
+  "$AUTHORITY_ROOT/crates/program-abi/src/lib.rs" || {
   echo "prepare-durable-package-generation: current main does not declare the selected ABI" >&2
   exit 1
 }

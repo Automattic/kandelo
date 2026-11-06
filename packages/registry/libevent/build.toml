@@ -1,0 +1,9 @@
+script_path = "packages/registry/libevent/build-libevent.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = [
+  "packages/registry/libevent/build-libevent.sh",
+  "packages/registry/libevent/configure-libevent.sh",
+  "scripts/package-build-roots.sh",
+]

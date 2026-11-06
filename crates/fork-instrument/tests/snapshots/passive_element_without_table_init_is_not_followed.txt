@@ -1,0 +1,27 @@
+=== closed 085560e49c5a ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+    },
+    control_reachable: {
+        0,
+        1,
+    },
+    tail_sites: {},
+}
+
+=== external 085560e49c5a ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+    },
+    tail_sites: {},
+}

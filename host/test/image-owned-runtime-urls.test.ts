@@ -1,17 +1,17 @@
-import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import { ROOTFS_LAZY_ASSET_URLS } from "../../apps/browser-demos/lib/init/rootfs-lazy-files";
+import { describe, expect, it, vi } from "vitest";
 import {
-  imageOwnedRuntimeUrlMapper,
-  imageOwnedRuntimeUrlTable,
+  imageOwnedLazyAssetDirectory,
   normalizeImageOwnedLazyReference,
 } from "../../apps/browser-demos/lib/init/image-owned-runtime-urls";
+import { resolveImageOwnedLazyAsset } from "../src/vfs/vfs-asset-group-reference";
+import { createPagesVfsProductLoaderForBase } from "../../apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-loader";
 
 /**
- * Nothing rewrites the image: it keeps the canonical address, and the
- * deployment maps that address when it fetches. So the subject is a pure
- * function, and the tests need no image at all — "where would this URL end
- * up" never depends on the image.
+ * Nothing rewrites the image: it keeps the canonical address, and the kernel
+ * worker resolves that address to its package member under the deployment's
+ * lazy-asset directory when it fetches. So the subjects are pure functions,
+ * and the tests need no image at all — "where would this URL end up" never
+ * depends on the image.
  */
 describe("image-owned grouped runtime URLs", () => {
   const AUTHORITY = {
@@ -20,105 +20,108 @@ describe("image-owned grouped runtime URLs", () => {
     manifestUrl: "https://demo.invalid/a/assets-group/manifest.json",
   };
 
-  it("maps a legacy reference into the group manifest directory", () => {
-    const map = imageOwnedRuntimeUrlMapper(AUTHORITY);
-    expect(map("binaries/programs/wasm32/program.wasm")).toBe(
+  it("resolves legacy references into the group manifest directory", () => {
+    const directory = imageOwnedLazyAssetDirectory(AUTHORITY);
+    expect(directory).toBe("https://demo.invalid/a/assets-group/");
+    expect(resolveImageOwnedLazyAsset(directory, "binaries/programs/wasm32/program.wasm")).toBe(
       "https://demo.invalid/a/assets-group/assets/programs/wasm32/program.wasm",
     );
-    expect(map("kandelo-lazy:programs/lazy-program.wasm")).toBe(
+    expect(resolveImageOwnedLazyAsset(directory, "kandelo-lazy:programs/lazy-program.wasm")).toBe(
       "https://demo.invalid/a/assets-group/assets/programs/wasm32/lazy-program.wasm",
     );
-    expect(map("vim.zip")).toBe(
+    expect(resolveImageOwnedLazyAsset(directory, "kandelo-lazy:programs/wasm32/vim.zip")).toBe(
       "https://demo.invalid/a/assets-group/assets/programs/wasm32/vim.zip",
     );
-    expect(map("freeciv.zip")).toBe(
-      "https://demo.invalid/a/assets-group/assets/programs/wasm32/freeciv.zip",
+    expect(
+      resolveImageOwnedLazyAsset(directory, "kandelo-lazy:programs/love/share/love-examples.zip"),
+    ).toBe(
+      "https://demo.invalid/a/assets-group/assets/programs/wasm32/love/share/love-examples.zip",
     );
+    expect(
+      resolveImageOwnedLazyAsset(
+        directory,
+        "kandelo-lazy:programs/wasm32/freeciv-browser-bundle/freeciv.zip",
+      ),
+    ).toBe(
+      "https://demo.invalid/a/assets-group/assets/programs/wasm32/freeciv-browser-bundle/freeciv.zip",
+    );
+    // An archive's bare name is not an address: nothing maps names to packages.
+    expect(resolveImageOwnedLazyAsset(directory, "vim.zip")).toBeNull();
   });
 
-  it("maps /a/ and /candidate-b/ to their own exact manifest directories", () => {
-    const primary = imageOwnedRuntimeUrlMapper(AUTHORITY);
-    const candidate = imageOwnedRuntimeUrlMapper({
+  it("gives /a/ and /candidate-b/ their own exact manifest directories", () => {
+    const reference = "binaries/programs/wasm32/program.wasm";
+    const primary = imageOwnedLazyAssetDirectory(AUTHORITY);
+    const candidate = imageOwnedLazyAssetDirectory({
       deploymentBase: "/candidate-b/",
       directoryUrl: "https://demo.invalid/candidate-b/assets-group/",
       manifestUrl: "https://demo.invalid/candidate-b/assets-group/manifest.json",
     });
-    const reference = "binaries/programs/wasm32/program.wasm";
-    expect(primary(reference)).toBe(
+    expect(resolveImageOwnedLazyAsset(primary, reference)).toBe(
       "https://demo.invalid/a/assets-group/assets/programs/wasm32/program.wasm",
     );
-    expect(candidate(reference)).toBe(
+    expect(resolveImageOwnedLazyAsset(candidate, reference)).toBe(
       "https://demo.invalid/candidate-b/assets-group/assets/programs/wasm32/program.wasm",
     );
   });
 
   // The old file asserted that a malformed transport did not mutate a PRECEDING
   // valid one, because binding walked the image and wrote as it went, so a
-  // failure halfway could leave the image partly bound. A mapper has no
-  // partial state to leave: one reference failing is one call throwing.
-  it("refuses a reference outside the grammar, and the refusal is per call", () => {
-    const map = imageOwnedRuntimeUrlMapper(AUTHORITY);
-    expect(() => map("https://demo.invalid/a/forged.wasm")).toThrow();
-    // The next call is unaffected. There is nothing to leave half-written.
-    expect(map("binaries/programs/wasm32/program.wasm")).toBe(
+  // failure halfway could leave the image partly bound. A resolver has no
+  // partial state to leave: one reference failing is one call returning null.
+  it("leaves a reference outside the grammar unresolved, per call", () => {
+    const directory = imageOwnedLazyAssetDirectory(AUTHORITY);
+    expect(resolveImageOwnedLazyAsset(directory, "https://demo.invalid/a/forged.wasm")).toBeNull();
+    expect(resolveImageOwnedLazyAsset(directory, "binaries/programs/wasm32/program.wasm")).toBe(
       "https://demo.invalid/a/assets-group/assets/programs/wasm32/program.wasm",
     );
   });
 
   it("does not retain caller-mutable authority", () => {
     const mutable = { ...AUTHORITY };
-    const map = imageOwnedRuntimeUrlMapper(mutable);
+    const directory = imageOwnedLazyAssetDirectory(mutable);
     mutable.manifestUrl = "https://evil.invalid/a/assets-group/manifest.json";
     mutable.directoryUrl = "https://evil.invalid/a/assets-group/";
-    expect(map("binaries/programs/wasm32/program.wasm")).toBe(
-      "https://demo.invalid/a/assets-group/assets/programs/wasm32/program.wasm",
-    );
+    expect(directory).toBe("https://demo.invalid/a/assets-group/");
   });
 
-  it("builds a table whose keys come from the DEPLOYMENT, not from an image", () => {
-    // The point of the table: a worker can be handed the whole mapping without
-    // anyone enumerating an image's deferred entries, which is the operation
-    // that made B45 silent. The deployment imports every asset it serves, so
-    // it already knows the key set.
-    const table = imageOwnedRuntimeUrlTable(AUTHORITY);
-    const keys = Object.keys(table);
-    expect(keys.length).toBeGreaterThan(0);
-    for (const [reference, url] of Object.entries(table)) {
-      expect(url, `${reference} must stay inside the deployment`)
-        .toMatch(/^https:\/\/demo\.invalid\/a\/assets-group\//);
+  it("gives a non-product image the deployment's own asset group", () => {
+    const sha = "a".repeat(64);
+    const entry = {
+      id: "browser-main-shell",
+      load: "lazy" as const,
+      path: `/a/products/browser-main-shell/sha256-${sha}/browser-main-shell-1.vfs.zst`,
+      bytes: 1,
+      sha256: sha,
+    };
+    const fetcher = () => Promise.reject(new Error("no fetch expected"));
+    const grouped = createPagesVfsProductLoaderForBase(
+      [{ ...entry, asset_group: { path: "/a/vfs-groups/release-1/manifest.json", bytes: 1, sha256: sha } }],
+      fetcher,
+      "/a/",
+    );
+    const directory = imageOwnedLazyAssetDirectory(grouped.deploymentLazyAssets())!;
+    expect(resolveImageOwnedLazyAsset(directory, "kandelo-lazy:programs/wasm32/vim.zip")).toBe(
+      new URL("/a/vfs-groups/release-1/assets/programs/wasm32/vim.zip", directory).href,
+    );
+    // Without a group there is no deployment authority to fall back to.
+    expect(createPagesVfsProductLoaderForBase([entry], fetcher, "/a/").deploymentLazyAssets())
+      .toBeUndefined();
+  });
+
+  it("points the dev server's kernel at its lazy-asset route without an asset group", () => {
+    // Vitest serves modules like the Vite dev server: import.meta.env.DEV.
+    vi.stubGlobal("location", new URL("http://127.0.0.1:5401/pages/kandelo/"));
+    let directory: string;
+    try {
+      directory = imageOwnedLazyAssetDirectory(undefined);
+    } finally {
+      vi.unstubAllGlobals();
     }
-    // And a known rootfs binary is in it, so the table is not merely non-empty.
-    expect(table["binaries/programs/wasm32/bash.wasm"]).toBe(
-      "https://demo.invalid/a/assets-group/assets/programs/wasm32/bash.wasm",
+    expect(directory).toBe("http://127.0.0.1:5401/@kandelo-lazy/");
+    expect(resolveImageOwnedLazyAsset(directory, "kandelo-lazy:programs/tmux.wasm")).toBe(
+      new URL("/@kandelo-lazy/assets/programs/wasm32/tmux.wasm", directory).href,
     );
-  });
-
-  it("keeps browser rootfs imports within the declared rootfs outputs", () => {
-    const mapping = readFileSync(new URL("../../images/rootfs/PACKAGES.toml", import.meta.url), "utf8");
-    const source = readFileSync(new URL("../../apps/browser-demos/lib/init/rootfs-lazy-files.ts", import.meta.url), "utf8");
-    const declared = new Set([...mapping.matchAll(/^\s*binary\s*=\s*("(?:[^"\\]|\\.)*")/gm)]
-      .map(match => JSON.parse(match[1]) as string));
-    const imports = [...source.matchAll(/from\s+"@binaries\/([^"?]+)\?url"/g)]
-      .map(match => match[1]);
-    expect(imports.length).toBeGreaterThan(0);
-    // A static import outside this closure prevents every focused image from
-    // booting under SourceOnly, even when it never executes that program.
-    for (const path of imports) expect(declared.has(path), path).toBe(true);
-    expect([...ROOTFS_LAZY_ASSET_URLS.keys()].sort()).toEqual(
-      imports.map(path => `binaries/${path}`).sort(),
-    );
-  });
-
-  it("falls back to the deployment's own asset URLs when there is no asset group", () => {
-    const table = imageOwnedRuntimeUrlTable(undefined);
-    // No authority to resolve against, so the values are whatever this build
-    // emitted for each import. What must hold is that every key resolves to
-    // SOMETHING rather than being dropped.
-    expect(Object.keys(table).length).toBeGreaterThan(0);
-    for (const [reference, url] of Object.entries(table)) {
-      expect(typeof url, `${reference} must map to a string`).toBe("string");
-      expect(url.length).toBeGreaterThan(0);
-    }
   });
 
   // Authority validation, kept because it is the security half of this module
@@ -140,7 +143,7 @@ describe("image-owned grouped runtime URLs", () => {
       manifestUrl: "https://demo.invalid/a/assets-group/manifest.json#part",
     }],
   ])("refuses %s authority at construction", (_label, patch) => {
-    expect(() => imageOwnedRuntimeUrlMapper({ ...AUTHORITY, ...patch }))
+    expect(() => imageOwnedLazyAssetDirectory({ ...AUTHORITY, ...patch }))
       .toThrow(/authority is invalid/);
   });
 

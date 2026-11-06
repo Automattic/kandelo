@@ -8,6 +8,12 @@ import {
 
 const reservationSettlementAllowances = [
   {
+    owner: "CentralizedKernelWorker.#rootfsExportContainerVisit",
+    why: "The catch records a branded native export trap before rethrowing it "
+      + "unchanged. Its finally must not re-enter the damaged kernel to cancel "
+      + "an export whose native settlement is unknown.",
+  },
+  {
     owner:
       "CentralizedKernelWorker.#executeReservedChannelDispatch",
     why:
@@ -22,14 +28,6 @@ const reservationSettlementAllowances = [
       "The catch records the branded execute trap, then its finally revokes "
       + "the lease and deliberately skips cancellation because Rust settlement "
       + "is unknown before throwing one fatal wrapper.",
-  },
-  {
-    owner:
-      "CentralizedKernelWorker.#handleSpawnAfterResolve",
-    why:
-      "The reserved spawn catch records the branded commit trap, then its "
-      + "finally revokes the lease and skips cancellation because Rust "
-      + "settlement is unknown before throwing one fatal wrapper.",
   },
   {
     owner:
@@ -279,8 +277,8 @@ describe("kernel export-failure catch audit", () => {
     );
     expect(formatKernelExportFailureAudit(result)).toEqual([]);
     expect(result.exportBearingOwners).toEqual(expect.arrayContaining([
-      "CentralizedKernelWorker.#beginLargeSpawnScratch",
       "CentralizedKernelWorker.#beginLargeTransferScratch",
+      "CentralizedKernelWorker.#handleSpawn",
     ]));
   });
 });

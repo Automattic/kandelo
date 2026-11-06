@@ -1,23 +1,14 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import { test } from "./support/persistent-page";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
+import { configureNewComputer } from "./support/computer-library";
 
 async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
 }
 
-async function ensureGuideOpen(page: Page) {
-  // The demo guide no longer auto-opens; open it from the dock on first use.
-  if (await page.locator("aside.kdemo").count()) return;
-  await page.getByRole("button", { name: "Demo guide" }).click({ timeout: 120_000 });
-  await page.waitForSelector("aside.kdemo", { timeout: 30_000 });
-}
-
 async function waitForReady(page: Page, timeout = 180_000) {
-  // "Ready" renders inside the demo guide panel, which no longer auto-opens.
-  await ensureGuideOpen(page);
-  await expect
-    .poll(() => page.evaluate(() => document.body.innerText), { timeout })
-    .toContain("Ready");
+  await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout });
 }
 
 async function waitForPrompt(page: Page, timeout = 120_000) {
@@ -90,22 +81,17 @@ test("Kandelo WebKit tears down Node before launching another demo", async ({
 
   await gotoMachineOrSkip(page, "node");
   await waitForReady(page, 240_000);
-  await page.getByRole("button", { name: "Runtime check" }).click();
+  await runTerminalLine(page, `node -e "const {Worker}=require('worker_threads'); const sab=new SharedArrayBuffer(8); const view=new Int32Array(sab); new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,7); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab}); if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000); if(Atomics.load(view,1)!==1) throw new Error('worker did not finish'); console.log('worker',Atomics.load(view,0));"`);
   await expect
     .poll(() => terminalText(page), { timeout: 120_000 })
     .toContain("worker 7");
-  await page.getByRole("button", { name: "Install cowsay" }).click();
+  await runTerminalLine(page, `rm -rf node_modules package-lock.json /tmp/.npm-cache && printf '%s\\n' '{"name":"demo","version":"0.0.1"}' > package.json && npm install cowsay && ./node_modules/.bin/cowsay Kandelo`);
   await expect
     .poll(() => terminalText(page), { timeout: 300_000 })
     .toContain("< Kandelo >");
 
-  await page.getByRole("button", { name: "New", exact: true }).click();
-  await page
-    .locator(".kgal-row", {
-      has: page.locator(".kgal-machine-title", { hasText: /^Bare shell$/ }),
-    })
-    .getByRole("button", { name: "Launch" })
-    .click();
+  await configureNewComputer(page, "shell");
+  await page.getByRole("button", { name: "Create and boot", exact: true }).click();
   await waitForReady(page, 180_000);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await waitForPrompt(page);

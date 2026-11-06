@@ -37,7 +37,7 @@ if [ -z "$OUTPUT" ] || [ ! -d "$(dirname "$OUTPUT")" ]; then
 fi
 
 ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
-  "$REPO_ROOT/crates/shared/src/lib.rs" | head -n1)"
+  "$REPO_ROOT/crates/program-abi/src/lib.rs" | head -n1)"
 if [ -z "$ABI_VERSION" ]; then
   echo "build-fork-instrumented-test-fixture.sh: cannot read the current ABI version" >&2
   exit 2

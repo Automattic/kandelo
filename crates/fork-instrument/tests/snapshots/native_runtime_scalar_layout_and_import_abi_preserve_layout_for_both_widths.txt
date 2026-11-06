@@ -1,0 +1,85 @@
+=== scalar-prefix 31874256f77d ===
+(
+    72,
+    88,
+    [
+        SavedScalar {
+            global: 1,
+            ty: I64,
+            offset: 16,
+        },
+        SavedScalar {
+            global: 2,
+            ty: I64,
+            offset: 24,
+        },
+        SavedScalar {
+            global: 3,
+            ty: I32,
+            offset: 32,
+        },
+        SavedScalar {
+            global: 4,
+            ty: I64,
+            offset: 36,
+        },
+        SavedScalar {
+            global: 5,
+            ty: F32,
+            offset: 44,
+        },
+        SavedScalar {
+            global: 6,
+            ty: F64,
+            offset: 48,
+        },
+        SavedScalar {
+            global: 7,
+            ty: V128,
+            offset: 56,
+        },
+    ],
+)
+
+=== scalar-prefix bd9fff7a48c3 ===
+(
+    60,
+    76,
+    [
+        SavedScalar {
+            global: 1,
+            ty: I64,
+            offset: 8,
+        },
+        SavedScalar {
+            global: 2,
+            ty: I32,
+            offset: 16,
+        },
+        SavedScalar {
+            global: 3,
+            ty: I32,
+            offset: 20,
+        },
+        SavedScalar {
+            global: 4,
+            ty: I64,
+            offset: 24,
+        },
+        SavedScalar {
+            global: 5,
+            ty: F32,
+            offset: 32,
+        },
+        SavedScalar {
+            global: 6,
+            ty: F64,
+            offset: 36,
+        },
+        SavedScalar {
+            global: 7,
+            ty: V128,
+            offset: 44,
+        },
+    ],
+)

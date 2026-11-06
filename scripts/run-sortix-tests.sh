@@ -20,10 +20,12 @@ set -euo pipefail
 #   scripts/run-sortix-tests.sh basic stdio/printf     # run suite or specific test
 #   scripts/run-sortix-tests.sh --all                 # run all suites
 #   scripts/run-sortix-tests.sh --report              # run all + write report
+#   scripts/run-sortix-tests.sh --persistent basic stdio/rename  # resizable journaled rootfs
+#   scripts/run-sortix-tests.sh --persistent-reboot basic stdio/rename  # strict post-test reboot
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # WHY: the SDK driver finds its sysroot and glue dir by walking up from the
-# current directory (findProjectRoot in sdk/src/lib/toolchain.ts), not from
+# current directory (find_project_root in crates/kandelo-cc/src/toolchain.rs), not from
 # this script's location. Run from inside another Kandelo checkout, it would
 # compile against THAT checkout's sysroot while the prerequisite check below
 # validated this one. Pin the cwd so both agree.
@@ -36,96 +38,14 @@ OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
 BUILD_DIR="$OS_TEST/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
-# ── Expected failures ──────────────────────────────────────
-# Include tests for headers/features our musl sysroot doesn't provide.
-# Format: "header/symbol" matching the test path under tests/sortix/os-test/include/
-INCLUDE_EXPECTED_FAIL=(
-    "devctl/posix_devctl" "devctl/size_t"      # device control (Sortix/2024, not in musl)
-)
-
-BASIC_EXPECTED_FAIL=(
-    "devctl/posix_devctl"                                 # device control (Sortix/2024, not in musl)
-    "pthread/pthread_attr_setinheritsched"                # priority scheduling not supported. Observed
-                                                          # 2026-09-30: the test HANGS (no output, killed at
-                                                          # XFAIL_TIMEOUT) instead of failing with an error;
-                                                          # unexplained, a candidate defect in pthread_create
-                                                          # with PTHREAD_EXPLICIT_SCHED
-    "pthread/pthread_getcpuclockid"                       # encoded per-thread CPU clocks are not yet
-                                                          # recognized by clock_gettime (EINVAL)
-    "syslog/closelog" "syslog/syslog"                    # no /dev/log receiver; keep that boundary visible
-    "unistd/fpathconf" "unistd/pathconf"                  # _PC_FILESIZEBITS is truthfully indeterminate until
-                                                          # the selected VFS backend can prove a bit width
-    "strings/ffsll"                                       # wasm32 test bug (long vs long long)
-    # aio/aio_cancel was flaky (FAIL once, XPASS next run) — left
-    # off this list; if it starts failing reliably, add it back.
-    # The previous Linux-CI-only XFAILs for environ propagation
-    # through exec/spawn (spawn/posix_spawn{,p}, unistd/{execle,
-    # execve,fexecve}, wordexp/wordexp) now pass on the GHA runner
-    # under scripts/dev-shell.sh's `--ignore-environment` build env.
-    # They were verified XPASS across multiple PR builds before
-    # being removed from this list.
-)
-
-LIMITS_EXPECTED_FAIL=()
-
-MALLOC_EXPECTED_FAIL=()
-
-STDIO_EXPECTED_FAIL=()
-
-IO_EXPECTED_FAIL=(
-)
-
-SIGNAL_EXPECTED_FAIL=()
+# Expected failures, their recorded reasons, and how expected output is
+# found and compared are shared with the browser runner.
+# shellcheck source=scripts/sortix-expectations.sh
+source "$REPO_ROOT/scripts/sortix-expectations.sh"
 
 # Upstream tests that do not test a POSIX requirement on Kandelo are
 # reported as SKIP; see scripts/sortix-not-applicable.sh.
 source "$REPO_ROOT/scripts/sortix-not-applicable.sh"
-
-PROCESS_EXPECTED_FAIL=()
-PATHS_EXPECTED_FAIL=()
-UDP_EXPECTED_FAIL=(
-    # External raw UDP routes need a HostIO/proxy backend. The in-kernel UDP
-    # implementation intentionally supports loopback/virtual datagrams only and
-    # reports unreachable external routes as ENETUNREACH for now.
-    "bind-lan-subnet-broadcast"
-    "bind-lan-subnet-first"
-    "bind-lan-subnet-wrong"
-    "connect-broadcast-getpeername-so-broadcast"
-    "connect-broadcast-getsockname-so-broadcast"
-    "connect-wan-get-so-bindtodevice"
-    "connect-wan-getsockname"
-    "connect-wan-send-reconnect-loopback-send"
-    "connect-wan-unconnect-rebind-any-getsockname"
-    "connect-wan-unconnect-rebind-same-getsockname"
-    "cross-netif-lan-send-loopback-recv"
-    "cross-netif-loopback-send-lan-recv"
-    "shutdown-r-send"
-)
-
-# How each XFAIL above is expected to fail, checked by xfail_check (see
-# scripts/xfail-reasons.sh). Why: an XFAIL entry used to turn ANY failure of
-# its test green, so a test that started failing for a new reason (a broken
-# helper, a runner that never started the guest) stayed hidden behind its old
-# rationale, and the run was cited as clean until someone re-investigated.
-# Keys are "<suite>/<test>". Kinds this runner observes: outcome (include
-# suite: the compile probe's outcome word), build (no wasm was produced),
-# timeout (only XFAILs recorded as "timeout" get the shorter XFAIL_TIMEOUT),
-# output (the run's output matched no expect file; output starts with "exit
-# <code>"). An XFAIL that fails any other way is an XFAIL-MISMATCH.
-xfail_expected_reason() {
-    case "$1" in
-        include/devctl/*) echo "outcome:missing_header" ;;
-        basic/devctl/posix_devctl) echo "build:wasm not found" ;;
-        basic/pthread/pthread_attr_setinheritsched) echo "timeout" ;;
-        basic/pthread/pthread_getcpuclockid) echo "output:clock_gettime self cpu clock: EINVAL" ;;
-        basic/syslog/closelog) echo "output:openlog: ENOENT" ;;
-        basic/syslog/syslog) echo "output:syslog: EDESTADDRREQ" ;;
-        basic/unistd/fpathconf|basic/unistd/pathconf) echo "output:_PC_FILESIZEBITS" ;;
-        basic/strings/ffsll) echo "output:ffsll\(.*\) gave" ;;
-        udp/*) echo "output:ENETUNREACH" ;;
-        *) echo "" ;;
-    esac
-}
 
 # shellcheck source=scripts/xfail-reasons.sh
 source "$REPO_ROOT/scripts/xfail-reasons.sh"
@@ -182,7 +102,7 @@ LLVM_BIN="$(find_llvm_bin)"
 # ── Toolchain: the SDK owns the target/link contract ──
 #
 # Conformance binaries must be built the way user software is built.
-# `sdk/src/lib/flags.ts` is the single authority for the wasm32posix
+# `crates/kandelo-cc/src/flags.rs` is the single authority for the wasm32posix
 # target triple, the guest syscall glue, crt1/libc ordering, the pinned
 # wasm-ld, the host-imports allowance file that bounds what may stay
 # undefined, and the process memory layout (8 MiB main-thread shadow
@@ -221,15 +141,15 @@ CFLAGS_BASE=(
 # The SDK driver contributes the whole executable link line: syscall
 # glue, compiler-rt shims, crt1.o, libc.a, and every `-Wl,` flag. `-ldl`
 # is how the SDK spells the `libc/glue/dlopen.c` input this list used to
-# name directly (parseArgs/linkDl in sdk/src/bin/cc.ts); the suite's
+# name directly (parse_args/link_dl in crates/kandelo-cc/src/driver.rs); the suite's
 # dlfcn tests need it.
 LINK_FLAGS=(
     -ldl
 )
 
 # Flags for building shared libraries (.so) for dlopen tests. `-shared`
-# selects the SDK's shared-library link contract (SHARED_LINK_FLAGS in
-# sdk/src/lib/flags.ts): no CRT, no libc, no syscall glue, plus
+# selects the SDK's shared-library link contract (shared_link_flags() in
+# crates/kandelo-cc/src/flags.rs): no CRT, no libc, no syscall glue, plus
 # --experimental-pic/--shared/--shared-memory/--export-all.
 SO_CFLAGS=(
     -fPIC
@@ -742,79 +662,40 @@ _run_runtime_test_worker() {
     # stdin redirected to /dev/null: run-example.ts reads process.stdin
     # when not a TTY, which would drain any pipe the caller supplies.
     set +e
+    local runner_mode="isolated"
+    local journal_path=""
+    local verify_reopen=""
+    if $PERSISTENT_MODE; then
+        runner_mode="persistent"
+        journal_path="${SORTIX_FIXTURE_ROOT:?}/rootfs.journal"
+    fi
+    if $PERSISTENT_REBOOT_MODE; then
+        verify_reopen=1
+    fi
     (cd "$REPO_ROOT" && \
         KERNEL_CWD= \
+        KANDELO_RUNNER_NETWORK=offline-egress \
         KANDELO_GUEST_OUTPUT_FILE="$guest_output_file" \
         KANDELO_RUNNER_FIXTURE_ROOT="${SORTIX_FIXTURE_ROOT:?}" \
         KANDELO_RUNNER_FIXTURE_CWD="$suite" \
         KANDELO_RUNNER_GUEST_PROGRAM="$suite/$test_name" \
-        KANDELO_RUNNER_VFS=isolated \
+        KANDELO_RUNNER_VFS="$runner_mode" \
+        KANDELO_RUNNER_PERSISTENCE_PATH="$journal_path" \
+        KANDELO_RUNNER_VERIFY_REOPEN="$verify_reopen" \
+        KANDELO_RUNNER_BUILTINS=explicit \
+        WASM_POSIX_XTASK_BIN="$PROGRAM_INDEX_CHECKER" \
         TIMEOUT="$((this_timeout * 1000))" \
         run_with_timeout "$((this_timeout + 5))" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
             </dev/null >"$host_diagnostic_file" 2>&1)
     rc=$?
     set -e
-    output=$(cat "$guest_output_file" 2>/dev/null || true)
+    output=$(sortix_compose_output "$guest_output_file" "$rc")
 
-    # Sortix convention: if output is empty or exit code >= 2,
-    # append "exit: N" to the output (matches tests/sortix/os-test/misc/run.sh)
-    if [ -z "$output" ] || [ "$rc" -ge 2 ]; then
-        if [ -n "$output" ]; then
-            output="$output
-exit: $rc"
-        else
-            output="exit: $rc"
-        fi
-    fi
-
-    # For suites with .expect files, compare output. Repo-local overrides
-    # shadow submodule expectations for tests whose upstream expectation is a
-    # known Kandelo-specific limitation that has since been fixed here.
-    local expect_base="${test_name##*/}"
-    local local_expect_dir="$OS_TEST_LOCAL/${suite}.expect"
-    local default_expect_dir="$OS_TEST/${suite}.expect"
-    local override_expect_dir="$REPO_ROOT/tests/sortix/os-test-overrides/${suite}.expect"
-    local additional_expect_dir="$REPO_ROOT/tests/sortix/os-test-overrides/${suite}.expect-additional"
-    local -a expect_dirs=()
-    local override_has_expect=false
-    local local_has_expect=false
-    if [ -d "$override_expect_dir" ]; then
-        for expect_file in "$override_expect_dir/${expect_base}.posix" "$override_expect_dir/${expect_base}.posix."* "$override_expect_dir/${expect_base}."[0-9]* "$override_expect_dir/${expect_base}.unknown."*; do
-            if [ -f "$expect_file" ]; then
-                override_has_expect=true
-                break
-            fi
-        done
-    fi
-    if $override_has_expect; then
-        expect_dirs=("$override_expect_dir")
-    elif [ -d "$local_expect_dir" ]; then
-        for expect_file in "$local_expect_dir/${expect_base}.posix" "$local_expect_dir/${expect_base}.posix."* "$local_expect_dir/${expect_base}."[0-9]* "$local_expect_dir/${expect_base}.unknown."*; do
-            if [ -f "$expect_file" ]; then
-                local_has_expect=true
-                break
-            fi
-        done
-        if $local_has_expect; then
-            expect_dirs=("$local_expect_dir")
-        elif [ -d "$default_expect_dir" ]; then
-            expect_dirs=("$default_expect_dir")
-        fi
-    elif [ -d "$default_expect_dir" ]; then
-        expect_dirs=("$default_expect_dir")
-    fi
-    # Add narrowly documented Kandelo outcomes without shadowing the upstream
-    # cross-platform alternatives. Existing *.expect override directories
-    # continue to replace upstream candidates when an invariant demands it.
-    if [ -d "$additional_expect_dir" ]; then
-        for expect_file in "$additional_expect_dir/${expect_base}.posix" "$additional_expect_dir/${expect_base}.posix."* "$additional_expect_dir/${expect_base}."[0-9]* "$additional_expect_dir/${expect_base}.unknown."*; do
-            if [ -f "$expect_file" ]; then
-                expect_dirs+=("$additional_expect_dir")
-                break
-            fi
-        done
-    fi
+    # For suites with .expect files, compare output against the candidates
+    # sortix_expect_dirs selects (repository overrides, os-test-local,
+    # upstream, then documented additional outcomes).
+    sortix_expect_dirs "$suite" "$test_name"
 
     local test_passed=false
     if [ $rc -eq 124 ]; then
@@ -826,20 +707,16 @@ exit: $rc"
         fi
         return
     fi
+    if $PERSISTENT_REBOOT_MODE && [ $rc -eq 125 ] && grep -q '^persistent runner verification failed:' "$host_diagnostic_file"; then
+        { echo "FAIL"; echo "persistent runner verification failed (exit 125)"; tail -n 30 "$host_diagnostic_file"; } > "$result_dir/${test_name//\//__}.result"
+        return
+    fi
 
     # Check output against expect files
-    if [ ${#expect_dirs[@]} -gt 0 ]; then
-        for expect_dir in "${expect_dirs[@]}"; do
-            for expect_file in "$expect_dir/${expect_base}.posix" "$expect_dir/${expect_base}.posix."* "$expect_dir/${expect_base}."[0-9]* "$expect_dir/${expect_base}.unknown."*; do
-                [ -f "$expect_file" ] || continue
-                local expected
-                expected=$(cat "$expect_file")
-                if [ "$output" = "$expected" ]; then
-                    test_passed=true
-                    break 2
-                fi
-            done
-        done
+    if [ ${#SORTIX_EXPECT_DIRS[@]} -gt 0 ]; then
+        if sortix_output_matches "$suite" "$test_name" "$output"; then
+            test_passed=true
+        fi
     elif [ $rc -eq 0 ]; then
         test_passed=true
     fi
@@ -1149,6 +1026,7 @@ run_suite() {
         export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT TEST_TIMEOUT XFAIL_TIMEOUT
         export -f _run_runtime_test_worker _run_runtime_test_with_private_fixture
         export -f _check_xfail_serialized run_with_timeout not_applicable_reason xfail_expected_reason
+        export -f sortix_expect_dirs sortix_has_expect sortix_compose_output sortix_output_matches
 
         # Export serialized XFAIL list for this suite
         _export_xfail_for_suite "$suite"
@@ -1169,6 +1047,8 @@ run_suite() {
 
 REPORT_MODE=false
 ALL_MODE=false
+PERSISTENT_MODE=false
+PERSISTENT_REBOOT_MODE=false
 SUITES=()
 SPECIFIC_TESTS=()
 
@@ -1179,6 +1059,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --report) REPORT_MODE=true; ALL_MODE=true; shift ;;
         --all)    ALL_MODE=true; shift ;;
+        --persistent) PERSISTENT_MODE=true; shift ;;
+        --persistent-reboot) PERSISTENT_MODE=true; PERSISTENT_REBOOT_MODE=true; shift ;;
         --sequential) PARALLEL=1; shift ;;
         --parallel)
             if [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -1206,6 +1088,7 @@ if [ ${#SUITES[@]} -eq 0 ]; then
         SUITES=("${DEFAULT_SUITES[@]}")
     fi
 fi
+export PERSISTENT_MODE PERSISTENT_REBOOT_MODE
 
 # Verify prerequisites
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
@@ -1220,7 +1103,22 @@ if [ ! -d "$OS_TEST" ]; then
     echo "Error: os-test not found. Run: git submodule update --init tests/sortix/os-test" >&2
     exit 1
 fi
+RUST_HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+if [ -z "$RUST_HOST_TARGET" ]; then
+    echo "Error: could not determine the Rust host target." >&2
+    exit 1
+fi
+cargo build --release -p xtask --target "$RUST_HOST_TARGET" --quiet
+PROGRAM_INDEX_CHECKER="$REPO_ROOT/target/$RUST_HOST_TARGET/release/xtask"
+if [ ! -f "$PROGRAM_INDEX_CHECKER" ]; then
+    echo "Error: prepared xtask was not found at $PROGRAM_INDEX_CHECKER" >&2
+    exit 1
+fi
+export PROGRAM_INDEX_CHECKER
 abi_contract_stamp_prepare || exit 1
+# shellcheck source=scripts/conformance-program-index.sh
+source "$REPO_ROOT/scripts/conformance-program-index.sh"
+conformance_program_index_prepare || exit 1
 
 PASS=0
 FAIL=0
@@ -1278,7 +1176,13 @@ done
 # ── Report mode ─────────────────────────────────────────────
 
 if $REPORT_MODE; then
-    REPORT="$REPO_ROOT/docs/sortix-test-report.md"
+    if $PERSISTENT_REBOOT_MODE; then
+        REPORT="$REPO_ROOT/docs/sortix-persistent-reboot-test-report.md"
+    elif $PERSISTENT_MODE; then
+        REPORT="$REPO_ROOT/docs/sortix-persistent-test-report.md"
+    else
+        REPORT="$REPO_ROOT/docs/sortix-test-report.md"
+    fi
     {
         echo "# Sortix os-test Conformance Report"
         echo ""
@@ -1330,6 +1234,6 @@ if [ ${#EMPTY_SUITES[@]} -gt 0 ]; then
     echo "Error: suites with no tests: ${EMPTY_SUITES[*]}" >&2
     exit 1
 fi
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ]; then
+if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi

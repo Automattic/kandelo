@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { encodeSessionInvitation } from "../../../web-libs/kandelo-session/src/session-invitation";
 
 import type { RemoteSessionSnapshot } from "../../../host/src/networking/remote-segment-runtime.ts";
 import type { PeerConnection } from "../../../web-libs/kandelo-session/src/peer-connection.ts";
@@ -10,6 +11,16 @@ import {
 } from "./network-session.ts";
 
 const SERVER = "https://signal.test/piplet.php";
+test("activity invitations carry typed offers while ordinary room links drop startup fragments", () => {
+  const offer = { version: 1 as const, package: "termchat", packageVersion: "1.3.1", manifestSha256: "a".repeat(64), offer: "chat", values: { name: "alice" } };
+  const url = new URL(sessionLink("https://kandelo.test/?profile=shell#k1=script", "abcdefghijklmnopqrstuvwxyz", "Chat"));
+  assert.equal(url.hash, "");
+  url.hash = encodeSessionInvitation(offer);
+  assert.deepEqual(sessionInvitation(url.href)?.offer, offer);
+  url.searchParams.delete("network");
+  assert.throws(() => sessionInvitation(url.href), /requires a valid network room/);
+  assert.throws(() => sessionInvitation("https://kandelo.test/?network=abcdefghijklmnopqrstuvwxyz#ks2=eA"), /Unsupported/);
+});
 const until = async (check: () => boolean, what: string) => {
   const deadline = Date.now() + 2000;
   while (!check()) {
