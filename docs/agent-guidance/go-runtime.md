@@ -240,6 +240,12 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   collect notifications before queuing them on the Go system stack.
   An arbitrary Go callback must not enter through an invented active cgo
   call. C-created pthreads use their existing foreign callback transition.
+  Go-owned signal notifications run on the system stack without the normal
+  user-callback transition: libc can still hold pointers into the interrupted
+  Go stack, including its syscall completion frame. Keep that goroutine in
+  syscall state until C returns. The signal/GC fixture verifies completion
+  after collections during blocked reads; it does not prove stack relocation
+  or reproduce corruption in the preceding implementation.
   `tests/go/signal-basic` covers plain-Go/cgo notifications, SIGTERM defaults
   after Reset/Stop, real C handlers, an 8 GiB logical seek, and in-flight HTTP
   shutdown on Node and all three browsers. Its restart probe observes the

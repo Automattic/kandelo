@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 var foreignSignalProbe func()
@@ -33,6 +34,10 @@ func main() {
 		return
 	}
 	runtime.LockOSThread()
+	if len(os.Args) > 1 && os.Args[1] == "signal-gc" {
+		signalDuringGC()
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "blocked-wait" {
 		blockedWait()
 		return
@@ -120,6 +125,53 @@ func main() {
 	signal.Stop(signals)
 	checkWideSeek()
 	fmt.Println("GO SIGNAL PASS")
+}
+
+//go:noinline
+func growSignalStack(depth int) byte {
+	var padding [1024]byte
+	padding[depth%len(padding)] = byte(depth)
+	if depth > 0 {
+		padding[0] = growSignalStack(depth - 1)
+	}
+	runtime.KeepAlive(&padding)
+	return padding[depth%len(padding)]
+}
+
+func signalDuringGC() {
+	const rounds = 12
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGUSR1)
+	defer signal.Stop(signals)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	fd := int(reader.Fd())
+	go func() {
+		var control [1]byte
+		for round := 0; round < rounds; round++ {
+			if n, err := os.Stdin.Read(control[:]); n != 1 || err != nil || control[0] != 'g' {
+				panic("missing GC control byte")
+			}
+			runtime.GC()
+			fmt.Printf("GO SIGNAL GC DONE round=%d\n", round)
+		}
+	}()
+	var value [1]byte
+	for round := 0; round < rounds; round++ {
+		growSignalStack(128 + round)
+		before := uintptr(unsafe.Pointer(&value[0]))
+		fmt.Printf("GO SIGNAL GC READ round=%d fd=%d\n", round, fd)
+		if n, err := syscall.Read(fd, value[:]); n != 0 || err != syscall.EINTR {
+			panic(fmt.Sprintf("signal completion changed during GC: n=%d err=%v", n, err))
+		}
+		receive(signals)
+		fmt.Printf("GO SIGNAL GC STACK MOVED=%t\n", before != uintptr(unsafe.Pointer(&value[0])))
+	}
+	fmt.Println("GO SIGNAL GC PASS")
 }
 
 func blockedWait() {

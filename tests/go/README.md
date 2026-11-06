@@ -55,6 +55,10 @@ safepoint import and preserves a pipe read across a 400 ms wait. This tests
 producer integration and syscall completion, not a standalone GC diagnosis.
 The cgo restart case waits for the actual blocked read,
 sends a signal, and requires a second read dispatch before success.
+The signal/GC case performs twelve blocked reads, triggers a collection
+from another goroutine after each read is dispatched, then delivers a
+signal and verifies the interrupted completion and notification. It does
+not require or establish stack relocation.
 The upstream `os/signal` binary also runs ten selected tests in each
 browser/mode. This does not establish inherited blocked-mask management,
 native signal-context unwinding, or complete Go signal conformance.
@@ -64,6 +68,7 @@ scripts/dev-shell.sh bash tests/go/signal-basic/build.sh
 scripts/dev-shell.sh bash -c 'node --import tsx tests/go/signal-basic/run.ts .context/go-signals/cgo.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
 scripts/dev-shell.sh bash -c 'node --import tsx tests/go/signal-basic/run-http-drain.ts .context/go-signals/cgo.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
 scripts/dev-shell.sh bash -c 'node --import tsx tests/go/signal-basic/run-http-drain.ts .context/go-signals/cgo.wasm "$(scripts/resolve-binary.sh kernel.wasm)" restart'
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/signal-basic/run-http-drain.ts .context/go-signals/cgo.wasm "$(scripts/resolve-binary.sh kernel.wasm)" signal-gc'
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_SIGNAL_TESTS=1 npx playwright test test/go-signals.spec.ts --workers=1'
 ```
 

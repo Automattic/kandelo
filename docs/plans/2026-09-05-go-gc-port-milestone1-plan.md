@@ -5132,3 +5132,31 @@ retirement with clean guest stderr and diagnostics. The active source
 rebuild is `go-safepoint-source-products-1105-183847-8b11`; its registry
 snapshot is stable at the revision-35 recipes. The application-level
 PHP/Caddy drain test is still unrun until that image is available.
+
+
+**2026-11-05 — Preserve syscall state for runtime-owned cgo signals.**
+Source review found that Go-owned signal notification entered the ordinary
+user cgo callback transition. That transition allows a Go stack to move,
+while libc may still hold pointers into that stack, including the typed
+syscall completion frame. Go fork
+`29e21182116f32de46a7792402860a88ccb1178c` handles this runtime-owned
+notification on the system stack instead, preserving syscall state until
+C returns. It leaves ordinary foreign-pthread callbacks unchanged. This
+is a twelve-line target-runtime change, not a compiler or consumer patch.
+
+The new signal/GC fixture waits for each actual blocked read, triggers GC
+from another goroutine, then delivers SIGUSR1 and checks both EINTR and
+notification. Both Node modes pass twelve rounds with clean guest stderr
+and diagnostics. The expanded browser suite passes 51/51 in 2m35s including
+fixture builds (`go-signal-system-stack-browser-1105-190444-1170`). The
+Kandelo cgo-disabled/enabled, js/wasm, and wasip1/wasm standard-library
+compile matrix passes; the portable test helpers pass strict TypeScript.
+The first compile invocation omitted `CC=wasm32posix-cc` and failed the
+C pointer-width check; the corrected target compiler invocation passes.
+
+The prior implementation also passed both Node GC fixtures and no stack
+relocation was observed. Do not describe this as reproduced corruption or
+the established cause of WordPress failures. The source build continues
+with its stable 9301243/revision-35 snapshot; the new callback commit is
+pushed but not yet pinned or part of an application image. The real
+PHP/Caddy shutdown probe is still pending that image.

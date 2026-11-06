@@ -5,7 +5,7 @@ import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { test } from "./support/streamed-artifacts";
 
 for (const mode of ["pure", "cgo"]) {
-  for (const probeMode of mode === "cgo" ? ["http-drain", "restart"] : ["http-drain"]) {
+  for (const probeMode of mode === "cgo" ? ["http-drain", "restart", "signal-gc"] : ["http-drain", "signal-gc"]) {
     test(`Go ${mode} signal ${probeMode}`, async ({ page, baseURL, serveArtifacts }) => {
       test.skip(process.env.KANDELO_GO_SIGNAL_TESTS !== "1", "Build tests/go/signal-basic and set KANDELO_GO_SIGNAL_TESTS=1");
       const urls = await serveArtifacts({
@@ -17,7 +17,7 @@ for (const mode of ["pure", "cgo"]) {
       const result = await page.evaluate(async ({ urls, browserKernelUrl, probeUrl, probeMode }) => {
         const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
         const probe = await import(/* @vite-ignore */ probeUrl);
-        const verify = probeMode === "restart" ? probe.verifySignalRestart : probe.verifyHttpSignalDrain;
+        const verify = probeMode === "signal-gc" ? probe.verifySignalGC : probeMode === "restart" ? probe.verifySignalRestart : probe.verifyHttpSignalDrain;
         const [program, kernelWasm, image] = await Promise.all(["program", "kernel", "image"].map(async name => {
           const response = await fetch(urls[name]);
           if (!response.ok) throw new Error(`signal fixture fetch failed: ${name}: ${response.status}`);
@@ -50,11 +50,12 @@ for (const mode of ["pure", "cgo"]) {
         urls,
         probeMode,
         browserKernelUrl: new URL(`/@fs${resolve("../../host/src/browser-kernel-host.ts")}`, baseURL).href,
-        probeUrl: new URL(`/@fs${resolve(`../../tests/go/signal-basic/${probeMode === "restart" ? "restart" : "http-drain"}.ts`)}`, baseURL).href,
+        probeUrl: new URL(`/@fs${resolve(`../../tests/go/signal-basic/${probeMode === "signal-gc" ? "signal-gc" : probeMode === "restart" ? "restart" : "http-drain"}.ts`)}`, baseURL).href,
       });
       expect(result.exitCode).toBe(0);
       if (probeMode === "http-drain") expect(result.status).toBe(200);
-      else expect(result.readDispatches).toBeGreaterThanOrEqual(2);
+      else if (probeMode === "restart") expect(result.readDispatches).toBeGreaterThanOrEqual(2);
+      else expect(result.stdout).toContain("GO SIGNAL GC PASS");
       expect(result.stderr).toBe("");
       expect(result.diagnostics).toEqual([]);
     });
