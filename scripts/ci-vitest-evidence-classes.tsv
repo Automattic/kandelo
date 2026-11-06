@@ -180,6 +180,7 @@ host/test/guest-program-preparation.test.ts	prepared-product
 host/test/guest-sdk-equivalence.test.ts	prepared-product
 host/test/guest-spawn-overlay-program.test.ts	prepared-product
 host/test/guest-yacc-lex.test.ts	prepared-product
+host/test/harper-smoke.test.ts	prepared-product
 host/test/heap-safepoint.test.ts	prepared-product
 host/test/host-adapter-manifest.test.ts	source-only
 host/test/host-diagnostic-routing.test.ts	source-only
@@ -627,6 +628,7 @@ tests/package-system/qtbase-package.test.ts	source-only
 tests/package-system/resolve-binary.test.ts	prepared-product
 tests/package-system/rootfs-package-manifest.test.ts	prepared-product
 tests/package-system/rootfs-verified-source-contract.test.ts	prepared-product
+tests/package-system/rust-package-workspace.test.ts	source-only
 tests/package-system/scummvm-play-download.test.ts	source-only
 tests/package-system/sdl-dsp-packages.test.ts	source-only
 tests/package-system/shell-lazy-url-resolution.test.ts	prepared-product

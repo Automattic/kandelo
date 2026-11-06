@@ -167,6 +167,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "harper-browser-bundle",
+      "version": "3.0.0",
+      "role": "lazy-archive"
+    },
+    {
       "name": "sqlite-cli",
       "version": "3.49.1",
       "role": "lazy-file"
