@@ -254,6 +254,12 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   unwinding, preemption, and management of inherited blocked masks remain
   gaps. Rebuild consumers and validate actual Caddy/PHP shutdown before
   claiming the demo drains in-flight requests.
+- Repeated upstream `os/exec` `TestWaitid` is a useful stop/continue probe.
+  A child returning `EBUSY` from stdin after SIGCONT exposed the shared host
+  re-arming a deferred blocked read as a fresh dispatch. Preserve the frozen
+  request and its existing Rust target token through resume; retrying EBUSY
+  in Go would hide the platform defect. The Node VFS harness accepts
+  `KANDELO_GO_TEST_COUNT` to repeat upstream tests without modifying them.
 - Go `syscall.StartProcess` uses non-forking `SYS_SPAWN`; descriptor
   inheritance must be serialized with `ForkLock`. The existing spawn
   attribute supports child-atomic process groups. Requested child

@@ -47,3 +47,31 @@ scripts/dev-shell.sh bash -c 'set -e; bash tests/go/build-browser-fixtures.sh; c
 
 Complete source-log SHA-256:
 `5857215b9ba337ab9269daa246b0c30f97899c28518b7ac20c894f014ea04f9d`.
+
+`go-browser-waitid-ebusy.log` retains decoded nonpassing stdout and stderr
+from a 100-repeat Chromium upstream TestWaitid diagnostic run
+(`go-waitid-upstream-diagnostics-1105-193531-d5e8`, exit 1). A Go test overlay
+only adds child-error output and forwards that child's stderr; it changes
+no runtime or installed standard-library implementation. The child reports
+`read /dev/stdin: device or resource busy` after stop/continue. The
+standalone pipe probes passed 200 rounds per Go mode in Node and Chromium;
+the repeated upstream test supplies the actual failing sequence.
+
+The overlay and exact browser fixture are retained locally under
+`.context/waitid-upstream-debug/`; the invoked browser command is in that
+job's log. Kandelo commit: `86204e23c`; Go fork: `29e2118`. The source build
+and baseline package build were also active. Complete source-log SHA-256:
+`b6101f9ef6ea1cdcbc772fa55992e58819aa9977de6853309b4bef0f031dc5bc`.
+
+`stopped-read-before.log` retains the failure excerpt from `.context/stopped-read-retry-before.log`; complete source-log SHA-256: `5857c30da6037b33b7971dc1b22dec2b928ff727db156065141edd2923675dd8`.
+
+`stopped-read-stale-source-check.log` retains the failure excerpt from `.context/stopped-read-retry-after.log`; complete source-log SHA-256: `d96a74da9a2f9abd3a883e0270ba411044a19c3f9c91554284c6f99d9827f862`.
+
+The stopped-read tests fail with errno 16 in both wasm32 and wasm64 before
+the host resume correction. The first four-file rerun then passes 184/185,
+including both regressions, but an existing source-text assertion expects
+the old libc wrapper's return syntax. Updating that assertion for typed
+completion leaves its cancellation-point argument checks intact. The full
+four-file rerun passes 185/185 with no skips. The diagnostic upstream
+Chromium test also passes all 100 repeats with clean stderr after the fix.
+These are corrected observations, not an expected-failure allowance.

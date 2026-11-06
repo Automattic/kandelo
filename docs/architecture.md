@@ -5665,7 +5665,10 @@ consume a record, so an `EFAULT` cannot lose child status or reap a zombie.
 Default stop actions park execution cooperatively at the syscall boundary. The
 kernel emits a process-transition event, and the shared Node/browser host holds
 prepared completions by exact channel identity, including every pthread
-channel, until SIGCONT. SIGCONT changes state immediately even when blocked,
+channel, until SIGCONT. A blocked I/O retry deferred during the stop resumes
+through its retained request and kernel target token. It must not become a
+fresh dispatch while the original open-file-description binding remains live.
+SIGCONT changes state immediately even when blocked,
 ignored, or caught; SIGKILL can terminate a stopped process. Current Wasm
 workers do not provide arbitrary-instruction preemption, so CPU-bound code that
 never reaches a syscall cannot be suspended immediately; that boundary is

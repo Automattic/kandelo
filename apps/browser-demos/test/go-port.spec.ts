@@ -315,6 +315,18 @@ const probes: Probe[] = [
     passedTopLevelTests: 5,
   },
   {
+    name: "upstream Go os/exec repeated stop and continue retains blocked reads",
+    file: "os-exec-test.wasm",
+    argv: ["go-os-exec-test", "-test.run=^TestWaitid$", "-test.count=20", "-test.short", "-test.parallel=1", "-test.v"],
+    stdout: ["--- PASS: TestWaitid", "PASS"],
+    directories: ["/tmp", "/work"],
+    selfExecPath: "/bin/os-exec-test.wasm",
+    launchFromVfs: true,
+    cwd: "/work",
+    env: ["PATH=/bin:/usr/bin"],
+    passedTopLevelTests: 20,
+  },
+  {
     name: "upstream Go archive/tar complete suite",
     file: "tar-test.wasm",
     argv: ["go-tar-test", "-test.run=^Test", "-test.v"],

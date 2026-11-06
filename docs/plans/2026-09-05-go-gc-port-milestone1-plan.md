@@ -5236,3 +5236,42 @@ Chromium preparation first hit duplicate Playwright installations and an
 ES-module directory import; neither attempt ran guest tests. The corrected
 module/runner selection is now running. These observations do not establish
 the cause of the upstream Chromium TestWaitid failure.
+
+
+**2026-11-05 — Preserve blocked I/O retry authority across SIGCONT.**
+A diagnostic overlay of upstream `os/exec` TestWaitid forwards child stderr
+and prints its read error. One hundred Chromium repeats reproduce nine
+failures: `read /dev/stdin: device or resource busy`. This changes only the
+test build; the runtime and standard-library implementation remain intact.
+The earlier standalone 200-round probes pass in Node and Chromium; an
+exact two-write variant also passes in Node. The original upstream test
+provides the failing scheduling sequence.
+
+The shared host's resume barrier re-armed all deferred channels through a
+fresh mailbox listener. A deferred blocked read still owns its original
+Rust open-file-description binding; a new request with token zero therefore
+correctly receives EBUSY from Rust. Resume now sends such channels through
+the existing frozen retry plan and target token, while fresh requests keep
+the ordinary listener. This is a shared Node/browser host correction, with
+no guest-library workaround, new ABI field, or relaxed kernel admission.
+
+A deterministic wasm32/wasm64 regression fails with EBUSY before the fix
+and passes afterward, also checking the original fd, destination, payload,
+and exactly-once binding release after guest request bytes change. All four
+related host suites pass 185/185 with no skips
+(`.context/stopped-read-retry-current.log`). The initial broad rerun had one
+stale source-text assertion for the earlier typed libc wrapper; its update
+preserves cancellation-point argument checks. Failure excerpts are retained
+under `tests/baselines/2026-11-05-go-signals/`.
+
+The Chromium diagnostic selection passes 100/100 upstream repetitions with
+clean stderr/diagnostics after the fix
+(`go-waitid-resume-retry-fixed-1105-194403-b745`, 1m27s). Newly rebuilt cgo
+and current pure-Go exec binaries each pass twenty unmodified TestWaitid
+repetitions in Node, also clean
+(`go-waitid-node-resume-fixed-1105-194558-c1c6`, 24 seconds including build).
+The ordinary browser inventory now includes a twenty-repeat unmodified
+upstream stop/continue case per engine; its full 150-case run is ongoing.
+ABI 55's digest/snapshot check remains unchanged and passes; the existing
+runtime-workaround registry also remains consistent. This defect belongs
+to Kandelo's host, and needs no external-runtime workaround entry.

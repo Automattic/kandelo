@@ -4,6 +4,10 @@ import { NodeKernelHost } from "../../../host/src/node-kernel-host.ts";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs.ts";
 
 const [programPath, kernelPath, pwdPath, filter, skipFilter, sourcePackage = "os"] = process.argv.slice(2);
+const repetitions = Number(process.env.KANDELO_GO_TEST_COUNT ?? "1");
+if (!Number.isSafeInteger(repetitions) || repetitions < 1 || repetitions > 10_000) {
+  throw new Error("KANDELO_GO_TEST_COUNT must be an integer from 1 to 10000");
+}
 if (!programPath || !kernelPath || !pwdPath || !filter) {
   throw new Error("usage: node --import tsx run-full-vfs.ts <test.wasm> <kernel.wasm> <pwd.wasm> <test-filter> [skip-filter] [source-package]");
 }
@@ -73,7 +77,7 @@ try {
   }
   const { exit } = await host.spawnFromVfs(
     "/bin/os-test.wasm",
-    [sourcePackage === "os/exec" ? "/bin/os-test.wasm" : "go-os-test", `-test.run=${filter}`, ...(skipFilter ? [`-test.skip=${skipFilter}`] : []), ...(process.env.KANDELO_GO_SHORT === "1" ? ["-test.short"] : []), "-test.v"],
+    [sourcePackage === "os/exec" ? "/bin/os-test.wasm" : "go-os-test", `-test.run=${filter}`, `-test.count=${repetitions}`, ...(skipFilter ? [`-test.skip=${skipFilter}`] : []), ...(process.env.KANDELO_GO_SHORT === "1" ? ["-test.short"] : []), "-test.v"],
     { cwd: "/work", env: ["PATH=/bin:/usr/bin"] },
   );
   const timeout = Number(process.env.KANDELO_GO_TEST_TIMEOUT_MS ?? 180_000);

@@ -15404,10 +15404,12 @@ export class CentralizedKernelWorker {
           publication.prepared,
         );
       }
-      // Re-enter through the normal listener so polling mode and the browser's
-      // event-loop yielding policy retain their existing behavior.
+      // A deferred retry still owns its frozen request and Rust target token.
+      // Re-entering it as a fresh mailbox dispatch would lose that token and
+      // return EBUSY instead of completing the original operation.
       for (const channel of deferredToRelisten) {
-        this.relistenChannel(channel);
+        if (this.blockingRetrySnapshots.has(channel)) this.retrySyscall(channel);
+        else this.relistenChannel(channel);
       }
     });
     return true;

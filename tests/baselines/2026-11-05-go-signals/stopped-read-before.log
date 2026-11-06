@@ -1,0 +1,30 @@
+ FAIL  test/kernel-blocking-retry-snapshot.test.ts > blocking retry request snapshots > wasm32 resumes a stopped scalar read with its retained target and destination
+ FAIL  test/kernel-blocking-retry-snapshot.test.ts > blocking retry request snapshots > wasm64 resumes a stopped scalar read with its retained target and destination
+AssertionError: expected { status: 2, returnValue: -1, …(1) } to deeply equal { Object (status, returnValue, ...) }
+
+- Expected
++ Received
+
+  {
+-   "errno": 0,
+-   "returnValue": 3,
++   "errno": 16,
++   "returnValue": -1,
+    "status": 2,
+  }
+
+ ❯ test/kernel-blocking-retry-snapshot.test.ts:863:38
+    861|       await vi.advanceTimersByTimeAsync(0);
+    862|
+    863|       expect(requestResult(harness)).toEqual({
+       |                                      ^
+    864|         status: CHANNEL_STATUS_COMPLETE, returnValue: payload.length, …
+    865|       });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 121 skipped (123)
+   Start at  19:41:57
+   Duration  83.74s (transform 80%, import 16%, tests 4%)
