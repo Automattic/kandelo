@@ -39,8 +39,11 @@ not yet pinned in a package image.
   ordinary/foreign callback regressions pass three Node probes and nine
   browser cases. The complete cgo-enabled upstream Node `os` run passes
   224 top-level tests/examples with 21 skips and clean guest diagnostics.
-- Next: finish the Go signal-notification port and validate application
-  shutdown, isolate the classic WebKit failures, then establish sustained
+- The current full Go browser inventory passes 150/150 across Chromium,
+  Firefox, and WebKit after correcting shared-host stop/continue retry
+  ownership. The related host suites pass 185/185.
+- Next: finish the consumer rebuild and validate actual PHP shutdown,
+  isolate the classic WebKit failures, then establish sustained
   traffic/memory behavior and current paired stack comparisons. Child
   credentials, host-backed path limits, and broader conformance remain gaps.
 
@@ -5194,7 +5197,7 @@ including fixture builds). The same case passes in Firefox and WebKit;
 three focused Chromium repeats also pass (35 seconds). This remains an
 intermittent failure, not a green full-inventory result. Its actual failure
 payload and source-log hash are retained under
-`tests/baselines/2026-11-05-go-signals/`. A smaller stop/continue pipe
+`.context/branch-failures/go-signals/`. A smaller stop/continue pipe
 reproducer with child-error capture is running before any behavior change.
 
 
@@ -5262,7 +5265,7 @@ related host suites pass 185/185 with no skips
 (`.context/stopped-read-retry-current.log`). The initial broad rerun had one
 stale source-text assertion for the earlier typed libc wrapper; its update
 preserves cancellation-point argument checks. Failure excerpts are retained
-under `tests/baselines/2026-11-05-go-signals/`.
+under `.context/branch-failures/go-signals/`.
 
 The Chromium diagnostic selection passes 100/100 upstream repetitions with
 clean stderr/diagnostics after the fix
@@ -5275,3 +5278,26 @@ upstream stop/continue case per engine; its full 150-case run is ongoing.
 ABI 55's digest/snapshot check remains unchanged and passes; the existing
 runtime-workaround registry also remains consistent. This defect belongs
 to Kandelo's host, and needs no external-runtime workaround entry.
+
+
+The full ordinary browser inventory now passes 150/150 across Chromium,
+Firefox, and WebKit (`go-core-resume-retry-fixed-1105-194514-9160`, 8m07s).
+That includes twenty unmodified upstream TestWaitid repetitions per engine.
+Together with the deterministic wasm32/wasm64 regressions, this validates
+the shared host's retry-token correction; it does not establish the cause
+of the separate classic WordPress/WebKit editor stalls.
+
+The subsequent sequential Sortix signal/I/O run does not execute guests:
+Node reports 89 resolver failures and two existing skips; browser reports
+89 runner errors and the same skips. The active source build has staged a
+new rootfs of 173194 bytes while the previous published projection still
+records 173050 bytes. The resolver correctly refuses the mismatched cohort.
+The source build log records that new rootfs at its rootfs/wasm32 node;
+its final publication must finish before rerunning these conformance suites.
+No integrity check is weakened. Raw reports remain in
+`.context/stopped-read-sortix-{node,browser}.log`.
+
+Branch-only diagnostic excerpts are kept in
+`.context/branch-failures/go-signals/`, following the repository's failure
+recording policy. The earlier committed baseline inventory remains intact;
+the progress log retains the branch commands, results, and root cause.
