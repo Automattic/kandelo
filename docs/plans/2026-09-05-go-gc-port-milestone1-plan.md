@@ -38,8 +38,10 @@ threads and verify the actual Caddy startup count. This is resource sizing,
 not proof that the per-thread native cost is solved or that long-term memory
 use is bounded. The detailed controls below preserve measurement scope.
 
-The full revision-39 visible UI and required memory/lifecycle gate are
-running. Final crash persistence, all-engine service recovery/draining,
+The required memory/lifecycle gate passes on revision 39 in 20m20s: all
+18 browser cases, 239 ownership checks, seven boundary checks, three Node
+and seven Bun teardown cases, with no skipped/failed cases. The full
+revision-39 visible UI is running. Final crash persistence, all-engine service recovery/draining,
 sustained comparisons and quiet nine-suite measurements remain open.
 The target supports cooperative
 signals, fatal Go tracebacks, shared libc cgo syscall dispatch, callbacks,
@@ -62,8 +64,8 @@ production readiness, a physical-memory plateau, or superiority over PHP-FPM.
 
 ### Remaining release gates
 
-1. Finish the full memory/lifecycle gate on revision 39. Vite cache
-   isolation and the earlier complete gate pass all 18 three-engine cases.
+1. The full memory/lifecycle gate on revision 39 is complete. Vite cache
+   isolation and all 18 three-engine lifecycle cases pass.
    The terminal-channel wake fix has a fail-before/pass-after regression
    and real service repetitions. The exact waiter order behind the
    original intermittent dinit retirement was not captured.
@@ -481,6 +483,21 @@ observed PHP thread count. Evidence:
 `.context/wordpress-node-pool-smoke-HpLw7M/`. It runs for 25 seconds under
 concurrent UI validation and supplies no performance conclusion. Quiet
 sustained measurements remain pending.
+
+### Final-artifact memory/lifecycle gate — 2026-11-06
+
+`frankenphp-rev39-final-browser-memory-1106-150118-ba3c` passes in 20m20s
+on final WordPress revision 39, kernel `bfdf6ce5`, Go `5834adc`. The normal
+command is `./run.sh test browser-memory` in the declared dev shell. All
+18 browser cases pass across Chromium, Firefox and WebKit with no retries,
+skips or failures. Each engine completes four constrained-budget demo
+switches in the same page/audio realm, including Doom, Quake, Freeciv,
+LÖVE, tmux and WordPress. The source boundary checks (7), host ownership
+checks (239), Node teardown (3), Bun teardown (7), and host declaration
+build also pass. No forced GC, reload, replacement context, memory-ceiling
+increase or app fallback is used to make the gate pass. The WordPress
+switch case uses the ordinary MariaDB/FPM profile; it does not replace the
+separate embedded-PHP service and persistence workflows.
 
 ### Standalone Caddy and byte ownership review — 2026-11-06
 

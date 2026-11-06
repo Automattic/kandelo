@@ -762,6 +762,25 @@ page so a content-process kill does not erase the evidence. Inspect actual
 Wasm section sizes before proposing debug stripping; do not assume a large
 module contains DWARF or remove names needed for failure diagnostics.
 
+Audit worker message payloads separately from compiled-module sharing. The
+current Node and browser thread paths send the original program bytes as
+well as the compiled module. Those bytes support reflection, typed import
+routing, fork-template identity and legacy channel TLS detection; dropping
+them without replacing those uses would weaken correctness. For a roughly
+206-MB program, each ordinary structured clone is a material allocation
+even when `threadCompiles` is zero. Do not attribute it to engine code or
+promise that eliminating it solves the native footprint without measuring.
+
+For WebKit inspector memory diagnostics, navigation replaces the page's
+target. Reattach tracking to the committed target and retain UTC receipt
+times outside the page; record pairing skew with guest snapshots. Keep
+unknown guest values absent after destruction. Native allocation categories
+are not whole-process footprint or per-worker JavaScript heap counts, and
+direct page-worker events omit nested guest workers. Use guest `/proc`
+thread counts alongside those events. Observe natural post-destroy behavior
+in the same page without forced GC; one short reclamation interval does not
+prove a sustained-memory bound.
+
 For Node diagnostics, record process RSS and, on macOS, physical footprint;
 V8's `--print-wasm-offheap-memory-size` is useful for an exit-time compiled
 module sample, not a running-service memory plateau. Guard large runs against
