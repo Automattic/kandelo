@@ -6,15 +6,21 @@ The work now extends beyond the original hello-world milestone below.
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
 on ABI 55 and latest main `21cfba152` (fetched again November 5).
 
-The package source pin is `29e21182116f32de46a7792402860a88ccb1178c`,
+The package source pin is `1b0cf58011c425efe571b67dc134513b0760ad83`,
 including cooperative Go signals, fatal Go tracebacks, shared libc cgo
 syscall dispatch, host heap-safepoint integration, and the tested callback
 system-stack correction. WordPress revision 36 adds classic HTTP graceful
-shutdown and aligned HTTP/service stop deadlines. The normal final build
+shutdown and aligned HTTP/service stop deadlines. That Go-`29e2118` build
 passes all 183 nodes and 11 products plus consumer admission. Node proves
 held-PHP request draining in both profiles. Browser draining and final-image
 editor/recovery checks remain pending; the revision-32 app evidence below
 remains tied to Go fork `c925e9c`.
+
+The source correction `1b0cf58` validates file pollability at open. Its two
+Node and six browser regressions, all four standard-library compile gates,
+and the full 153-case ordinary browser inventory pass. All four consumer
+recipes now pin it; WordPress revision 37 needs a normal rebuild before
+application correction can be established.
 
 - The revision-32 WordPress image runs actual embedded PHP through both
   FrankenPHP classic and Caddy. Six visible Chromium cases prove
@@ -56,7 +62,7 @@ remains tied to Go fork `c925e9c`.
   passes. Caddy's first full test has a separate forced worker retirement
   during machine destruction; its targeted rerun passes, so that failure
   remains intermittent and under investigation.
-- Next: correct regular-file polling and require clean Caddy startup,
+- Next: package the regular-file poll correction and require clean startup,
   validate browser PHP shutdown, isolate the classic WebKit failures,
   then establish sustained
   traffic/memory behavior and current paired stack comparisons. Child
@@ -5623,3 +5629,13 @@ wasip1/wasm). The full ordinary Go browser inventory is now running before
 consumer pins change. The packaged image still uses `29e2118`; actual Caddy
 clean startup, browser PHP draining, and machine retirement need a rebuilt
 consumer image. No application-level correction is claimed yet.
+
+The complete ordinary browser inventory then passes 153/153 in 7m39s
+(`go-netpoll-full-browser-1106-003213-ad4b`). Only after that terminal success
+do the four consumer recipes move to `1b0cf58`: go-hello revision 25,
+FrankenPHP classic 32, FrankenPHP+Caddy 11, and standalone Caddy 9. WordPress
+moves to revision 37. The next normal source union explicitly includes the
+optional Go sample alongside the previous products and benchmark inputs.
+No overlapping WordPress image builds are started. The revised image must
+still prove startup without a fatal trace or hidden restart, actual PHP
+draining on both hosts, and complete machine retirement.
