@@ -53,6 +53,7 @@
 //! record from the same callsite after the window closes. A callsite that
 //! floods and then never logs again leaves its final count unreported.
 
+use crate::process::HostIO;
 use core::cell::UnsafeCell;
 use wasm_posix_shared::Errno;
 
@@ -111,7 +112,7 @@ const OFF_TEXT_LEN: usize = 19;
 /// into a fixed table, not a handle that is allocated at run time.
 pub type CallsiteId = u32;
 
-/// The highest callsite id that gets its own limiter slot.
+/// The highest syscall number the limiter table has a slot for.
 ///
 /// Callers use syscall numbers as callsite ids so a flood from one syscall
 /// cannot suppress reports about another. The bound is the highest `SYS_*`
@@ -121,7 +122,19 @@ pub type CallsiteId = u32;
 /// (`SYS_EXECVEAT`). When a syscall is added past this number, raise it; the
 /// `every_syscall_number_has_its_own_callsite_slot` test checks the
 /// shared-crate constants.
-pub const KMSG_MAX_CALLSITE_ID: CallsiteId = 500;
+pub const KMSG_MAX_SYSCALL_CALLSITE_ID: CallsiteId = 500;
+
+/// Callsite ids reserved for the kernel's own events ([`KlogSite`]), which
+/// start just above the syscall numbers so that no event is ever limited
+/// together with a syscall.
+pub const KMSG_FIRST_EVENT_CALLSITE: CallsiteId = KMSG_MAX_SYSCALL_CALLSITE_ID + 1;
+
+/// How many event callsites the table has room for. [`KlogSite`] asserts at
+/// compile time that it fits.
+pub const KMSG_EVENT_CALLSITES: CallsiteId = 16;
+
+/// The highest callsite id that gets its own limiter slot.
+pub const KMSG_MAX_CALLSITE_ID: CallsiteId = KMSG_MAX_SYSCALL_CALLSITE_ID + KMSG_EVENT_CALLSITES;
 
 /// Callsite ids `0..=KMSG_MAX_CALLSITE_ID` each get their own limiter slot.
 pub const KMSG_CALLSITES: usize = KMSG_MAX_CALLSITE_ID as usize + 1;
@@ -259,6 +272,10 @@ pub struct KmsgRing {
     /// Stored bytes (header plus text) of live records, excluding pads.
     live_bytes: usize,
     limiter: CallsiteLimiter,
+    /// Keys [`first_time`](KmsgRing::first_time) has already answered `true`
+    /// for, one bit per key. Like the records, it lives and dies with the
+    /// machine.
+    first_seen: u64,
 }
 
 impl KmsgRing {
@@ -271,6 +288,7 @@ impl KmsgRing {
             next_seq: 0,
             live_bytes: 0,
             limiter: CallsiteLimiter::new(),
+            first_seen: 0,
         }
     }
 
@@ -379,6 +397,22 @@ impl KmsgRing {
     /// One past the newest `seq`: the `seq` the next push will be assigned.
     pub fn head_seq(&self) -> u64 {
         self.next_seq
+    }
+
+    /// `true` the first time it is asked about `key` (below 64), `false`
+    /// every time after. [`clear`](KmsgRing::clear) does not reset it: the
+    /// records are gone, but what they reported still happened.
+    pub fn first_time(&mut self, key: u8) -> bool {
+        let first = !self.already_seen(key);
+        self.first_seen |= 1u64 << key;
+        first
+    }
+
+    /// Whether [`first_time`](KmsgRing::first_time) has already answered
+    /// `true` for `key`, without spending it.
+    pub fn already_seen(&self, key: u8) -> bool {
+        assert!(key < 64, "first_time keys are bit positions in a u64");
+        self.first_seen & (1u64 << key) != 0
     }
 
     /// Discard every live record. `seq` is not reset, so a cursor into the
@@ -508,6 +542,197 @@ pub static KMSG_RING: GlobalKmsgRing = GlobalKmsgRing(UnsafeCell::new(KmsgRing::
 /// Caller must ensure no other references exist. Safe in single-threaded kernel.
 pub unsafe fn global_kmsg_ring() -> &'static mut KmsgRing {
     unsafe { &mut *KMSG_RING.0.get() }
+}
+
+// ---------------------------------------------------------------------------
+// Writing: the kernel's own events
+// ---------------------------------------------------------------------------
+//
+// The kernel logs by naming a [`KlogSite`] and formatting a message. Nothing
+// else is on the path: no syscall is traced here. Every site below is a
+// boot-, device- or process-lifecycle event, or the failure branch of an
+// operation, never something that runs once per syscall. Per-syscall tracing
+// is the opt-in syscall trace ring in `host/src/kernel-worker.ts`, which has
+// a different budget.
+
+/// Facility of every record the kernel writes itself.
+pub const LOG_KERN: u8 = 0;
+/// Severity of a condition that stopped something working.
+pub const LOG_WARNING: u8 = 4;
+/// Severity of a normal, noteworthy state change.
+pub const LOG_INFO: u8 = 6;
+
+/// A place in the kernel that writes to the log.
+///
+/// A site owns exactly one severity, [`level`](KlogSite::level), and
+/// [`klog`] takes the site rather than a level, so a callsite cannot emit
+/// mixed severities. That is load-bearing for the rate limiter: its
+/// `N messages suppressed` record carries the level of the last record it
+/// dropped, which is only a fair label for the whole count when every record
+/// the site can produce has that level.
+///
+/// Each site also owns one limiter slot ([`id`](KlogSite::id)), above the
+/// syscall numbers. Separate sites are limited separately: a flood of one
+/// cannot hide another. Two sites share a subject only where their severity
+/// or their flood behaviour differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum KlogSite {
+    /// The kernel's identity at boot: ABI, pointer width, memory budgets.
+    BootIdentity,
+    /// The `/` VFS image was loaded.
+    RootImageMounted,
+    /// A virtual device was opened for the first time since boot.
+    DeviceFirstOpen,
+    /// A process died of a signal that reports a fault in the program.
+    ProcessKilledByFault,
+    /// A process died of any other signal.
+    ProcessKilledBySignal,
+    /// An `mmap` was refused because the process address space has no room.
+    MmapAddressSpaceExhausted,
+    /// An `mmap` was refused because the kernel could not grow its own table.
+    MmapKernelMemoryExhausted,
+    /// The host reported that it lacks a capability the guest asked for.
+    HostCapabilityUnavailable,
+}
+
+const _: () = assert!((KlogSite::HostCapabilityUnavailable as u32) < KMSG_EVENT_CALLSITES);
+
+impl KlogSite {
+    /// Every site, for tests that must hold for all of them.
+    #[cfg(test)]
+    pub(crate) const ALL: [KlogSite; 8] = [
+        KlogSite::BootIdentity,
+        KlogSite::RootImageMounted,
+        KlogSite::DeviceFirstOpen,
+        KlogSite::ProcessKilledByFault,
+        KlogSite::ProcessKilledBySignal,
+        KlogSite::MmapAddressSpaceExhausted,
+        KlogSite::MmapKernelMemoryExhausted,
+        KlogSite::HostCapabilityUnavailable,
+    ];
+
+    /// The limiter slot this site owns.
+    pub const fn id(self) -> CallsiteId {
+        KMSG_FIRST_EVENT_CALLSITE + self as u32
+    }
+
+    /// The one severity every record from this site carries.
+    pub const fn level(self) -> u8 {
+        match self {
+            KlogSite::BootIdentity
+            | KlogSite::RootImageMounted
+            | KlogSite::DeviceFirstOpen
+            | KlogSite::ProcessKilledBySignal => LOG_INFO,
+            KlogSite::ProcessKilledByFault
+            | KlogSite::MmapAddressSpaceExhausted
+            | KlogSite::MmapKernelMemoryExhausted
+            | KlogSite::HostCapabilityUnavailable => LOG_WARNING,
+        }
+    }
+}
+
+/// Fixed-size writer for one record's text: never allocates, because the
+/// kernel logs while it may be out of memory. Text beyond the buffer is
+/// dropped, and one byte more than a record can hold is kept so that
+/// [`KmsgRing::push`] sees the overflow and marks the record truncated.
+struct EventText {
+    bytes: [u8; KMSG_MAX_TEXT_BYTES + 1],
+    len: usize,
+}
+
+impl core::fmt::Write for EventText {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let room = self.bytes.len() - self.len;
+        let take = s.len().min(room);
+        self.bytes[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
+        self.len += take;
+        Ok(())
+    }
+}
+
+/// `CLOCK_MONOTONIC` as nanoseconds since kernel boot, which is the time base
+/// `dmesg` prints. `None` when the host cannot say, and a caller then writes
+/// no record: a made-up timestamp is indistinguishable from a real one.
+fn monotonic_nsec<H: HostIO + ?Sized>(host: &mut H) -> Option<u64> {
+    let (sec, nsec) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC).ok()?;
+    u64::try_from(sec).ok()?.checked_mul(1_000_000_000)?.checked_add(u64::try_from(nsec).ok()?)
+}
+
+fn format_event(args: core::fmt::Arguments<'_>) -> EventText {
+    use core::fmt::Write;
+    let mut text = EventText { bytes: [0; KMSG_MAX_TEXT_BYTES + 1], len: 0 };
+    let _ = text.write_fmt(args);
+    text
+}
+
+/// Write one record from `site`, stamped now, subject to the site's rate
+/// limit. Returns the record's `seq`, or `None` when nothing was written:
+/// the limiter dropped it, or the host could not supply the time.
+///
+/// `host` is how the kernel reads the clock, so a call site must hold one.
+/// Where it does not, thread it through from the caller rather than
+/// stamping the record with a guess.
+pub fn klog<H: HostIO + ?Sized>(host: &mut H, site: KlogSite, args: core::fmt::Arguments<'_>) -> Option<u64> {
+    let ts_nsec = monotonic_nsec(host)?;
+    let text = format_event(args);
+    with_ring(|ring| ring.push_limited(site.id(), LOG_KERN, site.level(), ts_nsec, &text.bytes[..text.len]))
+}
+
+/// [`klog`], but only the first time `key` (below 64) is seen since boot.
+///
+/// For events that mark a thing becoming live, such as a device's first
+/// open: the limiter would let the first ten opens through, which is not
+/// "the first". The latch is spent only by a record that is written, so a
+/// clock failure does not use up the one chance.
+///
+/// Keys are one namespace across every site, so two callers must not pick the
+/// same number.
+pub fn klog_once<H: HostIO + ?Sized>(
+    host: &mut H,
+    site: KlogSite,
+    key: u8,
+    args: core::fmt::Arguments<'_>,
+) -> Option<u64> {
+    // Checked before the clock is read, so that the second and every later
+    // open of a device costs a bit test and not a call out to the host.
+    if with_ring(|ring| ring.already_seen(key)) {
+        return None;
+    }
+    let ts_nsec = monotonic_nsec(host)?;
+    let text = format_event(args);
+    with_ring(|ring| {
+        ring.first_time(key);
+        ring.push_limited(site.id(), LOG_KERN, site.level(), ts_nsec, &text.bytes[..text.len])
+    })
+}
+
+/// Run `f` on the ring the kernel's own events are written to.
+#[cfg(not(test))]
+pub(crate) fn with_ring<R>(f: impl FnOnce(&mut KmsgRing) -> R) -> R {
+    // SAFETY: the kernel services one syscall at a time.
+    f(unsafe { global_kmsg_ring() })
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_RING: core::cell::RefCell<alloc::boxed::Box<KmsgRing>> =
+        core::cell::RefCell::new(alloc::boxed::Box::new(KmsgRing::new()));
+}
+
+/// Under test each thread writes its own events to its own ring, so a test
+/// that kills a process or opens a device cannot put records into the global
+/// ring that `/dev/kmsg` and `klogctl` tests are reading.
+#[cfg(test)]
+pub(crate) fn with_ring<R>(f: impl FnOnce(&mut KmsgRing) -> R) -> R {
+    TEST_RING.with(|ring| f(&mut ring.borrow_mut()))
+}
+
+/// Start the calling thread's test ring over: empty, sequence at zero, and
+/// no once-latch spent.
+#[cfg(test)]
+pub(crate) fn reset_test_ring() {
+    TEST_RING.with(|ring| **ring.borrow_mut() = KmsgRing::new());
 }
 
 #[cfg(test)]
@@ -871,6 +1096,124 @@ mod tests {
         ] {
             assert!(number <= KMSG_MAX_CALLSITE_ID, "syscall {number} would share the overflow slot");
         }
+    }
+
+    // ---- klog: the writer ------------------------------------------------
+
+    use crate::test_fixtures::ClockHost;
+
+    /// Records of the calling thread's ring, as (level, ts_nsec, text).
+    fn logged() -> Vec<(u8, u64, alloc::string::String)> {
+        with_ring(|ring| {
+            (ring.oldest_seq()..ring.head_seq())
+                .map(|seq| {
+                    let record = ring.read_at(seq).unwrap();
+                    (record.level, record.ts_nsec, alloc::string::String::from_utf8_lossy(record.text).into_owned())
+                })
+                .collect()
+        })
+    }
+
+    #[test]
+    fn klog_stamps_the_record_from_the_monotonic_clock() {
+        reset_test_ring();
+        let mut host = ClockHost::at(12, 345_678_901);
+        let seq = klog(&mut host, KlogSite::BootIdentity, format_args!("hello {}", 7));
+        assert!(seq.is_some());
+        assert_eq!(host.clock_reads, 1);
+        assert_eq!(logged(), [(LOG_INFO, 12_345_678_901, "hello 7".into())]);
+        with_ring(|ring| assert_eq!(ring.read_at(seq.unwrap()).unwrap().facility, LOG_KERN));
+    }
+
+    #[test]
+    fn klog_gives_each_record_the_level_its_callsite_owns() {
+        // One level per callsite is what lets the limiter's
+        // "N messages suppressed" record carry the level of what it
+        // summarises: a callsite cannot mix severities.
+        for site in KlogSite::ALL {
+            reset_test_ring();
+            let mut host = ClockHost::at(1, 0);
+            klog(&mut host, site, format_args!("x"));
+            assert_eq!(logged()[0].0, site.level(), "{site:?}");
+        }
+        assert!(KlogSite::ALL.iter().any(|site| site.level() == LOG_WARNING));
+        assert!(KlogSite::ALL.iter().any(|site| site.level() == LOG_INFO));
+    }
+
+    #[test]
+    fn klog_callsite_ids_are_distinct_and_clear_of_the_syscall_numbers() {
+        let mut ids: Vec<CallsiteId> = KlogSite::ALL.iter().map(|site| site.id()).collect();
+        for id in &ids {
+            // Syscall numbers keep their own slots for the unimplemented-syscall
+            // report; an event sharing one would be rate-limited with it.
+            assert!(*id > wasm_posix_shared::abi::host_intercepted::SYS_SPAWN, "{id} collides with a syscall");
+            assert!(*id <= KMSG_MAX_CALLSITE_ID, "{id} would share the overflow slot");
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), KlogSite::ALL.len());
+    }
+
+    #[test]
+    fn klog_with_an_unreadable_clock_records_nothing() {
+        // A record with a made-up timestamp is indistinguishable from a real
+        // one at boot, so the record is dropped, not stamped zero.
+        reset_test_ring();
+        let mut host = ClockHost { monotonic: Err(Errno::EIO), clock_reads: 0 };
+        assert_eq!(klog(&mut host, KlogSite::BootIdentity, format_args!("x")), None);
+        let mut negative = ClockHost::at(-1, 0);
+        assert_eq!(klog(&mut negative, KlogSite::BootIdentity, format_args!("x")), None);
+        assert_eq!(klog_once(&mut host, KlogSite::DeviceFirstOpen, 0, format_args!("x")), None);
+        assert!(logged().is_empty());
+        // The failed attempt must not have spent the once-latch.
+        let mut host = ClockHost::at(1, 0);
+        assert!(klog_once(&mut host, KlogSite::DeviceFirstOpen, 0, format_args!("x")).is_some());
+    }
+
+    #[test]
+    fn klog_is_rate_limited_per_callsite() {
+        reset_test_ring();
+        let mut host = ClockHost::at(1, 0);
+        for _ in 0..KMSG_RATE_BURST {
+            assert!(klog(&mut host, KlogSite::ProcessKilledBySignal, format_args!("a")).is_some());
+        }
+        assert_eq!(klog(&mut host, KlogSite::ProcessKilledBySignal, format_args!("a")), None);
+        // Another callsite has its own budget: a flood of ordinary signal
+        // deaths cannot hide a fault.
+        assert!(klog(&mut host, KlogSite::ProcessKilledByFault, format_args!("b")).is_some());
+    }
+
+    #[test]
+    fn klog_truncates_overlong_text_and_marks_the_record() {
+        reset_test_ring();
+        let mut host = ClockHost::at(1, 0);
+        let long = "y".repeat(KMSG_MAX_TEXT_BYTES + 500);
+        let seq = klog(&mut host, KlogSite::BootIdentity, format_args!("{long}")).unwrap();
+        with_ring(|ring| {
+            let record = ring.read_at(seq).unwrap();
+            assert_eq!(record.text.len(), KMSG_MAX_TEXT_BYTES);
+            assert_eq!(record.flags, KMSG_FLAG_TRUNCATED);
+        });
+        // Text that exactly fits is not marked.
+        let exact = "z".repeat(KMSG_MAX_TEXT_BYTES);
+        let seq = klog(&mut host, KlogSite::BootIdentity, format_args!("{exact}")).unwrap();
+        with_ring(|ring| assert_eq!(ring.read_at(seq).unwrap().flags, 0));
+    }
+
+    #[test]
+    fn klog_once_records_the_first_time_for_each_key_only() {
+        reset_test_ring();
+        let mut host = ClockHost::at(1, 0);
+        assert!(klog_once(&mut host, KlogSite::DeviceFirstOpen, 3, format_args!("first")).is_some());
+        let reads = host.clock_reads;
+        assert_eq!(klog_once(&mut host, KlogSite::DeviceFirstOpen, 3, format_args!("again")), None);
+        assert_eq!(host.clock_reads, reads, "a repeat does not call out to the host");
+        assert!(klog_once(&mut host, KlogSite::DeviceFirstOpen, 4, format_args!("other")).is_some());
+        assert_eq!(logged().len(), 2);
+        // Clearing the log does not forget what was seen: the record is gone,
+        // the device has still been opened.
+        with_ring(|ring| ring.clear());
+        assert_eq!(klog_once(&mut host, KlogSite::DeviceFirstOpen, 3, format_args!("again")), None);
     }
 
     #[test]

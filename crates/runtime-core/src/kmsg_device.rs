@@ -72,8 +72,11 @@
 //!   `"a\n7,1,0,-;fake"` would forge a kernel record boundary. Escaping the
 //!   backslash too is what keeps the escape unambiguous: a literal `\x0a` in
 //!   the text renders as `\x5cx0a`, distinct from an escaped newline. The C
-//!   style `\xNN` is also what consumers that unescape (sysklogd's
-//!   `kmsg_unescape`) require, so it is contract, not only defence.
+//!   style `\xNN` is also the form sysklogd's `kmsg_unescape` decodes. That
+//!   is the one consumer checked; it does not establish what other
+//!   `/dev/kmsg` readers require, nor that sysklogd would reject another
+//!   encoding. The escaping is kept because it also keeps a record boundary
+//!   unforgeable, which does not depend on any consumer.
 //! * `seq` is monotonic and never reused, including across `clear`
 //!   ([`crate::kmsg::KmsgRing::clear`] moves `oldest_seq` up and never rewinds
 //!   the counter). Consumers deduplicate on it: sysklogd skips any record

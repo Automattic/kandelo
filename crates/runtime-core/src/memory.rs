@@ -59,6 +59,20 @@ pub struct MemoryManager {
     initial_brk: usize,
 }
 
+/// Why [`MemoryManager::try_mmap_anonymous`] refused a mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmapRefusal {
+    /// The request cannot be honoured as asked: zero length, or a fixed
+    /// range outside the address space or on a range the host reserved.
+    Invalid,
+    /// The process address space has no free range that large.
+    AddressSpaceExhausted,
+    /// The kernel could not grow its own mapping table, because the I/O
+    /// memory budget or the kernel heap is exhausted. Which of the two is not
+    /// known here: both surface as `ENOMEM` from the allocation.
+    KernelMemoryExhausted,
+}
+
 impl MemoryManager {
     /// Default mmap region starts at 64MB (0x04000000).
     /// This leaves room for stack and heap below (brk starts at 16MB).
@@ -149,21 +163,31 @@ impl MemoryManager {
         self.prepare_mapping_change(addr, len, 1)
     }
 
-    /// Allocate an anonymous mapping. Returns the base address.
+    /// Allocate an anonymous mapping. Returns the base address, or
+    /// `MAP_FAILED`; [`try_mmap_anonymous`](Self::try_mmap_anonymous) says
+    /// why it failed.
     /// If `hint` is non-zero and MAP_FIXED is set, maps at exactly that address
     /// (unmapping any overlapping regions first).
     pub fn mmap_anonymous(&mut self, hint: usize, len: usize, prot: u32, flags: u32) -> usize {
+        self.try_mmap_anonymous(hint, len, prot, flags).unwrap_or(wasm_posix_shared::mmap::MAP_FAILED)
+    }
+
+    /// [`mmap_anonymous`](Self::mmap_anonymous) that names the reason for a
+    /// refusal. The two budget-shaped reasons, [`MmapRefusal::AddressSpaceExhausted`]
+    /// and [`MmapRefusal::KernelMemoryExhausted`], are the ones a caller reports
+    /// to the kernel log: the guest sees only `ENOMEM` either way.
+    pub fn try_mmap_anonymous(&mut self, hint: usize, len: usize, prot: u32, flags: u32) -> Result<usize, MmapRefusal> {
         use wasm_posix_shared::mmap::MAP_FIXED;
 
         if len == 0 {
-            return wasm_posix_shared::mmap::MAP_FAILED;
+            return Err(MmapRefusal::Invalid);
         }
 
         // Align to page boundary (Wasm page = 64KB).
         // Use saturating add to prevent overflow for very large sizes.
         let aligned_len = match len.checked_add(0xFFFF) {
             Some(v) => v & !0xFFFF,
-            None => return wasm_posix_shared::mmap::MAP_FAILED, // overflow → too large
+            None => return Err(MmapRefusal::AddressSpaceExhausted), // overflow → too large
         };
 
         let addr = if hint != 0 && (flags & MAP_FIXED) != 0 {
@@ -181,15 +205,15 @@ impl MemoryManager {
                 || self.overlaps_host_control(hint, aligned_len)
                 || (self.reserved_until != 0 && self.overlaps_brk_heap(hint, aligned_len))
             {
-                return wasm_posix_shared::mmap::MAP_FAILED;
+                return Err(MmapRefusal::Invalid);
             }
             let required = match self.mapping_count_after_unmap(hint, aligned_len)
                 .and_then(|count| count.checked_add(1).ok_or(Errno::ENOMEM)) {
                 Ok(required) => required.max(self.mappings.len()),
-                Err(_) => return wasm_posix_shared::mmap::MAP_FAILED,
+                Err(_) => return Err(MmapRefusal::KernelMemoryExhausted),
             };
             if self.mappings.try_reserve(required - self.mappings.len()).is_err() {
-                return wasm_posix_shared::mmap::MAP_FAILED;
+                return Err(MmapRefusal::KernelMemoryExhausted);
             }
             self.munmap_prepared(hint, aligned_len);
             hint
@@ -212,10 +236,10 @@ impl MemoryManager {
             // absent or unusable. Mappings are kept sorted by address.
             let addr = match hinted_addr.or_else(|| self.find_gap(aligned_len)) {
                 Some(a) => a,
-                None => return wasm_posix_shared::mmap::MAP_FAILED,
+                None => return Err(MmapRefusal::AddressSpaceExhausted),
             };
             if self.mappings.try_reserve(1).is_err() {
-                return wasm_posix_shared::mmap::MAP_FAILED;
+                return Err(MmapRefusal::KernelMemoryExhausted);
             }
             addr
         };
@@ -232,7 +256,7 @@ impl MemoryManager {
             },
         );
 
-        addr
+        Ok(addr)
     }
 
     /// Find the first gap in [mmap_base, max_addr) that can fit `needed` bytes.
@@ -679,6 +703,46 @@ mod tests {
             prot: PROT_READ | PROT_WRITE,
             flags: MAP_PRIVATE | MAP_ANONYMOUS,
         }
+    }
+
+    #[test]
+    fn a_refused_anonymous_mapping_says_why() {
+        let page = 0x10000;
+        let base = MemoryManager::MMAP_BASE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+
+        // A request the kernel cannot make sense of is refused as invalid,
+        // not blamed on memory.
+        let mut manager = MemoryManager::new();
+        assert_eq!(manager.try_mmap_anonymous(0, 0, 3, anon), Err(MmapRefusal::Invalid));
+        assert_eq!(
+            manager.try_mmap_anonymous(manager.max_addr, page, 3, MAP_FIXED | MAP_ANONYMOUS),
+            Err(MmapRefusal::Invalid),
+            "a fixed range past the address space is a bad request",
+        );
+
+        // Room, not memory, ran out: the address space has no gap that big.
+        manager.set_max_addr(base + page);
+        assert_eq!(manager.try_mmap_anonymous(0, 2 * page, 3, anon), Err(MmapRefusal::AddressSpaceExhausted));
+        assert_eq!(manager.try_mmap_anonymous(0, usize::MAX, 3, anon), Err(MmapRefusal::AddressSpaceExhausted));
+        assert_eq!(manager.try_mmap_anonymous(0, page, 3, anon), Ok(base), "one page still fits");
+        assert_eq!(manager.try_mmap_anonymous(0, page, 3, anon), Err(MmapRefusal::AddressSpaceExhausted));
+
+        // The kernel's own bookkeeping ran out: there was room.
+        let mut manager = MemoryManager::new();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(manager.try_mmap_anonymous(0, page, 3, anon), Err(MmapRefusal::KernelMemoryExhausted));
+            assert_eq!(
+                manager.try_mmap_anonymous(base, page, 3, MAP_FIXED | MAP_ANONYMOUS),
+                Err(MmapRefusal::KernelMemoryExhausted),
+            );
+        }
+        assert!(manager.mappings().is_empty(), "a refusal maps nothing");
+        // The old entry point reports every refusal the same way it always did.
+        manager.set_max_addr(base);
+        assert_eq!(manager.mmap_anonymous(0, page, 3, anon), MAP_FAILED);
     }
 
     #[test]

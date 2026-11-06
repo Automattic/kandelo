@@ -1266,6 +1266,19 @@ fn handle_dri_ioctl(
                 crate::dri::with_registry(|r| {
                     r.decref(bo_id);
                 });
+                // ENOSYS is how a host says it has no shared WebGL context to
+                // back a GPU buffer (`host_gbm_gpu_bo_create` in
+                // `host/src/kernel.ts`). Any other failure means a host that
+                // has the capability could not do this one allocation.
+                if host_rc == -(Errno::ENOSYS as i32) {
+                    crate::kmsg::klog(
+                        host,
+                        crate::kmsg::KlogSite::HostCapabilityUnavailable,
+                        format_args!(
+                            "host capability unavailable: WebGL (GPU buffer for process {pid} refused, host answered ENOSYS)"
+                        ),
+                    );
+                }
                 return Err(Errno::ENOMEM);
             }
             *prepared_handle.value_mut() = bo_id;
@@ -3591,8 +3604,44 @@ fn resume_fifo_open(proc: &mut Process) -> Result<Option<i32>, Errno> {
     install_fifo_open(proc, pipe_idx, prepared, waiter.fd_flags, waiter.side).map(Some)
 }
 
-fn publish_virtual_device_fd(proc: &mut Process, device: VirtualDevice, status_flags: u32, fd_flags: u32, resolved: Vec<u8>) -> Result<i32, Errno> {
-    proc.open_descriptor(FileType::CharDevice, status_flags, &resolved, fd_flags, |proc, description| {
+/// The name and once-latch key of a device whose first open the kernel log
+/// reports. Devices that are always usable and say nothing about the machine
+/// (`/dev/null`, `/dev/zero`, the random devices, `/dev/kmsg` itself) are not
+/// listed, nor is the pointer-stream node `/dev/input/mice` and the render
+/// node, which carry nothing the entries below do not.
+fn device_log_identity(device: VirtualDevice) -> Option<(u8, &'static str)> {
+    match device {
+        VirtualDevice::Fb0 => Some((0, "/dev/fb0")),
+        VirtualDevice::DriCard0 => Some((1, "/dev/dri/card0")),
+        VirtualDevice::InputEvent { device: 0 } => Some((2, "/dev/input/event0")),
+        VirtualDevice::InputEvent { device: 1 } => Some((3, "/dev/input/event1")),
+        VirtualDevice::Dsp => Some((4, "/dev/dsp")),
+        VirtualDevice::Clipboard => Some((5, "/dev/kandelo/clipboard")),
+        _ => None,
+    }
+}
+
+/// Record, once per device since boot, that a program opened it.
+///
+/// These devices are served by the kernel itself and always listed in `/dev`,
+/// so the kernel has no attach step to report. The first open is when a
+/// device first becomes part of what the machine is doing (a framebuffer is
+/// claimed, an audio stream starts, an input queue begins to fill), which is
+/// what a person reading the log wants to date. Later opens are not news,
+/// and the once-latch means opening a device in a loop costs no record.
+fn record_device_first_open(host: &mut dyn HostIO, device: VirtualDevice, pid: u32) {
+    if let Some((key, name)) = device_log_identity(device) {
+        crate::kmsg::klog_once(
+            host,
+            crate::kmsg::KlogSite::DeviceFirstOpen,
+            key,
+            format_args!("{name}: first opened by process {pid}"),
+        );
+    }
+}
+
+fn publish_virtual_device_fd(proc: &mut Process, host: &mut dyn HostIO, device: VirtualDevice, status_flags: u32, fd_flags: u32, resolved: Vec<u8>) -> Result<i32, Errno> {
+    let fd = proc.open_descriptor(FileType::CharDevice, status_flags, &resolved, fd_flags, |proc, description| {
         install_dri_state_on_open(description, device)?;
         install_input_state_on_open(description, device)?;
         match device {
@@ -3603,7 +3652,9 @@ fn publish_virtual_device_fd(proc: &mut Process, device: VirtualDevice, status_f
             _ => {},
         }
         Ok(device.host_handle())
-    })
+    })?;
+    record_device_first_open(host, device, proc.pid);
+    Ok(fd)
 }
 
 fn try_open_fifo(proc: &mut Process, host: &mut dyn HostIO, resolved: &[u8], oflags: u32, exclusive_create: bool) -> Result<Option<i32>, Errno> {
@@ -3750,10 +3801,10 @@ pub fn sys_open(
             if !matches!(status_flags & O_ACCMODE, O_WRONLY | O_RDWR) {
                 return Err(Errno::EOPNOTSUPP);
             }
-            return open_pcm_descriptor(proc, status_flags, oflags_to_fd_flags(oflags), &resolved);
+            return open_pcm_descriptor(proc, host, status_flags, oflags_to_fd_flags(oflags), &resolved);
         }
         let fd_flags = oflags_to_fd_flags(oflags);
-        return publish_virtual_device_fd(proc, dev, status_flags, fd_flags, resolved);
+        return publish_virtual_device_fd(proc, host, dev, status_flags, fd_flags, resolved);
     }
 
     // /dev/ptmx — allocate a new PTY master
@@ -3929,15 +3980,17 @@ fn open_host_file(proc: &mut Process, host: &mut dyn HostIO, resolved: Vec<u8>, 
     })
 }
 
-fn open_pcm_descriptor(proc: &mut Process, status_flags: u32, fd_flags: u32, path: &[u8]) -> Result<i32, Errno> {
-    proc.open_descriptor(FileType::PcmPlayback, status_flags, path, fd_flags, |_, _| {
+fn open_pcm_descriptor(proc: &mut Process, host: &mut dyn HostIO, status_flags: u32, fd_flags: u32, path: &[u8]) -> Result<i32, Errno> {
+    let fd = proc.open_descriptor(FileType::PcmPlayback, status_flags, path, fd_flags, |_, _| {
         let handle = crate::audio::open_stream()?;
         if let Err(error) = crate::audio::set_nonblock(handle, status_flags & O_NONBLOCK != 0) {
             crate::audio::rollback_open(handle);
             return Err(error);
         }
         Ok(handle)
-    })
+    })?;
+    record_device_first_open(host, VirtualDevice::Dsp, proc.pid);
+    Ok(fd)
 }
 
 fn open_new_pty_descriptor(proc: &mut Process, oflags: u32, path: &[u8]) -> Result<i32, Errno> {
@@ -10688,7 +10741,27 @@ fn sys_exit_by_signal_impl(
         return;
     }
     cleanup_process_for_exit(proc, locks, host);
-    proc.record_signal_exit(signum);
+    if proc.record_signal_exit(signum) {
+        record_death_by_signal(proc.pid, signum, host);
+    }
+}
+
+/// Write the kernel log's record of a process dying of a signal. Once per
+/// death, from the one place a signal death is recorded, so it costs nothing
+/// on the syscall path of a process that lives.
+fn record_death_by_signal(pid: u32, signum: u32, host: &mut dyn HostIO) {
+    use crate::kmsg::{klog, KlogSite};
+    // The exit status keeps the low seven bits; name what the parent will see.
+    let signum = signum & 0x7f;
+    let site = if crate::signal::is_fault_signal(signum) {
+        KlogSite::ProcessKilledByFault
+    } else {
+        KlogSite::ProcessKilledBySignal
+    };
+    match crate::signal::signal_name(signum) {
+        Some(name) => klog(host, site, format_args!("process {pid} killed by signal {signum} ({name})")),
+        None => klog(host, site, format_args!("process {pid} killed by signal {signum}")),
+    };
 }
 
 fn is_encoded_process_cpu_clock_id(clock_id: u32) -> bool {
@@ -11450,11 +11523,47 @@ fn sys_mmap_prepared(
     // address space allocator. The host populates file-backed regions after
     // allocation and tracks MAP_SHARED regions for msync writeback.
     let alloc_flags = flags | MAP_ANONYMOUS;
-    let result = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
-    if result == MAP_FAILED {
-        return Err(Errno::ENOMEM);
+    match proc.memory.try_mmap_anonymous(addr, len, prot, alloc_flags) {
+        Ok(result) => Ok(result),
+        Err(refusal) => {
+            record_mmap_refusal(host, proc, len, refusal);
+            Err(Errno::ENOMEM)
+        }
     }
-    Ok(result)
+}
+
+/// Write the kernel log's record of an `mmap` the kernel refused for want of
+/// room, which the guest sees only as `ENOMEM`. A request that was never going
+/// to work (zero length, a fixed range outside the address space) is the
+/// caller's mistake, not a shortage, and is not recorded. Runs only on the
+/// failure branch, and is rate limited per cause.
+fn record_mmap_refusal(host: &mut dyn HostIO, proc: &Process, len: usize, refusal: crate::memory::MmapRefusal) {
+    use crate::kmsg::{klog, KlogSite};
+    use crate::memory::MmapRefusal;
+    let pid = proc.pid;
+    match refusal {
+        MmapRefusal::Invalid => {}
+        MmapRefusal::AddressSpaceExhausted => {
+            klog(
+                host,
+                KlogSite::MmapAddressSpaceExhausted,
+                format_args!(
+                    "process {pid}: mmap of {len} bytes refused: no free address range that large ({} mappings, ceiling {:#x})",
+                    proc.memory.mappings().len(),
+                    proc.memory.layout_metadata().max_addr,
+                ),
+            );
+        }
+        MmapRefusal::KernelMemoryExhausted => {
+            klog(
+                host,
+                KlogSite::MmapKernelMemoryExhausted,
+                format_args!(
+                    "process {pid}: mmap of {len} bytes refused: the kernel could not grow its mapping table (memory budget or kernel heap exhausted)"
+                ),
+            );
+        }
+    };
 }
 
 /// munmap -- unmap a previously mapped region.
@@ -16197,10 +16306,10 @@ pub fn sys_openat(
             if !matches!(status_flags & O_ACCMODE, O_WRONLY | O_RDWR) {
                 return Err(Errno::EOPNOTSUPP);
             }
-            return open_pcm_descriptor(proc, status_flags, oflags_to_fd_flags(oflags), &resolved);
+            return open_pcm_descriptor(proc, host, status_flags, oflags_to_fd_flags(oflags), &resolved);
         }
         let fd_flags = oflags_to_fd_flags(oflags);
-        return publish_virtual_device_fd(proc, dev, status_flags, fd_flags, resolved);
+        return publish_virtual_device_fd(proc, host, dev, status_flags, fd_flags, resolved);
     }
 
     // /dev/ptmx — allocate a new PTY master
@@ -56489,6 +56598,186 @@ impl HostIO for RelSymlinkMock {
             assert!(crate::tmpfs::lstat(&dir).is_ok(), "the inherited reference keeps it");
             assert!(crate::descriptor_backing::release_for_ofd(FileType::CharDevice, handle));
             assert_eq!(crate::tmpfs::lstat(&dir).unwrap_err(), Errno::ENOENT);
+        }
+    }
+
+    /// Records the kernel writes about itself: boot, device, host-capability
+    /// and memory events. Each test starts its thread's log empty (the log the
+    /// kernel writes under test is per thread, so none of this reaches the
+    /// global ring the `/dev/kmsg` tests read) and gives the host a fixed
+    /// monotonic clock so the timestamp is checked, not just present.
+    mod kernel_event_tests {
+        use super::*;
+        use crate::kmsg::{reset_test_ring, with_ring, LOG_INFO, LOG_WARNING};
+        use wasm_posix_shared::mmap::{MAP_PRIVATE, PROT_READ, PROT_WRITE};
+
+        fn log() -> Vec<(u8, u64, String)> {
+            with_ring(|ring| {
+                (ring.oldest_seq()..ring.head_seq())
+                    .map(|seq| {
+                        let record = ring.read_at(seq).unwrap();
+                        (record.level, record.ts_nsec, String::from_utf8_lossy(record.text).into_owned())
+                    })
+                    .collect()
+            })
+        }
+
+        fn host_at(sec: i64) -> MockHostIO {
+            let mut host = MockHostIO::new();
+            host.monotonic_time = Some((sec, 0));
+            host
+        }
+
+        #[test]
+        fn device_attach_records_the_device() {
+            use core::sync::atomic::Ordering;
+            let _clipboard = crate::clipboard::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _audio = crate::audio::TEST_AUDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+            crate::clipboard::reset_for_test();
+            crate::audio::reset_for_test();
+            reset_test_ring();
+            let mut proc = Process::new(7);
+            let mut host = host_at(5);
+
+            let devices: [(&[u8], u32); 6] = [
+                (b"/dev/fb0", O_RDWR),
+                (b"/dev/dri/card0", O_RDWR),
+                (b"/dev/input/event0", O_RDONLY),
+                (b"/dev/input/event1", O_RDONLY),
+                (b"/dev/dsp", O_WRONLY),
+                (b"/dev/kandelo/clipboard", O_RDWR),
+            ];
+            let mut fds = Vec::new();
+            for (path, flags) in devices {
+                fds.push(sys_open(&mut proc, &mut host, path, flags, 0).unwrap());
+            }
+            let expected: Vec<_> = devices
+                .iter()
+                .map(|(path, _)| (LOG_INFO, 5_000_000_000, format!("{}: first opened by process 7", String::from_utf8_lossy(path))))
+                .collect();
+            assert_eq!(log(), expected);
+
+            // It is the first open that is recorded, however it is spelled and
+            // by whom; the second is not news.
+            let mut other = Process::new(8);
+            sys_open(&mut other, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+            sys_openat(&mut other, &mut host, wasm_posix_shared::flags::AT_FDCWD, b"/dev/input/event0", O_RDONLY, 0).unwrap();
+            assert_eq!(log().len(), 6);
+
+            // Devices that are always there, and nodes that are not devices of
+            // this kind, are not reported at all.
+            sys_open(&mut other, &mut host, b"/dev/null", O_RDWR, 0).unwrap();
+            sys_open(&mut other, &mut host, b"/dev/urandom", O_RDONLY, 0).unwrap();
+            assert_eq!(log().len(), 6);
+
+            // openat is the same path: a device first opened through it counts.
+            reset_test_ring();
+            for fd in fds {
+                sys_close(&mut proc, &mut host, fd).unwrap();
+            }
+            sys_openat(&mut proc, &mut host, wasm_posix_shared::flags::AT_FDCWD, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+            assert_eq!(log().len(), 1);
+
+            // A device that fails to open was not opened.
+            reset_test_ring();
+            let mut first = Process::new(9);
+            let mut second = Process::new(10);
+            let held = sys_open(&mut first, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+            assert_eq!(sys_open(&mut second, &mut host, b"/dev/fb0", O_RDWR, 0), Err(Errno::EBUSY));
+            assert_eq!(log().len(), 1, "only the open that succeeded is recorded");
+            sys_close(&mut first, &mut host, held).unwrap();
+        }
+
+        #[test]
+        fn unavailable_host_capability_records_which_one() {
+            use wasm_posix_shared::dri::*;
+            let _registry = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            crate::dri::bo::reset_registry();
+            reset_test_ring();
+            let mut proc = Process::new(1);
+            let mut host = host_at(9);
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            let create = |proc: &mut Process, host: &mut MockHostIO| {
+                let req = WpkDrmGpuBoCreate { width: 8, height: 8, format: 0, usage: 0 };
+                let mut buf = [0u8; core::mem::size_of::<WpkDrmGpuBoCreate>()];
+                unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGpuBoCreate, req) };
+                sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut buf)
+            };
+
+            // The host answers ENOSYS when it has no WebGL context to back the
+            // buffer; that is the one capability this names.
+            host.gbm_gpu_bo_create_rc = -(Errno::ENOSYS as i32);
+            assert_eq!(create(&mut proc, &mut host), Err(Errno::ENOMEM));
+            assert_eq!(
+                log(),
+                [(
+                    LOG_WARNING,
+                    9_000_000_000,
+                    "host capability unavailable: WebGL (GPU buffer for process 1 refused, host answered ENOSYS)".into()
+                )]
+            );
+
+            // A host that has WebGL but could not allocate the texture lacks
+            // no capability, and the log does not say it does.
+            host.gbm_gpu_bo_create_rc = -(Errno::ENOMEM as i32);
+            assert_eq!(create(&mut proc, &mut host), Err(Errno::ENOMEM));
+            assert_eq!(log().len(), 1);
+        }
+
+        #[test]
+        fn memory_budget_refusal_records_the_refusal() {
+            let page = 0x10000;
+            let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+            let map = |proc: &mut Process, host: &mut MockHostIO, addr: usize, len: usize, flags: u32| {
+                sys_mmap(proc, host, addr, len, PROT_READ | PROT_WRITE, flags, -1, 0)
+            };
+            reset_test_ring();
+            let mut proc = Process::new(21);
+            let mut host = host_at(4);
+
+            // Out of address space: the guest sees ENOMEM and the log says
+            // whose ceiling it was.
+            let ceiling = proc.memory.layout_metadata().mmap_base + page;
+            proc.memory.set_max_addr(ceiling);
+            assert_eq!(map(&mut proc, &mut host, 0, 2 * page, anon), Err(Errno::ENOMEM));
+            assert_eq!(
+                log(),
+                [(
+                    LOG_WARNING,
+                    4_000_000_000,
+                    format!("process 21: mmap of {} bytes refused: no free address range that large (0 mappings, ceiling {ceiling:#x})", 2 * page)
+                )]
+            );
+
+            // Out of kernel memory for its own table, with room to spare.
+            reset_test_ring();
+            let mut proc = Process::new(22);
+            {
+                let held = crate::io_buffer::IO_MEMORY.usage().0;
+                let _limit = crate::io_buffer::test_budget(held);
+                assert_eq!(map(&mut proc, &mut host, 0, page, anon), Err(Errno::ENOMEM));
+            }
+            assert_eq!(
+                log(),
+                [(
+                    LOG_WARNING,
+                    4_000_000_000,
+                    format!("process 22: mmap of {page} bytes refused: the kernel could not grow its mapping table (memory budget or kernel heap exhausted)")
+                )]
+            );
+
+            // A request that was never going to work is not a budget refusal
+            // and is not reported as one.
+            reset_test_ring();
+            let mut proc = Process::new(23);
+            let past = proc.memory.layout_metadata().max_addr;
+            assert_eq!(map(&mut proc, &mut host, past, page, anon | wasm_posix_shared::mmap::MAP_FIXED), Err(Errno::ENOMEM));
+            assert!(log().is_empty());
+
+            // A mapping that succeeds says nothing.
+            assert!(map(&mut proc, &mut host, 0, page, anon).is_ok());
+            assert!(log().is_empty());
         }
     }
 

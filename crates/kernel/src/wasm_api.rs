@@ -2198,7 +2198,10 @@ pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32)
         }
         crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
     }) {
-        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
+        Ok(count) => {
+            crate::rootfs::record_root_image_loaded(&mut host, count);
+            i32::try_from(count).unwrap_or(i32::MAX)
+        }
         Err(error) => -(error as i32),
     }
 }
@@ -2248,7 +2251,10 @@ pub extern "C" fn kernel_rootfs_load_persistent_image(
             crate::rootfs::ByteReq::Image { offset } => host.image_read(bytes, offset),
         },
     ) {
-        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
+        Ok(count) => {
+            crate::rootfs::record_root_image_loaded(&mut host, count);
+            i32::try_from(count).unwrap_or(i32::MAX)
+        }
         Err(error) => -(error as i32),
     }
 }

@@ -73,6 +73,36 @@ pub fn default_action(signum: u32) -> DefaultAction {
     }
 }
 
+/// Whether a signal reports a fault in the program itself (an illegal
+/// instruction, a bad access, an arithmetic error, a bad system call), as
+/// opposed to one a person, another process or a timer sent. The kernel log
+/// treats a death by one of these as a warning and everything else as
+/// information.
+///
+/// `SIGABRT` is not here: a program that calls `abort` chose to die.
+///
+/// `SIGSEGV` and `SIGSYS` have no constants in `wasm_posix_shared::signal`,
+/// so they are spelled as their numbers, which are the ones musl uses.
+pub fn is_fault_signal(signum: u32) -> bool {
+    use wasm_posix_shared::signal::{SIGBUS, SIGFPE, SIGILL, SIGTRAP};
+    const SIGSEGV: u32 = 11;
+    const SIGSYS: u32 = 31;
+    matches!(signum, SIGILL | SIGTRAP | SIGBUS | SIGFPE | SIGSEGV | SIGSYS)
+}
+
+/// The conventional name of a standard signal, for messages a person reads.
+/// Real-time signals and unassigned numbers have none.
+pub fn signal_name(signum: u32) -> Option<&'static str> {
+    const NAMES: [&str; 31] = [
+        "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGBUS", "SIGFPE",
+        "SIGKILL", "SIGUSR1", "SIGSEGV", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM",
+        "SIGSTKFLT", "SIGCHLD", "SIGCONT", "SIGSTOP", "SIGTSTP", "SIGTTIN", "SIGTTOU",
+        "SIGURG", "SIGXCPU", "SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH", "SIGIO",
+        "SIGPWR", "SIGSYS",
+    ];
+    NAMES.get((signum as usize).checked_sub(1)?).copied()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DefaultSignalOutcome {
     Continue,
@@ -1049,6 +1079,101 @@ mod tests {
         assert_eq!(proc.state, ProcessState::Stopped);
         assert!(proc.signals.is_pending(SIGTERM));
         assert_eq!(proc.wait_event.unwrap().event_mask, EVENT_STOPPED);
+    }
+
+    /// The calling thread's kernel log as `(level, ts_nsec, text)`.
+    fn kernel_log() -> Vec<(u8, u64, alloc::string::String)> {
+        crate::kmsg::with_ring(|ring| {
+            (ring.oldest_seq()..ring.head_seq())
+                .map(|seq| {
+                    let record = ring.read_at(seq).unwrap();
+                    (record.level, record.ts_nsec, alloc::string::String::from_utf8_lossy(record.text).into_owned())
+                })
+                .collect()
+        })
+    }
+
+    #[test]
+    fn process_death_by_signal_records_pid_and_signal() {
+        use crate::kmsg::{reset_test_ring, LOG_INFO, LOG_WARNING};
+        use crate::process::{Process, ProcessState};
+        use crate::test_fixtures::ClockHost;
+
+        // An ordinary termination is informational.
+        reset_test_ring();
+        let mut proc = Process::new(52);
+        let mut host = ClockHost::at(7, 250_000_000);
+        assert!(proc.raise_signal(SIGTERM));
+        deliver_pending_signals(&mut proc, &mut host);
+        assert_eq!(proc.state, ProcessState::Exited);
+        assert_eq!(kernel_log(), [(LOG_INFO, 7_250_000_000, "process 52 killed by signal 15 (SIGTERM)".into())]);
+
+        // A fault in the program is a warning, and has its own rate limit.
+        reset_test_ring();
+        let mut proc = Process::new(53);
+        assert!(proc.raise_signal(11));
+        deliver_pending_signals(&mut proc, &mut host);
+        assert_eq!(kernel_log(), [(LOG_WARNING, 7_250_000_000, "process 53 killed by signal 11 (SIGSEGV)".into())]);
+
+        // A real-time signal has a number and no name.
+        reset_test_ring();
+        let mut proc = Process::new(54);
+        terminate_process_by_signal(&mut proc, &mut host, 40);
+        assert_eq!(kernel_log()[0].2, "process 54 killed by signal 40");
+    }
+
+    #[test]
+    fn signal_names_and_fault_signals_match_the_numbers_programs_see() {
+        // The shared constants where there are any, musl's numbers where not.
+        assert_eq!(signal_name(SIGHUP), Some("SIGHUP"));
+        assert_eq!(signal_name(SIGKILL), Some("SIGKILL"));
+        assert_eq!(signal_name(SIGTERM), Some("SIGTERM"));
+        assert_eq!(signal_name(SIGCHLD), Some("SIGCHLD"));
+        assert_eq!(signal_name(SIGWINCH), Some("SIGWINCH"));
+        assert_eq!(signal_name(11), Some("SIGSEGV"));
+        assert_eq!(signal_name(31), Some("SIGSYS"));
+        assert_eq!((signal_name(0), signal_name(32), signal_name(64)), (None, None, None));
+        for signum in [SIGILL, SIGTRAP, SIGBUS, SIGFPE, 11, 31] {
+            assert!(is_fault_signal(signum), "{signum}");
+        }
+        for signum in [SIGHUP, SIGINT, SIGABRT, SIGKILL, SIGPIPE, SIGTERM, 40] {
+            assert!(!is_fault_signal(signum), "{signum}");
+        }
+    }
+
+    #[test]
+    fn a_signal_that_does_not_kill_records_nothing_and_a_death_is_recorded_once() {
+        use crate::process::Process;
+        use crate::test_fixtures::ClockHost;
+
+        crate::kmsg::reset_test_ring();
+        let mut host = ClockHost::at(1, 0);
+        // Ignored by default, stopped, and caught signals do not end the process.
+        let mut proc = Process::new(55);
+        assert!(proc.raise_signal(SIGCHLD));
+        deliver_pending_signals(&mut proc, &mut host);
+        assert!(proc.record_stop(SIGTSTP));
+        deliver_pending_signals(&mut proc, &mut host);
+        assert!(kernel_log().is_empty());
+        // Killing a process that is already dead is not a second death.
+        let mut dead = Process::new(56);
+        terminate_process_by_signal(&mut dead, &mut host, SIGKILL);
+        terminate_process_by_signal(&mut dead, &mut host, SIGKILL);
+        assert_eq!(kernel_log().len(), 1);
+    }
+
+    #[test]
+    fn a_death_is_still_a_death_when_the_clock_cannot_be_read() {
+        use crate::process::{Process, ProcessState};
+        use crate::test_fixtures::ClockHost;
+
+        crate::kmsg::reset_test_ring();
+        let mut host = ClockHost { monotonic: Err(wasm_posix_shared::Errno::EIO), clock_reads: 0 };
+        let mut proc = Process::new(57);
+        terminate_process_by_signal(&mut proc, &mut host, SIGKILL);
+        assert_eq!(proc.state, ProcessState::Exited);
+        assert_eq!(proc.exit_signal, SIGKILL);
+        assert!(kernel_log().is_empty(), "no timestamp, so no record");
     }
 
     #[test]

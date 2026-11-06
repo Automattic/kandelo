@@ -1886,6 +1886,50 @@ pub fn image_length() -> Option<u64> {
     ROOTFS.with(|state| state.image.map(|geometry| geometry.image_len))
 }
 
+/// Write the kernel log's boot and mount records for the `/` image that was
+/// just loaded, `entries` being what the loader counted.
+///
+/// The kernel's boot identity is written here, beside the rootfs identity,
+/// because the kernel has no boot step of its own: it runs only when the host
+/// calls an export, and loading `/` is the first call that carries something
+/// worth recording. A machine started with no `/` image therefore gets no
+/// boot record, which is a gap in the log and not something to paper over with
+/// a record written at some unrelated call.
+///
+/// Both records are stamped with the host clock; without one neither is
+/// written. Nothing is written when no image is loaded.
+pub fn record_root_image_loaded<H: crate::process::HostIO + ?Sized>(host: &mut H, entries: usize) {
+    use crate::kmsg::{klog, KlogSite};
+    let Some(image_len) = image_length() else { return };
+    let declared_abi = ROOTFS.with(|state| {
+        state.image_metadata.as_deref().and_then(|bytes| crate::image_policy::declared_kernel_abi(bytes))
+    });
+    let width = if core::mem::size_of::<usize>() == 8 { "wasm64" } else { "wasm32" };
+    klog(
+        host,
+        KlogSite::BootIdentity,
+        format_args!(
+            "kernel ABI {}, {width}; memory budgets: rootfs metadata {} B, journal state {} B, I/O {} B",
+            wasm_posix_shared::ABI_VERSION,
+            metadata_budget_usage().1,
+            journal_state_budget_usage().1,
+            io_budget_usage().1,
+        ),
+    );
+    match declared_abi {
+        Some(abi) => klog(
+            host,
+            KlogSite::RootImageMounted,
+            format_args!("rootfs: mounted VFS image of {image_len} bytes, {entries} entries, built for kernel ABI {abi}"),
+        ),
+        None => klog(
+            host,
+            KlogSite::RootImageMounted,
+            format_args!("rootfs: mounted VFS image of {image_len} bytes, {entries} entries, declares no kernel ABI"),
+        ),
+    };
+}
+
 pub fn sync_persistence() -> Result<(), Errno> {
     if !resizable_persistence_enabled() {
         return match PERSISTENT_ROOTFS.lock().as_mut() {
@@ -18943,6 +18987,129 @@ mod tests {
             php.uri.is_empty(),
             "a member is addressed by its archive, and the export must not invent a second address"
         );
+    }
+
+    /// A loadable image whose container metadata declares `abi`, or declares
+    /// nothing when `abi` is `None`.
+    fn image_declaring(abi: Option<u32>) -> Vec<u8> {
+        let mut w = crate::kandelo_image_write::KandeloImageWriter::mkfs(
+            crate::kandelo_image_write::KandeloImageConfig::fixed(128 * 1024),
+        )
+        .expect("mkfs");
+        let root = w.root();
+        w.create_file(root, b"plain", 0o644, crate::kandelo_image_write::Content::Bytes(b"hi"))
+            .expect("a plain file");
+        w.declare_deferred_section().expect("declare the deferred section");
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::kandelo_image_write::NoContent)
+            .expect("materialize");
+        let metadata = abi.map(|abi| alloc::format!(r#"{{"version":1,"kernelAbi":{abi}}}"#));
+        crate::vfsi_container::wrap(
+            &body,
+            &crate::vfsi_container::ContainerSections {
+                lazy_json: b"",
+                archive_json: None,
+                metadata_json: metadata.as_deref().map(str::as_bytes),
+                kernel_lazy: None,
+            },
+        )
+        .expect("wrap")
+    }
+
+    /// The calling thread's log as `(level, ts_nsec, text)`.
+    fn kernel_log() -> Vec<(u8, u64, alloc::string::String)> {
+        crate::kmsg::with_ring(|ring| {
+            (ring.oldest_seq()..ring.head_seq())
+                .map(|seq| {
+                    let record = ring.read_at(seq).unwrap();
+                    (record.level, record.ts_nsec, alloc::string::String::from_utf8_lossy(record.text).into_owned())
+                })
+                .collect()
+        })
+    }
+
+    #[test]
+    fn boot_records_abi_version_wasm_width_memory_budget_and_rootfs_identity() {
+        let _guard = TestGuard::acquire();
+        crate::kmsg::reset_test_ring();
+        let image = image_declaring(Some(wasm_posix_shared::ABI_VERSION));
+        let entries = load_image(image.len() as u64, image_host(&image)).expect("load");
+        let mut host = crate::test_fixtures::ClockHost::at(3, 500_000_000);
+        record_root_image_loaded(&mut host, entries);
+
+        let width = if cfg!(target_pointer_width = "64") { "wasm64" } else { "wasm32" };
+        let log = kernel_log();
+        assert_eq!(log.len(), 2, "one boot record and one mount record: {log:?}");
+        // The kernel's own identity, and the budgets it will refuse against.
+        assert_eq!(
+            log[0],
+            (
+                crate::kmsg::LOG_INFO,
+                3_500_000_000,
+                alloc::format!(
+                    "kernel ABI {}, {width}; memory budgets: rootfs metadata {} B, journal state {} B, I/O {} B",
+                    wasm_posix_shared::ABI_VERSION,
+                    metadata_budget_usage().1,
+                    journal_state_budget_usage().1,
+                    io_budget_usage().1,
+                )
+            )
+        );
+        // The rootfs identity: what image, and which kernel it says it is for.
+        assert!(
+            log[1].2.contains(&alloc::format!("{} bytes", image.len()))
+                && log[1].2.contains(&alloc::format!("built for kernel ABI {}", wasm_posix_shared::ABI_VERSION)),
+            "{log:?}"
+        );
+    }
+
+    #[test]
+    fn mounting_a_vfs_image_records_the_mount() {
+        let _guard = TestGuard::acquire();
+        crate::kmsg::reset_test_ring();
+        let image = image_declaring(Some(wasm_posix_shared::ABI_VERSION));
+        let entries = load_image(image.len() as u64, image_host(&image)).expect("load");
+        let mut host = crate::test_fixtures::ClockHost::at(1, 0);
+        record_root_image_loaded(&mut host, entries);
+        assert_eq!(
+            kernel_log()[1],
+            (
+                crate::kmsg::LOG_INFO,
+                1_000_000_000,
+                alloc::format!(
+                    "rootfs: mounted VFS image of {} bytes, {entries} entries, built for kernel ABI {}",
+                    image.len(),
+                    wasm_posix_shared::ABI_VERSION,
+                )
+            )
+        );
+
+        // An image that declares no ABI says so, rather than claiming this
+        // kernel's number for it.
+        crate::kmsg::reset_test_ring();
+        let silent = image_declaring(None);
+        let entries = load_image(silent.len() as u64, image_host(&silent)).expect("load");
+        record_root_image_loaded(&mut host, entries);
+        assert!(kernel_log()[1].2.ends_with("declares no kernel ABI"), "{:?}", kernel_log());
+    }
+
+    #[test]
+    fn a_root_image_record_needs_a_clock_and_a_loaded_image() {
+        let _guard = TestGuard::acquire();
+        crate::kmsg::reset_test_ring();
+        let image = image_declaring(None);
+        let entries = load_image(image.len() as u64, image_host(&image)).expect("load");
+        // No clock, no records: neither is stamped with a guess.
+        let mut broken = crate::test_fixtures::ClockHost { monotonic: Err(Errno::EIO), clock_reads: 0 };
+        record_root_image_loaded(&mut broken, entries);
+        assert!(kernel_log().is_empty());
+        // Nothing loaded, nothing to say about it.
+        reset();
+        let mut host = crate::test_fixtures::ClockHost::at(1, 0);
+        record_root_image_loaded(&mut host, 0);
+        assert!(kernel_log().is_empty());
     }
 
     #[test]
