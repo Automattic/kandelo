@@ -4315,14 +4315,20 @@ tls.createSecureContext = _notImpl('tls', 'createSecureContext');
 // ============================================================
 // http / https modules — real HTTP/1.1 over net.Socket (http) and tls.TLSSocket (https)
 //
-// Single-source parser; the http vs https split is just the transport
-// factory we hand the request constructor. Mirrors Node's surface enough
-// for npm: ClientRequest extends Writable, IncomingMessage extends
-// Readable, headers are stored case-insensitively, body modes are
-// Content-Length / Transfer-Encoding: chunked / connection-close.
+// ClientRequest inherits the complete pinned OutgoingMessage framing owner.
+// IncomingMessage and the native response parser own received HTTP state;
+// net.Socket/TLSSocket own actual bytes. Agent and server ownership remain
+// separate incomplete contracts.
 // ============================================================
 
+const _nodeHttpOutgoing = _createNodeHttpOutgoing({
+    process, Buffer, stream, events, assert, types: util.types, async: _nodeAsyncPlatform,
+    streamsState: _nodeStreamPlatform.require('internal/streams/state'), values: _nodeValues,
+    insecureHTTPParser: _nodeNative.cliOptions?.insecureHttpParser === true,
+    setUnrefTimeout(fn, delay) { return setTimeout(fn, delay).unref(); },
+});
 const _nodeHttpHeaders = _createNodeHttpHeaders({
+    outgoing: _nodeHttpOutgoing,
     values: _nodeValues, Buffer, insecureHTTPParser: _nodeNative.cliOptions?.insecureHttpParser === true,
 });
 const STATUS_CODES = _nodeHttpHeaders.STATUS_CODES;
@@ -4416,9 +4422,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
         return { opts, cb };
     }
 
-    class ClientRequest extends stream.Writable {
+    class ClientRequest extends _nodeHttpHeaders.OutgoingMessage {
         constructor(opts, cb) {
-            super({ autoDestroy: false });
+            super();
             this.path = opts.path || '/';
             this._host = opts.hostname || opts.host || 'localhost';
             // WHATWG URL gives `port = ''` when default; treat that like missing.
@@ -4454,12 +4460,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
 
             this._socket = null;
             this._connected = false;
-            this._headersSent = false;
-            this._headersFlushed = false;
-            this._headersWanted = false;
             this._destroyed = false;
             this._redirected = false;
-            this._pendingBody = []; // chunks buffered until socket is connected
+            this._requestErrorEmitted = false;
             const options = opts;
             const { validateInteger, validateBoolean, validateOneOf } = _nodeValues.validators;
             const { ERR_INVALID_ARG_VALUE } = _nodeValues.errors.codes;
@@ -4506,6 +4509,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
 
             if (cb) this.once('response', cb);
             this._origCb = cb;
+            // Expect commits/flushes the header before the body, as in the
+            // pinned ClientRequest constructor and OutgoingMessage store owner.
+            if (this.getHeader('expect')) this._implicitHeader();
 
             queueMicrotask(() => {
                 if (this._destroyed) return;
@@ -4528,6 +4534,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
                 });
             }
             this._socket = sock;
+            this.socket = sock;
+            sock._httpMessage = this;
+            sock.on('drain', _nodeHttpOutgoing.onSocketDrain);
             this._fromPool = fromPool;
             this._headersReceived = false;
 
@@ -4558,7 +4567,13 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
                     this._failed(error);
                 }
             };
-            const onClose = () => { if (!parser.completed) onEnd(); };
+            const onClose = () => {
+                if (!parser.completed) onEnd();
+                this.destroyed = true;
+                if (this.res && !this.res.complete) this.res.destroy(new _nodeValues.errors.ConnResetException('aborted',
+                    this._requestError ? { cause: this._requestError } : undefined));
+                this._closeRequest();
+            };
             const onError = (err) => this._failed(err);
             sock.on('data', onData);
             sock.on('end', onEnd);
@@ -4572,9 +4587,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             const onReady = () => {
                 if (this._destroyed) return;
                 this._connected = true;
-                if (this._headersWanted) this._sendHeaders();
-                const pendingBody = this._pendingBody; this._pendingBody = [];
-                for (const { buf, callback } of pendingBody) this._socket.write(buf, callback);
+                this._flush();
 
             };
             if (fromPool) {
@@ -4583,6 +4596,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
                 sock.once('connect', onReady);
                 sock.once('secureConnect', onReady);
             }
+            // Expose the real socket only after parser/listener ownership is
+            // installed, so reentrant writes/destruction have a valid owner.
+            this.emit('socket', sock);
         }
 
         _releaseSocket() {
@@ -4595,6 +4611,10 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             sock.removeListener('end', lst.onEnd);
             sock.removeListener('error', lst.onError);
             sock.removeListener('close', lst.onClose);
+            sock.removeListener('drain', _nodeHttpOutgoing.onSocketDrain);
+            if (sock._httpMessage === this) sock._httpMessage = null;
+            this.destroyed = true;
+            process.nextTick(() => this._closeRequest());
             if (this._destroyed || this._redirected || this._respConnectionClose || !this.shouldKeepAlive) {
                 try { sock.destroy(); } catch (_) { /* ignore */ }
                 return;
@@ -4612,42 +4632,8 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             returnToPool(this._sockPoolKey, sock);
         }
 
-        _prepareHeaders() {
-            this._headersWanted = true;
-            if (!this._header) this._header = _nodeHttpHeaders.serialize(this, `${this.method} ${this.path} HTTP/1.1\r\n`);
-        }
-
-        _sendHeaders() {
-            if (this._headersSent) return;
-            this._prepareHeaders();
-            this._headersSent = true;
-            this._socket.write(Buffer.from(this._header, 'latin1'), error => {
-                this._headersFlushed = !error;
-                const callback = this._pendingFinal; this._pendingFinal = null;
-                if (callback) callback(error);
-                else if (error) this._failed(error);
-            });
-        }
-
-        _write(chunk, encoding, cb) {
-            if (this._destroyed) return cb(new Error('http: request destroyed'));
-            this._prepareHeaders();
-            const buf = (chunk instanceof Uint8Array) ? Buffer.from(chunk)
-                : (typeof chunk === 'string') ? Buffer.from(chunk, encoding || 'utf8')
-                : Buffer.from(chunk);
-            if (!this._connected) {
-                this._pendingBody.push({ buf, callback: cb });
-                return;
-            }
-            this._sendHeaders();
-            this._socket.write(buf, cb);
-        }
-
-        _final(callback) {
-            this._prepareHeaders();
-            if (this._connected) this._sendHeaders();
-            if (this._headersFlushed) callback();
-            else this._pendingFinal = callback;
+        _implicitHeader() {
+            _nodeHttpHeaders.store(this, `${this.method} ${this.path} HTTP/1.1\r\n`);
         }
 
         _onUpgrade(msg, head) {
@@ -4656,8 +4642,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             const lst = this._sockListeners;
             sock.removeListener('data', lst.onData);
             sock.removeListener('end', lst.onEnd);
-            sock.removeListener('close', lst.onClose);
-            sock.removeListener('error', lst.onError);
+            sock.removeListener('drain', _nodeHttpOutgoing.onSocketDrain);
             this.res = msg; msg.req = this;
             msg[_nodeHttpIncoming.kDetachAbortSignal]();
             this._socket = null;
@@ -4665,6 +4650,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             if (this.listenerCount(name) > 0) {
                 this.upgradeOrConnect = true;
                 sock.emit('agentRemove');
+                sock.removeListener('close', lst.onClose);
+                sock.removeListener('error', lst.onError);
+                if (sock._httpMessage === this) sock._httpMessage = null;
                 sock.readableFlowing = null;
                 this.emit(name, msg, sock, head);
                 this.destroyed = true;
@@ -4742,30 +4730,53 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
         }
 
         _failed(err) {
-            if (!this._destroyed && !this._redirected) this.destroy(err);
+            if (this._redirected) return;
+            this._requestError ||= err;
+            if (!this._requestErrorEmitted) {
+                this._requestErrorEmitted = true;
+                // A parser/transport error retires its real socket first;
+                // request destroyed/close state belongs to the close callback.
+                // Do not manufacture Writable destruction before that fence.
+                if (this._socket) {
+                    this._socket._hadError = true;
+                    this._socket.destroy();
+                }
+                this.emit('error', err);
+            }
+        }
+
+        _closeRequest() {
+            if (this._closed) return;
+            this._closed = true;
+            // The pinned client discards output that could not reach its
+            // socket on close; completed writes keep real socket callbacks.
+            this.emit('close');
+            this.outputData.length = 0;
         }
 
         abort() { this.destroy(); }
-        _destroy(err, callback) {
+        destroy(err) {
+            if (this.destroyed) return this;
+            this.destroyed = true;
             this._destroyed = true;
-            const socket = this._socket; this._socket = null;
-            if (socket) socket.destroy();
-            if (this.res && !this.res.destroyed) this.res.destroy(err);
-            const pendingBody = this._pendingBody; this._pendingBody = [];
-            const failure = err || new _nodeValues.errors.codes.ERR_STREAM_DESTROYED('write');
-            for (const pending of pendingBody) pending.callback(failure);
-            const final = this._pendingFinal; this._pendingFinal = null;
-            if (final) final(failure);
-            callback(err);
+            if (this.res) this.res._dump();
+            if (this.writableFinished && this.res?.complete) return this;
+            this._requestError = err;
+            if (this._socket) this._socket.destroy(err);
+            else process.nextTick(() => {
+                if (err && !this._requestErrorEmitted) {
+                    this._requestErrorEmitted = true;
+                    this.emit('error', err);
+                }
+                this._closeRequest();
+            });
+            return this;
         }
 
         setTimeout(_ms, cb) { if (cb) this.once('timeout', cb); return this; }
         setNoDelay() { return this; }
         setSocketKeepAlive() { return this; }
-        flushHeaders() {
-            this._prepareHeaders();
-            if (this._connected) this._sendHeaders();
-        }
+
     }
 
     _nodeHttpHeaders.install(ClientRequest.prototype);
@@ -4784,6 +4795,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
         STATUS_CODES, METHODS: HTTP_METHODS,
         ...(protoLower === 'http:' ? {
             IncomingMessage: _nodeHttpIncoming.IncomingMessage,
+            OutgoingMessage: _nodeHttpOutgoing.module.OutgoingMessage,
             validateHeaderName: _nodeHttpHeaders.validateHeaderName,
             validateHeaderValue: _nodeHttpHeaders.validateHeaderValue,
             isValidHeaderName: _nodeHttpHeaders.isValidHeaderName,
@@ -4941,6 +4953,7 @@ const _builtinModules = {
     'tls': tls,
     'http': http,
     '_http_incoming': _nodeHttpIncoming,
+    '_http_outgoing': _nodeHttpOutgoing.module,
     'https': https,
     get zlib() { return _nodeStreamPlatform.require('zlib'); },
     'tty': {

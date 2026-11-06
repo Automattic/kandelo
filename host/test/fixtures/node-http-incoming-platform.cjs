@@ -27,15 +27,16 @@ function create(connect = options => net.connect(options)) {
   // portable backend is checked separately, and this is never guest proof.
   const { Buffer, values } = require('./node-buffer-pool.cjs').create();
   const incoming = factories.incoming({ stream, abort: { AbortController }, process });
-  const headers = factories.headers({ Buffer, values, insecureHTTPParser: false });
+  const outgoing = require('./node-http-outgoing-platform.cjs').create(Buffer, values);
+  const headers = factories.headers({ Buffer, values, outgoing, insecureHTTPParser: false });
   const native = nativeParserBoundary();
   const start = source.indexOf('const HTTP_METHODS =');
   const end = source.indexOf('const http = makeHttpModule(', start);
   if (start < 0 || end < 0) throw Error('Missing actual HTTP parser/client source boundary');
   const { makeHttpModule, makeResponseParser } = Function('_nodeHttpHeaders', '_nodeHttpIncoming',
-    'Buffer', 'stream', 'url', '_nodeValues', 'process', '_createNodeHttpParser', '_nodeNative',
+    'Buffer', 'stream', 'url', '_nodeValues', 'process', '_createNodeHttpParser', '_nodeNative', '_nodeHttpOutgoing',
     'const STATUS_CODES=_nodeHttpHeaders.STATUS_CODES;' + source.slice(start, end) +
-    ';return {makeHttpModule,makeResponseParser};')(headers, incoming, Buffer, stream, url, values, process, factories.parser, native);
+    ';return {makeHttpModule,makeResponseParser};')(headers, incoming, Buffer, stream, url, values, process, factories.parser, native, outgoing);
   const http = makeHttpModule({ defaultPort: 80, defaultProtocol: 'http:', connect });
   const route = source.split('\n').find(line => line.trimStart().startsWith("'_http_incoming':"));
   if (!route) throw Error('Missing actual IncomingMessage builtin route');

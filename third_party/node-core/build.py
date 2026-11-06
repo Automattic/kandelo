@@ -613,6 +613,7 @@ for marker, replacement in [('/* NODE_CONSOLE_MODULES */', ',\n'.join(console_fa
         raise ValueError('Review Console source marker: ' + marker)
     console_adapter = console_adapter.replace(marker, replacement)
 bundle += console_adapter + '\n'
+bundle += runpy.run_path(str(root / 'generate-http-outgoing.py'))['generate'](root) + '\n'
 http_item = manifest['httpHeaders']
 http_sources = {}
 for name, item in http_item['sources'].items():
@@ -630,6 +631,13 @@ for name, selector in http_item['sections'].items():
     if hashlib.sha256(section.encode()).hexdigest() != selector['sha256']:
         raise ValueError('HTTP section hash mismatch: ' + name)
     http_sections[name] = section
+outgoing_identity = json.loads((root / 'http-outgoing-sources.json').read_text())
+selector = outgoing_identity['bodyDefaultsSelection']
+body_source = http_sources['client']
+start = body_source.index(selector['start'])
+selected_http_body_defaults = body_source[start:start + selector['length']]
+if hashlib.sha256(selected_http_body_defaults.encode()).hexdigest() != selector['sha256']:
+    raise ValueError('Client request body-default source mismatch')
 http_adapter = (root / 'http-headers-adapter.js').read_text()
 http_parts = [http_sections['token'], http_sections['headerCharacters'],
     'const RE_TE_CHUNKED = ({' + http_sections['chunkExpression'] + '}).chunkExpression;',
@@ -639,6 +647,7 @@ for marker, replacement in [
     ('/* NODE_HTTP_HEADER_ALGORITHMS */', '\n'.join(http_parts)),
     ('/* NODE_HTTP_REQUEST_METHOD */', http_sections['method']),
     ('/* NODE_HTTP_REQUEST_VALIDATION */', http_sections['validationOptions']),
+    ('/* NODE_HTTP_REQUEST_BODY_DEFAULTS */', selected_http_body_defaults),
 ]:
     if http_adapter.count(marker) != 1:
         raise ValueError('Review HTTP header marker: ' + marker)

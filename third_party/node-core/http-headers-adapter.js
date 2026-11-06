@@ -1,11 +1,11 @@
-// Shared outgoing-header state for actual HTTP/HTTPS requests. These pinned
-// algorithms do not supply the missing full OutgoingMessage/framing/parser,
-// Agent or server owners; no public placeholder constructor is created.
+// Client method/path setup shares the actual OutgoingMessage private header
+// state in production. Header-only dependency controls can install the selected
+// pure methods without claiming a transport or public placeholder constructor.
 function _createNodeHttpHeaders(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
     const { ArrayIsArray, ObjectDefineProperties, ObjectDefineProperty, ObjectGetOwnPropertyDescriptors,
-        ObjectKeys, ObjectSetPrototypeOf, ObjectValues, SafeSet, String, Symbol, Uint8Array } = primordials;
+        ObjectKeys, ObjectSetPrototypeOf, ObjectValues, ObjectGetOwnPropertyDescriptor, SafeSet, String, Symbol, Uint8Array } = primordials;
     const { assignFunctionName } = platform.values.util;
     const { hideStackFrames, codes: { ERR_HTTP_HEADERS_SENT, ERR_HTTP_INVALID_HEADER_VALUE,
         ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_INVALID_CHAR, ERR_INVALID_HTTP_TOKEN,
@@ -15,15 +15,16 @@ function _createNodeHttpHeaders(platform) {
     const debug = platform.values.require('internal/util/debuglog').debuglog('http');
     const OutgoingMessage = { prototype: {} };
     const ClientRequest = OutgoingMessage;
-    const kOutHeaders = Symbol('kOutHeaders');
+    const kOutHeaders = platform.outgoing ? platform.outgoing.kOutHeaders : Symbol('kOutHeaders');
     const kLenientCache = Symbol('kLenientCache');
-    const kUniqueHeaders = Symbol('kUniqueHeaders');
+    const kUniqueHeaders = platform.outgoing ? platform.outgoing.module.kUniqueHeaders : Symbol('kUniqueHeaders');
     const kPath = Symbol('kPath');
     const isLenient = () => platform.insecureHTTPParser === true;
     /* NODE_HTTP_HEADER_ALGORITHMS */
     function configure(options) {
         /* NODE_HTTP_REQUEST_METHOD */
         /* NODE_HTTP_REQUEST_VALIDATION */
+        /* NODE_HTTP_REQUEST_BODY_DEFAULTS */
     }
     function initialize(request, options) {
         request[kOutHeaders] = null;
@@ -43,9 +44,20 @@ function _createNodeHttpHeaders(platform) {
         }
         return state.header + '\r\n';
     }
-    function install(prototype) {
-        ObjectDefineProperties(prototype, ObjectGetOwnPropertyDescriptors(OutgoingMessage.prototype));
+    function store(request, firstLine) {
+        request._storeHeader(firstLine, request[kOutHeaders]);
     }
-    return { initialize, serialize, install, STATUS_CODES,
-        validateHeaderName, validateHeaderValue, isValidHeaderName, isValidHeaderValue };
+    function install(prototype) {
+        if (platform.outgoing) {
+            // Real framing/header methods are inherited from the unchanged
+            // OutgoingMessage; only ClientRequest owns this path accessor.
+            ObjectDefineProperty(prototype, 'path', ObjectGetOwnPropertyDescriptor(OutgoingMessage.prototype, 'path'));
+        } else ObjectDefineProperties(prototype, ObjectGetOwnPropertyDescriptors(OutgoingMessage.prototype));
+    }
+    const api = platform.outgoing ? platform.outgoing.module :
+        { validateHeaderName, validateHeaderValue, isValidHeaderName, isValidHeaderValue };
+    return { initialize, serialize, store, install, STATUS_CODES,
+        OutgoingMessage: api.OutgoingMessage,
+        validateHeaderName: api.validateHeaderName, validateHeaderValue: api.validateHeaderValue,
+        isValidHeaderName: api.isValidHeaderName, isValidHeaderValue: api.isValidHeaderValue };
 }

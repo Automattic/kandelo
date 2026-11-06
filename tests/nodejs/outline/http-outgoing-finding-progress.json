@@ -1,0 +1,105 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/http-contracts.md",
+    "findingIds": [
+      "H-005",
+      "H-009"
+    ],
+    "relatedFamilies": [
+      "http",
+      "streams",
+      "async",
+      "network",
+      "crypto"
+    ],
+    "scope": "Full pinned OutgoingMessage over actual client/socket owners;custom ClientRequest/Agent/lifecycle/server/TLS obligations remain open"
+  },
+  "sourceImplemented": [
+    "Complete unchanged pinned outgoing header/framing/chunk/trailer/strict-length/cork/backpressure/finish owner consumes actual shared stream/Buffer/async/timer owners",
+    "Actual ClientRequest socket/output/drain/flush/response-finish fence replaces raw body Writable path;upgrade transfers owned socket",
+    "Public http.OutgoingMessage and legacy _http_outgoing share actual owner;private header symbols are shared with existing request setup"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-http-outgoing-source-r1/report.json",
+    "sha256": "54db916842e38027274473f8d92dc981d5df0a3ece4d4e3c9abb0d404f0f88a5",
+    "guardedInputs": 679,
+    "wholeReferencePaths": 6,
+    "uniqueNodeReferenceFiles": 5,
+    "scope": "Exact pinned outgoing/public/header/client selections,current bootstrap/route/recipe/generated bundle and source closure only. No production guest C++/JSAPI/HTTP/TLS/GC/lifecycle or four-host runtime conformance."
+  },
+  "nativeDependencyControls": {
+    "report": ".context/node26-http-outgoing-controls-r1/report.json",
+    "sha256": "4afca4489585da897fdb6ac770374c878ca356f2f356d71afc2efe19633f7cc2",
+    "groups": 20,
+    "passed": 20,
+    "failed": 0,
+    "skipped": 0,
+    "componentWireCases": 13,
+    "componentValidationCases": 8,
+    "componentDescriptorGroups": 2,
+    "requestFramingCases": 14,
+    "affectedGroups": 14,
+    "scope": "Actual candidate JS over explicit native dependencies;four source/version+two component/request+14affected groups. Early-response case overlaps request/affected;not unique API or guest conformance."
+  },
+  "affectedControls": {
+    "report": ".context/node26-http-outgoing-affected-r1.json",
+    "sha256": "70421b8a9a6f9a666817012a97f58afc94db5988603e487ee87bb7f6dd103385",
+    "passed": 20,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Six existing header cases+14package source checks;global product setup disabled,not guest conformance"
+  },
+  "packageChecks": {
+    "report": ".context/node26-http-outgoing-affected-r1.json",
+    "sha256": "70421b8a9a6f9a666817012a97f58afc94db5988603e487ee87bb7f6dd103385",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package checks within20aggregate,not extra runtime passes"
+  },
+  "privateHandoff": {
+    "report": ".context/http-framing-agent/handoff/report.json",
+    "sha256": "4761a2071fbc7b33ebfb212feac2505d7ca6dcba2c3703fc54a8f98f1535d365",
+    "sealSha256": "64594e8611f57813f68867e1ed21bf30bc659ac94083a1474437d20485362087",
+    "scope": "Immutable exact proposal/evidence identities verified before additive current integration"
+  },
+  "privateSetupAttempt": {
+    "report": ".context/http-framing-agent/setup-attempt/report.json",
+    "sha256": "c94dbe8211b595917d73df7d377cc4b847a6eb407d7173f9cd787fe2e55d8dc0",
+    "scope": "Historical private prerequisite builds/interruption;zero HTTP tests,not this root slice or full product rebuild"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/http-framing-agent/handoff/historical-evidence/replay-old-early-control.log",
+      "sha256": "2f79e25f07427829bc40221edd523f70fd35405d1b1c40f8fd3230af9b783ca4",
+      "kind": "local-dependency-fixture",
+      "reason": "Old separate-write callback assumption fails under pinned coalescing;actual paused TCP/native comparison retains required socket/write/signal assertions"
+    },
+    {
+      "report": ".context/http-framing-agent/handoff/report.json",
+      "sha256": "4761a2071fbc7b33ebfb212feac2505d7ca6dcba2c3703fc54a8f98f1535d365",
+      "kind": "prior-dependency-harness-nonpasses",
+      "reason": "Debug owner initialization,missing output environment,launcher/execArgv/config resolution failures retained in sealed historical evidence"
+    },
+    {
+      "report": ".context/http-framing-agent/setup-attempt/report.json",
+      "sha256": "c94dbe8211b595917d73df7d377cc4b847a6eb407d7173f9cd787fe2e55d8dc0",
+      "kind": "private-unplanned-setup",
+      "reason": "Private prerequisite/index preparation interrupted at130;zero HTTP tests,not a full product rebuild"
+    }
+  ],
+  "remaining": [
+    "Implement complete ClientRequest/Agent/options/abort/socket controls/error/close/identity/pool and HTTP server/HTTPS/HTTP2 owners",
+    "Compile current combined engine and validate actual guest stream/parser/socket/TLS/GC/reentry and four-host behavior",
+    "Integrate corrected ELD,backing-store bridge,TLS trust and watcher/lazy-data work;all19families remain partial"
+  ],
+  "at": "2026-11-06T04:58:33.730991+00:00",
+  "recipeRevision": 138,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

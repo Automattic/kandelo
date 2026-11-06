@@ -1,0 +1,31 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/_http_outgoing.js": {
+      "path": "upstream/http-outgoing/lib/_http_outgoing.js",
+      "sha256": "737581e10460c2bf4cedcd98a402b46fd11b490ecd3e9d2ceccc22b94381f669"
+    },
+    "lib/internal/http.js": {
+      "path": "upstream/http-outgoing/lib/internal/http.js",
+      "sha256": "7340c282d028e6aa6b3813084ad0e7fea22e33478706b295e746f29e02558f37"
+    }
+  },
+  "dateSelection": {
+    "start": "let utcCache;",
+    "length": 572,
+    "sha256": "933e266cb9412786842056ea140eb7ffb5ba4a9c20ab4af0dd96a26f3f9cef6e"
+  },
+  "drainSelection": {
+    "source": "upstream/http/client.js",
+    "start": "function ondrain()",
+    "length": 162,
+    "sha256": "6ab38b3bafb0dfd1f8fba0d45806e843c75a84f99a24bbb06d9303904e4c7ab2"
+  },
+  "bodyDefaultsSelection": {
+    "source": "upstream/http/client.js",
+    "start": "  if (method === 'GET' ||",
+    "length": 276,
+    "sha256": "a509068f885af502c695a3ae01a6c0bdca1999f76a123a0d41362dfc010677ea"
+  }
+}

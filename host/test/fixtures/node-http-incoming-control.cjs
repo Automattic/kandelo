@@ -263,25 +263,10 @@ const cases = {
     assert.equal(signal.aborted, false); req.destroy();
   },
   async earlyResponseRetainsPendingWrite() {
-    const peer = socket(); let pendingWrite;
-    peer._write = (bytes, _encoding, callback) => {
-      if (bytes.toString().startsWith('POST ')) {
-        callback(); queueMicrotask(() => peer.push(Buffer.from('HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n')));
-      } else pendingWrite = callback;
-    };
-    const api = create(() => { queueMicrotask(() => peer.emit('connect')); return peer; }).http;
-    const req = api.request({ method: 'POST', headers: { 'Content-Length': '4' } });
-    req.on('error', () => {}); req.end('body');
-    const [res] = await once(req, 'response');
-    const signal = res.signal; const ended = once(res, 'end'); res.resume(); await ended;
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(typeof pendingWrite, 'function'); assert.equal(req.writableFinished, false);
-    assert.equal(req._socket, peer); assert.equal(peer._poolTimer, undefined);
-    const finished = once(req, 'finish'); pendingWrite(); await finished;
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(req._socket, null); assert.equal(res.socket, null);
-    peer.destroy(); await new Promise(resolve => setImmediate(resolve));
-    assert.equal(signal.aborted, false); req.destroy();
+    // The complete pinned outgoing owner can coalesce header/body into one
+    // real write. Exercise the finish fence with an actually paused TCP peer,
+    // not the former assumption of separate fake header/body callbacks.
+    await require('./node-http-request-framing-controls.cjs').earlyResponseRetainsRealPendingWrite();
   },
 };
 module.exports = { cases };

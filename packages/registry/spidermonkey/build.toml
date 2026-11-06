@@ -243,6 +243,10 @@ inputs = [
   "third_party/node-core/fs-stats-adapter.js",
   "third_party/node-core/fs-streams-adapter.js",
   "third_party/node-core/http-headers-adapter.js",
+  "third_party/node-core/http-outgoing-adapter.js",
+  "third_party/node-core/http-outgoing-sources.json",
+  "third_party/node-core/generate-http-outgoing.py",
+  "third_party/node-core/upstream/http-outgoing",
   "third_party/node-core/incremental-crypto-adapter.js",
   "third_party/node-core/inspection-adapter.js",
   "third_party/node-core/licenses/balanced-match.txt",
@@ -532,4 +536,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 137
+revision = 138

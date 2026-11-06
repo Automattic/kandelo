@@ -1,5 +1,12 @@
 # Broad implementation review
 
+Source checkpoint138 integrates the complete pinned OutgoingMessage and actual
+request framing/socket completion paths. Twenty focused dependency-runner groups
+and20 source-only header/package checks pass; these are not guest/four-host
+conformance. Client/Agent/server/TLS gaps remain open. See the
+[HTTP integration scope](http-outgoing-integration.md).
+
+
 Source checkpoint 136 adds real source/synthetic module records, graph linking,
 live namespaces and evaluation ownership beneath the pinned public VM classes.
 The real CLI now owns the experimental flag instead of leaving the JS gate
