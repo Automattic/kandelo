@@ -66,7 +66,7 @@
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "1914c8604e78672e8a5a7a3791dece2bb40ee3ab4298aa5aa39d7d00829f03e8"
+        "packages/registry/spidermonkey/build.toml": "4c7efa145b7d2f09d4eb2d7e01ed3ddabbebf6a3274d77f510bfb300db1cca89"
       },
       "sourceRoute": "pinned URL/path/byte-path/HTTP-option helpers over shared parser and platform owners; generic native Error location policy; pinned AssertionError/Myers diff and shared validator/error/color/primordial owners; values/util/UV/dotenv/MIME/Buffer/path owners and full querystring/punycode algorithms with saved-frame load-origin source; pinned util/StringDecoder owners and callable Buffer/shared aligned pool/permanent storage/zero-fill source",
       "remainingDependencies": "Private worker marks have a source owner and focused environment evidence; remaining Buffer/backing-store/realm/CLI/error/descriptor edges, remaining util/URL/IDNA/encoding, complete errors/brands/descriptors and guest byte/origin/loader/warning conformance",
@@ -246,7 +246,7 @@
         "packages/registry/node-compat/bootstrap.js": "ff4e7eaad4e489e61987a55fc0e07cf1df1656f11977b58de098dced6321a75d",
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
-        "third_party/node-core/native-digests.cpp": "c27419711fa945239c1d00b5fe375e2ec4ce0c456ff5c642c466b3c83b114e33",
+        "third_party/node-core/native-digests.cpp": "a70f0713fe46b411042f5e9a5792529b1029cc56c14e9b00b426031718d6a1f7",
         "third_party/node-core/digest-operations.h": "0a44643d4dfcadcaf9a9e3ed1dd6fccf40e5435a81352ac3d0701523a5f56825",
         "packages/registry/spidermonkey/node-compat/adapter.js": "017561d34369147d1a8c54210fccb7ee37a5f28a32210c1e6d83f73b4b4d25b9"
       },
@@ -369,7 +369,7 @@
         "packages/registry/php/package.toml": "3ae9d7bc075a1e187e0262e276f16d63b02aacd9e213f1f4f440ac52bee6cbba",
         "packages/registry/php/build.toml": "ad4e35904e40a9027b646dd25f342b0335a0afcd025edaee68354d656bc05ab4",
         "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
-        "packages/registry/spidermonkey/build.toml": "1914c8604e78672e8a5a7a3791dece2bb40ee3ab4298aa5aa39d7d00829f03e8",
+        "packages/registry/spidermonkey/build.toml": "4c7efa145b7d2f09d4eb2d7e01ed3ddabbebf6a3274d77f510bfb300db1cca89",
         "packages/registry/wget/package.toml": "252e2ea144b723a24617f78911bf44ff9ec5ff61d2f0c12a6947c7c170e97b2e",
         "packages/registry/wget/build.toml": "ad538e1d004b0ab32732563826a33c6230ff627d855b0f14de3627d2d508569e"
       },
@@ -394,9 +394,12 @@
         "equals": "crypto"
       },
       "selectedCurrentSourceIdentities": {
+        "third_party/node-core/string-bytes.h": "78e06fe1f90feed03fad55efcd9b71012485e24125fc4ebe22932ecf81fcd48e",
+        "third_party/node-core/string-bytes-sources.json": "c6aaf11b67f6c698991b7bae2870a4a86801e1eedb354c43d367c639b71a97ea",
+        "third_party/node-core/stage-string-bytes.py": "310cdd75644c58d37688f4d7c6668f6a82bb95c3eaa46d571733ab11448df8e3",
         "third_party/node-core/cipher-operations.h": "650d5aff11d214297e2b5690ecf91bc6bc6ab02498cce61f3921c5006d5495de",
-        "third_party/node-core/native-cipher.cpp": "dcc707a2b1345973a7198fd4d0d5230737ad121ceef09ebe3cde37ef453340b7",
-        "third_party/node-core/cipher-platform-adapter.js": "a39f18c74b676bc69ee5f2976080d7b2f3852760e89d5dba82a7d634ed920877",
+        "third_party/node-core/native-cipher.cpp": "7a0f7bf925dd8597c4d0c5b93b8ab099e5083985829218653ac41ae0a4c97ac6",
+        "third_party/node-core/cipher-platform-adapter.js": "dd7ec92ffc81c91583a7f97c052f6559d1b79b4f3bb52c83b451c04035591334",
         "third_party/node-core/upstream/cipher/lib/internal/crypto/cipher.js": "9c8b7ed1acd3adc147fe92903c36a195b32b2fd23e48cb158e25c9238e124d72",
         "third_party/node-core/upstream/cipher/src/crypto/crypto_cipher.cc": "d3d9e716d8398244bb4782f030c3bebfc35e640807669034ee5a243616d55b32",
         "third_party/node-core/hkdf-operations.h": "dde8d3075037673d2e07f452219974e91d27a290a6c07e61b7a79c5cbae418b6",
@@ -404,7 +407,7 @@
         "third_party/node-core/upstream/kdf/src/crypto/crypto_hkdf.cc": "a55f95827bea6ccc5d0c32cebb1df618ac8aabba37efca847175eefc9056ef73",
         "third_party/node-core/upstream/kdf/src/crypto/crypto_hkdf.h": "811f9592f716da3b59cac4d8933517f1d5deaeaa691f88b1e0b077ffa625b479",
         "third_party/node-core/keys-platform-adapter.js": "e072c809e76b93aa36bf43de667d018c23250df8528bbdb14de6d2d93bb432ac",
-        "third_party/node-core/key-operations.h": "2414fbdc55696ea71b8241fc5c776da6fc56d360c5c3ebc6c7c9ac763b3d3ee4",
+        "third_party/node-core/key-operations.h": "5440bdc00977a75e262ca205adb07a2d2ae6db167e7c965db96bf4e2a202a29a",
         "third_party/node-core/native-keys.cpp": "89c22df9910074ac835574f524812c3433ed8232b092482b03e4146d8bbd82fe",
         "third_party/node-core/upstream/keys/lib/internal/crypto/keys.js": "e6c16626648d551dd3aa505a6b386376f6173ae6bab6fd9360acf406ce92e1ff",
         "third_party/node-core/upstream/kdf/lib/internal/crypto/argon2.js": "290fb7163daaa18c35ecead2bb492acba9b12059df3088ff7d1749b80925c9f5",
@@ -416,9 +419,9 @@
         "third_party/node-core/native-kdf.cpp": "c243ce9d934d4cba9d74ca4d1e53927d62418f009581f513a8ad22ed06a92372",
         "third_party/node-core/upstream/kdf/lib/internal/crypto/pbkdf2.js": "49467187c9ab8fa36de7f3d456f01c3bbc2a27ab4b5f5ee76e00664783d63322",
         "third_party/node-core/upstream/kdf/lib/internal/crypto/scrypt.js": "f590103014a0fa582e9d860bd2526ce797bd51406d454f8d8a6fee38f3c0646c",
-        "third_party/node-core/incremental-crypto-adapter.js": "1666d1666a748ce01b1a14321ed975af70d279b068193eed648b3edb063747ab",
+        "third_party/node-core/incremental-crypto-adapter.js": "06b695ccac9a79973f78f8987175ee600cf8364efffb9d0396bf76a4d7c5c1b6",
         "third_party/node-core/incremental-hash.h": "8407547c476ab803312ea8600038992e53a70cf4dafd1ceabf90b12e84f1a362",
-        "third_party/node-core/native-incremental-hash.cpp": "b28b85cdc929dba3a4a7df92a665eba7448598d4a1146ba2580494f27277b950",
+        "third_party/node-core/native-incremental-hash.cpp": "239029b8eb29082bda053c91eb4f86bd972441cb09d0148e9a6bb862a3281319",
         "third_party/node-core/generate-native-encoding.py": "f2e7cf4ff23ee6ca2287b0cd7ad7e37072bb1e3b884abd879b9abb1dfd432394",
         "third_party/node-core/upstream/incremental-crypto/lib/internal/crypto/hash.js": "cd8b888ff72f1c219e801c9dcd65b5d23ef9ac3cc6f4303cf3d34e5bd941d615",
         "third_party/node-core/upstream/incremental-crypto/lib/internal/streams/lazy_transform.js": "a2b7749bc9c31e31677907a96235a9e0b37f43bc429753e448a02ca681935b68",
@@ -429,7 +432,7 @@
         "third_party/node-core/crypto-random-sync-adapter.js": "cfa961263245ceca02a665c02c227dd8c6587ad07ab55b96e90bf118d2955fb9",
         "third_party/node-core/crypto-digest-adapter.js": "1a98e9e9a550ff22b3d6dff3dac35599b69ee2706103e0be48346e6903a3eeee",
         "third_party/node-core/digest-operations.h": "0a44643d4dfcadcaf9a9e3ed1dd6fccf40e5435a81352ac3d0701523a5f56825",
-        "third_party/node-core/native-digests.cpp": "c27419711fa945239c1d00b5fe375e2ec4ce0c456ff5c642c466b3c83b114e33",
+        "third_party/node-core/native-digests.cpp": "a70f0713fe46b411042f5e9a5792529b1029cc56c14e9b00b426031718d6a1f7",
         "packages/registry/node-compat/bootstrap.js": "ff4e7eaad4e489e61987a55fc0e07cf1df1656f11977b58de098dced6321a75d",
         "packages/registry/openssl/package.toml": "31fabb4cc62f44b69e5634da9b0f4874efe26cb04179f10d454aacd1f9ba2619",
         "packages/registry/openssl/build.toml": "cd50f937b14253bfc9e672d5120faa855944afa9ec1d09021afcc55f2036df3c",
@@ -446,7 +449,7 @@
         "packages/registry/php/package.toml": "3ae9d7bc075a1e187e0262e276f16d63b02aacd9e213f1f4f440ac52bee6cbba",
         "packages/registry/php/build.toml": "ad4e35904e40a9027b646dd25f342b0335a0afcd025edaee68354d656bc05ab4",
         "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
-        "packages/registry/spidermonkey/build.toml": "1914c8604e78672e8a5a7a3791dece2bb40ee3ab4298aa5aa39d7d00829f03e8",
+        "packages/registry/spidermonkey/build.toml": "4c7efa145b7d2f09d4eb2d7e01ed3ddabbebf6a3274d77f510bfb300db1cca89",
         "packages/registry/wget/package.toml": "252e2ea144b723a24617f78911bf44ff9ec5ff61d2f0c12a6947c7c170e97b2e",
         "packages/registry/wget/build.toml": "ad538e1d004b0ab32732563826a33c6230ff627d855b0f14de3627d2d508569e",
         "packages/registry/node-ncrypto/package.toml": "aa361891e88e356114e223dd009c63de934a8d7a01986da92ea2f927c4d8716f",
@@ -455,12 +458,12 @@
         "packages/registry/node-ncrypto/build-node-ncrypto.sh": "14a3fc69ffa434bd4d7b5f2c9fd2d4a3977bf47e59ac4aba3a16ef1d2722f476",
         "packages/registry/node-ncrypto/build-node-ncrypto.py": "106dd6038cdd57113ff48fca27ba9cb5be9dd9823b40fabbe2f4fa7a816d0eb6"
       },
-      "sourceRoute": "Pinned random/KDF/digest/Hash/Hmac/HKDF/cipher algorithms and real secret/PEM/DER/raw/JWK ncrypto material;130native pinned lenient byte codec,OOM/control-failure preservation,material roots and foreign-realm publication source",
-      "remainingDependencies": "Guest117\u2013130uncompiled;sign/WebCrypto/cipher nonpasses retained;asymmetric GC pressure/worker transfer,shared private hash/cipher byte authority,store/PKCS12,WebCrypto,generation/exchange/signatures/certificates,FIPS/provider transitions and four-host obligations",
+      "sourceRoute": "Pinned random/KDF/digest/Hash/Hmac/HKDF/cipher and real key material;130JWK failure/material/realm fixes;132shared pinned native private string-byte primitives with original string/encoding hash/HMAC/cipher consumers",
+      "remainingDependencies": "Guest117\u2013132uncompiled;sign/WebCrypto/cipher nonpasses retained;actual UTF8/BufferSource/GC/OOM/native-byte JSAPI,asymmetric pressure/worker transfer,store/PKCS12,WebCrypto,generation/exchange/signatures/certificates,FIPS/provider transitions and four-host obligations",
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
-        "node": "130keys native byte/error/root/realm source uncompiled.20root key/12package pass;8unchanged full-file runs retain2consumer nonpasses. Private portable12308+226identities verified,not guest/runtime conformance.",
+        "node": "132shared native private bytes uncompiled as engine;31root groups/12package checks/SDK portable object pass. Private bytes/JWK/material evidence identities verified;actual UTF8/BufferSource/JSAPI and all4hosts remain open.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -607,7 +610,7 @@
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "1914c8604e78672e8a5a7a3791dece2bb40ee3ab4298aa5aa39d7d00829f03e8",
+        "packages/registry/spidermonkey/build.toml": "4c7efa145b7d2f09d4eb2d7e01ed3ddabbebf6a3274d77f510bfb300db1cca89",
         "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
         "third_party/node-core/performance-clock.h": "b1bc2198b8718731d043282eb67738b900f5855860a5d4bd735d48175aa91f39"
       },
@@ -637,7 +640,7 @@
         "third_party/node-core/native-work.cpp": "530d8d95eb485264d76f9ef56cbe4d570fdd678ab6adf9cb0cb7c17f174013fa",
         "third_party/node-core/generate-codec-contexts.py": "6f61278030201514033f6fabd0aefc63a2d0e4c23294e2f6113242f98ce760e5",
         "packages/registry/node-compat/bootstrap.js": "ff4e7eaad4e489e61987a55fc0e07cf1df1656f11977b58de098dced6321a75d",
-        "packages/registry/spidermonkey/build.toml": "1914c8604e78672e8a5a7a3791dece2bb40ee3ab4298aa5aa39d7d00829f03e8"
+        "packages/registry/spidermonkey/build.toml": "4c7efa145b7d2f09d4eb2d7e01ed3ddabbebf6a3274d77f510bfb300db1cca89"
       },
       "sourceRoute": "pinned codec/archive/iterable JS and native contexts; actual shared/growable queue leases and synchronous resizable codec/CRC/dictionary spans compiled in112",
       "remainingDependencies": "Ordinary async resizable/transfer/pre-existing pin ownership; complete modes/options/iterators/files and native cleanup/cancellation/accounting; retained gzip OS-byte comparison mismatches and complete four-host evidence",
@@ -701,7 +704,7 @@
         "third_party/node-core/native-vm.cpp": "55c20f56eb704baad5e65498ce7361b2991d1382a75f37aff46312dfb5c12b62",
         "packages/registry/node-compat/bootstrap.js": "ff4e7eaad4e489e61987a55fc0e07cf1df1656f11977b58de098dced6321a75d",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "1914c8604e78672e8a5a7a3791dece2bb40ee3ab4298aa5aa39d7d00829f03e8"
+        "packages/registry/spidermonkey/build.toml": "4c7efa145b7d2f09d4eb2d7e01ed3ddabbebf6a3274d77f510bfb300db1cca89"
       },
       "sourceRoute": "generic native Error location policy across registered root/worker contexts and VM realms; VM compiler, actual ordinary DONT_CONTEXTIFY globals, per-runtime chained security-callback owners and partial nominal GC budget",
       "remainingDependencies": "Complete ordinary sandbox exotic behavior, context metadata/deadlines/modules/cache/microtasks, inspector, heap measurements and worker/guest integration",
@@ -782,7 +785,7 @@
         "equals": "documentation"
       },
       "selectedCurrentSourceIdentities": {
-        "tests/nodejs/outline/current-capability-reconciliation.md": "2eb7595e317c2b654828aca7da7f6c443e4f82eb9676f58093795bf350892a91"
+        "tests/nodejs/outline/current-capability-reconciliation.md": "d9e3bb6bd2e6e60645e7a6de580e0a95cf240b7b7c3704ac9e30f0b38910ae9d"
       },
       "sourceRoute": "This reconciliation and original requirements",
       "remainingDependencies": "Actual warning/origin/CLI/environment/activation behavior and unresolved target prose/source questions",

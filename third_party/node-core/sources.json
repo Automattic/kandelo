@@ -5219,5 +5219,39 @@
       }
     },
     "scope": "Full pinned public module over actual shared native manager,receiver-local promises and fair provider dispatch;not complete descriptor/guest/four-host conformance"
+  },
+  "privateStringBytes": {
+    "manifest": {
+      "path": "string-bytes-sources.json",
+      "sha256": "c6aaf11b67f6c698991b7bae2870a4a86801e1eedb354c43d367c639b71a97ea"
+    },
+    "sources": {
+      "deps/nbytes/include/nbytes.h": {
+        "path": "upstream/keys/deps/nbytes/include/nbytes.h",
+        "upstreamPath": "deps/nbytes/include/nbytes.h",
+        "sha256": "52c5253e3a3675faf8319af36066326f27dfd7ee2a9d6b5a49348007cb6ff12e"
+      },
+      "deps/nbytes/src/nbytes.cpp": {
+        "path": "upstream/keys/deps/nbytes/src/nbytes.cpp",
+        "upstreamPath": "deps/nbytes/src/nbytes.cpp",
+        "sha256": "b49555787f8fe74f5e3915485a268dded486a6afd496cf2f68f4d3c3147cb504"
+      },
+      "src/string_bytes.h": {
+        "path": "upstream/native-string-bytes/src/string_bytes.h",
+        "upstreamPath": "src/string_bytes.h",
+        "sha256": "5e0b0f184d2e7b0556b5afb67bfaa28b3aa92c960a2dccff40006e1a1c1b86f2"
+      },
+      "src/string_bytes.cc": {
+        "path": "upstream/buffer-codecs/src/string_bytes.cc",
+        "upstreamPath": "src/string_bytes.cc",
+        "sha256": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d"
+      },
+      "src/crypto/crypto_util.h": {
+        "path": "upstream/digests/src/crypto/crypto_util.h",
+        "upstreamPath": "src/crypto/crypto_util.h",
+        "sha256": "17ef1d34245c0c4eac4b4b9a154e3350dcb3ad8fcbbfb2673a43472afde6a78f"
+      }
+    },
+    "scope": "Pinned shared native string-byte primitives;public Buffer unchanged,private crypto consumers/JWK forwarding,not guest JSAPI conformance"
   }
 }

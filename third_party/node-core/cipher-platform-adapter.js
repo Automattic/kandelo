@@ -19,11 +19,7 @@ function _createNodeCipherPlatform(platform) {
             return call('new', new.target.prototype, encrypt, name, key, iv, tag, cts, xts);
         }
         update(data, encoding) {
-            if (typeof data === 'string') {
-                const mode = call('encoding', encoding, false);
-                data = platform.codecs.fromString(data, mode === 'buffer' ? 'utf8' : mode);
-            }
-            return platform.codecs.copyBytes(call('update', this, data));
+            return platform.codecs.copyBytes(call('update', this, data, encoding));
         }
         final() { return platform.codecs.copyBytes(call('final', this)); }
         getAuthTag() {

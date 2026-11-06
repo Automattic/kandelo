@@ -34,6 +34,7 @@ export default {
       'test/node-readdir-platform.test.ts',
       'test/node-dotenv-platform.test.ts',
       'test/node-digests-platform.test.ts',
+      'test/node-private-bytes-platform.test.ts',
       'test/node-diagnostics-channels.test.ts',
       'test/node-console-platform.test.ts',
       'test/node-web-data.test.ts',

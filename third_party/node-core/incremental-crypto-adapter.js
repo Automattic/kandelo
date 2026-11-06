@@ -46,11 +46,6 @@ function _createNodeIncrementalCrypto(platform) {
         }
         throw error;
     }
-    function input(data, encoding) {
-        if (typeof data !== 'string') return data;
-        const mode = call('encoding', encoding, false);
-        return platform.codecs.fromString(data, mode === 'buffer' ? 'utf8' : mode);
-    }
     function output(handle, encoding) {
         const mode = call('encoding', encoding, true);
         const bytes = call('digest', handle);
@@ -62,13 +57,13 @@ function _createNodeIncrementalCrypto(platform) {
             this.#owner = algorithm instanceof _Hash ? call('copy', algorithm.#owner, length) :
                 call('create', algorithm, length, functionName !== undefined || customization !== undefined);
         }
-        update(data, encoding) { return call('update', this.#owner, input(data, encoding)); }
+        update(data, encoding) { return call('update', this.#owner, data, encoding); }
         digest(encoding) { return output(this.#owner, encoding); }
     };
     const _Hmac = class Hmac {
         #owner;
         init(algorithm, key) { this.#owner = call('hmac', algorithm, key); }
-        update(data, encoding) { return call('update', this.#owner, input(data, encoding)); }
+        update(data, encoding) { return call('update', this.#owner, data, encoding); }
         digest(encoding) { return output(this.#owner, encoding); }
     };
     /* NODE_INCREMENTAL_CLASSES */

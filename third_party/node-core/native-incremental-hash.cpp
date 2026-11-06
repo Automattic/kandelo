@@ -108,7 +108,7 @@ static bool KandeloIncrementalDispatch(JSContext* cx, const CallArgs& args,
   auto* state = KandeloIncrementalOwner(cx, args.get(1), &object); if (!state) return false;
   if (!strcmp(operation.get(), "update")) {
     kandelo::crypto::Bytes input;
-    if (!KandeloCryptoInput(cx, args.get(2), &input)) return false;
+    if (!KandeloCryptoEncodedInput(cx, args.get(2), args.get(3), &input)) return false;
     output.setBoolean(state->hash ? state->hash->Update(input) : state->hmac->Update(input)); return true;
   }
   if (!strcmp(operation.get(), "digest")) {

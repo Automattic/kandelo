@@ -392,6 +392,8 @@ python3 "$REPO_ROOT/third_party/node-core/generate-dirent-types.py" \
 cp "$REPO_ROOT/third_party/node-core/incremental-hash.h" "$SRC_DIR/js/src/shell/kandelo-node-incremental-hash.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-native-encoding.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-native-encoding.h"
+python3 "$REPO_ROOT/third_party/node-core/stage-string-bytes.py" \
+    --output "$SRC_DIR/js/src/shell/kandelo-node-string-bytes.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-native-embedding.py" \
     --shell-dir "$SRC_DIR/js/src/shell"
 

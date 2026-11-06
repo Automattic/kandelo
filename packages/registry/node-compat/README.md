@@ -1,5 +1,15 @@
 # Node core compatibility target
 
+Source132 shares native string-byte primitives across JWK and hash/HMAC/cipher
+updates. Original strings/encodings now reach native owned conversion;public
+Buffer allocation cannot supply private native input.31root groups(including
+96boundary cases inside one new group) and12package checks pass;the standalone
+codec compiles to Wasm through the SDK. Private24,736byte/12,308affected-JWK/
+226material results were identity-verified,not rerun. Actual native JSAPI and
+combined117–132engine remain uncompiled;all19families partial. Overall suites/
+full product rebuild stay deferred. See [private native bytes](../../../tests/nodejs/outline/private-byte-implementation-dependencies.md).
+
+
 Source131 fixes receiver victim-root insertion with genuine own properties,
 so inherited indexed setters cannot leak/drop roots or reenter before commit.
 The NAPI packet fixture now mirrors production own-element definitions.

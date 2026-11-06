@@ -90,6 +90,10 @@ inputs = [
   "third_party/node-core/dotenv-file.h",
   "third_party/node-core/native-dotenv.cpp",
   "third_party/node-core/native-digests.cpp",
+  "third_party/node-core/string-bytes.h",
+  "third_party/node-core/string-bytes-sources.json",
+  "third_party/node-core/stage-string-bytes.py",
+  "third_party/node-core/upstream/native-string-bytes",
   "third_party/node-core/native-incremental-hash.cpp",
   "third_party/node-core/native-keys.cpp",
   "third_party/node-core/native-cipher.cpp",
@@ -504,4 +508,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 131
+revision = 132

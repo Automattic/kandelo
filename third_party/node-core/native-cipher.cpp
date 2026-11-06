@@ -145,7 +145,9 @@ static bool KandeloCipherDispatch(JSContext* cx, const CallArgs& args, MutableHa
     return KandeloCipherBytes(cx, {state->tag.begin(), state->tag.begin() + state->tagLength}, result);
   }
   kandelo::crypto::Bytes bytes;
-  if (!KandeloCryptoInput(cx, args.get(2), &bytes)) return false;
+  if (op == "update") {
+    if (!KandeloCryptoEncodedInput(cx, args.get(2), args.get(3), &bytes)) return false;
+  } else if (!KandeloCryptoInput(cx, args.get(2), &bytes)) return false;
   if (op == "update") return KandeloCipherBytes(cx, state->Update(bytes.value.data(), bytes.value.size()), result);
   if (op == "setTag") { result.setBoolean(state->SetTag(bytes.value.data(), bytes.value.size())); return true; }
   if (op == "aad") {

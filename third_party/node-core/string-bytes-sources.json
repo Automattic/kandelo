@@ -1,0 +1,64 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "deps/nbytes/include/nbytes.h": {
+      "path": "upstream/keys/deps/nbytes/include/nbytes.h",
+      "upstreamPath": "deps/nbytes/include/nbytes.h",
+      "sha256": "52c5253e3a3675faf8319af36066326f27dfd7ee2a9d6b5a49348007cb6ff12e"
+    },
+    "deps/nbytes/src/nbytes.cpp": {
+      "path": "upstream/keys/deps/nbytes/src/nbytes.cpp",
+      "upstreamPath": "deps/nbytes/src/nbytes.cpp",
+      "sha256": "b49555787f8fe74f5e3915485a268dded486a6afd496cf2f68f4d3c3147cb504"
+    },
+    "src/string_bytes.h": {
+      "path": "upstream/native-string-bytes/src/string_bytes.h",
+      "upstreamPath": "src/string_bytes.h",
+      "sha256": "5e0b0f184d2e7b0556b5afb67bfaa28b3aa92c960a2dccff40006e1a1c1b86f2"
+    },
+    "src/string_bytes.cc": {
+      "path": "upstream/buffer-codecs/src/string_bytes.cc",
+      "upstreamPath": "src/string_bytes.cc",
+      "sha256": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d"
+    },
+    "src/crypto/crypto_util.h": {
+      "path": "upstream/digests/src/crypto/crypto_util.h",
+      "upstreamPath": "src/crypto/crypto_util.h",
+      "sha256": "17ef1d34245c0c4eac4b4b9a154e3350dcb3ad8fcbbfb2673a43472afde6a78f"
+    }
+  },
+  "selections": {
+    "TABLE": {
+      "source": "deps/nbytes/src/nbytes.cpp",
+      "start": "const int8_t unbase64_table[256] = {\n    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -2, -1, -1, -2, -1, -1, -1, -1, -1,",
+      "length": 1117,
+      "sha256": "2907db92c59eea07828d093a5e377185426138529635c39e13a29a7b2aedf01f"
+    },
+    "GROUP": {
+      "source": "deps/nbytes/include/nbytes.h",
+      "start": "template <typename TypeName>\nbool Base64DecodeGroupSlow(char *const dst, const size_t dstlen,",
+      "length": 1324,
+      "sha256": "4be94a159370c388cc8639238a7199e411b1d2752665cae8fc461187d34bedcb"
+    },
+    "DECODER": {
+      "source": "deps/nbytes/include/nbytes.h",
+      "start": "// Doesn't check for padding at the end.  Can be 1-2 bytes over.\ninline constexpr size_t Base64DecodedSizeFast(size_t size) {",
+      "length": 2510,
+      "sha256": "fdedaf5353e123a38dfed9b1b891fc02726833f49cec435a1691fbb3bf3c548b"
+    },
+    "HEX_TABLE": {
+      "source": "deps/nbytes/src/nbytes.cpp",
+      "start": "const int8_t unhex_table[256] = {\n    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,",
+      "length": 1113,
+      "sha256": "f5604beedac2b2836eeff0d7f5fc077d86de113e1620be66466fc37fe0bff481"
+    },
+    "HEX_DECODER": {
+      "source": "deps/nbytes/include/nbytes.h",
+      "start": "template <typename TypeName>\nstatic size_t HexDecode(char *buf, size_t len, const TypeName *src,",
+      "length": 421,
+      "sha256": "a697c37040ca6de8baa9ea59cd8ca3772f969511ee41d798783fda83efb258a9"
+    }
+  },
+  "scope": "Private allocation-free non-UTF8 writes shared by crypto and JWK; existing engine UTF8 and native BufferSource owners remain separate. Source identities do not establish JSAPI/four-host conformance."
+}

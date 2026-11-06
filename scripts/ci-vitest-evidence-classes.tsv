@@ -340,6 +340,7 @@ host/test/node-performance-timeline.test.ts	source-only
 host/test/node-platform-io-uid-gid.test.ts	source-only
 host/test/node-ports-platform.test.ts	source-only
 host/test/node-positioned-io.test.ts	source-only
+host/test/node-private-bytes-platform.test.ts	source-only
 host/test/node-process-state.test.ts	source-only
 host/test/node-process-teardown-ordering.test.ts	source-only
 host/test/node-process-usage.test.ts	source-only

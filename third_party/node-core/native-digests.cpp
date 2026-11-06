@@ -1,5 +1,7 @@
 /* Owned synchronous libcrypto consumers; included after existing byte helpers. */
 #include "kandelo-node-digest-operations.h"
+#include "kandelo-node-string-bytes.h"
+#include "js/String.h"
 namespace {
 static bool KandeloNativeOpenSSLVersion(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -37,6 +39,39 @@ static bool KandeloCryptoInput(JSContext* cx, HandleValue input, kandelo::crypto
     return false;
   }
   KandeloCryptoCopy(data, length, bytes); return true;
+}
+// Native stream crypto decodes strings inside its owning byte boundary.
+// ParseEncoding receives a primitive string only and preserves the pin's
+// fallback/C-string rules; nonstrings retain the existing BufferSource path.
+static bool KandeloCryptoEncodedInput(JSContext* cx, HandleValue input,
+                                       HandleValue encoding,
+                                       kandelo::crypto::Bytes* bytes) {
+  if (!input.isString()) return KandeloCryptoInput(cx, input, bytes);
+  auto mode = kandelo::encoding::UTF8;
+  if (encoding.isString()) {
+    RootedString name(cx, encoding.toString());
+    JS::UniqueChars text = JS_EncodeStringToUTF8(cx, name);
+    if (!text) return false;
+    mode = kandelo::encoding::ParseEncoding(text.get(), mode);
+  }
+  if (mode == kandelo::encoding::UTF8 || mode == kandelo::encoding::BUFFER)
+    return KandeloCryptoInput(cx, input, bytes);
+  RootedString text(cx, input.toString());
+  JSLinearString* linear = JS_EnsureLinearString(cx, text);
+  if (!linear) return false;
+  JS::AutoCheckCannotGC nogc;
+  const size_t length = JS::GetLinearStringLength(linear);
+  size_t capacity;
+  if (!kandelo::encoding::bytes::Capacity(length, mode, &capacity)) throw std::bad_alloc();
+  bytes->value.resize(capacity);
+  if (JS::LinearStringHasLatin1Chars(linear)) {
+    bytes->value.resize(kandelo::encoding::bytes::Write(bytes->value.data(), capacity,
+        JS::GetLatin1LinearStringChars(nogc, linear), length, mode));
+  } else {
+    bytes->value.resize(kandelo::encoding::bytes::Write(bytes->value.data(), capacity,
+        JS::GetTwoByteLinearStringChars(nogc, linear), length, mode));
+  }
+  return true;
 }
 static bool KandeloDigestError(JSContext* cx, const kandelo::crypto::Error& failure, MutableHandleValue value) {
   RootedObject object(cx, JS_NewPlainObject(cx));

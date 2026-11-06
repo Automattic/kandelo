@@ -1,5 +1,15 @@
 # Current public-contract reconciliation
 
+Source132 shares native string-byte primitives across JWK and hash/HMAC/cipher
+updates. Original strings/encodings now reach native owned conversion;public
+Buffer allocation cannot supply private native input.31root groups(including
+96boundary cases inside one new group) and12package checks pass;the standalone
+codec compiles to Wasm through the SDK. Private24,736byte/12,308affected-JWK/
+226material results were identity-verified,not rerun. Actual native JSAPI and
+combined117–132engine remain uncompiled;all19families partial. Overall suites/
+full product rebuild stay deferred. See [private native bytes](private-byte-implementation-dependencies.md).
+
+
 Source131 fixes receiver victim-root insertion with genuine own properties,
 so inherited indexed setters cannot leak/drop roots or reenter before commit.
 The NAPI packet fixture now mirrors production own-element definitions.
@@ -260,7 +270,7 @@ of the APIs, overloads, inherited members, symbols and open questions.
 | Network | native address/rule state, pinned BlockList/SocketAddress and live TCP consumers; queued lookup, actual c-ares channels/record JSAPI/external-completion source and libc/kernel/host routes | Guest rule/clone/worker integration, full Socket/Server controls/lifecycle, Resolver configuration/permission/JSAPI lifecycle integration and datagram owners; source/native controls are not guest conformance |
 | HTTP | Pinned outgoing headers/full IncomingMessage and unchanged common parser callbacks; actual Node-vendored llhttp/private GC-owned response framing, strict/insecure/relaxed limits, interim/HEAD/upgrade/CONNECT source; unconditional pooled replay and same-feed leftover reuse removed | Synchronous native-to-JS callback/reentry/byte/memory/error/EOF integration, OutgoingMessage/request framing, idle bytes/public Agent/TLS pool keys, servers/request parsing and HTTP/2; guest/four-host lifecycle remains unvalidated |
 | Secure network | TLS identity algorithms, actual live OpenSSL protocol/cipher/reuse/Finished/verification metadata source, shared IP/domain helpers and transports | Complete socket/context/trust/key/certificate/handshake/session ownership, metadata/error/descriptor fidelity, secure pooling/servers and DTLS/QUIC |
-| Crypto | Pinned random/KDF/digest/Hash/Hmac/HKDF/cipher algorithms and real secret/PEM/DER/raw/JWK ncrypto material;130native pinned lenient byte codec,OOM/control-failure preservation,material roots and foreign-realm publication source | Guest117–130uncompiled;sign/WebCrypto/cipher nonpasses retained;asymmetric GC pressure/worker transfer,shared private hash/cipher byte authority,store/PKCS12,WebCrypto,generation/exchange/signatures/certificates,FIPS/provider transitions and four-host obligations |
+| Crypto | Pinned random/KDF/digest/Hash/Hmac/HKDF/cipher and real key material;130JWK failure/material/realm fixes;132shared pinned native private string-byte primitives with original string/encoding hash/HMAC/cipher consumers | Guest117–132uncompiled;sign/WebCrypto/cipher nonpasses retained;actual UTF8/BufferSource/GC/OOM/native-byte JSAPI,asymmetric pressure/worker transfer,store/PKCS12,WebCrypto,generation/exchange/signatures/certificates,FIPS/provider transitions and four-host obligations |
 | Web | File/FormData/Headers, private header guard/list consumers, Blob/clone and Web Stream owners | Complete body/Fetch/WebIDL/global/encoding/URL semantics, transfer and network/crypto dependencies |
 | Loading | Partial pinned Module.wrap/wrapper and patched-script source owners with single exports snapshot; Real native parser goals and direct CJS body compilation, pinned filename/package/entry selection and shared ESM source format in103; Module record/require/JSON, package cache/reader, exports/imports/conditions/self/maps and SourceMap algorithms | Actual guest parser/error/source/realm evidence; complete provided-source execution, CJS wrapper/hooks/cache and ESM URL/namespace/JSON/async/cycle/dynamic-import graphs; TypeScript/Wasm/addon/source-map/cache/preload/CLI/permission/lifecycle owners; four-host conformance |
 | Terminal | Pinned shared/callback/promise readline,history/key/cursor owners plus120actual borrowed terminal-mode leases and window queries | Full public TTY/stdio classes,signals/resize/drain,Unicode width,persistence/permissions/REPL and guest lifecycle/stream/symbol conformance |

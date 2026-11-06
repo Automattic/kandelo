@@ -45,7 +45,7 @@ exports.create = function create() {
         value = new binding.Hash(args[0], args[1], -1, Object.create(null));
       } else if (operation === 'copy') value = new binding.Hash(args[0], args[1], -1, Object.create(null));
       else if (operation === 'hmac') { value = new binding.Hmac(); value.init(args[0], args[1]); }
-      else if (operation === 'update') value = args[0].update(args[1]);
+      else if (operation === 'update') value = args[0].update(args[1], args[2]);
       else if (operation === 'digest') value = args[0].digest();
       else throw Error('Unknown control operation');
       return { value, error: undefined };

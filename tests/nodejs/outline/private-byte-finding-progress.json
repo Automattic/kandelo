@@ -1,0 +1,208 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto-contracts.md",
+    "findingIds": [
+      "C-001",
+      "C-007",
+      "C-009",
+      "C-011",
+      "C-015"
+    ],
+    "retainedRows": [
+      {
+        "rowIndex": 881,
+        "id": "crypto.createPrivateKey"
+      },
+      {
+        "rowIndex": 882,
+        "id": "crypto.createPublicKey"
+      },
+      {
+        "rowIndex": 3614,
+        "id": "crypto.KeyObject"
+      },
+      {
+        "rowIndex": 3623,
+        "id": "crypto.KeyObject.prototype.asymmetricKeyDetails"
+      },
+      {
+        "rowIndex": 3624,
+        "id": "crypto.KeyObject.prototype.asymmetricKeyType"
+      },
+      {
+        "rowIndex": 3625,
+        "id": "crypto.KeyObject.prototype.symmetricKeySize"
+      },
+      {
+        "rowIndex": 3626,
+        "id": "crypto.KeyObject.prototype.export"
+      },
+      {
+        "rowIndex": 3629,
+        "id": "crypto.[KeyObject/CryptoKey/X509 clone and lifetime]"
+      },
+      {
+        "rowIndex": 3645,
+        "id": "crypto.createPrivateKey.prototype"
+      },
+      {
+        "rowIndex": 3646,
+        "id": "crypto.createPublicKey.prototype"
+      },
+      {
+        "rowIndex": 3742,
+        "id": "crypto.KeyObject.prototype"
+      },
+      {
+        "rowIndex": 3743,
+        "id": "crypto.KeyObject.prototype.type"
+      },
+      {
+        "rowIndex": 3744,
+        "id": "crypto.KeyObject.prototype.toCryptoKey"
+      },
+      {
+        "rowIndex": 3745,
+        "id": "crypto.KeyObject.prototype.equals"
+      },
+      {
+        "rowIndex": 3746,
+        "id": "crypto.KeyObject.prototype.Symbol(Symbol.toStringTag)"
+      },
+      {
+        "rowIndex": 3747,
+        "id": "crypto.KeyObject.from"
+      },
+      {
+        "rowIndex": 3848,
+        "id": "crypto.[doc] KeyObject @133"
+      },
+      {
+        "rowIndex": 3903,
+        "id": "crypto.[doc] Class: `KeyObject` @2257"
+      },
+      {
+        "rowIndex": 3904,
+        "id": "crypto.[doc] Static method: `KeyObject.from(key)` @2290"
+      },
+      {
+        "rowIndex": 3907,
+        "id": "crypto.[doc] `keyObject.equals(otherKeyObject)` @2415"
+      },
+      {
+        "rowIndex": 3966,
+        "id": "crypto.[doc] `crypto.createPrivateKey(key)` @4194"
+      },
+      {
+        "rowIndex": 3968,
+        "id": "crypto.[doc] `crypto.createPublicKey(key)` @4301"
+      }
+    ],
+    "relatedFamilies": [
+      "crypto",
+      "secure-network",
+      "workers",
+      "values"
+    ],
+    "scope": "Real JWK material/public wrappers/own-property prerequisites,not full API/finding/family closure"
+  },
+  "sourceImplemented": [
+    "OpenSSL-independent shared pinned byte primitives factored from JWK with identical decoded output",
+    "Native hash/HMAC/cipher updates consume original strings/encodings with private cleansing bytes,not mutable public Buffer input",
+    "Existing UTF8/BufferSource/atomic snapshot bodies and public validation/pool/source semantics retained"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-private-bytes-source-r1/report.json",
+    "sha256": "41c733982cd91dd96d9d5c15fdc42b01ed0dad9e96a5af51f964d6fe29b566ca",
+    "selectedIdentities": 20,
+    "wholeReferences": 5,
+    "selectedPrimitives": 5,
+    "guardedInputs": 642,
+    "scope": "Shared primitive/native consumer source identities,whole pin/selection staging,bundle/bootstrap/native unity and input closure;actual JSAPI/UTF8/BufferSource ownership remains unexecuted and combined117\u2013132engine uncompiled."
+  },
+  "frontendAndAffected": {
+    "report": ".context/node26-private-bytes-frontend-r1.json",
+    "sha256": "a1bbce0392f61564999d46babcdb139f9b9234e3f2b161092416d36e531f3f16",
+    "newGroups": 1,
+    "newBoundaryCases": 96,
+    "affectedPassed": 30,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Native-dependency adapter controls,not candidate JSAPI/actual backing-store execution"
+  },
+  "portableNative": {
+    "report": ".context/native-byte-boundary-agent/private-byte-report.json",
+    "sha256": "50b58f062e74ddf6b663b2445b4b6eae899de2b8d645404e82c150ed68d267b3",
+    "passed": 24736,
+    "failed": 0,
+    "scope": "Private actual portable primitives/native consumers compared;root source/dependency/executable/corpus/output identities verified,not rerun"
+  },
+  "affectedJwk": {
+    "report": ".context/native-byte-boundary-agent/codec-report.json",
+    "sha256": "09ef16a928f9ec134bb1f2fd178d9e340c2c9be316953034a7928d1502cf6688",
+    "passed": 12308,
+    "failed": 0,
+    "inputOutputIdenticalTo130": true,
+    "scope": "Private actual JWK bytes,identities verified rather than root rerun"
+  },
+  "portableMaterial": {
+    "report": ".context/native-byte-boundary-agent/jwk-material-controls/report.json",
+    "sha256": "6e1a16c813af209939302b368df9e5084610254e2be621d688c4fe52a019c38d",
+    "passed": 226,
+    "failed": 0,
+    "scope": "Private actual material controls and matching source/dependencies,not JSAPI"
+  },
+  "packageChecks": {
+    "report": ".context/node26-private-bytes-package-r1.json",
+    "sha256": "80dcc96c43b04b513512a67c93e0e10395e0e2a752fe3341d3d5c54576911092",
+    "passed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "642declared source inputs/package contracts,not API conformance"
+  },
+  "targetHeader": {
+    "report": ".context/node26-private-bytes-target/report.json",
+    "sha256": "277495db63ab4621b04195d057387c4c272c8957be855acb23e77c8fc9e98a4a",
+    "objects": 1,
+    "scope": "Actual SDK Wasm object instantiates shared allocation-free codec with canonical staged includes;no OpenSSL/ncrypto dependency. Not JSAPI/complete engine/runtime acceptance."
+  },
+  "privateAgentEvidence": {
+    "report": ".context/native-byte-boundary-agent/handoff.json",
+    "sha256": "2dfef1b4186b1fdd08af52f708f79b0ddca257efca40a5f01217dd5433dcf8f3",
+    "scope": "Five sealed patch groups and source/portable/native-dependency identities;production JSAPI unexecuted"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/native-byte-boundary-agent/poison-baseline.json",
+      "sha256": "7d576a0bd2f2447f03ea86295faaaa17480742a337e94820569b35272f668252",
+      "kind": "original-public-allocator-regression",
+      "reason": "Before-fix native/candidate authority difference retained;source132fixes boundary without altering public Buffer"
+    },
+    {
+      "report": ".context/node26-private-bytes-stage-alias-initial.log",
+      "sha256": "857ba7a69fd6e2d856e9189058a07e748037ba023c6ca7ccd6e6d1eb7c548c96",
+      "kind": "fixture-staged-include-expectation",
+      "reason": "Exact canonical include alias transform corrected in source checker,not runtime assertion"
+    },
+    {
+      "report": ".context/node26-jwk-review-upstream-r1/report.json",
+      "sha256": "a477faae33e3f6766c93f4dad9fb84a715af4dee789d84bfe3f9710f513b6cc2",
+      "kind": "previous-consumer-nonpasses",
+      "reason": "Existing sign/WebCrypto consumer failures retained at130scope,not rerun or inferred fixed"
+    }
+  ],
+  "remaining": [
+    "Compile combined117\u2013132and actual native JSAPI/root/GC/OOM/UTF8/BufferSource/realm/concurrency paths on all4hosts",
+    "Integrate reviewed independent histogram/UDP/default-trigger/retained-memory foundations;keep original-view lease and ABI budget decisions explicit",
+    "SDK recovery patch freshness consequences and inherited platform-config debt need coherent build decision;all19families remain partial"
+  ],
+  "at": "2026-11-06T02:44:21.935814+00:00",
+  "recipeRevision": 132,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
