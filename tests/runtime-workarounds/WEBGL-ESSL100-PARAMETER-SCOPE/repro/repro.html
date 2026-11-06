@@ -1,0 +1,19 @@
+<!doctype html><meta charset="utf-8"><title>GLSL ES100 parameter and function-body scope</title><pre id="result">Running</pre>
+<script>
+// Standalone WebGL2 shaders only. GLSL ES1.00 revision17 §4.2.2 gives
+// the function body a nested scope inside the parameter declarations.
+try {
+ const gl=document.createElement('canvas').getContext('webgl2');
+ if(!gl)throw Error('WebGL2 unavailable');
+ const rows=[];
+ for(const [stage,kind] of [['vertex',gl.VERTEX_SHADER],['fragment',gl.FRAGMENT_SHADER]]){
+  const main=stage==='vertex'?'void main(){gl_Position=vec4(float(f(2,42)));}':'void main(){gl_FragColor=vec4(float(f(2,42)));}';
+  const run=body=>{const s=gl.createShader(kind);gl.shaderSource(s,'#version 100\nprecision mediump float;\nint f(int inp,int x){'+body+'}\n'+main);gl.compileShader(s);const row={ok:!!gl.getShaderParameter(s,gl.COMPILE_STATUS),log:gl.getShaderInfoLog(s)};gl.deleteShader(s);return row;};
+  rows.push({stage,test:run('int x=5;return inp+x-5;'),control:run('{int x=5;return inp+x-5;}'),invalid:run('int y=1;int y=2;return y;')});
+ }
+ const controls=rows.every(r=>r.control.ok&&!r.invalid.ok)&&gl.getError()===gl.NO_ERROR;
+ const verdict=!controls?'inconclusive':rows.every(r=>!r.test.ok)?'reproduced':rows.every(r=>r.test.ok)?'not-reproduced':'inconclusive';
+ window.__reproVerdict={verdict,details:JSON.stringify({rows,renderer:gl.getParameter(gl.RENDERER)})};
+ document.querySelector('#result').textContent=JSON.stringify(window.__reproVerdict,null,2);
+}catch(error){window.__reproVerdict={verdict:'inconclusive',details:String(error)};}
+</script>

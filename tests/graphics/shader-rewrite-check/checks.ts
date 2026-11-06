@@ -18,7 +18,7 @@ import { variantStageSource, type VariantOptions } from "../../../host/src/webgl
 import { NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRangeValues } from "../../../host/src/webgl/vertex-depth-range.js";
 import { externalShaderSource } from "../../../host/src/webgl/external-texture.js";
 import { builtinLimitShaderSource, guestBuiltinLimits } from "../../../host/src/webgl/limits.js";
-import { compileGuestShader, nativeInterfaceName, prepareLinkLanguages, programNativeName, recordProgramLanguage,
+import { compileGuestShader, compatibleShaderSource, nativeInterfaceName, prepareLinkLanguages, programNativeName, recordProgramLanguage,
   recordShaderLanguage, standardDerivativesShaderSource, translateEssl100, type ShaderLanguage } from "../../../host/src/webgl/essl3-translation.js";
 
 /** "inconclusive": the engine fails the same check on unrewritten shaders
@@ -548,7 +548,7 @@ function buildGuest(vertex: string, fragment: string, bindings: Iterable<[string
   const shaders = ([[gl.VERTEX_SHADER, vertex, false], [gl.FRAGMENT_SHADER, fragment, true]] as const).map(([type, source, fragment]) => {
     const shader = gl.createShader(type)!, text = standardDerivativesShaderSource(source);
     const language = compileGuestShader(gl, shader, text, fragment);
-    recordShaderLanguage(shader, language, text, fragment);
+    recordShaderLanguage(shader, language, compatibleShaderSource(shader, text), fragment);
     return { shader, language };
   });
   const compileLog = shaders.map(s => gl.getShaderInfoLog(s.shader)).filter(Boolean).join(" | ");
@@ -645,6 +645,21 @@ function essl3Translation(): void {
     { name: "predefined-macros", vertex: VARYING_VERTEX, rejected: ["fragment"], ints: { n: 4 },
       fragment: okFragment(DYNAMIC_LOOP + "#define TWICE(x) ((x) + (x))\n#line 40\nconst int line = __LINE__;",
         "", "dynamicSum() == 1.0 && __VERSION__ == 100 && line == 40 && TWICE(GL_ES) == 2 && GL_FRAGMENT_PRECISION_HIGH == 1") },
+    // ES100 has a function-body scope inside its parameters. The native
+    // controls reject this; both native-compatible and translated paths must
+    // keep the parameter read before the local declaration, and its new value
+    // after it. A second shader forces partner translation during link.
+    { name: "parameter-shadow-native", vertex: VARYING_VERTEX, rejected: ["fragment"],
+      fragment: okFragment("int f(int inp,int x){int before=x;int x=5;return inp+x-5+before;}", "", "f(2,42)==44") },
+    { name: "parameter-shadow-translated", vertex: VARYING_VERTEX, rejected: ["fragment"], ints: {n:4},
+      fragment: okFragment(DYNAMIC_LOOP+"int f(int inp,int x){int x=5;return inp+x-5;}", "", "f(2,42)==2 && dynamicSum()==1.0") },
+    { name: "parameter-shadow-link-promotion", rejected: ["vertex", "fragment"], ints: {n:4},
+      vertex: "varying mediump vec4 v;\nint f(int inp,int x){int before=x;int x=5;return inp+x-5+before;}\nvoid main(){v=vec4(0.0,float(f(2,42)==44),0.0,1.0);gl_Position=vec4(0.0,0.0,0.0,1.0);gl_PointSize=1.0;}",
+      fragment: "precision mediump float;\nvarying vec4 v;\n"+DYNAMIC_LOOP+"void main(){gl_FragColor=v*dynamicSum();}" },
+    { name: "macro-defined-native", vertex: VARYING_VERTEX, rejected: ["fragment"],
+      fragment: "precision mediump float;\n#define A defined(B)\n#if !A\n#define VALUE 1.0\n#else\n#error wrong initial table\n#endif\n#define B 7\n#if A\n#define LATER 1.0\n#else\n#error wrong later table\n#endif\nvoid main(){gl_FragColor=vec4(0.0,VALUE*LATER,0.0,1.0);}" },
+    { name: "macro-defined-translated", vertex: VARYING_VERTEX, rejected: ["fragment"], ints:{n:4},
+      fragment: "precision mediump float;\n#define A defined(B)\n#if !A\n#define VALUE 1.0\n#else\n#error wrong table\n#endif\n"+DYNAMIC_LOOP+"void main(){gl_FragColor=vec4(0.0,VALUE*dynamicSum(),0.0,1.0);}" },
     { name: "invariant-varyings", rejected: ["fragment"], ints: { n: 4 },
       vertex: "invariant varying mediump vec4 v;\nvoid main() { v = vec4(0.0, 1.0, 0.0, 1.0); gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n",
       fragment: "precision mediump float;\ninvariant varying vec4 v;\n" + DYNAMIC_LOOP + "void main() { gl_FragColor = v * dynamicSum(); }\n" },
@@ -679,9 +694,27 @@ function essl3Translation(): void {
     gl.deleteProgram(built.program);
   }
 
+  // The compile receipt must retain compatible source for private rebuilds,
+  // then revoke it on a new failed compile instead of serving stale text.
+  {
+    const source="precision mediump float;\nint f(int x){int x=5;return x;}\nvoid main(){gl_FragColor=vec4(float(f(42)));}";
+    const shader=gl.createShader(gl.FRAGMENT_SHADER)!;
+    const language=compileGuestShader(gl,shader,source,true), retained=compatibleShaderSource(shader,source);
+    const rebuilt=nativeCompile(retained,true);
+    record("essl100-compatible-source.private-rebuild",language==="essl100" && retained!==source && rebuilt.ok,rebuilt.log);
+    const rejected="#version 300 es\nprecision mediump float;out vec4 color;void main(){color=vec4(1.0);}";
+    const failed=compileGuestShader(gl,shader,rejected,true);
+    record("essl100-compatible-source.reject-revokes-old-source",failed===null && compatibleShaderSource(shader,rejected)===rejected && !gl.getShaderParameter(shader,gl.COMPILE_STATUS));
+    gl.deleteShader(shader);
+  }
+
   // Shaders ES 1.00 rejects stay rejected: each also needs the translation
   // (a uniform loop bound), so only the translated compile could accept it.
   const invalid: { name: string; vertex?: string; fragment: string; link?: boolean }[] = [
+    { name: "parameter-scope-duplicate-local", fragment: okFragment("int f(int x){int y=1;int y=2;return y;}", "", "f(1)==1") },
+    { name: "parameter-scope-duplicate-parameter", fragment: okFragment("int f(int x,int x){return x;}", "", "f(1,2)==1") },
+    { name: "macro-defined-malformed-operand", fragment: "precision mediump float;\n#define A defined(B,C)\n#if A\n#endif\nvoid main(){gl_FragColor=vec4(0.0,1.0,0.0,1.0);}" },
+    { name: "macro-defined-preserves-error", fragment: "precision mediump float;\n#define A defined(B)\n#if !A\n#error this must remain an error\n#endif\nvoid main(){gl_FragColor=vec4(0.0,1.0,0.0,1.0);}" },
     { name: "fragcolor-and-fragdata", fragment: `precision mediump float;\n${DYNAMIC_LOOP}void main() { gl_FragColor = vec4(dynamicSum()); gl_FragData[0] = vec4(1.0); }\n` },
     { name: "fragdata-index-1", fragment: `precision mediump float;\n${DYNAMIC_LOOP}void main() { gl_FragData[1] = vec4(dynamicSum()); }\n` },
     { name: "modulo-operator", fragment: okFragment(DYNAMIC_LOOP, "int m = n % 2;", "m == 0") },

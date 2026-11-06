@@ -1348,3 +1348,11 @@ compiler, focused Node/browser TLS, graphics, Node graphics-refusal and normal
 host-build checks pass. Full host/POSIX/memory/benchmark, B1 offscreen ownership,
 normal application preview and native-feel acceptance remain required; the
 compiler fix does not substitute for those gates.
+
+R449 repairs the native ESSL100 macro-conditional and function-parameter/body
+scope controls with the original native validator retained. Its combined
+graphics/compiler/shader/registry checks pass. Direct pinned CTS programs
+still expose four Firefox struct-hiding failures; long multiplication
+expressions and final actual-guest GLES2/EGL execution remain required in this
+iteration. Direct shader checks do not establish conformance, B1 completion or
+native desktop feel.

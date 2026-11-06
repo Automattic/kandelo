@@ -44,7 +44,7 @@ import { copiedTextureColorRenderable, depthTextureFormat, nativeRenderbufferFor
   renderbufferDepthRenderable, renderbufferStencilRenderable, textureColorRenderable } from "./es2-formats.js";
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource, nativeShaderSource } from "./shader-source.js";
-import { compileGuestShader, recordShaderLanguage, type ShaderLanguage } from "./essl3-translation.js";
+import { compileGuestShader, compatibleShaderSource, recordShaderLanguage, type ShaderLanguage } from "./essl3-translation.js";
 import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
 import { nativeBlendFunc, updateBlendSourceFactor } from "./blend-constant.js";
 import { attributeAliasLayout } from "./attribute-aliasing.js";
@@ -1393,9 +1393,10 @@ function dispatch(
         fragment = Number(gl.getShaderParameter(sh, 0x8b4f)) === 0x8b30;
         language = compileGuestShader(gl, sh, source, fragment);
       })) {
-        recordCompiledShader(sh, native ? source : undefined);
+        const acceptedSource = compatibleShaderSource(sh, source);
+        recordCompiledShader(sh, native ? acceptedSource : undefined);
         recordCompiledExternalSamplers(sh, native?.samplers);
-        recordShaderLanguage(sh, language, source, fragment);
+        recordShaderLanguage(sh, language, acceptedSource, fragment);
       }
       return;
     }

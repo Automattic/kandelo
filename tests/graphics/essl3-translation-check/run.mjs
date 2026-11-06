@@ -28,7 +28,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
 const require = createRequire(join(root, "host/package.json"));
 const esbuild = require("esbuild");
-const playwright = require("playwright");
+// Match the declared browser gate; the host's standalone driver can select
+// different engine builds and cannot support a cross-engine comparison.
+const browserRequire = createRequire(join(root, "apps/browser-demos/package.json"));
+const playwright = browserRequire("@playwright/test");
 
 const args = process.argv.slice(2);
 const out = resolve(args.shift() ?? join(tmpdir(), "kandelo-essl3-translation-check"));
@@ -104,7 +107,11 @@ function compareOp(values, dst, prefix) {
   return outputs.map((v, i) => `${i ? "RES = RES && " : "bool RES = "}isOk(${scalarFloat(v.type) ? v.name : prefix + v.name}, ref_${v.name}${scalarFloat(v.type) ? ", 0.05" : ""});`).join("\n")
     + `\n${dst} = vec4(RES, RES, RES, 1.0);\n`;
 }
-const fill = (src, params) => src.replace(/\$\{(\w+)\}/g, (all, k) => params[k] ?? all);
+// The shader library's single-line substitution preserves guest __LINE__.
+// Leaving the format suffix uninterpreted compiled literal ${...} tokens and
+// misreported a harness specialization failure as a shader compiler failure.
+const fill = (src, params) => src.replace(/\$\{(\w+)(?::(single-line))?\}/g,
+  (all, k, singleLine) => params[k] === undefined ? all : singleLine ? params[k].replace(/\n/g, " ") : params[k]);
 const uniformDecls = values => values.filter(v => v.kind === "uniform" && !v.name.includes(".")).map(v => `uniform ${v.type} ${v.name};\n`).join("");
 
 function genVertex(values) {

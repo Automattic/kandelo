@@ -95,7 +95,7 @@ describe("lookups through switching samplers (ESSL 3.00 translation)", () => {
     const ambiguous = t("precision mediump float;\nuniform sampler2D a;\n" +
       "vec4 f(sampler2D x, vec2 p) { return texture2D(x, p); }\nvec4 f(vec2 p, sampler2D x) { return texture2D(x, p); }\n" +
       "void main() { gl_FragColor = f(a, vec2(0.5)) + texture2D(a, vec2(0.5)); }\n", ["a"]);
-    expect(ambiguous).toContain("vec4 f ( sampler2D x , vec2 p ) { return texture ( x , p ) ; }");
+    expect(ambiguous).toContain("vec4 f ( sampler2D x , vec2 p ) { { return texture ( x , p ) ; } }");
     expect(ambiguous).toContain(`${LOD}texture2D ( true , a`);
     // A struct parameter's sampler member.
     const struct = t("precision mediump float;\nstruct S { sampler2D t; };\nuniform S u;\n" +

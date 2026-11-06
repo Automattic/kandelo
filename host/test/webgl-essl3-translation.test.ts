@@ -1,9 +1,10 @@
+import { compatibleEssl100Source, nestedFunctionBodySource } from "../src/webgl/essl100-native-source.js";
 import { describe, expect, it } from "vitest";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import * as O from "../src/webgl/ops.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
-import { preprocessEssl100 } from "../src/webgl/essl-preprocessor.js";
+import { macroDefinedConditionalSource, preprocessEssl100 } from "../src/webgl/essl-preprocessor.js";
 import {
   compileGuestShader, derivativeValidationSource, guestInterfaceName, nativeInterfaceName, onlyAppendixALimitations,
   prepareLinkLanguages, recordShaderLanguage, standardDerivativesShaderSource, translateEssl100, unsupportedShaderVersion,
@@ -44,6 +45,25 @@ describe("ES 1.00 preprocessor (accepted input)", () => {
     expect(lines.map(t => `${t.text}@${t.line}`)).toEqual(["a@1", "b@3", "3@3", "c@40", "40@40", "d@42", "42@42", "e@43", "43@43", "0@43"]);
   });
 
+  it("rescans macro-produced defined against the table at each conditional", () => {
+    const source = "#define A defined(B)\n#if A\nwrong\n#else\nfirst\n#endif\n" +
+      "#define B 77\n#if A\nsecond\n#endif\n#undef B\n#if !A\nthird\n#endif\n";
+    expect(code(source)).toBe("first second third");
+    expect(code("#define A defined(__LINE__) && defined(__FILE__)\n#if A\nbuiltins\n#endif")).toBe("builtins");
+    const native = macroDefinedConditionalSource(source);
+    expect(native).toContain("#if 0");expect(native).toContain("#if 1");
+    expect(native.split("\n")).toHaveLength(source.split("\n").length);
+    expect(native).toContain("#define A defined(B)");
+    expect(macroDefinedConditionalSource("#if defined(B, C)\n#error invalid\n#endif")).toBe("#if defined(B, C)\n#error invalid\n#endif");
+  });
+
+  it("keeps directives and line positions when restoring ES100 function scopes", () => {
+    const source = "#version 100\n#define UNUSED { }\nint f(int x){int x=5;return x;}\n#error still-invalid\n";
+    const native = nestedFunctionBodySource(source);
+    expect(native).toBe("#version 100\n#define UNUSED { }\nint f(int x){ { int x=5;return x; } }\n#error still-invalid\n");
+    expect(compatibleEssl100Source("int f(int x){int x=5;")).toBe("int f(int x){int x=5;");
+  });
+
   it("treats comments as whitespace and keeps directives in order", () => {
     const { tokens, directives } = preprocessEssl100("/* a\n b */ x // y\n#pragma optimize(off)\n#extension all : warn\nz");
     expect(tokens.map(t => `${t.text}@${t.line}`)).toEqual(["x@2", "z@5"]);
@@ -58,7 +78,7 @@ describe("ESSL 3.00 translation", () => {
     const source = "// comment\n#version 100\nattribute vec4 p;\nvarying vec2 v;\n\nvoid main() {\n  v = p.xy;\n  gl_Position = p;\n}\n";
     const { text } = translateEssl100(source, false);
     expect(text.startsWith("#version 300 es\n")).toBe(true);
-    expect(body(text)).toBe("#line 3\nin vec4 p ;\nout vec2 v ;\n\nvoid main ( ) {\nv = p . xy ;\ngl_Position = p ;\n}\n");
+    expect(body(text)).toBe("#line 3\nin vec4 p ;\nout vec2 v ;\n\nvoid main ( ) { {\nv = p . xy ;\ngl_Position = p ;\n} }\n");
   });
 
   it("declares the fragment outputs and maps the ES 1.00 lookups by stage", () => {
@@ -95,7 +115,7 @@ describe("ESSL 3.00 translation", () => {
     expect(code).toContain("precision highp sampler2DArray ;");
     expect(code).toContain("uniform sampler2DArray c [ 2 ] ;");
     expect(code).toContain("struct S { sampler2DArray m ; } ;");
-    expect(code).toContain("vec4 f ( sampler2DArray x , vec3 d ) { return kandelo_essl3_textureCube ( x , d , 1.0 ) ; }");
+    expect(code).toContain("vec4 f ( sampler2DArray x , vec3 d ) { { return kandelo_essl3_textureCube ( x , d , 1.0 ) ; } }");
     expect(code).not.toMatch(/\bsamplerCube\b|(?<!_)\btextureCube \(/);
     // A vertex lookup uses level 0, or the given level; no derivatives.
     const vertex = translateEssl100("uniform samplerCube c;\nattribute vec3 p;\nvarying vec4 v;\n" +

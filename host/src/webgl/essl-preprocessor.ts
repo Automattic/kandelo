@@ -50,7 +50,7 @@ export type EsslDirective = { kind: "pragma" | "extension"; tokens: string[]; li
 
 export type PreprocessedEssl = { tokens: EsslToken[]; directives: EsslDirective[] };
 
-type Raw = { text: string; kind: EsslToken["kind"] | "nl"; line: number; space: boolean };
+type Raw = { text: string; kind: EsslToken["kind"] | "nl"; line: number; space: boolean; start: number; end: number };
 
 const PUNCTUATORS = ["<<=", ">>=", "++", "--", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "^^",
   "+=", "-=", "*=", "/=", "%=", "&=", "^=", "|="];
@@ -86,7 +86,7 @@ function tokenize(source: string): Raw[] {
     splice();
     if (i >= n) break;
     const c = source[i];
-    if (c === "\n") { out.push({ text: "\n", kind: "nl", line, space }); line++; i++; space = false; continue; }
+    if (c === "\n") { out.push({ text: "\n", kind: "nl", line, space, start: i, end: i + 1 }); line++; i++; space = false; continue; }
     if (c === " " || c === "\t" || c === "\r" || c === "\f" || c === "\v") { i++; space = true; continue; }
     if (c === "/" && peek(1) === "/") {
       while (i < n && source[i] !== "\n") i++;
@@ -99,10 +99,10 @@ function tokenize(source: string): Raw[] {
       space = true; continue;
     }
     let text = "";
-    const start = line;
+    const start = line, startOffset = i;
     if (identStart(c)) {
       while (i < n && identPart(peek())) text += take();
-      out.push({ text, kind: "id", line: start, space }); space = false; continue;
+      out.push({ text, kind: "id", line: start, space, start: startOffset, end: i }); space = false; continue;
     }
     if (digit(c) || (c === "." && digit(peek(1)))) {
       // A C preprocessing number: digits, letters, '.', and an exponent sign.
@@ -113,7 +113,7 @@ function tokenize(source: string): Raw[] {
         if ((d === "+" || d === "-") && /[eE]$/.test(text) && !/^0[xX]/.test(text)) { text += take(); continue; }
         break;
       }
-      out.push({ text, kind: "num", line: start, space }); space = false; continue;
+      out.push({ text, kind: "num", line: start, space, start: startOffset, end: i }); space = false; continue;
     }
     let match = c;
     for (const p of PUNCTUATORS) {
@@ -122,7 +122,7 @@ function tokenize(source: string): Raw[] {
       if (ok) { match = p; break; }
     }
     for (let k = 0; k < match.length; k++) take();
-    out.push({ text: match, kind: "op", line: start, space }); space = false;
+    out.push({ text: match, kind: "op", line: start, space, start: startOffset, end: i }); space = false;
   }
   return out;
 }
@@ -130,7 +130,8 @@ function tokenize(source: string): Raw[] {
 type Macro = { params: string[] | null; body: EsslToken[] };
 
 /** The active code of an accepted ESSL 1.00 shader, macro-expanded. */
-export function preprocessEssl100(source: string): PreprocessedEssl {
+type ConditionalEdit = { start: number; end: number; text: string };
+export function preprocessEssl100(source: string, conditionalEdits?: ConditionalEdit[]): PreprocessedEssl {
   const raw = tokenize(source);
   const macros = new Map<string, Macro>();
   const number = (value: number): EsslToken[] => [{ text: String(value), kind: "num", line: 0, file: 0, space: true }];
@@ -140,15 +141,26 @@ export function preprocessEssl100(source: string): PreprocessedEssl {
   const tokens: EsslToken[] = [], directives: EsslDirective[] = [];
   const groups: { active: boolean; taken: boolean; parent: boolean }[] = [];
   const active = () => groups.length === 0 || groups[groups.length - 1].active;
+  const isDefined = (name: string) => macros.has(name) || name === "__LINE__" || name === "__FILE__";
   let offset = 0, file = 0, pending: EsslToken[] = [];
   const flush = () => { if (pending.length) { tokens.push(...expand(pending)); pending = []; } };
 
-  function expand(input: EsslToken[]): EsslToken[] {
+  function expand(input: EsslToken[], conditional = false, generatedDefined?: { value: boolean }): EsslToken[] {
     const out: EsslToken[] = [], queue = input.slice();
     let i = 0;
     while (i < queue.length) {
       const t = queue[i++];
       if (t.kind !== "id") { out.push(t); continue; }
+      if (conditional && t.text === "defined") {
+        const paren = queue[i]?.text === "(", operand = queue[i + (paren ? 1 : 0)];
+        // Do not turn a malformed operator into a valid expression: the
+        // native ES100 front end still diagnoses its complete original shape.
+        if (operand?.kind !== "id" || (paren && queue[i + 2]?.text !== ")")) { out.push(t); continue; }
+        if (t.hide?.size && generatedDefined) generatedDefined.value = true;
+        i += paren ? 3 : 1;
+        out.push({ ...t, kind: "num", text: isDefined(operand.text) ? "1" : "0" });
+        continue;
+      }
       if (t.text === "__LINE__" || t.text === "__FILE__") {
         out.push({ ...t, kind: "num", text: String(t.text === "__LINE__" ? t.line : t.file), hide: undefined });
         continue;
@@ -176,7 +188,7 @@ export function preprocessEssl100(source: string): PreprocessedEssl {
         else if (a.text === "," && depth === 0) { args.push([]); continue; }
         args[args.length - 1].push(a);
       }
-      const expanded = args.map(arg => expand(arg));
+      const expanded = args.map(arg => expand(arg, conditional, generatedDefined));
       const replacement: EsslToken[] = [];
       for (const b of macro.body) {
         const k = b.kind === "id" ? macro.params.indexOf(b.text) : -1;
@@ -191,17 +203,9 @@ export function preprocessEssl100(source: string): PreprocessedEssl {
   }
 
   function evaluate(expression: EsslToken[]): number {
-    // `defined` applies before macro expansion.
-    const resolved: EsslToken[] = [];
-    for (let k = 0; k < expression.length; k++) {
-      const t = expression[k];
-      if (t.text !== "defined") { resolved.push(t); continue; }
-      const paren = expression[k + 1]?.text === "(";
-      const name = expression[k + (paren ? 2 : 1)]?.text ?? "";
-      k += paren ? 3 : 1;
-      resolved.push({ ...t, kind: "num", text: macros.has(name) ? "1" : "0" });
-    }
-    const list = expand(resolved);
+    // Resolve defined while rescanning: an object macro can produce the
+    // operator too. Its operand is a name, never another macro expansion.
+    const list = expand(expression, true);
     let p = 0;
     const PRECEDENCE: Record<string, number> = { "||": 1, "&&": 2, "|": 3, "^": 4, "&": 5, "==": 6, "!=": 6,
       "<": 7, ">": 7, "<=": 7, ">=": 7, "<<": 8, ">>": 8, "+": 9, "-": 9, "*": 10, "/": 10, "%": 10 };
@@ -254,6 +258,7 @@ export function preprocessEssl100(source: string): PreprocessedEssl {
   let k = 0;
   while (k < raw.length) {
     // One logical line: raw tokens up to the next line end.
+    const physicalStart = k;
     let end = k;
     while (end < raw.length && raw[end].kind !== "nl") end++;
     const lineTokens: EsslToken[] = [];
@@ -269,10 +274,20 @@ export function preprocessEssl100(source: string): PreprocessedEssl {
     }
     const keyword = lineTokens[1]?.text ?? "";
     const rest = lineTokens.slice(2);
+    if (conditionalEdits && (keyword === "if" || keyword === "elif")) {
+      const generated = { value: false }, expanded = expand(rest, true, generated);
+      if (generated.value && rest.length) {
+        const start = raw[physicalStart + 2].start, stop = raw[end - 1].end;
+        // Keep physical line count when a directive spans continuations, so
+        // later __LINE__ and compiler diagnostics retain the guest's positions.
+        const padding = "\\\n".repeat((source.slice(start, stop).match(/\n/g) ?? []).length);
+        conditionalEdits.push({ start, end: stop, text: expanded.map(t => t.text).join(" ") + padding });
+      }
+    }
     if (keyword === "if" || keyword === "ifdef" || keyword === "ifndef") {
       const parent = active();
       const value = !parent ? false : keyword === "if" ? evaluate(rest) !== 0
-        : macros.has(rest[0]?.text ?? "") === (keyword === "ifdef");
+        : isDefined(rest[0]?.text ?? "") === (keyword === "ifdef");
       groups.push({ active: parent && value, taken: value, parent });
       continue;
     }
@@ -313,4 +328,19 @@ export function preprocessEssl100(source: string): PreprocessedEssl {
   }
   flush();
   return { tokens, directives };
+}
+
+/** WebGL deliberately rejects a defined operator produced by macro expansion.
+ * GLES preprocessing leaves that C++ case undefined; Kandelo consistently
+ * evaluates it by the current macro table, as its GLES conformance workload
+ * expects. Rewrite only those conditional expressions, preserving native
+ * validation of declarations, other directives and malformed operators. */
+export function macroDefinedConditionalSource(source: string): string {
+  if (!source.includes("defined")) return source;
+  const edits: ConditionalEdit[] = [];
+  preprocessEssl100(source, edits);
+  for (let i = edits.length - 1; i >= 0; i--) {
+    const e = edits[i]; source = source.slice(0, e.start) + e.text + source.slice(e.end);
+  }
+  return source;
 }

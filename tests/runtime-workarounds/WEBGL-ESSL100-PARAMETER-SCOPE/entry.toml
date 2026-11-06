@@ -1,0 +1,40 @@
+id = "WEBGL-ESSL100-PARAMETER-SCOPE"
+kind = "bug"
+status = "confirmed"
+runtimes = ["chromium", "firefox", "webkit"]
+summary = "ESSL100 function bodies cannot hide a same-named function parameter"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["chromium", "firefox", "webkit"]
+self_judging = true
+timeout_seconds = 60
+
+[[observed]]
+runtime = "chromium"
+version = "153.0.8010.12"
+os = "macos"
+reproduced = true
+date = 2026-11-05
+source = "suite"
+released = false
+
+[[observed]]
+runtime = "firefox"
+version = "155.0"
+os = "macos"
+reproduced = true
+date = 2026-11-05
+source = "suite"
+released = false
+
+[[observed]]
+runtime = "webkit"
+version = "26.6"
+os = "macos"
+reproduced = true
+date = 2026-11-05
+source = "suite"
+released = false

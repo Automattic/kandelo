@@ -57,6 +57,33 @@ explicitly wants to wait until all changes are integrated into a normally
 built preview that passes its required checks. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Native-compatible ESSL100 validation, 2026-11-05 (R449)
+
+The host now retries two native-rejected ESSL100 spellings without changing
+the guest's source-query bytes. Macro-produced `defined` expressions use the
+current macro table; function bodies retain ESSL100's child scope inside the
+parameter scope. The same native ESSL100 validator still judges the resulting
+source, including malformed directives, syntax, types and language versions.
+Accepted source follows private alias/depth executables so they cannot
+reintroduce the rejected spelling. Why comments explain these invariants;
+normalization is compile-time work, not a new draw-time pass.
+
+Integration job `graphics-cts-shader-integration-r449-1105-205131-7175`
+passes1m31 through the frozen `validate.sh` in
+`.context/graphics-cts-shader-integration-r449/`: graphics2226/89, full host
+compiler0 diagnostics, evidence classes and registry19 entries/55 sites.
+The shader harness passes283 Chromium,280 Firefox and283 WebKit checks with
+zero hard failures; Firefox retains one inconclusive and two registered
+depth-range controls. Direct pinned a119 CTS preprocessor/scoping compilation
+checks614 programs per engine: all614 match expectations on Chromium/WebKit;
+Firefox610 match, with four existing struct-hiding failures still open.
+These direct compile/link/pixel controls do not replace actual guest dEQP
+execution or final current-tree conformance. The standalone parameter-scope
+reproduction is registered as `WEBGL-ESSL100-PARAMETER-SCOPE`, human-only for
+upstream reporting; exact native component attribution remains unestablished.
+Long-product compiler failures, remaining B1 work and full acceptance remain
+open. No ABI/snapshot change, new preview or performance claim follows.
+
 ## Host TLS source ownership and compiler gate, 2026-11-05 (R445)
 
 The shared host/legacy-JavaScript TLS implementation now lives under

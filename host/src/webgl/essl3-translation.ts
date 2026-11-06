@@ -1,3 +1,4 @@
+import { compatibleEssl100Source } from "./essl100-native-source.js";
 import { lowerSamplerArrayLookups } from "./sampler-arrays.js";
 /**
  * GLSL ES 1.00 shaders compiled as GLSL ES 3.00 on WebGL 2.
@@ -14,6 +15,12 @@ import { lowerSamplerArrayLookups } from "./sampler-arrays.js";
  * ESSL 3.00 with the same meaning and compiled again (`compileGuestShader`,
  * called by CompileShader in bridge.ts), once per CompileShader; no draw
  * pays for it.
+ *
+ * Two ES100 spellings need native-compatible source first: macro-produced
+ * defined expressions and a function body's scope inside its parameters.
+ * Failed native compiles retry only these token-preserving normalizations;
+ * the same ES100 parser/type checker still decides validity. See
+ * essl100-native-source.ts and the runtime registry for the scope control.
  *
  * Which shaders. The engine's own ESSL 1.00 front end (ANGLE in Chromium,
  * Firefox and WebKit) stays the judge of ES 1.00 validity: CompileShader
@@ -181,6 +188,12 @@ export function onlyAppendixALimitations(log: string): boolean {
 export type ShaderLanguage = "essl100" | "essl300";
 
 const COMPILE_STATUS = 0x8b81;
+const compatibleSources = new WeakMap<WebGLShader, string>();
+/** Private executables must rebuild the source the ES100 validator actually
+ * accepted, or a later alias/depth variant would reintroduce the failed rule. */
+export function compatibleShaderSource(shader: WebGLShader, fallback: string): string {
+  return compatibleSources.get(shader) ?? fallback;
+}
 
 /**
  * The `#version` directive of a source that declares a language other than
@@ -235,14 +248,25 @@ export function compileGuestShader(gl: WebGL2RenderingContext, shader: WebGLShad
   // An ES 2.0 compiler accepts GLSL ES 1.00 only. WebGL 2 would compile
   // `#version 300 es` as written, which would make ES 3.0 shaders run in an
   // ES 2.0 context; the version is refused before any translation instead.
+  compatibleSources.delete(shader);
   const rejected = unsupportedShaderVersion(source);
   if (rejected) {
     gl.shaderSource(shader, unsupportedVersionSource(rejected)); gl.compileShader(shader);
     return null;
   }
-  const validation = derivativeValidationSource(source, fragment);
+  let validation = derivativeValidationSource(source, fragment);
   gl.shaderSource(shader, validation ?? source); gl.compileShader(shader);
-  const compiled = !!gl.getShaderParameter(shader, COMPILE_STATUS);
+  let compiled = !!gl.getShaderParameter(shader, COMPILE_STATUS);
+  if (!compiled && !onlyAppendixALimitations(gl.getShaderInfoLog(shader) ?? "")) {
+    const normalized = compatibleEssl100Source(source);
+    if (normalized !== source) {
+      source = normalized;
+      validation = derivativeValidationSource(source, fragment);
+      gl.shaderSource(shader, validation ?? source); gl.compileShader(shader);
+      compiled = !!gl.getShaderParameter(shader, COMPILE_STATUS);
+      if (compiled || onlyAppendixALimitations(gl.getShaderInfoLog(shader) ?? "")) compatibleSources.set(shader, source);
+    }
+  }
   if (!compiled && !onlyAppendixALimitations(gl.getShaderInfoLog(shader) ?? "")) return null;
   // Only a fragment shader's derivative declarations stand in for
   // built-ins; a vertex shader's validation source means what its source does.
@@ -1022,6 +1046,13 @@ export function translateEssl100(source: string, fragment: boolean, lodSwitch?: 
   // Token rewrites.
   const cube = text.includes("samplerCube");
   const out = text.slice();
+  // ES100 function bodies nest inside the parameter scope; ES300 combines
+  // them. Keep a real child block rather than renaming just one shadowed
+  // declaration (which would break uses before/after that declaration).
+  for (let i = 0; i < n; i++) if (at(i) === "{" && depth[i] === 0 && at(i - 1) === ")") {
+    out[i] = "{ {";
+    for (let j = i + 1; j < n; j++) if (at(j) === "}" && depth[j] === 1) { out[j] = "} }"; break; }
+  }
   for (let i = 0; i < n; i++) {
     if (!id(i)) continue;
     const t = text[i], call = at(i + 1) === "(";

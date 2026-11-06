@@ -4098,6 +4098,21 @@ anything. ES forbids linking shaders of different language versions, so
 translation (its meaning, and `COMPILE_STATUS`, are unchanged; its info
 log is now the 3.00 compile's).
 
+A failed native ES100 compile now also retries two source normalizations,
+still through the same ES100 syntax/type validator. Macro-produced `defined`
+in conditional expressions is evaluated against the current macro table;
+WebGL deliberately rejects that otherwise undefined GLES preprocessing
+choice. Only affected conditionals change, while other directives and
+malformed operators remain visible to native validation. ES100 function
+bodies receive a child compound statement so their locals can shadow
+parameters as §4.2.2 requires. The ES300 translation preserves that child
+scope too. Same-scope duplicates remain invalid. Original guest source
+bytes still serve GetShaderSource; retained private executables rebuild
+the exact normalized ES100 source that passed validation. This is
+compile-only work and introduces no draw/frame cost for unused features.
+See the standalone WebGL scope control in
+`tests/runtime-workarounds/WEBGL-ESSL100-PARAMETER-SCOPE/`.
+
 The translation works on the shader after preprocessing
 (`host/src/webgl/essl-preprocessor.ts`, ES 1.00 rules for input ANGLE has
 already accepted), so each decision is about code the compiler parsed, not
