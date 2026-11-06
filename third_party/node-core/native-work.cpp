@@ -6,7 +6,7 @@
 #include <pthread.h>
 #include <new>
 
-#include "js/SharedArrayBuffer.h"
+#include "js/experimental/KandeloBackingStore.h"
 
 namespace js::shell {
 class KandeloNativeWorkQueue;
@@ -29,18 +29,6 @@ struct KandeloNativeWork {
   virtual void Interrupt() {}
 };
 
-struct KandeloNativePin {
-  JS::PersistentRootedObject buffer;
-  // Shared stores need a lifetime root, not a length pin. GSAB growth leaves
-  // the existing address/span valid; releasing it must never unpin a different
-  // owner or prevent another agent from growing that same shared store.
-  bool shared;
-  KandeloNativePin* next = nullptr;
-  size_t references = 1;
-  KandeloNativePin(JSContext* cx, JSObject* object, bool shared)
-      : buffer(cx, object), shared(shared) {}
-};
-
 // A queue belongs to the shell context, rather than to a collectible JS
 // object. Jobs/leases are deterministic roots of outstanding native work.
 class KandeloNativeWorkQueue {
@@ -52,11 +40,10 @@ class KandeloNativeWorkQueue {
   size_t dispatchDepth_ = 0;
   KandeloNativeWork* externalHead_ = nullptr;
   bool closing_ = false;
-  KandeloNativePin* pins_ = nullptr;  // Accessed only on the owning JS thread.
 
  public:
   ~KandeloNativeWorkQueue() {
-    MOZ_RELEASE_ASSERT(!outstanding_ && !running_ && !doneHead_ && !externalHead_ && !pins_);
+    MOZ_RELEASE_ASSERT(!outstanding_ && !running_ && !doneHead_ && !externalHead_);
   }
   bool Submit(KandeloNativeWork* work);
   bool BeginExternal(KandeloNativeWork* work);
@@ -65,8 +52,6 @@ class KandeloNativeWorkQueue {
   bool HasWork();
   int Dispatch(JSContext* cx);
   void Shutdown(JSContext* cx);
-  KandeloNativePin* Pin(JSContext* cx, JS::HandleObject view);
-  void Unpin(KandeloNativePin* pin);
 };
 
 // One actual pool per guest process, with completion queues per JS context.
@@ -314,7 +299,7 @@ int KandeloNativeWorkQueue::Dispatch(JSContext* cx) {
   bool success = true;
   if (work->cancelled) work->Cancel(cx);
   else success = work->Complete(cx);
-  js_delete(work);  // Root and pin release occurs on this JS thread.
+  js_delete(work);  // Root and native-span release occurs on this JS thread.
   --dispatchDepth_;
   pool.Lock();
   MOZ_RELEASE_ASSERT(outstanding_);
@@ -328,7 +313,7 @@ void KandeloNativeWorkQueue::Shutdown(JSContext* cx) {
   auto& pool = kandeloNativeWorkPool;
   pool.Lock();
   closing_ = true;
-  // Cancel only queued work. Running codec calls finish before roots/pins
+  // Cancel only queued work. Running codec calls finish before roots/spans
   // are released; cancellation never frees storage out from under a worker.
   KandeloNativeWork** link = &pool.head;
   pool.tail = nullptr;
@@ -365,66 +350,10 @@ void KandeloNativeWorkQueue::Shutdown(JSContext* cx) {
     --outstanding_;
     work = next;
   }
-  MOZ_RELEASE_ASSERT(!outstanding_ && !pins_);
+  MOZ_RELEASE_ASSERT(!outstanding_);
   pool.Lock();
   pool.Release();
   pool.Unlock();
-}
-
-KandeloNativePin* KandeloNativeWorkQueue::Pin(JSContext* cx, JS::HandleObject view) {
-  bool shared;
-  JS::RootedObject buffer(cx, JS_GetArrayBufferViewBuffer(cx, view, &shared));
-  if (!buffer) return nullptr;
-  if (shared ? !JS::IsSharedArrayBufferObject(buffer) : !JS::IsArrayBufferObject(buffer)) {
-    JS_ReportErrorASCII(cx, "Cannot access native work backing buffer");
-    return nullptr;
-  }
-  if (!shared && JS::IsResizableArrayBufferView(view)) {
-    JS_ReportErrorASCII(cx, "Resizable native work buffers require explicit backing-store leases");
-    return nullptr;
-  }
-  // The public checked unwrap supplies one canonical identity across realms.
-  // Never bypass a security wrapper to obtain a backing-store identity.
-  buffer = shared ? JS::UnwrapSharedArrayBuffer(buffer) : JS::UnwrapArrayBuffer(buffer);
-  if (!buffer) {
-    JS_ReportErrorASCII(cx, "Cannot access native work backing buffer");
-    return nullptr;
-  }
-  if (!shared && JS::IsDetachedArrayBufferObject(buffer)) {
-    JS_ReportErrorASCII(cx, "Native work buffer is detached"); return nullptr;
-  }
-  for (auto* pin = pins_; pin; pin = pin->next) {
-    if (pin->buffer == buffer) { ++pin->references; return pin; }
-  }
-  // SharedArrayRawBuffer owns nonmoving, refcounted storage, including GSAB's
-  // maximum allocation. Its rooted JS owner retains that reference throughout
-  // work/cancellation/teardown. Ordinary inline bytes must first move out.
-  if (!shared && !JS::EnsureNonInlineArrayBufferOrView(cx, buffer)) return nullptr;
-  auto* pin = js_new<KandeloNativePin>(cx, buffer.get(), shared);
-  if (!pin) { JS_ReportOutOfMemory(cx); return nullptr; }
-  if (!shared && !JS::PinArrayBufferOrViewLength(buffer, true)) {
-    // Do not adopt an unrelated boolean pin: its original owner could release
-    // it during our asynchronous work. A shared engine lease protocol is still
-    // needed for that case; never claim safe ownership without it.
-    js_delete(pin);
-    JS_ReportErrorASCII(cx, "Backing buffer already has an external native pin");
-    return nullptr;
-  }
-  pin->next = pins_;
-  pins_ = pin;
-  return pin;
-}
-
-void KandeloNativeWorkQueue::Unpin(KandeloNativePin* pin) {
-  if (!pin) return;
-  MOZ_RELEASE_ASSERT(pin->references);
-  if (--pin->references) return;
-  KandeloNativePin** link = &pins_;
-  while (*link && *link != pin) link = &(*link)->next;
-  MOZ_RELEASE_ASSERT(*link == pin);
-  *link = pin->next;
-  if (!pin->shared) MOZ_RELEASE_ASSERT(JS::PinArrayBufferOrViewLength(pin->buffer, false));
-  js_delete(pin);
 }
 
 static KandeloNativeWorkQueue* KandeloGetNativeWorkQueue(JSContext* cx) {

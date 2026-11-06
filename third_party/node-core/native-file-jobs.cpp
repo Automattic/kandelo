@@ -2,6 +2,7 @@
  * worker owns its path and allocation without any JS memory/data pointers.
  * Source candidate only: native/four-host conformance remains pending.
  */
+#include <cstring>
 #include "kandelo-node-write-file-operations.h"
 namespace {
 struct KandeloReadFileWork final : KandeloFsWork {
@@ -143,16 +144,15 @@ static bool KandeloNativeRunReadFileJob(JSContext* cx, unsigned argc, Value* vp)
   failed.release(); args.rval().setUndefined(); return true;
 }
 struct KandeloWriteFileWork final : KandeloFsWork {
-  js::shell::KandeloNativeWorkQueue* ownerQueue;
+  JS::KandeloBacking::SpanRef backing;
   const char* path;
   int flags;
   mode_t mode;
-  js::shell::KandeloNativePin* pin = nullptr;
   const char* data = nullptr;
   size_t size = 0;
   const char* failedSyscall = "write";
-  KandeloWriteFileWork(JSContext* cx, JSObject* request, js::shell::KandeloNativeWorkQueue* queue)
-      : KandeloFsWork(cx, request, -1, 0, Operation::FileRead), ownerQueue(queue),
+  KandeloWriteFileWork(JSContext* cx, JSObject* request)
+      : KandeloFsWork(cx, request, -1, 0, Operation::FileRead),
         path(State()->name.get()), flags(State()->flags), mode(mode_t(State()->fileMode)) {
     JS::AddAssociatedMemory(owner, sizeof(*this) - sizeof(KandeloFsWork), JS::MemoryUse::Embedding3);
   }
@@ -160,7 +160,7 @@ struct KandeloWriteFileWork final : KandeloFsWork {
     ReleaseIo();
     JS::RemoveAssociatedMemory(owner, sizeof(*this) - sizeof(KandeloFsWork), JS::MemoryUse::Embedding3);
   }
-  void ReleaseIo() override { ownerQueue->Unpin(pin); pin = nullptr; data = nullptr; }
+  void ReleaseIo() override { backing.reset(); data = nullptr; }
   const char* Syscall() const override { return failedSyscall; }
   void Run() override {
     const auto outcome = kandelo::nodefs::WritePathFile(path, flags, mode, data, size);
@@ -191,25 +191,41 @@ static bool KandeloNativeCreateWriteFileJob(JSContext* cx, unsigned argc, Value*
   RootedObject prototype(cx, args[0].toObjectOrNull()), owner(cx), view(cx, &args[4].toObject());
   if (!KandeloCreateFsResource(cx, prototype, args[5], FsResourceKind::FileWrite, &owner)) return false;
   auto* state = KandeloFsRequestStateOf(cx, owner); if (!state) return false;
+  auto abandon = mozilla::MakeScopeExit([&] { KandeloFsAbandonRequest(owner); });
   state->name = std::move(path); state->nameLength = length; state->nameBytes = length + 1;
   state->flags = int(flags); state->fileMode = uint32_t(mode);
   JS::AddAssociatedMemory(owner, state->nameBytes, JS::MemoryUse::Embedding3);
   JS::SetReservedSlot(owner, FsRequestBuffers, ObjectValue(*view));
   if (!KandeloInitializeFsResource(cx, owner)) return false;
-  // AsyncWrap init precedes Node's view capture. A resizable view must become
-  // owned bytes now, before later shrink/detach can invalidate worker storage.
-  if (JS::IsResizableArrayBufferView(view)) {
-    const size_t size = JS_GetArrayBufferViewByteLength(view);
-    std::vector<uint8_t> copy(size);
-    {
-      JS::AutoCheckCannotGC nogc; bool shared;
-      auto* bytes = static_cast<const uint8_t*>(JS_GetArrayBufferViewData(view, &shared, nogc));
-      for (size_t i = 0; i < size; ++i) copy[i] = __atomic_load_n(bytes + i, __ATOMIC_RELAXED);
-    }
-    RootedObject snapshot(cx, KandeloNewUint8ArrayCopy(cx, copy.data(), copy.size()));
-    if (!snapshot) return false;
-    JS::SetReservedSlot(owner, FsRequestBuffers, ObjectValue(*snapshot));
+  // This API deliberately differs from scalar/vector fs: WriteFileJob's
+  // AsyncWrap constructor/init precedes length/backing capture. Preserve it.
+  auto backing = JS::KandeloBacking::Acquire(cx, view);
+  if (!backing) return false;
+  bool shared;
+  RootedObject buffer(cx, JS_GetArrayBufferViewBuffer(cx, view, &shared));
+  if (!buffer) return false;
+  const bool detached = !shared && JS::IsDetachedArrayBufferObject(buffer);
+  // V8's IsResizableByUserJavaScript includes RAB and growable SAB. Only
+  // these stores are copied, after init, as in the pinned WriteFileJob.
+  if (!detached && JS::IsResizableArrayBufferView(view)) {
+    const size_t size = backing->Length();
+    mozilla::UniquePtr<void, JS::FreePolicy> copy(size ? js_malloc(size) : nullptr);
+    if (size && !copy) { JS_ReportOutOfMemory(cx); return false; }
+    auto* target = static_cast<uint8_t*>(copy.get());
+    if (backing->Shared()) {
+      for (size_t i = 0; i < size; ++i)
+        target[i] = __atomic_load_n(backing->Data() + i, __ATOMIC_RELAXED);
+    } else if (size) std::memcpy(target, backing->Data(), size);
+    auto allocation = JS::KandeloBacking::Prepare(target, size,
+        [](void* data, size_t, void*) noexcept { js_free(data); }, nullptr);
+    if (!allocation) { JS_ReportErrorASCII(cx, "Native write-file allocation ownership unavailable"); return false; }
+    allocation->Commit(); copy.release();
+    backing = allocation->Capture(0, size, JS::KandeloBacking::ResolveAccount(cx));
+    // Node's resizable-copy branch owns native bytes, not a JS snapshot/view.
+    JS::SetReservedSlot(owner, FsRequestBuffers, UndefinedValue());
   }
+  state->ioBacking = std::move(backing);
+  abandon.release();
   args.rval().setObject(*owner); return true;
 }
 static bool KandeloNativeRunWriteFileJob(JSContext* cx, unsigned argc, Value* vp) {
@@ -222,17 +238,13 @@ static bool KandeloNativeRunWriteFileJob(JSContext* cx, unsigned argc, Value* vp
   }
   auto failed = mozilla::MakeScopeExit([&] { KandeloFsAbandonRequest(owner); });
   auto* queue = js::shell::KandeloGetNativeWorkQueue(cx); if (!queue) return false;
-  auto* work = js_new<KandeloWriteFileWork>(cx, owner.get(), queue);
+  auto* work = js_new<KandeloWriteFileWork>(cx, owner.get());
   if (!work) { JS_ReportOutOfMemory(cx); return false; }
   auto dispose = mozilla::MakeScopeExit([&] { if (work) js_delete(work); });
-  RootedObject view(cx, &JS::GetReservedSlot(owner, FsRequestBuffers).toObject());
-  work->pin = queue->Pin(cx, view); if (!work->pin) return false;
-  work->size = JS_GetArrayBufferViewByteLength(view);
-  {
-    JS::AutoCheckCannotGC nogc; bool shared;
-    work->data = static_cast<char*>(JS_GetArrayBufferViewData(view, &shared, nogc));
-  }
-  if (work->size && !work->data) { JS_ReportErrorASCII(cx, "WriteFileJob has no live backing data"); return false; }
+  work->backing = std::move(state->ioBacking);
+  if (!work->backing) { JS_ReportErrorASCII(cx, "WriteFileJob has no captured allocation"); return false; }
+  work->size = work->backing->Length();
+  work->data = reinterpret_cast<char*>(work->backing->Data());
   state->dispatched = true;
   if (!queue->Submit(work)) { JS_ReportErrorASCII(cx, "WriteFileJob work queue closing"); return false; }
   work = nullptr; failed.release(); args.rval().setUndefined(); return true;

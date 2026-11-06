@@ -236,20 +236,19 @@ static bool KandeloFsControlSync(JSContext* cx, unsigned argc, Value* vp) {
 }
 
 struct KandeloFsIoWork final : KandeloFsWork {
-  js::shell::KandeloNativeWorkQueue* ownerQueue;
-  js::shell::KandeloNativePin* pin = nullptr;
+  JS::KandeloBacking::SpanRef backing;
   char* data = nullptr;
   size_t size = 0;
   KandeloFsIoWork(JSContext* cx, JSObject* request, int fd, off_t position,
-                  bool writing, js::shell::KandeloNativeWorkQueue* queue)
-      : KandeloFsWork(cx, request, fd, position, writing ? Operation::Write : Operation::Read), ownerQueue(queue) {
+                  bool writing)
+      : KandeloFsWork(cx, request, fd, position, writing ? Operation::Write : Operation::Read) {
     JS::AddAssociatedMemory(owner, sizeof(*this) - sizeof(KandeloFsWork), JS::MemoryUse::Embedding3);
   }
   ~KandeloFsIoWork() override {
     ReleaseIo();
     JS::RemoveAssociatedMemory(owner, sizeof(*this) - sizeof(KandeloFsWork), JS::MemoryUse::Embedding3);
   }
-  void ReleaseIo() override { ownerQueue->Unpin(pin); pin = nullptr; data = nullptr; }
+  void ReleaseIo() override { backing.reset(); data = nullptr; }
   const char* Syscall() const override { return operation == Operation::Write ? "write" : "read"; }
   void Run() override {
     ssize_t count;
@@ -281,31 +280,26 @@ static bool KandeloFsIoPromise(JSContext* cx, unsigned argc, Value* vp) {
   if (position >= 0 && uint64_t(position) > uint64_t(INT64_MAX) - uint64_t(count)) {
     JS_ReportErrorASCII(cx, "Filesystem position plus length exceeds int64"); return false;
   }
+  // Node derives the uv span before GetReqWrap can create a Promise or emit
+  // async init. Retain that same real allocation now; later JS view metadata
+  // must neither redirect the operation nor impose a stricter length pin.
+  auto backing = JS::KandeloBacking::Acquire(cx, view);
+  if (!backing) return false;
+  auto* initial = backing->Data();
+  if (count && !initial) { JS_ReportErrorASCII(cx, "Filesystem buffer has no backing data"); return false; }
+  char* data = initial ? reinterpret_cast<char*>(initial) + size_t(offset) : nullptr;
   RootedObject request(cx), promise(cx);
   if (!KandeloFsPromiseRequest(cx, args.get(6), &request, &promise)) return false;
   auto abandon = mozilla::MakeScopeExit([&] { KandeloFsAbandonRequest(request); });
   auto* queue = js::shell::KandeloGetNativeWorkQueue(cx); if (!queue) return false;
-  auto* work = js_new<KandeloFsIoWork>(cx, request.get(), fd, position, args[0].toBoolean(), queue);
+  auto* work = js_new<KandeloFsIoWork>(cx, request.get(), fd, position, args[0].toBoolean());
   if (!work) { JS_ReportOutOfMemory(cx); return false; }
   auto dispose = mozilla::MakeScopeExit([&] { if (work) js_delete(work); });
-  work->pin = queue->Pin(cx, view); if (!work->pin) return false;
-  // Promise init hooks ran since the first bounds check. Pin the actual store
-  // and recheck its span before deriving any worker address.
-  const size_t pinnedBytes = JS_GetArrayBufferViewByteLength(view);
-  if (size_t(offset) > pinnedBytes || size_t(count) > pinnedBytes - size_t(offset)) {
-    JS_ReportErrorASCII(cx, "Filesystem buffer span changed before native ownership"); return false;
-  }
+  work->backing = std::move(backing);
+  work->data = data;
+  work->size = size_t(count);
+  // Preserve original JS identity separately from native allocation ownership.
   JS::SetReservedSlot(request, FsRequestBuffers, args[2]);
-  bool liveData;
-  {
-    JS::AutoCheckCannotGC nogc; bool shared;
-    auto* data = static_cast<char*>(JS_GetArrayBufferViewData(view, &shared, nogc));
-    liveData = count == 0 || data != nullptr;
-    work->data = count == 0 || !data ? nullptr : data + offset; work->size = size_t(count);
-  }
-  if (!liveData) {
-    JS_ReportErrorASCII(cx, "Filesystem buffer has no live backing data"); return false;
-  }
   auto* submitted = work; work = nullptr; abandon.release();
   if (!KandeloFsDispatchPrepared(cx, request, submitted, queue)) return false;
   if (promise) args.rval().setObject(*promise); else args.rval().setUndefined(); return true;
@@ -474,24 +468,25 @@ static int64_t KandeloFsVectorIo(bool writing, int fd, off_t position, std::vect
     return total;
 }
 struct KandeloFsVectorWork final : KandeloFsWork {
-  js::shell::KandeloNativeWorkQueue* ownerQueue;
+  // Keep the capacity claim until both actual vectors are destroyed.
+  JS::KandeloBacking::MetadataRef storage;
   std::vector<iovec> spans;
-  std::vector<js::shell::KandeloNativePin*> pins;
+  std::vector<JS::KandeloBacking::SpanRef> backings;
   size_t associated = 0;
   KandeloFsVectorWork(JSContext* cx, JSObject* request, int fd, off_t position,
-                      bool writing, size_t count,
-                      js::shell::KandeloNativeWorkQueue* queue)
+                      bool writing, std::vector<iovec>&& captured,
+                      std::vector<JS::KandeloBacking::SpanRef>&& owners,
+                      JS::KandeloBacking::MetadataRef&& metadata)
       : KandeloFsWork(cx, request, fd, position, writing ? Operation::Write : Operation::Read),
-        ownerQueue(queue), spans(count), pins(count, nullptr) {
-    associated = sizeof(*this) - sizeof(KandeloFsWork) +
-        spans.capacity() * sizeof(iovec) + pins.capacity() * sizeof(pins[0]);
+        storage(std::move(metadata)), spans(std::move(captured)), backings(std::move(owners)) {
+    associated = sizeof(*this) - sizeof(KandeloFsWork);
     JS::AddAssociatedMemory(owner, associated, JS::MemoryUse::Embedding3);
   }
   ~KandeloFsVectorWork() override {
     ReleaseIo(); JS::RemoveAssociatedMemory(owner, associated, JS::MemoryUse::Embedding3);
   }
   void ReleaseIo() override {
-    for (auto*& pin : pins) { if (pin) ownerQueue->Unpin(pin); pin = nullptr; }
+    backings.clear();
     for (auto& span : spans) span.iov_base = nullptr;
   }
   const char* Syscall() const override { return operation == Operation::Write ? "write" : "read"; }
@@ -509,16 +504,22 @@ static bool KandeloFsVectorPromise(JSContext* cx, unsigned argc, Value* vp) {
   if (!JS::IsArrayObject(cx, buffers, &array)) return false;
   if (!array) { JS_ReportErrorASCII(cx, "Filesystem vectors require an array"); return false; }
   if (!JS::GetArrayLength(cx, buffers, &count)) return false;
-  RootedObject request(cx), promise(cx);
-  if (!KandeloFsPromiseRequest(cx, args.get(4), &request, &promise)) return false;
-  auto abandon = mozilla::MakeScopeExit([&] { KandeloFsAbandonRequest(request); });
-  auto* queue = count == 0 ? nullptr : js::shell::KandeloGetNativeWorkQueue(cx);
-  if (count && !queue) return false;
-  auto* work = js_new<KandeloFsVectorWork>(cx, request.get(), fd, position,
-                                         args[0].toBoolean(), count, queue);
-  if (!work) { JS_ReportOutOfMemory(cx); return false; }
-  auto dispose = mozilla::MakeScopeExit([&] { if (work) js_delete(work); });
-  JS::SetReservedSlot(request, FsRequestBuffers, args[2]);
+  JS::KandeloBacking::MetadataRef storage;
+  std::vector<iovec> spans(count);
+  std::vector<JS::KandeloBacking::SpanRef> backings(count);
+  if (count) {
+    if (spans.capacity() > SIZE_MAX / sizeof(iovec) ||
+        backings.capacity() > (SIZE_MAX - spans.capacity() * sizeof(iovec)) / sizeof(backings[0])) {
+      JS_ReportOutOfMemory(cx); return false;
+    }
+    storage = JS::KandeloBacking::TrackMetadata(
+        spans.capacity() * sizeof(iovec) + backings.capacity() * sizeof(backings[0]),
+        JS::KandeloBacking::ResolveAccount(cx));
+    if (!storage) { JS_ReportErrorASCII(cx, "Native vector ownership is unavailable"); return false; }
+  }
+  // Exactly one native list Get per entry, in order, before request init. A
+  // later getter can detach/resize/replace an earlier entry without redirecting
+  // its already owned span. No temporary JS list or send snapshot is created.
   for (uint32_t i = 0; i < count; ++i) {
     RootedValue entry(cx);
     if (!JS_GetElement(cx, buffers, i, &entry)) return false;
@@ -526,19 +527,23 @@ static bool KandeloFsVectorPromise(JSContext* cx, unsigned argc, Value* vp) {
       JS_ReportErrorASCII(cx, "Filesystem vector entry is not an ArrayBufferView"); return false;
     }
     RootedObject view(cx, &entry.toObject());
-    work->pins[i] = queue->Pin(cx, view); if (!work->pins[i]) return false;
-    bool live;
-    {
-      JS::AutoCheckCannotGC nogc; bool shared;
-      work->spans[i].iov_base = JS_GetArrayBufferViewData(view, &shared, nogc);
-      work->spans[i].iov_len = JS_GetArrayBufferViewByteLength(view);
-      live = work->spans[i].iov_base || work->spans[i].iov_len == 0;
-    }
-    if (!live) { JS_ReportErrorASCII(cx, "Filesystem vector has no live data"); return false; }
+    backings[i] = JS::KandeloBacking::Acquire(cx, view);
+    if (!backings[i]) return false;
+    spans[i].iov_base = backings[i]->Data();
+    spans[i].iov_len = backings[i]->Length();
   }
+  RootedObject request(cx), promise(cx);
+  if (!KandeloFsPromiseRequest(cx, args.get(4), &request, &promise)) return false;
+  auto abandon = mozilla::MakeScopeExit([&] { KandeloFsAbandonRequest(request); });
+  auto* queue = count == 0 ? nullptr : js::shell::KandeloGetNativeWorkQueue(cx);
+  if (count && !queue) return false;
+  auto* work = js_new<KandeloFsVectorWork>(cx, request.get(), fd, position,
+      args[0].toBoolean(), std::move(spans), std::move(backings), std::move(storage));
+  if (!work) { JS_ReportOutOfMemory(cx); return false; }
+  auto dispose = mozilla::MakeScopeExit([&] { if (work) js_delete(work); });
+  JS::SetReservedSlot(request, FsRequestBuffers, args[2]);
   if (count == 0) {
-    // uv_fs_read rejects an empty iovec before scheduling. Keep its actual
-    // request/promise lifecycle instead of manufacturing a successful read.
+    // Preserve uv_fs_read's actual empty-iovec error and request lifecycle.
     if (work->State()->kind != FsResourceKind::Callback && !KandeloInitializeFsResource(cx, request)) return false;
     work->result = -EINVAL;
     if (!work->Complete(cx)) return false;
@@ -636,7 +641,7 @@ static bool KandeloFsIoSync(JSContext* cx, unsigned argc, Value* vp) {
   ssize_t transferred = -1; int error = 0; bool live;
   {
     // No JS can run or collect while this synchronous libc operation holds
-    // an engine view pointer. Async jobs instead acquire explicit native pins.
+    // an engine view pointer. Async jobs own native allocation spans instead.
     JS::AutoCheckCannotGC nogc; bool shared;
     char* data = static_cast<char*>(JS_GetArrayBufferViewData(view, &shared, nogc));
     live = count == 0 || data;
@@ -664,30 +669,34 @@ static bool KandeloFsVectorSync(JSContext* cx, unsigned argc, Value* vp) {
   if (!JS::IsArrayObject(cx, array, &isArray)) return false;
   if (!isArray) { JS_ReportErrorASCII(cx, "Filesystem vectors require an array"); return false; }
   if (!JS::GetArrayLength(cx, array, &count)) return false;
-  JS::RootedValueVector views(cx);
-  if (!views.reserve(count)) return false;
+  // A later JS entry getter can invalidate or replace an earlier view.
+  // Capture each original span immediately, as the native uv vector does.
+  // Metadata outlives both actual vector allocations, including failure paths.
+  JS::KandeloBacking::MetadataRef storage;
+  std::vector<iovec> spans(count);
+  std::vector<JS::KandeloBacking::SpanRef> backings(count);
+  if (count) {
+    if (spans.capacity() > SIZE_MAX / sizeof(iovec) ||
+        backings.capacity() > (SIZE_MAX - spans.capacity() * sizeof(iovec)) / sizeof(backings[0])) {
+      JS_ReportOutOfMemory(cx); return false;
+    }
+    storage = JS::KandeloBacking::TrackMetadata(
+        spans.capacity() * sizeof(iovec) + backings.capacity() * sizeof(backings[0]),
+        JS::KandeloBacking::ResolveAccount(cx));
+    if (!storage) { JS_ReportErrorASCII(cx, "Native vector ownership is unavailable"); return false; }
+  }
   for (uint32_t i = 0; i < count; ++i) {
     RootedValue value(cx); if (!JS_GetElement(cx, array, i, &value)) return false;
     if (!value.isObject() || !JS_IsArrayBufferViewObject(&value.toObject())) {
       JS_ReportErrorASCII(cx, "Filesystem vector entry is not an ArrayBufferView"); return false;
     }
-    if (!views.append(value)) return false;
+    RootedObject view(cx, &value.toObject());
+    backings[i] = JS::KandeloBacking::Acquire(cx, view);
+    if (!backings[i]) return false;
+    spans[i].iov_base = backings[i]->Data();
+    spans[i].iov_len = backings[i]->Length();
   }
-  std::vector<iovec> spans(count);
-  int64_t result = -EINVAL; bool live = true;
-  {
-    // Array getters above may collect/mutate earlier views. Derive every
-    // span only now, with all actual view objects rooted and JS/GC excluded.
-    JS::AutoCheckCannotGC nogc;
-    for (uint32_t i = 0; i < count; ++i) {
-      bool shared; JSObject* view = &views[i].toObject();
-      spans[i].iov_base = JS_GetArrayBufferViewData(view, &shared, nogc);
-      spans[i].iov_len = JS_GetArrayBufferViewByteLength(view);
-      if (!spans[i].iov_base && spans[i].iov_len) { live = false; break; }
-    }
-    if (live) result = KandeloFsVectorIo(args[0].toBoolean(), fd, position, spans);
-  }
-  if (!live) { JS_ReportErrorASCII(cx, "Filesystem vector has no backing data"); return false; }
+  const int64_t result = KandeloFsVectorIo(args[0].toBoolean(), fd, position, spans);
   args.rval().setNumber(double(result)); return true;
 }
 template <bool (*Callback)(JSContext*, unsigned, Value*)>

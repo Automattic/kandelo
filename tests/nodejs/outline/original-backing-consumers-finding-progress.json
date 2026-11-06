@@ -1,0 +1,103 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem-contracts.md",
+    "findingIds": [
+      "FS-011"
+    ],
+    "relatedFamilies": [
+      "values",
+      "filesystem",
+      "compression",
+      "async",
+      "engine"
+    ],
+    "scope": "Original allocation-span consumer routing and actual USER_OWNED producer transaction; not full FS011/public codec/backing closure"
+  },
+  "sourceImplemented": [
+    "Scalar FS original span captured before Promise/request init; sync/async vectors Get once and capture immediately with real capacity claims",
+    "WriteFileJob captures after actual async init; resizable/GSAB copies into actual native owner; fixed backing remains live; unrun job owns captured span",
+    "Codec original input/output/write-state spans and params ownership; target-specific result offsets and shared atomic result/dictionary/parameter accesses",
+    "Actual shell USER_OWNED js_calloc/js_free producer prepares ownership, preserves precommit original free authority, retires cell charge on GC thread before native last release",
+    "Additive engine0116 over145 preserves earlier watcher/clock/Worker/lazy/TLS/VM source; normal recipe146, no ABI/pin change"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-backing-consumers-source-r1/report.json",
+    "sha256": "9331f2e09c4ac2029346895cbb166df3bc7f7fe195f96dac4e7e79536c326b01",
+    "guardedInputs": 704,
+    "wholeNodeReferences": 4,
+    "engineFiles": 1,
+    "scope": "Six exact native-span consumer postimages, additive USER_OWNED over145, normal unity/closure and four exact Node references. Source checks only; production SpiderMonkey/GC/realm/guest/four-host uncompiled/unvalidated."
+  },
+  "nativeDependencyControls": {
+    "report": ".context/node26-backing-consumers-controls-r1/report.json",
+    "sha256": "0830872fa5d118c8a96dee999de753c339d24a729c01b716c5bc287537fbbadb",
+    "passedProcesses": 1,
+    "compileAttempts": 1,
+    "scope": "Actual integrated factory/ledger, pthread queue/scalar Run and rebased UserBuffer create/finalize bodies. Explicit fake GC/cell accounting/Install commit dependencies; no SpiderMonkey/JSAPI/realm/guest proof."
+  },
+  "nativeReferenceControls": {
+    "report": ".context/backing-consumer-agent/native/report.json",
+    "sha256": "f410473cf1a4567c369f9c3f0b77891ce60b7e2761fc6aad738ac83fa889bc22",
+    "cases": 11,
+    "rerunThisSlice": false,
+    "scope": "Existing exact pinned native target capture/order/copy/result observations only; not candidate implementation evidence"
+  },
+  "affectedControls": {
+    "report": ".context/node26-backing-consumers-affected-r1.json",
+    "sha256": "526013fe0a57fda393c70c04b408a64accc67d3b4c0692eb4aae5a66dbc6a3a8",
+    "passed": 36,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "22 unchanged frontend controls with actual native dependencies plus14 package checks; no current native JSAPI/guest proof"
+  },
+  "packageChecks": {
+    "report": ".context/node26-backing-consumers-affected-r1.json",
+    "sha256": "526013fe0a57fda393c70c04b408a64accc67d3b4c0692eb4aae5a66dbc6a3a8",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14 package-source checks within36aggregate, not extra passes"
+  },
+  "privateHandoff": {
+    "report": ".context/backing-consumer-agent/handoff.json",
+    "sha256": "82f3c81e0fcb5b03e2a646bdd83369cd946e64f95619405af24af4e46cb53fe1",
+    "sealSha256": "2e9a48253f4188e56f461ba3f7e34e5e32444f75a9ad43ca4cea42a1bed08272",
+    "entries": 154,
+    "scope": "Immutable source140/139 proposal; six exact consumer postimages and root additive USER_OWNED rebase over145"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/backing-consumer-agent/component/compile.log",
+      "sha256": "515e63795d609d0dd1f15f18141c829aaf490b3d80de0ec7780e81703f0a5f89",
+      "kind": "original-component-fixture-compile",
+      "reason": "Initial missing fixture declaration/default/macro corrected only in fixture; final strict warning build passed"
+    },
+    {
+      "report": ".context/backing-consumer-agent/initial-source-check.log",
+      "sha256": "54f35af542fb32fa0cf0173f9d786998000fba124d5c3b4b82c8e5d745f206d9",
+      "kind": "original-static-check-helper-spelling",
+      "reason": "Wrong private property-helper name in static checker corrected; actual production helper unchanged"
+    },
+    {
+      "report": ".context/backing-consumer-agent/initial-source-check-scope.log",
+      "sha256": "032ed90e0283778db120502b4bcfb8c9da2c7d4305cac28623e65be8bea73b55",
+      "kind": "original-static-check-scope",
+      "reason": "Overbroad static checker included unrelated sync/cleanup paths; narrowed to actual function and identity assignments"
+    }
+  ],
+  "remaining": [
+    "Actual SpiderMonkey C++/JSAPI/GC/realm/CCW/OOM/interrupt and owning callback integration",
+    "Full detached/OOB/zero/shared/resizable public FS/codec behavior and codec shared-library access races",
+    "UDP/socket allocation consumers, native byte accounting beyond this slice, ReadFileJob capacity-versus-result accounting",
+    "FS011/public codec/backing API closure, complete per-API reconciliation and identified-artifact four-host conformance; all19families partial"
+  ],
+  "at": "2026-11-06T14:57:31.727524+00:00",
+  "recipeRevision": 146,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

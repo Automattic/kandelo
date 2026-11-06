@@ -5972,6 +5972,22 @@ original operation and the gate callback's exact scope and effect
 registrar. Notification callbacks and their captured state are created
 only on the active-watch path.
 
+### Original Node buffer allocation ownership source
+
+The source146 candidate routes queued filesystem and codec operations through
+allocation owners that retain each original offset and length across changes
+to the JavaScript view. Scalar/vector I/O captures before request initialization;
+WriteFileJob captures after initialization and copies only resizable stores.
+The actual USER_OWNED shell producer transfers deallocation authority only
+after the private engine link commits. GC retires its cell charge before the
+last native owner may free the allocation on a worker. No rooted JS view is
+substituted for native deallocation ownership.
+
+Focused native-component and frontend controls pass with explicit dependencies.
+The combined engine, actual GC/realm behavior and four-host conformance remain
+unvalidated; UDP/socket consumers and shared-codec races remain separate gaps.
+See [original backing allocation scope](../tests/nodejs/outline/original-backing-consumers-integration.md).
+
 ### Node stdio stream source candidate
 
 The Node compatibility source now routes process stdio through

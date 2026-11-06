@@ -26,9 +26,13 @@ struct KandeloFsRequestState {
   size_t nameLength = 0, nameBytes = 0;
   std::shared_ptr<kandelo::nodefs::DirectoryCursor> directory;
   size_t directoryBytes = 0;
+  // Native allocation capability for an initialized but not yet run file job.
+  // It contains no JS roots and survives view detach/resize independently.
+  JS::KandeloBacking::SpanRef ioBacking;
   std::unique_ptr<kandelo::crypto::KdfOperation> kdf;
   size_t kdfBytes = 0;
   void Retire() {
+    ioBacking.reset();
     if (!retired && lifetime && id >= 0) { retired = true; lifetime->Finalized(id); }
   }
   ~KandeloFsRequestState() {

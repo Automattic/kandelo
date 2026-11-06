@@ -1,7 +1,7 @@
 #include <cstring>
 /* Native backing stores used by the pinned unpooled Buffer allocator.
  * Ordinary malloc-backed ArrayBuffers retain engine ownership/accounting and
- * can enter the same canonical pin path as other filesystem/codec buffers.
+ * can adopt the same real allocation capability as filesystem/codec buffers.
  */
 namespace {
 static bool KandeloNativeUnsafeArrayBuffer(JSContext* cx, unsigned argc, Value* vp) {

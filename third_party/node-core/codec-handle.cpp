@@ -4,6 +4,7 @@
  * JS namespace declarations. Source candidate only: not compiled or validated.
  */
 #include <cmath>
+#include <cstring>
 
 namespace {
 namespace codec = kandelo::codecs;
@@ -32,6 +33,9 @@ struct KandeloCodecState : codec::CompressionStreamMemoryOwner {
   size_t reportedBytes = 0;
   size_t inputOffset = 0, outputOffset = 0;
   uint32_t inputRemaining = 0, outputRemaining = 0;
+  // Actual original allocations, independent of current view metadata. The
+  // remaining input/output survive to params(); write state survives to close.
+  JS::KandeloBacking::SpanRef inputBacking, outputBacking, writeBacking;
   js::shell::KandeloNativeAsyncState* asyncLifetime = nullptr;
   double asyncId = -1, triggerId = -1;
 
@@ -52,6 +56,7 @@ struct KandeloCodecState : codec::CompressionStreamMemoryOwner {
     pendingClose = false;
     closed = true;
     if (initStarted) context->Close();
+    inputBacking.reset(); outputBacking.reset(); writeBacking.reset();
   }
 
   void Report(JSObject* owner) {
@@ -184,17 +189,34 @@ static bool KandeloCodecView(JSContext* cx, HandleValue value, MutableHandleObje
     return KandeloCodecFail(cx, "ERR_INVALID_ARG_TYPE", "Compression buffer must be an ArrayBufferView");
   }
   result.set(&value.toObject());
-  // Synchronous consumers borrow bytes only while JS/GC cannot run. Shared
-  // stores cannot detach and keep their address when growing. Async consumers
-  // separately acquire a queue lease; ordinary resizable stores still need a
-  // lease that preserves Node's observable resize/transfer behavior.
-  bool shared;
-  RootedObject buffer(cx, JS_GetArrayBufferViewBuffer(cx, result, &shared));
-  if (!buffer) return false;
-  if (!shared && JS::IsDetachedArrayBufferObject(buffer)) {
-    return KandeloCodecFail(cx, "ERR_INVALID_STATE", "Compression buffer is detached");
-  }
+  // Initial detached/OOB views have the intrinsic empty span used by the
+  // pinned Buffer::Data/Length contract. Per-operation bounds decide validity;
+  // there is no blanket detached/shared/resizable-kind rejection here.
   return true;
+}
+
+static JS::KandeloBacking::SpanRef KandeloCodecStateBacking(
+    JSContext* cx, HandleObject view, bool zlib) {
+  auto span = JS::KandeloBacking::Acquire(cx, view);
+  if (!span) return {};
+  if (span->Length() < 2 * sizeof(uint32_t)) {
+    KandeloCodecFail(cx, "ERR_INVALID_STATE", "Compression write state has no initial span");
+    return {};
+  }
+  // Pinned Zlib::Init uses ArrayBuffer::Data(), not Buffer::Data(view).
+  // Brotli/Zstd intentionally retain the actual view's byte offset instead.
+  if (zlib && span->Offset())
+    return span->Store()->Capture(0, 2 * sizeof(uint32_t), JS::KandeloBacking::ResolveAccount(cx));
+  return span;
+}
+static void KandeloCodecWriteResult(KandeloCodecState* state,
+                                    uint32_t remainingIn, uint32_t remainingOut) {
+  MOZ_RELEASE_ASSERT(state->writeBacking && state->writeBacking->Length() >= 2 * sizeof(uint32_t));
+  auto* result = reinterpret_cast<uint32_t*>(state->writeBacking->Data());
+  if (state->writeBacking->Shared()) {
+    __atomic_store_n(result, remainingOut, __ATOMIC_RELAXED);
+    __atomic_store_n(result + 1, remainingIn, __ATOMIC_RELAXED);
+  } else { result[0] = remainingOut; result[1] = remainingIn; }
 }
 
 static bool KandeloCodecDictionary(JSContext* cx, HandleValue value, std::vector<uint8_t>* result) {
@@ -205,7 +227,13 @@ static bool KandeloCodecDictionary(JSContext* cx, HandleValue value, std::vector
   JS::AutoCheckCannotGC nogc;
   bool shared;
   const auto* bytes = static_cast<const uint8_t*>(JS_GetArrayBufferViewData(view, &shared, nogc));
-  if (length) result->assign(bytes, bytes + length);
+  if (length) {
+    result->resize(length);
+    if (shared) {
+      for (size_t i = 0; i < length; ++i)
+        (*result)[i] = __atomic_load_n(bytes + i, __ATOMIC_RELAXED);
+    } else std::memcpy(result->data(), bytes, length);
+  }
   return true;
 }
 
@@ -293,7 +321,11 @@ static bool KandeloCodecInit(JSContext* cx, unsigned argc, Value* vp) {
       JS::AutoCheckCannotGC nogc;
       bool shared;
       const auto* data = JS_GetUint32ArrayData(paramView, &shared, nogc);
-      if (count) params.assign(data, data + count);
+      if (count) {
+        params.resize(count);
+        for (size_t i = 0; i < count; ++i)
+          params[i] = shared ? __atomic_load_n(data + i, __ATOMIC_RELAXED) : data[i];
+      }
     }
     if (!brotli && !args[1].isUndefined()) {
       int64_t value;
@@ -301,7 +333,11 @@ static bool KandeloCodecInit(JSContext* cx, unsigned argc, Value* vp) {
       pledge = static_cast<uint64_t>(value);
     }
   }
-  JS::SetReservedSlot(owner, CodecWriteState, writeStateValue);
+  auto writeBacking = KandeloCodecStateBacking(cx, writeState, zlib);
+  if (!writeBacking) return false;
+  state->writeBacking = std::move(writeBacking);
+  // Native InitStream stores a pointer, not a JS identity root. Public stream
+  // state retains its own original write-state object as in the pinned JS.
   JS::SetReservedSlot(owner, CodecWriteCallback, args[callbackIndex]);
   state->initStarted = true;  // Failed partial init is still owned and closed.
   if (zlib) {
@@ -346,31 +382,24 @@ static void KandeloCodecClearClosedSlots(JSObject* owner) {
 struct KandeloCodecWork final : js::shell::KandeloNativeWork {
   JS::PersistentRootedObject owner;
   KandeloCodecState* state;
-  js::shell::KandeloNativeWorkQueue* ownerQueue;
-  js::shell::KandeloNativePin *inputPin = nullptr, *outputPin = nullptr, *statePin = nullptr;
+  JS::KandeloBacking::SpanRef inputBacking, outputBacking;
   size_t inputOffset, outputOffset;
   uint32_t inputLength, outputLength, remainingIn = 0, remainingOut = 0;
   codec::CompressionError error;
   char emptyInput = 0, emptyOutput = 0;
 
   KandeloCodecWork(JSContext* cx, JSObject* object, KandeloCodecState* state,
-                   js::shell::KandeloNativeWorkQueue* queue,
                    size_t inOffset, uint32_t inLength,
                    size_t outOffset, uint32_t outLength)
-      : owner(cx, object), state(state), ownerQueue(queue),
+      : owner(cx, object), state(state),
         inputOffset(inOffset), outputOffset(outOffset),
         inputLength(inLength), outputLength(outLength) {}
 
   ~KandeloCodecWork() override {
-    ReleasePins();
+    ReleaseSpans();
   }
 
-  void ReleasePins() {
-    ownerQueue->Unpin(statePin);
-    ownerQueue->Unpin(outputPin);
-    ownerQueue->Unpin(inputPin);
-    statePin = outputPin = inputPin = nullptr;
-  }
+  void ReleaseSpans() { inputBacking.reset(); outputBacking.reset(); }
 
   void Run() override {
     state->context->DoThreadPoolWork();
@@ -381,7 +410,7 @@ struct KandeloCodecWork final : js::shell::KandeloNativeWork {
   }
 
   void FinishClose(JSObject* object) {
-    // A callback can immediately enqueue another write. Its context and pins
+    // A callback can immediately enqueue another write. Its context and owners
     // belong to the new job and must survive this old completion's cleanup.
     if (state->pendingClose && !state->writing) {
       state->Close();
@@ -396,7 +425,7 @@ struct KandeloCodecWork final : js::shell::KandeloNativeWork {
     state->writing = false;
     state->context->SetBuffers(nullptr, 0, nullptr, 0);
     if (failure != Failure::None) {
-      ReleasePins();
+      ReleaseSpans();
       state->pendingClose = true;
       FinishClose(object);
       if (failure == Failure::OutOfMemory) { JS_ReportOutOfMemory(cx); return false; }
@@ -409,21 +438,14 @@ struct KandeloCodecWork final : js::shell::KandeloNativeWork {
     state->Report(object);
     auto close = mozilla::MakeScopeExit([&] { FinishClose(object); });
     if (error.IsError()) {
-      ReleasePins();
+      ReleaseSpans();
       return KandeloCodecError(cx, object, error);
     }
-    RootedObject writeState(cx, &JS::GetReservedSlot(object, CodecWriteState).toObject());
-    {
-      JS::AutoCheckCannotGC nogc;
-      bool shared;
-      auto* result = JS_GetUint32ArrayData(writeState, &shared, nogc);
-      result[0] = remainingOut;
-      result[1] = remainingIn;
-    }
+    KandeloCodecWriteResult(state, remainingIn, remainingOut);
     // The native operation has completed. Release its leases before user JS
     // can transfer/resize storage or enqueue another write. Other operations
-    // sharing a backing buffer retain their own counted leases.
-    ReleasePins();
+    // sharing an allocation retain their own actual span owners.
+    ReleaseSpans();
     RootedValue callback(cx, JS::GetReservedSlot(object, CodecWriteCallback)), ignored(cx);
     return KandeloCodecCall(cx, object, callback, JS::HandleValueArray::empty(), &ignored);
   }
@@ -449,7 +471,8 @@ static bool KandeloCodecWriteCommon(JSContext* cx, unsigned argc, Value* vp) {
   const int flushMax = state->mode <= codec::UNZIP ? Z_BLOCK :
       state->mode <= codec::BROTLI_ENCODE ? BROTLI_OPERATION_EMIT_METADATA : ZSTD_e_end;
   if (flush > flushMax) return KandeloCodecFail(cx, "ERR_OUT_OF_RANGE", "Invalid compression flush operation");
-  RootedObject owner(cx, &args.thisv().toObject()), input(cx), output(cx), writeState(cx);
+  RootedObject owner(cx, &args.thisv().toObject()), input(cx), output(cx);
+  JS::KandeloBacking::SpanRef inputBacking;
   if (!args[1].isNull()) {
     if (!KandeloCodecView(cx, args[1], &input) ||
         !KandeloCodecConvertedInteger<false>(cx, args[2], 0, UINT32_MAX, &inOffset) ||
@@ -458,6 +481,8 @@ static bool KandeloCodecWriteCommon(JSContext* cx, unsigned argc, Value* vp) {
     if (size_t(inOffset) > length || size_t(inLength) > length - size_t(inOffset)) {
       return KandeloCodecFail(cx, "ERR_OUT_OF_RANGE", "Input buffer is out of bounds");
     }
+    inputBacking = JS::KandeloBacking::Acquire(cx, input);
+    if (!inputBacking) return false;
   }
   if (!KandeloCodecView(cx, args[4], &output) ||
       !KandeloCodecConvertedInteger<false>(cx, args[5], 0, UINT32_MAX, &outOffset) ||
@@ -466,51 +491,46 @@ static bool KandeloCodecWriteCommon(JSContext* cx, unsigned argc, Value* vp) {
   if (size_t(outOffset) > length || size_t(outLength) > length - size_t(outOffset)) {
     return KandeloCodecFail(cx, "ERR_OUT_OF_RANGE", "Output buffer is out of bounds");
   }
-  RootedValue writeStateValue(cx, JS::GetReservedSlot(owner, CodecWriteState));
-  if (!KandeloCodecView(cx, writeStateValue, &writeState)) return false;
-  if (JS_GetTypedArrayLength(writeState) < 2) return KandeloCodecFail(cx, "ERR_INVALID_STATE", "Compression write state is out of bounds");
+  auto outputBacking = JS::KandeloBacking::Acquire(cx, output);
+  if (!outputBacking) return false;
+  if (!state->writeBacking) return KandeloCodecFail(cx, "ERR_INVALID_STATE", "Missing compression write state owner");
   if constexpr (async) {
     auto* queue = js::shell::KandeloGetNativeWorkQueue(cx);
     if (!queue) return false;
-    auto* work = js_new<KandeloCodecWork>(cx, owner.get(), state, queue,
+    auto* work = js_new<KandeloCodecWork>(cx, owner.get(), state,
                                          inOffset, inLength, outOffset, outLength);
     if (!work) { JS_ReportOutOfMemory(cx); return false; }
     // Every failure path releases the roots and every lease already acquired.
     auto destroy = mozilla::MakeScopeExit([&] { if (work) js_delete(work); });
-    if (input) {
-      work->inputPin = queue->Pin(cx, input);
-      if (!work->inputPin) return false;
-    }
-    work->outputPin = queue->Pin(cx, output);
-    if (!work->outputPin) return false;
-    work->statePin = queue->Pin(cx, writeState);
-    if (!work->statePin) return false;
-    JS::SetReservedSlot(owner, CodecLastInput, args[1]);
-    JS::SetReservedSlot(owner, CodecLastOutput, args[4]);
-    {
-      JS::AutoCheckCannotGC nogc;
-      bool shared;
-      const auto* in = input ? static_cast<const char*>(JS_GetArrayBufferViewData(input, &shared, nogc)) : nullptr;
-      auto* out = static_cast<char*>(JS_GetArrayBufferViewData(output, &shared, nogc));
-      state->context->SetBuffers(in ? in + inOffset : &work->emptyInput, inLength,
-                                 out ? out + outOffset : &work->emptyOutput, outLength);
-      state->context->SetFlush(flush);
-    }
+    work->inputBacking = inputBacking;
+    work->outputBacking = outputBacking;
+    const auto* in = work->inputBacking ? work->inputBacking->Data() : nullptr;
+    auto* out = work->outputBacking->Data();
+    state->context->SetBuffers(in ? reinterpret_cast<const char*>(in) + inOffset : &work->emptyInput, inLength,
+                               out ? reinterpret_cast<char*>(out) + outOffset : &work->emptyOutput, outLength);
+    state->context->SetFlush(flush);
     state->writing = true;
     if (!queue->Submit(work)) {
       state->writing = false;
       state->context->SetBuffers(nullptr, 0, nullptr, 0);
       return KandeloCodecFail(cx, "ERR_INVALID_STATE", "Native work queue is shutting down");
     }
-    work = nullptr;  // Queue owns the actual native operation and all its roots.
+    // Submit succeeded. Commit the remaining-span state only now; a failed
+    // handoff leaves the prior params() state paired with its original owners.
+    state->inputBacking = std::move(inputBacking);
+    state->outputBacking = std::move(outputBacking);
+    state->inputOffset = inOffset; state->inputRemaining = inLength;
+    state->outputOffset = outOffset; state->outputRemaining = outLength;
+    work = nullptr;  // Queue owns the actual native operation and its JS root.
     args.rval().setUndefined();
     return true;
   }
-  // Retain the actual views, so a later params() can safely reacquire and
-  // refresh zlib's remaining output span after a moving GC. Raw pointers are
-  // never treated as roots or used after detachment/resizing.
-  JS::SetReservedSlot(owner, CodecLastInput, args[1]);
-  JS::SetReservedSlot(owner, CodecLastOutput, args[4]);
+  // Preserve native allocation/initial span to params(), without adding JS
+  // input/output roots that the native handle itself does not own.
+  state->inputBacking = std::move(inputBacking);
+  state->outputBacking = std::move(outputBacking);
+  state->inputOffset = inOffset; state->inputRemaining = inLength;
+  state->outputOffset = outOffset; state->outputRemaining = outLength;
   state->writing = true;
   auto cleanup = mozilla::MakeScopeExit([&] {
     state->context->SetBuffers(nullptr, 0, nullptr, 0);
@@ -520,9 +540,8 @@ static bool KandeloCodecWriteCommon(JSContext* cx, unsigned argc, Value* vp) {
   codec::CompressionError error;
   {
     JS::AutoCheckCannotGC nogc;
-    bool shared;
-    const auto* in = input ? static_cast<const char*>(JS_GetArrayBufferViewData(input, &shared, nogc)) : nullptr;
-    auto* out = static_cast<char*>(JS_GetArrayBufferViewData(output, &shared, nogc));
+    const auto* in = state->inputBacking ? reinterpret_cast<const char*>(state->inputBacking->Data()) : nullptr;
+    auto* out = reinterpret_cast<char*>(state->outputBacking->Data());
     // Node's zero-length Buffer supplies an address. The codecs can perform
     // pointer subtraction even for empty spans, so supply real byte addresses.
     char emptyOutput = 0;
@@ -539,10 +558,9 @@ static bool KandeloCodecWriteCommon(JSContext* cx, unsigned argc, Value* vp) {
     state->inputOffset = inOffset + inLength - remainingIn;
     state->outputOffset = outOffset + outLength - remainingOut;
     if (!error.IsError()) {
-      uint32_t* result = JS_GetUint32ArrayData(writeState, &shared, nogc);
-      state->context->GetAfterWriteOffsets(&result[1], &result[0]);
+      KandeloCodecWriteResult(state, remainingIn, remainingOut);
     }
-    // No pointer into movable GC storage survives the operation.
+    // No unowned pointer into GC storage survives the operation.
     state->context->SetBuffers(nullptr, 0, nullptr, 0);
   }
   state->writing = false;
@@ -583,8 +601,7 @@ static bool KandeloCodecReset(JSContext* cx, unsigned argc, Value* vp) {
   if (!error.IsError()) {
     state->inputOffset = state->inputRemaining = 0;
     state->outputOffset = state->outputRemaining = 0;
-    JS::SetReservedSlot(owner, CodecLastInput, UndefinedValue());
-    JS::SetReservedSlot(owner, CodecLastOutput, UndefinedValue());
+    state->inputBacking.reset(); state->outputBacking.reset();
   }
   state->Report(owner);
   args.rval().setUndefined();
@@ -603,27 +620,23 @@ static bool KandeloCodecParams(JSContext* cx, unsigned argc, Value* vp) {
   if (!KandeloCodecConvertedInteger<true>(cx, args[0], -1, 9, &level) ||
       !KandeloCodecConvertedInteger<true>(cx, args[1], Z_DEFAULT_STRATEGY, Z_FIXED, &strategy)) return false;
   RootedObject owner(cx, &args.thisv().toObject());
-  RootedValue inputValue(cx, JS::GetReservedSlot(owner, CodecLastInput));
-  RootedValue outputValue(cx, JS::GetReservedSlot(owner, CodecLastOutput));
-  RootedObject input(cx), output(cx);
-  if (inputValue.isObject() && !KandeloCodecView(cx, inputValue, &input)) return false;
-  if (outputValue.isObject() && !KandeloCodecView(cx, outputValue, &output)) return false;
-  if ((input && (state->inputOffset > JS_GetArrayBufferViewByteLength(input) ||
-                state->inputRemaining > JS_GetArrayBufferViewByteLength(input) - state->inputOffset)) ||
-      (output && (state->outputOffset > JS_GetArrayBufferViewByteLength(output) ||
-                 state->outputRemaining > JS_GetArrayBufferViewByteLength(output) - state->outputOffset))) {
-    return KandeloCodecFail(cx, "ERR_INVALID_STATE", "Compression buffer resized before params");
-  }
+  // Params continues the original native pointers, not whatever storage the
+  // old JS views currently name after a transfer, resize, replacement or GC.
+  const auto& input = state->inputBacking;
+  const auto& output = state->outputBacking;
+  MOZ_RELEASE_ASSERT(!input || (state->inputOffset <= input->Length() &&
+      state->inputRemaining <= input->Length() - state->inputOffset));
+  MOZ_RELEASE_ASSERT(!output || (state->outputOffset <= output->Length() &&
+      state->outputRemaining <= output->Length() - state->outputOffset));
   codec::CompressionError error;
   auto clearBuffers = mozilla::MakeScopeExit([&] {
     state->context->SetBuffers(nullptr, 0, nullptr, 0);
   });
   {
     JS::AutoCheckCannotGC nogc;
-    bool shared;
     char emptyOutput = 0;
-    const auto* in = input ? static_cast<const char*>(JS_GetArrayBufferViewData(input, &shared, nogc)) : nullptr;
-    auto* out = output ? static_cast<char*>(JS_GetArrayBufferViewData(output, &shared, nogc)) : nullptr;
+    const auto* in = input ? reinterpret_cast<const char*>(input->Data()) : nullptr;
+    auto* out = output ? reinterpret_cast<char*>(output->Data()) : nullptr;
     state->context->SetBuffers(in ? in + state->inputOffset : "", state->inputRemaining,
                                out ? out + state->outputOffset : &emptyOutput, state->outputRemaining);
     error = static_cast<codec::ZlibContext*>(state->context.get())->SetParams(level, strategy);

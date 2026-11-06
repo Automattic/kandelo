@@ -1,5 +1,13 @@
 # Broad implementation review
 
+Source checkpoint146 routes original allocation spans through queued FS/codec
+consumers and makes USER_OWNED deallocation a committed native transaction.
+One actual component control and36 affected frontend/package checks pass with
+explicit dependencies. The combined engine and four-host runtime remain
+unvalidated; FS-011 and all19families stay open. See the
+[allocation integration scope](original-backing-consumers-integration.md).
+
+
 Source145 adds actual watchFile/StatWatcher polling,timer/close/resource owners
 and shared cached-clock integration over144. Eight bounded native/component
 processes and affected source checks pass;production JSAPI/four-host validation,

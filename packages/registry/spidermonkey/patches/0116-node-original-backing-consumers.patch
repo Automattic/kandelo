@@ -1,0 +1,96 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -36,4 +36,5 @@
+ #endif
+ #include <errno.h>
++#include <exception>
+ #include <fcntl.h>
+ #if defined(XP_WIN)
+@@ -47,4 +48,5 @@
+ #include <ctime>
+ #include <math.h>
++#include <new>
+ #include <poll.h>
+ #ifndef __wasi__
+@@ -158,4 +160,5 @@
+ #include "js/experimental/JitInfo.h"  // JSJit{Getter,Setter,Method}CallArgs, JSJitGetterInfo, JSJit{Getter,Setter}Op, JSJitInfo
+ #include "js/experimental/JSStencil.h"  // JS::Stencil, JS::DecodeStencil, JS::InstantiateModuleStencil
++#include "js/experimental/KandeloBackingStore.h"
+ #include "js/experimental/SourceHook.h"  // js::{Set,Forget,}SourceHook
+ #include "js/experimental/TypedData.h"   // JS_NewUint8Array
+@@ -6424,5 +6427,6 @@
+   static const uint32_t BUFFER_SLOT = 0;
+   static const uint32_t BYTE_LENGTH_SLOT = 1;
+-  static const uint32_t RESERVED_SLOTS = 2;
++  static const uint32_t NATIVE_OWNER_SLOT = 2;
++  static const uint32_t RESERVED_SLOTS = 3;
+
+   static constexpr auto BufferMemoryUse = MemoryUse::Embedding1;
+@@ -6447,4 +6451,9 @@
+   size_t byteLength() const {
+     return size_t(getReservedSlot(BYTE_LENGTH_SLOT).toPrivate());
++  }
++  JS::KandeloBacking::Owner* nativeOwner() const {
++    const auto& value = getReservedSlot(NATIVE_OWNER_SLOT);
++    return value.isUndefined() ? nullptr :
++        static_cast<JS::KandeloBacking::Owner*>(value.toPrivate());
+   }
+ };
+@@ -6478,13 +6487,26 @@
+   UniquePtr<void, JS::FreePolicy> ptr(buffer);
+
++  JS::KandeloBacking::OwnerRef owner;
++  try {
++    auto allocation = JS::KandeloBacking::Prepare(
++        static_cast<uint8_t*>(ptr.get()), byteLength,
++        [](void* data, size_t, void*) noexcept { js_free(data); }, nullptr);
++    // Normal non-Node shell use has no provider. Preserve its genuine original
++    // GC ownership rather than inventing retained capability or failing it.
++    if (allocation) {
++      owner = allocation->MakeOwner(JS::KandeloBacking::ResolveAccount(cx), true);
++      if (!owner) { JS_ReportErrorASCII(cx, "User backing owner allocation failed"); return nullptr; }
++    }
++  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return nullptr; }
++  catch (const std::exception& error) { JS_ReportErrorASCII(cx, "User backing owner: %s", error.what()); return nullptr; }
++
+   auto* userBuffer = NewObjectWithGivenProto<UserBufferObject>(cx, nullptr);
+-  if (!userBuffer) {
+-    return nullptr;
+-  }
+-
++  if (!userBuffer) return nullptr;
++  // No deallocation authority transfers yet: gcx->free_ remains the owner
++  // until InstallUserOwned successfully commits the actual allocation.
+   InitReservedSlot(userBuffer, BUFFER_SLOT, ptr.release(), byteLength,
+                    BufferMemoryUse);
+   userBuffer->initReservedSlot(BYTE_LENGTH_SLOT, PrivateValue(byteLength));
+-
++  if (owner) userBuffer->initReservedSlot(NATIVE_OWNER_SLOT, PrivateValue(owner.release()));
+   return userBuffer;
+ }
+@@ -6492,7 +6514,14 @@
+ void UserBufferObject::finalize(JS::GCContext* gcx, JSObject* obj) {
+   auto* userBuffer = &obj->as<UserBufferObject>();
++  auto* owner = userBuffer->nativeOwner();
+   if (auto* buffer = userBuffer->buffer()) {
+-    gcx->free_(userBuffer, buffer, userBuffer->byteLength(), BufferMemoryUse);
+-  }
++    if (owner && owner->Store()->Committed()) {
++      // Retire this real engine payload charge on its GC thread before
++      // dropping the JS-owner role. Only the thread-safe native js_free
++      // capability survives in leases; no GC object/context is retained.
++      gcx->removeCellMemory(userBuffer, userBuffer->byteLength(), BufferMemoryUse);
++    } else gcx->free_(userBuffer, buffer, userBuffer->byteLength(), BufferMemoryUse);
++  }
++  delete owner;
+ }
+
+@@ -6545,4 +6574,7 @@
+   }
+
++  if (auto* owner = userBuffer->nativeOwner()) {
++    if (!JS::KandeloBacking::InstallUserOwned(cx, arrayBuffer, owner->Store())) return false;
++  }
+   args.rval().setObject(*arrayBuffer);
+   return true;
