@@ -1,0 +1,93 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/engine-contracts.md",
+    "findingIds": [
+      "R-015"
+    ],
+    "relatedFamilies": [
+      "engine",
+      "workers",
+      "values",
+      "filesystem",
+      "web",
+      "loading"
+    ],
+    "scope": "Native lazy DATA prerequisite;no public consumer/wholeR015closure"
+  },
+  "sourceImplemented": [
+    "Distinct pending DATA shape/flag and actual slot-owned GC cell/native callback",
+    "Actual get/descriptor/define/set/proxy/integrity/pure/megamorphic source owners recognize pending state",
+    "Actual holder realm/result/exception wrapping and successful result retention before fallible publication",
+    "Current142shell adds only native binding;140backing moz.build and0100environment source preserved"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-native-lazy-source-r1/report.json",
+    "sha256": "3396db4fcbcd800545c47dc9619dce4d0f7a9053a0c7cfde3ceb47a78e0b6fb3",
+    "guardedInputs": 693,
+    "wholeNodeReferences": 16,
+    "engineFiles": 13,
+    "parsedJSAPIBodies": 2,
+    "scope": "Actual13fileengine/native-bridge prerequisite source;current142TLS/ELD/VM+140backing composition preserved;exact16Node source references and2JSAPIbodyparsechecks. No C++/JSAPI execution/publicconsumer/GC/JIT/guest/four-host conformance."
+  },
+  "nativeReferenceControls": {
+    "report": ".context/lazy-data-agent/handoff.json",
+    "sha256": "93fb5e97e2ed6d324754493c6f7357e5aa81f8cbb07bb245840ff1d30dfded1e",
+    "nativeTargetObservations": 17,
+    "nativeIntegrityCases": 3,
+    "nativeFatalCases": 4,
+    "candidateRuntimePasses": 0,
+    "scope": "Sealed target-reference observations only;none are candidate/C++/JSAPI/guest passes"
+  },
+  "packageChecks": {
+    "report": ".context/node26-native-lazy-package-r1.json",
+    "sha256": "bb74b1c296b7eaf23c84f58e5bc4cf1b6e1ead7343e44128630df3be1f5e7fbe",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Declaredcore production/fragment/manifest inputs;no artifact/cache/runtime conformance"
+  },
+  "privateHandoff": {
+    "report": ".context/lazy-data-agent/seal.json",
+    "sha256": "b9826876eb46f0ceb5b5088941928846502342a3692fcd51bb3c9ff7ffcc2963",
+    "handoffSha256": "93fb5e97e2ed6d324754493c6f7357e5aa81f8cbb07bb245840ff1d30dfded1e",
+    "entries": 244,
+    "scope": "Immutable source135proposal reconciled with142TLS/ELD/VM+140backing,reference/fatal/evidence scopes retained"
+  },
+  "buildCoordination": {
+    "report": ".context/node26-engine-r142-preflight/report.json",
+    "sha256": "ea17a293ea34ad86213beb30ee7990e1afc6eda1cb05b888c4b5cdcfc0a1e673",
+    "heavyEngineBuildStarted": false,
+    "selectedNodes": 9,
+    "scope": "Observed4livepeerlarge-package builds;sharedcacheGCskippedlock,noengine/fullproductbuildstarted. Recheckpeersbeforetargetedcurrentcandidatebuild."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-native-lazy-source-r1/initial-checkpoint/checkpoint.log",
+      "sha256": "167b7c8e8856895612502cb4c1fdd51d808a6db7b8bf15af8efeea23631483f2",
+      "kind": "root-patch-serialization-whitespace",
+      "reason": "Final empty context line in new patch tripped staged whitespace gate;regeneratedtwo-context diff has exactsame13postimages. Original patch/report/state retained."
+    },
+    {
+      "report": ".context/lazy-data-agent/native-rerun/native-observations.json",
+      "sha256": "53cd56769811bc4ae8548fe7dd9be69fad88426650f38971413ab540bdbe694f",
+      "kind": "native-target-reentry-fatal-observations",
+      "reason": "Four bounded/reaped fatal native processes;candidate ownership policy parity unresolved,not an external defect or accepted limit"
+    }
+  ],
+  "remaining": [
+    "Broader holder/global/nativeclass/existingproperty/index/private/CCWinstallation source admission",
+    "Recursive loading/callback mutation/reentry parity;preserved fatal reference outcomes not candidate conformance",
+    "Public Worker/locks/Navigator/util/fs/Buffer/web/module consumers remain source work",
+    "Actual C++/JSAPI/GC/OOM/IC/JIT/proxy/realm/worker/SDKcallback compilation and identified-artifact four-host validation",
+    "All19families partial;normal targeted build resource coordination ongoing,no compatibility boundary accepted"
+  ],
+  "at": "2026-11-06T06:51:58.800618+00:00",
+  "recipeRevision": 143,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

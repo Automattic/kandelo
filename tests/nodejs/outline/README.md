@@ -1,5 +1,11 @@
 # Node 26 core implementation outline
 
+Source143 integrates real engine lazy DATA shapes,traced cells and native
+binding over current142TLS/ELD/VM/backing source. Source/staging and14package
+checks pass;no C++/guest/public-consumer conformance is established. See the
+[native lazy prerequisite scope](native-lazy-data-integration.md).
+
+
 The separate SDK recovery slice keeps recipe142 and fixes diagnosed invalid
 initializer handling in Kandelo's compiler-facts collector. Thirteen native
 component controls pass;normal SDK/musl/package freshness must refresh before

@@ -6535,6 +6535,20 @@ bundled/system/extra CA APIs, public SecureContext, hostname policy, fatal
 allocation behavior, cancellation and context shutdown remain open. See the
 [trust-context scope](../tests/nodejs/outline/tls-context-trust-implementation-dependencies.md).
 
+### Native lazy data-property source prerequisite
+
+The current engine source introduces a distinct pending native DATA property
+state for Node-compatible lazy exports. A real native shape/slot owns a traced
+loader/data/value cell. Native lookup, descriptor, definition, assignment,
+integrity and cache owners recognize that state; it does not expose an ES
+accessor or visible placeholder. Publication uses real shape invalidation.
+This initial API admits absent ordinary PlainObject keys only. Public consumer
+routing, wider holder/key admission and callback mutation/reentry remain open.
+The prerequisite and new JSAPI controls are uncompiled; source/staging checks
+and native target reference observations do not establish candidate GC, realm,
+JIT, interruption or four-host behavior. See
+[native lazy scope](../tests/nodejs/outline/native-lazy-data-integration.md).
+
 ### Public Buffer constructor and pooled storage source candidate
 
 Public Buffer now uses the pinned callable constructor over a separate

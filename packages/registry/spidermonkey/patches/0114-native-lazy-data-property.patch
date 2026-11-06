@@ -1,0 +1,756 @@
+diff --git a/js/public/NativeLazyDataProperty.h b/js/public/NativeLazyDataProperty.h
+--- /dev/null
++++ b/js/public/NativeLazyDataProperty.h
+@@ -0,0 +1,47 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#ifndef js_NativeLazyDataProperty_h
++#define js_NativeLazyDataProperty_h
++
++#include "jstypes.h"
++#include "js/PropertyDescriptor.h"
++#include "js/RootingAPI.h"
++#include "js/TypeDecls.h"
++
++namespace JS {
++
++// The callback has native-code lifetime (like JSNative). It runs directly in
++// the actual holder's realm, with data/key in that compartment. It must leave
++// its result there; the owner wraps it back to the caller. Any JS edges retained
++// by an embedding callback must be reachable through |data|, never raw pointers.
++using NativeLazyDataPropertyLoader = bool (*)(
++    JSContext* cx, HandleObject holder, HandleId key, HandleValue data,
++    MutableHandleValue result);
++
++// Install an absent own, non-index, non-private property on an extensible plain
++// object in the current compartment. This admission is deliberately explicit;
++// support for globals and other NativeObject classes remains to be implemented.
++//
++// This is a DATA property, with no observable getter/setter. Keys, has, own
++// assignment/deletion and native seal/freeze/preventExtensions do not load it.
++// Get, own descriptor retrieval and DefineOwnProperty load it on the holder.
++// There is no JS function representation for the native callback. An embedding
++// may deliberately call a checked wrapped JS function from that callback; such
++// a JS function retains its own normal realm/this semantics. The engine enters
++// the holder realm and wraps the native callback result on return.
++//
++// A throw leaves the loader pending for retry, unless user code replaced or
++// deleted the property. Successful loading is retained across a subsequent
++// materialization OOM. Recursive loading reports an error, and loader mutation
++// never resurrects or overwrites a retired cell. The latter policies require
++// separate compatibility review (the pinned Node mutation controls can abort).
++// All JS data/value edges are ordinary traced object slots; there is no
++// global root, external pointer registry, ES accessor or public placeholder.
++extern JS_PUBLIC_API bool DefineNativeLazyDataProperty(
++    JSContext* cx, HandleObject holder, HandleId key,
++    NativeLazyDataPropertyLoader loader, HandleValue data,
++    PropertyAttributes attributes);
++
++}  // namespace JS
++#endif  // js_NativeLazyDataProperty_h
+diff --git a/js/src/jit/VMFunctions.cpp b/js/src/jit/VMFunctions.cpp
+--- a/js/src/jit/VMFunctions.cpp
++++ b/js/src/jit/VMFunctions.cpp
+@@ -1707,5 +1707,7 @@
+         // There's nothing fundamentally blocking us from supporting these,
+         // it's just not a priority
+-        if (prop.isCustomDataProperty()) {
++        if (prop.isCustomDataProperty() || prop.isNativeLazyDataProperty()) {
++          // A pending native lazy cell is neither a public slot value nor a
++          // GetterSetter. Run the normal owner; attach only after publication.
+           return false;
+         }
+diff --git a/js/src/jsapi-tests/moz.build b/js/src/jsapi-tests/moz.build
+--- a/js/src/jsapi-tests/moz.build
++++ b/js/src/jsapi-tests/moz.build
+@@ -94,4 +94,5 @@
+     "testMappedArrayBuffer.cpp",
+     "testMapSet.cpp",
++    "testNativeLazyDataProperty.cpp",
+     "testMemoryAssociation.cpp",
+     "testMutedErrors.cpp",
+diff --git a/js/src/jsapi-tests/testNativeLazyDataProperty.cpp b/js/src/jsapi-tests/testNativeLazyDataProperty.cpp
+--- /dev/null
++++ b/js/src/jsapi-tests/testNativeLazyDataProperty.cpp
+@@ -0,0 +1,274 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#include "js/CallAndConstruct.h"
++#include "js/GCAPI.h"
++#include "js/Class.h"
++#include "js/Object.h"
++#include "js/NativeLazyDataProperty.h"
++#include "js/PropertyAndElement.h"
++#include "js/Realm.h"
++#include "jsapi-tests/tests.h"
++
++namespace {
++const JSClass TestLazyAdapterClass = {
++    "TestLazyAdapter", JSCLASS_HAS_RESERVED_SLOTS(2)};
++
++bool TestCallLazyLoader(JSContext* cx, JS::HandleObject holder, JS::HandleId key,
++                        JS::HandleValue data, JS::MutableHandleValue result) {
++  // This is a native callback, before deliberately entering a JS function's
++  // own realm. Check the owner selected the actual holder's realm.
++  MOZ_RELEASE_ASSERT(JS::GetCurrentRealmOrNull(cx) ==
++                     JS::GetObjectRealmOrNull(holder));
++  JS::RootedObject record(cx, &data.toObject());
++  JS::RootedValue loader(cx, JS::GetReservedSlot(record, 0));
++  JS::RootedValue thisValue(cx, JS::ObjectValue(*holder));
++  JS::RootedValueArray<2> args(cx);
++  args[0].set(JS::GetReservedSlot(record, 1));
++  if (!JS_IdToValue(cx, key, args[1])) return false;
++  return JS::Call(cx, thisValue, loader, args, result);
++}
++
++bool TestInstallNativeLazyData(JSContext* cx, unsigned argc, JS::Value* vp) {
++  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
++  if (argc < 4 || !args[0].isObject() || !args[2].isObject()) {
++    JS_ReportErrorASCII(cx, "invalid native lazy test arguments");
++    return false;
++  }
++  JS::RootedObject holder(cx, &args[0].toObject());
++  JS::RootedObject loader(cx, &args[2].toObject());
++  JS::RootedId key(cx);
++  if (!JS_ValueToId(cx, args[1], &key)) {
++    return false;
++  }
++  JS::PropertyAttributes attrs{JS::PropertyAttribute::Writable,
++                               JS::PropertyAttribute::Enumerable,
++                               JS::PropertyAttribute::Configurable};
++  if (!JS::IsCallable(loader)) {
++    JS_ReportErrorASCII(cx, "test loader must be callable");
++    return false;
++  }
++  JS::RootedObject record(cx, JS_NewObject(cx, &TestLazyAdapterClass));
++  if (!record) return false;
++  JS::SetReservedSlot(record, 0, args[2]);
++  JS::SetReservedSlot(record, 1, args[3]);
++  JS::RootedValue payload(cx, JS::ObjectValue(*record));
++  if (!JS::DefineNativeLazyDataProperty(cx, holder, key, TestCallLazyLoader,
++                                        payload, attrs)) {
++    return false;
++  }
++  args.rval().setUndefined();
++  return true;
++}
++
++bool TestNativeHolderRealm(JSContext* cx, JS::HandleObject holder,
++                           JS::HandleId key, JS::HandleValue data,
++                           JS::MutableHandleValue result) {
++  MOZ_RELEASE_ASSERT(JS::GetCurrentRealmOrNull(cx) ==
++                     JS::GetObjectRealmOrNull(holder));
++  JS_GC(cx);
++  result.setObject(*holder);
++  return true;
++}
++
++bool TestCollectInLazyLoader(JSContext* cx, unsigned argc, JS::Value* vp) {
++  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
++  JS_GC(cx);
++  args.rval().set(args.get(0));
++  return true;
++}
++}  // namespace
++
++BEGIN_TEST(testNativeLazyDataProperty) {
++  CHECK(JS_DefineFunction(cx, global, "installNativeLazy", TestInstallNativeLazyData,
++                          4, 0));
++  CHECK(JS_DefineFunction(cx, global, "collectInLazy", TestCollectInLazyLoader,
++                          1, 0));
++  EXEC(R"JS(
++'use strict';
++function eq(a,b) { if (!Object.is(a,b)) throw new Error('lazy data mismatch'); }
++function throws(f, expected) {
++  let caught=false;
++  try { f(); } catch(e) { caught=true; if (expected) eq(e,expected); }
++  eq(caught,true);
++}
++function fixture(loader) {
++  const state={calls:0, key:Symbol('native lazy'), holder:{}, data:{alive:1}};
++  installNativeLazy(state.holder,state.key,function(data,key) {
++    eq(this,state.holder); eq(data,state.data); eq(key,state.key);
++    state.calls++; return loader(state);
++  },state.data);
++  return state;
++}
++{
++  const s=fixture(()=>19);
++  eq(Reflect.ownKeys(s.holder)[0],s.key);
++  eq(Object.hasOwn(s.holder,s.key),true); eq(s.key in s.holder,true);
++  eq(s.calls,0);
++  const d=Object.getOwnPropertyDescriptor(s.holder,s.key);
++  eq(s.calls,1); eq(d.value,19); eq(d.writable,true);
++  eq(d.enumerable,true); eq(d.configurable,true);
++  eq('get' in d,false); eq('set' in d,false);
++}
++for(const op of ['preventExtensions','seal','freeze']) {
++  const s=fixture(()=>({alive:2})); Object[op](s.holder);
++  eq(s.calls,0); eq(Object.isExtensible(s.holder),false);
++  eq(Object.isSealed(s.holder),op!=='preventExtensions'); eq(s.calls,0);
++  eq(Object.isFrozen(s.holder),op!=='preventExtensions'); eq(s.calls,0);
++  const value=s.holder[s.key], d=Object.getOwnPropertyDescriptor(s.holder,s.key);
++  eq(value,d.value); eq(s.calls,1); eq(d.writable,op!=='freeze');
++  eq(d.configurable,op==='preventExtensions');
++  eq(Object.isFrozen(s.holder),op==='freeze');
++}
++for(const descriptor of [{},{value:9},{enumerable:false},{writable:false},
++                         {get(){return 31;}}]) {
++  const s=fixture(()=>5);
++  Object.defineProperty(s.holder,s.key,descriptor); eq(s.calls,1);
++  const d=Object.getOwnPropertyDescriptor(s.holder,s.key);
++  if('get' in descriptor) {eq(d.get,descriptor.get); eq('value' in d,false);}
++  else eq(d.value,'value' in descriptor?9:5);
++}
++{
++  const s=fixture(()=>({shared:1})), child=Object.create(s.holder);
++  eq(child[s.key],s.holder[s.key]); eq(Object.hasOwn(child,s.key),false);
++  eq(s.calls,1);
++}
++{
++  const s=fixture(()=>5), child=Object.create(s.holder);
++  child[s.key]=9; eq(s.calls,0); eq(child[s.key],9);
++  eq(Object.hasOwn(child,s.key),true); eq(s.holder[s.key],5);
++}
++{
++  const s=fixture(()=>5); s.holder[s.key]=9;
++  eq(s.calls,0); eq(s.holder[s.key],9);
++  eq(Object.getOwnPropertyDescriptor(s.holder,s.key).value,9);
++}
++{
++  const s=fixture(()=>5); eq(delete s.holder[s.key],true);
++  eq(s.calls,0); eq(Object.hasOwn(s.holder,s.key),false);
++}
++{
++  const sentinel={}, s=fixture(()=>{throw sentinel;});
++  throws(()=>s.holder[s.key],sentinel); throws(()=>s.holder[s.key],sentinel);
++  eq(s.calls,2);
++}
++{
++  const s=fixture(()=>23); Object.freeze(s.holder);
++  throws(()=>Object.defineProperty(s.holder,s.key,{writable:true}));
++  eq(s.calls,1); eq(s.holder[s.key],23);
++  eq(Object.getOwnPropertyDescriptor(s.holder,s.key).writable,false);
++}
++{
++  const s=fixture(s=>{Object.freeze(s.holder);return 23;});
++  eq(s.holder[s.key],23); eq(s.calls,1);
++  eq(Object.getOwnPropertyDescriptor(s.holder,s.key).writable,false);
++}
++{
++  const sentinel={}, s=fixture(s=>{s.holder[s.key]=27;throw sentinel;});
++  throws(()=>s.holder[s.key],sentinel); eq(s.holder[s.key],27); eq(s.calls,1);
++}
++{
++  const s=fixture(()=>23); Object.freeze(s.holder);
++  const proxy=new Proxy(s.holder,{get(){return 99;}});
++  throws(()=>proxy[s.key]); eq(s.calls,1); eq(s.holder[s.key],23);
++}
++{
++  const holder={}, payload={survives:1};
++  installNativeLazy(holder,'value',collectInLazy,payload);
++  eq(holder.value,payload);
++}
++// Candidate ownership policy controls below are deliberately distinct from
++// native parity controls: the four pinned Node mutation cases terminate their
++// isolated process. Keep their fatal evidence; these checks prove no parity.
++{
++  const s=fixture(s=>{throws(()=>s.holder[s.key]);return 37;});
++  eq(s.holder[s.key],37);eq(s.calls,1);eq(s.holder[s.key],37);
++}
++{
++  const s=fixture(s=>{delete s.holder[s.key];return 23;});
++  eq(s.holder[s.key],23);eq(Object.hasOwn(s.holder,s.key),false);
++}
++{
++  const s=fixture(s=>{s.holder[s.key]=27;return 23;});
++  eq(s.holder[s.key],23);eq(s.holder[s.key],27);eq(s.calls,1);
++}
++{
++  const s=fixture(s=>{delete s.holder[s.key];Object.preventExtensions(s.holder);return 23;});
++  eq(s.holder[s.key],23);eq(Object.hasOwn(s.holder,s.key),false);
++  eq(Object.isExtensible(s.holder),false);
++}
++{
++  const s=fixture(()=>23);Object.freeze(s.holder);
++  throws(()=>{s.holder[s.key]=29;});eq(s.calls,0);
++  eq(Reflect.deleteProperty(s.holder,s.key),false);eq(s.calls,0);
++  eq(s.holder[s.key],23);eq(s.calls,1);
++}
++for(const target of [[],function(){},new Date(),new Proxy({},{})])
++  throws(()=>installNativeLazy(target,'value',()=>1,null));
++for(const key of ['0',0,'4294967294'])
++  throws(()=>installNativeLazy({},key,()=>1,null));
++{
++ const holder={value:1};throws(()=>installNativeLazy(holder,'value',()=>2,null));
++ eq(holder.value,1);
++ throws(()=>installNativeLazy(Object.preventExtensions({}),'value',()=>2,null));
++}
++// Polymorphic reads/writes exercise attachment before and after the lazy
++// holder shape, and inherited has/read paths. This is not an IC proof until
++// run under both interpreter and JIT configurations of the patched engine.
++{
++  function get(o){return o.x;} function put(o,v){o.x=v;}
++  const ordinary=Array.from({length:40},(_,i)=>({['p'+i]:i,x:i}));
++  for(let i=0;i<2000;i++)get(ordinary[i%ordinary.length]);
++  let calls=0;const holder={};
++  installNativeLazy(holder,'x',()=>{calls++;return 71;},undefined);
++  eq(get(Object.create(holder)),71);eq(calls,1);eq(get(holder),71);
++  const write={};installNativeLazy(write,'x',()=>{throw new Error('load on set');},null);
++  put(write,73);eq(get(write),73);
++}
++)JS");
++  return true;
++}
++END_TEST(testNativeLazyDataProperty)
++
++BEGIN_TEST(testNativeLazyDataPropertyRealms) {
++  CHECK(JS_DefineFunction(cx, global, "installNativeLazy", TestInstallNativeLazyData,
++                          4, 0));
++  JS::RootedObject other(cx, createGlobal());
++  CHECK(other);
++  JS::RootedValue loader(cx), foreignPrototype(cx), owner(cx);
++  {
++    JSAutoRealm ar(cx, other);
++    EVAL("(function(data,key){return {data,key,holder:this};})", &loader);
++    EVAL("Object.prototype", &foreignPrototype);
++    EVAL("({})", &owner);
++    JS::RootedObject foreignHolder(cx, &owner.toObject());
++    JS::RootedString keyString(cx, JS_NewStringCopyZ(cx, "nativeOwner"));
++    CHECK(keyString);
++    JS::RootedId key(cx);
++    CHECK(JS_StringToId(cx, keyString, &key));
++    JS::PropertyAttributes attrs{JS::PropertyAttribute::Writable,
++                                 JS::PropertyAttribute::Enumerable,
++                                 JS::PropertyAttribute::Configurable};
++    CHECK(JS::DefineNativeLazyDataProperty(cx, foreignHolder, key,
++                                           TestNativeHolderRealm,
++                                           JS::UndefinedHandleValue, attrs));
++  }
++  CHECK(JS_WrapValue(cx, &loader));
++  CHECK(JS_WrapValue(cx, &foreignPrototype));
++  CHECK(JS_WrapValue(cx, &owner));
++  CHECK(JS_DefineProperty(cx, global, "foreignLoader", loader, 0));
++  CHECK(JS_DefineProperty(cx, global, "foreignPrototype", foreignPrototype, 0));
++  CHECK(JS_DefineProperty(cx, global, "foreignReceiver", owner, 0));
++  EXEC(R"JS(
++if(foreignReceiver.nativeOwner!==foreignReceiver) throw new Error('native holder realm');
++const realmHolder={}, realmData={payload:1};
++installNativeLazy(realmHolder,'value',foreignLoader,realmData);
++const realmValue=Reflect.get(realmHolder,'value',foreignReceiver);
++if(Object.getPrototypeOf(realmValue)!==foreignPrototype ||
++   realmValue.data!==realmData || realmValue.holder!==realmHolder ||
++   realmValue.key!=='value' || realmHolder.value!==realmValue ||
++   Object.hasOwn(foreignReceiver,'value')) throw new Error('lazy realm failure');
++)JS");
++  return true;
++}
++END_TEST(testNativeLazyDataPropertyRealms)
+diff --git a/js/src/moz.build b/js/src/moz.build
+--- a/js/src/moz.build
++++ b/js/src/moz.build
+@@ -164,4 +164,5 @@
+     "../public/MemoryFunctions.h",
+     "../public/MemoryMetrics.h",
++    "../public/NativeLazyDataProperty.h",
+     "../public/Modules.h",
+     "../public/NativeStackLimits.h",
+@@ -401,4 +402,5 @@
+     "vm/MemoryMetrics.cpp",
+     "vm/Modules.cpp",
++    "vm/NativeLazyDataProperty.cpp",
+     "vm/NativeObject.cpp",
+     "vm/ObjectWithStashedPointer.cpp",
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3950,4 +3950,5 @@
+       JS_FN("httpParser", KandeloNativeHttpParser, 5, 0),
+       JS_FN("objectMark", KandeloNativeObjectMark, 2, 0),
++      JS_FN("defineNativeLazyDataProperty", KandeloNativeDefineLazyDataProperty, 5, 0),
+       JS_FN("createEnvironmentObject", KandeloNativeCreateEnvironmentObject, 2, 0),
+       JS_FN("moduleSyntax", KandeloNativeModuleSyntax, 3, 0),
+diff --git a/js/src/vm/JSObject.cpp b/js/src/vm/JSObject.cpp
+--- a/js/src/vm/JSObject.cpp
++++ b/js/src/vm/JSObject.cpp
+@@ -670,4 +670,9 @@
+     }
+
++    // Native pending lazy properties retain their descriptor attributes, but
++    // do not count as writable material values for this non-loading integrity
++    // observation. Pinned Node's sealed pending holder reports frozen until
++    // first materialization; descriptor lookup itself materializes. This rule
++    // does not classify the property as an accessor or change writable flags.
+     // Steps 7-9.
+     for (ShapePropertyIter<NoGC> iter(nobj->shape()); !iter.done(); iter++) {
+@@ -675,5 +680,5 @@
+       if (iter->configurable() ||
+           (level == IntegrityLevel::Frozen && iter->isDataDescriptor() &&
+-           iter->writable())) {
++           !iter->isNativeLazyDataProperty() && iter->writable())) {
+         // Private fields on objects don't participate in the frozen state, and
+         // so should be elided from checking for frozen state.
+diff --git a/js/src/vm/NativeLazyDataProperty.cpp b/js/src/vm/NativeLazyDataProperty.cpp
+--- /dev/null
++++ b/js/src/vm/NativeLazyDataProperty.cpp
+@@ -0,0 +1,177 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#include "vm/NativeLazyDataProperty.h"
++
++#include "jsapi.h"
++
++#include "builtin/Array.h"
++#include "js/Context.h"
++#include "js/NativeLazyDataProperty.h"
++#include "js/Realm.h"
++#include "vm/PlainObject.h"
++#include "vm/Watchtower.h"
++
++#include "vm/JSContext-inl.h"
++#include "vm/JSObject-inl.h"
++#include "vm/NativeObject-inl.h"
++
++using namespace js;
++
++namespace {
++// The owning shape's slot is the only persistent edge to this cell. Ordinary
++// slot barriers/tracing support nursery movement, compacting GC and cycles.
++// This class is never returned to user code. No native allocation/finalizer or
++// per-context root table is needed.
++class NativeLazyDataCell : public NativeObject {
++ public:
++  enum Slot { Callback, Data, Value, State, Count };
++  enum Status { Pending, Loading, Ready };
++  static const JSClass class_;
++
++  Status status() const { return Status(getReservedSlot(State).toInt32()); }
++  void setStatus(Status state) { setReservedSlot(State, Int32Value(state)); }
++};
++
++const JSClass NativeLazyDataCell::class_ = {
++    "NativeLazyDataCell", JSCLASS_HAS_RESERVED_SLOTS(NativeLazyDataCell::Count)};
++
++bool PublishValue(JSContext* cx, Handle<NativeObject*> holder, HandleId key,
++                  PropertyInfo property, HandleValue value) {
++  PropertyFlags flags = property.flags();
++  flags.clearFlag(PropertyFlag::NativeLazyDataProperty);
++  // Materialization is the owner's internal state transition, including for a
++  // frozen property. Preserve every descriptor attribute. changeProperty uses
++  // the normal shape/Watchtower invalidation path; no old raw-slot IC can name
++  // the pending shape because isDataProperty() excluded it.
++  Watchtower::watchPropertyValueChange<AllowGC::CanGC>(cx, holder, key, value,
++                                                     property);
++  uint32_t slot;
++  if (!NativeObject::changeProperty(cx, holder, key, flags, &slot)) {
++    return false;
++  }
++  holder->setSlot(slot, value);
++  return true;
++}
++
++bool LoadInHolderRealm(JSContext* cx, Handle<NativeObject*> holder, HandleId key,
++                       Handle<NativeLazyDataCell*> cell,
++                       MutableHandleValue result) {
++  if (cell->status() == NativeLazyDataCell::Loading) {
++    JS_ReportErrorASCII(cx, "Recursive native lazy data property loading");
++    return false;
++  }
++  if (cell->status() == NativeLazyDataCell::Pending) {
++    auto loader = reinterpret_cast<JS::NativeLazyDataPropertyLoader>(
++        cell->getReservedSlot(NativeLazyDataCell::Callback).toPrivate());
++    RootedValue data(cx, cell->getReservedSlot(NativeLazyDataCell::Data));
++    cell->setStatus(NativeLazyDataCell::Loading);
++    if (!loader(cx, holder, key, data, result)) {
++      // Do not clear, classify or replace the pending exception: this includes
++      // OOM and uncatchable interruption. A callback may have retired the cell;
++      // the local root still owns it until this frame returns.
++      cell->setStatus(NativeLazyDataCell::Pending);
++      return false;
++    }
++    cx->check(result);
++    // Retain a successfully computed value before a fallible shape allocation.
++    // A retry after materialization OOM must not call user code a second time.
++    cell->setReservedSlot(NativeLazyDataCell::Value, result);
++    cell->setStatus(NativeLazyDataCell::Ready);
++    cell->setReservedSlot(NativeLazyDataCell::Callback, UndefinedValue());
++    cell->setReservedSlot(NativeLazyDataCell::Data, UndefinedValue());
++  } else {
++    result.set(cell->getReservedSlot(NativeLazyDataCell::Value));
++  }
++
++  auto current = holder->lookupPure(key);
++  if (!current || !current->isNativeLazyDataProperty() ||
++      &holder->getSlot(current->slot()).toObject() != cell) {
++    // User code deleted/replaced this particular cell. Returning from a get
++    // must not resurrect the property or overwrite a newer value/cell.
++    return true;
++  }
++  return PublishValue(cx, holder, key, *current, result);
++}
++}  // namespace
++
++bool js::GetNativeLazyDataProperty(JSContext* cx,
++                                   Handle<NativeObject*> holder, HandleId key,
++                                   PropertyInfo property,
++                                   MutableHandleValue result) {
++  MOZ_ASSERT(property.isNativeLazyDataProperty());
++  Rooted<NativeLazyDataCell*> cell(
++      cx, &holder->getSlot(property.slot()).toObject().as<NativeLazyDataCell>());
++  bool ok;
++  {
++    JSAutoRealm ar(cx, holder);
++    ok = LoadInHolderRealm(cx, holder, key, cell, result);
++  }
++  if (!ok) {
++    // getPendingException wraps into the restored compartment and preserves
++    // ExceptionStatus, including OutOfMemory. No pending exception means an
++    // uncatchable completion; leave that untouched.
++    if (cx->isExceptionPending()) {
++      RootedValue ignored(cx);
++      (void)cx->getPendingException(&ignored);
++    }
++    return false;
++  }
++  return cx->compartment()->wrap(cx, result);
++}
++
++bool js::SetNativeLazyDataProperty(JSContext* cx,
++                                   Handle<NativeObject*> holder, HandleId key,
++                                   PropertyInfo property, HandleValue value) {
++  MOZ_ASSERT(property.isNativeLazyDataProperty());
++  MOZ_ASSERT(property.writable());
++  // OrdinarySet already validated writability and actual receiver ownership.
++  // An inherited assignment takes SetPropertyByDefining instead of this path.
++  return PublishValue(cx, holder, key, property, value);
++}
++
++JS_PUBLIC_API bool JS::DefineNativeLazyDataProperty(
++    JSContext* cx, HandleObject holder, HandleId key,
++    NativeLazyDataPropertyLoader loader, HandleValue data,
++    PropertyAttributes attributes) {
++  AssertHeapIsIdle();
++  CHECK_THREAD(cx);
++  cx->check(holder, key, data);
++  uint32_t index;
++  if (!holder->is<PlainObject>() || key.isVoid() || key.isPrivateName() ||
++      IdIsIndex(key, &index) || !loader) {
++    JS_ReportErrorASCII(cx, "Invalid native lazy data property owner, key or loader");
++    return false;
++  }
++  Rooted<NativeObject*> owner(cx, &holder->as<NativeObject>());
++  if (!owner->isExtensible() || owner->containsPure(key)) {
++    JS_ReportErrorASCII(cx, "Native lazy data property requires an absent extensible own key");
++    return false;
++  }
++  RootedValue payload(cx, data);
++  JSAutoRealm ar(cx, holder);
++  if (!JS_WrapValue(cx, &payload)) {
++    return false;
++  }
++  Rooted<NativeLazyDataCell*> cell(
++      cx, NewObjectWithGivenProto<NativeLazyDataCell>(cx, nullptr));
++  if (!cell) {
++    return false;
++  }
++  // A native-code pointer has module/code lifetime, not GC lifetime. Only
++  // this private slot interprets it; it is never exposed as a property value.
++  cell->setReservedSlot(NativeLazyDataCell::Callback,
++                        PrivateValue(reinterpret_cast<void*>(loader)));
++  cell->setReservedSlot(NativeLazyDataCell::Data, payload);
++  cell->setStatus(NativeLazyDataCell::Pending);
++  PropertyFlags flags{PropertyFlag::NativeLazyDataProperty};
++  flags.setFlag(PropertyFlag::Configurable, attributes.configurable());
++  flags.setFlag(PropertyFlag::Enumerable, attributes.enumerable());
++  flags.setFlag(PropertyFlag::Writable, attributes.writable());
++  uint32_t slot;
++  if (!NativeObject::addProperty(cx, owner, key, flags, &slot)) {
++    return false;
++  }
++  owner->setSlot(slot, ObjectValue(*cell));
++  return true;
++}
+diff --git a/js/src/vm/NativeLazyDataProperty.h b/js/src/vm/NativeLazyDataProperty.h
+--- /dev/null
++++ b/js/src/vm/NativeLazyDataProperty.h
+@@ -0,0 +1,19 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#ifndef vm_NativeLazyDataProperty_h
++#define vm_NativeLazyDataProperty_h
++
++#include "vm/NativeObject.h"
++
++namespace js {
++// Only called after a shape lookup returned a NativeLazyDataProperty. The
++// property info must not be reused after Get: the loader can change the holder.
++bool GetNativeLazyDataProperty(JSContext* cx, Handle<NativeObject*> holder,
++                               HandleId key, PropertyInfo property,
++                               MutableHandleValue result);
++bool SetNativeLazyDataProperty(JSContext* cx, Handle<NativeObject*> holder,
++                               HandleId key, PropertyInfo property,
++                               HandleValue value);
++}  // namespace js
++#endif  // vm_NativeLazyDataProperty_h
+diff --git a/js/src/vm/NativeObject.cpp b/js/src/vm/NativeObject.cpp
+--- a/js/src/vm/NativeObject.cpp
++++ b/js/src/vm/NativeObject.cpp
+@@ -24,4 +24,5 @@
+ #include "vm/Interpreter.h"         // js::CallGetter, js::CallSetter
+ #include "vm/JSONPrinter.h"         // js::JSONPrinter
++#include "vm/NativeLazyDataProperty.h"
+ #include "vm/PlainObject.h"         // js::PlainObject
+ #include "vm/TypedArrayObject.h"
+@@ -1467,4 +1468,7 @@
+   }
+
++  if (propInfo.isNativeLazyDataProperty()) {
++    return GetNativeLazyDataProperty(cx, obj, id, propInfo, vp);
++  }
+   MOZ_RELEASE_ASSERT(propInfo.isCustomDataProperty());
+   return GetCustomDataProperty(cx, obj, id, vp);
+@@ -1613,4 +1617,19 @@
+   }
+   MOZ_ASSERT(!prop.isTypedArrayElement());
++
++  if (prop.isNativeProperty() &&
++      prop.propertyInfo().isNativeLazyDataProperty()) {
++    AutoCheckRecursionLimit recursion(cx);
++    if (!recursion.check(cx)) {
++      return false;
++    }
++    RootedValue ignored(cx);
++    if (!GetNativeLazyDataProperty(cx, obj, id, prop.propertyInfo(), &ignored)) {
++      return false;
++    }
++    // The callback may delete, replace or change attributes. Restart with a
++    // fresh lookup, never the old PropertyInfo or descriptor attributes.
++    return NativeDefineProperty(cx, obj, id, desc_, result);
++  }
+
+   // From this point, the step numbers refer to
+@@ -2034,4 +2053,17 @@
+   }
+
++  if (prop.isNativeProperty() &&
++      prop.propertyInfo().isNativeLazyDataProperty()) {
++    AutoCheckRecursionLimit recursion(cx);
++    if (!recursion.check(cx)) {
++      return false;
++    }
++    RootedValue ignored(cx);
++    if (!GetNativeLazyDataProperty(cx, obj, id, prop.propertyInfo(), &ignored)) {
++      return false;
++    }
++    return NativeGetOwnPropertyDescriptor(cx, obj, id, desc);
++  }
++
+   if (prop.isNativeProperty() && prop.propertyInfo().isAccessorProperty()) {
+     PropertyInfo propInfo = prop.propertyInfo();
+@@ -2083,4 +2115,7 @@
+   MOZ_ASSERT(!prop.isDataProperty());
+
++  if (prop.isNativeLazyDataProperty()) {
++    return GetNativeLazyDataProperty(cx, obj, id, prop, vp);
++  }
+   if (prop.isAccessorProperty()) {
+     RootedValue getter(cx, obj->getGetterValue(prop));
+@@ -2106,5 +2141,6 @@
+   vp.setUndefined();
+
+-  if (!prop.isCustomDataProperty() && !obj->hasGetter(prop)) {
++  if (!prop.isCustomDataProperty() && !prop.isNativeLazyDataProperty() &&
++      !obj->hasGetter(prop)) {
+     return true;
+   }
+@@ -2401,4 +2437,10 @@
+   MOZ_ASSERT(prop.isDataDescriptor());
+
++  if (prop.isNativeLazyDataProperty()) {
++    if (!SetNativeLazyDataProperty(cx, obj, id, prop, v)) {
++      return false;
++    }
++    return result.succeed();
++  }
+   Watchtower::watchPropertyValueChange<AllowGC::CanGC>(cx, obj, id, v, prop);
+
+diff --git a/js/src/vm/ObjectFlags-inl.h b/js/src/vm/ObjectFlags-inl.h
+--- a/js/src/vm/ObjectFlags-inl.h
++++ b/js/src/vm/ObjectFlags-inl.h
+@@ -41,5 +41,6 @@
+     // non-writable property. We can just look this up directly though in the
+     // JIT.
+-    if (propFlags.isDataProperty() && !propFlags.writable()) {
++    if ((propFlags.isDataProperty() || propFlags.isNativeLazyDataProperty()) &&
++        !propFlags.writable()) {
+       flags.setFlag(ObjectFlag::NeedsProxyGetSetResultValidation);
+     } else if (propFlags.isAccessorProperty()) {
+diff --git a/js/src/vm/PropMap.cpp b/js/src/vm/PropMap.cpp
+--- a/js/src/vm/PropMap.cpp
++++ b/js/src/vm/PropMap.cpp
+@@ -1079,4 +1079,7 @@
+         known("UseWatchtowerTestingCallback");
+         break;
++      case PropertyFlag::NativeLazyDataProperty:
++        known("NativeLazyDataProperty");
++        break;
+       default:
+         unknown(i);
+@@ -1235,4 +1238,7 @@
+   }
+
++  if (prop.isNativeLazyDataProperty()) {
++    out.printf(", <native-lazy-data-prop>");
++  }
+   if (prop.hasSlot()) {
+     out.printf(", slot=%u", prop.slot());
+diff --git a/js/src/vm/PropertyInfo.h b/js/src/vm/PropertyInfo.h
+--- a/js/src/vm/PropertyInfo.h
++++ b/js/src/vm/PropertyInfo.h
+@@ -46,4 +46,10 @@
+   // This flag is deprecated (we don't want to add more uses).
+   CustomDataProperty = 1 << 4,
++
++  // Slotful native lazy DATA property. The slot owns a GC-traced loader cell,
++  // not an exposed value or GetterSetter. Only the native lazy owner may read
++  // that slot. Descriptor classification stays data, while raw-slot ICs and
++  // pure gets must reject the pending shape.
++  NativeLazyDataProperty = 1 << 5,
+ };
+
+@@ -65,7 +71,8 @@
+
+   // Note: this returns true only for plain data properties with a slot. Returns
+-  // false for custom data properties. See CustomDataProperty flag.
++  // false for custom and native lazy data properties.
+   bool isDataProperty() const {
+-    return !isAccessorProperty() && !isCustomDataProperty();
++    return !isAccessorProperty() && !isCustomDataProperty() &&
++           !isNativeLazyDataProperty();
+   }
+   bool isAccessorProperty() const {
+@@ -76,6 +83,10 @@
+   }
+
+-  // Note: unlike isDataProperty, this returns true also for custom data
+-  // properties.
++  bool isNativeLazyDataProperty() const {
++    return hasFlag(PropertyFlag::NativeLazyDataProperty);
++  }
++
++  // Note: unlike isDataProperty, this returns true also for native lazy and
++  // custom data properties.
+   bool isDataDescriptor() const { return !isAccessorProperty(); }
+ };
+@@ -135,4 +146,7 @@
+   bool isDataProperty() const { return flags().isDataProperty(); }
+   bool isCustomDataProperty() const { return flags().isCustomDataProperty(); }
++  bool isNativeLazyDataProperty() const {
++    return flags().isNativeLazyDataProperty();
++  }
+   bool isAccessorProperty() const { return flags().isAccessorProperty(); }
+   bool isDataDescriptor() const { return flags().isDataDescriptor(); }
