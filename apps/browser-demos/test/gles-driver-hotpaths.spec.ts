@@ -76,13 +76,19 @@ for(const mode of ["ordinary","admitted","automatic"] as const) for(const arch o
     expect(new Set(uniformCounts.map((row:any)=>row.operation)).size).toBe(40);
     if(mode!=="ordinary")expect(uniformCounts.every((row:any)=>row.requests===0)).toBe(true);
     expect(lines).toContain("READONLY_QUERY_PROOFS 12");
-    expect(lines).toContain("INLINE_PROOFS 10");
+    expect(lines).toContain("INLINE_PROOFS 12");
     const inlineCounts=lines.filter((line:string)=>line.startsWith("INLINE_COUNT ")).map((line:string)=>JSON.parse(line.slice(13)));
-    expect(inlineCounts).toHaveLength(10);
-    expect(new Set(inlineCounts.map((row:any)=>row.operation)).size).toBe(10);
+    expect(inlineCounts).toHaveLength(12);
+    expect(new Set(inlineCounts.map((row:any)=>row.operation)).size).toBe(12);
     for(const row of inlineCounts){
-      const exact=mode!=="ordinary" && ["no-sampler","one-sampler","old-link","new-link-multi-sampler","same-kind-sampler-array","restored-framebuffer"].includes(row.operation);
+      const exact=mode!=="ordinary" && ["no-sampler","one-sampler","shared-input-generation","shared-input-content","old-link","new-link-multi-sampler","same-kind-sampler-array","restored-framebuffer"].includes(row.operation);
       expect(row.requests,row.operation).toBe(exact?0:4);
+    }
+    if(mode!=="ordinary"){
+      // The retained EGLImage forces a new native generation, whereas a
+      // subsequent content write must reuse its already prepared receiver.
+      expect(inlineCounts.find((row:any)=>row.operation==="shared-input-generation").cold).toBeGreaterThan(0);
+      expect(inlineCounts.find((row:any)=>row.operation==="shared-input-content").cold).toBe(0);
     }
     // Permit future improvements, while rejecting one drain for every large
     // definition. Rollover still revokes the exact prefix and needs recovery.

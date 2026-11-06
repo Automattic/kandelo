@@ -1,3 +1,4 @@
+import type {PreparedOwnedDraw} from "./prepared-owned-draw.js";
 /** Cold execution workspace for the bounded owned-buffer wire format. */
 import type {GlBinding} from "./registry.js";
 import {issueGlesDraw,sequentialVertices,type GlesDraw} from "./draw-state.js";
@@ -14,6 +15,7 @@ export class BufferSnapshotDraw {
   private first=0;
   private count=0;
   private readonly draw:GlesDraw;
+  private proof:PreparedOwnedDraw|null=null;
   readonly run=():boolean=>this.receiver.apply();
   constructor(private readonly binding:GlBinding){
     const b=binding,gl=b.gl!;this.view=b;
@@ -31,14 +33,14 @@ export class BufferSnapshotDraw {
     const receiver=PreparedNativeChanges.reserve(b,[{apply:()=>{
       for(const call of this.applyCalls)if(!checkedPreparedNativeCall(b,call))return false;
       return true;
-    },restore:inverse},{apply:()=>issueGlesDraw(this.view,this.draw),restore:empty}],{finalizer:inverse});
+    },restore:inverse},{apply:()=>this.proof?this.proof.issue(this.draw):issueGlesDraw(this.view,this.draw),restore:empty}],{finalizer:inverse});
     if(!receiver)throw new Error("Unable to reserve owned draw receiver");this.receiver=receiver;
   }
   /** No warmed command may allocate its recovery after C has answered its
    * error locally. These fixed rows hold only this synchronous borrow; the
    * complete wire record is validated before run can mutate the renderer. */
-  begin(view:GlBinding,mode:number,first:number,count:number):void {
-    this.view=view;this.draw.mode=mode;this.first=first;this.count=count;this.draw.maxVertex=first+count-1;
+  begin(view:GlBinding,mode:number,first:number,count:number,proof:PreparedOwnedDraw|null=null):void {
+    this.proof=proof;this.view=view;this.draw.mode=mode;this.first=first;this.count=count;this.draw.maxVertex=first+count-1;
     for(const call of this.applyCalls)call.enabled=false;
     const inverse=this.restoreCalls;
     // Disabled rows restore their already-selected attribute back to itself;

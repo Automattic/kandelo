@@ -252,6 +252,14 @@ describe("cold CPU receivers for locally predicted inline uniforms",()=>{
     expect(result).toBe(0);expect(t.calls).toEqual([{name,values:values.slice(0,components*2)}]);
     expect(t.b.errors).toEqual([]);owner.done();
   });
+  it("cold-reserves the native sampler limit before the first locally accepted sampler setter",()=>{
+    const t=setup(0x8b5e,1,false),ordinary=t.native.getParameter;
+    t.native.getParameter=(pname:number)=>pname===0x8b4d?16:ordinary(pname);
+    const owner=admit(t),data=t.bytes(O.OP_UNIFORM1IV,[0,1,0]);t.b.cmdbufView!.set(data);
+    const set=vi.spyOn(WeakMap.prototype,"set").mockImplementation(()=>{throw new Error("late immutable sampler-limit cache");});
+    try{expect(decodeAndDispatch(t.b,0,data.length)).toBe(0);}finally{set.mockRestore();}
+    expect(t.b.errors).toEqual([]);expect(t.calls).toEqual([{name:"uniform1iv",values:[0]}]);owner.done();
+  });
   it("returns stable completed unavailability on cold CPU refusal without adding a guest error",()=>{
     const t=setup(),execution=t.registry.retainContextExecution(1,2,new GlMuxer(t.gl))!;
     const journal=GlProgramJournal.create(execution,2)!,reserve=vi.spyOn(GlUniformCpuPreparation,"reserve").mockReturnValue(null);

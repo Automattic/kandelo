@@ -380,6 +380,12 @@ struct wpk_framebuffer_snapshot {
     uint64_t storage_epoch,target_serial,inputs[16];
     uint32_t name,token;int valid;
 };
+struct wpk_owned_draw_ready {
+    uint64_t storage_epoch,inputs[16];
+    uint32_t input_revisions[16];
+    uint32_t program,target,target_token,flags,token,family;
+    int valid;
+};
 struct wpk_program_intent {
     struct wpk_program_stream *owner;
     struct wpk_program_intent *next;
@@ -403,6 +409,7 @@ struct wpk_program_stream {
     int uniform_cpu_ready;
     struct wpk_framebuffer_snapshot framebuffers[16];
     uint32_t framebuffer_cursor;
+    struct wpk_owned_draw_ready owned_draws[16];uint32_t owned_draw_cursor;
 
     uint32_t signature_request[4], signature_reply[12];
     struct wpk_program_intent slots[WPK_PROGRAM_SLOTS];
@@ -469,6 +476,10 @@ struct wpk_gles_context {
     int default_framebuffer_rearmable;
     GLuint requested_framebuffer;
     uint64_t target_storage_epoch;
+    GLfloat owned_depth_near,owned_depth_far;
+    GLenum owned_src_rgb,owned_dst_rgb,owned_equation_rgb;
+    int owned_blend_enabled;
+    GLint owned_stencil_ref[2];GLuint owned_stencil_value_mask[2],owned_stencil_write_mask[2];
     int default_vertex_array_only;
     /* Known current default target; raw I/O or a lost prefix revokes it. */
     int default_framebuffer_only;
@@ -535,6 +546,7 @@ static inline int publish_program_intents_from_encoder(struct wpk_gles_context *
 static int program_submission_scope(struct wpk_gles_context *, struct wpk_gl_name_scope *);
 static void complete_program_submission(struct wpk_gles_context *, int);
 static int disable_program_stream(struct wpk_gles_context *);
+static int program_stream_mutate(struct wpk_program_stream *,uint32_t,uint32_t,uint32_t);
 static int try_program_stream_use(struct wpk_gles_context *, GLuint);
 static int prepare_automatic_program_stream(struct wpk_gles_context *,GLuint);
 static struct wpk_gl_name_scope begin_dispatch_scope(struct wpk_gles_context *state) {
@@ -629,6 +641,8 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
     state->default_framebuffer_only = 1;
     state->default_framebuffer_rearmable = 1;
     state->target_storage_epoch = 1;
+    state->owned_depth_far=1;state->owned_src_rgb=GL_ONE;state->owned_equation_rgb=GL_FUNC_ADD;
+    for(unsigned i=0;i<2;i++)state->owned_stencil_value_mask[i]=state->owned_stencil_write_mask[i]=UINT32_MAX;
     state->buffer_raw_known_at = _wpk_gl_raw_device_requests();
     init_vertex_array(&state->default_vertex_array);
     return state;
@@ -977,10 +991,12 @@ void glScissor(GLint x, GLint y, GLsizei w, GLsizei h) {
 void glEnable(GLenum cap)  {
     if (!_wpk_gl_command_encoder()) return;
     EMIT_PREDICTED_BEGIN(OP_ENABLE,  4, scalar_cap(cap) ? GL_NO_ERROR : GL_INVALID_ENUM) w_u32(&_c, (uint32_t)cap); EMIT_PREDICTED_END()
+    if(cap==GL_BLEND)_wpk_gl_current_encoder()->owned_blend_enabled=1;
 }
 void glDisable(GLenum cap) {
     if (!_wpk_gl_command_encoder()) return;
     EMIT_PREDICTED_BEGIN(OP_DISABLE, 4, scalar_cap(cap) ? GL_NO_ERROR : GL_INVALID_ENUM) w_u32(&_c, (uint32_t)cap); EMIT_PREDICTED_END()
+    if(cap==GL_BLEND)_wpk_gl_current_encoder()->owned_blend_enabled=0;
 }
 
 /* ----- buffers ------------------------------------------------------ */
@@ -1653,6 +1669,69 @@ failed:
  * encoder; the device receives packed referenced elements without public names
  * or ARRAY mutations. Return zero only before admission for the legacy path. */
 static int inline_client_error_prediction(void);
+/* Context-local emulation shape, not a hash of mutable GL state. Range
+ * values and blend colors can change without a new private executable;
+ * samplers/texture traits select among the complete cold-prepared family. */
+static uint32_t owned_draw_flags(struct wpk_gles_context *state) {
+    uint32_t flags=state->owned_depth_near>state->owned_depth_far?1:0;
+    const GLenum src=state->owned_src_rgb,dst=state->owned_dst_rgb,eq=state->owned_equation_rgb;
+    const int forbidden=((src==GL_CONSTANT_COLOR||src==GL_ONE_MINUS_CONSTANT_COLOR)&&(dst==GL_CONSTANT_ALPHA||dst==GL_ONE_MINUS_CONSTANT_ALPHA))||
+        ((dst==GL_CONSTANT_COLOR||dst==GL_ONE_MINUS_CONSTANT_COLOR)&&(src==GL_CONSTANT_ALPHA||src==GL_ONE_MINUS_CONSTANT_ALPHA));
+    if(state->owned_blend_enabled&&forbidden&&(eq==GL_FUNC_ADD||eq==GL_FUNC_SUBTRACT||eq==GL_FUNC_REVERSE_SUBTRACT))flags|=2;
+    if(state->owned_stencil_ref[0]!=state->owned_stencil_ref[1]||state->owned_stencil_value_mask[0]!=state->owned_stencil_value_mask[1]||
+       state->owned_stencil_write_mask[0]!=state->owned_stencil_write_mask[1])flags|=4;
+    return flags;
+}
+static int owned_draw_ready_slot(struct wpk_gles_context *state,struct wpk_program_stream *stream,int target_slot,uint32_t family) {
+    const uint32_t flags=owned_draw_flags(state),target=target_slot<0?UINT32_MAX:(uint32_t)target_slot;
+    const uint32_t target_token=target_slot<0?0:stream->framebuffers[target_slot].token;
+    if(flags&4u || !state->target_storage_epoch)return -1;
+    /* Canonical serials prevent public-name reuse from reviving old proof.
+     * Retain every nonzero input identity cold: later sampler uniform writes
+     * can select another already-bound unit without another per-frame query. */
+    uint64_t inputs[16]={0};uint32_t input_revisions[16]={0};int known_inputs=1;
+    /* Image publication uses the namespace mutex. Dispatch orders effectful
+     * entries, while this bounded snapshot also excludes a peer finishing
+     * publication after its native entry; plain unlocked revision reads would
+     * race C metadata even when the GL caller later provides a proper fence. */
+    pthread_mutex_lock(&state->objects->mutex);
+    for(unsigned i=0;i<state->texture_unit_count;i++){
+        const struct wpk_texture_unit *unit=&state->texture_units[i];
+        const struct wpk_object_name *object=unit->texture_object;if(!object)continue;
+        if(i>=16||object->image||object->image_source||object->external){known_inputs=0;break;}
+        inputs[i]=object->serial;
+        /* A peer can orphan a retained native generation without changing
+         * this context's target epoch or the public object's serial. The
+         * already-published shared image revision revokes NEW-call readiness;
+         * old queued records still own their original proof cells. Ordinary
+         * TexSubImage changes no generation and keeps its warm proof. */
+        input_revisions[i]=object->image_revision;
+    }
+    pthread_mutex_unlock(&state->objects->mutex);
+    if(!known_inputs)return -1;
+    for(unsigned i=0;i<16;i++){
+        struct wpk_owned_draw_ready *entry=&stream->owned_draws[i];
+        if(entry->valid&&entry->program==stream->current_token&&entry->storage_epoch==state->target_storage_epoch&&
+           entry->target==target&&entry->target_token==target_token&&entry->flags==flags&&entry->family==family&&!memcmp(entry->inputs,inputs,sizeof inputs)&&!memcmp(entry->input_revisions,input_revisions,sizeof input_revisions))return entry->valid>0?(int)i:-1;
+    }
+    unsigned slot=16;
+    for(unsigned i=0;i<16;i++){unsigned next=stream->owned_draw_cursor++%16;if(stream->owned_draws[next].token!=UINT32_MAX){slot=next;break;}}
+    if(slot==16)return -1;
+    if(!publish_program_intents_from_encoder(state,1)||flush_commands()!=0)return -2;
+    struct wpk_owned_draw_ready *entry=&stream->owned_draws[slot];const uint32_t token=entry->token+1;
+    stream->request[2]=stream->id;stream->request[3]=slot;stream->request[4]=token;stream->request[5]=family;stream->request[6]=target;stream->request[7]=target_token;
+    int prepared=program_stream_mutate(stream,13,8,QOP_PROGRAM_JOURNAL);
+    if(prepared<0&&prepared!=-2)return -2;
+    if(stream->blocked||_wpk_gl_context_reset())return -2;
+    // Completed unavailability owns its attempted token. Proven nonentry
+    // leaves that counter untouched, while memoizing this exact unavailable
+    // shape still prevents a new cold query on every ordinary fallback draw.
+    if(prepared!=-2)entry->token=token;
+    entry->program=stream->current_token;entry->storage_epoch=state->target_storage_epoch;
+    entry->family=family;entry->target=target;entry->target_token=target_token;entry->flags=flags;memcpy(entry->inputs,inputs,sizeof inputs);memcpy(entry->input_revisions,input_revisions,sizeof input_revisions);
+    entry->valid=prepared==1&&stream->reply[4]?1:-1;
+    return entry->valid>0?(int)slot:-1;
+}
 static int emit_owned_buffer_arrays(GLenum,GLint,GLsizei);
 static int emit_inline_client_arrays(GLenum mode, GLint first, GLsizei count) {
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
@@ -1699,8 +1778,10 @@ static int emit_inline_client_arrays(GLenum mode, GLint first, GLsizei count) {
     if (!clients || payload > WPK_GL_INLINE_DRAW_MAX_BYTES)
         return 0;
     int exact=0;
-    if(state->default_framebuffer_only && _wpk_gl_has_draw_surface() &&
+    struct wpk_gl_name_scope dispatch __attribute__((cleanup(_wpk_gl_end_name_scope)))={0};
+    if(state->program_stream&&state->program_stream->active&&state->default_framebuffer_only && _wpk_gl_has_draw_surface() &&
         state->default_vertex_array_only && state->array_binding_known){
+        dispatch=begin_dispatch_scope(state);if(!dispatch.group)return -1;
         int only_known_clients=1;
         for(uint32_t i=0;i<state->current_vertex_array->attrib_count;i++){
             const struct wpk_client_attrib *a=&g_attribs[i];
@@ -1708,15 +1789,30 @@ static int emit_inline_client_arrays(GLenum mode, GLint first, GLsizei count) {
         }
         if(only_known_clients){exact=inline_client_error_prediction();if(exact<0)return -1;}
     }
-    uint8_t *cursor = reserve(4 + (size_t)payload);
+    int ready_slot=-1;
+    if(exact){
+        ready_slot=owned_draw_ready_slot(state,state->program_stream,-1,1);
+        if(ready_slot==-2)return -1;
+        if(ready_slot<0)exact=0;
+    }
+    const int compact=exact&&payload+12>WPK_GL_INLINE_DRAW_MAX_BYTES;
+    const uint32_t wire_payload=(uint32_t)payload+(exact&&!compact?12u:0u);
+    uint8_t *cursor = reserve(4 + (size_t)wire_payload);
     if (!cursor) return -1;
     uint8_t *start=cursor;
-    w_u16(&cursor, OP_DRAW_CLIENT_ARRAYS);
-    w_u16(&cursor, (uint16_t)payload);
-    w_u32(&cursor, mode);
-    w_i32(&cursor, first);
-    w_i32(&cursor, count);
-    w_u32(&cursor, clients);
+    w_u16(&cursor, exact?(compact?OP_DRAW_PREPARED_INLINE_COMPACT:OP_DRAW_PREPARED_INLINE):OP_DRAW_CLIENT_ARRAYS);
+    w_u16(&cursor, (uint16_t)wire_payload);
+    if(compact){
+        // At least one copied byte per positive vertex and a u16 payload
+        // prove count<=65535. Pack only bounded scalars; first and both opaque
+        // identities retain every original bit. No GL range is narrowed.
+        w_u32(&cursor,(uint32_t)mode|(clients<<3)|((uint32_t)ready_slot<<8)|((uint32_t)count<<13));
+        w_i32(&cursor,first);w_u32(&cursor,state->program_stream->id);
+        w_u32(&cursor,state->program_stream->owned_draws[ready_slot].token);
+    }else{
+        if(exact){w_u32(&cursor,state->program_stream->id);w_u32(&cursor,ready_slot);w_u32(&cursor,state->program_stream->owned_draws[ready_slot].token);}
+        w_u32(&cursor,mode);w_i32(&cursor,first);w_i32(&cursor,count);w_u32(&cursor,clients);
+    }
     for (uint32_t i = 0; i < clients; i++) {
         const struct inline_client_attribute *p = &plan[i];
         const struct wpk_client_attrib *a = p->attribute;
@@ -2460,6 +2556,7 @@ static int valid_program_mutation_receipt(struct wpk_program_stream *stream,cons
     if(action==10)return reply[4]==32;
     if(action==11)return reply[4]<=32768;
     if(action==12)return reply[4]<=1;
+    if(action==13)return reply[4]<=1;
     if(action==14)return reply[4]==0||reply[4]==16384;
     return action==5 && !reply[4];
 }
@@ -2660,6 +2757,7 @@ static int disable_program_stream(struct wpk_gles_context *state) {
     stream->uniform_cpu_ready=0;
     stream->buffer_bank_ready=0;memset(stream->buffers,0,sizeof stream->buffers);stream->buffer_cursor=0;
     memset(stream->framebuffers,0,sizeof stream->framebuffers);stream->framebuffer_cursor=0;
+    memset(stream->owned_draws,0,sizeof stream->owned_draws);stream->owned_draw_cursor=0;
     for (unsigned i=0;i<WPK_PROGRAM_CACHE;i++) {
         struct wpk_program_generation *g=&stream->generations[i];
         g->token=0; // The acknowledged journal closure retired every token.
@@ -4338,10 +4436,12 @@ static int emit_owned_buffer_arrays(GLenum mode,GLint first,GLsizei count) {
         target_slot=owned_framebuffer_slot(state,stream);
         if(target_slot<0)return target_slot==-2?-1:0;
     }
-    uint32_t payload=(target_slot<0?20:28)+rows*32;uint8_t *cursor=reserve(4+payload);if(!cursor)return -1;uint8_t *start=cursor;
-    w_u16(&cursor,target_slot<0?OP_DRAW_BUFFER_SNAPSHOTS:OP_DRAW_FRAMEBUFFER_SNAPSHOTS);w_u16(&cursor,payload);w_u32(&cursor,stream->id);w_u32(&cursor,mode);
+    int ready_slot=owned_draw_ready_slot(state,stream,target_slot,0);if(ready_slot<0)return ready_slot==-2?-1:0;
+    uint32_t payload=36+rows*32;uint8_t *cursor=reserve(4+payload);if(!cursor)return -1;uint8_t *start=cursor;
+    w_u16(&cursor,OP_DRAW_PREPARED_SNAPSHOTS);w_u16(&cursor,payload);w_u32(&cursor,stream->id);w_u32(&cursor,mode);
     w_i32(&cursor,first);w_i32(&cursor,count);w_u32(&cursor,rows);
-    if(target_slot>=0){w_u32(&cursor,target_slot);w_u32(&cursor,stream->framebuffers[target_slot].token);}
+    w_u32(&cursor,ready_slot);w_u32(&cursor,stream->owned_draws[ready_slot].token);
+    w_u32(&cursor,target_slot<0?UINT32_MAX:(uint32_t)target_slot);w_u32(&cursor,target_slot<0?0:stream->framebuffers[target_slot].token);
     for(unsigned row=0;row<rows;row++){
         const struct wpk_client_attrib *a=&g_attribs[indices[row]];const struct wpk_buffer_snapshot *entry=&stream->buffers[slots[row]];
         w_u32(&cursor,indices[row]);w_u32(&cursor,slots[row]);w_u32(&cursor,entry->token);w_u32(&cursor,a->size);w_u32(&cursor,a->type);
@@ -4594,6 +4694,9 @@ void glBlendFunc(GLenum sfactor, GLenum dfactor) {
     w_u32(&_c, (uint32_t)sfactor);
     w_u32(&_c, (uint32_t)dfactor);
     EMIT_PREDICTED_END()
+    if(scalar_blend_factor(sfactor,1)&&scalar_blend_factor(dfactor,0)){
+        _wpk_gl_current_encoder()->owned_src_rgb=sfactor;_wpk_gl_current_encoder()->owned_dst_rgb=dfactor;
+    }
 }
 
 void glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB,
@@ -4605,6 +4708,9 @@ void glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB,
     w_u32(&_c, (uint32_t)srcAlpha);
     w_u32(&_c, (uint32_t)dstAlpha);
     EMIT_PREDICTED_END()
+    if(scalar_blend_factor(srcRGB,1)&&scalar_blend_factor(dstRGB,0)&&scalar_blend_factor(srcAlpha,1)&&scalar_blend_factor(dstAlpha,0)){
+        _wpk_gl_current_encoder()->owned_src_rgb=srcRGB;_wpk_gl_current_encoder()->owned_dst_rgb=dstRGB;
+    }
 }
 
 void glBlendEquationSeparate(GLenum modeRGB, GLenum modeAlpha) {
@@ -4613,6 +4719,7 @@ void glBlendEquationSeparate(GLenum modeRGB, GLenum modeAlpha) {
     w_u32(&_c, (uint32_t)modeRGB);
     w_u32(&_c, (uint32_t)modeAlpha);
     EMIT_PREDICTED_END()
+    if(scalar_blend_equation(modeRGB)&&scalar_blend_equation(modeAlpha))_wpk_gl_current_encoder()->owned_equation_rgb=modeRGB;
 }
 
 void glBlendEquation(GLenum mode) {
@@ -5228,6 +5335,9 @@ void glStencilFunc(GLenum func, GLint ref, GLuint mask) {
     w_i32(&_c, ref);
     w_u32(&_c, mask);
     EMIT_PREDICTED_END()
+    if(scalar_compare(func))for(unsigned i=0;i<2;i++){
+        _wpk_gl_current_encoder()->owned_stencil_ref[i]=ref;_wpk_gl_current_encoder()->owned_stencil_value_mask[i]=mask;
+    }
 }
 
 void glStencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask) {
@@ -5238,6 +5348,9 @@ void glStencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask) {
     w_i32(&_c, ref);
     w_u32(&_c, mask);
     EMIT_PREDICTED_END()
+    if(scalar_face(face)&&scalar_compare(func))for(unsigned i=0;i<2;i++)if(face==GL_FRONT_AND_BACK||face==(i?GL_BACK:GL_FRONT)){
+        _wpk_gl_current_encoder()->owned_stencil_ref[i]=ref;_wpk_gl_current_encoder()->owned_stencil_value_mask[i]=mask;
+    }
 }
 
 void glStencilMask(GLuint mask) {
@@ -5245,6 +5358,7 @@ void glStencilMask(GLuint mask) {
     EMIT_INFALLIBLE_BEGIN(OP_STENCIL_MASK, 4)
     w_u32(&_c, mask);
     EMIT_INFALLIBLE_END()
+    _wpk_gl_current_encoder()->owned_stencil_write_mask[0]=_wpk_gl_current_encoder()->owned_stencil_write_mask[1]=mask;
 }
 
 void glStencilMaskSeparate(GLenum face, GLuint mask) {
@@ -5253,6 +5367,7 @@ void glStencilMaskSeparate(GLenum face, GLuint mask) {
     w_u32(&_c, (uint32_t)face);
     w_u32(&_c, mask);
     EMIT_PREDICTED_END()
+    if(scalar_face(face))for(unsigned i=0;i<2;i++)if(face==GL_FRONT_AND_BACK||face==(i?GL_BACK:GL_FRONT))_wpk_gl_current_encoder()->owned_stencil_write_mask[i]=mask;
 }
 
 void glStencilOp(GLenum fail, GLenum zfail, GLenum zpass) {
@@ -5288,6 +5403,8 @@ void glDepthRangef(GLfloat n, GLfloat f) {
     w_f32(&_c, n);
     w_f32(&_c, f);
     EMIT_INFALLIBLE_END()
+    _wpk_gl_current_encoder()->owned_depth_near=n<0?0:n>1?1:n;
+    _wpk_gl_current_encoder()->owned_depth_far=f<0?0:f>1?1:f;
 }
 
 void glSampleCoverage(GLfloat value, GLboolean invert) {

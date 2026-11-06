@@ -1,3 +1,5 @@
+import type {GlWirePayload} from "./wire-payload.js";
+import {validPreparedInlineDraw,validPreparedInlineCompact,validPreparedInlineBody} from "./owned-inline-draw.js";
 import {clearFramebufferSnapshot,validFramebufferSnapshotClear} from "./private-framebuffer-clear.js";
 import {drawBufferSnapshots,validBufferSnapshotDraw} from "./private-buffer-draw.js";
 import {nativeGlFault} from "./native-recovery.js";
@@ -27,7 +29,7 @@ import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
  */
 import { interruptUniformUpload, runUniformUpload, uniformUploadOp, validUniformUploadPayload } from "./uniform-upload.js";
 import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors, consumeObservedGlError } from "./errors.js";
-import { acceptedUniformCount, type GlUniformTarget } from "./uniform-setters.js";
+import { acceptedUniformCount, recordPreparedUniformValues, type GlUniformTarget } from "./uniform-setters.js";
 import { imageTextureOperation, imageRenderbufferStorage, prepareCubeRespecification, prepareImageDraw, renderbufferNative } from "./image-storage.js";
 import { cubeGenerateMipmap, cubeImagesChanged, cubeSpecifyImage, cubeTexParameter, cubeUpdateImage, TEXTURE_2D_ARRAY } from "./cube-storage.js";
 import { boundTextureObject, isCubeFace, recordGeneratedMipmaps, recordTextureLevel, textureLevel } from "./texture-levels.js";
@@ -149,9 +151,22 @@ function decodeAndDispatchFrame(
   if (!b.cmdbufView || !b.gl) return GL_SUBMIT_OK;
   // Validate the entire batch before the first observable mutation. A bad
   // trailing record must not leave a partially executed, rejected batch.
-  const validation = validateCommandBuffer(b.cmdbufView, offset, length);
+  const reader=b.programJournal?.wirePayload;
+  const validation = walkCommandBuffer(b.cmdbufView,offset,length,null,reader);
   if (validation !== GL_SUBMIT_OK) {b.compressedUpload=null;b.uniformUpload=null;return validation;}
-  const result = walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
+  const result = walkCommandBuffer(b.cmdbufView,offset,length,b,reader,storage);
+  if (result < 0) {b.uniformUpload=null;requestClientArrayRestore(b);}
+  if (!repairNativeState(b.gl) || !reconcileClientArrayRestore(b,b.gl)) {
+    b.uniformUpload=null;
+    requestClientArrayRestore(b);
+    return GL_SUBMIT_EIO;
+  }
+  collectRetiredImages(b);
+  collectRetiredBuffers(b);
+  return result;
+}
+
+function dispatchParsedPayload(b:GlBinding,payload:DataView,op:number,storage?:{before:()=>boolean;after:()=>boolean}):number {
     if (glAuditOn) noteGlAuditOp(op, payload);
     // Flags have no native effects and may accompany a partial upload batch.
     // Merge before repair/utility work without interrupting that transaction.
@@ -188,16 +203,6 @@ function decodeAndDispatchFrame(
       logGlBridgeFailure("submit", op, err);
       return GL_SUBMIT_EIO;
     }
-  });
-  if (result < 0) {b.uniformUpload=null;requestClientArrayRestore(b);}
-  if (!repairNativeState(b.gl) || !reconcileClientArrayRestore(b,b.gl)) {
-    b.uniformUpload=null;
-    requestClientArrayRestore(b);
-    return GL_SUBMIT_EIO;
-  }
-  collectRetiredImages(b);
-  collectRetiredBuffers(b);
-  return result;
 }
 
 export function validateCommandBuffer(
@@ -205,26 +210,31 @@ export function validateCommandBuffer(
   offset: number,
   length: number,
 ): number {
-  return walkCommandBuffer(buf, offset, length, () => GL_SUBMIT_OK);
+  return walkCommandBuffer(buf, offset, length, null);
 }
 
 function walkCommandBuffer(
   buf: Uint8Array,
   offset: number,
   length: number,
-  visit: (payload: DataView, op: number) => number,
+  binding:GlBinding|null,
+  reader?:GlWirePayload,
+  storage?:{before:()=>boolean;after:()=>boolean},
 ): number {
   if (!isSafeSpan(offset, length, buf.byteLength)) return GL_SUBMIT_EINVAL;
-  const view = new DataView(buf.buffer, buf.byteOffset + offset, length);
+  const view = reader??new DataView(buf.buffer, buf.byteOffset + offset, length);
+  reader?.begin();
+  try {
   let p = 0;
   while (p < length) {
+    reader?.reset(buf,offset,length);
     if (length - p < 4) return GL_SUBMIT_EINVAL;
     const op = view.getUint16(p, true);
     const payloadLen = view.getUint16(p + 2, true);
     const payloadStart = p + 4;
     const payloadEnd = payloadStart + payloadLen;
     if (payloadEnd > length) return GL_SUBMIT_EINVAL;
-    const payload = new DataView(
+    const payload = reader?reader.reset(buf,offset+payloadStart,payloadLen):new DataView(
       view.buffer,
       view.byteOffset + payloadStart,
       payloadLen,
@@ -237,11 +247,12 @@ function walkCommandBuffer(
       );
       return GL_SUBMIT_EINVAL;
     }
-    const rc = visit(payload, op);
+    const rc = binding?dispatchParsedPayload(binding,payload,op,storage):GL_SUBMIT_OK;
     if (rc !== GL_SUBMIT_OK) return rc;
     p = payloadEnd;
   }
   return GL_SUBMIT_OK;
+  }finally{reader?.end();}
 }
 
 function isSafeSpan(offset: number, length: number, limit: number): boolean {
@@ -422,11 +433,17 @@ function validPayload(op: number, v: DataView): boolean {
       return exact(v,16) && v.getUint32(0,true)!==0 && v.getUint32(4,true)<256 &&
         v.getUint32(12,true)<=0x1f_ffff && journalInteger(v,8)!==0;
     case O.OP_DRAW_CLIENT_ARRAYS:
-      return validPrivateClientDraw(v);
+      return validPreparedInlineBody(v);
     case O.OP_DRAW_BUFFER_SNAPSHOTS:
       return validBufferSnapshotDraw(v);
     case O.OP_DRAW_FRAMEBUFFER_SNAPSHOTS:
       return validBufferSnapshotDraw(v,true);
+    case O.OP_DRAW_PREPARED_SNAPSHOTS:
+      return validBufferSnapshotDraw(v,false,true);
+    case O.OP_DRAW_PREPARED_INLINE:
+      return validPreparedInlineDraw(v);
+    case O.OP_DRAW_PREPARED_INLINE_COMPACT:
+      return validPreparedInlineCompact(v);
     case O.OP_CLEAR_FRAMEBUFFER_SNAPSHOT:
       return validFramebufferSnapshotClear(v);
     case O.OP_BEGIN_CLIENT_ARRAY:
@@ -750,6 +767,9 @@ function dispatch(
     const count=acceptedUniformCount(b,op,v,p,uniformTarget);
     if(count===null || count===0) return;
     uniformCount=count;
+    // Only live prepared-owned-draw authorities opt this executable into a
+    // mirror. Unused private variants impose no value-copy work on programs.
+    recordPreparedUniformValues(uniformTarget,op,v,p,count);
     noteUniformWrite(b.currentProgram);
     // Sampler units, which select depth-sampling variants, change only here.
     if (op === O.OP_UNIFORM1I || op === O.OP_UNIFORM1IV) noteSamplerWrite(b.currentProgram);
@@ -1691,6 +1711,21 @@ function dispatch(
       drawBufferSnapshots(b,v); return;
     case O.OP_DRAW_FRAMEBUFFER_SNAPSHOTS:
       drawBufferSnapshots(b,v,true); return;
+    case O.OP_DRAW_PREPARED_SNAPSHOTS:
+      drawBufferSnapshots(b,v,false,true);return;
+    case O.OP_DRAW_PREPARED_INLINE: {
+      const journal=b.programJournal,proof=journal?.id===v.getUint32(p,true)?journal.ownedDraw(v.getUint32(p+4,true),v.getUint32(p+8,true),0xffff_ffff,0,1):null;
+      const workspace=journal?.inlineDrawWorkspace();
+      if(!proof||!workspace){recordGlError(b,0x502);return;}
+      workspace.drawPrepared(b,v,proof);return;
+    }
+    case O.OP_DRAW_PREPARED_INLINE_COMPACT: {
+      const packed=v.getUint32(p,true),journal=b.programJournal;
+      const proof=journal?.id===v.getUint32(p+8,true)?journal.ownedDraw((packed>>>8)&31,v.getUint32(p+12,true),0xffff_ffff,0,1):null;
+      const workspace=journal?.inlineDrawWorkspace();
+      if(!proof||!workspace){recordGlError(b,0x502);return;}
+      workspace.drawPreparedCompact(b,v,proof);return;
+    }
     case O.OP_CLEAR_FRAMEBUFFER_SNAPSHOT:
       clearFramebufferSnapshot(b,v); return;
     case O.OP_DRAW_ARRAYS:

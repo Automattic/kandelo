@@ -1,5 +1,7 @@
 #define GL_GLEXT_PROTOTYPES
+#define EGL_EGLEXT_PROTOTYPES
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <assert.h>
@@ -197,6 +199,14 @@ static void *inline_relink(void *opaque){
  linked(p->program);glFinish();assert(glGetError()==GL_NO_ERROR);
  assert(eglMakeCurrent(p->display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT)&&eglDestroyContext(p->display,ctx)&&eglReleaseThread());return NULL;
 }
+struct inline_storage_peer {EGLDisplay display;EGLConfig config;EGLContext source;GLuint texture;const unsigned char *pixel;};
+static void *inline_respec_storage(void *opaque){
+ struct inline_storage_peer *p=opaque;const EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
+ EGLContext ctx=eglCreateContext(p->display,p->config,p->source,attrs);assert(ctx!=EGL_NO_CONTEXT);
+ assert(eglMakeCurrent(p->display,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));
+ glBindTexture(GL_TEXTURE_2D,p->texture);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,p->pixel);glFinish();assert(glGetError()==GL_NO_ERROR);
+ assert(eglMakeCurrent(p->display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT)&&eglDestroyContext(p->display,ctx)&&eglReleaseThread());return NULL;
+}
 #define INLINE_CHECK(label,error,...) do { \
  uint64_t cold_before=_wpk_gl_device_requests(); \
  __VA_ARGS__;assert(glGetError()==(error)&&glGetError()==GL_NO_ERROR); \
@@ -231,6 +241,21 @@ static void inline_proofs(EGLDisplay d,EGLConfig config,EGLContext parent,EGLSur
  if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());
  GLuint texture;glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,white);assert(glGetError()==GL_NO_ERROR);
  INLINE_CHECK("one-sampler",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(white);
+ // WHY: a real EGLImage keeps the old native storage alive while a future
+ // sharing peer replaces the public texture's image. A serial-only cache
+ // would still render white; a fresh draw must select the new blue image.
+ const EGLint image_attrs[]={EGL_GL_TEXTURE_LEVEL_KHR,0,EGL_IMAGE_PRESERVED_KHR,EGL_TRUE,EGL_NONE};
+ EGLImageKHR retained=eglCreateImageKHR(d,ctx,EGL_GL_TEXTURE_2D_KHR,(EGLClientBuffer)(uintptr_t)texture,image_attrs);assert(retained!=EGL_NO_IMAGE_KHR);
+ struct inline_storage_peer storage_peer={d,config,ctx,texture,blue};pthread_t storage_thread;
+ assert(!pthread_create(&storage_thread,NULL,inline_respec_storage,&storage_peer)&&!pthread_join(storage_thread,NULL));
+ glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_NO_ERROR);
+ INLINE_CHECK("shared-input-generation",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(blue);
+ // A content update keeps the new image identity: it must stay coherent
+ // without a fresh readiness query, unlike the generation replacement above.
+ glTexSubImage2D(GL_TEXTURE_2D,0,0,0,1,1,GL_RGBA,GL_UNSIGNED_BYTE,white);assert(glGetError()==GL_NO_ERROR);
+ glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_NO_ERROR);
+ INLINE_CHECK("shared-input-content",GL_NO_ERROR,glDrawArrays(GL_TRIANGLES,0,3));inline_pixel(white);
+ assert(eglDestroyImageKHR(d,retained)&&eglGetError()==EGL_SUCCESS);
  struct inline_peer peer={d,config,ctx,sp,sf,"precision mediump float;uniform sampler2D t,s;void main(){gl_FragColor=(texture2D(t,vec2(.5))+texture2D(s,vec2(.5)))/2.;}"};pthread_t thread;
  assert(!pthread_create(&thread,NULL,inline_relink,&peer)&&!pthread_join(thread,NULL));
  if(admitted&&!automatic)assert(_wpk_gl_enable_program_journal());assert(glGetError()==GL_NO_ERROR);

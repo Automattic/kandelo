@@ -1,3 +1,4 @@
+import {nativeGlFault} from "./native-recovery.js";
 import { nativeBatchActive } from "./native-batch.js";
 export type GlErrorState = { errors: number[] };
 
@@ -48,12 +49,12 @@ let optionalCpuScope:OptionalCpuPreparation|null=null;
 /** The query owns this receiver before entry. Linking an existing scope does
  * not allocate or leave a window with the guest's error receiver swapped. */
 export function beginOptionalCpuPreparation(scope:OptionalCpuPreparation):void {
-  if(scope.active)throw new Error("Optional CPU preparation receiver reentered");
+  if(scope.active)nativeGlFault("Optional CPU preparation receiver reentered");
   scope.previous=optionalCpuScope;scope.refused=false;scope.active=true;optionalCpuScope=scope;
 }
 export function optionalCpuPreparationRefused(scope:OptionalCpuPreparation):boolean{return scope.active&&scope.refused;}
 export function endOptionalCpuPreparation(scope:OptionalCpuPreparation):void {
-  if(optionalCpuScope!==scope||!scope.active)throw new Error("Optional CPU preparation scopes retired out of order");
+  if(optionalCpuScope!==scope||!scope.active)nativeGlFault("Optional CPU preparation scopes retired out of order");
   optionalCpuScope=scope.previous;scope.previous=null;scope.active=false;
 }
 /** Call only at a proven CPU metadata reservation failure, never for a native

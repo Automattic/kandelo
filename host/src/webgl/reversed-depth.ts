@@ -30,7 +30,7 @@ import { depthSamplersForDraw, depthSamplingShaderSource, samplingUnits } from "
 import { engineLosesVertexDepthRange, NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRangeValues, vertexDepthRangeShaderSource,
   vertexDepthRangeWorkaround } from "./vertex-depth-range.js";
 import { BLEND_SOURCE_FACTOR_UNIFORM, blendFoldNeeded, blendFoldShaderSource, drawColorBufferKind } from "./blend-constant.js";
-import { rethrowNativeGlFault } from "./native-recovery.js";
+import { rethrowNativeGlFault, reserveNativeRetirement, retireNativeRetirement, type NativeRetirement } from "./native-recovery.js";
 import { nativeInterfaceName, programGuestName, shaderLanguage, translateEssl100 } from "./essl3-translation.js";
 import { lodSwitchSamplersForDraw, reportLodSwitchGaps } from "./lod-switchover.js";
 import type { LodSwitchGap } from "./essl3-translation.js";
@@ -209,11 +209,22 @@ export type VariantOptions = { reversedDepth: boolean; depthSamplers: readonly s
   /** The fragment color is multiplied by the RGB source blend factor, with
    * fixed-point or floating-point color buffer clamping. */
   blendFold?: "fixed" | "float" };
-type Twin = { program: WebGLProgram; sources: LinkedSources; uniforms: number; vertexDepthRange: boolean; rangeValues: string | null;
+type Twin = { program: WebGLProgram; retirement:NativeRetirement; sources: LinkedSources; uniforms: number; vertexDepthRange: boolean; rangeValues: string | null;
   blendFold: boolean; blendFactor: readonly number[] | null;
   /** The twin is an ESSL 3.00 translation of a program WebGL linked as ES
    * 1.00: its interface names are the translated ones. */
   renamed: boolean };
+/** The CPU receiver exists before any native handle. program is assigned
+ * only after creation; an incomplete receiver never leaves buildTwin. This
+ * prevents a successful native link from being stranded by return allocation. */
+class ReservedTwin implements Twin {
+  program!:WebGLProgram;
+  uniforms=-1;
+  rangeValues:string|null=null;
+  blendFactor:readonly number[]|null=null;
+  constructor(readonly sources:LinkedSources,readonly retirement:NativeRetirement,
+    readonly vertexDepthRange:boolean,readonly blendFold:boolean,readonly renamed:boolean){}
+}
 const twins = new WeakMap<WebGLProgram, Map<string, Twin>>();
 
 function variantKey(options: VariantOptions): string {
@@ -226,11 +237,25 @@ function twinName(primary: WebGLProgram, twin: Twin | { renamed: boolean }, name
   return twin.renamed ? nativeInterfaceName(programGuestName(primary, name)) : name;
 }
 
-function deleteTwin(owner: CheckedGlOwner, twin: Twin): void {
-  checkedGlCall(owner, () => {
-    if (owner.gl!.getParameter(0x8b8d) === twin.program) owner.gl!.useProgram(null);
-    owner.gl!.deleteProgram(twin.program);
-  });
+function deleteTwin(_owner:CheckedGlOwner,twin:Twin):void {
+  // An enclosing private draw may defer cleanup to its restoration fence.
+  // The receipt retains custody across that deferral; genuine native refusal
+  // still throws through the existing retirement invariant policy.
+  retireNativeRetirement(twin.retirement);
+}
+
+/** Cache publication can refuse after native compilation. The cold receipt
+ * stays the deletion owner until this exact cache entry acknowledges custody;
+ * a partial insertion is removed before retirement, preventing double delete. */
+function publishTwin(b:GlBinding,primary:WebGLProgram,key:string,built:Twin):Twin {
+  let variants=twins.get(primary);
+  try{
+    if(!variants){variants=new Map();twins.set(primary,variants);}
+    variants.set(key,built);return built;
+  }catch(error){
+    if(variants?.get(key)===built)variants.delete(key);
+    deleteTwin(b,built);throw error;
+  }
 }
 
 /** Every path that deletes a guest executable releases all its variants. */
@@ -273,10 +298,18 @@ function buildTwin(b: GlBinding, primary: WebGLProgram, sources: LinkedSources, 
   }
   const gl = b.gl!;
   let vs: WebGLShader | null = null, fs: WebGLShader | null = null, program: WebGLProgram | null = null;
-  let linked = false;
+  let linked = false,ready=false;
+  let programRetirement:NativeRetirement|null=null,shaderRetirement:NativeRetirement|null=null,candidate:ReservedTwin|null=null;
   try {
+    programRetirement=reserveNativeRetirement(b,[["deleteProgram",null]],[],{uninstallPrograms:true});
+    if(!programRetirement)return null;
+    shaderRetirement=reserveNativeRetirement(b,[["deleteShader",null],["deleteShader",null]]);
+    if(!shaderRetirement)return null;
+    candidate=new ReservedTwin(sources,programRetirement,!!options.vertexDepthRange,!!options.blendFold,renamed);
     if (!checkedGlCall(b, () => {
-      vs = gl.createShader(VERTEX_SHADER); fs = gl.createShader(FRAGMENT_SHADER); program = gl.createProgram();
+      vs = gl.createShader(VERTEX_SHADER);shaderRetirement!.calls[0][1]=vs;
+      fs = gl.createShader(FRAGMENT_SHADER);shaderRetirement!.calls[1][1]=fs;
+      program = gl.createProgram();programRetirement!.calls[0][1]=program;
     }) || !vs || !fs || !program) return null;
     const v = vs as WebGLShader, f = fs as WebGLShader, p = program as WebGLProgram;
     if (!checkedGlCall(b, () => {
@@ -299,16 +332,17 @@ function buildTwin(b: GlBinding, primary: WebGLProgram, sources: LinkedSources, 
     if (!linked) return null;
     // Built once per program and variant key, so this is never per draw.
     reportLodSwitchGaps(b, sources, gaps);
-    return { program: p, sources, uniforms: -1, vertexDepthRange: !!options.vertexDepthRange, rangeValues: null,
-      blendFold: !!options.blendFold, blendFactor: null, renamed };
+    candidate.program=p;ready=true;
   } finally {
-    // Shaders stay alive while attached; the twin program owns them now.
-    checkedGlCall(b, () => {
-      if (vs) gl.deleteShader(vs);
-      if (fs) gl.deleteShader(fs);
-      if (program && !linked) gl.deleteProgram(program);
-    });
+    // Attached shaders retire independently. An enclosing native repair may
+    // defer deletion to its restoration fence; receipts retain every handle.
+    // A real cleanup refusal remains fatal and also retires the unpublished
+    // program through the same original-context owner.
+    try{if(shaderRetirement)retireNativeRetirement(shaderRetirement);}
+    catch(error){ready=false;throw error;}
+    finally{if(!ready&&programRetirement)retireNativeRetirement(programRetirement);}
   }
+  return candidate;
 }
 
 const FLOAT_VECTORS = new Map([[0x1406, 1], [0x8b50, 2], [0x8b51, 3], [0x8b52, 4]]);
@@ -424,8 +458,7 @@ export function drawVariantExecutable(b: GlBinding): WebGLProgram | null | undef
     // INVALID_OPERATION is the WebGL boundary error the draw would otherwise
     // raise; recording it keeps an unemulated draw visible.
     if (!built) { recordGlError(b, 0x502); return null; }
-    if (!variants) twins.set(primary, variants = new Map());
-    variants.set(key, twin = built);
+    twin=publishTwin(b,primary,key,built);
   }
   return twin.program;
 }
@@ -460,4 +493,59 @@ export function synchronizeReversedDepthTwin(b: GlBinding, twinProgram: WebGLPro
     twin.blendFactor = factor;
   }
   return true;
+}
+
+/** A prepared-owned draw has a bounded number of active2D sampler elements.
+ * Every depth/half-LOD combination is compiled cold: a future peer can change
+ * units, filters or image representation without authorizing a first shader
+ * rewrite or CPU receiver allocation after local NoError. */
+export type OwnedVariantProgram={program:WebGLProgram;upload:readonly (()=>void)[];generation:number;
+  range:WebGLUniformLocation|null;blend:WebGLUniformLocation|null;rangeCall:()=>void;blendCall:()=>void;
+  rangeCalls:readonly (()=>void)[];blendCalls:readonly (()=>void)[]};
+export function prepareOwnedVariantPrograms(b:GlBinding,primary:WebGLProgram,
+    mirror:import("./prepared-uniform-values.js").PreparedUniformValues,
+    samplers:readonly string[],options:Omit<VariantOptions,"depthSamplers"|"lodSwitch">):readonly (OwnedVariantProgram|null)[]|null {
+  const sources=linkedSources.get(primary);if(!sources)return null;
+  const result:(OwnedVariantProgram|null)[]=[],gl=b.gl!;
+  for(let mask=0;mask<1<<(samplers.length*2);mask++){
+    const depthSamplers:string[]=[],lodSwitch:string[]=[];
+    for(let i=0;i<samplers.length;i++){if(mask&(1<<(i*2)))depthSamplers.push(samplers[i]);if(mask&(2<<(i*2)))lodSwitch.push(samplers[i]);}
+    if(!mask&&!options.reversedDepth&&!options.vertexDepthRange&&!options.blendFold){result.push(null);continue;}
+    const variantOptions={...options,depthSamplers,lodSwitch},key=variantKey(variantOptions);
+    let variants=twins.get(primary),twin=variants?.get(key);
+    if(!twin){
+      const built=buildTwin(b,primary,sources,variantOptions);if(!built)return null;
+      twin=publishTwin(b,primary,key,built);
+    }
+    const program=twin.program,upload:(()=>void)[]=[];
+    for(const row of mirror.rows){
+      const location=gl.getUniformLocation(program,twinName(primary,twin,row.entry.array?`${row.entry.native}[0]`:row.entry.native));
+      if(!location)continue;
+      const values=row.values,matrix=MATRICES.get(row.entry.type);
+      if(matrix){
+        const method=gl[matrix] as (l:WebGLUniformLocation,t:boolean,v:Float32Array,offset:number,length:number)=>void;
+        upload.push(()=>method.call(gl,location,false,values as Float32Array,0,values.length));
+      }else {
+        const components=FLOAT_VECTORS.get(row.entry.type)??INT_VECTORS.get(row.entry.type)??1;
+        const method=gl[`uniform${components}${row.integer?"iv":"fv"}` as "uniform1fv"] as
+          (l:WebGLUniformLocation,v:Float32Array|Int32Array,offset:number,length:number)=>void;
+        upload.push(()=>method.call(gl,location,values,0,values.length));
+      }
+    }
+    const range=options.vertexDepthRange?gl.getUniformLocation(program,NATIVE_DEPTH_RANGE_UNIFORM):null;
+    const blend=options.blendFold?gl.getUniformLocation(program,BLEND_SOURCE_FACTOR_UNIFORM):null;
+    const record:OwnedVariantProgram={program,upload,generation:-1,range,blend,rangeCall:()=>{},blendCall:()=>{},rangeCalls:[],blendCalls:[]};
+    record.rangeCall=()=>{
+      const values=b.shadow.depthRange,near=Math.fround(Math.min(values[0],values[1])),far=Math.fround(Math.max(values[0],values[1]));
+      gl.uniform3f(range,near,far,Math.fround(far-near));
+    };
+    record.blendCall=()=>{const factor=b.shadow.blendSourceFactor!;gl.uniform3f(blend,factor[0],factor[1],factor[2]);};
+    record.rangeCalls=[record.rangeCall];record.blendCalls=[record.blendCall];result.push(record);
+  }
+  return result;
+}
+/** Cold executable-source check, with the same engine-specific trigger used
+ * by ordinary draws. The prepared path never reruns tokenization per frame. */
+export function ownedVertexDepthRange(b:GlBinding,program:WebGLProgram):boolean|null {
+  const sources=linkedSources.get(program);return sources?vertexDepthRangeWorkaround(b,program,sources):null;
 }

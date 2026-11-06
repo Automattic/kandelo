@@ -1,3 +1,4 @@
+import {applyNativeChanges,nativeInverse} from "./native-recovery.js";
 /**
  * Constant color with constant alpha blend factors (ES 2.0 section 4.1.6,
  * table 4.1) on WebGL 2.
@@ -103,4 +104,17 @@ export function blendFoldShaderSource(source: string, clampColor: boolean): stri
     : `${output}.rgb * ${BLEND_SOURCE_FACTOR_UNIFORM}`;
   return `${text}\nuniform highp vec3 ${BLEND_SOURCE_FACTOR_UNIFORM};\n` +
     `void main() { ${MAIN}(); ${output}.rgb = ${product}; }\n`;
+}
+
+
+/** A retained target's component type must be queried while that exact
+ * native FBO is selected. The current public target may already be another
+ * generation or format; using it would choose the wrong folding executable. */
+export function ownedDrawColorBufferKind(b:GlBinding):"fixed"|"float"|null {
+  const gl=b.gl!;let previous:WebGLFramebuffer|null=null,kind:"fixed"|"float"|null=null;
+  if(!checkedGlCall(b,()=>{previous=gl.getParameter(0x8ca6) as WebGLFramebuffer|null;}))return null;
+  const accepted=applyNativeChanges(b,[{apply:()=>checkedGlCall(b,()=>gl.bindFramebuffer(0x8ca9,b.shadow.fbo))&&
+    (kind=drawColorBufferKind(b))!==null,restore:nativeInverse(b,[ ["bindFramebuffer",0x8ca9,previous] ])}],
+    {finalizer:nativeInverse(b,[ ["bindFramebuffer",0x8ca9,previous] ])});
+  return accepted?kind:null;
 }

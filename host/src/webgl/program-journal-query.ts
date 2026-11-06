@@ -23,6 +23,8 @@ export function validProgramJournalRequest(input:Uint8Array,outputBytes:number):
   if(action===8 || action===9)return n===16;
   if(action===10)return n===16 && v.getUint32(8,true)!==0 && v.getUint32(12,true)>0 && v.getUint32(12,true)<=32;
   if(action===12)return n===24 && v.getUint32(8,true)!==0 && v.getUint32(12,true)<16 && v.getUint32(16,true)!==0 && v.getUint32(20,true)!==0;
+  if(action===13)return n===32 && v.getUint32(8,true)!==0 && v.getUint32(12,true)<16 && v.getUint32(16,true)!==0 && v.getUint32(20,true)<=1 &&
+    (v.getUint32(24,true)===0xffff_ffff?v.getUint32(28,true)===0:v.getUint32(24,true)<16&&v.getUint32(28,true)!==0);
   if(action===14)return n===12 && v.getUint32(8,true)!==0;
   if(action===11)return n===24 && v.getUint32(8,true)!==0 && v.getUint32(12,true)<32 && v.getUint32(16,true)!==0 && v.getUint32(20,true)<16;
   if(action===1)return n===12 && v.getUint32(8,true)>0 && v.getUint32(8,true)<=256;
@@ -138,6 +140,11 @@ export function runProgramJournalQuery(b:GlBinding,input:Uint8Array,out:Uint8Arr
     if(journal?.id===v.getUint32(8,true)){
       const captured=journal.captureFramebuffer(v.getUint32(12,true),v.getUint32(16,true),v.getUint32(20,true));
       accepted=captured!==null;value=captured??0;
+    }
+  }
+  else if(action===13){
+    if(journal?.id===v.getUint32(8,true)){
+      const prepared=journal.prepareOwnedDraw(v.getUint32(12,true),v.getUint32(16,true),v.getUint32(20,true),v.getUint32(24,true),v.getUint32(28,true));accepted=prepared!==null;value=prepared??0;
     }
   }
   else if(action===14){

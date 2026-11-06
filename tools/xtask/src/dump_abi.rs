@@ -4593,6 +4593,28 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "recovery":"read-last-same-completed-capture; no-mutator-replay; failed-candidates-retained-until-cleanup",
         "lifecycle_barrier":"forbidden; no-peer-encoder-execution",
     }));
+    s.add(Program, "gl_owned_draw_cpu_preparation", json!({
+        "query":shared::gl::QOP_PROGRAM_JOURNAL,"action":13,"request_bytes":32,
+        "request_fields":["action","transaction","own_journal","ready_cell","next_token","family","target_cell_or_uintmax","target_token_or_zero"],
+        "family":{"owned_buffer":0,"inline_client":1},"capacity":16,
+        "reply_bytes":48,"reply":"sealed-journal-receipt; value-one-complete-zero-unavailable",
+        "authority":"own-current-context-tid-journal; exact-executable-input-identities-and-context-emulation-shape",
+        "lifecycle_barrier":"forbidden; no-peer-encoder-execution",
+        "refusal":"completed-zero-without-new-guest-API-error; original-observed-draw-remains-available",
+        "generation":"strict-next-nonzero-u32-per-cell; consume-before-cold-reservation; proven-nonentry-does-not-consume",
+        "readiness":"bounded-cold-CPU-receivers-and-native-variants; live-shared-uniform-mirror-only-for-used-authority",
+        "sampling":"at-most-two-ordinary2D-sampler-elements; current-sampler-depth-and-halfLOD-traits-select-cold-variants; other-valid-GL-observed",
+        "buffer_opcode":shared::gl::OP_DRAW_PREPARED_SNAPSHOTS,"buffer_header_bytes":36,
+        "buffer_fields":["own_journal","mode","first","positive_count","attribute_count","ready_cell","ready_token","target_cell_or_uintmax","target_token_or_zero"],
+        "buffer_attributes":"unchanged32-byte-buffer-snapshot-rows; exact-canonical-identity-and-span",
+        "inline_opcode":shared::gl::OP_DRAW_PREPARED_INLINE,"inline_header_bytes":28,
+        "inline_fields":["own_journal","ready_cell","ready_token","mode","first","positive_count","attribute_count"],
+        "compact_inline_opcode":shared::gl::OP_DRAW_PREPARED_INLINE_COMPACT,"compact_inline_header_bytes":16,
+        "compact_inline_fields":["mode3bits-rowcount5bits-cell5bits-count16bits-top3zero","full_signed_first","full_journal_u32","full_token_u32"],
+        "inline_attributes":"unchanged20-byte-client-rows-and-exact-packed-bytes; bounded-positive-count65535-for-compact; full-first-range-preserved",
+        "ownership":"same-stack-borrow; cold-independent-stream-only-for-inline-family; exact-native-restoration-and-original-logical-reset-authority",
+        "legacy":"all-existing-journal-actions-and-observed-draw-layouts-and-effects-remain-exact",
+    }));
     s.add(Program, "gl_uniform_cpu_preparation", json!({
         "query":shared::gl::QOP_PROGRAM_JOURNAL,"action":14,"request_bytes":12,
         "request_fields":["action","transaction","own_journal"],
@@ -8735,6 +8757,7 @@ fn additive_top_level_section(section: &str) -> bool {
             | "gl_program_buffer_snapshots"
             | "gl_program_buffer_attribute_capture"
             | "gl_program_framebuffer_snapshots"
+            | "gl_owned_draw_cpu_preparation"
             | "gl_uniform_cpu_preparation"
             | "gl_buffer_snapshot_draw"
             | "clipboard_device_abi"
@@ -10495,7 +10518,7 @@ mod tests {
 
     #[test]
     fn buffer_capture_and_draw_are_additive_but_existing_contracts_stay_exact() {
-        for section in ["gl_program_buffer_attribute_capture","gl_buffer_snapshot_draw","gl_program_framebuffer_snapshots","gl_uniform_cpu_preparation"] {
+        for section in ["gl_program_buffer_attribute_capture","gl_buffer_snapshot_draw","gl_program_framebuffer_snapshots","gl_uniform_cpu_preparation","gl_owned_draw_cpu_preparation"] {
             let old=base_snapshot();let mut new=old.clone();
             new[section]=json!({"authority":"own-context-exact-generations","layout":"bounded","recovery":"no-replay"});
             assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());

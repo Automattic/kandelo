@@ -22,6 +22,8 @@
 export type StorageWrites = { count: number };
 const records = new WeakMap<object, StorageWrites>();
 
+export function existingStorageWrites(native:object):StorageWrites|undefined{return records.get(native);}
+
 export function storageWrites(native: object): StorageWrites {
   let record = records.get(native);
   if (!record) records.set(native, record = { count: 0 });

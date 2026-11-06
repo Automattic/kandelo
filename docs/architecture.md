@@ -7406,7 +7406,30 @@ entry is reconciled without replay. Native OOM retains the approved context-rese
 policy, including under the audit; other unpredicted native errors remain fatal
 under the audit. No numeric error filtering substitutes for provenance.
 
-This checkpoint does not finish B1. Complete prepared executable/sampling and
-inline execution, selected-path decoding, final application/conformance checks,
-measurements and the complete normal preview remain required. In particular,
-retaining storage alone does not prove every later CPU emulation receiver exists.
+Optional action13 now reserves exact executable/sampling authority before the
+guest accepts eligible retained-buffer or inline draws. Separate families avoid
+allocating inline upload storage for VBO users. The bounded C readiness cache
+keys canonical input serials and shared image revisions: a peer's replacement
+storage renews new-call authority, while ordinary content updates keep the warm
+proof. Old accepted records retain their original native generations. Private
+uniform mirrors exist only while opted-in proofs reference their executable;
+exceptional native-reset recovery reconciles them before a healthy peer resumes.
+
+Prepared inline records preserve the full first-vertex operand and use bounded
+CPU upload scratch. A compact header handles the existing maximum-size payload
+without narrowing the GL API. Journal decoding borrows one cold reusable scalar
+receiver only for the synchronous command stack and clears it in finally,
+including after Wasm memory growth. Full shape and authority checks precede any
+upload or private pointer mutation. Stale authority gets the ordinary GL error;
+an invariant lost after preflight fails loudly.
+
+Cold CPU receivers own native pins before any later map insertion. Shader
+variants likewise reserve program/shader deletion receipts and their result
+receiver before native creation, retaining the original context owner through
+publication failure, deferred cleanup and normal retirement. Nested retirement
+cannot collect the same in-flight receipt twice.
+
+This checkpoint does not finish B1. Predicted ordinary scalar setters still need
+stable receivers and cold capability preparation. Final application/conformance
+checks, measurements and the complete normal preview remain required. Retaining
+storage alone does not prove every later CPU emulation receiver exists.

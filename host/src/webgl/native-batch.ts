@@ -14,6 +14,12 @@ type Owner = { gl: WebGL2RenderingContext | null; errors: number[]; pid: number;
 type Batch = { owner: Owner; label: string; sequence: number; nativeWork: boolean; bookkeeping: number };
 let active: Batch | null = null;
 let sequence = 0;
+let preparedUniformResetRecovery:((gl:WebGL2RenderingContext)=>void)|null=null;
+/** Only a live owned-draw authority installs this exceptional recovery. It
+ * adds no native queries, mirror copies or callbacks to ordinary batches. */
+export function setPreparedUniformResetRecovery(recovery:((gl:WebGL2RenderingContext)=>void)|null):void {
+  preparedUniformResetRecovery=recovery;
+}
 
 /** Internal unwind only; public host entries return ENODEV for this reset. */
 export class NativeContextReset extends Error {}
@@ -66,7 +72,10 @@ function resetBatch(detail: string, fatalInAudit = true): never {
   // A private exact check can discover a flag before the final sample.
   // Clear the physical queue before a peer acquires this shared renderer.
   for (let i = 0; i < 32; i++) {
-    if (owner.gl!.getError() === 0) throw new NativeContextReset(message);
+    if (owner.gl!.getError() === 0){
+      if(!owner.gl!.isContextLost())preparedUniformResetRecovery?.(owner.gl!);
+      throw new NativeContextReset(message);
+    }
   }
   nativeGlFault(`${message}; native flags did not clear after reset`);
 }

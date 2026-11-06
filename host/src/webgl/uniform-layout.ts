@@ -1,3 +1,4 @@
+import type {PreparedUniformValues} from "./prepared-uniform-values.js";
 /**
  * Uniform locations: per-program, dense, numbered the way Linux GLES drivers
  * number them (maintainer decision D-41).
@@ -91,6 +92,7 @@ export type GlUniformEntry = Readonly<{
 
 /** Immutable numbering for one native link generation of one executable. */
 export class GlUniformLayout {
+  ownedValues:PreparedUniformValues|null=null;
   constructor(
     readonly executable: WebGLProgram,
     private readonly link: { value: number },

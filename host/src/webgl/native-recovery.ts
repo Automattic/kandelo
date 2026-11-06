@@ -98,7 +98,7 @@ export type NativeDeletion = ["deleteTexture", WebGLTexture | null] | ["deleteRe
   | ["deleteFramebuffer", WebGLFramebuffer | null] | ["deleteBuffer", WebGLBuffer | null]
   | ["deleteSync", WebGLSync | null] | ["deleteShader", WebGLShader | null]
   | ["deleteProgram", WebGLProgram | null] | ["deleteVertexArray", WebGLVertexArrayObject | null];
-export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; references: number; dependencies: readonly NativeRetirement[]; ordered?: boolean; uninstallPrograms?: boolean; unusedProgramOwners?: WeakRef<GlObjectGroup>;
+export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; collecting:boolean; references: number; dependencies: readonly NativeRetirement[]; ordered?: boolean; uninstallPrograms?: boolean; unusedProgramOwners?: WeakRef<GlObjectGroup>;
   /** Renderer generation (loss count) the objects were created in. */
   epoch: number};
 const retirements = new WeakMap<WebGL2RenderingContext, Set<NativeRetirement>>();
@@ -228,7 +228,7 @@ function restoreInverse(inverse: NativeInverse): boolean {
 export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion[], dependencies: readonly NativeRetirement[] = [], options: {ordered?: boolean; uninstallPrograms?: boolean; unusedProgramOwners?: GlObjectGroup} = {}): NativeRetirement | null {
   if (!b.gl) return null;
   try {
-    const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,references:0,dependencies,ordered:options.ordered,uninstallPrograms:options.uninstallPrograms,
+    const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,collecting:false,references:0,dependencies,ordered:options.ordered,uninstallPrograms:options.uninstallPrograms,
       unusedProgramOwners:options.unusedProgramOwners ? new WeakRef(options.unusedProgramOwners) : undefined,
       epoch:rendererObjectEpoch(b)};
     let owners = retirements.get(b.gl);
@@ -268,7 +268,13 @@ function collectNativeRetirements(gl: WebGL2RenderingContext): boolean {
   while (progress) {
     progress = false; waiting = false;
     for (const retirement of owned) {
-      if (!retirement.pending || retainedRetirement(retirement)) continue;
+      if (!retirement.pending || retainedRetirement(retirement) || retirement.collecting) continue;
+      // Deleting a guest executable retires its private variant receipts.
+      // Nested collection must skip this in-flight receipt until its native
+      // delete is acknowledged; otherwise it deletes the parent twice. The
+      // flag is reserved cold and untouched when no retirement is pending.
+      retirement.collecting=true;
+      try {
       for (const call of retirement.calls) {
         const object = call[1];
         if (!object) continue;
@@ -302,6 +308,7 @@ function collectNativeRetirements(gl: WebGL2RenderingContext): boolean {
       }
       if (retirement.dependencies.every(dependency => dependency.complete)) { finishNativeRetirement(retirement); progress = true; }
       else waiting = true;
+      }finally{retirement.collecting=false;}
     }
   }
   return !waiting;

@@ -265,7 +265,7 @@ it("does not classify invalid private authority as CPU unavailability",()=>{
  expect(runGlQuery(f.b,0x3b,input,out,f.execution)).toBe(48);
  expect(new Uint32Array(out.buffer)[0]).toBe(1);expect(f.b.errors).toEqual([0x502]);f.dispose();
 });
-it("keeps native OOM sampling authoritative after a completed private CPU refusal receipt",()=>{
+it("keeps controlled native505 sampling authoritative after a completed private CPU refusal receipt",()=>{
  const f=fixture(),out=new Uint8Array(48),input=new Uint8Array(new Uint32Array([10,1,f.journal.id,2]).buffer);
  const reserve=vi.spyOn(f.journal,"prepareBufferSnapshots").mockImplementation(()=>{recordCpuGlOutOfMemory(f.b);return 0;});
  let native=0;const get=vi.spyOn(f.gl,"getError").mockImplementation(()=>{const error=native;native=0;return error;});
@@ -273,6 +273,7 @@ it("keeps native OOM sampling authoritative after a completed private CPU refusa
   const result=withNativeBatch(f.b,"optional CPU refusal followed by actual native OOM",()=>{
    const bytes=runGlQuery(f.b,0x3b,input,out,f.execution);
    expect(bytes).toBe(48);expect(new Uint32Array(out.buffer)[0]).toBe(1);
+   // A mocked native error observation, not physical GPU memory exhaustion.
    native=0x505;return bytes;
   });
   expect(result).toBe(RENDERER_LOST);expect(rendererLost(f.b)).toBe(true);
@@ -296,4 +297,27 @@ it("binds optional CPU refusal to exact receivers across derived owners and nest
   expect(optionalCpuPreparationRefused(outer.cpuPreparation)).toBe(true);
  }finally{endOptionalCpuPreparation(outer.cpuPreparation);}
  recordCpuGlOutOfMemory({errors:outer.errors});expect(outer.errors).toEqual([0x505]);
+});
+
+it("fatal-latches broken optional scope order as invariant hardening",()=>{
+ const outer=createProgramJournalControl(),inner=createProgramJournalControl();
+ beginOptionalCpuPreparation(outer.cpuPreparation);
+ try{
+  expect(()=>beginOptionalCpuPreparation(outer.cpuPreparation)).toThrow(NativeGlFault);
+  beginOptionalCpuPreparation(inner.cpuPreparation);
+  try{expect(()=>endOptionalCpuPreparation(outer.cpuPreparation)).toThrow(NativeGlFault);}
+  finally{endOptionalCpuPreparation(inner.cpuPreparation);}
+ }finally{endOptionalCpuPreparation(outer.cpuPreparation);}
+});
+
+it("seals optional draw unavailability while consuming only its completed cell token",()=>{
+ const f=fixture(4,true),query=(tx:number,token:number)=>{
+  const input=new Uint8Array(new Uint32Array([13,tx,f.journal.id,0,token,0,0xffffffff,0]).buffer),out=new Uint8Array(48);
+  expect(runGlQuery(f.b,0x3b,input,out,f.execution)).toBe(48);return [...new Uint32Array(out.buffer)];
+ };
+ // This journal has no buffer bank: no exact draw authority can be granted,
+ // but unavailable optimization metadata cannot invent an error for GL.
+ expect(query(1,1).slice(0,5)).toEqual([0,1,13,f.journal.id,0]);expect(f.b.errors).toEqual([]);
+ expect(query(2,1)[0]).toBe(1);expect(f.b.errors).toEqual([0x502]);f.b.errors.length=0;
+ expect(query(3,2).slice(0,5)).toEqual([0,3,13,f.journal.id,0]);expect(f.b.errors).toEqual([]);f.dispose();
 });

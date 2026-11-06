@@ -546,6 +546,7 @@ host/test/webgl-object-capture.test.ts	source-only
 host/test/webgl-op-contract.test.ts	source-only
 host/test/webgl-opaque-alpha.test.ts	source-only
 host/test/webgl-operation-stream.test.ts	source-only
+host/test/webgl-prepared-owned-draw.test.ts	source-only
 host/test/webgl-present-target.test.ts	source-only
 host/test/webgl-private-client-draw.test.ts	source-only
 host/test/webgl-private-limits.test.ts	source-only

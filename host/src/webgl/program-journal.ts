@@ -1,4 +1,8 @@
+import {GlWirePayload} from "./wire-payload.js";
+import {GlInlineDraws} from "./owned-inline-draw.js";
+import {combinedTextureUnits} from "./limits.js";
 import type {OptionalCpuPreparation} from "./errors.js";
+import {PreparedOwnedDraw} from "./prepared-owned-draw.js";
 import {GlUniformCpuPreparation} from "./uniform-cpu-preparation.js";
 import {prepareUniformWrites} from "./reversed-depth.js";
 import {prepareSamplerWrites} from "./depth-sampling.js";
@@ -45,6 +49,38 @@ export class GlProgramJournal {
   private previewActive = false;
   private previewTicket = 0;
   private bufferSnapshots:GlBufferSnapshots|null=null;
+  readonly wirePayload=new GlWirePayload();
+  private readonly ownedDrawCells=Array.from({length:16},()=>({token:0,proof:null as PreparedOwnedDraw|null,ready:false,family:0,target:0xffff_ffff,targetToken:0}));
+  private inlineDraws:GlInlineDraws|null=null;
+  inlineDrawWorkspace():GlInlineDraws|null{return this.ready&&!this.closed&&!this.poisoned?this.inlineDraws:null;}
+  prepareOwnedDraw(index:number,token:number,family:number,target:number,targetToken:number):number|null {
+    if(!this.ready||this.closed||this.poisoned||!this.execution||index>=16||family>1)return null;
+    const cell=this.ownedDrawCells[index];
+    if(!Number.isInteger(token)||token===0||cell.token===0xffff_ffff||token!==cell.token+1)return null;
+    if(cell.proof&&!cell.proof.retire())nativeGlFault("Owned draw cold replacement could not retire its exact authority");
+    cell.proof=null;cell.ready=false;cell.token=token;cell.family=family;cell.target=target;cell.targetToken=targetToken;
+    if(family===1){
+      // The selected inline family addresses the default target. An optional
+      // offscreen request gets no proof; its original GL draw stays observed.
+      if(target!==0xffff_ffff)return 0;
+      // No VBO authority allocates this bank. Publish the receiver before
+      // native stream initialization so refused admission retains its custody.
+      if(!this.inlineDraws)this.inlineDraws=GlInlineDraws.reserve(this.binding);
+      if(!this.inlineDraws?.initialize(this.execution))return 0;
+    }
+    const base=target===0xffff_ffff?(family===1?this.inlineDraws?.executionView(this.binding):this.bufferDrawExecutionView()):this.framebufferTargetChanges(target,targetToken)?.view;
+    if(!base)return 0;
+    const proof=PreparedOwnedDraw.prepare(this.execution,base,receiver=>{cell.proof=receiver;},target===0xffff_ffff);
+    if(!proof){
+      if(!retirePreparedOwned(cell.proof))nativeGlFault("Refused owned draw preparation retained unresolved custody");
+      cell.proof=null;return 0;
+    }
+    cell.proof=proof;cell.ready=true;return 1;
+  }
+  ownedDraw(index:number,token:number,target:number,targetToken:number,family=0):PreparedOwnedDraw|null {
+    const cell=this.ownedDrawCells[index];
+    return this.ready&&!this.closed&&!this.poisoned&&cell?.ready&&cell.token===token&&cell.target===target&&cell.targetToken===targetToken&&cell.family===family&&cell.proof?.matches()?cell.proof:null;
+  }
   private uniformCpu:GlUniformCpuPreparation|null=null;
   private uniformCpuAttempted=false;
   prepareUniformCpu():number {
@@ -52,6 +88,9 @@ export class GlProgramJournal {
     if(!this.uniformCpuAttempted){
       this.uniformCpuAttempted=true;
       try{
+        // A first sampler setter must not allocate the immutable limit cache
+        // after C used the guaranteed GLES minimum for local acceptance.
+        combinedTextureUnits(this.binding.gl!);
         this.uniformCpu=GlUniformCpuPreparation.reserve();
         // Draw signatures may already be cached in the C driver. Reserve
         // every retained executable now; a cache hit after this receipt must
@@ -355,6 +394,11 @@ export class GlProgramJournal {
       if(this.current) {this.current.references--;this.current=null;}
       for(const generation of this.generations.values())generation.cache=false;
     }
+    for(const cell of this.ownedDrawCells){
+      if(cell.proof&&!cell.proof.retire())nativeGlFault("Owned draw authority retirement remains unacknowledged");
+      cell.proof=null;cell.ready=false;
+    }
+    if(this.inlineDraws){if(!this.inlineDraws.retire())nativeGlFault("Owned inline stream retirement remains unacknowledged");this.inlineDraws=null;}
     this.retirePending();
     for(const generation of this.generations.values())this.collect(generation);
     this.finish();
@@ -427,3 +471,5 @@ export function createProgramJournalControl(): GlProgramJournalControl {
   const errors:number[]=[],cpuPreparation:OptionalCpuPreparation={errors,previous:null,active:false,refused:false};
   return {receipt,bytes:new Uint8Array(receipt.buffer),snapshot,snapshotBytes:new Uint8Array(snapshot.buffer),errors,cpuPreparation};
 }
+
+function retirePreparedOwned(proof:PreparedOwnedDraw|null):boolean {return proof?.retire()??true;}

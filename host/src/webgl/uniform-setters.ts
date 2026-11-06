@@ -66,3 +66,9 @@ export function acceptedUniformCount(b: GlBinding, op: number, v: DataView, p: n
 }
 
 function rejectUniform(b:GlBinding):null {recordGlError(b,0x502);return null;}
+
+/** Kept outside the decoder's nullable-target flow analysis. The authority
+ * lives on the immutable layout and is absent for ordinary programs. */
+export function recordPreparedUniformValues(target:GlUniformTarget,op:number,v:DataView,p:number,count:number):void {
+  target.layout?.ownedValues?.write(op,v,p,count);
+}

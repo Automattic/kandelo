@@ -30,6 +30,7 @@
       "gl_image_container_receipts",
       "gl_inline_client_draw",
       "gl_object_capture",
+      "gl_owned_draw_cpu_preparation",
       "gl_program_buffer_attribute_capture",
       "gl_program_buffer_snapshots",
       "gl_program_capture",
@@ -1697,6 +1698,70 @@
     "tokens": "monotonic-per-context-no-query-replay",
     "units": "bytes-except-attached-shaders-u32",
     "value": "original-unit-count,[active-size,active-type],requested-prefix"
+  },
+  "gl_owned_draw_cpu_preparation": {
+    "action": 13,
+    "authority": "own-current-context-tid-journal; exact-executable-input-identities-and-context-emulation-shape",
+    "buffer_attributes": "unchanged32-byte-buffer-snapshot-rows; exact-canonical-identity-and-span",
+    "buffer_fields": [
+      "own_journal",
+      "mode",
+      "first",
+      "positive_count",
+      "attribute_count",
+      "ready_cell",
+      "ready_token",
+      "target_cell_or_uintmax",
+      "target_token_or_zero"
+    ],
+    "buffer_header_bytes": 36,
+    "buffer_opcode": 1290,
+    "capacity": 16,
+    "compact_inline_fields": [
+      "mode3bits-rowcount5bits-cell5bits-count16bits-top3zero",
+      "full_signed_first",
+      "full_journal_u32",
+      "full_token_u32"
+    ],
+    "compact_inline_header_bytes": 16,
+    "compact_inline_opcode": 1292,
+    "family": {
+      "inline_client": 1,
+      "owned_buffer": 0
+    },
+    "generation": "strict-next-nonzero-u32-per-cell; consume-before-cold-reservation; proven-nonentry-does-not-consume",
+    "inline_attributes": "unchanged20-byte-client-rows-and-exact-packed-bytes; bounded-positive-count65535-for-compact; full-first-range-preserved",
+    "inline_fields": [
+      "own_journal",
+      "ready_cell",
+      "ready_token",
+      "mode",
+      "first",
+      "positive_count",
+      "attribute_count"
+    ],
+    "inline_header_bytes": 28,
+    "inline_opcode": 1291,
+    "legacy": "all-existing-journal-actions-and-observed-draw-layouts-and-effects-remain-exact",
+    "lifecycle_barrier": "forbidden; no-peer-encoder-execution",
+    "ownership": "same-stack-borrow; cold-independent-stream-only-for-inline-family; exact-native-restoration-and-original-logical-reset-authority",
+    "query": 59,
+    "readiness": "bounded-cold-CPU-receivers-and-native-variants; live-shared-uniform-mirror-only-for-used-authority",
+    "refusal": "completed-zero-without-new-guest-API-error; original-observed-draw-remains-available",
+    "reply": "sealed-journal-receipt; value-one-complete-zero-unavailable",
+    "reply_bytes": 48,
+    "request_bytes": 32,
+    "request_fields": [
+      "action",
+      "transaction",
+      "own_journal",
+      "ready_cell",
+      "next_token",
+      "family",
+      "target_cell_or_uintmax",
+      "target_token_or_zero"
+    ],
+    "sampling": "at-most-two-ordinary2D-sampler-elements; current-sampler-depth-and-halfLOD-traits-select-cold-variants; other-valid-GL-observed"
   },
   "gl_program_buffer_attribute_capture": {
     "action": 11,

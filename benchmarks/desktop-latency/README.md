@@ -201,14 +201,19 @@ load and ScummVM. ScummVM calibration requires its red software cursor, and
 verification requires the browser OS cursor to be hidden. It does not paint
 a replacement cursor. A native run additionally requires
 `KPERF_DESKTOP_PIXEL_NATIVE=1`, `KPERF_NATIVE_CAPTURE_BIN`, an owned visible
-window and a newly coordinated unlocked session. This native desktop mode
-has not yet passed physical validation.
+window and a newly coordinated unlocked session. A historical Chromium run
+passes on the frozen partial-B1 desktop, with eight responses each for Foot,
+Foot under concurrent ScummVM load and ScummVM's cursor, plus no-op controls.
+SFWBar is present throughout. Its [measurement record](../../docs/measurements/2026-11-04-native-desktop-cursor-method.md)
+retains the exact host/normal-product identities, bounded observations and
+preceding calibration failures. It does not validate the current runtime,
+the other engines, total instrumentation overhead or the ship bar.
 
 Headless desktop correlation has passed on all three engines. Failed capture
 and geometry attempts remain evidence, including a Firefox screenshot taking
 10.03 seconds and a later WebKit geometry failure that is not explained by
 replaying the saved raster. A subsequent WebKit run passes; that does not
 establish the cause or erase the failure. Continuous motion/drag/resize/scroll,
-native display correlation under load, missed-frame accounting and total
+the complete current-tree native workload/engine matrix, missed-frame accounting and total
 capture/matcher overhead remain required for desktop acceptance. This standalone control is
 not a Stage B application preview or a native-feel result.

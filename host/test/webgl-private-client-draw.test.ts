@@ -1,3 +1,6 @@
+import {GlInlineDraws,validPreparedInlineDraw,validPreparedInlineBody,validPreparedInlineCompact} from "../src/webgl/owned-inline-draw.js";
+import {GlMuxer} from "../src/webgl/muxer.js";
+import {withNativeBatch} from "../src/webgl/native-batch.js";
 import { afterEach, expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { drawPrivateClientArrays, validPrivateClientDraw } from "../src/webgl/private-client-draw.js";
@@ -65,16 +68,16 @@ class Gl {
       else throw new Error("Unexpected target");
     });
   }
-  bufferData(target: number, input: number|Uint8Array) {
+  bufferData(target: number, input: number|Uint8Array, _usage?:number, sourceOffset=0, length?:number) {
     this.method("bufferData",() => {
       if (target !== ARRAY || !this.array) throw new Error("Missing upload selection");
-      this.buffers.set(this.array,typeof input === "number" ? new Uint8Array(input) : input.slice());
+      this.buffers.set(this.array,typeof input === "number" ? new Uint8Array(input) : input.slice(sourceOffset,length===undefined?undefined:sourceOffset+length));
     });
   }
-  bufferSubData(target: number, offset: number, input: Uint8Array) {
+  bufferSubData(target: number, offset: number, input: Uint8Array, sourceOffset=0, length?:number) {
     this.method("bufferSubData",() => {
       if (target !== ARRAY || !this.array) throw new Error("Missing upload selection");
-      this.buffers.get(this.array)!.set(input,offset);
+      this.buffers.get(this.array)!.set(input.subarray(sourceOffset,length===undefined?undefined:sourceOffset+length),offset);
     });
   }
   vertexAttribPointer(index: number, size: number, type: number, normalized: boolean, stride: number, offset: number) {
@@ -347,4 +350,102 @@ for (const fault of ["incomplete", "native-error", "throw"]) it(`refuses private
   expect(checked).toEqual([0x8ca9]); expect(gl.counts.size).toBe(0); expect(gl.draws).toHaveLength(0);
   expect(b.errors).toEqual([0x501,0x500,fault === "incomplete" ? 0x506 : fault === "native-error" ? 0x505 : 0x502]);
   restored();
+});
+
+
+function ownedInlinePayload(options:Parameters<typeof payload>[0]={}){
+  const source=payload(options),bytes=new Uint8Array(source.byteLength+12),v=new DataView(bytes.buffer);
+  v.setUint32(0,1,true);v.setUint32(4,0,true);v.setUint32(8,1,true);bytes.set(new Uint8Array(source.buffer),12);return v;
+}
+function ownedInlineFixture(type=FLOAT,size=2){
+  const registry=new GlContextRegistry();registry.bind({pid:67,sessionId:0,cmdbufAddr:0,cmdbufLen:128});
+  const b=registry.get(67)!,gl=new Gl();b.contextId=1;
+  b.gl=new Proxy(gl,{get:(object,key)=>Reflect.has(object,key)?Reflect.get(object,key):(()=>null)}) as unknown as WebGL2RenderingContext;
+  const execution=registry.retainContextExecution(67,0,new GlMuxer(b.gl))!;
+  const array=gl.createBuffer()!;b.buffers.set(17,array);b.shadow.arrayBuffer=array;gl.array=array;
+  b.vertexArrays.get(0)!.attributes.set(0,{buffer:null,enabled:true,size,type,normalized:false,stride:0,offset:0});
+  gl.attributes.set(0,{buffer:null,size,type:type===FIXED?FLOAT:type,normalized:false,stride:0,offset:0});
+  const bank=GlInlineDraws.reserve(b)!;expect(bank).not.toBeNull();expect(bank.initialize(execution)).toBe(true);
+  const proof={executionView:bank.executionView(b)!,issue(draw:import("../src/webgl/draw-state.js").GlesDraw){draw.issue();return true;}};
+  return{b,gl,registry,execution,array,bank,proof,dispose(){expect(bank.retire()).toBe(true);execution.release();registry.unbind(67);expect(gl.alive.size).toBe(0);}};
+}
+for(const first of [0,3])it(`executes owned inline bytes with original first${first} and exact native restoration`,()=>{
+  const f=ownedInlineFixture(),wire=ownedInlinePayload({first,count:2,bytes:new Uint8Array([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16])});
+  const creates=f.gl.counts.get("createBuffer"),before=f.gl.errorReads;
+  try{
+    expect(validPreparedInlineDraw(wire)).toBe(true);
+    expect(withNativeBatch(f.b,"owned inline",()=>{expect(f.bank.drawPrepared(f.b,wire,f.proof)).toBe(true);})).toBe(0);
+    const draw=f.gl.draws[0],pointer=draw.attributes.get(0)!,bytes=draw.bytes.get(pointer.buffer!)!;
+    expect(draw.first).toBe(first);expect(draw.count).toBe(2);expect(pointer.offset).toBe(0);
+    expect(Array.from(bytes.subarray(first*8,first*8+16))).toEqual([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]);
+    expect(f.gl.array).toBe(f.array);expect(f.gl.attributes.get(0)!.buffer).toBeNull();expect(f.b.shadow.arrayBuffer).toBe(f.array);
+    expect(f.gl.counts.get("createBuffer")).toBe(creates);expect(f.gl.errorReads-before).toBe(1);expect(f.b.errors).toEqual([]);
+  }finally{f.dispose();}
+});
+it("converts owned inline FIXED bytes without allocating conversion views",()=>{
+  const f=ownedInlineFixture(FIXED),values=new Int32Array([-2147483648,-65536,1,65536,2147483647,0]);
+  try{
+    expect(f.bank.drawPrepared(f.b,ownedInlinePayload({type:FIXED,count:3,bytes:new Uint8Array(values.buffer)}),f.proof)).toBe(true);
+    const draw=f.gl.draws[0],pointer=draw.attributes.get(0)!,bytes=draw.bytes.get(pointer.buffer!)!;
+    expect(Array.from(new Float32Array(bytes.buffer))).toEqual(Array.from(Float32Array.from(values,x=>x/65536)));
+    expect(pointer.type).toBe(FLOAT);expect(f.gl.attributes.get(0)!.type).toBe(FLOAT);
+  }finally{f.dispose();}
+});
+it("refuses inline cold CPU metadata before allocating a native stream",()=>{
+  const f=ownedInlineFixture(),creates=f.gl.counts.get("createBuffer"),map=Array.prototype.map;let bank:GlInlineDraws|null=null;
+  try{Array.prototype.map=()=>{throw new Error("cold inline inverse exhausted");};bank=GlInlineDraws.reserve(f.b);}
+  finally{Array.prototype.map=map;}
+  try{expect(bank).toBeNull();expect(f.gl.counts.get("createBuffer")).toBe(creates);expect(f.b.errors).toEqual([0x505]);}
+  finally{f.dispose();}
+});
+it("reuses inline parser, upload and inverse metadata after local acceptance",()=>{
+  const f=ownedInlineFixture(),wire=ownedInlinePayload({count:2}),map=Array.prototype.map,flat=Array.prototype.flatMap,set=WeakMap.prototype.set,TypedArray=globalThis.Uint8Array;
+  let draws=0;f.gl.drawArrays=()=>{draws++;};let accepted=false,failure:unknown;
+  const forbidden=()=>{throw new Error("warm inline CPU metadata exhausted");};
+  try{
+    Array.prototype.map=forbidden;Array.prototype.flatMap=forbidden;WeakMap.prototype.set=forbidden;
+    globalThis.Uint8Array=class extends TypedArray{constructor(){throw new Error("warm inline typed array exhausted");}} as typeof Uint8Array;
+    withNativeBatch(f.b,"warm inline metadata refusal",()=>{accepted=f.bank.drawPrepared(f.b,wire,f.proof);});
+  }catch(error){failure=error;}
+  finally{Array.prototype.map=map;Array.prototype.flatMap=flat;WeakMap.prototype.set=set;globalThis.Uint8Array=TypedArray;}
+  try{expect(failure).toBeUndefined();expect(accepted).toBe(true);expect(draws).toBe(1);expect(f.gl.array).toBe(f.array);expect(f.b.errors).toEqual([]);}
+  finally{f.dispose();}
+});
+it("validates every owned inline row before native uploads or selection",()=>{
+  const f=ownedInlineFixture(),before=f.gl.counts.get("bindBuffer")??0;
+  try{
+    for(const [at,value]of [[0,0],[4,16],[8,0],[12,7],[16,0xffffffff],[20,0],[24,17],[28,16],[32,0],[36,0xdead],[40,2],[44,1]]){
+      const v=ownedInlinePayload();v.setUint32(at,value,true);expect(validPreparedInlineDraw(v)).toBe(false);expect(f.bank.drawPrepared(f.b,v,f.proof)).toBe(false);
+    }
+    expect(f.gl.counts.get("bindBuffer")??0).toBe(before);expect(f.gl.counts.get("bufferData")??0).toBe(0);expect(f.gl.draws).toHaveLength(0);
+  }finally{f.dispose();}
+});
+
+function ownedCompactPayload(options:Parameters<typeof payload>[0]={}){
+  const v=payload(options),mode=v.getUint32(0,true),count=v.getUint32(8,true),n=v.getUint32(12,true);
+  v.setUint32(0,mode|(n<<3)|(count<<13),true);v.setUint32(8,1,true);v.setUint32(12,1,true);return v;
+}
+it("preserves maximum original inline bodies and full first in compact authority",()=>{
+  const v=ownedCompactPayload({type:0x1401,size:1,count:65499});
+  expect(v.byteLength).toBe(65535);expect(validPreparedInlineCompact(v)).toBe(true);
+  const largeFirst=ownedCompactPayload({type:0x1401,size:1,count:1,first:0x7ffffffe});
+  expect(validPreparedInlineCompact(largeFirst)).toBe(true);expect(largeFirst.getInt32(4,true)).toBe(0x7ffffffe);
+  expect(validPreparedInlineBody(payload({type:0x1401,size:1,count:65499}))).toBe(true);
+});
+it("executes compact inline bytes through the same preallocated receiver",()=>{
+  const f=ownedInlineFixture(),v=ownedCompactPayload({first:3,count:2});
+  try{
+    expect(f.bank.drawPreparedCompact(f.b,v,f.proof)).toBe(true);expect(f.gl.draws[0].first).toBe(3);
+    const pointer=f.gl.draws[0].attributes.get(0)!,bytes=f.gl.draws[0].bytes.get(pointer.buffer!)!;
+    expect(Array.from(bytes.subarray(24,40))).toEqual(Array(16).fill(0x42));expect(f.gl.array).toBe(f.array);expect(f.b.errors).toEqual([]);
+  }finally{f.dispose();}
+});
+it("rejects compact reserved bits and invalid authority before any upload",()=>{
+  const f=ownedInlineFixture(),before=f.gl.counts.get("bindBuffer")??0;
+  try{
+    for(const word of [0x20000000|4|(1<<3)|(2<<13),7|(1<<3)|(2<<13),4|(2<<13),4|(17<<3)|(2<<13),4|(1<<3)|(16<<8)|(2<<13),4|(1<<3)]){
+      const v=ownedCompactPayload({count:2});v.setUint32(0,word,true);expect(validPreparedInlineCompact(v)).toBe(false);expect(f.bank.drawPreparedCompact(f.b,v,f.proof)).toBe(false);
+    }
+    expect(f.gl.counts.get("bindBuffer")??0).toBe(before);expect(f.gl.counts.get("bufferData")??0).toBe(0);
+  }finally{f.dispose();}
 });

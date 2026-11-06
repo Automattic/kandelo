@@ -57,6 +57,40 @@ explicitly wants to wait until all changes are integrated into a normally
 built preview that passes its required checks. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Prepared draws and cold cleanup custody, 2026-11-05 (R472–R493)
+
+The guest now connects action13's cold executable/sampling authority to owned
+VBO and inline records, including full first-vertex values and the compact
+maximum-size body. Shared input revisions renew new-call proofs after a peer
+replaces native storage; content-only updates preserve warm authority. Bounded
+journal decoding borrows and releases its payload synchronously. Optional
+uniform mirrors preserve exact private variants and exceptional reset recovery.
+
+Cold CPU insertion failure no longer strands an acquired input pin or compiled
+variant. Receivers and original-context deletion receipts precede native
+creation/acquisition; failed cache publication, nested/deferred cleanup, retry
+and actual native refusal retain exact ownership. Six deterministic source
+controls distinguish CPU refusal from physical/native GPU exhaustion.
+
+| Frozen run | Exact scope and result |
+| --- | --- |
+| R488 `graphics-owned-normal-r488-1105-234009-dde3` | PASS6m14: graphics2292/90, host compiler0, native489, Rust journal4, xtask additive-contract1, own release tool, normal SDK32/SDK64/kernel/image writer, ABI/evidence and source hashes |
+| R483 `graphics-owned-ready-custody-final-r483-1105-234237-523d` | PASS57s: graphics2298/90, host compiler0, twelve three-engine production/fatal GPU module controls and source hashes. Four host-only files change after R488; all C/Rust/ABI inputs and nine normal products remain exact |
+| R489 `graphics-owned-final-consumer-r489-1105-234746-3d68`, port6229 | PASS10m23: Node26/6 and all336 actual C browser cases across three engines/both widths/production+fatal, zero skips/flakes. Includes48 inline cases, ScummVM-shaped ALPHA320x200/RGBA256x1 two-pass sampling, generation-vs-content renewal, and24 prepared-draw native-OOM isolation/healthy-peer/retirement cases. All2145 frozen source/config inputs and ten product/tool hashes match |
+| R493 `graphics-owned-integration-r493-1105-235838-6ec9` | PASS37s: combined integration graphics2298/90, host compiler0, evidence registry713, shader harness297/294/297 with zero hard failures and unchanged Firefox inconclusive/native controls; source hashes match |
+
+Current normal kernel is
+`a2b7c521955bbef64dd42dfe78999b8300e91d88f44ac88b2c81611052bdec96`;
+snapshot is `47c1aa0a36163668794c9947640bd49a01e52d919870a3c17accca6fc1f2bc51`.
+Versions remain program56, unpublished host3, GL17 and fork21. There is no
+artifact stamping or old-SDK compatibility shim.
+
+B1 remains incomplete: ordinary predicted scalar tuple/cache preparation,
+remaining stage audit/conformance and application checks, before/after
+measurements, full normal application/image rebuilding and complete preview
+admission remain required. The existing preview is unchanged. These request,
+pixel and ownership controls do not establish native feel or performance.
+
 ## Offscreen generations and preparation refusal, 2026-11-05 (R461–R474)
 
 The guest driver now cold-captures eligible offscreen target/input native

@@ -1,8 +1,9 @@
+import {nativeGlFault} from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 import type { GlShadowState } from "./shadow.js";
 import { attachedNativeStorage } from "./image-storage.js";
 import { framebufferInputsChanged, framebufferInputsRevision } from "./framebuffer-revision.js";
-import { hostFramebufferColorStorage, storageWrites } from "./image-writes.js";
+import { hostFramebufferColorStorage, storageWrites, existingStorageWrites } from "./image-writes.js";
 
 /**
  * Color formats without alpha that WebGL 2 can only store with alpha: an
@@ -95,4 +96,32 @@ export function prepareDrawTarget(b: GlBinding): void {
     }
   }
   if (target.writes !== null) target.writes.count++;
+}
+
+
+/** Owned draws have already admitted target storage/write metadata. A global
+ * revision may come from an unrelated context, so rederive existing facts
+ * without creating a write-count cell or color-mask tuple after NoError. */
+export function prepareOwnedDrawTarget(b:GlBinding):void {
+  const s=b.shadow,target=s.drawTarget,revision=framebufferInputsRevision();
+  if(target.fbo!==s.fbo||target.revision!==revision){
+    const framebuffer=s.fbo,image=framebuffer?b.framebufferAttachments.get(framebuffer)?.get(0x8ce0):undefined;
+    const storage=image?attachedNativeStorage(b,image):framebuffer?hostFramebufferColorStorage(framebuffer)??null:null;
+    const writes=storage?existingStorageWrites(storage):null;
+    if(storage&&!writes)nativeGlFault("Owned draw target lost its cold write-count receiver");
+    const locked=!!image&&isOpaqueAlphaStorage(storage);
+    target.fbo=framebuffer;target.revision=revision;target.writes=writes??null;
+    if(target.locked!==locked){target.locked=locked;if(s.colorMask[3])b.gl!.colorMask(s.colorMask[0],s.colorMask[1],s.colorMask[2],s.colorMask[3]&&!locked);}
+  }
+  if(target.writes)target.writes.count++;
+}
+
+
+/** Reserve only the target's write-count receiver. Readiness is not a
+ * rendering operation: it must neither publish a phantom write nor change
+ * the native color mask of a different, currently selected public target. */
+export function reserveOwnedDrawTargetStorage(b:GlBinding):void {
+  const framebuffer=b.shadow.fbo,image=framebuffer?b.framebufferAttachments.get(framebuffer)?.get(0x8ce0):undefined;
+  const storage=image?attachedNativeStorage(b,image):framebuffer?hostFramebufferColorStorage(framebuffer):null;
+  if(storage)storageWrites(storage);
 }
