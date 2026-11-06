@@ -2,8 +2,9 @@
 
 The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ programs that run on Kandelo. It wraps LLVM tools with the correct flags for the `wasm32-unknown-unknown` target and links against the musl libc sysroot.
 
-Every SDK tool is one program, the SDK driver (`crates/kandelo-cc`), which
-decides from the name it runs as whether to be `cc`, `c++`, `ar`, `configure`
+The C/C++ compiler and binary tools share the SDK driver
+(`crates/kandelo-cc`), which decides from the name it runs as whether to be
+`cc`, `c++`, `ar`, `configure`
 and so on. The same source is built twice: as a native program for the build
 machine (the `sdk/bin` tools run it) and as a Kandelo program for the SDK
 inside Kandelo (see [Compile inside the base shell](#compile-inside-the-base-shell)).
@@ -74,7 +75,8 @@ shell); later runs rebuild it only when its sources change
 (`scripts/build-kandelo-cc.sh`, run by `./run.sh setup`). The package is not
 published to a registry: the driver is built from the checkout it belongs to.
 
-This makes 8 CLI tools available globally:
+The wasm32 C/C++ tool names are listed below; the npm package also exposes
+their wasm64 counterparts:
 
 | Tool | Purpose |
 |------|---------|
@@ -86,6 +88,12 @@ This makes 8 CLI tools available globally:
 | `wasm32posix-strip` | Symbol stripper (no-op for Wasm) |
 | `wasm32posix-pkg-config` | pkg-config with sysroot awareness |
 | `wasm32posix-configure` | Autoconf `./configure` wrapper |
+
+The checkout also provides `sdk/bin/wasm32posix-go` for a separately built
+Kandelo Go fork. It selects pure Go; cgo packages invoke the fork directly
+with the SDK C compiler. See [Go support](go.md) for that build route and
+its current boundaries. The Go wrapper is available through the checkout's
+SDK `PATH`; it is not registered by the npm package's C/C++ tool list.
 
 ### LLVM Discovery
 

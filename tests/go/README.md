@@ -1,5 +1,8 @@
 # Native Go browser probes
 
+For package entry points and the current support matrix, see
+[Go and FrankenPHP support](../../docs/go.md).
+
 These probes run binaries built from the `kandelo-port` branch of
 [`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-port) through
 Kandelo's real Chromium, Firefox, and WebKit process workers. Their program

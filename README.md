@@ -51,6 +51,10 @@ Real, unmodified software compiled to WebAssembly:
 
 All run in both Node.js and the browser with no source modifications.
 
+Go and FrankenPHP support is under development. See the
+[support overview](docs/go.md) for package entry points, tested contracts,
+known gaps, and the WordPress service profiles.
+
 ## Architecture
 
 A single shared kernel serves all processes via channel IPC (SharedArrayBuffer + Atomics):

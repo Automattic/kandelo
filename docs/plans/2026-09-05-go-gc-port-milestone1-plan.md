@@ -5426,3 +5426,17 @@ Node/browser execution of this stronger gate still awaits image publication.
 The Node case preserves the service log's beginning and end, plus the live
 listener process's status when available, if the drain probe fails. This
 keeps fatal headers and signal-mask evidence available before teardown.
+
+**2026-11-05 — Add a public Go support overview.**
+`docs/go.md`, linked from the main README, SDK guide, and probe README,
+collects the normal package entry points, bounded runtime/cgo coverage,
+remaining platform gaps, and the actual embedded-PHP WordPress profiles.
+It distinguishes the native Go compiler from cgo's SDK C compiler and
+records that the `wasm32posix-go` convenience wrapper currently forces
+pure-Go mode. Existing cgo recipes use the fork's ordinary Go CLI with
+the SDK C compiler and the normal installer.
+
+No SDK file is changed: `sdk/bin` and `sdk/package.json` are global package
+cache inputs, so edits there would invalidate the active source builds.
+The overview's repository links resolve and `git diff --check` passes.
+This documentation adds no runtime or performance validation claim.
