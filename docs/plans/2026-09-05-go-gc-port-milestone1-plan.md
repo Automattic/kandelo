@@ -5457,3 +5457,18 @@ temporary kernel override is removed from the Node test. The job
 inspection remain under `.context/` as failure evidence. Normal coherent
 image publication remains the prerequisite for the real PHP shutdown gate;
 resolver integrity checks are unchanged.
+
+**2026-11-05 — Align the final service shutdown deadlines.**
+Review finds a real configuration mismatch in the prepared classic shutdown
+change: the Go HTTP server allows 20 seconds to drain, but the packaged dinit
+defaults to SIGKILL after 10 seconds (`build-dinit.sh`). The current image
+does not override that deadline for either FrankenPHP service. Caddy's
+current configuration also leaves its HTTP grace period unbounded.
+
+The final-image patch now prepares an explicit 20-second Caddy grace period
+and 30-second dinit stop deadlines for both services, allowing cleanup after
+HTTP draining. It uses ordinary upstream configuration, without changing
+dinit, Go, or PHP. This image-input patch is not applied during the active
+build; it belongs with WordPress revision 36 and the final source pin.
+Patch applicability and browser-runner shell syntax pass. Actual application
+shutdown evidence remains pending coherent image publication.

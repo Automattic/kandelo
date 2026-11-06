@@ -671,6 +671,28 @@ expected output, empty stderr, and no host diagnostics before building a
 PHP embed library or FrankenPHP. Re-run `js` and `wasip1` builds after
 compiler, linker, or runtime changes.
 
+## Shutting down embedded runtimes
+
+Drain HTTP handlers before shutting down an embedded C runtime. With Go's
+HTTP server, `Serve` returning `http.ErrServerClosed` only means the
+listener has closed; wait for `Server.Shutdown` to finish before calling
+`frankenphp.Shutdown`. Keep cleanup in a function that returns an error to
+`main`, because `log.Fatal` and `os.Exit` skip deferred cleanup.
+
+Check the generated service configuration as well as the Go handler.
+The packaged dinit defaults to a 10-second stop timeout, after which it
+sends SIGKILL. A longer HTTP drain needs an explicit service stop deadline
+that also leaves time for PHP thread cleanup. Bound Caddy's `grace_period`
+explicitly when running under a bounded supervisor; its upstream default
+is unlimited. Use ordinary service/server settings rather than patching
+the supervisor or changing target signal semantics.
+
+Use the real held-PHP probe in
+`host/test/support/frankenphp-graceful.ts` on Node and browser. It requires
+actual listener removal before releasing PHP, the complete response, and
+normal service exit. A small Go HTTP fixture, a SIGTERM trace, or cooperative
+host destruction does not establish embedded-runtime request draining.
+
 ## Profiling large Go/Wasm services
 
 Keep binary size, compiled-module bookkeeping, live guest linear memory,
