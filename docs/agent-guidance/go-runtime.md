@@ -254,6 +254,16 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   unwinding, preemption, and management of inherited blocked masks remain
   gaps. Rebuild consumers and validate actual Caddy/PHP shutdown before
   claiming the demo drains in-flight requests.
+  Before implementing inherited-mask management, trace `runtime.needm` in
+  `proc.go`: it calls `sigsave` and `sigblock` before obtaining an M or
+  installing g. Kandelo's `doSyscall6Raw` reads `getg().m.channelBase`, so
+  calling it from those hooks is invalid for an unattached C thread.
+  The shared Wasm `sigset` is still empty and its mask/minit hooks are
+  no-ops. A real port needs an early thread-channel path, runtime-thread
+  mask initialization, and restoration of the foreign caller's mask.
+  Unblocking only the thread running `Notify` does not cover that lifecycle.
+  Test an inherited blocked signal, delivery after Notify, and mask
+  restoration after foreign C callbacks in Node and browsers.
 - Repeated upstream `os/exec` `TestWaitid` is a useful stop/continue probe.
   A child returning `EBUSY` from stdin after SIGCONT exposed the shared host
   re-arming a deferred blocked read as a fresh dispatch. Preserve the frozen
@@ -264,6 +274,13 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   inheritance must be serialized with `ForkLock`. The existing spawn
   attribute supports child-atomic process groups. Requested child
   credentials currently return `ENOSYS`; do not report a no-op as success.
+  Rust's `SpawnAttrs` has flags, process group, and signal masks, but no
+  requested uid, gid, or supplementary groups. `POSIX_SPAWN_RESETIDS` only
+  resets inherited effective IDs to real IDs. Supporting Go's `Credential`
+  needs an explicit spawn contract and child-side permission transitions
+  before file actions and executable admission, with rollback on failure.
+  Do not change the parent credentials or reuse the wire header's ignored
+  padding without ABI review; neither implements child-atomic credentials.
 - Go's generic `os/exec/lp_wasm.go` treats every executable as absent because
   upstream Wasm targets cannot spawn. Kandelo must select the Unix `LookPath`
   implementation and check effective execute permission through the real

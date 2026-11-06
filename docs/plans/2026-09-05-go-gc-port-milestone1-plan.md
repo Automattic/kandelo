@@ -5381,3 +5381,19 @@ browser provisioning scope to eight of nine suites. These are executions
 under compiler load, not before/after performance evidence. The baseline's
 full canonical WordPress image is building through the normal package graph
 before the ninth browser suite; no smaller substitute image is used.
+
+**2026-11-05 — Locate the broader spawn and mask boundaries.**
+Read-only review confirms that child credentials are a missing spawn
+contract: Rust's `SpawnAttrs` carries no requested uid/gid/groups, while
+RESETIDS only resets inherited effective IDs. The wire header padding is
+explicitly ignored until a later ABI assigns it semantics. Go's current
+`Credential` rejection is therefore truthful; no parent-credential mutation
+or launcher wrapper is introduced.
+
+Inherited-mask management also needs early thread lifecycle support.
+`runtime.needm` saves and blocks signals before attaching an M or g, but
+Kandelo's raw channel helper dereferences `getg().m.channelBase`. The shared
+Wasm mask type and lifecycle hooks remain stubs. The Go runtime guide now
+records these actual hook points and the required inherited-mask/foreign-
+callback validation. No Go source, compiler, package recipe, kernel, or ABI
+is changed by this review. The current image builds remain uninterrupted.
