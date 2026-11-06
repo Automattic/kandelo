@@ -1839,6 +1839,7 @@ if locks_adapter.count('/* NODE_LOCKS_MODULE */') != 1:
 bundle += locks_adapter.replace('/* NODE_LOCKS_MODULE */', locks_source) + '\n'
 
 bundle += (root / 'adapter.js').read_text().replace('/* UPSTREAM_MODULES */', ',\n'.join(entries))
+bundle += '\n' + runpy.run_path(str(root / 'generate-stat-watcher.py'))['assemble']().rstrip('\n') + '\n'
 dest = root / 'node-core.js'
 if '--check' in sys.argv:
     if dest.read_text() != bundle:

@@ -136,9 +136,19 @@ static bool KandeloELDInitializeContext(JSContext* cx) {
     KandeloFlushNativeMemory(cx); return true;
   } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
 }
+static bool KandeloELDReadCachedTime(JSContext* cx, uint64_t* result) {
+  auto context = KandeloELDFindContext(cx);
+  if (!context) {
+    JS_ReportErrorASCII(cx, "Node native loop clock is not initialized");
+    return false;
+  }
+  *result = context->loop->time();
+  return true;
+}
 static void KandeloELDUpdateCachedTime(JSContext* cx) {
-  if (auto context = KandeloELDFindContext(cx)) context->loop->UpdateTime(
-      kandelo::histogram::HistogramMonotonicNow() / 1000000);
+  const uint64_t now = kandelo::histogram::HistogramMonotonicNow() / 1000000;
+  if (auto context = KandeloELDFindContext(cx)) context->loop->UpdateTime(now);
+  js::shell::KandeloStatWatcherUpdateCachedTime(cx, now);
 }
 static void KandeloELDShutdown(JSContext* cx) {
   if (auto context = KandeloELDFindContext(cx)) context->Shutdown();

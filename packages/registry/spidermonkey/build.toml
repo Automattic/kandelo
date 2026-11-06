@@ -1,5 +1,14 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/native-stat-watcher.cpp",
+  "third_party/node-core/stat-poll.h",
+  "third_party/node-core/stat-poll.cc",
+  "third_party/node-core/stat-poll-port",
+  "third_party/node-core/upstream/stat-poll",
+  "third_party/node-core/stat-watcher-platform-adapter.js",
+  "third_party/node-core/stat-watcher-sources.json",
+  "third_party/node-core/generate-stat-watcher.py",
+  "third_party/node-core/stage-stat-watcher.py",
   "third_party/node-core/worker-lazy-sources.json",
   "third_party/node-core/upstream/worker-lazy",
   "third_party/node-core/native-lazy-data.cpp",
@@ -553,4 +562,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 144
+revision = 145

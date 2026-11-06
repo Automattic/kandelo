@@ -107390,3 +107390,260 @@ module.exports = { myersDiff, printMyersDiff, printSimpleMyersDiff };
     return { get assert() { return require('assert'); },
         get comparisons() { return require('internal/util/comparisons'); }, types, require };
 }
+
+// Pinned public watchFile/StatWatcher algorithms over the actual native owner.
+function _createNodeStatWatcherPlatform(platform) {
+    'use strict';
+    const P = _createNodePrimordials();
+    const { FunctionPrototypeCall, ObjectSetPrototypeOf, SafeMap, Symbol } = P;
+    const { validateFunction, validateUint32 } = platform.values.validators;
+    const { UVException } = platform.values.errors;
+    const { getValidatedPath, getStatsFromBinding } = platform.utils;
+    const { defaultTriggerAsyncIdScope, symbols: { owner_symbol } } = platform.async;
+    const EventEmitter = platform.events.EventEmitter;
+    const process = platform.process;
+    const pathModule = platform.path;
+    const toNamespacedPath = platform.path.toNamespacedPath;
+    const vfsState = platform.truncation.vfsState;
+    const kFsStatsFieldsNumber = 18;
+    const native = (...args) => P.ReflectApply(platform.native.statWatcher, undefined, args);
+    const _StatWatcher = class StatWatcher {
+        constructor(bigint) { return native('create', new.target.prototype, bigint); }
+        start(filename, interval) { return native('start', this, filename, interval); }
+        close(callback) { return native('close', this, callback); }
+        ref() { return native('ref', this); }
+        unref() { return native('unref', this); }
+        hasRef() { return native('hasRef', this); }
+        getAsyncId() { return native('getAsyncId', this); }
+    };
+    const kOldStatus = Symbol('kOldStatus');
+const kUseBigint = Symbol('kUseBigint');
+
+const kFSWatchStart = Symbol('kFSWatchStart');
+const kFSStatWatcherStart = Symbol('kFSStatWatcherStart');
+const KFSStatWatcherRefCount = Symbol('KFSStatWatcherRefCount');
+const KFSStatWatcherMaxRefCount = Symbol('KFSStatWatcherMaxRefCount');
+const kFSStatWatcherAddOrCleanRef = Symbol('kFSStatWatcherAddOrCleanRef');
+
+
+    function emitStop(self) {
+  self.emit('stop');
+}
+
+function StatWatcher(bigint) {
+  FunctionPrototypeCall(EventEmitter, this);
+
+  this._handle = null;
+  this[kOldStatus] = -1;
+  this[kUseBigint] = bigint;
+  this[KFSStatWatcherRefCount] = 1;
+  this[KFSStatWatcherMaxRefCount] = 1;
+}
+ObjectSetPrototypeOf(StatWatcher.prototype, EventEmitter.prototype);
+ObjectSetPrototypeOf(StatWatcher, EventEmitter);
+
+function onchange(newStatus, stats) {
+  const self = this[owner_symbol];
+  if (self[kOldStatus] === -1 &&
+      newStatus === -1 &&
+      stats[2/* new nlink */] === stats[16/* old nlink */]) {
+    return;
+  }
+
+  self[kOldStatus] = newStatus;
+  self.emit('change', getStatsFromBinding(stats),
+            getStatsFromBinding(stats, kFsStatsFieldsNumber));
+}
+
+// At the moment if filename is undefined, we
+// 1. Throw an Error if it's the first
+//    time Symbol('kFSStatWatcherStart') is called
+// 2. Return silently if Symbol('kFSStatWatcherStart') has already been called
+//    on a valid filename and the wrap has been initialized
+// This method is a noop if the watcher has already been started.
+StatWatcher.prototype[kFSStatWatcherStart] = function(filename,
+                                                      persistent,
+                                                      interval) {
+  if (this._handle !== null)
+    return;
+
+  this._handle = new _StatWatcher(this[kUseBigint]);
+  this._handle[owner_symbol] = this;
+  this._handle.onchange = onchange;
+  if (!persistent)
+    this.unref();
+
+  // uv_fs_poll is a little more powerful than ev_stat but we curb it for
+  // the sake of backwards compatibility.
+  this[kOldStatus] = -1;
+
+  filename = getValidatedPath(filename, 'filename');
+  validateUint32(interval, 'interval');
+  // Coerce -0 to +0.
+  interval += 0;
+  const err = this._handle.start(toNamespacedPath(filename), interval);
+  if (err) {
+    const error = new UVException({
+      errno: err,
+      syscall: 'watch',
+      path: filename,
+    });
+    error.filename = filename;
+    throw error;
+  }
+};
+
+// To maximize backward-compatibility for the end user,
+// a no-op stub method has been added instead of
+// totally removing StatWatcher.prototype.start.
+// This should not be documented.
+StatWatcher.prototype.start = () => {};
+
+// FIXME(joyeecheung): this method is not documented while there is
+// another documented fs.unwatchFile(). The counterpart in
+// FSWatcher is .close()
+// This method is a noop if the watcher has not been started.
+StatWatcher.prototype.stop = function() {
+  if (this._handle === null)
+    return;
+
+  defaultTriggerAsyncIdScope(this._handle.getAsyncId(),
+                             process.nextTick,
+                             emitStop,
+                             this);
+  this._handle.close();
+  this._handle = null;
+};
+
+// Clean up or add ref counters.
+StatWatcher.prototype[kFSStatWatcherAddOrCleanRef] = function(operate) {
+  if (operate === 'add') {
+    // Add a Ref
+    this[KFSStatWatcherRefCount]++;
+    this[KFSStatWatcherMaxRefCount]++;
+  } else if (operate === 'clean') {
+    // Clean up a single
+    this[KFSStatWatcherMaxRefCount]--;
+    this.unref();
+  } else if (operate === 'cleanAll') {
+    // Clean up all
+    this[KFSStatWatcherMaxRefCount] = 0;
+    this[KFSStatWatcherRefCount] = 0;
+    this._handle?.unref();
+  }
+};
+
+StatWatcher.prototype.ref = function() {
+  // Avoid refCount calling ref multiple times causing unref to have no effect.
+  if (this[KFSStatWatcherRefCount] === this[KFSStatWatcherMaxRefCount])
+    return this;
+  if (this._handle && this[KFSStatWatcherRefCount]++ === 0)
+    this._handle.ref();
+  return this;
+};
+
+StatWatcher.prototype.unref = function() {
+  // Avoid refCount calling unref multiple times causing ref to have no effect.
+  if (this[KFSStatWatcherRefCount] === 0) return this;
+  if (this._handle && --this[KFSStatWatcherRefCount] === 0)
+    this._handle.unref();
+  return this;
+};
+
+    const watchers = { StatWatcher, kFSStatWatcherStart, kFSStatWatcherAddOrCleanRef };
+    const require = name => {
+        if (name === 'internal/fs/watchers') return watchers;
+        throw new P.Error('Unresolved stat watcher dependency: ' + name);
+    };
+    const statWatchers = new SafeMap();
+
+/**
+ * Watches for changes on `filename`.
+ * @param {string | Buffer | URL} filename
+ * @param {{
+ *   bigint?: boolean;
+ *   persistent?: boolean;
+ *   interval?: number;
+ *   }} [options]
+ * @param {(
+ *   current?: Stats,
+ *   previous?: Stats
+ *   ) => any} listener
+ * @returns {watchers.StatWatcher}
+ */
+function watchFile(filename, options, listener) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const result = h.watchFile(filename, options, listener);
+    if (result !== undefined) return result;
+  }
+  filename = getValidatedPath(filename);
+  filename = pathModule.resolve(filename);
+  let stat;
+
+  if (options === null || typeof options !== 'object') {
+    listener = options;
+    options = null;
+  }
+
+  options = {
+    // Poll interval in milliseconds. 5007 is what libev used to use. It's
+    // a little on the slow side but let's stick with it for now to keep
+    // behavioral changes to a minimum.
+    interval: 5007,
+    persistent: true,
+    ...options,
+  };
+
+  validateFunction(listener, 'listener');
+
+  stat = statWatchers.get(filename);
+  const watchers = require('internal/fs/watchers');
+  if (stat === undefined) {
+    stat = new watchers.StatWatcher(options.bigint);
+    stat[watchers.kFSStatWatcherStart](filename,
+                                       options.persistent, options.interval);
+    statWatchers.set(filename, stat);
+  } else {
+    stat[watchers.kFSStatWatcherAddOrCleanRef]('add');
+  }
+
+  stat.addListener('change', listener);
+  return stat;
+}
+
+/**
+ * Stops watching for changes on `filename`.
+ * @param {string | Buffer | URL} filename
+ * @param {() => any} [listener]
+ * @returns {void}
+ */
+function unwatchFile(filename, listener) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    if (h.unwatchFile(filename, listener)) return;
+  }
+  filename = getValidatedPath(filename);
+  filename = pathModule.resolve(filename);
+  const stat = statWatchers.get(filename);
+
+  if (stat === undefined) return;
+  const watchers = require('internal/fs/watchers');
+  if (typeof listener === 'function') {
+    const beforeListenerCount = stat.listenerCount('change');
+    stat.removeListener('change', listener);
+    if (stat.listenerCount('change') < beforeListenerCount)
+      stat[watchers.kFSStatWatcherAddOrCleanRef]('clean');
+  } else {
+    stat.removeAllListeners('change');
+    stat[watchers.kFSStatWatcherAddOrCleanRef]('cleanAll');
+  }
+
+  if (stat.listenerCount('change') === 0) {
+    stat.stop();
+    statWatchers.delete(filename);
+  }
+}
+
+    return { watchFile, unwatchFile, watchers };
+}

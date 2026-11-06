@@ -1,0 +1,123 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem.md",
+    "findingIds": [
+      "FS-005"
+    ],
+    "supportingDocuments": [
+      "tests/nodejs/audit/filesystem-contracts.md"
+    ],
+    "relatedFamilies": [
+      "filesystem",
+      "async",
+      "observability",
+      "engine"
+    ],
+    "scope": "watchFile/unwatchFile/StatWatcher source subset,not notifications/promisewatch/fullFS005orAPIclosure"
+  },
+  "sourceImplemented": [
+    "Actual pinned public watcher algorithms over native asynchronousstat/one-shot timer/ref/close owner",
+    "Actual class/provider/ID/frame/realm/root/GC/native allocation/teardown source hooks",
+    "Existing ELD and new poller share actual cached clock;start consumes cache without freshwallread",
+    "Current144Worker/143TLS/VM/lazy/backing engine source retained with additive0115hooks"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-stat-watcher-source-r1/report.json",
+    "sha256": "ee93d92f06150999a3a0d91105d27f42d46c758759cc2a8a1a04c041d3425a42",
+    "guardedInputs": 704,
+    "wholeNodeReferences": 7,
+    "engineFiles": 3,
+    "scope": "Actual145nativepolling/StatWatcher/class/clock/loopsource over144Worker/143engine.7wholeNode files exact,derivedstatconversionbody exact with separatorLF normalization,normalstaging/unity andcached-clocksource correction. No productionSM/JSAPI/GC/realm/runtime/four-host acceptance."
+  },
+  "nativeDependencyControls": {
+    "report": ".context/node26-stat-watcher-controls-r2/report.json",
+    "sha256": "ccf2525cd0d1daa547d8b64b053b35956da1e979535b5b397ece28fbaa3e5f1b",
+    "publicComponentProcesses": 6,
+    "ownerProcesses": 1,
+    "nativeClockProcesses": 1,
+    "successfulRootCompileCommands": 4,
+    "scope": "Actual unchanged polling/public algorithms via nativePOSIX worker/timer port and NAPI dependencies;8bounded run processes (6public/ref/worker+owner+nativecachedclock). ProductionSMclass/GC/loop/realm source uncompiled."
+  },
+  "affectedControls": {
+    "report": ".context/node26-stat-watcher-affected-r1.json",
+    "sha256": "958e378ed984a65777f46849d2392f042bfe70967e4d6b6fe5d9a630415702ab",
+    "passed": 41,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing metadata/performance/ELU plus14package source checks,noglobalsetup/artifacts"
+  },
+  "packageChecks": {
+    "report": ".context/node26-stat-watcher-affected-r1.json",
+    "sha256": "958e378ed984a65777f46849d2392f042bfe70967e4d6b6fe5d9a630415702ab",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package checks within affectedaggregate,notextra passes"
+  },
+  "privateHandoff": {
+    "report": ".context/stat-watcher-agent/identities.json",
+    "sha256": "f4c5d3e38c62b3df262a77f617ac654bf537505bce42d517f8abc64e6411eafc",
+    "sealSha256": "ccf349756759f65482c54a25f0f87469362eab499fb989b83a35d9e37e516d33",
+    "entries": 129,
+    "scope": "Immutable137/139proposal and nonpasses;rootadditive145rebasing/clock/boundary corrections,not oldcompletepostimage overwrite"
+  },
+  "priorFindingReconciliation": {
+    "report": ".context/unlink-rmdir-agent/reconciliation/report.json",
+    "sha256": "519d2f129900c8e52f388f664c1244855fd7c74525ace62bd20d19c398c6ecf2",
+    "scope": "FS014actualsync/callback/promise finalroutes distinctunlink/rmdir alreadyimplemented;fiveexistingfrontendcontrols,no newruntimechange/no guestclosure"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-stat-watcher-integration-r1.log",
+      "sha256": "4522c5929c6df7cc359dd8b11671fa890a1ad4d58136bb4304bfefac2f0bd431",
+      "kind": "root-shared-recipe-context",
+      "reason": "Old137context conflicts with current retainedbacking inputs;additive rebase preserves both"
+    },
+    {
+      "report": ".context/node26-stat-watcher-controls-r1/commands.json",
+      "sha256": "d44a99164b5ad5c021f3940f61da13d1767630233c0435a48882fd0814c8b78b",
+      "kind": "root-helper-include-harness",
+      "reason": "Onepollcompilepassed;componentcompilefailed dueprivateuv.h precedence. Separate real/public include scopes fix without weakeningcompiler diagnostics"
+    },
+    {
+      "report": ".context/node26-stat-watcher-source-initial-nonpass.log",
+      "sha256": "9c1bc8ca5b63cf541437b69e603e903881125f9cf771e43d09689d8a1e7a15a9",
+      "kind": "generated-bundle-boundary",
+      "reason": "Extra EOF separator rejected bywhitespacegate;normalizeprojectgeneratedboundary,retain pinnedalgorithm bodies"
+    },
+    {
+      "report": ".context/stat-watcher-agent/controls-initial-nonpasses.json",
+      "sha256": "1a96de7314f8018e790b85b4f85fa9592ddf29f6d196a233b2671e70e7cd057f",
+      "kind": "original-watcher-component",
+      "reason": "Originaladdon/compile controlsretained withtheiractualscope"
+    },
+    {
+      "report": ".context/stat-watcher-agent/handle-scope-nonpass.json",
+      "sha256": "8eac35e1733839a1e5b25425d00553b4647a445eb886e4dbe307ca07d6a01cf3",
+      "kind": "original-NAPI-handle-scope",
+      "reason": "FixtureSIGABRT-6preserved,notexternalruntimefault"
+    },
+    {
+      "report": ".context/stat-watcher-agent/date-nonpass.json",
+      "sha256": "1a96de7314f8018e790b85b4f85fa9592ddf29f6d196a233b2671e70e7cd057f",
+      "kind": "original-first-Stats-Date",
+      "reason": "Realsharedhelperreturngapfixed141;originalassertion/failureunchanged"
+    }
+  ],
+  "remaining": [
+    "ActualSMC++/JSAPI/class/provider/GC/realm/OOM/reentry/worker/contextretirement validation",
+    "Complete nativeHandleWrap/AsyncWrap/internalconstructor/descriptors/globalStatsArrayinterop",
+    "Globaltimer phase/order and sharedactualuncaughtException recovery/after-ID-stack ownership",
+    "Notificationsfs.watch/FSWatcher/promises.watch,enabledVFS routing and backendstat/precision/permission/changepropagation",
+    "Currentidentified-artifactfour-host conformance;all19familiespartial,noindividualAPIclosure"
+  ],
+  "at": "2026-11-06T07:54:24.862350+00:00",
+  "recipeRevision": 145,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

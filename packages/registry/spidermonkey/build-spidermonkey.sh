@@ -376,6 +376,8 @@ python3 "$REPO_ROOT/third_party/node-core/generate-sqlite-constants.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-sqlite-constants.h"
 cp "$REPO_ROOT/third_party/node-core/callback-scope.h" "$SRC_DIR/js/src/shell/kandelo-node-callback-scope.h"
 cp "$REPO_ROOT/third_party/node-core/native-retained-memory.h" "$SRC_DIR/js/src/shell/native-retained-memory.h"
+python3 "$REPO_ROOT/third_party/node-core/stage-stat-watcher.py" \
+    --shell-dir "$SRC_DIR/js/src/shell"
 # The VM's native capability boundary stays C++17; only this existing C++20
 # shell embedding consumes the canonical retained-memory owner implementation.
 cp "$SRC_DIR/js/public/experimental/KandeloBackingCapabilities.h" \

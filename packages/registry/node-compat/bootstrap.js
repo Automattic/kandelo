@@ -1915,8 +1915,6 @@ const fs = (() => {
             // listener is never called, since we don't observe changes.
             return w;
         },
-        watchFile() {},
-        unwatchFile() {},
     };
 
     // fs.promises
@@ -2267,6 +2265,12 @@ const _nodeFsCallbacks = _createNodeFsCallbacks({
     require: name => name === 'internal/event_target' ? _nodeEventPlatform.eventTarget : _nodeStreamPlatform.require(name),
 });
 Object.assign(fs, _nodeFsCallbacks);
+const _nodeStatWatchers = _createNodeStatWatcherPlatform({
+    process, path, events, values: _nodeValues, utils: _nodeFsStats,
+    async: _nodeAsyncPlatform, truncation: _nodeFsTruncation, native: _nodeNative,
+});
+fs.watchFile = _nodeStatWatchers.watchFile;
+fs.unwatchFile = _nodeStatWatchers.unwatchFile;
 const _nodeDirectoryPlatform = _createNodeDirectoryPlatform({
     native: _nodeNative, values: _nodeValues, utils: _nodeFsStats, truncation: _nodeFsTruncation,
 });

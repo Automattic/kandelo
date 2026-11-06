@@ -6535,6 +6535,19 @@ bundled/system/extra CA APIs, public SecureContext, hostname policy, fatal
 allocation behavior, cancellation and context shutdown remain open. See the
 [trust-context scope](../tests/nodejs/outline/tls-context-trust-implementation-dependencies.md).
 
+### Native filesystem metadata polling source candidate
+
+The Node source candidate routes watchFile/unwatchFile and StatWatcher to actual
+asynchronous POSIX stat,one-shot native timers and explicit close/ref ownership.
+Pinned fs-poll and stat-conversion algorithms consume that native port. New
+watcher contexts join the existing cached loop clock;watcher start does not
+advance it,and normal clock updates sample once for both watcher and event-loop
+delay owners. Native class/provider/GC/realm/loop code remains uncompiled.
+Notification watchers,promise iteration,global phase ordering,shared uncaught
+recovery and complete backend metadata remain open. Component/reference checks
+do not prove current guest or four-host behavior. See
+[watcher source scope](../tests/nodejs/outline/stat-watcher-integration.md).
+
 ### Native lazy data-property source prerequisite
 
 The current engine source introduces a distinct pending native DATA property

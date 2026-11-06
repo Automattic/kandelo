@@ -1,5 +1,12 @@
 # Node 26 core implementation outline
 
+Source145 adds actual watchFile/StatWatcher polling,timer/close/resource owners
+and shared cached-clock integration over144. Eight bounded native/component
+processes and affected source checks pass;production JSAPI/four-host validation,
+notifications and shared callback recovery remain open. See
+[watcher integration](stat-watcher-integration.md).
+
+
 Source144 routes Worker lazy locks/private module identity through the actual
 production native adapter.27differential traces,four existing Locks processes
 and affected source checks pass with real V8/portable dependencies;SMprimitive

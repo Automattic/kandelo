@@ -1,0 +1,97 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3514,4 +3514,7 @@
+     return KandeloDnsRequestResourceInfo(cx, unwrapped, args.rval());
+   }
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloStatWatcherClass) {
++    return KandeloStatWatcherResourceInfo(cx, unwrapped, args.rval());
++  }
+   return js::GetKandeloAsyncResourceInfo(cx, resource, args.rval());
+ }
+@@ -3995,4 +3998,5 @@
+       JS_FN("fsVectorPromise", (KandeloFsPromiseGuard<KandeloFsVectorPromise>), 5, 0),
+       JS_FN("fsStatPromise", (KandeloFsPromiseGuard<KandeloFsStatPromise>), 3, 0),
++      JS_FN("statWatcher", KandeloNativeStatWatcher, 4, 0),
+       JS_FN("fsStatSync", (KandeloFsPromiseGuard<KandeloFsStatSync>), 3, 0),
+       JS_FN("fsCopyFileSync", (KandeloFsPromiseGuard<KandeloFsCopyFileSync>), 3, 0),
+@@ -5481,5 +5485,6 @@
+           !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
+           !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx) &&
+-          !KandeloLocksHaveReferences(cx) && !KandeloELDHasClosing(cx)) {
++          !KandeloLocksHaveReferences(cx) && !KandeloELDHasClosing(cx) &&
++          !KandeloStatWatcherReferences(cx)) {
+         if (beforeExitEmittedForIdle) return;
+         beforeExitEmittedForIdle = true;
+@@ -5500,4 +5505,7 @@
+
+     if (IsKandeloNodeMode() && !KandeloELDUpdateAndRunTimers(cx)) {
++      AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++    }
++    if (IsKandeloNodeMode() && KandeloDispatchStatWatchers(cx, false) < 0) {
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+     }
+@@ -5569,5 +5577,13 @@
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+     }
+-    if (ranProvider) continue;
++    // The native completion has retired before entering the close phase.
++    // Bound one actual close owner per turn; callbacks get their own scope.
++    const int ranStatClose = IsKandeloNodeMode()
++        ? KandeloDispatchStatWatchers(cx, true) : 0;
++    if (sc->quitting) return;
++    if (ranStatClose < 0) {
++      AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++    }
++    if (ranProvider || ranStatClose) continue;
+
+     if (!ranTasks && ranNative == 0 && ranTimers == 0 &&
+@@ -5575,5 +5591,6 @@
+         !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
+           !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx) &&
+-          !KandeloLocksHaveReferences(cx) && !KandeloELDHasClosing(cx)) {
++          !KandeloLocksHaveReferences(cx) && !KandeloELDHasClosing(cx) &&
++          !KandeloStatWatcherReferences(cx)) {
+       if (IsKandeloNodeMode()) continue;
+       break;
+@@ -5593,4 +5610,7 @@
+       // ELD timer may shorten a live provider deadline, never extend it.
+       if (IsKandeloNodeMode()) {
++        const int64_t statDelay = KandeloStatWatcherDelay(cx);
++        if (statDelay >= 0 && uint64_t(statDelay) < uint64_t(sleepUs / 1000))
++          sleepUs = useconds_t(statDelay) * 1000;
+         const int timeout = KandeloELDBackendTimeout(cx, int(sleepUs / 1000), true);
+         if (timeout >= 0 && useconds_t(timeout) * 1000 < sleepUs)
+@@ -16731,5 +16751,7 @@
+   KandeloShutdownWorkers(cx_);
+   // Finish/cancel native jobs and retire pins/roots while the JSContext lives.
++  KandeloStopStatWatchers(this);
+   KandeloShutdownNativeWork(this);
++  KandeloShutdownStatWatchers(this);
+   KandeloShutdownChildWatches(cx_);
+   KandeloShutdownPorts(cx_);
+diff --git a/js/src/shell/jsshell.h b/js/src/shell/jsshell.h
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -186,4 +186,5 @@
+ class KandeloNativeWorkQueue;
+ struct KandeloNativeAsyncState;
++struct KandeloStatWatcherLoop;
+
+ // Per-context shell state.
+@@ -201,4 +202,5 @@
+   // Owns real native jobs, completion roots and buffer leases until shutdown.
+   KandeloNativeWorkQueue* kandeloNativeWork = nullptr;
++  KandeloStatWatcherLoop* kandeloStatWatchers = nullptr;
+   KandeloNativeAsyncState* kandeloNativeAsync = nullptr;
+
+diff --git a/js/src/shell/moz.build b/js/src/shell/moz.build
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -80,2 +80,6 @@
+ SOURCES["histogram-window.cc"].flags += ["-std=c++20"]
+ SOURCES["histogram-vendor/src/hdr_histogram.c"].flags += ["-std=c11"]
++
++# Unchanged pinned fs-poll algorithms consume the real native allocation ledger.
++SOURCES += ["kandelo-node-stat-poll.cc"]
++SOURCES["kandelo-node-stat-poll.cc"].flags += ["-std=c++20"]

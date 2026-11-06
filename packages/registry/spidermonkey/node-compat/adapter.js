@@ -567,6 +567,7 @@
         runWriteFileJob(job) { return native.runWriteFileJob(job); },
         cancelFsRequest(request) { return native.cancelFsRequest(request); },
         createFsRequest(prototype, callback) { return native.createFsRequest(prototype, callback); },
+        statWatcher(...args) { return native.statWatcher(...args); },
         ftruncate(fd, length, request) { return native.ftruncate(fd, length, request); },
         closeDescriptor(fd, request) { return native.closeDescriptor(fd, request); },
         adoptFileHandle(fd, path, makeError) { return native.adoptFileHandle(fd, path, makeError); },

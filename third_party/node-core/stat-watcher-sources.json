@@ -1,0 +1,72 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "deps/uv/src/fs-poll.c": {
+      "path": "upstream/stat-poll/deps/uv/src/fs-poll.c",
+      "sha256": "e4869036bc54bc5a881794ca6aac044c9c567361fff48dd7f02f3a4640e6d271"
+    },
+    "deps/uv/src/to-stat.inc": {
+      "path": "upstream/stat-poll/deps/uv/src/to-stat.inc",
+      "sha256": "bd37911f928db4989249f3ff1cd3e2c648a52860bc642c81ac9809c6674ac5b2"
+    },
+    "deps/uv/src/unix-fs.c": {
+      "path": "upstream/stat-poll/deps/uv/src/unix-fs.c",
+      "sha256": "895d46c60b30e12249ed6a6696a184fcc594fccaefb008ddb3a3b6a694f0388b"
+    },
+    "deps/uv/uv.h": {
+      "path": "upstream/stat-poll/deps/uv/uv.h",
+      "sha256": "bb9ed99b80cd22c58361bffdfbb2aa7029ce0391cde616745c0072a6f3c03219"
+    },
+    "lib/fs.js": {
+      "path": "upstream/stat-poll/lib/fs.js",
+      "sha256": "21e9604151bcdfdacec9ec6e127e8ba906fb1b4e9415fd0de3221b7e92a08ef3"
+    },
+    "lib/internal/fs/watchers.js": {
+      "path": "upstream/stat-poll/lib/internal/fs/watchers.js",
+      "sha256": "1e56ebb425c662e48cbccc4338995b2076bd6892ff07e539fb3cade491cd3e6a"
+    },
+    "src/node_stat_watcher.cc": {
+      "path": "upstream/stat-poll/src/node_stat_watcher.cc",
+      "sha256": "58d48a36f5773de273b65c248a77077853123fe9bdce25cd8df6470456c5a8f7"
+    },
+    "src/node_stat_watcher.h": {
+      "path": "upstream/stat-poll/src/node_stat_watcher.h",
+      "sha256": "51a9654ba2d99edc79e2f1a3aa9ff6dda9b687c0a3649e3450b2eb571b764af5"
+    }
+  },
+  "selections": {
+    "symbols": {
+      "source": "lib/internal/fs/watchers.js",
+      "start": "const kOldStatus = Symbol('kOldStatus');",
+      "end": "const lazyMinimatch = ",
+      "sha256": "66fbcd0fc034ac8813164998594a1492ef5a8fba69e6afc135b914abf3414c64",
+      "startLine": 73,
+      "endLine": 82
+    },
+    "statWatcher": {
+      "source": "lib/internal/fs/watchers.js",
+      "start": "function emitStop(self) {",
+      "end": "\n\nfunction FSWatcher()",
+      "sha256": "c94946329b237c96e1455cc571531f66862b29c0474afa6c1444ef5f11591191",
+      "startLine": 126,
+      "endLine": 249
+    },
+    "watchFile": {
+      "source": "lib/fs.js",
+      "start": "const statWatchers = new SafeMap();",
+      "end": "\n\nlet splitRoot;",
+      "sha256": "49b2b360fc543a38e88433e68898f4cd47832f902fc111e5d95ef7ab2f78235a",
+      "startLine": 3204,
+      "endLine": 3293
+    },
+    "nativeStatConversion": {
+      "source": "deps/uv/src/unix-fs.c",
+      "start": "static void uv__to_stat(",
+      "end": "\n\nstatic int uv__fs_statx",
+      "sha256": "bd37911f928db4989249f3ff1cd3e2c648a52860bc642c81ac9809c6674ac5b2",
+      "startLine": 1433,
+      "endLine": 1509
+    }
+  }
+}
