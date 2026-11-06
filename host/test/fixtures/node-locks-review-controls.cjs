@@ -23,12 +23,18 @@ if(mode==='adapter'){
   }};
   const P=Object.create(null,descriptors);
   const source=fs.readFileSync(path.join(root,'third_party/node-core/locks-platform-adapter.js'),'utf8')
-    .replace('/* NODE_LOCKS_MODULE */',fs.readFileSync(path.join(root,'third_party/node-core/upstream/locks/lib/internal/locks.js'),'utf8'));
+    .replace('/* NODE_LOCKS_MODULE */',fs.readFileSync(path.join(root,'third_party/node-core/upstream/locks/lib/internal/locks.js'),'utf8'))
+    .replace('/* NODE_WORKER_LOCKS_LAZY_EXPORT */',(() => {
+      const source=fs.readFileSync(path.join(root,'third_party/node-core/upstream/object-marks/lib/worker_threads.js'),'utf8');
+      return source.slice(source.indexOf('// The Web Locks API implementation is only needed once `locks` is used.'));
+    })());
+  const lazyOwner=require(process.env.NODE_LOCKS_LAZY_REFERENCE_BINDING);
   const create=Function('_createNodePrimordials',source+'\nreturn _createNodeLocksPlatform;')(()=>P);
   addon=require(process.argv[3]);
   const platform=create({process,worker,diagnostics:dc,types:require('node:util/types'),
     values:{errors:require('internal/errors'),util:require('internal/util'),validators:require('internal/validators')},
-    eventRequire:name=>require(name),native:{locks:addon.locks,markPromiseAsHandled}});
+    eventRequire:name=>require(name),native:{locks:addon.locks,markPromiseAsHandled,
+      defineNativeLazyDataProperty:lazyOwner.defineNativeLazyDataProperty}});
   const api={};platform.install(api);locks=api.locks;
 }
 const gate=()=>{let resolve;const promise=new Promise(yes=>{resolve=yes;});return {promise,resolve};};

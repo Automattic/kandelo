@@ -5269,5 +5269,22 @@
         "sha256": "81a2745d8329d2674ef54d0b56c0a510c9f6d3c9fbb794fe447f2b7eb5075c0f"
       }
     }
+  },
+  "workerLazyExports": {
+    "manifest": {
+      "path": "worker-lazy-sources.json",
+      "sha256": "ec47d55a27dcda35285b9c21ddce7e636010f3dd490ede88c5b8ba74003ff97e"
+    },
+    "scope": "Pinned Worker native lazy locks installation over sealed engine prerequisite and actual existing lock owner; initialization/private identity/singleton routing only; guest JSAPI and full R-015 remain open",
+    "sources": {
+      "lib/worker_threads.js": {
+        "path": "upstream/object-marks/lib/worker_threads.js",
+        "sha256": "6b5a54b8b7d6b279d62b829240dc3a10c6ea5e4156d414d9b70192056269fa60"
+      },
+      "lib/internal/bootstrap/realm.js": {
+        "path": "upstream/worker-lazy/lib/internal/bootstrap/realm.js",
+        "sha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b"
+      }
+    }
   }
 }

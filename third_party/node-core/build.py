@@ -1812,7 +1812,28 @@ for name, item in locks_manifest['sources'].items():
     if hashlib.sha256(raw).hexdigest() != item['sha256']:
         raise ValueError('Web Locks source identity mismatch: ' + name)
 locks_source = (root / locks_manifest['sources']['lib/internal/locks.js']['path']).read_text()
+worker_lazy_record = manifest['workerLazyExports']['manifest']
+worker_lazy_raw = (root / worker_lazy_record['path']).read_bytes()
+if hashlib.sha256(worker_lazy_raw).hexdigest() != worker_lazy_record['sha256']:
+    raise ValueError('Worker lazy manifest identity mismatch')
+worker_lazy_manifest = json.loads(worker_lazy_raw)
+if worker_lazy_manifest['sources'] != manifest['workerLazyExports']['sources']:
+    raise ValueError('Worker lazy source ledger mismatch')
+if (worker_lazy_manifest['version'], worker_lazy_manifest['commit']) != (manifest['version'], manifest['commit']):
+    raise ValueError('Worker lazy export target identity mismatch')
+for name, item in worker_lazy_manifest['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Worker lazy source identity mismatch: ' + name)
+worker_public_source = (root / worker_lazy_manifest['sources']['lib/worker_threads.js']['path']).read_text()
+worker_lazy_anchor = '// The Web Locks API implementation is only needed once `locks` is used.'
+if worker_public_source.count(worker_lazy_anchor) != 1:
+    raise ValueError('Review pinned Worker native lazy installation block')
+worker_lazy_source = worker_public_source[worker_public_source.index(worker_lazy_anchor):]
 locks_adapter = (root / 'locks-platform-adapter.js').read_text()
+if locks_adapter.count('/* NODE_WORKER_LOCKS_LAZY_EXPORT */') != 1:
+    raise ValueError('Review Worker native lazy installation marker')
+locks_adapter = locks_adapter.replace('/* NODE_WORKER_LOCKS_LAZY_EXPORT */', worker_lazy_source)
 if locks_adapter.count('/* NODE_LOCKS_MODULE */') != 1:
     raise ValueError('Review Web Locks public module marker')
 bundle += locks_adapter.replace('/* NODE_LOCKS_MODULE */', locks_source) + '\n'

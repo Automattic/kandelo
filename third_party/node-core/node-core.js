@@ -103895,7 +103895,10 @@ function _createNodeWorkerPlatform(platform) {
     const api = { Worker, SHARE_ENV, parentPort, workerData: environment ? undefined : null,
         isMainThread: !environment, isInternalThread: false, threadId: environment ? environment.threadId : 0,
         getEnvironmentData, setEnvironmentData };
-    return { api, dispatch,
+    // Private imports consume real captured thread identity, independently of
+    // public worker_threads assignment/shadowing. This view is never exported.
+    const internal = { threadId: api.threadId };
+    return { api, internal, dispatch,
         initializeData(data) { environmentData = new SafeMap(data.environmentData); api.workerData = data.workerData; } };
 }
 
@@ -103905,10 +103908,16 @@ function _createNodeWorkerPlatform(platform) {
 function _createNodeLocksPlatform(platform) {
     'use strict';
     const P = _createNodePrimordials();
-    const { ObjectDefineProperty, Promise, PromisePrototypeThen, ReflectApply, SafeMap } = P;
+    const { ArrayPrototypePush, ObjectDefineProperty, Promise, PromisePrototypeThen, ReflectApply, SafeMap } = P;
     const requests = new SafeMap();
     const native = (...args) => ReflectApply(platform.native.locks, undefined, args);
-    let publicModule;
+    // Match BuiltinModule's owning exports/loading/loaded state, including
+    // partial exports during circular initialization and retry after a throw.
+    // The module record and loader belong to this Worker/context's realm.
+    const publicModule = { exports: {} };
+    const moduleLoadList = platform.process.moduleLoadList;
+    let loaded = false, loading = false;
+    const defineNativeLazy = platform.native.defineNativeLazyDataProperty;
     function settle(id, entry, rejected, value, processQueue = true) {
         const status = native('complete', id);
         requests.delete(id);
@@ -103928,7 +103937,7 @@ function _createNodeLocksPlatform(platform) {
         if (entry.callbackSettled) { native('complete', id); requests.delete(id); }
     }
     function dispatchOne() {
-        if (!publicModule) return 0;
+        if (!loaded) return 0;
         let event, entry, victims, stolenError;
         // Prepare receiver-local roots/errors before the native state commit.
         // A GC/allocation failure or reentrant request cannot consume a steal
@@ -104039,8 +104048,8 @@ function _createNodeLocksPlatform(platform) {
         },
     };
     function load() {
-        if (publicModule) return publicModule;
-        const module = { exports: {} };
+        if (loaded || loading) return publicModule.exports;
+        const module = publicModule;
         function require(name) {
             if (name === 'internal/errors') return platform.values.errors;
             if (name === 'internal/util') return platform.values.util;
@@ -104054,8 +104063,10 @@ function _createNodeLocksPlatform(platform) {
             if (name === 'locks') return binding;
             throw new P.Error('Unsupported Web Locks binding: ' + name);
         }
-        (function(module, exports, require, primordials, internalBinding, process) {
-            'use strict';
+        loading = true;
+        try {
+            (function(module, exports, require, primordials, internalBinding, process) {
+                'use strict';
 
 const {
   ObjectDefineProperties,
@@ -104395,23 +104406,45 @@ module.exports = {
   locks: new LockManager(kConstructLockManager),
 };
 
-        })(module, module.exports, require, P, internalBinding, platform.process);
-        publicModule = module.exports;
-        return publicModule;
+            })(module, module.exports, require, P, internalBinding, platform.process);
+            loaded = true;
+        } finally { loading = false; }
+        // Record the actual successful module initialization. Keep the captured
+        // owner array, like the pinned builtin loader, rather than rereading a
+        // mutable public process property. This is not a materialization proof.
+        ArrayPrototypePush(moduleLoadList, 'NativeModule internal/locks');
+        return publicModule.exports;
+    }
+    function requireBuiltin(id) {
+        if (id === 'internal/locks') return load();
+        throw new P.Error('Unsupported lazy Worker builtin: ' + id);
+    }
+    function loadLazyExport(id, key) { return requireBuiltin(id)[key]; }
+    function defineLazyProperties(target, id, keys, enumerable = true) {
+        // This privileged helper is called only by the unchanged pinned
+        // worker_threads installation block below. There is no accessor or
+        // fallback when the real native owner has not been integrated.
+        const attributes = enumerable ? 7 : 5;
+        for (let index = 0, length = keys.length; index < length; index++) {
+            ReflectApply(defineNativeLazy, undefined,
+                [target, keys[index], loadLazyExport, id, attributes]);
+        }
     }
     return {
         // One event per engine phase preserves the ordinary tick/job checkpoint.
         dispatch: dispatchOne,
+        // Private builtin routing owns the same module/singleton regardless of
+        // assignment, defineProperty or deletion on public worker_threads.
+        require: requireBuiltin,
         install(target) {
-            ObjectDefineProperty(target, 'locks', {
-                configurable: true, enumerable: true,
-                get() {
-                    const value = load().locks;
-                    ObjectDefineProperty(target, 'locks', { value, writable: true, configurable: true, enumerable: true });
-                    return value;
-                },
-                set(value) { ObjectDefineProperty(target, 'locks', { value, writable: true, configurable: true, enumerable: true }); },
-            });
+            const module = { exports: target };
+            // The Web Locks API implementation is only needed once `locks` is used.
+defineLazyProperties(
+  module.exports,
+  'internal/locks',
+  ['locks'],
+);
+
         },
     };
 }

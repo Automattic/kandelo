@@ -1,0 +1,15 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/worker_threads.js": {
+      "path": "upstream/object-marks/lib/worker_threads.js",
+      "sha256": "6b5a54b8b7d6b279d62b829240dc3a10c6ea5e4156d414d9b70192056269fa60"
+    },
+    "lib/internal/bootstrap/realm.js": {
+      "path": "upstream/worker-lazy/lib/internal/bootstrap/realm.js",
+      "sha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b"
+    }
+  },
+  "scope": "Unchanged pinned Worker locks installation block; actual native lazy-data prerequisite and real existing LockManager. No full Worker/Navigator/guest parity claim."
+}

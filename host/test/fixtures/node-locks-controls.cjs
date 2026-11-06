@@ -21,15 +21,21 @@ if (mode === 'adapter') {
         'third_party/node-core/upstream/primordials.js'), 'utf8') + '\nreturn primordials;')({});
     const publicSource = fs.readFileSync(path.join(root,
         'third_party/node-core/upstream/locks/lib/internal/locks.js'), 'utf8');
+    const workerPublic = fs.readFileSync(path.join(root,
+        'third_party/node-core/upstream/object-marks/lib/worker_threads.js'), 'utf8');
+    const lazyAnchor = '// The Web Locks API implementation is only needed once `locks` is used.';
     const adapterSource = fs.readFileSync(path.join(root,
-        'third_party/node-core/locks-platform-adapter.js'), 'utf8').replace('/* NODE_LOCKS_MODULE */', publicSource);
+        'third_party/node-core/locks-platform-adapter.js'), 'utf8').replace('/* NODE_LOCKS_MODULE */', publicSource)
+        .replace('/* NODE_WORKER_LOCKS_LAZY_EXPORT */', workerPublic.slice(workerPublic.indexOf(lazyAnchor)));
+    const lazyOwner = require(process.env.NODE_LOCKS_LAZY_REFERENCE_BINDING);
     const create = Function('_createNodePrimordials', adapterSource + '\nreturn _createNodeLocksPlatform;')(() => primordials);
     api = {};
     adapter = create({
         process, worker: workerThreads, diagnostics: dc, types: require('node:util/types'),
         values: { errors: require('internal/errors'), util: require('internal/util'), validators: require('internal/validators') },
         eventRequire: name => require(name),
-        native: { locks: require(process.argv[3]).locks, markPromiseAsHandled },
+        native: { locks: require(process.argv[3]).locks, markPromiseAsHandled,
+            defineNativeLazyDataProperty: lazyOwner.defineNativeLazyDataProperty },
     });
     adapter.install(api);
 }

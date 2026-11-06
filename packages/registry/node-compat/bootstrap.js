@@ -4936,11 +4936,10 @@ const _nodeWorkerPlatform = _createNodeWorkerPlatform({
 globalThis.__kandeloDispatchWorkers = _nodeWorkerPlatform.dispatch;
 
 const _nodeLocksPlatform = _createNodeLocksPlatform({
-    native: _nodeNative, values: _nodeValues, process, worker: _nodeWorkerPlatform.api,
+    native: _nodeNative, values: _nodeValues, process, worker: _nodeWorkerPlatform.internal,
     types: util.types, diagnostics: _nodeDiagnostics.api,
     eventRequire: name => _nodeEventPlatform.require(name),
 });
-_nodeLocksPlatform.install(_nodeWorkerPlatform.api);
 globalThis.__kandeloDispatchLocks = _nodeLocksPlatform.dispatch;
 
 
@@ -5908,6 +5907,9 @@ Object.assign(_builtinModules.worker_threads, {
     moveMessagePortToContext: _nodePortIO.moveMessagePortToContext,
     BroadcastChannel: _nodePortIO.BroadcastChannel,
 });
+// Match the pinned worker_threads module: install the pending native export
+// after the actual ordinary Worker/port/object-mark exports have been assembled.
+_nodeLocksPlatform.install(_nodeWorkerPlatform.api);
 // Web Crypto global. Modern Node (19+) exposes `globalThis.crypto` separately
 // from `require('crypto')`. uuid/dist-node/rng.js and many other packages
 // reach for the bare `crypto.getRandomValues()` here without importing

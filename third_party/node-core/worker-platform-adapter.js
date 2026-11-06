@@ -121,6 +121,9 @@ function _createNodeWorkerPlatform(platform) {
     const api = { Worker, SHARE_ENV, parentPort, workerData: environment ? undefined : null,
         isMainThread: !environment, isInternalThread: false, threadId: environment ? environment.threadId : 0,
         getEnvironmentData, setEnvironmentData };
-    return { api, dispatch,
+    // Private imports consume real captured thread identity, independently of
+    // public worker_threads assignment/shadowing. This view is never exported.
+    const internal = { threadId: api.threadId };
+    return { api, internal, dispatch,
         initializeData(data) { environmentData = new SafeMap(data.environmentData); api.workerData = data.workerData; } };
 }

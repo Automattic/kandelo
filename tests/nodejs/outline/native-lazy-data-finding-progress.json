@@ -1,6 +1,6 @@
 {
   "auditRequirements": {
-    "document": "tests/nodejs/audit/engine-contracts.md",
+    "document": "tests/nodejs/audit/worker-contracts.md",
     "findingIds": [
       "R-015"
     ],

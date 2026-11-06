@@ -458,6 +458,7 @@
         createCloneModeSymbol() { return native.createCloneModeSymbol(); },
         markBufferUntransferable(buffer) { return native.markBufferUntransferable(buffer); },
         objectMark(operation, value) { return native.objectMark(operation, value); },
+        defineNativeLazyDataProperty(...args) { return native.defineNativeLazyDataProperty(...args); },
         setCloneMode(object, mode) { return native.setCloneMode(object, mode); },
         hrtime() { return native.hrtime(); },
         operatingSystem(operation, first, second) { return native.operatingSystem(operation, first, second); },

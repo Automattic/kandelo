@@ -1,5 +1,7 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/worker-lazy-sources.json",
+  "third_party/node-core/upstream/worker-lazy",
   "third_party/node-core/native-lazy-data.cpp",
   "third_party/node-core/event-loop-delay.h",
   "third_party/node-core/event-loop-delay-lifetime.h",
@@ -551,4 +553,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 143
+revision = 144

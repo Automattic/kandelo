@@ -1,5 +1,12 @@
 # Broad implementation review
 
+Source144 routes Worker lazy locks/private module identity through the actual
+production native adapter.27differential traces,four existing Locks processes
+and affected source checks pass with real V8/portable dependencies;SMprimitive
+and current four-host conformance remain unvalidated. See
+[Worker lazy scope](worker-lazy-integration.md).
+
+
 Source143 integrates real engine lazy DATA shapes,traced cells and native
 binding over current142TLS/ELD/VM/backing source. Source/staging and14package
 checks pass;no C++/guest/public-consumer conformance is established. See the

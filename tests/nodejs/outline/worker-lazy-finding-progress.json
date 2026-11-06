@@ -1,0 +1,100 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/worker-contracts.md",
+    "findingIds": [
+      "R-015"
+    ],
+    "relatedFamilies": [
+      "workers",
+      "engine",
+      "values"
+    ],
+    "scope": "Worker lazy Locks/private identity source subset;fullR015/Worker/global-lazy/APIclosure remains open"
+  },
+  "sourceImplemented": [
+    "Unchanged pinned Worker lazy suffix installs real pending DATA locks after actual ordinary exports",
+    "Actual private locks module/singleton loading/retry/cycle state and captured thread identity",
+    "Actual production native adapter forwards native property binding;root controls use its source surface",
+    "Current deterministic bundle/manifest/recipe inputs retain existing143native prerequisite and allother owners"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-worker-lazy-source-r1/report.json",
+    "sha256": "61a37dfb70ffc85ad5376f3f799bbc37d6152f76a3160e1f6bbf5ae0fc1ae79a",
+    "guardedInputs": 695,
+    "wholeNodeReferences": 3,
+    "scope": "Actual Worker lazy locks/private module/identity JSsource,current generated bundle/native adapter route and unchanged assertion bodies.3wholeNode references exact. Native143primitive unchanged and uncompiled. No guest/publicWorker/globalNavigator/four-host acceptance."
+  },
+  "nativeDependencyControls": {
+    "report": ".context/node26-worker-lazy-controls-r1/report.json",
+    "sha256": "862a68273c02f1e0cb18c8163372fa9db75e7d6900ab06dac1b94ef311fa91c4",
+    "matchingConsumerTraces": 27,
+    "fatalProcessesRetained": 2,
+    "existingFocusedProcesses": 4,
+    "newNativeCompilations": 0,
+    "scope": "Actual candidate JSWorker/locks source through real production adapter surface,plus unchanged existing public/review assertions. Genuine V8nativeDATA+portableLockManager dependencies;not actual SMprimitive/guest/GC/four-host proof."
+  },
+  "affectedControls": {
+    "report": ".context/node26-worker-lazy-affected-r1.json",
+    "sha256": "036809630c064faa9507ee1a8762b1c11c8b18876213b530bcc7840daf4286c1",
+    "passed": 25,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing ports/Worker JS source controls+14package checks,no globalsetup/guest artifacts"
+  },
+  "packageChecks": {
+    "report": ".context/node26-worker-lazy-affected-r1.json",
+    "sha256": "036809630c064faa9507ee1a8762b1c11c8b18876213b530bcc7840daf4286c1",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package source checks within affected aggregate,not extra passes"
+  },
+  "privateHandoff": {
+    "report": ".context/worker-lazy-consumer-agent/seal.json",
+    "sha256": "d6172b1dd69b082c5624ee444514a1ccb4eb85079054be93083c34f835d1291d",
+    "entries": 206,
+    "scope": "Immutable139consumer source/reference/evidence seal;rootrebases143and adds missing actual adapter projection/forwarder"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-worker-lazy-adapter-before-r2.log",
+      "sha256": "21c614a657c449fe95bc82308cb6d4f1ab90f4a04f31bb441bbd87e48df65fbd",
+      "kind": "production-native-adapter-forwarding",
+      "reason": "Actual adapter lacked nativeDATAforwarder;identical descriptor assertion reproduces failure before correction"
+    },
+    {
+      "report": ".context/node26-worker-lazy-adapter-before-harness-nonpass.log",
+      "sha256": "50efe77053e9b24f0920e96f1767239bd2b24d82c4174b5eecb6310f0eee5f63",
+      "kind": "root-relative-addon-path-harness",
+      "reason": "Initialrelativeaddonname treated asmoduleidentifier;failurebeforeproductionroute,not compat evidence"
+    },
+    {
+      "report": ".context/node26-worker-lazy-source-initial-nonpass.log",
+      "sha256": "29f9617fbbd4f27bffc7c9db747023f3c320e268e75c94e7e8eef76e6cbd7447",
+      "kind": "root-prefix-only-syntax-harness",
+      "reason": "Intentionalopenadapterprefixrequiresnormalassembledbootstrap;production unchanged bycheckfix"
+    },
+    {
+      "report": ".context/node26-worker-lazy-controls-r1/report.json",
+      "sha256": "862a68273c02f1e0cb18c8163372fa9db75e7d6900ab06dac1b94ef311fa91c4",
+      "kind": "native-data-reentry-fatal-observations",
+      "reason": "Two bounded/reaped reference fatal processes;not SMcandidate passes or acceptedexclusion"
+    }
+  ],
+  "remaining": [
+    "Actual SM/native143DATAprimitive/JSAPI/callback/GC/CCW/realm/OOM/reentry/JIT/runtime execution",
+    "FullWorker ordinary exports/resourceLimits/threadName/postMessageToThread/launch/exit/modulealias behavior",
+    "Navigator/global/special-holder/key admission and actualCPU/locale/platform/branding providers",
+    "Otherutil/fs/Buffer/web/module lazyconsumers and current identified-artifact four-hostconformance",
+    "All19families remain partial,no individualAPIclosure"
+  ],
+  "at": "2026-11-06T07:20:32.722805+00:00",
+  "recipeRevision": 144,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
