@@ -394,6 +394,8 @@ status "extracted into $GAMES; add it from the launcher"
  * execs it:
  * `retro-run game.sfc`, passing any further options (`--state FILE`) to the
  * emulator. With no argument it runs the NES starter ROM.
+ * `retro-run --identify FILE` prints the system it detected (nes, md, sms, gg
+ * or sfc) and exits 0, or exits 1 when FILE is not a ROM.
  *
  * WHY it reads the ROM instead of trusting its extension: dumps circulate with
  * wrong or generic extensions (.bin, .smc for a HiROM game), so the system is
@@ -414,6 +416,8 @@ const RETRO_RUN_SCRIPT = `#!/bin/bash
 # ROM's first 64 KiB once and does everything else with bash builtins. Probing
 # each offset with its own dd|od|tr pipeline took about 25 processes to reach
 # the SNES test, and seconds before a SNES game started.
+IDENTIFY=""
+if [ "\${1:-}" = --identify ]; then IDENTIFY=1; shift; fi
 ROM=\${1:-/usr/share/retro-emulators/roms/240pee.nes}
 RUN=\${XDG_RUNTIME_DIR:-/run/user/$UID}/retro
 
@@ -468,6 +472,9 @@ if [ -z "$CORE" ]; then
     echo "retro-run: $ROM is not a recognised NES, SNES, Mega Drive, Master System or Game Gear ROM" >&2
     exit 1
 fi
+# --identify FILE: name the system and stop, for callers deciding whether a
+# file is a ROM at all (the ROM exchange handler).
+if [ -n "$IDENTIFY" ]; then echo "$EXT"; exit 0; fi
 
 # The cores read the system type from the path's extension, so give the ROM
 # a name that carries what its contents said. The rest of the name is the
@@ -488,9 +495,14 @@ exec "$CORE" "$LINK" "\${@:2}"
 
 /**
  * The Kandelo exchange handler for a dropped ROM, on every shell machine: it
- * keeps the ROM in ~/roms and starts the emulator on it, so dropping a game on
- * the machine plays it. The machine's view brings the display forward when
- * the emulator binds /dev/fb0.
+ * keeps the drop in ~/roms and starts the emulator on its first ROM, so
+ * dropping a game, or a folder of them, on the machine plays it. The
+ * machine's view brings the display forward when the emulator binds /dev/fb0.
+ *
+ * WHY it takes every drop and reads contents: ROM collections name files
+ * .rom, .bin or nothing at all, and arrive as folders, so no extension rule
+ * can pick them out. A drop with no ROM in it goes to exchange-save, exactly
+ * as the 99-save catch-all would have handled it.
  *
  * The emulator runs outside any terminal (kxchgd gives handlers /dev/null as
  * stdin), so it reads keys from the machine's keyboard device rather than
@@ -509,19 +521,39 @@ RUNTIME=\${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 PIDFILE=$RUNTIME/retro.pid
 LOG=$RUNTIME/retro.log
 
-rom=""
-for entry in "$batch"/*; do
-    [ -f "$entry" ] && { rom=$entry; break; }
-done
-[ -n "$rom" ] || { status "failed: no ROM file in the drop"; exit 1; }
-name=$(basename "$rom")
-
-# The batch is removed when this handler exits; the ROM must outlive it.
-dir="$HOME/roms"
-mkdir -p "$dir" && cp "$rom" "$dir/.$name.tmp" && mv -f "$dir/.$name.tmp" "$dir/$name" || {
-    status "failed: could not store $name in $dir"
-    exit 1
+# A ROM is recognised by its contents (retro-run --identify), not its name:
+# collections name ROMs .rom, .bin or nothing at all, and arrive as folders.
+# Only names that could be a ROM are read, so a dropped photo or archive
+# costs one directory walk. The first ROM in path order is played.
+could_be_rom() {
+    base=\${1##*/}
+    case "$base" in
+        .*) return 1 ;;
+        *.*) ;;
+        *) return 0 ;;
+    esac
+    case "$base" in
+        *.[nN][eE][sS]|*.[sS][fF][cC]|*.[sS][mM][cC]|*.[mM][dD]|*.[gG][eE][nN]|*.[sS][mM][dD]) return 0 ;;
+        *.[sS][mM][sS]|*.[gG][gG]|*.[rR][oO][mM]|*.[bB][iI][nN]) return 0 ;;
+    esac
+    return 1
 }
+rom=$(find "$batch" -type f | sort | while IFS= read -r f; do
+    could_be_rom "$f" || continue
+    /usr/bin/retro-run --identify "$f" >/dev/null 2>&1 && { printf '%s\\n' "$f"; break; }
+done)
+# Not a game: what any other drop gets.
+[ -n "$rom" ] || exec /usr/libexec/kandelo/exchange-save "$batch"
+
+# The batch is removed when this handler exits, so the drop is kept in
+# ~/roms as it arrived: a file as itself, a folder with what is in it.
+dir="$HOME/roms"
+mkdir -p "$dir" || { status "failed: could not create $dir"; exit 1; }
+for entry in "$batch"/*; do
+    cp -Rf "$entry" "$dir/" || { status "failed: could not store $(basename "$entry") in $dir"; exit 1; }
+done
+path=\${rom#"$batch"/}
+name=\${rom##*/}
 
 old=$(cat "$PIDFILE" 2>/dev/null)
 if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
@@ -537,7 +569,7 @@ fi
 rm -f "$PIDFILE"
 
 status "starting $name"
-/usr/bin/retro-run "$dir/$name" </dev/null >"$LOG" 2>&1 &
+/usr/bin/retro-run "$dir/$path" </dev/null >"$LOG" 2>&1 &
 pid=$!
 # The emulator publishes its pid once it holds the display, sound and
 # keyboard. The first start of a core fetches it, which can take a while.
@@ -580,15 +612,17 @@ const GAME_EXCHANGE_RULES: ReadonlyArray<{ name: string; handler: string; script
     rule: "# Game data for ScummVM, zipped: extracted for its launcher.\nmatch extension .zip\nkind file\nmax-bytes 536870912\nrun /usr/libexec/kandelo/scummvm-load-zip\n",
   },
   {
-    name: "50-retro-rom.handler",
+    // Sorted after the game machines' rules and before the 99-save
+    // catch-all: it takes every drop, plays one holding a ROM, and hands
+    // anything else to exchange-save as the catch-all would.
+    name: "90-retro-rom.handler",
     handler: "/usr/libexec/kandelo/retro-load-rom",
     script: RETRO_LOAD_ROM_HANDLER,
     rule: [
-      "# A NES, SNES, Mega Drive, Master System or Game Gear ROM: kept in ~/roms",
-      "# and played. .bin is left out: too many other files use it, and",
-      "# `retro-run FILE` plays a ROM by its contents whatever its name.",
-      ...[".nes", ".sfc", ".smc", ".md", ".gen", ".smd", ".sms", ".gg"].map((ext) => `match extension ${ext}`),
-      "kind file",
+      "# A drop holding a NES, SNES, Mega Drive, Master System or Game Gear",
+      "# ROM, whatever it is named: kept in ~/roms and played. Anything",
+      "# else is saved to ~/Downloads, as the 99-save catch-all would.",
+      "kind any",
       "max-bytes 16777216",
       "run /usr/libexec/kandelo/retro-load-rom",
       "",

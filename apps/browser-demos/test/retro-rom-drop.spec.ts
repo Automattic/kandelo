@@ -10,10 +10,12 @@
 //   framebuffer canvas feeds while focused. The starter ROMs are static
 //   test-suite menus, so a frame that changes after a key press changed
 //   because of the key, and Esc, which quits, must end the emulator.
-// - The launcher picks the core from the ROM's bytes: the SNES ROM is dropped
-//   under an .smc name (a copier-dump extension) and still runs on Snes9x.
+// - ROMs are recognised by their bytes, not their names, because collections
+//   name them .rom or nothing at all: the SNES ROM is dropped as Suite.rom
+//   and still runs on Snes9x, and a ROM with no extension plays.
 // - A second drop replaces the running game: the display changes owner.
-// - A file the rule matches by name but that is no ROM fails visibly.
+// - A file that is not a ROM, even one whose name could be (.md), is saved
+//   to ~/Downloads as any other drop would be.
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { existsSync, readFileSync } from "node:fs";
@@ -131,10 +133,10 @@ test("a ROM dropped on the shell plays, takes keys without a terminal, and Esc q
   await expect.poll(async () => (await frameSummary(canvas)).digest, { timeout: 30_000 })
     .not.toBe(settled);
 
-  // A second drop replaces the game. The SNES ROM goes under an .smc name;
-  // the launcher reads its header, not its name, to pick Snes9x.
-  await dropFile(page, page.locator(".kframebuffer-surface").first(), "Suite.smc", readFileSync(SNES_ROM));
-  await expect.poll(() => batchStatus(page), { timeout: 240_000 }).toBe("playing Suite.smc");
+  // A second drop replaces the game. The SNES ROM is named .rom, as ROM
+  // collections often do; the launcher reads its header to pick Snes9x.
+  await dropFile(page, page.locator(".kframebuffer-surface").first(), "Suite.rom", readFileSync(SNES_ROM));
+  await expect.poll(() => batchStatus(page), { timeout: 240_000 }).toBe("playing Suite.rom");
   await expect.poll(() => boundPid(page), { timeout: 60_000 }).not.toBe(nesPid);
   expect(await boundPid(page)).not.toBeNull();
   await awaitRender(canvas);
@@ -144,8 +146,18 @@ test("a ROM dropped on the shell plays, takes keys without a terminal, and Esc q
   await page.keyboard.press("Escape");
   await expect.poll(() => boundPid(page), { timeout: 30_000 }).toBeNull();
 
-  // A file the rule takes by name that holds no ROM fails, and says why.
-  await dropFile(page, page.locator(".kshell-surface, .kframebuffer-surface").first(), "notes.md", Buffer.from("# not a game\n"));
+  // A ROM with no extension at all plays: it is recognised by its bytes.
+  const surface = page.locator(".kshell-surface, .kframebuffer-surface").first();
+  await dropFile(page, surface, "testsuite", readFileSync(NES_ROM));
+  await expect.poll(() => batchStatus(page), { timeout: 120_000 }).toBe("playing testsuite");
+  await expect.poll(() => boundPid(page), { timeout: 30_000 }).not.toBeNull();
+  await canvas.focus();
+  await page.keyboard.press("Escape");
+  await expect.poll(() => boundPid(page), { timeout: 30_000 }).toBeNull();
+
+  // A file whose name could be a ROM but whose bytes are not is saved, as
+  // any other drop is.
+  await dropFile(page, surface, "notes.md", Buffer.from("# not a game\n"));
   await expect.poll(() => batchStatus(page), { timeout: 60_000 })
-    .toMatch(/^failed: .*not a recognised NES, SNES, Mega Drive, Master System or Game Gear ROM$/);
+    .toBe("saved to ~/Downloads/notes.md");
 });

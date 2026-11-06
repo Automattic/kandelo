@@ -1746,18 +1746,25 @@ the ROM's own bytes, not its name: the iNES magic, the Mega Drive `SEGA`
 header, the Master System and Game Gear `TMR SEGA` header, or a SNES
 header checksum. A file that matches none of them is refused with a
 message. It passes further options to the emulator. With no argument it
-runs the NES test suite.
+runs the NES test suite. `retro-run --identify FILE` prints the system it
+detected (`nes`, `md`, `sms`, `gg` or `sfc`) and exits 0, or exits 1 when
+the file is not a ROM.
 
-Dropping a ROM with a `.nes`, `.sfc`, `.smc`, `.md`, `.gen`, `.smd`, `.sms`
-or `.gg` name on a machine plays it. The image's exchange rule
-`50-retro-rom.handler` runs `/usr/libexec/kandelo/retro-load-rom`, which
-copies the ROM to `~/roms`, stops the emulator if one is playing, starts
-`retro-run` on the ROM in the background and reports "playing NAME" once the
-emulator holds the display, or the emulator's own error. The machine's view
-switches to the display when the emulator binds `/dev/fb0`. A ROM named
-`.bin` is not matched (too many other files use the extension) and goes to
-`~/Downloads`; `retro-run` plays it. A display already held by another
-program is not taken: the drop fails with a message saying so.
+Dropping a ROM, or a folder holding ROMs, on a machine plays it. ROMs are
+recognised by their contents, because collections name them `.rom`, `.bin`
+or nothing at all: the image's exchange rule `90-retro-rom.handler` takes
+every drop that the game machines' rules do not, and
+`/usr/libexec/kandelo/retro-load-rom` asks `retro-run --identify` about
+each file whose name could be a ROM (a console extension, `.rom`, `.bin`,
+or none). A drop with no ROM in it goes to `exchange-save`, so it is saved
+to `~/Downloads` as before. Otherwise the handler copies the drop into
+`~/roms` as it arrived (a folder keeps its contents), stops the emulator if
+one is playing, starts `retro-run` on the first ROM in path order in the
+background, and reports "playing NAME" once the emulator holds the display,
+or the emulator's own error. The machine's view switches to the display
+when the emulator binds `/dev/fb0`. A display already held by another
+program is not taken: the drop fails with a message saying so. Files over
+16 MiB are left to the catch-all.
 
 The handler's emulator has no terminal (kxchgd starts handlers with stdin
 on `/dev/null`), so it reads keys from `/dev/input/event0`, which the
@@ -1774,9 +1781,10 @@ Gated in Node by `host/test/retro-emulators-cli-smoke.test.ts` (each
 emulator initialises its core; a European ROM's name sets PAL timing; with
 no terminal the emulator reads `/dev/input/event0` and Esc there quits it)
 and in the browser by `apps/browser-demos/test/retro-rom-drop.spec.ts` (a
-dropped ROM plays and takes keys, an `.smc` name still starts Snes9x, a
-second drop replaces the game, Esc releases the display, and a non-ROM
-fails with the launcher's message).
+dropped ROM plays and takes keys, a SNES ROM named `.rom` still starts
+Snes9x, a second drop replaces the game, Esc releases the display, a ROM
+with no extension plays, and a file that is not a ROM is saved to
+`~/Downloads`).
 
 ### Kandelo session UI
 
