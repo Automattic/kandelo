@@ -10,18 +10,23 @@ The public Kandelo UI is available at:
 https://automattic.github.io/kandelo/
 ```
 
-It boots prebuilt machines in the browser using `kernel.wasm`, package artifacts, and VFS images. The first screen lets users boot a preset, paste a Kandelo URL, or bring a VFS image.
+It boots computers from filesystem images in the browser. Open **Library**
+to create or reopen a computer, then use **Activities** to start installed
+apps without rebooting it.
 
 ## Requirements
 
-Kandelo needs browser support for `SharedArrayBuffer`. In practice the page must be cross-origin isolated:
+Kandelo needs a secure context (HTTPS, or a trustworthy local address such as
+`127.0.0.1`) and cross-origin isolation to expose `SharedArrayBuffer`:
 
 ```text
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-The GitHub Pages deployment uses a service worker to add the required isolation headers. If the page reports that `SharedArrayBuffer` is unavailable, clear site data and reload. A stale service worker can keep old behavior alive.
+The static deployment uses a service worker to add the required isolation
+headers. Reload if an old worker is still active. Clearing site data also
+removes local computers; export important files before doing so.
 
 ## Local Development
 
@@ -37,35 +42,46 @@ Open:
 http://127.0.0.1:5401/
 ```
 
-`./run.sh browser` prepares missing browser artifacts before starting Vite. The lower-level path is:
+`./run.sh browser` builds or reuses the supported local graph and points Vite
+at its validated source-only projection. Prefer it to launching Vite directly,
+which omits that build and selection step.
 
-```bash
-cd apps/browser-demos
-npm install
-npm run dev
-```
+## Computers and Activities
 
-That path assumes the needed kernel, rootfs, package, and VFS artifacts already exist.
+Choose **Library → New computer**, then an image: **Base Shell**, **Web Stack**,
+or **WordPress**. Give it a name and choose temporary or saved storage.
+Library reopens, renames, keeps, and deletes local computers. A computer's
+`?computer=<UUID>` URL reopens its own filesystem on reload; it is not a
+shareable copy of that filesystem.
 
-## Gallery Presets
+Temporary computers also use browser disk storage. They become eligible for
+cleanup after 24 hours without opening them. Keep one through Library to
+retain it. Image-backed files persist; scratch mounts such as `/tmp` reset
+on reboot. Browser storage is not a backup.
 
-The current UI ships local gallery presets such as:
+::: warning Experimental persistence
+Saved computers from this release will not work in the next release.
+Export important files before updating Kandelo. Transactional software
+upgrades are not implemented yet.
+:::
 
-- Bare shell
-- Node.js
-- nginx
-- nginx + PHP
-- WordPress SQLite
-- WordPress MariaDB
-- fbDOOM
+**Activities** starts installed programs on the running computer. Independent
+apps can run together; an app that needs a display or managed website port
+already in use stops the conflicting activity first. **Web** and **Graphics**
+switch between the website preview and graphical display without restarting
+their programs. Terminal, file browsing, and process information remain
+available from the dock.
 
-When a user launches a preset, the UI selects a VFS image, boots the kernel, starts the configured process, and presents the relevant surfaces:
+Web Stack includes nginx, PHP/Adminer, Python Notes, Ruby Todo, and a Redis
+voting board. Games and tools such as Doom, Quake, Freeciv, and LÖVE are
+activities on the base shell. See
+[computer storage and retention](https://github.com/Automattic/kandelo/blob/main/docs/browser-support.md#computer-library-and-retention)
+for the full storage behavior.
 
-- terminal
-- web preview for HTTP demos
-- syslog and process internals
-- VFS browser
-- framebuffer, mouse, keyboard, and audio for demos that expose those devices
+The base shell also has PHP CLI and Composer. Each command downloads its
+deferred executable or archive on first use. Composer enables its required
+PHP extensions for its own invocation; ordinary `php` keeps its usual
+configuration, and these shell commands do not install PHP-FPM.
 
 ## Direct VFS Links
 
@@ -81,11 +97,16 @@ The host serving the image must allow the browser to fetch it from a cross-origi
 
 ## Script-Carrying Share Links
 
-The dock's Share button turns the current machine into a link that also runs a shell script when opened. Type a script into the dialog's editor and copy the URL; the script travels in the URL's `#k1=` fragment as a size-capped, checksum-verified payload.
+**More → Share setup…** creates a link with startup settings and an optional
+shell script. It shares starting inputs, not the current filesystem or a
+network invitation. The script travels in the URL's `#k1=` fragment as a
+size-capped, checksum-verified payload.
 
 When someone opens the link, the machine boots, the script's full contents are printed in the terminal, and it then runs in the initial shell — bash on images that ship it. The script file is left in place at `/run/kandelo/inputs/script/kandelo-link.sh`, writable, so the visitor can inspect, edit, and re-run it. Opening the Share dialog on a machine booted from such a link pre-fills the editor with the inherited script, so a received link can be tweaked and re-shared.
 
-Scripts run without a confirmation prompt because every machine in the current UI is ephemeral: closing the tab discards everything, so a link can affect only its own session. A malformed or oversized link fragment fails with a visible error instead of booting. Launching a different machine from the gallery drops the fragment, so a script never follows you to another machine.
+Scripts currently run without a confirmation step. A malformed or oversized
+fragment fails with a visible error. Selecting a different computer drops
+the fragment; it does not carry that script into the selected computer.
 
 ## External Software
 
@@ -95,7 +116,45 @@ image, use a [direct VFS link](#direct-vfs-links).
 
 ## Network Behavior
 
-Browser Kandelo supports local loopback sockets and virtual machine-to-machine networking inside the browser session. Browser sandboxing prevents raw external TCP and UDP sockets. External network use goes through fetch, the service worker HTTP bridge, a CORS proxy, or future transport backends.
+Browser Kandelo supports local loopback sockets, virtual machine-to-machine
+networks inside one browser session, and WebRTC network sessions between
+computers. Internet egress uses fetch/TLS bridges, exposed to guests as a
+TCP-only link; external UDP fails with `EHOSTUNREACH`. Browser sandboxing
+still prevents raw TCP/UDP sockets to arbitrary internet endpoints. The
+service worker HTTP bridge lets browser requests reach guest web servers.
+
+### Network Sessions
+
+Open the dock's network panel to create an invitation. Choose an installed
+activity, such as termchat or a multiplayer game, or share a plain network
+room. Packages supply the activity's setup and join steps. The host forwards
+IPv4 UDP and TCP between members. Leaving or replacing a hosted room
+disconnects its members; their programs keep running. See
+[package-declared sessions](https://github.com/Automattic/kandelo/blob/main/docs/package-sessions.md).
+
+Doom's **LAN game** dock menu can host a private game or join one in the
+session. Its waiting room shows joined players; the host can press Space
+to start early or Esc to quit. Quake's multiplayer menus can discover session
+peers. Freeciv's **Multiplayer** dock menu can host a server or join the
+session host; its launcher uses a direct TCP connection rather than depending
+on discovery. See [Freeciv multiplayer](https://github.com/Automattic/kandelo/blob/main/docs/freeciv.md#multiplayer).
+These are LAN links, not arbitrary internet UDP access. The default connection setup
+uses STUN without a TURN relay, so some network layouts cannot connect.
+Current guest-session validation covers Chromium; Firefox/WebKit guest
+behavior and general internet paths between computers remain unverified.
+
+Network sessions need a signalling server as well as the browser app. The
+development server runs the PHP piplet. A standalone production build includes
+`signalling/piplet.php`, requiring 64-bit PHP 8.3+ and a writable directory;
+static-only hosting needs a separately hosted endpoint selected at build time
+with `./run.sh build-browser --signalling-url URL`. The optional combined
+Spacefast package uses its database-backed `/signalling` Function instead,
+leaving the portable PHP build available for other hosts. Both clients must
+have access if that Space is private. See the
+[network-session reference](https://github.com/Automattic/kandelo/blob/main/docs/browser-support.md#purpose-checked-browser-peer-connections)
+for connection settings, deployment, and validation limits.
+
+### Cross-Origin HTTP Requests
 
 The browser app defaults cross-origin fetches to:
 
@@ -118,3 +177,10 @@ which hosts the default proxy, strips `Range` before it reaches the proxy.
 Anonymous bodyless GETs may omit other fields with a diagnostic. Requests that
 would lose credentials, a body, or state-changing semantics fail before proxy
 dispatch. Direct browser requests and Node.js-host networking are unchanged.
+
+The optional Spacefast proxy also requires a quota-session credential. The
+current app obtains it through the proxy's PHP session Function and stores it
+on the app's origin, without needing third-party cookies. Deploy the app,
+proxy, and session endpoint together and reload existing tabs after upgrading
+that protocol. The ordinary Playground proxy does not use this handshake.
+See [Spacefast deployment and limits](https://github.com/Automattic/kandelo/blob/main/apps/spacefast-cors-proxy/README.md#combined-kandelo-site).
