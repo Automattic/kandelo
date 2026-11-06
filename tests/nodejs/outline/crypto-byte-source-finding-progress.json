@@ -1,0 +1,80 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto-contracts.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "crypto",
+      "values",
+      "engine",
+      "workers"
+    ],
+    "scope": "Owning byte-source and original-random allocation prerequisites, not public crypto closure"
+  },
+  "sourceImplemented": [
+    "Checked dynamic caller-authority unwrap/root actual storage, real denied-wrapper errors, source-realm nonallocating no-GC consumers and unchanged atomic copy helper",
+    "Prepare equality inputs before pointer use; real key/KDF/digest/hash/cipher delegates use bounded native byte consumption",
+    "Capture actual original backing before random init, move into work, write captured native range, remove completion reborrow/fabricated invalid-state path",
+    "Allocate and account actual scratch capacity before publication; preserve failure, ReleaseIo and shutdown ownership"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-crypto159-source-r1/report.json",
+    "sha256": "7c8bd5e747db4a8cef777359ef5dafcc61182ced453c7d19695e17dd637b97ee",
+    "guardedInputs": 740,
+    "scope": "Current exact crypto candidate integration and normal source/unity/input checks only; reference behavior is separately identified. No production JSAPI compilation or candidate runtime/four-host acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-crypto159-affected-r1.json",
+    "sha256": "9c39776cdc9c6791fb6ccc3c3daf17b1dbf44b7ecacf7f2e94f80c795003e66c",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing package-source tests only"
+  },
+  "sealedSourceReview": {
+    "report": ".context/crypto-byte-source-agent/REPORT.json",
+    "sha256": "b5c51aba2f27b433eab00b4d0de64a6041917bc8f4ad49d5c9ff5924059f6ddf",
+    "sourceReviewChecks": 24,
+    "scope": "Private source155 actual overload/caller/ownership/header review, production JSAPI uncompiled"
+  },
+  "nativeReferences": {
+    "report": ".context/crypto-byte-source-agent/REPORT.json",
+    "sha256": "b5c51aba2f27b433eab00b4d0de64a6041917bc8f4ad49d5c9ff5924059f6ddf",
+    "passed": 12,
+    "failed": 0,
+    "reusedEvidence": true,
+    "scope": "Pinned native V8 VM/public crypto target behavior, not Kandelo candidate JSAPI/native work/security CCW"
+  },
+  "sharedFoundationLayout": {
+    "report": "tests/nodejs/outline/shared-backing-layout-review.json",
+    "sha256": "b7d9d7b569a38b16f215a93c9d6cf37fb3850f3559323b10648c80cf6efce520",
+    "scope": "Bounded actual base/field-type extraction for prior158alignment fix; not full header/derived/TU/engine/runtime"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/crypto-byte-source-agent/SEAL.json",
+      "sha256": "d84ce7c1bdac6b99c7cb3967bb96cf74d033536a4647cf04afc1555b41e96ac3",
+      "kind": "native-reference-fixture-and-source-review-errors",
+      "reason": "Initial incorrect proxy-error expectation and comment-matching source-check failure retained; no upstream assertion changed"
+    },
+    {
+      "report": ".context/shared-buffer-alignment-review-157/SEAL.json",
+      "sha256": "a8129a0d081eb3d97bbb0ba8c5612f85fec5318825ba8b01d23303628a560e6b",
+      "kind": "layout-fixture-and-original-assert-negatives",
+      "reason": "13tiny helper attempts include4missing-header setup failures and2expected original-assert failures; none passing API cases"
+    }
+  ],
+  "remaining": [
+    "Production JSAPI/current-engine compilation and actual allowed/denied/revoked CCW, inline/pinned/shared/detached/OOB/zero/GC/realm behavior",
+    "Native original-storage work/transfer/shrink/grow/GC/cancellation/retirement and all four hosts",
+    "Existing sync-KDF constructor/init mutation semantics, separate SQLite/TLS byte-source questions and full crypto public surface remain open"
+  ],
+  "at": "2026-11-06T23:45:55.019644+00:00",
+  "recipeRevision": 159,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

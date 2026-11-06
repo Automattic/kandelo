@@ -5995,6 +5995,13 @@ The combined engine, actual GC/realm behavior and four-host conformance remain
 unvalidated; UDP/socket consumers and shared-codec races remain separate gaps.
 See [original backing allocation scope](../tests/nodejs/outline/original-backing-consumers-integration.md).
 
+Synchronous crypto byte consumption separately roots checked actual storage,
+enters its owner realm and borrows through nonallocating public data readers.
+Async random work captures the original allocation capability before init
+hooks and retains it through work; completion does not redirect into the
+current JS view. Production JSAPI, GC/realm/work/cancellation and four-host
+behavior remain unvalidated. See [crypto byte-source scope](../tests/nodejs/outline/crypto-byte-source-integration.md).
+
 ### Recursive Node copy source ownership
 
 The source147 candidate installs pinned public recursive-copy algorithms

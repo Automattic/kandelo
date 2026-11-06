@@ -1,18 +1,25 @@
 /* CSPRNG work and secure allocations over the real packaged OpenSSL provider.
  * Included after native-digests.cpp and shared native request/work owners. */
 #include "kandelo-node-random-operations.h"
+#include <new>
 namespace {
 static bool KandeloNativeRandomFill(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   kandelo::crypto::Bytes bytes;
+  KandeloCryptoByteSource source(cx);
+  if (!source.Init(args.get(0))) {
+    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Random fill requires real bytes");return false;
+  }
   try {
-    JS::AutoCheckCannotGC nogc; SharedMem<uint8_t*> output; size_t length;
-    if (!KandeloCryptoSpan(cx, args.get(0), &output, &length)) {
-      if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Random fill requires real bytes"); return false;
+    const bool filled = source.WithBytes([&](SharedMem<uint8_t*> output, size_t length) {
+      bytes.value.resize(length);kandelo::crypto::FillRandom(bytes.value.data(), length);
+      for (size_t i = 0; i < length; ++i) __atomic_store_n(output.unwrap() + i, bytes.value[i], __ATOMIC_RELAXED);
+      return true;
+    });
+    if (!filled) {
+      if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Random destination has no backing data");return false;
     }
-    bytes.value.resize(length); kandelo::crypto::FillRandom(bytes.value.data(), length);
-    for (size_t i = 0; i < length; ++i) __atomic_store_n(output.unwrap() + i, bytes.value[i], __ATOMIC_RELAXED);
-    args.rval().setUndefined(); return true;
+    args.rval().setUndefined();return true;
   } catch (const kandelo::crypto::Error& error) { return KandeloDigestError(cx, error, args.rval()); }
 }
 static void KandeloFreeSecureRandomBuffer(void*, void* owner) {
@@ -34,59 +41,42 @@ static bool KandeloNativeSecureRandomBuffer(JSContext* cx, unsigned argc, Value*
   args.rval().setObject(*view); return true;
 }
 struct KandeloRandomWork final : KandeloFsWork {
-  size_t offset, size, associated;
+  size_t offset, size, associated = 0;
+  JS::KandeloBacking::SpanRef backing;
   kandelo::crypto::Bytes bytes;
   std::unique_ptr<kandelo::crypto::Error> cryptoError;
-  KandeloRandomWork(JSContext* cx, JSObject* request, size_t offset, size_t size)
-      : KandeloFsWork(cx, request, -1, 0, Operation::FileRead), offset(offset), size(size),
-        associated(sizeof(*this) - sizeof(KandeloFsWork) + size) {
+  KandeloRandomWork(JSContext* cx, JSObject* request, size_t offset, size_t size,
+                    JS::KandeloBacking::SpanRef backing)
+      : KandeloFsWork(cx, request, -1, 0, Operation::FileRead), offset(offset), size(size), backing(std::move(backing)) {
     workClass = WorkClass::Cpu;
+    // Allocate real native scratch before publishing work. The charge follows
+    // actual capacity, not a predicted allocation on another thread.
+    bytes.value.resize(size);
+    if (bytes.value.capacity() > SIZE_MAX - (sizeof(*this) - sizeof(KandeloFsWork))) throw std::length_error("Random scratch capacity overflow");
+    associated = sizeof(*this) - sizeof(KandeloFsWork) + bytes.value.capacity();
     JS::AddAssociatedMemory(owner, associated, JS::MemoryUse::Embedding3);
   }
   ~KandeloRandomWork() override { JS::RemoveAssociatedMemory(owner, associated, JS::MemoryUse::Embedding3); }
+  void ReleaseIo() override { backing.reset(); }
   const char* Syscall() const override { return "randomFill"; }
   void Run() override {
-    bytes.value.resize(size);
-    try { kandelo::crypto::FillRandom(bytes.value.data(), size); }
-    catch (const kandelo::crypto::Error& error) { cryptoError = std::make_unique<kandelo::crypto::Error>(error); }
+    try {
+      kandelo::crypto::FillRandom(bytes.value.data(), size);
+      // The capability owns the original admitted allocation and range, even
+      // if JS detached/resized/transferred the view after init. Worker code
+      // never touches JS objects; preserve relaxed atomic shared stores.
+      uint8_t* destination = backing->Data();
+      for (size_t i = 0; i < size; ++i)
+        __atomic_store_n(destination + offset + i, bytes.value[i], __ATOMIC_RELAXED);
+    } catch (const kandelo::crypto::Error& error) { cryptoError = std::make_unique<kandelo::crypto::Error>(error); }
     performed = true;
   }
   bool PrepareResult(JSContext* cx) override {
     RootedValue error(cx, NullValue());
-    if (cryptoError) {
-      if (!KandeloDigestError(cx, *cryptoError, &error)) return false;
-    } else {
-      bool valid = false;
-      RootedValue target(cx, JS::GetReservedSlot(owner, FsRequestBuffers));
-      RootedObject object(cx, &target.toObject()), backing(cx, object);
-      const bool view = JS_IsArrayBufferViewObject(object);
-      if (view) {
-        bool shared;
-        backing = JS_GetArrayBufferViewBuffer(cx, object, &shared);
-        if (!backing) return false;
-      }
-      const bool detached = JS::IsArrayBufferObject(backing) && JS::IsDetachedArrayBufferObject(backing);
-      // A detached or now-out-of-bounds view has no valid writable span. Do
-      // not turn its expected state transition into an uncaught JSAPI error.
-      const bool emptyView = view && JS_GetArrayBufferViewByteLength(object) == 0;
-      if (!detached && !emptyView) {
-        JS::AutoCheckCannotGC nogc; SharedMem<uint8_t*> output; size_t length;
-        if (KandeloCryptoSpan(cx, target, &output, &length)) {
-          valid = offset <= length && size <= length - offset;
-          if (valid) for (size_t i = 0; i < size; ++i)
-            __atomic_store_n(output.unwrap() + offset + i, bytes.value[i], __ATOMIC_RELAXED);
-        } else if (JS_IsExceptionPending(cx)) return false;
-      }
-      if (!valid) {
-        RootedObject object(cx, JS_NewPlainObject(cx));
-        RootedString message(cx, JS_NewStringCopyZ(cx, "Random destination was detached or resized before completion"));
-        RootedString code(cx, JS_NewStringCopyZ(cx, "ERR_INVALID_STATE"));
-        if (!object || !message || !code || !JS_DefineProperty(cx, object, "message", message, JSPROP_ENUMERATE) ||
-            !JS_DefineProperty(cx, object, "code", code, JSPROP_ENUMERATE)) return false;
-        error.setObject(*object);
-      }
-    }
-    JS::SetReservedSlot(owner, FsRequestResult, error); return true;
+    if (cryptoError && !KandeloDigestError(cx, *cryptoError, &error)) return false;
+    // Never re-borrow the current JS view or redirect writes during completion.
+    // The completed native work has already consumed its owned original span.
+    JS::SetReservedSlot(owner, FsRequestResult, error);return true;
   }
   bool ResultValue(JSContext*, MutableHandleValue value) override {
     value.set(JS::GetReservedSlot(owner, FsRequestResult)); return true;
@@ -100,23 +90,27 @@ static bool KandeloNativeCreateRandomBytesJob(JSContext* cx, unsigned argc, Valu
   }
   if (!KandeloFsInteger(cx, args.get(3), 0, INT32_MAX, &offset) ||
       !KandeloFsInteger(cx, args.get(4), 0, INT32_MAX, &size)) return false;
-  {
-    JS::AutoCheckCannotGC nogc; SharedMem<uint8_t*> data; size_t length;
-    if (!KandeloCryptoSpan(cx, args.get(2), &data, &length)) {
-      if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "RandomBytesJob requires buffer source"); return false;
-    }
-    if (uint64_t(offset) > length || uint64_t(size) > length - size_t(offset)) {
-      JS_ReportErrorASCII(cx, "RandomBytesJob span out of bounds"); return false;
-    }
+  KandeloCryptoByteSource source(cx);
+  if (!source.Init(args.get(2))) {
+    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "RandomBytesJob requires buffer source");return false;
+  }
+  const size_t length = source.Length();
+  if (uint64_t(offset) > length || uint64_t(size) > length - size_t(offset)) {
+    JS_ReportErrorASCII(cx, "RandomBytesJob span out of bounds");return false;
+  }
+  auto backing = source.Capture();if (!backing) return false;
+  if (uint64_t(offset) > backing->Length() || uint64_t(size) > backing->Length() - size_t(offset)) {
+    JS_ReportErrorASCII(cx, "RandomBytesJob captured span out of bounds");return false;
   }
   RootedObject prototype(cx, &args[0].toObject()), request(cx);
   if (!KandeloCreateFsResource(cx, prototype, args[5], FsResourceKind::Random, &request)) return false;
+  auto abandon = mozilla::MakeScopeExit([&] { KandeloFsAbandonRequest(request); });
   auto* state = KandeloFsRequestStateOf(cx, request); if (!state) return false;
-  state->limit = size; state->flags = int(offset);
+  state->limit = size; state->flags = int(offset);state->ioBacking = std::move(backing);
   JS::SetReservedSlot(request, FsRequestBuffers, args[2]);
   // The resource exists when constructed, before ondone is assigned/run called.
   if (!KandeloInitializeFsResource(cx, request)) return false;
-  args.rval().setObject(*request); return true;
+  abandon.release();args.rval().setObject(*request);return true;
 }
 static bool KandeloNativeRunRandomBytesJob(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -128,11 +122,16 @@ static bool KandeloNativeRunRandomBytesJob(JSContext* cx, unsigned argc, Value* 
   auto abandon = mozilla::MakeScopeExit([&] { KandeloFsAbandonRequest(owner); });
   if (state->limit > SIZE_MAX - sizeof(KandeloRandomWork)) { JS_ReportOutOfMemory(cx); return false; }
   auto* queue = js::shell::KandeloGetNativeWorkQueue(cx); if (!queue) return false;
-  auto* work = js_new<KandeloRandomWork>(cx, owner.get(), uint32_t(state->flags), size_t(state->limit));
-  if (!work) { JS_ReportOutOfMemory(cx); return false; }
+  if (!state->ioBacking) { JS_ReportErrorASCII(cx, "RandomBytesJob has no original allocation capability");return false; }
+  void* body = js_malloc(sizeof(KandeloRandomWork));if (!body) { JS_ReportOutOfMemory(cx);return false; }
+  KandeloRandomWork* work;
+  try {
+    work = new(body) KandeloRandomWork(cx, owner.get(), uint32_t(state->flags), size_t(state->limit), std::move(state->ioBacking));
+  } catch (...) { js_free(body);throw; }
+  auto dispose = mozilla::MakeScopeExit([&] { if (work) js_delete(work); });
   // Already initialized by construction: dispatch must not emit a second init.
   state->dispatched = true;
-  if (!queue->Submit(work)) { js_delete(work); JS_ReportErrorASCII(cx, "Crypto work queue closing"); return false; }
-  abandon.release(); args.rval().setUndefined(); return true;
+  if (!queue->Submit(work)) { JS_ReportErrorASCII(cx, "Crypto work queue closing"); return false; }
+  work = nullptr;abandon.release();args.rval().setUndefined();return true;
 }
 }  // namespace

@@ -1,5 +1,11 @@
 # Broad implementation review
 
+Source159 integrates checked rooted crypto byte consumption and original-
+allocation random work ownership. Exact source/staging/740input and14package
+checks pass; twelve reused native references are target expectations only.
+See [crypto byte-source scope](crypto-byte-source-integration.md). Production
+JSAPI/current guest/four-host conformance remains unvalidated.
+
 Source158 corrects the actual shared-buffer header alignment failure from the
 normal source157 engine build. Source replay and14 package checks pass; the
 combined engine still needs compilation. See [alignment scope](shared-backing-alignment-integration.md).

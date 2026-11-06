@@ -1,0 +1,106 @@
+{
+  "report": {
+    "base": "69663f9eee7dbf5801a0613054ee50975016d6a7",
+    "scope": "Owning private C++ header layout correction and bounded actual base-declaration/field-type compiler proof; no full configured header/derived class/TU/engine build claim",
+    "productionFailure": {
+      "log": "/Users/brandon/.cache/kandelo/agent-jobs/jobs/node26-engine157-1106-140451-23bf/output.log",
+      "sha256": "2c002fa4894b3ec72d2adb010ec394ab1a948ebda4aa604a8200824c4bc6c1e4",
+      "assertion": "sizeof(SharedArrayRawBuffer)%ARRAY_BUFFER_ALIGNMENT==0",
+      "observedRemainder": 4,
+      "removedWorkTree": true
+    },
+    "change": {
+      "patchSha256": "239121f9ffd3fe670435e54acab2d94fee93ca1922b4ec06ab331bd2b95ed527",
+      "preimage": "dc889f54e6a6826b32d5b775a80a2f7702cc5a8e43f2386789b74add86689813",
+      "postimage": "f1399dd9ed5c4c25a9fa50a933be59f820927943b1d1f2213f00c1ae02613fd9",
+      "method": "class alignas(ArrayBufferObject::ARRAY_BUFFER_ALIGNMENT)",
+      "assertionPreserved": true,
+      "fieldsAndOwnershipUnchanged": true,
+      "current0112ExactReplay": true,
+      "canonicalMatchesCurrent0112": true,
+      "exactPatchRoundtrip": true
+    },
+    "layout": {
+      "nativeDarwinArm64": {
+        "beforeSize": 160,
+        "beforeAlign": 8,
+        "afterSize": 160,
+        "afterAlign": 8
+      },
+      "wasm32": {
+        "beforeSize": 76,
+        "beforeAlign": 4,
+        "beforeAssertion": "expected failure,4mod8",
+        "afterSize": 80,
+        "afterAlign": 8
+      },
+      "wasm64": {
+        "beforeSize": 136,
+        "beforeAlign": 8,
+        "afterSize": 136,
+        "afterAlign": 8
+      }
+    },
+    "fixtureBoundary": {
+      "actualClassBody": true,
+      "actualMozillaAtomicFutexTypes": true,
+      "actualTargetLibcxxMutexSharedWeakPtrTypes": true,
+      "projectedUnrelatedClass": "Only ArrayBufferObject::ARRAY_BUFFER_ALIGNMENT=8 is extracted into a declaration; ArrayBufferObject itself is not compiled",
+      "fullConfiguredMozillaHeaderCompiled": false,
+      "actualWasmDerivedClassCompiled": false,
+      "fullProductionTranslationUnitCompiled": false,
+      "sourceOwnershipOrAllocationExecuted": false,
+      "wasm64EngineSupportClaim": false,
+      "targetHeadersProvenance": "Identified existing libcxx21.1.7rev9 ABI55 wasm32/wasm64 cached headers, explicit -nostdinc++/-isystem; not asserted to be the exact deleted157 private-sysroot receipt. Native host headers are declared devshell Darwin libc++."
+    },
+    "compilationAccounting": {
+      "nativeHelperCompileAttempts": 13,
+      "nativeHelperCompileFailures": 6,
+      "nativeHelperCompileSuccesses": 7,
+      "initialFixtureMissingStdlibFailures": 4,
+      "expectedOriginalAssertNegativeAttempts": 2,
+      "expectedOriginalAssertNegativeCountAsPass": false,
+      "productionOrEngineCompileAttemptsByThisAgent": 0,
+      "nativeRuntimeRuns": 0,
+      "notes": "Six initial invocations (2native success,4SDK missing-cstddef failures),six corrected invocations (5success,1expected wasm32 assert failure),one wasm32 record-layout dump retaining the assertion (expected failure). Initial typo warning preserved and corrected; target Mozilla unsupported-architecture warning remains recorded. No assertion removed or test weakened."
+    },
+    "sourceFacts": {
+      "/Users/brandon/conductor/workspaces/kandelo/davao/.context/spidermonkey-target-agent/mozilla-raw/mfbt/Atomics.h": {
+        "sha256": "159a333dc0f1f4c2890efad62c509d62f39979d836bd43372928aaeff4bae411"
+      },
+      "/Users/brandon/conductor/workspaces/kandelo/davao/.context/spidermonkey-target-agent/mozilla-raw/js/src/builtin/AtomicsObject.h": {
+        "sha256": "856022a3c3fd896599196035d7f54b74a747a80842da09205cf230dc18817871"
+      },
+      "/Users/brandon/conductor/workspaces/kandelo/davao/.context/spidermonkey-target-agent/mozilla-raw/js/src/vm/ArrayBufferObject.h": {
+        "sha256": "17baf1d92d08f2bd97ba6ac00a90be917456b2281c61b5219cc7281663689687"
+      },
+      "/Users/brandon/conductor/workspaces/kandelo/davao/.context/node26-backing-source-r1/canonical/js/src/vm/SharedArrayObject.cpp": {
+        "sha256": "988064c4cd0d723dd999ac521482cc13d9bb90c36ad43d6a51a576f785d18462"
+      },
+      "/Users/brandon/conductor/workspaces/kandelo/davao/.context/node26-backing-source-r1/canonical/js/public/experimental/KandeloBackingCapabilities.h": {
+        "sha256": "0936afdbd60c162d26eb61e9a7479980e2230db547f1d60aac627dce24928c49"
+      }
+    },
+    "targetHeaderIdentities": {
+      "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/libcxx-21.1.7-rev9-wasm32-abi55-6b1607ed16b34dd2325b60d7fdf0d63a14984c9231bc4fcac43a273a0a01997a/include/c++/v1": {
+        "__config_site": "80f394d1b21d0742f622e0a558125875525acf2a4d4051391851526a4f7415e3",
+        "mutex": "f93212665d62dbddab6e4e1235d55b15897f1b064335ba4ea49df40c0cd7dbf8",
+        "memory": "ad474dbfb0ea527bc3feaa78d4b63037aecde1681ccc52316c15f70723b2d4f6",
+        "cstddef": "53c4fc868f6439e48e52bbc9445a48eab1e597bbfad037ab7480216cb0c6832f"
+      },
+      "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/libcxx-21.1.7-rev9-wasm64-abi55-efc64db3a1e74aa782760fb7ccd8ec32252100243f927d6f353f5f246cd81b44/include/c++/v1": {
+        "__config_site": "80f394d1b21d0742f622e0a558125875525acf2a4d4051391851526a4f7415e3",
+        "mutex": "f93212665d62dbddab6e4e1235d55b15897f1b064335ba4ea49df40c0cd7dbf8",
+        "memory": "ad474dbfb0ea527bc3feaa78d4b63037aecde1681ccc52316c15f70723b2d4f6",
+        "cstddef": "53c4fc868f6439e48e52bbc9445a48eab1e597bbfad037ab7480216cb0c6832f"
+      }
+    },
+    "allPriorSealsPreserved": true,
+    "rootRegistryCommitsPushesChanged": false
+  },
+  "seal": {
+    "path": ".context/shared-buffer-alignment-review-157/SEAL.json",
+    "sha256": "a8129a0d081eb3d97bbb0ba8c5612f85fec5318825ba8b01d23303628a560e6b"
+  },
+  "scope": "Bounded base layout extraction; full configured header/derived class/TU/engine/runtime unvalidated"
+}

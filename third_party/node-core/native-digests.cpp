@@ -1,7 +1,14 @@
 /* Owned synchronous libcrypto consumers; included after existing byte helpers. */
 #include "kandelo-node-digest-operations.h"
 #include "kandelo-node-string-bytes.h"
+#include "js/ArrayBuffer.h"
+#include "js/Realm.h"
+#include "js/SharedArrayBuffer.h"
 #include "js/String.h"
+#include "js/Wrapper.h"
+#include "js/experimental/TypedData.h"
+#include "js/experimental/KandeloBackingStore.h"
+#include <utility>
 namespace {
 static bool KandeloNativeOpenSSLVersion(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -9,11 +16,81 @@ static bool KandeloNativeOpenSSLVersion(JSContext* cx, unsigned argc, Value* vp)
   if (!version) return false;
   args.rval().setString(version); return true;
 }
-static bool KandeloCryptoSpan(JSContext* cx, HandleValue input, SharedMem<uint8_t*>* data, size_t* length) {
-  if (!input.isObject()) return false;
-  RootedObject object(cx, &input.toObject());
-  return IsBufferSource(cx, object, /*allowShared*/ true, /*allowResizable*/ true, data, length);
-}
+// A synchronous borrow roots the checked-unwrapped original storage. It does
+// not externalize inline data or impose a length pin. Security/type admission
+// happens before no-GC; pointer consumers cannot enter JS or retain the span.
+class KandeloCryptoByteSource {
+  enum class Kind { None, View, Buffer, Shared };
+  JSContext* cx_;
+  RootedObject owner_;
+  Kind kind_ = Kind::None;
+  size_t LengthInRealm() const {
+    if (kind_ == Kind::View) return JS_GetArrayBufferViewByteLength(owner_);
+    if (kind_ == Kind::Buffer) return JS::GetArrayBufferByteLength(owner_);
+    return JS::GetSharedArrayBufferByteLength(owner_);
+  }
+ public:
+  explicit KandeloCryptoByteSource(JSContext* cx) : cx_(cx), owner_(cx) {}
+  bool Init(HandleValue input) {
+    kind_ = Kind::None;owner_ = nullptr;
+    if (!input.isObject()) return false;
+    // Check using the caller's current authority before entering the owner
+    // realm. Never use UncheckedUnwrap or invoke public getters/proxy traps.
+    owner_ = js::CheckedUnwrapDynamic(&input.toObject(), cx_);
+    if (!owner_) {
+      if (!JS_IsExceptionPending(cx_)) js::ReportAccessDenied(cx_);
+      return false;
+    }
+    // Brand tests are nonallocating and need no realm entry. In particular,
+    // reject unrelated proxies/window wrappers before JSAutoRealm's raw-owner
+    // precondition; only admitted actual storage reaches pointer access.
+    if (JS_IsArrayBufferViewObject(owner_)) kind_ = Kind::View;
+    else if (JS::IsArrayBufferObject(owner_)) kind_ = Kind::Buffer;
+    else if (JS::IsSharedArrayBufferObject(owner_)) kind_ = Kind::Shared;
+    return kind_ != Kind::None;
+  }
+  size_t Length() const {
+    MOZ_ASSERT(kind_ != Kind::None);
+    JSAutoRealm realm(cx_, owner_);
+    // Metadata only: no pointer exists while a later source is prepared or
+    // its realm/security operations run.
+    return LengthInRealm();
+  }
+  template<class Consume> bool WithBytes(Consume&& consume) {
+    MOZ_ASSERT(kind_ != Kind::None);
+    JSAutoRealm realm(cx_, owner_);
+    JS::AutoCheckCannotGC nogc;
+    const size_t length = LengthInRealm();
+    bool shared = false;
+    uint8_t* data;
+    if (kind_ == Kind::View)
+      data = static_cast<uint8_t*>(JS_GetArrayBufferViewData(owner_, &shared, nogc));
+    else if (kind_ == Kind::Buffer)
+      data = JS::GetArrayBufferData(owner_, &shared, nogc);
+    else
+      data = JS::GetSharedArrayBufferData(owner_, &shared, nogc);
+    if (length && !data) return false;
+    auto bytes = shared ? SharedMem<uint8_t*>::shared(data) : SharedMem<uint8_t*>::unshared(data);
+    // Native allocation may throw; C++ unwinding closes both scopes before
+    // any outer error guard can allocate/report a JavaScript exception.
+    return std::forward<Consume>(consume)(bytes, length);
+  }
+  JS::KandeloBacking::SpanRef Capture() {
+    MOZ_ASSERT(kind_ != Kind::None);
+    JSAutoRealm realm(cx_, owner_);
+    RootedObject view(cx_, owner_);
+    if (kind_ != Kind::View) {
+      const size_t length = LengthInRealm();
+      if (!std::in_range<int64_t>(length)) { JS_ReportOutOfMemory(cx_);return {}; }
+      // This is a real view of the same original allocation, not a copied
+      // snapshot. Async acquisition may materialize storage and collect, so
+      // it is intentionally separate from synchronous no-GC borrowing.
+      view = JS_NewUint8ArrayWithBuffer(cx_, owner_, 0, int64_t(length));
+      if (!view) return {};
+    }
+    return JS::KandeloBacking::Acquire(cx_, view);
+  }
+};
 static void KandeloCryptoCopy(SharedMem<uint8_t*> source, size_t length, kandelo::crypto::Bytes* bytes) {
   bytes->value.resize(length);
   // Shared JS bytes may change concurrently. Capture with real relaxed atomic
@@ -32,13 +109,16 @@ static bool KandeloCryptoInput(JSContext* cx, HandleValue input, kandelo::crypto
         mozilla::Span<char>(reinterpret_cast<char*>(bytes->value.data()), length));
     return true;
   }
-  SharedMem<uint8_t*> data; size_t length;
-  JS::AutoCheckCannotGC nogc;
-  if (!KandeloCryptoSpan(cx, input, &data, &length)) {
+  KandeloCryptoByteSource source(cx);
+  if (!source.Init(input)) {
     if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Crypto input requires a real buffer source");
     return false;
   }
-  KandeloCryptoCopy(data, length, bytes); return true;
+  const bool copied = source.WithBytes([&](SharedMem<uint8_t*> data, size_t length) {
+    KandeloCryptoCopy(data, length, bytes);return true;
+  });
+  if (!copied && !JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Crypto buffer has no backing data");
+  return copied;
 }
 // Native stream crypto decodes strings inside its owning byte boundary.
 // ParseEncoding receives a primitive string only and preserves the pin's
@@ -133,20 +213,30 @@ static bool KandeloNativeDigestNames(JSContext* cx, unsigned argc, Value* vp) {
 }
 static bool KandeloNativeTimingSafeEqual(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp); kandelo::crypto::Bytes a, b;
-  SharedMem<uint8_t*> first, second; size_t aSize, bSize;
-  {
-    JS::AutoCheckCannotGC nogc;
-    if (!KandeloCryptoSpan(cx, args.get(0), &first, &aSize)) {
-      if (JS_IsExceptionPending(cx)) return false;
-      args.rval().setInt32(1); return true;
-    }
-    if (!KandeloCryptoSpan(cx, args.get(1), &second, &bSize)) {
-      if (JS_IsExceptionPending(cx)) return false;
-      args.rval().setInt32(2); return true;
-    }
-    if (aSize != bSize) { args.rval().setInt32(3); return true; }
-    KandeloCryptoCopy(first, aSize, &a); KandeloCryptoCopy(second, bSize, &b);
+  KandeloCryptoByteSource first(cx), second(cx);
+  // Prepare both checked/rooted sources before obtaining either pointer.
+  if (!first.Init(args.get(0))) {
+    if (JS_IsExceptionPending(cx)) return false;
+    args.rval().setInt32(1);return true;
   }
+  if (!second.Init(args.get(1))) {
+    if (JS_IsExceptionPending(cx)) return false;
+    args.rval().setInt32(2);return true;
+  }
+  if (first.Length() != second.Length()) { args.rval().setInt32(3);return true; }
+  const bool copiedFirst = first.WithBytes([&](SharedMem<uint8_t*> data, size_t length) {
+    KandeloCryptoCopy(data, length, &a);return true;
+  });
+  const bool copiedSecond = copiedFirst && second.WithBytes([&](SharedMem<uint8_t*> data, size_t length) {
+    KandeloCryptoCopy(data, length, &b);return true;
+  });
+  if (!copiedSecond) {
+    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Crypto buffer has no backing data");return false;
+  }
+  // Concurrent growable shared memory can change observed lengths. Compare
+  // the actual captured native byte ranges, never hold a JS pointer across
+  // another source's realm/security preparation.
+  if (a.value.size() != b.value.size()) { args.rval().setInt32(3);return true; }
   args.rval().setBoolean(kandelo::crypto::Equal(a, b)); return true;
 }
 template <bool (*Callback)(JSContext*, unsigned, Value*)>

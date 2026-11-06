@@ -25,3 +25,13 @@ All nineteen families remain partial. Original allocation consumers,
 GC/realm/transfer and four-host obligations remain open.
 
 Exact evidence: [shared-backing-alignment-finding-progress.json](shared-backing-alignment-finding-progress.json).
+
+A later sealed base-declaration/field-type extraction reproduces the wasm32
+failure at size76/alignment4 and passes with size80/alignment8. Native Darwin
+size160/alignment8 and wasm64 size136/alignment8 are unchanged. It uses actual
+Atomic, Futex, mutex and ownership field types with identified target C++
+headers. It does not compile the full configured header, actual derived class
+or production translation unit. All13 helper invocations are accounted for:
+7 succeed,4 have initial missing-header fixture errors, and2 retain the
+original expected assertion failure. None is a passing guest/API case.
+See [sealed layout review](shared-backing-layout-review.json).

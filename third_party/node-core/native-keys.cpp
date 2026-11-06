@@ -72,14 +72,18 @@ static bool KandeloKeyCopy(JSContext* cx, HandleValue value, kandelo::crypto::By
 // Raw key sources are already validated as buffers by the pinned public
 // wrapper. Reject the target's size bound before allocating/copying storage.
 static bool KandeloKeyCopyRaw(JSContext* cx, HandleValue value, kandelo::crypto::Bytes* bytes) {
-  SharedMem<uint8_t*> data; size_t length;
-  JS::AutoCheckCannotGC nogc;
-  if (!KandeloCryptoSpan(cx, value, &data, &length)) {
-    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Raw key requires a real buffer source");
-    return false;
+  KandeloCryptoByteSource source(cx);
+  if (!source.Init(value)) {
+    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Raw key requires a real buffer source");return false;
   }
-  if (length > INT_MAX) throw kandelo::crypto::KeyError("keyData is too big", "ERR_OUT_OF_RANGE");
-  KandeloCryptoCopy(data, length, bytes); return true;
+  bool tooBig = false;
+  const bool copied = source.WithBytes([&](SharedMem<uint8_t*> data, size_t length) {
+    if (length > INT_MAX) { tooBig = true;return false; }
+    KandeloCryptoCopy(data, length, bytes);return true;
+  });
+  if (tooBig) throw kandelo::crypto::KeyError("keyData is too big", "ERR_OUT_OF_RANGE");
+  if (!copied && !JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Raw key has no backing data");
+  return copied;
 }
 static bool KandeloKeyDetails(JSContext* cx, kandelo::crypto::KeyMaterial& material,
                               HandleObject object, MutableHandleValue result) {

@@ -28,16 +28,19 @@ static bool KandeloKdfConstructorError(JSContext* cx, const kandelo::crypto::Kdf
 }
 static bool KandeloKdfInput(JSContext* cx, HandleValue input, kandelo::crypto::Bytes* result, bool copy,
                              const char* sizeMessage = "KDF input is too large") {
-  JS::AutoCheckCannotGC nogc;
-  SharedMem<uint8_t*> data; size_t length;
-  if (!KandeloCryptoSpan(cx, input, &data, &length)) {
-    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "KDF requires real byte storage");
-    return false;
+  KandeloCryptoByteSource source(cx);
+  if (!source.Init(input)) {
+    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "KDF requires real byte storage");return false;
   }
-  if (length > INT_MAX) throw kandelo::crypto::KdfError(sizeMessage, "ERR_OUT_OF_RANGE",
-      kandelo::crypto::KdfError::Type::RangeError);
-  if (copy) KandeloCryptoCopy(data, length, result);
-  return true;
+  bool tooBig = false;
+  const bool accepted = source.WithBytes([&](SharedMem<uint8_t*> data, size_t length) {
+    if (length > INT_MAX) { tooBig = true;return false; }
+    if (copy) KandeloCryptoCopy(data, length, result);
+    return true;
+  });
+  if (tooBig) throw kandelo::crypto::KdfError(sizeMessage, "ERR_OUT_OF_RANGE", kandelo::crypto::KdfError::Type::RangeError);
+  if (!accepted && !JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "KDF buffer has no backing data");
+  return accepted;
 }
 static bool KandeloKdfResult(JSContext* cx, const kandelo::crypto::Bytes& bytes,
                              const kandelo::crypto::Error* error, MutableHandleValue result) {
