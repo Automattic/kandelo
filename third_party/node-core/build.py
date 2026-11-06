@@ -697,6 +697,8 @@ for marker, replacement in [('/* NODE_VM_IMPORT_OPTION_ID */', section),
     if vm_adapter.count(marker) != 1:
         raise ValueError('Review VM marker: ' + marker)
     vm_adapter = vm_adapter.replace(marker, replacement)
+vm_modules = runpy.run_path(str(root / 'stage-vm-modules.py'))['render'](root)
+bundle += vm_modules + '\n'
 bundle += vm_adapter + '\n'
 sqlite_sources = {}
 for name, item in manifest['sqlitePlatform']['sources'].items():

@@ -18,7 +18,9 @@ static bool KandeloVmCompileFunction(JSContext* cx, unsigned argc, Value* vp) {
   RootedString code(cx, args[0].toString());
   RootedObject params(cx, &args[1].toObject()), target(cx, &args[2].toObject());
   RootedObject options(cx, &args[3].toObject()), extensions(cx, &args[4].toObject());
-  target = js::CheckedUnwrapDynamic(target, cx);
+  // The main realm exposes a WindowProxy as globalThis. Unwrap that shell
+  // wrapper with its security checks before requiring the actual global.
+  target = js::CheckedUnwrapDynamic(target, cx, false);
   if (!target || !JS_IsGlobalObject(target)) {
     JS_ReportErrorASCII(cx, "VM parsing context must own an accessible global");
     return false;

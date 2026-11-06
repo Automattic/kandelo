@@ -1,0 +1,33 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/internal/vm/module.js": {
+      "path": "upstream/vm-modules/lib/internal/vm/module.js",
+      "upstreamPath": "lib/internal/vm/module.js",
+      "sha256": "577f18d85d67c5a80c46bd3e5880f8ab5b360edeff76e1c8f65c471b04e87eee"
+    },
+    "src/module_wrap.cc": {
+      "path": "upstream/vm-modules/src/module_wrap.cc",
+      "upstreamPath": "src/module_wrap.cc",
+      "sha256": "ef6d3f20a46aaa844d9471b32e489bf60b7539681d6d9e3f7e230e1abddcb051"
+    },
+    "src/module_wrap.h": {
+      "path": "upstream/vm-modules/src/module_wrap.h",
+      "upstreamPath": "src/module_wrap.h",
+      "sha256": "4206d52a828c9cb2efff385821354ae968e2b6d059828ebd6656c25cc379f07f"
+    },
+    "lib/internal/util.js": {
+      "path": "upstream/vm-modules/lib/internal/util.js",
+      "upstreamPath": "lib/internal/util.js",
+      "sha256": "4aa900feab2a6cdb84060c0358c569578d31b6f0831224792868ece9b8899951"
+    }
+  },
+  "scope": "Pinned public Module/SourceTextModule/SyntheticModule algorithms over actual native module records; source/native dependency controls do not establish compiled guest or four-host conformance.",
+  "getConstructorOf": {
+    "source": "lib/internal/util.js",
+    "start": "function getConstructorOf(",
+    "length": 347,
+    "sha256": "a555de8137bc2e6d9c66855f3bdd1d9efb0c4891553e7f4a75ea2a43973960dd"
+  }
+}

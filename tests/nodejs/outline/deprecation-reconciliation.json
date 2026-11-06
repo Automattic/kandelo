@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "9c59e8a79ea844f809d75094f08a45b09b5e2ec0c8d93315c0406412f40aa831",
+    "packages/registry/node-compat/bootstrap.js": "f8543718136b543cdeb726b415897c37fce2c0d26fc49b7f871aeb4b8d71f984",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "94571bdb312f00d9bd7d1553a271fd30c9ba7f3d43c74d0ff3258c1aad2d5fe4",
@@ -87,7 +87,8 @@
     "third_party/node-core/util-public-adapter.js": "67b2d08758d67b8d882868cd187bd50e3fe6729f5be4c9b437ef23713f31b430",
     "third_party/node-core/uv-platform-adapter.js": "63b1d8c926c4ad069e1cc0a9efa1965401c45ac7ffe09fb1a1542a374d53581f",
     "third_party/node-core/values-platform-adapter.js": "661bef00b89d498492117b7315ace5423befb0dcde7ee1b882bf3cc53aeb99bf",
-    "third_party/node-core/vm-platform-adapter.js": "9953f331c80bc086e8092c5b9aa7dd5aa6ab64c3aa9990eddb885f6120ed86fa",
+    "third_party/node-core/vm-modules-adapter.js": "d20eb9d38980d6d8622990b324b2a8a1e98d99c8df73a0b3dd28f624bfae5de0",
+    "third_party/node-core/vm-platform-adapter.js": "e44ec14ccb12ed54f4cba302e58e7399487c811e99b0bba660a0fb436cc2e5fc",
     "third_party/node-core/warning-platform-adapter.js": "63e20e6db2e5dfc77e1499b08956158a4a74f1d77295bce7cd6509f200f068df",
     "third_party/node-core/worker-platform-adapter.js": "9a0454e3d951044e1c3e6c96e3d56fcc9923c638b72749621cdc29bfe830a2f7",
     "third_party/node-core/upstream/query-codecs/lib/punycode.js": "c5c75d5f31323affefa3595e63b3c50bca8bf7a2766936699e20460398e61717"

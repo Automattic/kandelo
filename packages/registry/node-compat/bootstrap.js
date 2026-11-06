@@ -4971,6 +4971,7 @@ const _builtinModules = {
         getHeapSpaceStatistics() { throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('v8.getHeapSpaceStatistics measurements'); },
     },
     'vm': _createNodeVmPlatform({ native: _nodeNative, values: _nodeValues, process, global: globalThis,
+        types: util.types, inspection: _nodeInspection, assert: _nodeCore.require('internal/assert'),
         getOptionValue: option => option === '--experimental-vm-modules' &&
             _nodeNative.cliOptions?.experimentalVmModules === true }),
     get test() { return _getNodeTestingPlatform().api; },

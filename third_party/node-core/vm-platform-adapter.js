@@ -98,5 +98,13 @@ function _createNodeVmPlatform(platform) {
     (function(module, exports, require, primordials, internalBinding, process) {
         /* NODE_PUBLIC_VM */
     })(module, module.exports, require, primordials, internalBinding, process);
+    if (getOptionValue('--experimental-vm-modules')) {
+        const modules = _createNodeVmModules({ native, values: platform.values,
+            types: platform.types, inspection: platform.inspection, assert: platform.assert,
+            contextGlobal, isContext: object => contexts.has(object) });
+        module.exports.Module = modules.Module;
+        module.exports.SourceTextModule = modules.SourceTextModule;
+        module.exports.SyntheticModule = modules.SyntheticModule;
+    }
     return module.exports;
 }

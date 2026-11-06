@@ -1,0 +1,344 @@
+--- a/js/src/builtin/ModuleObject.cpp
++++ b/js/src/builtin/ModuleObject.cpp
+@@ -698,12 +698,25 @@
+ class js::SyntheticModuleFields {
+  public:
+   ExportNameVector exportNames;
++  bool embedderEvaluation = false;
++  bool evaluationFailed = false;
++  ModuleStatus status = ModuleStatus::Evaluated;
++  HeapPtr<JSObject*> evaluationSteps;
++  HeapPtr<PromiseObject*> evaluationPromise;
++  HeapPtr<Value> evaluationError{UndefinedValue()};
++  HeapPtr<JSObject*> owner;
+
+  public:
+   void trace(JSTracer* trc);
+ };
+
+-void SyntheticModuleFields::trace(JSTracer* trc) { exportNames.trace(trc); }
++void SyntheticModuleFields::trace(JSTracer* trc) {
++  exportNames.trace(trc);
++  TraceNullableEdge(trc, &evaluationSteps, "SyntheticModuleFields::evaluationSteps");
++  TraceNullableEdge(trc, &evaluationPromise, "SyntheticModuleFields::evaluationPromise");
++  TraceEdge(trc, &evaluationError, "SyntheticModuleFields::evaluationError");
++  TraceNullableEdge(trc, &owner, "SyntheticModuleFields::owner");
++}
+
+ ///////////////////////////////////////////////////////////////////////////
+ // CyclicModuleFields
+@@ -1001,6 +1014,54 @@
+ }
+
+ /* static */
++ModuleObject* ModuleObject::createEmbedderSynthetic(
++    JSContext* cx, MutableHandle<ExportNameVector> exportNames,
++    HandleObject evaluationSteps, HandleObject owner) {
++  cx->check(evaluationSteps, owner);
++  Rooted<ModuleObject*> self(cx, createSynthetic(cx, exportNames));
++  if (!self) return nullptr;
++  auto* fields = self->syntheticModuleFields();
++  fields->embedderEvaluation = true;
++  fields->status = ModuleStatus::Unlinked;
++  fields->evaluationSteps = evaluationSteps;
++  fields->owner = owner;
++  return self;
++}
++
++bool ModuleObject::isEmbedderSynthetic() const {
++  return hasSyntheticModuleFields() && syntheticModuleFields()->embedderEvaluation;
++}
++JSObject* ModuleObject::syntheticEvaluationSteps() const {
++  return syntheticModuleFields()->evaluationSteps;
++}
++void ModuleObject::clearSyntheticEvaluationSteps() {
++  syntheticModuleFields()->evaluationSteps = nullptr;
++}
++PromiseObject* ModuleObject::syntheticEvaluationPromise() const {
++  return syntheticModuleFields()->evaluationPromise;
++}
++void ModuleObject::setSyntheticEvaluationPromise(Handle<PromiseObject*> promise) {
++  syntheticModuleFields()->evaluationPromise = promise;
++}
++JSObject* ModuleObject::syntheticOwner() const {
++  return syntheticModuleFields()->owner;
++}
++
++/* static */
++bool ModuleObject::setSyntheticExport(JSContext* cx, Handle<ModuleObject*> self,
++                                      Handle<JSAtom*> name, HandleValue value) {
++  const auto& names = self->syntheticExportNames();
++  for (size_t i = 0; i < names.length(); i++) {
++    if (names[i] == name) {
++      auto& environment = self->initialEnvironment();
++      environment.setAliasedBinding(environment.firstSyntheticValueSlot() + i, value);
++      return true;
++    }
++  }
++  return false;
++}
++
++/* static */
+ void ModuleObject::finalize(JS::GCContext* gcx, JSObject* obj) {
+   ModuleObject* self = &obj->as<ModuleObject>();
+   if (self->hasCyclicModuleFields()) {
+@@ -1159,7 +1220,8 @@
+   // without checking which kind it is, even though synthetic modules don't have
+   // this field according to the spec.
+   if (hasSyntheticModuleFields()) {
+-    return ModuleStatus::Evaluated;
++    auto status = syntheticModuleFields()->status;
++    return status == ModuleStatus::Evaluated_Error ? ModuleStatus::Evaluated : status;
+   }
+
+   ModuleStatus status = cyclicModuleFields()->status;
+@@ -1182,7 +1244,8 @@
+                  newStatus > status(),
+              "New module status inconsistent with current status");
+
+-  cyclicModuleFields()->status = newStatus;
++  if (isEmbedderSynthetic()) syntheticModuleFields()->status = newStatus;
++  else cyclicModuleFields()->status = newStatus;
+ }
+
+ bool ModuleObject::hasTopLevelAwait() const {
+@@ -1319,7 +1382,7 @@
+
+ bool ModuleObject::hadEvaluationError() const {
+   if (hasSyntheticModuleFields()) {
+-    return false;
++    return syntheticModuleFields()->evaluationFailed;
+   }
+
+   ModuleStatus fullStatus = cyclicModuleFields()->status;
+@@ -1330,14 +1393,22 @@
+   MOZ_ASSERT(status() != ModuleStatus::Unlinked);
+   MOZ_ASSERT(!hadEvaluationError());
+
+-  cyclicModuleFields()->status = ModuleStatus::Evaluated_Error;
+-  cyclicModuleFields()->evaluationError = newValue;
++  if (isEmbedderSynthetic()) {
++    auto* fields = syntheticModuleFields();
++    fields->status = ModuleStatus::Evaluated_Error;
++    fields->evaluationFailed = true;
++    fields->evaluationError = newValue;
++  } else {
++    cyclicModuleFields()->status = ModuleStatus::Evaluated_Error;
++    cyclicModuleFields()->evaluationError = newValue;
++  }
+
+   MOZ_ASSERT(status() == ModuleStatus::Evaluated);
+   MOZ_ASSERT(hadEvaluationError());
+ }
+
+ Value ModuleObject::maybeEvaluationError() const {
++  if (hasSyntheticModuleFields()) return syntheticModuleFields()->evaluationError;
+   return cyclicModuleFields()->evaluationError;
+ }
+
+--- a/js/src/builtin/ModuleObject.h
++++ b/js/src/builtin/ModuleObject.h
+@@ -367,6 +367,20 @@
+
+   static ModuleObject* createSynthetic(
+       JSContext* cx, MutableHandle<ExportNameVector> exportNames);
++
++  // Embedding-supplied synthetic evaluation with real module environment,
++  // lifecycle and Promise ownership. JSON-only records retain their old path.
++  static ModuleObject* createEmbedderSynthetic(
++      JSContext* cx, MutableHandle<ExportNameVector> exportNames,
++      HandleObject evaluationSteps, HandleObject owner);
++  bool isEmbedderSynthetic() const;
++  JSObject* syntheticEvaluationSteps() const;
++  void clearSyntheticEvaluationSteps();
++  PromiseObject* syntheticEvaluationPromise() const;
++  void setSyntheticEvaluationPromise(Handle<PromiseObject*> promise);
++  JSObject* syntheticOwner() const;
++  static bool setSyntheticExport(JSContext* cx, Handle<ModuleObject*> self,
++                                 Handle<JSAtom*> name, HandleValue value);
+
+   // Initialize the slots on this object that are dependent on the script.
+   void initScriptSlots(HandleScript script);
+--- a/js/src/shell/ModuleLoader.cpp
++++ b/js/src/shell/ModuleLoader.cpp
+@@ -5,6 +5,7 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+ #include "shell/ModuleLoader.h"
++#include "shell/kandelo-node-vm-module-hooks.h"
+
+ #include "mozilla/DebugOnly.h"
+ #include "mozilla/TextUtils.h"
+@@ -159,6 +160,9 @@
+ JSObject* ModuleLoader::ResolveImportedModule(
+     JSContext* cx, JS::HandleValue referencingPrivate,
+     JS::HandleObject moduleRequest) {
++  RootedObject vmModule(cx); bool handled = false;
++  if (!KandeloVmModuleResolve(cx, referencingPrivate, moduleRequest, &vmModule, &handled)) return nullptr;
++  if (handled) return vmModule;
+   ShellContext* scx = GetShellContext(cx);
+   return scx->moduleLoader->resolveImportedModule(cx, referencingPrivate,
+                                                   moduleRequest);
+@@ -168,6 +172,9 @@
+ bool ModuleLoader::GetImportMetaProperties(JSContext* cx,
+                                            JS::HandleValue privateValue,
+                                            JS::HandleObject metaObject) {
++  bool handled = false;
++  if (!KandeloVmModuleMetadata(cx, privateValue, metaObject, &handled)) return false;
++  if (handled) return true;
+   ShellContext* scx = GetShellContext(cx);
+   return scx->moduleLoader->populateImportMeta(cx, privateValue, metaObject);
+ }
+@@ -205,6 +212,9 @@
+                                            JS::HandleValue referencingPrivate,
+                                            JS::HandleObject moduleRequest,
+                                            JS::HandleObject promise) {
++  bool handled = false;
++  if (!KandeloVmModuleDynamic(cx, referencingPrivate, moduleRequest, promise, &handled)) return false;
++  if (handled) return true;
+   ShellContext* scx = GetShellContext(cx);
+   return scx->moduleLoader->dynamicImport(cx, referencingPrivate, moduleRequest,
+                                           promise);
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4035,6 +4035,7 @@
+       JS_FN("__kandeloVmRunInContext", KandeloVmRunInContext, 3, 0),
+       JS_FN("__kandeloVmCompile", KandeloVmCompile, 2, 0),
+       JS_FN("__kandeloVmCompileFunction", KandeloVmCompileFunction, 5, 0),
++      JS_FN("__kandeloVmModuleOperation", KandeloVmModuleOperation, 1, 0),
+       JS_FN("sqlite", KandeloNativeSqlite, 4, 0),
+       JS_FN("port", KandeloNativePort, 3, 0),
+       JS_FN("serializeMessage", KandeloNativeSerializeMessage, 2, 0),
+@@ -11259,6 +11260,7 @@
+   std::string diagnosticDir;
+   std::vector<std::string> disableWarnings;
+   bool experimentalStreamIter = false;
++  bool experimentalVmModules = false;
+   // The declared recipe links the actual SQLite backend (target HAVE_SQLITE).
+   bool experimentalSqlite = true;
+   bool preserveSymlinks = false;
+@@ -11324,6 +11326,10 @@
+   }
+   if (name == "--experimental-sqlite") {
+     kandeloNodeCLI.experimentalSqlite = value;
++    return true;
++  }
++  if (name == "--experimental-vm-modules") {
++    kandeloNodeCLI.experimentalVmModules = value;
+     return true;
+   }
+   if (name == "--experimental-stream-iter") {
+@@ -16371,6 +16377,7 @@
+         !KandeloDefineBooleanProperty(cx, cli, "zeroFillBuffers", gKandeloZeroFillBuffers, 0) ||
+         !KandeloDefineBooleanProperty(cx, cli, "noWarnings", kandeloNodeCLI.noWarnings, 0) ||
+         !KandeloDefineBooleanProperty(cx, cli, "experimentalStreamIter", kandeloNodeCLI.experimentalStreamIter, 0) ||
++        !KandeloDefineBooleanProperty(cx, cli, "experimentalVmModules", kandeloNodeCLI.experimentalVmModules, 0) ||
+         !KandeloDefineBooleanProperty(cx, cli, "experimentalSqlite", kandeloNodeCLI.experimentalSqlite, 0) ||
+         !JS_DefineProperty(cx, cli, "execArgv", execArgs, 0) ||
+         !JS_DefineProperty(cx, cx->global(), "__kandeloNodeCliOptions", cli, 0)) return false;
+--- a/js/src/vm/Modules.cpp
++++ b/js/src/vm/Modules.cpp
+@@ -1311,6 +1311,8 @@
+ // ES2023 16.2.1.5.1 Link
+ static bool ModuleLink(JSContext* cx, Handle<ModuleObject*> module) {
+   if (!module->hasCyclicModuleFields()) {
++    if (module->isEmbedderSynthetic() && module->status() == ModuleStatus::Unlinked)
++      module->setStatus(ModuleStatus::Linked);
+     return true;
+   }
+
+@@ -1366,8 +1368,12 @@
+                                size_t* indexOut) {
+   // Step 1. If module is not a Cyclic Module Record, then
+   if (!module->hasCyclicModuleFields()) {
++    // Embedding synthetic records own an already-created real environment;
++    // publishing the linked state does not invoke the evaluation callback.
++    if (module->isEmbedderSynthetic() && module->status() == ModuleStatus::Unlinked)
++      module->setStatus(ModuleStatus::Linked);
+     // Step 1.a. Perform ? module.Link().
+-    // (Skipped as we have already created the environment for these modules).
++    // (The environment was created by the embedding/JSON module owner).
+     // Step 1.b. Return index.
+     *indexOut = index;
+     return true;
+@@ -1527,6 +1533,55 @@
+ static bool SyntheticModuleEvaluate(JSContext* cx,
+                                     Handle<ModuleObject*> moduleArg,
+                                     MutableHandle<Value> rval) {
++  if (moduleArg->isEmbedderSynthetic()) {
++    if (auto* prior = moduleArg->syntheticEvaluationPromise()) {
++      rval.setObject(*prior);
++      return true;
++    }
++    if (moduleArg->hadEvaluationError()) {
++      Rooted<PromiseObject*> promise(cx, CreatePromiseObjectForAsync(cx));
++      RootedValue error(cx, moduleArg->evaluationError());
++      if (!promise || !AsyncFunctionThrown(cx, promise, error)) return false;
++      rval.setObject(*promise);
++      return true;
++    }
++    if (moduleArg->status() != ModuleStatus::Linked) {
++      ThrowUnexpectedModuleStatus(cx, moduleArg->status());
++      return false;
++    }
++    moduleArg->setStatus(ModuleStatus::Evaluating);
++    RootedValue callback(cx, ObjectValue(*moduleArg->syntheticEvaluationSteps()));
++    RootedValue receiver(cx, ObjectValue(*moduleArg->syntheticOwner())), ignored(cx);
++    if (!JS_WrapValue(cx, &callback) || !JS_WrapValue(cx, &receiver)) return false;
++    moduleArg->clearSyntheticEvaluationSteps();
++    if (!JS::Call(cx, receiver, callback, JS::HandleValueArray::empty(), &ignored)) {
++      // Preserve the actual thrown value/termination. The public pinned
++      // Module.evaluate supplies Promise rejection for a synchronous throw;
++      // a parent source graph handles the same abrupt completion internally.
++      if (cx->isExceptionPending()) {
++        RootedValue error(cx);
++        if (!cx->getPendingException(&error)) return false;
++        moduleArg->setEvaluationError(error);
++      }
++      return false;
++    }
++    // Allocate after callback execution, as the pinned synthetic host steps
++    // do, so callback-side async context changes precede Promise creation.
++    Rooted<PromiseObject*> promise(cx, CreatePromiseObjectForAsync(cx));
++    if (!promise) {
++      if (cx->isExceptionPending()) {
++        RootedValue error(cx);
++        if (cx->getPendingException(&error)) moduleArg->setEvaluationError(error);
++      }
++      return false;
++    }
++    if (!AsyncFunctionReturned(cx, promise, JS::UndefinedHandleValue)) return false;
++    moduleArg->setStatus(ModuleStatus::Evaluated);
++    moduleArg->setSyntheticEvaluationPromise(promise);
++    // The callback's returned value/Promise is deliberately ignored.
++    rval.setObject(*promise);
++    return true;
++  }
+   // Steps 1-12 happen elsewhere in the engine.
+
+   // Step 13. Let pc be ! NewPromiseCapability(%Promise%).
+@@ -1688,10 +1743,20 @@
+                                   size_t index, size_t* indexOut) {
+   // Step 1: If module is not a Cyclic Module Record, then
+   if (!module->hasCyclicModuleFields()) {
+-    // Step 1.a. Let promise be ! module.Evaluate(). (Skipped)
+-    // Step 1.b. Assert: promise.[[PromiseState]] is not pending. (Skipped)
+-    // Step 1.c. If promise.[[PromiseState]] is rejected, then (Skipped)
+-    //   Step 1.c.i Return ThrowCompletion(promise.[[PromiseResult]]). (Skipped)
++    if (module->isEmbedderSynthetic()) {
++      RootedValue result(cx);
++      if (!SyntheticModuleEvaluate(cx, module, &result)) return false;
++      auto& promise = result.toObject().as<PromiseObject>();
++      MOZ_ASSERT(promise.state() != JS::PromiseState::Pending);
++      if (promise.state() == JS::PromiseState::Rejected) {
++        RootedValue error(cx, promise.reason());
++        RootedObject handled(cx, &promise);
++        if (!JS::SetSettledPromiseIsHandled(cx, handled)) return false;
++        cx->setPendingException(error, ShouldCaptureStack::Maybe);
++        return false;
++      }
++    }
++    // JSON records have already completed their evaluation.
+     // Step 1.d. Return index.
+     *indexOut = index;
+     return true;

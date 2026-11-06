@@ -1,0 +1,123 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/engine-contracts.md",
+    "findingIds": [
+      "E-008",
+      "E-015"
+    ],
+    "relatedFamilies": [
+      "engine",
+      "loading",
+      "processes",
+      "async",
+      "workers",
+      "values"
+    ],
+    "scope": "Module record/graph/namespace and native admission foundation,not complete VM/API/family closure"
+  },
+  "sourceImplemented": [
+    "Checked unwrapping reaches the real shell inner global for default module construction and compileFunction without bypassing security checks",
+    "Pinned public module classes over actual source/synthetic records,live environments,link/evaluate/namespace state and real TLA graph",
+    "Traced graph/registry/reaction ownership and checked cross-realm callbacks;ordinary loader fallback retained",
+    "Root native experimental VM flag state/parser/property wiring and actual adapter forwarding,without a JS option fallback",
+    "Dynamic-import reaction forwards the actual settled value after unchanged pinned module validation; callable then namespace exports retain native assimilation semantics"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-vm-modules-source-r1/report.json",
+    "sha256": "781bcb89efe5e4b3ccb3710a61c929037013c4c14fe9165524a6f599a24b24c8",
+    "guardedInputs": 676,
+    "wholeNodeReferences": 6,
+    "scope": "Pinned module algorithms/native record/engine hook source,actual CLI route,staging/bundle/bootstrap/unity and source identity checks only. Actual combined engine C++/JSAPI/GC/graph/realm/dynamic Promise/four-host conformance remains uncompiled/unvalidated."
+  },
+  "nativeControls": {
+    "report": ".context/node26-vm-modules-controls-r1/report.json",
+    "sha256": "a354d6bc192713ad31c7a496a0e65a03cbab44ab2fa0c635539b0a064ed6381d",
+    "frontendScenarios": 11,
+    "nativeConstantValues": 8,
+    "nativeOnlyPositiveGaps": 5,
+    "scope": "Pinned public algorithms over actual native Node ModuleWrap/context/registry controls plus production constant mapping;not candidate SM graph/JSAPI/GC/realm/dynamic-import execution. Five native-positive target gaps remain candidate nonpasses."
+  },
+  "dynamicThenableControls": {
+    "report": ".context/node26-vm-modules-controls-r1/dynamic-thenable-report.json",
+    "sha256": "8b3725714ed97f173b191bad5a9c703eb5a9a82af72eb3741e7d8b81e7aef1f3",
+    "nativeCases": 2,
+    "dependencyCases": 2,
+    "scope": "Native reference and pinned JS wrapper over native dependencies; candidate SM Promise reaction remains uncompiled/unvalidated"
+  },
+  "independentReview": {
+    "report": ".context/vm-native-review/report.json",
+    "sha256": "0b529f59f2d250e2412f1b098939d759c17fca5155b10aff395949189ed7387d",
+    "sealSha256": "3981a7f9cbcd125a1827ecc8ea485a1e8150a6bed55041a43bb5e7433aed7393",
+    "sourceFixes": 1,
+    "withdrawnFindings": 1,
+    "scope": "Extra post-Promise namespace guard fixed; provisional synthetic status finding disproved and unchanged. Actual engine runtime pending."
+  },
+  "cliControls": {
+    "report": ".context/node26-vm-modules-cli-r1/report.json",
+    "sha256": "706a03c1122dc8afbb343b72e44659e4ebe05fd87a4469e118684a39df5a3c21",
+    "comparisons": 14,
+    "nativeHelperCompiles": 1,
+    "scope": "Actual extracted native CLI state/parser only; no candidate JSAPI property publication or VM/guest/four-host execution"
+  },
+  "affectedControls": {
+    "report": ".context/node26-vm-modules-affected-r1.json",
+    "sha256": "9ed82dfa93fc8963082953e4b84ed53b0e1e2a6bbe4bd977ed9ab47b3e030de4",
+    "passed": 24,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "10VM groups(2new8affected)+14package checks,not guest engine execution"
+  },
+  "packageChecks": {
+    "report": ".context/node26-vm-modules-affected-r1.json",
+    "sha256": "9ed82dfa93fc8963082953e4b84ed53b0e1e2a6bbe4bd977ed9ab47b3e030de4",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package checks within24aggregate,not extra runtime passes"
+  },
+  "privateHandoff": {
+    "report": ".context/vm-modules-agent/handoff.json",
+    "sha256": "1154b459161ee1472da12592f968ddc5d52a6535eb82cbb473a0c54db68a0ed8",
+    "sealSha256": "95fbb836dab32bd05f39d5578b6250e9c0fc8c11021a8f1cda3c5a6cd74a1e13",
+    "scope": "Immutable proposal/source/engine identities verified,with separate root CLI correction"
+  },
+  "privateSetupAttempt": {
+    "report": ".context/http-framing-agent/setup-attempt/report.json",
+    "sha256": "c94dbe8211b595917d73df7d377cc4b847a6eb407d7173f9cd787fe2e55d8dc0",
+    "scope": "Private unplanned prerequisite setup;zero HTTP tests/engine/package attempts/full product rebuilds. Reaped/interrupted;not VM or HTTP conformance."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/vm-modules-agent/frontend-report-initial-native-metadata-prototype.json",
+      "sha256": "a98b6c9af12f415feedb85052b8b5bd930005055c3ba82b391c4823924de0a51",
+      "kind": "dependency-fixture-construction",
+      "reason": "Original native metadata prototype recursion retained;corrected fixture constructs actual native owner before bridge prototype"
+    },
+    {
+      "report": ".context/node26-vm-modules-controls-r1/native-observations.json",
+      "sha256": "7a12b8e422c9fe7eb08c8e2eaac478b6663135695c2a54a0a154a10061435127",
+      "kind": "target-positive-candidate-gaps",
+      "reason": "Five positive native requirements remain source-backed candidate gaps,not passes"
+    },
+    {
+      "report": ".context/http-framing-agent/setup-attempt/report.json",
+      "sha256": "c94dbe8211b595917d73df7d377cc4b847a6eb407d7173f9cd787fe2e55d8dc0",
+      "kind": "private-unplanned-setup",
+      "reason": "Private prerequisite builds followed by index-generation interruption;zero HTTP tests,not full product rebuild"
+    }
+  ],
+  "remaining": [
+    "Compile current combined engine and validate actual VM graph/synthetic/realm/dynamic Promise/GC/OOM/termination across four hosts",
+    "Implement attributes,phases,offset/cache/deadline scopes and remaining context/heap/loader/warning/worker obligations",
+    "Review honest target/configuration and corrected ELD/HTTP/byte-lease proposals;all19families remain partial"
+  ],
+  "at": "2026-11-06T04:41:02.699418+00:00",
+  "recipeRevision": 136,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

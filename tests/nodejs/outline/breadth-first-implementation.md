@@ -1,5 +1,15 @@
 # Breadth-first implementation after the core audit
 
+Source checkpoint 136 adds real source/synthetic module records, graph linking,
+live namespaces and evaluation ownership beneath the pinned public VM classes.
+The real CLI now owns the experimental flag instead of leaving the JS gate
+unreachable. Eleven dependency scenarios, 14 extracted-parser/native comparisons,
+and 24 affected VM/package checks pass. These are not candidate engine results.
+Cache, phases, attributes, offsets and deadline gaps remain open; combined
+engine and four-host validation are pending. Overall suites and full product
+rebuilds stay deferred. See [VM module scope](vm-module-record-integration.md).
+
+
 Source checkpoint 135 fixes Worker argv coercion and option-getter order,
 captures eval once, and supplies the classic eval argument through the real
 startup configuration. All 32 source/native comparisons and two main-startup

@@ -6,15 +6,23 @@ import { constants } from 'node:os';
 import * as util from 'node:util';
 import * as vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { createNativeAdapter } from './fixtures/node-native-adapter.cjs';
 
 const bundle = readFileSync(new URL('../../third_party/node-core/node-core.js', import.meta.url), 'utf8');
 const target = JSON.parse(readFileSync(new URL('../../packages/registry/node-compat/target.json', import.meta.url), 'utf8'));
 const factories = Function(`${bundle};return { vm:_createNodeVmPlatform, values:_createNodeValuesPlatform };`)();
-function subject() {
+function subject(experimentalModules = false) {
   const values = factories.values({ process, Buffer, util, inspection: util, os: {}, signals: constants.signals });
   const realms = new WeakMap<object, vm.Context>();
   const calls: string[] = [];
   const native = {
+    __kandeloVmModuleOperation(operation: string) {
+      calls.push('module:' + operation);
+      if (operation !== 'constants') throw Error('No guest module operation in this dependency control');
+      const raw = createRequire(import.meta.url)('internal/test/binding').internalBinding('module_wrap');
+      return Object.fromEntries(Object.entries(raw).filter(([name]) =>
+        /^k(?:Uninstantiated|Instantiating|Instantiated|Evaluating|Evaluated|Errored|SourcePhase|EvaluationPhase)$/.test(name)));
+    },
     __kandeloVmMakeContext(sandbox: object, options: any) {
       calls.push('create');
       const context = vm.createContext(options.noContextify ? vm.constants.DONT_CONTEXTIFY : sandbox, { name: options.name, origin: options.origin,
@@ -37,7 +45,8 @@ function subject() {
   // This does not execute native-vm.cpp or Kandelo's context property hooks,
   // shared-memory policy, metadata, realm rooting or exception marshalling.
   return { api: factories.vm({ values, native, process, global: globalThis,
-    getOptionValue: () => false }), calls };
+    types: util.types, inspection: util, assert: createRequire(import.meta.url)('node:assert'),
+    getOptionValue: (name: string) => name === '--experimental-vm-modules' && experimentalModules }), calls };
 }
 function outcome(fn: () => unknown) {
   try { return { value: fn() }; } catch (error: any) {
@@ -46,6 +55,28 @@ function outcome(fn: () => unknown) {
 }
 
 describe.skipIf(process.versions.node !== target.version)('pinned public VM over explicit native realm boundary', () => {
+  it('admits module exports only through the supplied real option state', () => {
+    const off = subject(), on = subject(true);
+    for (const name of ['Module', 'SourceTextModule', 'SyntheticModule']) {
+      expect(off.api[name]).toBeUndefined();
+      expect(typeof on.api[name]).toBe('function');
+      expect(on.api[name].name).toBe(name);
+    }
+    expect(off.calls).toEqual([]);
+    expect(on.calls).toEqual(['module:constants']);
+  });
+
+  it('forwards module operations through the complete production prefix', () => {
+    const owner = {}, result = {}, calls: unknown[][] = [];
+    const adapter = createNativeAdapter({
+      __kandeloVmModuleOperation(...args: unknown[]) { calls.push(args); return result; },
+    });
+    expect(adapter.__kandeloVmModuleOperation('status', owner)).toBe(result);
+    expect(calls).toEqual([['status', owner]]);
+    expect(() => createNativeAdapter({}).__kandeloVmModuleOperation('status', owner))
+      .toThrow('native VM module records are unavailable');
+  });
+
   it('retains the original sandbox identity and real idempotent context association', () => {
     const { api, calls } = subject(), sandbox = { value: 1 };
     expect(api.createContext(sandbox)).toBe(sandbox);

@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0109-node-vm-module-records.patch",
   "third_party/node-core/generate-histogram-owner.py",
   "third_party/node-core/histogram-source-identities.json",
   "third_party/node-core/histogram-binding.h",
@@ -83,6 +84,12 @@ inputs = [
   "third_party/node-core/generate-native-embedding.py",
   "third_party/node-core/codec-handle.cpp",
   "third_party/node-core/native-vm.cpp",
+  "third_party/node-core/native-vm-modules.cpp",
+  "third_party/node-core/vm-module-hooks.h",
+  "third_party/node-core/vm-modules-adapter.js",
+  "third_party/node-core/vm-modules-sources.json",
+  "third_party/node-core/stage-vm-modules.py",
+  "third_party/node-core/upstream/vm-modules",
   "third_party/node-core/native-module-syntax.cpp",
   "third_party/node-core/module-syntax-platform-adapter.js",
   "third_party/node-core/module-record-platform-adapter.js",
@@ -525,4 +532,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 135
+revision = 136

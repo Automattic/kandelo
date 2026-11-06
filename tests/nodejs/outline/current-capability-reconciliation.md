@@ -1,5 +1,15 @@
 # Current public-contract reconciliation
 
+Source checkpoint 136 adds real source/synthetic module records, graph linking,
+live namespaces and evaluation ownership beneath the pinned public VM classes.
+The real CLI now owns the experimental flag instead of leaving the JS gate
+unreachable. Eleven dependency scenarios, 14 extracted-parser/native comparisons,
+and 24 affected VM/package checks pass. These are not candidate engine results.
+Cache, phases, attributes, offsets and deadline gaps remain open; combined
+engine and four-host validation are pending. Overall suites and full product
+rebuilds stay deferred. See [VM module scope](vm-module-record-integration.md).
+
+
 Source checkpoint 135 fixes Worker argv coercion and option-getter order,
 captures eval once, and supplies the classic eval argument through the real
 startup configuration. All 32 source/native comparisons and two main-startup
@@ -309,7 +319,7 @@ of the APIs, overloads, inherited members, symbols and open questions.
 | Workers | Real shared lock manager, transactional receiver delivery and dual-Promise lifetime with fair provider dispatch; native thread/context/input/error/join owners and connected packets; source 135 captures Worker argv/eval at the pinned constructor stage and constructs the real startup vector with array-like semantics | Native lazy-data descriptors and global Navigator remain missing; actual guest thread/clone/context/stdio/options/resource/ref/failure/termination behavior and combined 117–135 engine remain unvalidated. Prior lock termination/query-order nonpasses and full four-host obligations remain open |
 | Compression | pinned codec/archive/iterable JS and native contexts; actual shared/growable queue leases and synchronous resizable codec/CRC/dictionary spans compiled in112 | Ordinary async resizable/transfer/pre-existing pin ownership; complete modes/options/iterators/files and native cleanup/cancellation/accounting; retained gzip OS-byte comparison mismatches and complete four-host evidence |
 | Observability | Pinned Console/diagnostics/TCP/DNS producers,Performance timeline/entry/observer/resource/timerify and process-origin clock;124real loop-start/idle and ELU arithmetic;134real HDR/statistics/window owners,public histogram wrappers,queued QRDE,packet clone material and shared retained-memory ledger | Combined117–134engine uncompiled;actual JSAPI/GC/VM/clone/cancellation/pressure and realm retirement remain open;ELD producer integration pending;other milestones/counters/GC/network producers,inspector,tracing/reporting and four-host conformance incomplete |
-| Engine | generic native Error location policy across registered root/worker contexts and VM realms; VM compiler, actual ordinary DONT_CONTEXTIFY globals, per-runtime chained security-callback owners and partial nominal GC budget | Complete ordinary sandbox exotic behavior, context metadata/deadlines/modules/cache/microtasks, inspector, heap measurements and worker/guest integration |
+| Engine | Generic Error location policy and actual VM/context/compiler owners; source 136 adds pinned public module classes over actual source/synthetic records, live environments, graph/link/evaluation/namespace hooks and native experimental CLI state | Combined 117–136 engine uncompiled; actual graph/GC/realm/dynamic Promise execution and all four hosts unvalidated. Arbitrary attributes, source/defer phases, negative offsets, cache/deadline scopes, sandbox exotic properties, heap/inspector and broader context/worker gaps remain open |
 | Testing | Full pinned Test/Suite/harness/utils execution owners; actual native-frame caller location route and source-derived default option state, mock/reporter owners | Guest execution/async/fatal/phase/context/cleanup integration; discovery/run/CLI/isolation, snapshots/module mocks, measured coverage/benchmarks and complete lifecycle |
 | Native integration | SQLite scalar/aggregate/window registrations and GC-traced native callback/parent/accumulator owners compiled in113; real SQLite statement/iterator/column/limit/defensive/session/change-set and rooted synchronous callback owners, native virtual limits and actual activation | Statement close/dispose/serialization; complete scalar/aggregate/window error/reentry/GC policy, authorizer/virtual-table callbacks; complete limits/reflection/storage/GC/realm/accounting, tag cache/backup/extensions, FFI/WASI/SEA/addons/embedding and ABI/loader |
 | Documentation | This reconciliation and original requirements | Actual warning/origin/CLI/environment/activation behavior and unresolved target prose/source questions |

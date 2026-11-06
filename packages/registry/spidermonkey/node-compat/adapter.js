@@ -587,6 +587,10 @@
             if (typeof native.__kandeloVmRunInContext !== 'function') throw new Error('native __kandeloVmRunInContext is unavailable');
             return native.__kandeloVmRunInContext(codeOrScript, ctx, opts);
         },
+        __kandeloVmModuleOperation(...args) {
+            if (typeof native.__kandeloVmModuleOperation !== 'function') throw new Error('native VM module records are unavailable');
+            return native.__kandeloVmModuleOperation(...args);
+        },
         __kandeloVmCompileFunction(code, params, context, opts, extensions) {
             if (typeof native.__kandeloVmCompileFunction !== 'function') throw new Error('native __kandeloVmCompileFunction is unavailable');
             return native.__kandeloVmCompileFunction(code, params, context, opts, extensions);
