@@ -508,29 +508,40 @@ git commit -m "Packages: Add sysklogd 2.8.0 for syslogd and logger"
 
 ---
 
-### Task 12: util-linux `dmesg` package
+### Task 12: toybox `dmesg` package
 
 **Files:**
-- Create: `packages/registry/util-linux/package.toml`, `build.toml`, `build-util-linux.sh`
+- Create: `packages/registry/toybox/package.toml`, `build.toml`, `build-toybox.sh`
 - Modify: `packages/sets/local-supported.toml`
 
 **Interfaces:**
-- Consumes: Tasks 3 and 4 (`klogctl` and `/dev/kmsg`, which upstream `dmesg` reads)
+- Consumes: Tasks 3 and 4 — `klogctl` and `/dev/kmsg`, which are the only two interfaces this program needs
 - Produces: output `dmesg` (`dmesg.wasm`)
 
-- [ ] **Step 1: Check for an existing package first**
+**Why toybox rather than util-linux** (changed 2026-11-06, on the maintainer's question "should we consider a different port?"). The plan originally named util-linux because `dmesg` is historically a util-linux program. Measured against toybox's `toys/lsb/dmesg.c`:
 
-The spec records that a util-linux session was noted as owning `renice`. If a `util-linux` package already exists on another branch, join it rather than creating a second. Record what you found either way.
+| | toybox dmesg | util-linux dmesg |
+|---|---|---|
+| Size | **187 lines** | ~1,700 lines plus the whole util-linux autotools tree |
+| Interfaces used | `klogctl` via `<sys/klog.h>`, and `/dev/kmsg` | the same, plus much more of util-linux |
+| `#include <linux/...>` | **zero** | several across the tree |
+| License | 0BSD | GPL-2.0 |
 
-- [ ] **Step 2: Write the manifests and build script**
+Its single dependency is already satisfied: `sysroot/include/sys/klog.h` declares `int klogctl(int, char *, int)`, and Task 3 routed `SYS_SYSLOG` so that wrapper reaches the kernel handler. `/dev/kmsg` came from Task 4. toybox even carries a `-S` flag to force `syslog(2)` instead of `/dev/kmsg`, which maps onto the two read surfaces this plan built.
 
-`lhasa` shape again. **Build `dmesg` and nothing else** — the narrowest possible target against a project that assumes Linux throughout. `kernel_abi = 56`.
+This also removes the `__linux__` risk the plan previously carried, rather than managing it. Note what the "Linux assumption" in this program actually is: `klogctl` plus `/dev/kmsg`, which is *precisely the interface set this design chose to provide*. That is not a compatibility claim — the Linux-shaped mechanism was picked for concurrent-reader reasons, so a client written against it is a client written against Kandelo's design.
 
-- [ ] **Step 3: Build it**
+Picking the smallest canonical upstream per utility is also the established method here: the posix-utils replacement campaign used chimerautils for `gencat`, outils for `what`, and musl-utils for `getconf` rather than dragging in a large suite for one binary.
 
-Run: `scripts/agent-job start -- bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh util-linux wasm32` then wait.
+**Still binding: never define `__linux__`.** If toybox nonetheless demands it, stop and report rather than defining it — per `CLAUDE.md`, a per-package `-D__linux__` is a last resort requiring a conversation with the maintainer first.
 
-If it cannot build without `__linux__`, **stop and surface the boundary** rather than defining it. The fallback is a different canonical `dmesg` upstream — not a Kandelo-written one.
+- [ ] **Step 1: Write the manifests and build script**
+
+`lhasa` shape (the current-contract autoconf reference). toybox builds via its own `make` with a config, not autotools, so follow `packages/registry/tyrquake/` for the plain-make shape instead where they differ. **Build the `dmesg` applet and nothing else.** `kernel_abi` is whatever `crates/program-abi/src/lib.rs` says when you build — do not copy a neighbour's stale value.
+
+- [ ] **Step 2: Build it**
+
+Run: `scripts/agent-job start -- bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh toybox wasm32` then wait.
 
 - [ ] **Step 4: Verify `dmesg` runs against the real ring**
 
