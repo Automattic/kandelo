@@ -227,7 +227,7 @@ async function measureNode(profile: Profile, round: number, options: Options, im
     configure: (fs) => {
       const serviceConfigPath = `/etc/dinit.d/${target}`;
       const serviceConfig = readVfsText(fs, serviceConfigPath);
-      configureWordPressRuntime(fs, { port });
+      configureWordPressRuntime(fs, { port, phpFpmWorkers: 6, frankenPhpThreads: 6 });
       // Preserve the shipped service log; the demo helper routes it to stdio.
       writeVfsFile(fs, serviceConfigPath, serviceConfig);
       const smtpScript = "/usr/local/bin/start-msmtpd";

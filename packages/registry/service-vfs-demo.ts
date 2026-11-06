@@ -158,9 +158,20 @@ export function removeServiceLogfiles(fs: KandeloImageFs, services: string[]): v
 
 export function configureWordPressRuntime(
   fs: KandeloImageFs,
-  options: { port: number; freshSqliteDatabase?: boolean; phpFpmWorkers?: number },
+  options: { port: number; freshSqliteDatabase?: boolean; phpFpmWorkers?: number; frankenPhpThreads?: number },
 ): void {
   rewriteNginxListenPort(fs, options.port);
+
+  if (options.frankenPhpThreads !== undefined) {
+    if (!Number.isSafeInteger(options.frankenPhpThreads) || options.frankenPhpThreads < 1 || options.frankenPhpThreads > 32) {
+      throw new RangeError("frankenPhpThreads must be an integer from 1 to 32");
+    }
+    const path = "/etc/dinit.d/env-frankenphp";
+    const config = readVfsText(fs, path);
+    const setting = /^FRANKENPHP_NUM_THREADS=\d+$/m;
+    if (!setting.test(config)) throw new Error(`Missing PHP pool setting in ${path}`);
+    writeVfsFile(fs, path, config.replace(setting, `FRANKENPHP_NUM_THREADS=${options.frankenPhpThreads}`));
+  }
 
   try {
     const phpFpmConf = readVfsText(fs, "/etc/php-fpm.conf")

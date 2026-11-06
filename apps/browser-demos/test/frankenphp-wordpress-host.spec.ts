@@ -17,7 +17,7 @@ if (!Number.isSafeInteger(postDestroySeconds) || postDestroySeconds < 0 || postD
     (postDestroySeconds > 0 && !memoryDiagnostics)) {
   throw new Error("KANDELO_FRANKENPHP_POST_DESTROY_SECONDS requires memory diagnostics and an integer from 0 to 120");
 }
-const numThreads = Number(process.env.KANDELO_FRANKENPHP_NUM_THREADS ?? "6");
+const numThreads = Number(process.env.KANDELO_FRANKENPHP_NUM_THREADS ?? "2");
 if (!Number.isSafeInteger(numThreads) || numThreads < 1 || numThreads > 32) {
   throw new Error("KANDELO_FRANKENPHP_NUM_THREADS must be an integer from 1 to 32");
 }
@@ -165,18 +165,16 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
           return { kernelBytes: kernelPages * 65536, processes, statuses, modules };
         };
         await stage("kernel initialized");
-        if (numThreads !== 6) {
-          // Measure PHP pool cost through ordinary service configuration.
-          // Caddy owns its pool in the Caddyfile, classic in dinit's env file.
-          const path = serviceName === "frankenphp-caddy"
-            ? "/etc/caddy/Caddyfile" : "/etc/dinit.d/env-frankenphp";
+        if (numThreads !== 2) {
+          // Both services consume the image's ordinary dinit environment.
+          const path = "/etc/dinit.d/env-frankenphp";
           const bytes = await kernel.readFileFromVfs(path);
           if (!bytes) throw new Error(`Missing service pool configuration: ${path}`);
           const config = decoder.decode(bytes);
-          const setting = serviceName === "frankenphp-caddy" ? /\bnum_threads 6\b/ : /\bFRANKENPHP_NUM_THREADS=6\b/;
+          const setting = /^FRANKENPHP_NUM_THREADS=2$/m;
           if (!setting.test(config)) throw new Error(`Unexpected service pool configuration: ${path}`);
           await kernel.writeFileToVfs(path, new TextEncoder().encode(config.replace(setting,
-            serviceName === "frankenphp-caddy" ? `num_threads ${numThreads}` : `FRANKENPHP_NUM_THREADS=${numThreads}`)));
+            `FRANKENPHP_NUM_THREADS=${numThreads}`)));
         }
         const template = await kernel.readFileFromVfs("/etc/wp-config-template.php");
         if (!template) throw new Error("WordPress config template missing");
@@ -464,7 +462,7 @@ echo json_encode([
       expect(startups.every(event => event.num_threads === numThreads)).toBe(true);
     }
     expect(result.graceful).toMatchObject({ listenerClosed: true, status: 200, serverExit: 0, stopExit: 0 });
-    expect(result.serviceLog).toContain(serviceName === "frankenphp-caddy" ? '"num_threads":6' : "num_threads=6");
+    expect(result.serviceLog).toContain(serviceName === "frankenphp-caddy" ? `"num_threads":${numThreads}` : `num_threads=${numThreads}`);
     expect(result.serviceLog).not.toMatch(/^(?:panic:|fatal error:)/m);
     expect(result.diagnostics).toEqual([]);
     const drained = result.shutdown.filter(event => event.phase === "draining").at(-1);

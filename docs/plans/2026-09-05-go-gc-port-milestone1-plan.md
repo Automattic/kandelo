@@ -481,6 +481,62 @@ remain pending; the old preview remains identified as revision 37.
 The new target-OS waits pass 159/159 browser cases and four standard-library
 builds without compiler or collector edits.
 
+### Measured service budget and common pool setting — 2026-11-06
+
+The revision-38 six-thread WebKit repetition still hits a native kill at
+16,821 MB. The one-thread repetition completes all workload/recovery/drain
+steps but initially fails a remaining fixture assertion hardcoded to six.
+That assertion now checks the requested size; the rerun passes in 3m48s,
+including 200 soak requests, cooperative destruction and the post-destroy
+window. Evidence: `frankenphp-rev38-single-pool-confirm-1106-141433-583a`,
+`.context/frankenphp-webkit-host-aOxbq6/`. Its native allocation bucket peaks
+at 5.37 GiB, stays near 5 GiB during traffic and reaches about 0.25 GiB after
+destruction. The prior failed assertion and six-thread kill remain failures.
+
+A two-thread control also passes in 3m15s: 198 soak requests, full editor
+traffic, intentional restart, draining and cooperative retirement. Its
+native bucket peaks at 10.61 GiB, settles near 5.6 GiB during the soak and
+falls to about 0.28 GiB after destruction. This is a measured bounded run,
+not evidence of indefinite stability. Evidence:
+`frankenphp-rev38-two-pool-budget-control-1106-142646-5c4b`,
+`.context/frankenphp-webkit-host-8u5hSE/`.
+
+The unchanged binary's static-response controls isolate costs before PHP
+requests: without initializing PHP, Caddy has three guest threads, 365 MiB
+of combined guest/kernel linear memory and about 3.1 GiB in the native
+allocation bucket after idle. With six initialized but idle PHP threads,
+it has thirteen guest threads, 412 MiB linear memory and about 8.2 GiB in
+that bucket. Both serve 100 static requests, idle thirty seconds and
+cooperatively stop; their native buckets fall to 0.28/0.24 GiB thirty
+seconds later. This locates substantial cost in the instantiated runtime
+and pool before WordPress requests, without identifying individual
+retaining objects or blaming an engine defect. Evidence:
+`frankenphp-static-vs-idle-php-memory-1106-142012-4275`,
+`.context/frankenphp-static-pool-0-X3ylDP/`,
+`.context/frankenphp-static-pool-6-NRUOut/`.
+
+The compiled Caddy artifact has only two Wasm atomic-wait functions: the C
+channel implementation and Go's shared wait intrinsic. The Go intrinsic has
+one direct caller, the new bounded step. No extra generated fork wait is
+found. The offline parser reports 188,221 functions. Its first two tool
+build attempts fail (incompatible reused Rust dependency artifact, then a
+parser API mismatch); the standalone Cargo build and audit subsequently
+complete. Evidence: `.context/frankenphp-rev38-wasm-waits-cargo-fixed.log`.
+
+WordPress revision 39 now selects two PHP threads for both embedded
+services, with the standard Caddy environment substitution consuming the
+same dinit setting as the classic wrapper. This is explicit service sizing;
+the six-thread WebKit failure remains a documented limit. It also matches
+[FrankenPHP 1.11's guidance](https://github.com/php/frankenphp/blob/v1.11.0/docs/performance.md#number-of-threads-and-workers)
+to size the pool for CPU and memory; the guest Go scheduler has one P.
+The Node comparison explicitly configures both FPM and FrankenPHP to six
+workers, while browser comparisons retain shipped defaults (one/two).
+No compiler, dependency or guest-API patch is made for this budget.
+
+The new default and shared environment setting still require normal image
+publication and final artifact validation. The live revision-38 preview
+remains on 5453 until its replacement is verified.
+
 ### Revision-38 preview and shutdown observation — 2026-11-06
 
 The normal `./run.sh browser` on port 5452 is still preparing its default

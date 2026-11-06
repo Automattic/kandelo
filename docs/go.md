@@ -69,6 +69,15 @@ runtime budget; it excludes embedded PHP allocations and browser-engine
 memory. Whole-service memory accounting and sustained reclamation checks
 remain release work.
 
+The WordPress demo sizes both embedded-PHP services at two PHP threads.
+`/etc/dinit.d/env-frankenphp` controls their shared
+`FRANKENPHP_NUM_THREADS` setting; Caddy reads it through its standard
+configuration substitution. The larger six-thread WebKit workload can
+exceed the content-process memory limit despite a much smaller guest heap.
+Native module/worker costs therefore remain part of service sizing and
+cannot be capped by `GOMEMLIMIT` alone. Final validation of the new image
+default is recorded in the implementation log.
+
 The allocation/reuse fixture makes this distinction observable. With a soft
 32 MiB Go limit, Node holds a touched 32 MiB C allocation and a 64 MiB Go
 live set. After Go collection/scavenging, `HeapReleased` rises to about

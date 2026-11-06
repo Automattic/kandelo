@@ -442,9 +442,17 @@ execution mode. Both profiles use PHP 8.5 with file-cache-only OPcache;
 FrankenPHP embeds the thread-safe build and nginx uses PHP-FPM processes.
 Node configures six PHP-FPM children and six FrankenPHP threads. Browser
 runs use the image's shipped defaults: the current WordPress builder selects
-one PHP-FPM child and six FrankenPHP threads. Use the Node pair to compare
+one PHP-FPM child and two FrankenPHP threads. Use the Node pair to compare
 equal maximum worker pools and the browser pair to compare those shipped
 stacks. Retain the actual image configuration when interpreting concurrency.
+The Node harness explicitly updates the shared FrankenPHP service environment
+to six threads; Caddy and the classic wrapper consume that same setting.
+The demo's two-thread default accounts for host Wasm-instance costs as well
+as PHP allocations. Six idle PHP threads already produce about 8.2 GiB in
+WebKit's native allocation bucket in the recorded revision-38 control,
+before executing a WordPress PHP request. This is not a whole-process RSS
+measurement or a claim that other engines have that cost. See the
+[implementation measurements](plans/2026-09-05-go-gc-port-milestone1-plan.md).
 The image prewarms the FPM file cache at build time. FrankenPHP builds its
 own compatible cache during requests, so cold-start and warm-request
 results must remain separate. Verify actual OPcache activation and warm

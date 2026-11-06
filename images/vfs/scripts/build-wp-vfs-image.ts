@@ -421,7 +421,9 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
 `);
   ensureDirRecursive(fs, "/etc/dinit.d");
   writeVfsFile(fs, FRANKENPHP_ENV_PATH,
-    `${Object.entries({ ...DINIT_SERVICE_ENV, PHPRC: "/etc/frankenphp", FRANKENPHP_NUM_THREADS: "6" })
+    // PHP threads also require host Wasm instances. Keep the demo pool sized
+    // for its single Go scheduler P; larger pools are an explicit setting.
+    `${Object.entries({ ...DINIT_SERVICE_ENV, PHPRC: "/etc/frankenphp", FRANKENPHP_NUM_THREADS: "2" })
       .map(([name, value]) => `${name}=${value}`)
       .join("\n")}\n`);
   ensureDirRecursive(fs, "/etc/caddy");
@@ -431,7 +433,7 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
 \tgrace_period 20s
 
 \tfrankenphp {
-\t\tnum_threads 6
+\t\tnum_threads {$FRANKENPHP_NUM_THREADS:2}
 \t}
 }
 
