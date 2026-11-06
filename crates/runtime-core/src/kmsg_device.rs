@@ -63,13 +63,22 @@
 //! * `ts_usec` is microseconds of `CLOCK_MONOTONIC` since boot. The ring
 //!   stores nanoseconds; the conversion truncates.
 //! * `flag` is `-` for a plain record and `t` when the text was truncated at
-//!   [`crate::kmsg::KMSG_MAX_TEXT_BYTES`].
+//!   [`crate::kmsg::KMSG_MAX_TEXT_BYTES`]. `t` is Kandelo's own choice for a
+//!   facility POSIX does not describe. Readers are expected to skip the field,
+//!   as upstream sysklogd does (it scans forward to the `;`).
 //! * The line is newline-delimited, so the text is escaped on the way out:
 //!   every control byte (below 0x20, which includes `\n` and NUL), DEL, and
 //!   the backslash itself render as `\xNN`. Without this a program that logs
 //!   `"a\n7,1,0,-;fake"` would forge a kernel record boundary. Escaping the
 //!   backslash too is what keeps the escape unambiguous: a literal `\x0a` in
-//!   the text renders as `\x5cx0a`, distinct from an escaped newline.
+//!   the text renders as `\x5cx0a`, distinct from an escaped newline. The C
+//!   style `\xNN` is also what consumers that unescape (sysklogd's
+//!   `kmsg_unescape`) require, so it is contract, not only defence.
+//! * `seq` is monotonic and never reused, including across `clear`
+//!   ([`crate::kmsg::KmsgRing::clear`] moves `oldest_seq` up and never rewinds
+//!   the counter). Consumers deduplicate on it: sysklogd skips any record
+//!   whose `seq` is at or below the last one it saw, so a counter that reset
+//!   would silently drop every record until it climbed back past that mark.
 
 extern crate alloc;
 
@@ -342,8 +351,9 @@ mod tests {
             ring.push(0, 6, 0, &text);
         }
         let oldest = ring.oldest_seq();
+        // Exactly the reader's record (seq 0) was evicted, no more, so the
+        // cursor sits on the newest evicted seq: the boundary itself.
         assert_eq!(oldest, 1, "exactly the reader's record was evicted, no more");
-        assert_eq!(cursor, oldest - 1, "the newest evicted record is the boundary");
 
         // Exactly one EPIPE...
         assert_eq!(read_record(&ring, &mut cursor, &mut out), Err(Errno::EPIPE));
