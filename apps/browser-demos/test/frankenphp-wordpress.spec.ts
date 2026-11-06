@@ -209,7 +209,11 @@ for (const demo of [
     expect(serviceLog).not.toMatch(/^Service-log inspection unavailable:/);
     expect(serviceLog.length).toBeGreaterThan(0);
     // A supervisor restart can restore HTTP while hiding a Go server crash.
-    expect(serviceLog).not.toMatch(/^(?:panic:|fatal error:)/m);
+    expect(serviceLog).not.toMatch(/^(?:panic:|fatal error:)/mi);
+    if (demo.profile === "wordpress-frankenphp-caddy") {
+      expect(serviceLog.match(/FrankenPHP started/g) ?? [],
+        "The editor workflow must keep its original Caddy/PHP service alive").toHaveLength(1);
+    }
 
     await expect(page.locator('.kdock-status-text[data-status="error"]')).toHaveCount(0);
   });

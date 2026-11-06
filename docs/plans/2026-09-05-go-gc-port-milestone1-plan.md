@@ -136,6 +136,89 @@ service-worker health failure above. No execution-time or bootstrap limits
 are raised. The corrected checkpoint still needs equivalent repetitions.
 Raw logs are retained as `.context/old-production-recovery-failure-{1,2}.log`.
 
+### Corrected-host artifact publication — 2026-11-06
+
+The normal 184-node publication and consumer admission pass in 17m49s
+(`49d8`: 172 cached, 12 published). WordPress revision 39 is now 79,416,985
+bytes, SHA-256
+`52c13b187190ae24653bd50e939aaac6a15daef809a3b15df029bc2f70400ee3`.
+The admitted kernel remains `bfdf6ce5`. The Go/PHP/Caddy executables are
+reused; the host-assisted images rebuild against the corrected host.
+The earlier `b5d9a032` UI/persistence results remain scoped to that previous
+image and production host. A fresh static production build and its gates
+are pending.
+
+C signal/I/O conformance passes again with the corrected host (`c4d6`,
+2m42s): Node and Chromium each pass 89 cases with two existing skips, no
+failures or timeouts. Both use the final `bfdf6ce5` kernel and the same
+new rootfs `8484649a`; the older conformance record used a different kernel.
+Evidence: `.context/current-c-conformance-FxaTCF/` and
+`.context/checkpoint-c-conformance-evidence.json`. This is not full POSIX
+or upstream Go conformance.
+
+The default browser preparer's debug native tool is intentionally stopped
+with exit 143 after 13m44s in product finalization. A one-second native
+sample shows artifact-policy, receipt and source-identity validation at
+about 358 MB physical footprint, rather than a browser/Go memory stall.
+Preparation resumes through a freshly built release-profile executable of
+the same normal `xtask bootstrap packages` command, followed by unchanged
+consumer admission and authenticated-group/frontend building. No policy or identity checks are bypassed, and no artifacts or tracked
+build scripts are edited by hand. The cancelled run is not counted as
+passing.
+
+The release-profile preparation completes in 3m34s (`6e96`), including
+normal default-product publication/admission and the production frontend.
+The actual shipped `worker-entry-browser-BvSW-7L8.js` retains the private
+symbol/global assignment and a fresh `ArrayBuffer(8)` at each checkpoint.
+The immutable preview runs on port 5457 from
+`.context/frankenphp-final-browser-build-hLg168/site`; its HTTP image hash
+matches `52c13b18`, and its authenticated group is `fcab3ccc` (27,926 bytes).
+The first new WebKit Caddy/library save/upload/template/source-free reload
+case passes in 1m54s; two more repetitions and five-minute Firefox/WebKit
+editor checks are running. This is not yet the full production gate.
+
+### Corrected-host browser results and PHP optimizer stack boundary — 2026-11-06
+
+On the `52c13b18` image and corrected production bundle, both five-minute
+actual Appearance Editor health checks pass (Firefox and WebKit, `5644`,
+14m05s). Each requires exactly one Caddy/FrankenPHP startup and rejects PHP
+and Go fatal errors. Both Node service/drain/retirement workflows also
+pass (`1cb4`, 51s). The ordinary Go inventory passes all 162 cases across
+three engines (`3cdd`, 8m24s); this count includes the thread-slot ceiling
+case. Fresh callback checks pass three Node and nine browser cases (`2230`,
+37s); signal/retirement passes ten Node modes, two Node retirements and 57
+browser cases (`b41b`, 2m43s). The updated 184-node benchmark projection
+also passes normal publication/admission (`68af`, 7m20s, all cached).
+
+Three new production WebKit Caddy/library recovery repetitions finish two
+passes and one failure (`41e5`, 8m32s), so recovery is still open. The failed
+case reopens the saved homepage, then a later admin/editor request reports
+`Maximum call stack size exceeded` in Wasm function 7275 on a PHP thread.
+The function's four parameters, CFG block layout and recursive bytecode
+identify PHP's `compute_postnum_recursive` in `Zend/Optimizer/zend_cfg.c`;
+the static PHP archive also supplies its named object disassembly. This is
+distinct from the old PHP hard timeout. Retained evidence:
+`.context/frankenphp-checkpoint-production-recovery-koat0o/` and
+`.context/new-production-recovery-{service.log,syslog.json}`.
+
+A standalone C probe extracts that unchanged upstream function and block
+layout, compiles with the declared unwrapped LLVM, and instantiates modules
+with no imports. It checks exact postorder for chains and cycles. Cold
+standalone dedicated workers pass depth 512 on WebKit 26.6 but overflow at
+1024; Chromium 153 and Firefox 155 pass 4096 and overflow at 8192. A separate
+main-page probe has different limits. There is no Kandelo runtime, PHP
+runtime, or Go code in these modules. Evidence:
+`.context/php-cfg-depth-worker-original.json`; source and original main-page
+results remain alongside it. This establishes a bounded native worker
+call stack, not an engine specification defect. It does not justify
+claiming guest-memory corruption ruled out for every PHP path.
+
+Next: validate a small iterative CFG traversal against the original
+postorder and real optimized PHP execution before changing the package.
+Keep optimizer behavior, timeout limits and Go's compiler/collector intact.
+Final production recovery, full UI/memory gates and sustained/fair timings
+remain required after any package correction.
+
 ### Remaining release gates
 
 1. The full memory/lifecycle gate on revision 39 is complete. Vite cache
