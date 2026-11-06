@@ -166,11 +166,32 @@ actual browser cases across three engines, evidence registry712 and frozen
 inputs pass. The frozen R458-v2 comparison fails three original-consumer cases
 at the expected missing ownership diagnostic; its candidate passes all nine.
 
-These controls close the compiler gate, not the full host ownership audit.
-The complete repository audit exhausted its worker heap on both the original
-688 baseline and the compiler candidate; propagation analysis remains open
-without inventory cuts or allowances. Final browser-memory, normal desktop,
+Those controls closed the compiler gate. The complete repository audit exhausted
+its worker heap on both the original688 baseline and the compiler candidate;
+the R492 propagation correction below closes that reproduced audit failure.
+Final browser-memory, normal desktop,
 peer-network, conformance and performance validation remain required.
+
+## Complete ownership-source audit, 2026-11-06 (R458/R492)
+
+The audit no longer repeatedly clones concrete non-kernel device graphs through
+recursive aliases. Its compact summary retains owner tags; any kernel, raw
+export, allocator/reserver, constructor or scratch capability retains detailed
+paths and the existing conservative fallback. Callable authority is distinct
+from the authority returned by its invocation, including methods, getters,
+callbacks, overloads, casts and native array operations. Numeric pointer
+formatting no longer falsely becomes another allocator invocation. Two obsolete
+scalar-wrapper allowances are removed; none are added.
+
+R492 `graphics-owned-audit-r492-1105-235215-5e95` passes2m58 on an exact private
+projection of the R489 integration runtime plus this four-file source-only
+correction: all118 checks, including ten kernel-contract checks and108 audit
+fixtures, pass. The complete graph covers739 runtime sources, ten more than the
+earlier729-source compiler candidate, with zero removed roots. Its full-graph
+check takes148197ms under the unchanged300000ms watchdog; ordinary fixtures
+retain5000ms. Host and app strict compilers pass, and frozen source hashes match.
+This is complete ownership-source evidence, not a full host suite, browser-memory
+or native-feel claim. The original heap failures remain recorded as failures.
 
 ## Lazy asset failure visibility, 2026-11-05 (R454/R459)
 

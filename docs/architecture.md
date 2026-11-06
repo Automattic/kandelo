@@ -658,6 +658,19 @@ and follows its result into aliases, helper parameters, views, and writes.
 Same-named non-kernel APIs need an exact reviewed allowance. This narrow
 backstop is not a claim of sound general JavaScript taint analysis.
 
+The audit summarizes recursive device graphs only when every descendant
+carries concrete non-kernel memory, buffer, view, or instance ownership. The
+summary retains those owner tags without repeatedly cloning the whole graph.
+Kernel evidence, allocator or reservation callables, constructors, and scratch
+authority keep their detailed paths: any of those could produce a kernel
+capability later. New kernel taint still merges through its exact field path
+and prevents this summary. Allocator invocation and allocator return authority
+are separate states. Calling a raw allocator returns a pointer, while a
+callback that returns an allocator keeps that callable visible even through
+higher-order wrappers and casts. Numeric pointer formatting therefore requires
+no scratch-call exception. The audit retains its complete source inventory,
+fixed-depth conservative fallback, and exact exception multiset.
+
 The Rust dispatcher has a separate source-contract test for raw process
 addresses. It rejects the former raw-channel-pointer macro, matches every
 remaining `process_address!` use against its exact reviewed syscall context,

@@ -1372,6 +1372,8 @@ and manual verification remain required. R459's historical browser-app compiler
 gate fails126 existing diagnostics, with no additions against its clean baseline.
 R482 closes the compiler gate with complete browser/Node context inventories,
 213 Node tests,176 focused source checks and nine three-engine browser controls.
-The complete host ownership audit still needs its propagation failure fixed and
-validated; baseline and candidate both exhaust the worker heap. No source
-inventory, watchdog or acceptance requirement is reduced.
+R492 then closes the reproduced ownership-audit propagation failure:118 checks
+and the complete739-source graph pass under the unchanged watchdog, with zero
+removed roots and two obsolete allowances removed. Full host-suite and final
+memory/desktop/conformance/benchmark acceptance remain required. The original
+baseline/candidate heap failures stay recorded; no acceptance criterion changes.

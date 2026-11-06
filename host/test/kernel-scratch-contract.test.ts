@@ -1149,23 +1149,6 @@ const auditAllowances: AuditAllowance[] = [
     authorityOwner: "process-memory",
     why: "This self-contained constructor creates only the admitted guest address space, normally in a disposable realm and once in its owner after native constructor exhaustion. It has no kernel imports or kernel memory; the allocator validates and records fresh process ownership before exposing it.",
   },
-  {
-    key: "host/src/process-lifecycle.ts::createProcessLifecycle.threadAllocatorForLayout::scratch-allocator-call::host.reserveThreadSlotStartPage(pid, THREAD_SLOT_BYTES)",
-    disposition: "kernel-control",
-    count: 1,
-    // WHY: the shared lifecycle reaches the kernel worker through its host
-    // interface, so the audit sees the interface member rather than the
-    // public method behind it. Both hosts bind it to
-    // CentralizedKernelWorker.reserveHostRegion, which opens its own kernel
-    // entry; this call site never holds a scratch pointer or token.
-    why: "The thread-slot reservation passes a pid and a byte length and receives a guest process-memory address; it reserves guest address space through a public worker method that opens its own kernel entry, not kernel scratch.",
-  },
-  {
-    key: "host/src/process-lifecycle.ts::createProcessLifecycle.threadAllocatorForLayout::scratch-reservation-call::host.reserveThreadSlotStartPage(pid, THREAD_SLOT_BYTES)",
-    disposition: "kernel-control",
-    count: 1,
-    why: "The same thread-slot reservation; it carries no Rust scratch reservation token, so no host-staged kernel bytes outlive it.",
-  },
   ...reviewedScalarKernelExportCalls,
   {
     key: "host/src/host-adapter-manifest.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",

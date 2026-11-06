@@ -5314,3 +5314,144 @@ describe("WebAssembly memory write audit", () => {
     }
   });
 });
+
+
+describe("concrete non-kernel summaries and allocator results", () => {
+  const guestSeed: OwnershipSeed = { declaration: "case.ts::guest", target: "value", owner: "process-memory", form: "memory", why: "This fixture value belongs to an ordinary guest process." };
+  const kernelSeed: OwnershipSeed = { declaration: "case.ts::kernel", target: "value", owner: "kernel", form: "memory", why: "This fixture value is the kernel address space." };
+
+  it("converges a recursive non-kernel device graph without inventing kernel authority", () => {
+    const result = auditVirtual({ "case.ts": `
+      declare const guest: WebAssembly.Memory;
+      declare function retain(value: unknown): void;
+      interface Node { memory: WebAssembly.Memory; left: Node | null; right: Node | null; }
+      const node: Node = { memory: guest, left: null, right: null };
+      node.left = node; node.right = node;
+      retain(node);
+    ` }, [guestSeed]);
+    expect(formatAuditFailures(result)).toEqual([]);
+    expect(result.sourceFiles).toEqual(["case.ts"]);
+    expect(result.propagationPasses).toBeLessThanOrEqual(8);
+  });
+
+  it("retains late kernel contamination through a previously non-kernel recursive container", () => {
+    const result = auditVirtual({ "case.ts": `
+      declare const guest: WebAssembly.Memory;
+      declare const kernel: WebAssembly.Memory;
+      declare function retain(value: unknown): void;
+      interface Node { memory: WebAssembly.Memory; next: Node | null; payload?: Uint8Array; }
+      const node: Node = { memory: guest, next: null };
+      node.next = node;
+      node.payload = new Uint8Array(kernel.buffer);
+      retain(node.next!.payload);
+    ` }, [guestSeed, kernelSeed]);
+    expect(result.contractErrors).toEqual([]);
+    expect(result.violations.some(finding => finding.kind === "kernel-view-escape")).toBe(true);
+  });
+
+  it("keeps a constructor beside non-kernel memory capable of making a kernel view", () => {
+    const result = auditVirtual({ "case.ts": `
+      declare const guest: WebAssembly.Memory;
+      declare const kernel: WebAssembly.Memory;
+      declare function retain(value: unknown): void;
+      const box = { memory: guest, ctor: Uint8Array };
+      retain(new box.ctor(kernel.buffer));
+    ` }, [guestSeed, kernelSeed]);
+    expect(result.violations.some(finding => finding.kind === "kernel-view-escape")).toBe(true);
+  });
+
+  it("keeps scratch authority beside non-kernel memory visible at its escape", () => {
+    const result = auditVirtual({ "case.ts": `
+      declare const guest: WebAssembly.Memory;
+      declare const region: unknown;
+      declare function retain(value: unknown): void;
+      const box = { memory: guest, region };
+      retain(box.region);
+    ` }, [guestSeed, scratchRegionSeed("case.ts::region")]);
+    expect(result.violations.some(finding => finding.kind === "scratch-address-contract")).toBe(true);
+  });
+
+  it("tracks method factories through callbacks while accessors expose their immediate value", () => {
+    const result = auditVirtual({ "case.ts": `
+      declare const source: { kernel_alloc_scratch(capacity: number): number; };
+      const allocate = source.kernel_alloc_scratch;
+      class Source {
+        factory(): typeof allocate;
+        factory(flag: boolean): typeof allocate;
+        factory(flag?: boolean) { return allocate; }
+      }
+      const instance = new Source;
+      function consumeClass(callback: () => typeof allocate) {
+        const fromClass = callback(); fromClass(4);
+      }
+      consumeClass(instance.factory);
+      const object = { factory() { return allocate; }, get allocator() { return allocate; } };
+      function consumeObject(callback: () => typeof allocate) {
+        const fromObject = callback(); fromObject(4);
+      }
+      consumeObject(object["factory"]);
+      object.allocator(4);
+    ` }, []);
+    const calls = result.violations.filter(finding => finding.kind === "scratch-allocator-call").map(finding => finding.text);
+    for (const call of ["fromClass(4)", "fromObject(4)", "object.allocator(4)"])
+      expect(calls).toContain(call);
+  });
+
+  it("models array callback invocation separately from returned allocator values", () => {
+    const result = auditVirtual({ "case.ts": `
+      declare const source: { kernel_alloc_scratch(capacity: number): number; kernel_transfer_scratch_begin(capacity: number): number; };
+      const allocate = source.kernel_alloc_scratch, reserve = source.kernel_transfer_scratch_begin;
+      const pointers = [4].map(allocate); pointers[0].toString(16);
+      [4].forEach(reserve);
+      const mapped = [0].map(() => allocate); mapped[0](4);
+      const mappedReserve = [0].map(() => reserve); mappedReserve[0](4);
+      const erased = [0].map(() => allocate as unknown as number);
+      (erased[0] as unknown as typeof allocate)(4);
+    ` }, []);
+    const allocatorCalls = result.violations.filter(finding => finding.kind === "scratch-allocator-call").map(finding => finding.text);
+    const reserverCalls = result.violations.filter(finding => finding.kind === "scratch-reservation-call").map(finding => finding.text);
+    for (const call of ["[4].map(allocate)", "mapped[0](4)", "(erased[0] as unknown as typeof allocate)(4)"])
+      expect(allocatorCalls).toContain(call);
+    for (const call of ["[4].forEach(reserve)", "mappedReserve[0](4)"])
+      expect(reserverCalls).toContain(call);
+    expect(allocatorCalls.some(call => call.includes("toString"))).toBe(false);
+  });
+
+  it("consumes allocator invocation roles while retaining higher-order returned callables", () => {
+    const result = auditVirtual({ "case.ts": `
+      declare const guest: WebAssembly.Memory;
+      declare const source: { kernel_alloc_scratch(capacity: number): number; kernel_transfer_scratch_begin(capacity: number): number; };
+      const allocate = source.kernel_alloc_scratch;
+      const reserve = source.kernel_transfer_scratch_begin;
+      const address = allocate(4), token = reserve(4);
+      const text = address.toString(16) + token.toString(16);
+      function reserveScalar(capacity: number) { return reserve(capacity); }
+      const wrapped = reserveScalar(4); wrapped.toString(16);
+      const box = { memory: guest, allocate, reserve };
+      box.allocate(4); box.reserve(4);
+      const higher = () => allocate;
+      const returned = higher(); returned(4);
+      const bound = allocate.bind(null); const boundAddress = bound(4); boundAddress.toString(16);
+      const boundFactory = higher.bind(null); const fromBound = boundFactory(); fromBound(4);
+      const fromCall = higher.call(null); fromCall(4);
+      const fromApply = higher.apply(null, []); fromApply(4);
+      const nested = () => () => reserve;
+      const returnedTwice = nested()(); returnedTwice(4);
+      function factory(): typeof allocate;
+      function factory(flag: boolean): typeof allocate;
+      function factory(flag?: boolean) { return allocate; }
+      function consume(callback: () => typeof allocate) { const fromCallback = callback(); fromCallback(4); }
+      consume(factory);
+      const erased = () => allocate as unknown as number;
+      const fromErased = erased() as unknown as typeof allocate; fromErased(4);
+      const malicious = { toString: allocate }; malicious.toString(4);
+    ` }, [guestSeed]);
+    const allocatorCalls = result.violations.filter(finding => finding.kind === "scratch-allocator-call").map(finding => finding.text);
+    const reserverCalls = result.violations.filter(finding => finding.kind === "scratch-reservation-call").map(finding => finding.text);
+    for (const text of ["allocate(4)", "box.allocate(4)", "returned(4)", "bound(4)", "fromBound(4)", "fromCall(4)", "fromApply(4)", "fromCallback(4)", "fromErased(4)", "malicious.toString(4)"])
+      expect(allocatorCalls).toContain(text);
+    for (const text of ["reserve(4)", "reserve(capacity)", "box.reserve(4)", "returnedTwice(4)"])
+      expect(reserverCalls).toContain(text);
+    expect([...allocatorCalls, ...reserverCalls].some(text => /(?:address|token|wrapped|boundAddress)\.toString|reserveScalar\(4\)/.test(text))).toBe(false);
+  });
+});

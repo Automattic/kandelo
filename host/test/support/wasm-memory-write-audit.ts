@@ -2,7 +2,6 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
-
 export type MemoryOwner =
   "kernel" | "process-memory" | "framebuffer" | "shared-memory" | "rust-lent";
 
@@ -128,7 +127,11 @@ interface ValueState {
   exportNamespace: number;
   kernelExportFunctions: Set<string>;
   allocator: boolean;
+  /** A callback may return an allocator; it is not itself that allocator. */
+  allocatorReturn: boolean;
   reserver: boolean;
+  /** Sticky across unknown higher-order returns rather than losing authority. */
+  reserverReturn: boolean;
   scratchRegionFactory: boolean;
   scratchRegion: boolean;
   viewConstructors: number;
@@ -160,7 +163,9 @@ const EMPTY_STATE: ValueState = Object.freeze({
   exportNamespace: 0,
   kernelExportFunctions: new Set<string>(),
   allocator: false,
+  allocatorReturn: false,
   reserver: false,
+  reserverReturn: false,
   scratchRegionFactory: false,
   scratchRegion: false,
   viewConstructors: 0,
@@ -387,7 +392,9 @@ function emptyState(): ValueState {
     exportNamespace: 0,
     kernelExportFunctions: new Set<string>(),
     allocator: false,
+    allocatorReturn: false,
     reserver: false,
+    reserverReturn: false,
     scratchRegionFactory: false,
     scratchRegion: false,
     viewConstructors: 0,
@@ -416,7 +423,9 @@ function mergeDirectState(into: ValueState, other: ValueState): boolean {
   const beforeExportNamespace = into.exportNamespace;
   const beforeKernelExportFunctionCount = into.kernelExportFunctions.size;
   const beforeAllocator = into.allocator;
+  const beforeAllocatorReturn = into.allocatorReturn;
   const beforeReserver = into.reserver;
+  const beforeReserverReturn = into.reserverReturn;
   const beforeScratchRegionFactory = into.scratchRegionFactory;
   const beforeScratchRegion = into.scratchRegion;
   const beforeViewConstructors = into.viewConstructors;
@@ -430,7 +439,9 @@ function mergeDirectState(into: ValueState, other: ValueState): boolean {
     into.kernelExportFunctions.add(name);
   }
   into.allocator ||= other.allocator;
+  into.allocatorReturn ||= other.allocatorReturn;
   into.reserver ||= other.reserver;
+  into.reserverReturn ||= other.reserverReturn;
   into.scratchRegionFactory ||= other.scratchRegionFactory;
   into.scratchRegion ||= other.scratchRegion;
   into.viewConstructors |= other.viewConstructors;
@@ -443,7 +454,9 @@ function mergeDirectState(into: ValueState, other: ValueState): boolean {
     beforeExportNamespace !== into.exportNamespace ||
     beforeKernelExportFunctionCount !== into.kernelExportFunctions.size ||
     beforeAllocator !== into.allocator ||
+    beforeAllocatorReturn !== into.allocatorReturn ||
     beforeReserver !== into.reserver ||
+    beforeReserverReturn !== into.reserverReturn ||
     beforeScratchRegionFactory !== into.scratchRegionFactory ||
     beforeScratchRegion !== into.scratchRegion ||
     beforeViewConstructors !== into.viewConstructors ||
@@ -460,7 +473,9 @@ function hasDirectCapability(state: ValueState): boolean {
     state.exportNamespace !== 0 ||
     state.kernelExportFunctions.size !== 0 ||
     state.allocator ||
+    state.allocatorReturn ||
     state.reserver ||
+    state.reserverReturn ||
     state.scratchRegionFactory ||
     state.scratchRegion ||
     state.viewConstructors !== 0
@@ -496,7 +511,54 @@ function mergeDescendantCapabilities(
   return changed;
 }
 
+/** Keep concrete non-kernel ownership without cloning recursive device graphs.
+ * WHY: only evidence incapable of producing kernel authority may be summarized.
+ * Constructor, allocator, scratch and kernel capabilities keep exact paths;
+ * folding those would hide a later invocation against kernel memory. Future
+ * kernel taint merges into its own field paths and prevents this summary.
+ */
+function concreteNonKernelSummary(state: ValueState): ValueState | null {
+  if (
+    state.properties.size === 0 &&
+    state.hiddenProperties.size === 0 &&
+    state.elements === null
+  ) return null;
+  const result = emptyState();
+  const seen = new Set<ValueState>();
+  function visit(value: ValueState): boolean {
+    if (seen.has(value)) return true;
+    seen.add(value);
+    const owners = value.memory | value.buffer | value.view |
+      value.instance | value.exportNamespace;
+    if (
+      (owners & KERNEL_OWNER) !== 0 ||
+      value.kernelExportFunctions.size !== 0 ||
+      value.allocator || value.allocatorReturn ||
+      value.reserver || value.reserverReturn ||
+      value.scratchRegionFactory || value.scratchRegion ||
+      value.viewConstructors !== 0
+    ) return false;
+    result.memory |= value.memory;
+    result.buffer |= value.buffer;
+    result.view |= value.view;
+    result.instance |= value.instance;
+    result.exportNamespace |= value.exportNamespace;
+    for (const child of value.properties.values()) {
+      if (!visit(child)) return false;
+    }
+    for (const child of value.hiddenProperties.values()) {
+      if (!visit(child)) return false;
+    }
+    return value.elements === null || visit(value.elements);
+  }
+  if (!visit(state) || !hasDirectCapability(result)) return null;
+  result.unknownDescendant = true;
+  return result;
+}
+
 function cloneState(state: ValueState, depth = 0): ValueState {
+  const summary = concreteNonKernelSummary(state);
+  if (summary !== null) return summary;
   const result: ValueState = {
     memory: state.memory,
     buffer: state.buffer,
@@ -505,7 +567,9 @@ function cloneState(state: ValueState, depth = 0): ValueState {
     exportNamespace: state.exportNamespace,
     kernelExportFunctions: new Set(state.kernelExportFunctions),
     allocator: state.allocator,
+    allocatorReturn: state.allocatorReturn,
     reserver: state.reserver,
+    reserverReturn: state.reserverReturn,
     scratchRegionFactory: state.scratchRegionFactory,
     scratchRegion: state.scratchRegion,
     viewConstructors: state.viewConstructors,
@@ -638,6 +702,10 @@ function propertyState(state: ValueState, name: string): ValueState {
     result.kernelExportFunctions.add(name);
   }
   if (name === "call" || name === "apply" || name === "bind") {
+    result.allocator ||= state.allocator;
+    result.reserver ||= state.reserver;
+    result.allocatorReturn ||= state.allocatorReturn;
+    result.reserverReturn ||= state.reserverReturn;
     for (const exportName of state.kernelExportFunctions) {
       result.kernelExportFunctions.add(exportName);
     }
@@ -2556,6 +2624,30 @@ function expressionState(
     }
   }
 
+  if (
+    ts.isIdentifier(node) || ts.isPropertyAccessExpression(node) ||
+    ts.isElementAccessExpression(node)
+  ) {
+    // Overload signatures have no evaluated body; retain the implementation's
+    // return authority when the function value crosses a callback boundary.
+    const declaration = direct?.declarations?.find(
+      (candidate): candidate is ts.FunctionDeclaration | ts.MethodDeclaration =>
+        (ts.isFunctionDeclaration(candidate) || ts.isMethodDeclaration(candidate)) &&
+        hasBody(candidate),
+    );
+    if (
+      declaration && isInProgram(programSources, declaration) &&
+      hasBody(declaration)
+    ) {
+      const returned = cloneState(stateFor(states, declaration));
+      returned.allocatorReturn ||= returned.allocator;
+      returned.reserverReturn ||= returned.reserver;
+      returned.allocator = false;
+      returned.reserver = false;
+      unionState(directState, returned);
+    }
+  }
+
   if (ts.isConditionalExpression(node)) {
     return unionMany([
       directState,
@@ -2597,7 +2689,12 @@ function expressionState(
     ]);
   }
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
-    return unionMany([directState, stateFor(states, node)]);
+    const returned = cloneState(stateFor(states, node));
+    returned.allocatorReturn ||= returned.allocator;
+    returned.reserverReturn ||= returned.reserver;
+    returned.allocator = false;
+    returned.reserver = false;
+    return unionMany([directState, returned]);
   }
   if (ts.isObjectLiteralExpression(node)) {
     const result = cloneState(directState);
@@ -2667,6 +2764,15 @@ function expressionState(
         const name = propertyNameText(property.name);
         if (!name) continue;
         const value = cloneState(stateFor(states, property));
+        if (ts.isMethodDeclaration(property)) {
+          // WHY: a method returns its callable later; a getter evaluates now.
+          // Treating both as immediate values either erases a factory callback
+          // or consumes the raw allocator returned by an accessor too early.
+          value.allocatorReturn ||= value.allocator;
+          value.reserverReturn ||= value.reserver;
+          value.allocator = false;
+          value.reserver = false;
+        }
         if (!hasCapability(value)) continue;
         const existing = result.properties.get(name);
         if (existing) unionState(existing, value);
@@ -2859,6 +2965,10 @@ function expressionState(
             states,
             programSources,
           );
+          // WHY: map stores each callback's result, not the callback itself.
+          // A factory yields a callable; a raw allocator yields a scalar.
+          mappedElement.allocator = mappedElement.allocatorReturn;
+          mappedElement.reserver = mappedElement.reserverReturn;
           if (hasCapability(mappedElement)) {
             result.elements = mappedElement;
           }
@@ -2932,17 +3042,24 @@ function expressionState(
       unionState(result, stateFor(states, declaration));
     }
     const returnedKernelExportFunctions = new Set(result.kernelExportFunctions);
+    // WHY: invoking an allocator consumes its callable role. A numeric pointer
+    // must not become another allocator when formatted with toString. Preserve
+    // analyzed returns and conservative callback-return tags, including casts.
+    const returnedAllocator = result.allocator;
+    const returnedReserver = result.reserver;
+    const calleeState = expressionState(
+      node.expression, checker, states, programSources,
+    );
     // Higher-order callbacks retain the return capability in the parameter's
     // state. Calling such a parameter yields that capability.
-    unionState(
-      result,
-      expressionState(node.expression, checker, states, programSources),
-    );
+    unionState(result, calleeState);
     if (callPropertyName(node) !== "bind") {
       // Calling a raw export returns a scalar; the callable capability itself
       // does not flow into that scalar. An analyzed identity/helper return is
       // already represented by the declaration state captured above.
       result.kernelExportFunctions = returnedKernelExportFunctions;
+      result.allocator = returnedAllocator || calleeState.allocatorReturn;
+      result.reserver = returnedReserver || calleeState.reserverReturn;
     }
     if (result.scratchRegionFactory) {
       result.scratchRegionFactory = false;
@@ -4621,13 +4738,7 @@ export function auditWasmMemoryWrites(options: AuditOptions): AuditResult {
         programSources,
       );
       const projected = projectState(state, constraint.projection);
-      changed =
-        mergeIntoKey(
-          states,
-          constraint.target,
-          projected,
-          constraint.targetProjection,
-        ) || changed;
+      changed = mergeIntoKey(states, constraint.target, projected, constraint.targetProjection) || changed;
     }
   }
 
@@ -7163,6 +7274,20 @@ export function auditWasmMemoryWrites(options: AuditOptions): AuditResult {
           states,
           programSources,
         );
+        const callbackMethod = intrinsicArrayMethod(node, checker) ??
+          intrinsicTypedArrayMethod(node, checker);
+        if (
+          callbackMethod && ARRAY_ELEMENT_CALLBACK_METHODS.has(callbackMethod) &&
+          node.arguments[0]
+        ) {
+          const callbackState = expressionState(
+            node.arguments[0], checker, states, programSources,
+          );
+          // The proven intrinsic invokes this callback; its raw authority is
+          // used here even when no one later reads the resulting array.
+          if (callbackState.allocator) addFinding(sourceFile, node, "scratch-allocator-call");
+          if (callbackState.reserver) addFinding(sourceFile, node, "scratch-reservation-call");
+        }
         const directReflectedKernelExportKind =
           directReflectedKernelExportUseKind(node);
         if (directReflectedKernelExportKind !== null) {
