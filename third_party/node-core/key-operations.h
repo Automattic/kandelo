@@ -122,6 +122,74 @@ struct KeyMaterial {
     if (!result->asymmetric) invalid();
     return result;
   }
+  // JWK material is constructed by the same pinned ncrypto primitives as
+  // crypto_{rsa,ec,keys}.cc. JavaScript getters and codecs stay at the engine
+  // boundary; no imported JSON survives as key state.
+  static ncrypto::BignumPointer JwkBN(const Bytes& bytes) {
+    return ncrypto::BignumPointer(bytes.value.data(), bytes.value.size());
+  }
+  [[noreturn]] static void InvalidJwk(const char* kind) {
+    const auto message = std::string("Invalid JWK ") + kind + " key";
+    throw KeyError(message.c_str(), "ERR_CRYPTO_INVALID_JWK");
+  }
+  static const ncrypto::KeyAlgorithm* JwkAlgorithm(const std::string& name, bool akp) {
+    const auto* algorithm = ncrypto::KeyAlgorithm::FromName(name.c_str());
+    if (!algorithm || (akp ? !algorithm->isPqc() || !algorithm->isAvailable() : !algorithm->isOkp()) ||
+        std::strcmp(name.c_str(), algorithm->name()) != 0) {
+      if (akp) throw KeyError("Unsupported JWK AKP \"alg\"", "ERR_CRYPTO_INVALID_JWK");
+      InvalidJwk("OKP");
+    }
+    return algorithm;
+  }
+  static int JwkCurve(const std::string& curve) {
+    const int nid = ncrypto::Ec::GetCurveIdFromName(curve.c_str());
+    if (nid == NID_undef) throw KeyError("Invalid EC curve name", "ERR_CRYPTO_INVALID_CURVE");
+    return nid;
+  }
+  static std::unique_ptr<KeyMaterial> JwkEc(int nid, const Bytes& x, const Bytes& y, const Bytes* d) {
+    auto ec = ncrypto::ECKeyPointer::NewByCurveName(nid);
+    if (!ec || !ec.setPublicKeyRaw(JwkBN(x), JwkBN(y))) InvalidJwk("EC");
+    if (d && (!ec.setPrivateKey(JwkBN(*d)) || !ec.checkPrivateKey())) InvalidJwk("EC");
+    auto result = std::make_unique<KeyMaterial>();
+    result->asymmetric = Key::New();
+    if (!result->asymmetric || !result->asymmetric.set(ec)) InvalidJwk("EC");
+    return result;
+  }
+  static std::unique_ptr<KeyMaterial> JwkRaw(const ncrypto::KeyAlgorithm& algorithm,
+                                           const Bytes& publicBytes, const Bytes* privateBytes) {
+    std::optional<ncrypto::Buffer<const unsigned char>> privateKey;
+    if (privateBytes) privateKey = {privateBytes->value.data(), privateBytes->value.size()};
+    auto result = std::make_unique<KeyMaterial>();
+    result->asymmetric = Key::NewRawJwk(algorithm, {publicBytes.value.data(), publicBytes.value.size()}, privateKey);
+    if (!result->asymmetric) InvalidJwk(algorithm.isPqc() ? "AKP" : "OKP");
+    return result;
+  }
+  static std::unique_ptr<KeyMaterial> JwkRsa(ncrypto::Rsa& rsa) {
+    auto result = std::make_unique<KeyMaterial>();
+#if NCRYPTO_USE_OPENSSL3_PROVIDER
+    result->asymmetric = Key::NewRSA(rsa);
+#else
+    // The owner is built with the pinned OpenSSL 3 provider API. Other backends
+    // must retain their RSA pointer until NewRSA takes ownership.
+    throw KeyError("RSA JWK requires the OpenSSL provider owner", "ERR_METHOD_NOT_IMPLEMENTED");
+#endif
+    if (!result->asymmetric) throw KeyError("Unable to create key pointer", "ERR_CRYPTO_OPERATION_FAILED");
+    return result;
+  }
+  Key::RawJwkData ExportJwkRaw(bool privateKey) const {
+    auto result = asymmetric.exportRawJwk(privateKey);
+    if (!result) throw KeyError(result.error == Key::RawExportError::MISSING_SEED ?
+        "key does not have an available seed" : "Failed to export JWK", "ERR_CRYPTO_OPERATION_FAILED");
+    return std::move(result.value);
+  }
+  static ncrypto::DataPointer JwkEncodeBN(const BIGNUM* value, size_t size = 0) {
+    if (!size) size = ncrypto::BignumPointer::GetByteCount(value);
+    auto bytes = ncrypto::DataPointer::Alloc(size);
+    if (!bytes && size) throw std::bad_alloc();
+    if (ncrypto::BignumPointer::EncodePaddedInto(value, bytes.get<unsigned char>(), size) != size)
+      throw KeyError("Failed to export JWK", "ERR_CRYPTO_OPERATION_FAILED");
+    return bytes;
+  }
   ncrypto::DataPointer Export(Config config, bool privateKey) const {
     // Import has loaded the actual provider. Node configures its PQC encoding
     // policy once during crypto initialization; do the same before this owner's

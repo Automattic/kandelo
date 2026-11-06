@@ -52,6 +52,10 @@ exports.create = function create() {
           value = (operation === 'slots' ? raw.getKeyObjectSlots : raw.getCryptoKeySlots)(args[0]);
           Object.setPrototypeOf(value[operation === 'slots' ? 1 : 4], handlePrototype);
         }
+      } else if (operation === 'initJwk') {
+        value = Reflect.apply(nativeKeyMethods.init, args[0], [args[1], args[2], raw.kKeyFormatJWK, null, null, null]);
+      } else if (operation === 'exportJwk') {
+        value = Reflect.apply(nativeKeyMethods.exportJwk, args[0], args.slice(1, 3));
       } else {
         const name = { type: 'getKeyType', size: 'getSymmetricKeySize', asymmetricType: 'getAsymmetricKeyType',
           detail: 'keyDetail', rawPublic: 'rawPublicKey', rawPrivate: 'rawPrivateKey', rawSeed: 'rawSeed',
@@ -61,6 +65,8 @@ exports.create = function create() {
       }
       return { value, error: undefined };
     } catch (error) {
+      // Getter exceptions propagate directly through the guest JSAPI owner.
+      if (!error || !Object.hasOwn(error, 'code')) throw error;
       // Match the guest native error packet: constructor names are not carried.
       const record = { message: error.message };
       for (const key of ['code', 'library', 'reason', 'opensslErrorStack'])

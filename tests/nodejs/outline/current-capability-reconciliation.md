@@ -1,5 +1,14 @@
 # Current public-contract reconciliation
 
+Source126 adds real asymmetric JWK import/export over ncrypto/OpenSSL owners,
+including RSA multi-prime,EC,OKP/AKP,private/public relation checks and native
+own-property definitions. Eight new and61affected frontend controls and12package
+checks pass. The reviewed portable owner has226passing native comparisons with
+matching source/dependency identities. Four unchanged files in two modes retain
+6pass/2candidate consumer nonpasses. Guest117–126source remains uncompiled;
+accepted116is stale. All19families remain partial;overall suites/full rebuild
+remain deferred. See [JWK ownership](jwk-implementation-dependencies.md).
+
 Source125 installs the pinned public AsyncHook class with actual symbol/count
 registry semantics,ordinary public functions and a stable ordinary root resource.
 Eleven new and23 affected frontend controls,12 package checks and four runs of
@@ -196,7 +205,7 @@ of the APIs, overloads, inherited members, symbols and open questions.
 | Network | native address/rule state, pinned BlockList/SocketAddress and live TCP consumers; queued lookup, actual c-ares channels/record JSAPI/external-completion source and libc/kernel/host routes | Guest rule/clone/worker integration, full Socket/Server controls/lifecycle, Resolver configuration/permission/JSAPI lifecycle integration and datagram owners; source/native controls are not guest conformance |
 | HTTP | Pinned outgoing headers/full IncomingMessage and unchanged common parser callbacks; actual Node-vendored llhttp/private GC-owned response framing, strict/insecure/relaxed limits, interim/HEAD/upgrade/CONNECT source; unconditional pooled replay and same-feed leftover reuse removed | Synchronous native-to-JS callback/reentry/byte/memory/error/EOF integration, OutgoingMessage/request framing, idle bytes/public Agent/TLS pool keys, servers/request parsing and HTTP/2; guest/four-host lifecycle remains unvalidated |
 | Secure network | TLS identity algorithms, actual live OpenSSL protocol/cipher/reuse/Finished/verification metadata source, shared IP/domain helpers and transports | Complete socket/context/trust/key/certificate/handshake/session ownership, metadata/error/descriptor fidelity, secure pooling/servers and DTLS/QUIC |
-| Crypto | Pinned random/KDF/digest/Hash/Hmac/HKDF and cipher owners;real ncrypto secret/PEM/DER/raw EC/OKP/PQC material,roles,metadata and one-time provider encoding policy through123source | Guest117–124uncompiled;retained116cipher exceptions;JWK/store/PKCS12,WebCrypto,key generation/exchange/signatures/certificates,FIPS/provider transitions,transfer and allocation/lifecycle/namespace obligations |
+| Crypto | Pinned random/KDF/digest/Hash/Hmac/HKDF/cipher algorithms;actual secret/PEM/DER/raw/JWK ncrypto material,roles,relation checks,multi-prime/EC/OKP/AKP fields,own-property definitions and provider encoding policy through126source | Guest117–126uncompiled;retained cipher exceptions and two JWK consumer nonpasses;store/PKCS12,WebCrypto,generation/exchange/signatures/certificates,FIPS/provider transitions,transfer/accounting/GC/lifecycle/namespace and four-host obligations |
 | Web | File/FormData/Headers, private header guard/list consumers, Blob/clone and Web Stream owners | Complete body/Fetch/WebIDL/global/encoding/URL semantics, transfer and network/crypto dependencies |
 | Loading | Partial pinned Module.wrap/wrapper and patched-script source owners with single exports snapshot; Real native parser goals and direct CJS body compilation, pinned filename/package/entry selection and shared ESM source format in103; Module record/require/JSON, package cache/reader, exports/imports/conditions/self/maps and SourceMap algorithms | Actual guest parser/error/source/realm evidence; complete provided-source execution, CJS wrapper/hooks/cache and ESM URL/namespace/JSON/async/cycle/dynamic-import graphs; TypeScript/Wasm/addon/source-map/cache/preload/CLI/permission/lifecycle owners; four-host conformance |
 | Terminal | Pinned shared/callback/promise readline,history/key/cursor owners plus120actual borrowed terminal-mode leases and window queries | Full public TTY/stdio classes,signals/resize/drain,Unicode width,persistence/permissions/REPL and guest lifecycle/stream/symbol conformance |

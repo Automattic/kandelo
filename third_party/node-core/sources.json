@@ -4592,6 +4592,26 @@
         "path": "upstream/keys/src/crypto/crypto_keys.h",
         "upstreamPath": "src/crypto/crypto_keys.h",
         "sha256": "b295605d6b1415e20008b05268bd19c95dfe5abdbb6ec4f199c7c48fac25f029"
+      },
+      "src/crypto/crypto_ec.cc": {
+        "path": "upstream/keys/src/crypto/crypto_ec.cc",
+        "upstreamPath": "src/crypto/crypto_ec.cc",
+        "sha256": "526b35c048d2d82ac07b761c65d4b4a8c4079351c1bdf4815b48d81cef176123"
+      },
+      "src/crypto/crypto_ec.h": {
+        "path": "upstream/keys/src/crypto/crypto_ec.h",
+        "upstreamPath": "src/crypto/crypto_ec.h",
+        "sha256": "478769d0abb82fece81ba84a0ee7e7e0009812929f31a1d26498c12823a9190d"
+      },
+      "src/crypto/crypto_rsa.cc": {
+        "path": "upstream/keys/src/crypto/crypto_rsa.cc",
+        "upstreamPath": "src/crypto/crypto_rsa.cc",
+        "sha256": "6fb9229a1dfffab09dd3dfbfa805309fea5e2a2960d2462b89e8ff9b85756c2c"
+      },
+      "src/crypto/crypto_rsa.h": {
+        "path": "upstream/keys/src/crypto/crypto_rsa.h",
+        "upstreamPath": "src/crypto/crypto_rsa.h",
+        "sha256": "78209001efaf631ed6e9b22a227c680cb59b42ac77eaa8543ef29f42ba366843"
       }
     },
     "bigInt": {
@@ -4600,7 +4620,7 @@
       "length": 278,
       "sha256": "5e39c3d62043ed5ae41ff5141134376eaff8b40570489f65e90aaf22acc615a1"
     },
-    "scope": "Full pinned KeyObject/CryptoKey wrappers over real native material. Secret,PEM/DER and actual ncrypto EC/OKP/PQC raw import/export owners;asymmetric JWK/store/PKCS12/WebCrypto/transfer and provider/lifecycle/guest conformance remain implementation gaps,not exclusions."
+    "scope": "Full pinned KeyObject/CryptoKey wrappers over real native material. Secret, PEM/DER, raw and RSA/EC/OKP/AKP JWK owners; store/PKCS12/WebCrypto/transfer and provider/lifecycle/guest conformance remain implementation gaps. JWK portable and native-handle controls do not establish compiled guest or four-host conformance."
   },
   "moduleSyntax": {
     "sources": {

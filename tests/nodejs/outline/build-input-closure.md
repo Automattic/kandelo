@@ -1,5 +1,8 @@
 # Shared Node core build inputs
 
+Source126 adds four complete RSA/EC key references. Current guard:621inputs;
+12package-contract controls pass. Source closure is not runtime conformance.
+
 Source125 adds two complete AsyncHook/internal registry references under the
 declared async directory. Current guard:617inputs;12package-contract checks pass.
 This source coverage does not establish implementation or runtime conformance.

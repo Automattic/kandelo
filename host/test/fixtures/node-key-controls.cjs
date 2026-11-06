@@ -63,6 +63,88 @@ exports.controls = {
     return cases.map(options=>error(()=>api.createPublicKey({key:Buffer.alloc(32),...options})));
   },
 
+  'JWK RSA and multi-prime imports use actual prime material and public projection'(api) {
+    return ['rsa_private.pem','rsa_private_2048_3_primes.pem'].map(name => {
+      const jwk=crypto.createPrivateKey(fixture(name)).export({format:'jwk'});
+      const key=api.createPrivateKey({key:jwk,format:'jwk'}), pub=api.createPublicKey({key:jwk,format:'jwk'});
+      const publicJwk=pub.export({format:'jwk'});
+      return snapshot({private:key.export({format:'jwk'}),public:publicJwk,
+        der:key.export({format:'der',type:'pkcs8'}),spki:pub.export({format:'der',type:'spki'}),
+        same:pub.equals(api.createPublicKey({key:publicJwk,format:'jwk'})),
+        publicAsPrivate:error(()=>api.createPrivateKey({key:publicJwk,format:'jwk'}))});
+    });
+  },
+  'JWK EC coordinates are padded and private points must match the scalar'(api) {
+    return ['P-256','P-384','P-521','secp256k1'].map((namedCurve,i)=> {
+      const scalar=Buffer.alloc([32,48,66,32][i]); scalar[scalar.length-1]=7;
+      const raw={key:scalar,format:'raw-private',asymmetricKeyType:'ec',namedCurve};
+      const jwk=crypto.createPrivateKey(raw).export({format:'jwk'});
+      const key=api.createPrivateKey({key:jwk,format:'jwk'}),pub=api.createPublicKey({key:jwk,format:'jwk'});
+      const wrong={...jwk,d:Buffer.alloc(scalar.length,1).toString('base64url')};
+      const zero={...jwk,x:'',y:''};
+      return snapshot({private:key.export({format:'jwk'}),public:pub.export({format:'jwk'}),
+        der:key.export({format:'der',type:'pkcs8'}),wrong:error(()=>api.createPrivateKey({key:wrong,format:'jwk'})),
+        invalidPoint:error(()=>api.createPublicKey({key:zero,format:'jwk'}))});
+    });
+  },
+  'JWK OKP and AKP imports validate actual public and private relations'(api) {
+    return [['ed25519',32,'raw-private'],['ed448',57,'raw-private'],['x25519',32,'raw-private'],
+      ['x448',56,'raw-private'],['ml-dsa-44',32,'raw-seed'],['ml-kem-512',64,'raw-seed'],
+      ['slh-dsa-sha2-128s',64,'raw-private']].map(([asymmetricKeyType,size,format])=> {
+      const source=crypto.createPrivateKey({key:Buffer.alloc(size,7),format,asymmetricKeyType});
+      const jwk=source.export({format:'jwk'}),key=api.createPrivateKey({key:jwk,format:'jwk'});
+      const pub=api.createPublicKey({key:jwk,format:'jwk'}),field=jwk.kty==='AKP'?'pub':'x';
+      const bad={...jwk,[field]:Buffer.from(jwk[field],'base64url').fill(8).toString('base64url')};
+      return snapshot({private:key.export({format:'jwk'}),public:pub.export({format:'jwk'}),
+        der:key.export({format:'der',type:'pkcs8'}),wrong:error(()=>api.createPrivateKey({key:bad,format:'jwk'}))});
+    });
+  },
+  'JWK getters retain pinned access order and validation precedence'(api) {
+    const values=[{}, {kty:'RSA',n:0,e:0}, {kty:'EC',crv:'missing'},
+      {kty:'EC',crv:'P-256',x:0,y:0}, {kty:'OKP',crv:'bad',x:0},
+      {kty:'AKP',alg:'bad',pub:0}, {kty:'AKP',alg:'ML-DSA-44',pub:0},
+      {kty:'OKP',crv:'Ed25519',x:'',d:0}, {kty:'RSA',n:'',e:'',d:'',oth:[]},
+      {kty:'RSA',n:'',e:'',oth:[]}, {kty:'oct'}, {kty:'RSA\0suffix',n:'',e:''}];
+    return values.map(value=> {
+      const reads=[],key=new Proxy(value,{get(target,name){reads.push(String(name));return target[name];}});
+      const failure=error(()=>api.createPublicKey({key,format:'jwk'})); return {reads,failure};
+    });
+  },
+  'JWK getter exceptions preserve identity where the pinned native owner propagates them'(api) {
+    return [['OKP','crv'],['OKP','x'],['OKP','d'],['AKP','alg'],['AKP','pub'],['AKP','priv'],['EC','x'],['EC','y'],['EC','d']].map(([kty,field])=> {
+      const sentinel=Error('getter '+field), key={kty,crv:'P-256'};
+      Object.defineProperty(key,field,{get(){throw sentinel;}});
+      try { api.createPublicKey({key,format:'jwk'}); return false; } catch(e) {return e===sentinel;}
+    });
+  },
+  'JWK private AKP export keeps unavailable seed failures visible'(api) {
+    return ['ml_dsa_44_private_priv_only.pem','ml_kem_512_private_priv_only.pem'].map(name=> {
+      const key=api.createPrivateKey(fixture(name));
+      return {private:error(()=>key.export({format:'jwk'})),public:api.createPublicKey(key).export({format:'jwk'})};
+    });
+  },
+
+  'JWK inherited accessors cannot intercept own exported properties'(api) {
+    const key=api.createPrivateKey(fixture('rsa_private.pem'));
+    const names=['kty','n','e','d','p','q','dp','dq','qi'],saved=names.map(n=>Object.getOwnPropertyDescriptor(Object.prototype,n));
+    const calls=[]; let jwk;
+    try {
+      for(const name of names) Object.defineProperty(Object.prototype,name,{configurable:true,set(){calls.push(name);throw Error('intercepted');}});
+      jwk=key.export({format:'jwk'});
+    } finally {
+      names.forEach((name,i)=>saved[i]?Object.defineProperty(Object.prototype,name,saved[i]):delete Object.prototype[name]);
+    }
+    return {calls,properties:Object.keys(jwk).map(name=>{
+      const d=Object.getOwnPropertyDescriptor(jwk,name);return [name,d.writable,d.enumerable,d.configurable];}),jwk};
+  },
+  'JWK malformed RSA prime information and unsupported exports retain native errors'(api) {
+    const jwk=crypto.createPrivateKey(fixture('rsa_private.pem')).export({format:'jwk'});
+    const mutations=[{p:'AQ'},{oth:[]},{oth:{}},{oth:[null]},{oth:[{r:'AQ',d:'AQ',t:'AQ'}]},
+      {oth:Array(9).fill({r:'AQ',d:'AQ',t:'AQ'})},{oth:[{r:1,d:'AQ',t:'AQ'}]}];
+    return {invalid:mutations.map(change=>error(()=>api.createPrivateKey({key:{...jwk,...change},format:'jwk'}))),
+      unsupported:['rsa_pss_private_2048_sha256_sha256_16.pem','dsa_private_pkcs8.pem'].map(name=>error(()=>api.createPrivateKey(fixture(name)).export({format:'jwk'})))};
+  },
+
   'secret material is copied and independent exports cannot mutate it'(api) {
     const input = Buffer.from([1, 2, 3, 4]); const key = api.createSecretKey(input);
     input.fill(9); const exported = key.export(); exported.fill(8);

@@ -1,0 +1,192 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto-contracts.md",
+    "findingIds": [
+      "C-001",
+      "C-007",
+      "C-009",
+      "C-011",
+      "C-015"
+    ],
+    "retainedRows": [
+      {
+        "rowIndex": 881,
+        "id": "crypto.createPrivateKey"
+      },
+      {
+        "rowIndex": 882,
+        "id": "crypto.createPublicKey"
+      },
+      {
+        "rowIndex": 3614,
+        "id": "crypto.KeyObject"
+      },
+      {
+        "rowIndex": 3623,
+        "id": "crypto.KeyObject.prototype.asymmetricKeyDetails"
+      },
+      {
+        "rowIndex": 3624,
+        "id": "crypto.KeyObject.prototype.asymmetricKeyType"
+      },
+      {
+        "rowIndex": 3625,
+        "id": "crypto.KeyObject.prototype.symmetricKeySize"
+      },
+      {
+        "rowIndex": 3626,
+        "id": "crypto.KeyObject.prototype.export"
+      },
+      {
+        "rowIndex": 3629,
+        "id": "crypto.[KeyObject/CryptoKey/X509 clone and lifetime]"
+      },
+      {
+        "rowIndex": 3645,
+        "id": "crypto.createPrivateKey.prototype"
+      },
+      {
+        "rowIndex": 3646,
+        "id": "crypto.createPublicKey.prototype"
+      },
+      {
+        "rowIndex": 3742,
+        "id": "crypto.KeyObject.prototype"
+      },
+      {
+        "rowIndex": 3743,
+        "id": "crypto.KeyObject.prototype.type"
+      },
+      {
+        "rowIndex": 3744,
+        "id": "crypto.KeyObject.prototype.toCryptoKey"
+      },
+      {
+        "rowIndex": 3745,
+        "id": "crypto.KeyObject.prototype.equals"
+      },
+      {
+        "rowIndex": 3746,
+        "id": "crypto.KeyObject.prototype.Symbol(Symbol.toStringTag)"
+      },
+      {
+        "rowIndex": 3747,
+        "id": "crypto.KeyObject.from"
+      },
+      {
+        "rowIndex": 3848,
+        "id": "crypto.[doc] KeyObject @133"
+      },
+      {
+        "rowIndex": 3903,
+        "id": "crypto.[doc] Class: `KeyObject` @2257"
+      },
+      {
+        "rowIndex": 3904,
+        "id": "crypto.[doc] Static method: `KeyObject.from(key)` @2290"
+      },
+      {
+        "rowIndex": 3907,
+        "id": "crypto.[doc] `keyObject.equals(otherKeyObject)` @2415"
+      },
+      {
+        "rowIndex": 3966,
+        "id": "crypto.[doc] `crypto.createPrivateKey(key)` @4194"
+      },
+      {
+        "rowIndex": 3968,
+        "id": "crypto.[doc] `crypto.createPublicKey(key)` @4301"
+      }
+    ],
+    "relatedFamilies": [
+      "crypto",
+      "secure-network",
+      "workers",
+      "values"
+    ],
+    "scope": "Real JWK material/public wrappers/own-property prerequisites,not full API/finding/family closure"
+  },
+  "sourceImplemented": [
+    "Real native RSA/EC/OKP/AKP JWK material construction,role projection and actual public/private relation/prime-product/provider checks",
+    "Native getter order/exception precedence,private codecs and actual own-data-property export with minimal/padded native bytes",
+    "Secret JWK own-property correction,RSA-PSS/multi-prime and seedless PQC policies;no serialized-key facade"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-jwk-source-r1/report.json",
+    "sha256": "4047e880f865bcd343d8b63f3e3072adec4ac9b50f77795773d0cd0cd23b1da2",
+    "selectedIdentities": 13,
+    "completeReferences": 8,
+    "guardedInputs": 621,
+    "scope": "13selected source identities,8complete pinned references,621guarded inputs,generation/bootstrap syntax and portable-owner/handoff identity checks. Native SpiderMonkey JWK JSAPI/combined126source remains uncompiled;not four-host conformance."
+  },
+  "frontendAndAffected": {
+    "report": ".context/node26-jwk-frontend-r1.json",
+    "sha256": "dd7f70280d7e378e7d293340eb1328dd3fc5238e5c4271ae311d26ca10a46d33",
+    "newPassed": 8,
+    "affectedPassed": 61,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "19key groups(8new/11existing) plus50async/performance/digest/HKDF/cipher controls over explicit native dependencies;not guest JSAPI"
+  },
+  "portableNative": {
+    "report": ".context/crypto-jwk-agent/native-controls-r4/report.json",
+    "sha256": "cf4604de59dc764bb7ff313c9cdf9a925bbd3bafde2408130cd4f91511f89f2f",
+    "passed": 226,
+    "failed": 0,
+    "scope": "Reviewed source-identical private actual material owner/dependencies,not rerun or SpiderMonkey JSAPI evidence"
+  },
+  "packageChecks": {
+    "report": ".context/node26-jwk-package-r1.json",
+    "sha256": "61faf422e26f12cac67256cd6547599c27c1f03b429d0733f5ff17a879e56494",
+    "passed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "621input source declaration controls,not public API conformance"
+  },
+  "unchangedUpstream": {
+    "report": ".context/node26-jwk-upstream-r1/report.json",
+    "sha256": "babdf9e47cfc32b5addd11b54079e60a0e7d8651e4459b7433996177f0fb841c",
+    "files": 4,
+    "candidatePassed": 2,
+    "candidateFailed": 2,
+    "nativePassed": 4,
+    "scope": "Four complete unchanged upstream files in candidate/native modes. Candidate substitutes only pinned createPrivateKey/createPublicKey JavaScript wrappers over actual native26 handles. Algorithms, signing and WebCrypto remain native reference consumers. Does not exercise candidate SpiderMonkey JWK owner or establish WebCrypto/guest/four-host compatibility."
+  },
+  "privateAgentEvidence": {
+    "report": ".context/crypto-jwk-agent/handoff.json",
+    "sha256": "537ac70dd79ef9c1a566ef545448fb87120c55673ffb141f2ffa52adee75dc43",
+    "frontendPassed": 19,
+    "portablePassed": 226,
+    "scope": "Sealed private source/evidence identities;separate denominators and not additional root runs"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-jwk-upstream-r1/report.json",
+      "sha256": "babdf9e47cfc32b5addd11b54079e60a0e7d8651e4459b7433996177f0fb841c",
+      "kind": "candidate-consumer-integration-nonpasses",
+      "reason": "Native sign private-class #slots owner and native WebCrypto strict Buffer prototype mismatch;no exclusions or assertion changes"
+    },
+    {
+      "report": ".context/crypto-jwk-agent/upstream-r1/report.json",
+      "sha256": "c959cbf8b5575944f03a3b8cb47f8754b4d0db6550eeb79a5380d505b397b33a",
+      "kind": "private-original-consumer-nonpasses",
+      "passed": 6,
+      "failed": 2,
+      "reason": "Same complete source-file probe before combined root integration;retained original logs"
+    }
+  ],
+  "remaining": [
+    "Compile117\u2013126guest source;accepted116stale and native crypto exception boundary remains unresolved",
+    "Actual native JWK JSAPI getter/proxy/codec/exception/GC/OOM/realm/worker ownership and all four hosts",
+    "Actual signing/WebCrypto/store/PKCS12/generation/exchange/certificates/provider/FIPS consumers,transfer and complete provider allocation accounting;all other API/family gaps remain open"
+  ],
+  "at": "2026-11-06T00:31:45.740787+00:00",
+  "recipeRevision": 126,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

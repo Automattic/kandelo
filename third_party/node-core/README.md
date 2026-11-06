@@ -1,5 +1,14 @@
 # Pinned Node core algorithms
 
+Source126 adds real asymmetric JWK import/export over ncrypto/OpenSSL owners,
+including RSA multi-prime,EC,OKP/AKP,private/public relation checks and native
+own-property definitions. Eight new and61affected frontend controls and12package
+checks pass. The reviewed portable owner has226passing native comparisons with
+matching source/dependency identities. Four unchanged files in two modes retain
+6pass/2candidate consumer nonpasses. Guest117–126source remains uncompiled;
+accepted116is stale. All19families remain partial;overall suites/full rebuild
+remain deferred. See [JWK ownership](../../tests/nodejs/outline/jwk-implementation-dependencies.md).
+
 Source125 installs the pinned public AsyncHook class with actual symbol/count
 registry semantics,ordinary public functions and a stable ordinary root resource.
 Eleven new and23 affected frontend controls,12 package checks and four runs of

@@ -1,5 +1,9 @@
 # Native key material and upstream public wrappers
 
+Source126 now adds [actual JWK material/import/export](jwk-implementation-dependencies.md).
+Earlier source100/101/123statements below retain their historical scope.
+Current guest/four-host and complete key/crypto conformance remain open.
+
 Source123 subsequently implements real raw import owners and provider encoding
 policy. See [the current raw-key checkpoint](raw-key-implementation-dependencies.md).
 The source100/101 evidence below remains historical; it does not validate

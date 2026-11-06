@@ -1,5 +1,9 @@
 # Actual raw asymmetric key import ownership
 
+Source126 now adds [actual JWK material/import/export](jwk-implementation-dependencies.md).
+Earlier source100/101/123statements below retain their historical scope.
+Current guest/four-host and complete key/crypto conformance remain open.
+
 Source123 extends the existing private key-operation boundary. It changes
 Node compatibility code and the engine embedding only; no kernel, libc,
 syscall, host-wire protocol, ABI version or memory ceiling changes. The exact

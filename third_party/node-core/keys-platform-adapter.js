@@ -11,7 +11,7 @@ function _createNodeCryptoKeys(platform) {
             const record = packet.error;
             const Ctor = record.code === 'ERR_CRYPTO_INVALID_KEYTYPE' || record.code === 'ERR_OUT_OF_RANGE' ? RangeError :
                 record.code === 'ERR_MISSING_PASSPHRASE' || record.code === 'ERR_INVALID_ARG_VALUE' ||
-                record.code === 'ERR_CRYPTO_INVALID_CURVE' || record.name === 'TypeError' ? TypeError : Error;
+                record.code === 'ERR_CRYPTO_INVALID_CURVE' || record.code === 'ERR_CRYPTO_INVALID_JWK' || record.name === 'TypeError' ? TypeError : Error;
             const error = new Ctor(record.message);
             for (const field of ['code', 'library', 'reason', 'opensslErrorStack'])
                 if (ObjectPrototypeHasOwnProperty(record, field)) error[field] = record[field];
@@ -21,7 +21,11 @@ function _createNodeCryptoKeys(platform) {
     }
     class KeyObjectHandle {
         constructor() { return call('newHandle', new.target.prototype); }
-        init(...args) { return call('init', this, ...args); }
+        init(...args) {
+            if (args[2] === binding.kKeyFormatJWK)
+                return call('initJwk', this, args[0], args[1], platform.codecs.fromString);
+            return call('init', this, ...args);
+        }
         getKeyType() { return call('type', this); }
         getSymmetricKeySize() { return call('size', this); }
         getAsymmetricKeyType() { return call('asymmetricType', this); }
@@ -31,12 +35,8 @@ function _createNodeCryptoKeys(platform) {
             const value = call('export', this, ...args);
             return typeof value === 'string' ? value : platform.codecs.copyBytes(value);
         }
-        exportJwk(target) {
-            if (this.getKeyType() !== binding.kKeyTypeSecret)
-                throw new ERR_METHOD_NOT_IMPLEMENTED('KeyObject asymmetric JWK native owner');
-            target.kty = 'oct';
-            target.k = platform.codecs.decodeBytes(call('export', this), 'base64url');
-            return target;
+        exportJwk(target, handleRsaPss) {
+            return call('exportJwk', this, target, handleRsaPss, platform.codecs.decodeBytes);
         }
         rawPublicKey() { return platform.codecs.copyBytes(call('rawPublic', this)); }
         rawPrivateKey() { return platform.codecs.copyBytes(call('rawPrivate', this)); }
