@@ -53,6 +53,13 @@ function withArchiveAddresses<const T extends readonly Omit<ShellLazyArchiveSpec
 
 export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
   {
+    id: "harper",
+    dependency: "harper-browser-bundle",
+    resolverPath: "programs/wasm32/harper.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/harper-cli",
+  },
+  {
     id: "composer",
     dependency: "composer",
     resolverPath: "programs/wasm32/composer.zip",

@@ -335,9 +335,12 @@ function fixturePaths(root: string) {
     writeFileSync(
       artifact,
       zipSync({
-        [spec.requiredMember]: new TextEncoder().encode(
-          `${spec.id} executable`,
-        ),
+        ...(spec.id === "harper" ? {
+          "bin/harper-cli": [new TextEncoder().encode("harper-cli executable"), { os: 3, attrs: 0o100755 << 16 }] as [Uint8Array, { os: number; attrs: number }],
+          "bin/harper-ls": [new TextEncoder().encode("harper-ls executable"), { os: 3, attrs: 0o100755 << 16 }] as [Uint8Array, { os: number; attrs: number }],
+        } : {
+          [spec.requiredMember]: new TextEncoder().encode(`${spec.id} executable`),
+        }),
       }),
     );
   }
@@ -750,6 +753,14 @@ describe("canonical source-rootfs shell", () => {
         composed.archives.some((archive) => archive.uri === spec.archiveUrl),
         spec.id,
       ).toBe(true);
+    }
+    const harper = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.id === "harper")!;
+    const harperArchive = composed.archives.find(archive => archive.uri === harper.archiveUrl)!;
+    for (const name of ["harper-cli", "harper-ls"]) {
+      expect(composed.files.find(file => file.path === `/usr/bin/${name}`)).toMatchObject({
+        archiveId: harperArchive.archiveId, sourcePath: `bin/${name}`,
+      });
+      expect(fs.stat(`/usr/bin/${name}`).mode & 0o777).toBe(0o755);
     }
     expect(fs.isPathDeferred("/bin/bash")).toBe(false);
     expect(fs.isPathDeferred("/bin/sh")).toBe(false);

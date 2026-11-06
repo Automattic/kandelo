@@ -204,6 +204,14 @@ TOML
 # from STD_BUILD.
 (
   cd "$STD_BUILD"
+  # Installed std rlibs must work with consumer profiles that enable LTO,
+  # like upstream Rust targets. Cargo otherwise omits their LLVM bitcode
+  # when this bootstrap crate itself builds without LTO.
+  if [ -n "${CARGO_ENCODED_RUSTFLAGS:-}" ]; then
+    export CARGO_ENCODED_RUSTFLAGS="${CARGO_ENCODED_RUSTFLAGS}"$'\037''-Cembed-bitcode=yes'
+  else
+    export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Cembed-bitcode=yes"
+  fi
   RUSTC="$WRAP" RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 \
     cargo build --release --quiet \
       -Z build-std=std,panic_abort \

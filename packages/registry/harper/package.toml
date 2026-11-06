@@ -1,0 +1,28 @@
+kind = "program"
+name = "harper"
+version = "3.0.0"
+kernel_abi = 55
+arches = ["wasm32"]
+# Registry crates and parser grammars are pinned by upstream Cargo.lock;
+# native C parser sources compile through the Kandelo SDK.
+depends_on = []
+
+[source]
+url = "https://github.com/Automattic/harper/archive/refs/tags/v3.0.0.tar.gz"
+sha256 = "ccc78f04f886acb5b38f120d8ec0d8a60db75a2b346bc3c1a23b8edce5aed732"
+provider = "archive"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/Automattic/harper/blob/v3.0.0/LICENSE"
+
+[build]
+script_path = "packages/registry/harper/build-harper.sh"
+
+[[outputs]]
+name = "harper-cli"
+wasm = "harper-cli.wasm"
+
+[[outputs]]
+name = "harper-ls"
+wasm = "harper-ls.wasm"

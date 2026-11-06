@@ -263,6 +263,14 @@ name = "harfbuzz"
 class = "platform"
 
 [[packages]]
+name = "harper"
+class = "user-software"
+
+[[packages]]
+name = "harper-browser-bundle"
+class = "user-software"
+
+[[packages]]
 name = "hyprland-protocols"
 class = "platform"
 

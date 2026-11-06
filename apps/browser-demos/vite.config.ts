@@ -921,10 +921,25 @@ function injectCorsProxyConfig(): Plugin {
   let base = "/";
   const sourceSwPath = path.resolve(__dirname, "public", "service-worker.js");
 
-  function serviceWorkerSource(): string {
+  function serviceWorkerSource(preview: boolean): string {
+    let content = fs.readFileSync(sourceSwPath, "utf-8");
+    if (preview) {
+      // WHY: preview overrides the proxy configuration, but must retain the
+      // built group's cache identity. Serving the unversioned development
+      // worker lets a previous build's manifest survive at the same URL.
+      const built = fs.readFileSync(path.join(outputRoot, "service-worker.js"), "utf-8");
+      const versions = [...built.matchAll(
+        /^[ \t]*var LAZY_ASSET_CACHE_VERSION = ("[0-9a-f]{64}"|null \/\*__KANDELO_VFS_LAZY_CACHE_VERSION__\*\/);$/gm,
+      )];
+      const marker = "null /*__KANDELO_VFS_LAZY_CACHE_VERSION__*/";
+      if (versions.length !== 1 || content.split(marker).length !== 2) {
+        throw new Error("preview service worker lacks one built lazy-cache version");
+      }
+      content = content.replace(marker, versions[0]![1]!);
+    }
     return injectBlobIframeInterceptorPlaceholder(
       injectCorsProxyConfigPlaceholder(
-        fs.readFileSync(sourceSwPath, "utf-8"),
+        content,
         servedCorsProxyConfig,
       ),
     );
@@ -932,6 +947,7 @@ function injectCorsProxyConfig(): Plugin {
 
   function attachMiddleware(
     middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
+    preview = false,
   ): void {
     const serviceWorkerPath = serviceWorkerPathForBase(base);
     middlewares.use((req, res, next) => {
@@ -947,7 +963,7 @@ function injectCorsProxyConfig(): Plugin {
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/javascript; charset=utf-8");
       res.setHeader("Cache-Control", "no-store");
-      res.end(serviceWorkerSource());
+      res.end(serviceWorkerSource(preview));
     });
   }
 
@@ -965,7 +981,7 @@ function injectCorsProxyConfig(): Plugin {
       attachMiddleware(server.middlewares);
     },
     configurePreviewServer(server) {
-      attachMiddleware(server.middlewares);
+      attachMiddleware(server.middlewares, true);
     },
     writeBundle() {
       // service-worker.js is in public/ and Vite copies it to the resolved outDir.

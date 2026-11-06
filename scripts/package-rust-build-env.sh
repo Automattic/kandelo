@@ -2,6 +2,57 @@
 # Source inside a subshell: these Cargo overrides must not escape to the
 # repository's host Cargo (including install_local_binary).
 # Usage: kandelo_package_rust_build_env REPO SRC WORK PATCHES
+# Keep helper-owned dependency trees out of any upstream Cargo workspace.
+# Path dependencies stay below src for reproducible crate identities, but
+# must not become workspace members (including the private std/libc tree).
+kandelo_package_rust_prepare_workspace() {
+    python3 - "$1/Cargo.toml" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+import tomllib
+
+manifest = Path(sys.argv[1])
+source = manifest.read_text()
+data = tomllib.loads(source)
+workspace = data.get("workspace", {})
+if not isinstance(workspace, dict):
+    raise SystemExit("Cargo workspace must be a table")
+existing = workspace.get("exclude", [])
+if not isinstance(existing, list) or not all(isinstance(item, str) for item in existing):
+    raise SystemExit("Cargo workspace.exclude must be an array of strings")
+private = [".kandelo-rust", ".kandelo-patched-crates", ".kandelo-vendor"]
+missing = [path for path in private if path not in existing]
+if not missing:
+    raise SystemExit(0)
+header = re.search(r"(?m)^[ \t]*\[workspace\][ \t]*(?:#[^\n]*)?$", source)
+if header is None:
+    updated = source + "\n[workspace]\nexclude = " + json.dumps(missing + existing) + "\n"
+else:
+    start = header.end()
+    next_table = re.search(r"(?m)^[ \t]*\[", source[start:])
+    end = len(source) if next_table is None else start + next_table.start()
+    section = source[start:end]
+    if "exclude" in workspace:
+        array = re.search(r"(?m)^[ \t]*(?:exclude|\"exclude\"|'exclude')[ \t]*=[ \t]*\[", section)
+        if array is None:
+            raise SystemExit("Cannot locate Cargo workspace.exclude array")
+        position = start + array.end()
+        prefix = ", ".join(json.dumps(path) for path in missing) + ", "
+        updated = source[:position] + prefix + source[position:]
+    else:
+        updated = source[:start] + "\nexclude = " + json.dumps(missing) + source[start:]
+# Validate before writing. Preserve every upstream workspace setting and
+# refuse an unsupported representation instead of partially rewriting it.
+parsed = tomllib.loads(updated)
+expected = {**workspace, "exclude": missing + existing}
+if parsed.get("workspace") != expected:
+    raise SystemExit("Cargo workspace settings changed while adding private exclusions")
+manifest.write_text(updated)
+PY
+}
+
 kandelo_package_rust_build_env() {
     local repo="$1" src="$2" work="$3" patches="$4"
     # Keep path dependencies below the application's workspace. Cargo hashes
@@ -18,11 +69,7 @@ kandelo_package_rust_build_env() {
         "--remap-path-prefix=$repo=/kandelo/source" \
         "--remap-path-prefix=$work=/kandelo/build"
     export CARGO_ENCODED_RUSTFLAGS="${CARGO_ENCODED_RUSTFLAGS:+${CARGO_ENCODED_RUSTFLAGS}$'\037'}$guest_flags"
-    # A resolver cache may be inside the Kandelo checkout. Standalone
-    # upstream crates must not accidentally join the repository workspace.
-    if ! grep -Eq '^\[workspace(\]|\.)' "$src/Cargo.toml"; then
-        printf '\n[workspace]\nexclude = [".kandelo-rust/**", ".kandelo-patched-crates/**", ".kandelo-vendor/**"]\n' >> "$src/Cargo.toml"
-    fi
+    kandelo_package_rust_prepare_workspace "$src" || return
     export CARGO_HOME="$work/guest-cargo-home"
     mkdir -p "$CARGO_HOME"
     KANDELO_RUST_DIR="$rust_dir" bash "$repo/scripts/build-rust-sysroot.sh" || return

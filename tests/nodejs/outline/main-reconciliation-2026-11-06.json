@@ -1,0 +1,200 @@
+{
+  "at": "2026-11-06T18:13:29.692699+00:00",
+  "sourceCandidateRecipeRevision": 153,
+  "parents": [
+    "5fad4964a2372bb8631665942f28773a62f414a2",
+    "b92a1c1126ab065a7ffbfe6626a22b43951b3e51"
+  ],
+  "expectedPostMergeAheadBehind": "99\t0",
+  "auditedTargetUnchanged": true,
+  "coreSourceUnchangedByMerge": true,
+  "upstreamPaths": [
+    "apps/browser-demos/deployment-base-vite-config.test.ts",
+    "apps/browser-demos/lib/init/service-worker-bridge.test.ts",
+    "apps/browser-demos/lib/init/service-worker-bridge.ts",
+    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts",
+    "apps/browser-demos/test/harper.spec.ts",
+    "apps/browser-demos/vite.config.ts",
+    "docs/browser-support.md",
+    "docs/package-management.md",
+    "docs/porting-guide.md",
+    "host/test/harper-smoke.test.ts",
+    "host/test/kernel-scratch-contract.test.ts",
+    "host/test/support/harper-lsp-probe.ts",
+    "images/vfs/scripts/shell-lazy-archives.ts",
+    "packages/registry/harper-browser-bundle/build-harper-browser-bundle.sh",
+    "packages/registry/harper-browser-bundle/build.toml",
+    "packages/registry/harper-browser-bundle/package.toml",
+    "packages/registry/harper/build-harper.sh",
+    "packages/registry/harper/build.toml",
+    "packages/registry/harper/package.toml",
+    "packages/registry/harper/patches/chrono-0.4.45.patch",
+    "packages/registry/harper/patches/cubecl-common-0.8.1.patch",
+    "packages/registry/harper/patches/dirs-7.0.0.patch",
+    "packages/registry/harper/patches/getrandom-0.3.4.patch",
+    "packages/registry/harper/patches/getrandom-0.4.3.patch",
+    "packages/registry/harper/patches/mio-1.2.4.patch",
+    "packages/registry/harper/patches/open-5.4.4.patch",
+    "packages/registry/harper/patches/parking_lot_core-0.9.12.patch",
+    "packages/registry/harper/patches/socket2-0.6.5.patch",
+    "packages/registry/harper/patches/tokio-1.53.3.patch",
+    "packages/registry/harper/patches/tree-sitter-gitcommit-0.5.0.patch",
+    "packages/registry/shell/build.toml",
+    "packages/registry/shell/package.toml",
+    "packages/registry/shell/source-rootfs-shell-dependencies.json",
+    "packages/sets/local-supported.toml",
+    "scripts/build-rust-sysroot.sh",
+    "scripts/ci-vitest-evidence-classes.tsv",
+    "scripts/package-rust-build-env.sh",
+    "sdk/rust/README.md",
+    "tests/package-system/rust-package-workspace.test.ts",
+    "tests/package-system/source-rootfs-shell-bridge.test.ts",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.md",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.toml",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/repro/check.cjs",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/repro/repro.py",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/repro/run.sh"
+  ],
+  "mergedSourceIdentities": {
+    "apps/browser-demos/deployment-base-vite-config.test.ts": "5ed0c8f712dde6f34103e2d09ff84ff2a4246c495dd3959ba6b9ee571cc73afa",
+    "apps/browser-demos/lib/init/service-worker-bridge.test.ts": "9c75332df0c7498e81a39454f4e3327c62c42333f8bd239b13e97881204a0773",
+    "apps/browser-demos/lib/init/service-worker-bridge.ts": "8f8a5353238485529b14adb81a38c5b947dd7e53c33431b0173891a5d3328dc3",
+    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "48f66f740a30a7f96bb0975f109b2a6417191a2030979f7da9a5aba4b236c489",
+    "apps/browser-demos/test/harper.spec.ts": "76cc98e92799826f76c07c441bb85e66b2dec1191f38115b99d08718bbe63794",
+    "apps/browser-demos/vite.config.ts": "3fa0de51067f2e7160be87a3add1c5b9366cea361504b1a1ad555845b9a2b224",
+    "docs/browser-support.md": "25a6f595ae20dc9335b76c25639fb41b4171aabbdb5f7ff9cdfd6f219635dfa4",
+    "docs/package-management.md": "41492354ae2a72a702ab9721010f1dc92a3859669a440232b126386c2b765555",
+    "docs/porting-guide.md": "0a235dbf96c141b584b8719c7816b701d4094c561dc73468b22a87e53455cb16",
+    "host/test/harper-smoke.test.ts": "75aa2efd8dc424446e3a85ba8dd3de9eb902b32795b3c54ad77a5e65567caf90",
+    "host/test/kernel-scratch-contract.test.ts": "b605c17f538726189c12d4416098710418e8714f8f0987dc39704331e9dac080",
+    "host/test/support/harper-lsp-probe.ts": "80c2b91092e14a8928cb121e2f2de7d7410a7ea2ea6cd38e1c9e4e977c71afb0",
+    "images/vfs/scripts/shell-lazy-archives.ts": "0be0e2e904a7b94000a25e96f7d76efe46854fdf4ec81560ab8df110944a9592",
+    "packages/registry/harper-browser-bundle/build-harper-browser-bundle.sh": "b8945577b0ef6e38d71fb644d9da578a12bcb00eed2ccaf6db25880ecee9da60",
+    "packages/registry/harper-browser-bundle/build.toml": "9580e72fec886b497a7c7723414d66014d43fe2f9d96aee09f0ee6cea81c7950",
+    "packages/registry/harper-browser-bundle/package.toml": "d7bbf00a51a8941a293480429929cd7f2df90e46a43971446a9c1ec08a6cf086",
+    "packages/registry/harper/build-harper.sh": "3904b1dd6cfe636e8dc440899352286f0aee7a0aaf7a845f5256bae76b2d2d17",
+    "packages/registry/harper/build.toml": "6eb544c28ce3de436ba1651129609732ae9331dfd622061c4204f9b5b78e794f",
+    "packages/registry/harper/package.toml": "2f2ca3db9f6e34d5f950c404cd9740e7810b6ec20546705122df266fed65ec63",
+    "packages/registry/harper/patches/chrono-0.4.45.patch": "a2ccf8ec5389baa14942791c514ed6fd36426dde9286367b5da6bb148c74ee88",
+    "packages/registry/harper/patches/cubecl-common-0.8.1.patch": "66bd09abf627bbbb233097789615cd848db49a6967d2ef651686547ae40b3270",
+    "packages/registry/harper/patches/dirs-7.0.0.patch": "9ef490f6d5600a3e9a9efdfd330df4e6cf22a49beb5629dd59713ebe3b8f4c55",
+    "packages/registry/harper/patches/getrandom-0.3.4.patch": "fd844ef2e32b4a6dc5f975021928ea19d671944e33aa447e48c6199ba47d2b5f",
+    "packages/registry/harper/patches/getrandom-0.4.3.patch": "2eaa2f142442e7539b0dc86576d469c416bf5491d094aa33845b1bbb831d3f14",
+    "packages/registry/harper/patches/mio-1.2.4.patch": "905f5ed7da23d002f4e61cec22ab127c1a7630604c698b9fecd3e198094847ae",
+    "packages/registry/harper/patches/open-5.4.4.patch": "afb12472069013e3a8cf56495a1751c2ec9e3052edd9217b5aa52768e1e7730b",
+    "packages/registry/harper/patches/parking_lot_core-0.9.12.patch": "6a6d9719a721c9f506db08123d49898f205798b0390272db4ffab1a0d58c1496",
+    "packages/registry/harper/patches/socket2-0.6.5.patch": "b40f0d005a34edca9e0b16ef416fb308c9c41aca60563c1d0ad34b2f9dba4554",
+    "packages/registry/harper/patches/tokio-1.53.3.patch": "9c6472da0ad4d6046e656beeab6f3b4106b4c61d5066f93b972c2bc4f2ee9325",
+    "packages/registry/harper/patches/tree-sitter-gitcommit-0.5.0.patch": "9d9524d51d8bba7c8de3386b5b583134b4416c0e7bb39e1eeb3cdc1b48008dbf",
+    "packages/registry/shell/build.toml": "c5968b2c1146a1f691ca1912ada2f14ad127406cd472f35924c80c4104dd9db5",
+    "packages/registry/shell/package.toml": "c013e54bd4ecbd33eb09da4e9fab4731ebb9173a61fe8b0190e3f65b90ec1a50",
+    "packages/registry/shell/source-rootfs-shell-dependencies.json": "a37dd1575e818dd2073c59bbfd20c2e0416d631e865410c1b71d57353240b90d",
+    "packages/sets/local-supported.toml": "20d230cc717fa80d58ec0fdb5026015c5f1ab83a6be823f11fcff27d0504abae",
+    "scripts/build-rust-sysroot.sh": "b78395930733ede830547087498a0d268cfe6f9c61348239aa5140d4b5d11483",
+    "scripts/ci-vitest-evidence-classes.tsv": "8eec2f7e6f2c60a904d343d7ba583f20b253a30b3c115a67c572b6d42096ead7",
+    "scripts/package-rust-build-env.sh": "f1b398b864b7dc63f435d30f906207d76154f0847bdd615151242d57e6520104",
+    "sdk/rust/README.md": "83d546ae5221671a0cc7e2866ed5692aba4d6162502109b2cff2c8bcbc401987",
+    "tests/package-system/rust-package-workspace.test.ts": "4ac81a6016b08c32fdfa69cf463f45ba360b39cec50d86bd856fdb139d5547d1",
+    "tests/package-system/source-rootfs-shell-bridge.test.ts": "66271e90a660a94a9f5a680a82900a45aad54df7ff94abad646239db026923a3",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.md": "b80face9b26075e2f89af32cbb2ff74e359f33c4645cf4c803dbb3c2303d95a4",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.toml": "2fd87d25bc2570df181b009e2feae67426a1298fa4f815d49ef3f345c8856c82",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/repro/check.cjs": "0aab0a59a91cdb4ccae541eef3a938b8333bd7b0125a15420b9d0c580cef8811",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/repro/repro.py": "33b5058a0c49baf512ba9dd6df189c1093bb911cd193fd0e321d501370e1cb51",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/repro/run.sh": "38285b23e4a68dcbeec95e5eac51c4b25cd8ffbe40acf2d0fcf981eb83634e3a"
+  },
+  "unrelatedTrackedFilesPreserved": [
+    {
+      "path": "apps/browser-demos/test/node-core-compat.spec.ts",
+      "sha256": "d595f9cc14d5bc836fb1baec855081611e8be96fde76650ad6d8f74675cfc9e3"
+    },
+    {
+      "path": "host/test/node-core-compat.test.ts",
+      "sha256": "2425f8e35e947a1f0fce8c60bf546c9368122f677e86468e726e505126fce733"
+    },
+    {
+      "path": "scripts/nodejs-guest-runner.ts",
+      "sha256": "27d60d8632ac29d8d3eacc48c1b8b0579519d519b9f42dcc54c60c9677a80009"
+    }
+  ],
+  "sourceChecks": [
+    {
+      "command": [
+        "python3",
+        "third_party/node-core/build.py",
+        "--check"
+      ],
+      "exit": 0,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "python3",
+        "third_party/node-core/check-build-inputs.py"
+      ],
+      "exit": 0,
+      "stdoutSha256": "ee964276c8700cb3cfeb5865e882b431aae770ec1dc4f6876da616215722029f",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "bash",
+        "-n",
+        "scripts/package-rust-build-env.sh",
+        "scripts/build-rust-sysroot.sh"
+      ],
+      "exit": 0,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "exit": 2,
+      "stdoutSha256": "b46b78a445587692d571b0a66419a54d35fe5134db8b34ee51d048b08a2415a8",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        "tests/nodejs/outline"
+      ],
+      "exit": 0,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "guardedInputs": 718,
+  "inheritedWhitespaceNonpass": {
+    "exit": 2,
+    "files": [
+      "packages/registry/harper/patches/chrono-0.4.45.patch",
+      "packages/registry/harper/patches/cubecl-common-0.8.1.patch",
+      "packages/registry/harper/patches/dirs-7.0.0.patch",
+      "packages/registry/harper/patches/getrandom-0.3.4.patch",
+      "packages/registry/harper/patches/getrandom-0.4.3.patch",
+      "packages/registry/harper/patches/mio-1.2.4.patch",
+      "packages/registry/harper/patches/open-5.4.4.patch",
+      "packages/registry/harper/patches/parking_lot_core-0.9.12.patch",
+      "packages/registry/harper/patches/tokio-1.53.3.patch",
+      "packages/registry/harper/patches/tree-sitter-gitcommit-0.5.0.patch"
+    ],
+    "log": ".context/node26-main-reconcile153/inherited-whitespace.log",
+    "everyBlobIdenticalToMain": true
+  },
+  "evidence": {
+    "report": ".context/node26-main-reconcile153/report.json",
+    "sha256": "d9c1d41b6ee43eb42db9853567f31bc7d5901a057e861473351f7fe1cdec9910",
+    "fetchLog": ".context/node26-main-fetch-153.log",
+    "fetchLogSha256": "5fb351a63557ae75db81cdd72d530bad170225bca900014d5fba9521754487fb"
+  },
+  "scope": "Normal clean merge preserves both reviewed core work and main, including imported patch-format whitespace diagnostics. Receipt is staged before merge commit creation; expected two-parent ancestry is checked afterward. No engine/runtime/full-product/overall/four-host validation."
+}

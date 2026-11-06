@@ -68,8 +68,15 @@ function waitForOwnedServiceWorker(
         return;
       }
 
+      // A previous controller can have the same URL but an older asset-cache
+      // generation. Wait for the pending update and its activation/claim.
+      const pending = registration.installing ?? registration.waiting;
+      if ((pending && pending !== active && pending.state !== "redundant") ||
+          active.state !== "activated") return;
+
       const controller = navigator.serviceWorker.controller;
-      if (!controller || controller.scriptURL !== expectedScriptUrl) return;
+      if (!controller || controller.scriptURL !== expectedScriptUrl ||
+          controller.state !== "activated") return;
       finish(() => resolve(controller));
     };
 

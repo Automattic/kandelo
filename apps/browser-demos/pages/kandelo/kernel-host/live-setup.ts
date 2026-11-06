@@ -667,6 +667,9 @@ async function createLiveHostWithLease(
     throw new Error("resizable persistence requires a computer name");
   }
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
+  // Catalog resolution below fetches the authenticated group manifest before
+  // startBoot runs. It must wait for an updating worker to retire its old cache.
+  await requireServiceWorker();
   const candidateEvidence = readInjectedProtectedBrowserEvidence(
     window.__KANDELO_ABI_STAGING_BROWSER_EVIDENCE__,
   );
@@ -861,9 +864,9 @@ async function createLiveHostWithLease(
     await refreshLibrary();
   }
 
-  const requireServiceWorker = (
+  function requireServiceWorker(
     tick?: (msg: string) => void,
-  ): Promise<ServiceWorker> => {
+  ): Promise<ServiceWorker> {
     if (!serviceWorkerReady) {
       tick?.("preparing service worker...");
       serviceWorkerReady = ensureServiceWorkerReady(SW_URL, SW_SCOPE)
@@ -908,7 +911,7 @@ async function createLiveHostWithLease(
       );
     }
     return ready;
-  };
+  }
 
   if (protectedProfile === undefined) {
     void startBoot(

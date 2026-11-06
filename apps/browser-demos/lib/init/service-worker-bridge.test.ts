@@ -320,6 +320,40 @@ test("ignores sibling controllers without resetting the single readiness budget"
   });
 });
 
+test("waits for a same-URL update to activate and replace the old controller", async () => {
+  const fixture = readyFixture();
+  const update = new FakeWorker("https://example.test/a/service-worker.js");
+  update.state = "installing";
+  fixture.registration.installing = update;
+  await withBrowserGlobals(fixture.pageUrl, fixture.container, async clock => {
+    let settled = false;
+    const ready = ensureServiceWorkerReady("/a/service-worker.js").then(worker => {
+      settled = true;
+      return worker;
+    });
+    await flushPromises();
+    assert.equal(settled, false);
+    fixture.registration.installing = null;
+    fixture.registration.active = update;
+    update.state = "activating";
+    update.emit("statechange");
+    await flushPromises();
+    assert.equal(settled, false);
+    fixture.controller!.state = "redundant";
+    update.state = "activated";
+    update.emit("statechange");
+    await flushPromises();
+    assert.equal(settled, false);
+    fixture.container.controller = update;
+    fixture.container.emit("controllerchange");
+    assert.equal(await ready, update);
+    assert.deepEqual(clock.delays, [10_000]);
+    assert.equal(fixture.container.listenerCount(), 0);
+    assert.equal(fixture.registration.listenerCount(), 0);
+    assert.equal(update.listenerCount(), 0);
+  });
+});
+
 test("times out a wrong controller with the expected script and scope diagnostic", async () => {
   const fixture = readyFixture({
     controllerScriptUrl: "https://example.test/b/service-worker.js",

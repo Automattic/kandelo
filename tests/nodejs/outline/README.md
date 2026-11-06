@@ -1,5 +1,9 @@
 # Node 26 core implementation outline
 
+Reconciled with main `b92a1c1126ab` through a clean merge.
+The audited Node pin and core source are unchanged; inherited patch-format
+whitespace diagnostics remain recorded. See [merge receipt](main-reconciliation-2026-11-06.json).
+
 Source153 integrates real synchronous CommonJS customization hooks and source/
 cache ownership. Seventeen native comparison groups,22 existing loader tests
 and14 package-source tests pass. ESM/async loader and four-host gaps remain.

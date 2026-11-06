@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-06T18:06:38.834798+00:00",
+  "updatedAt": "2026-11-06T18:13:29.692699+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -291,7 +291,7 @@
     "packages/registry/spidermonkey/patches/0055-kandelo-node-sqlite-owner.patch": "148ab0dc9f0d0437ce8b1661a4dc46b3c80eaf017735c1e86b739177804b248c",
     "packages/registry/spidermonkey/patches/0056-kandelo-node-port-owner.patch": "6ef0e40d73e0c9f587c34e72dddf121962c23474e4d86ca30ae65cf2e2262bca",
     "packages/registry/spidermonkey/patches/0057-kandelo-node-monotonic-hrtime.patch": "5c75e223641cff044f5306255162ffd365be572fde45e0c2830eccfbdcb1356d",
-    "scripts/ci-vitest-evidence-classes.tsv": "4e2c6b401c1efb55ec4d4c8036134397651556ebd96257b1db7bdeca1d5d8626",
+    "scripts/ci-vitest-evidence-classes.tsv": "8eec2f7e6f2c60a904d343d7ba583f20b253a30b3c115a67c572b6d42096ead7",
     "third_party/node-core/buffer-bytes-adapter.js": "b73d5e43885582c9d25be752d8c4211a796b904412d2b824be4162e7b3dbd68a",
     "third_party/node-core/build.py": "36b77520a9afcf05bcaf44b3a3fb3b9b2359e48e014ab2691470450ee2f195aa",
     "third_party/node-core/codec-handle.cpp": "131df7e6b690bfdb7db5c1f1c455fb63c9dc58816ffe27d8aa5fd95f6dc5c943",
@@ -691,7 +691,7 @@
     "third_party/node-core/upstream/string-decoder/lib/internal/util.js": "4aa900feab2a6cdb84060c0358c569578d31b6f0831224792868ece9b8899951",
     "third_party/node-core/upstream/random-jobs/src/crypto/crypto_util.cc": "78f87b6979b666fb49d74698333e79c40aef549dfa362e3a040caeebf8edde3c",
     "third_party/node-core/native-random.cpp": "69183cd6fe601262851eb704eeac26c54160e9bf080800d79277bce9856f4062",
-    "docs/package-management.md": "3c89b7f836a485ace431817068f3fcbd51f8287aa99b5fe27329f224e70f469c",
+    "docs/package-management.md": "41492354ae2a72a702ab9721010f1dc92a3859669a440232b126386c2b765555",
     "third_party/node-core/upstream/string-decoder/src/string_decoder.cc": "34bedf8a3d3b455c89b59fdda5fa622f4c2c9e6eceeb72c7cbfee17e7f62fced",
     "packages/registry/spidermonkey/patches/0072-kandelo-node-random-jobs.patch": "491ae7723c9afc5aba5c3c3abf532fbdaaed3afd3c1ab5074ed789c3a5210188",
     "third_party/node-core/upstream/random-jobs/src/crypto/crypto_random.cc": "03d441e91c8656235de3ec2da735fb92dcb88b0baa4e3a1d97497090b37df9b8",
@@ -707,7 +707,7 @@
     "host/test/fixtures/node-string-decoder-controls.cjs": "f8486de93aad5c3ba6340de8f3d3a1389485f1aa10c5c5534b636c22dca8d339",
     "third_party/node-core/upstream/string-decoder/src/string_bytes.cc": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d",
     "third_party/node-core/upstream/random-jobs/src/async_wrap.h": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6",
-    "tests/nodejs/outline/README.md": "585d0c3eb401cd038a5906204a0646f030721c70b81c7bea348a45ec2de097d8",
+    "tests/nodejs/outline/README.md": "a99a15022d83c229160ca70960387de4614eb9d572f62179a6e1b2f0f1fce1f8",
     "tests/nodejs/outline/string-decoder-implementation-dependencies.md": "3954deecf903ff0155e74951f7ddbc7c0b63ef93b0c90d93512a688cd1a97d63",
     "host/test/node-text-decoder.test.ts": "c259e4757d83bc7ac1a3251ce93d0d348b94add348212f99ecf9bcec2616f365",
     "tests/nodejs/outline/random-implementation-dependencies.md": "0d14d44be5c1d2f6d84dfd7665ffb2be82bda0fa8ce0aebc8a28100ffd921196",
@@ -941,7 +941,7 @@
     "host/test/fixtures/node-path-metadata-reference.cjs": "b3ac867cf38d6305383f9cb83c2b39b1a738816e6dceda895ed3201f1fa50a67",
     "tests/nodejs/outline/path-metadata-implementation-dependencies.md": "3c02300563b032996d8906bbf4ea7257b983a53cc7714ce642b3af5dd4f9ab42",
     "tests/nodejs/outline/path-metadata-finding-progress.json": "a39dd16478114b475c2a3d348b4d900d4af99d5fd12bdbd2cb02ffc35ebd5941",
-    "docs/browser-support.md": "8b25a86786f7c86a223bc692ba3edbd530d537df37751b9185f449c7bd62c97c",
+    "docs/browser-support.md": "25a6f595ae20dc9335b76c25639fb41b4171aabbdb5f7ff9cdfd6f219635dfa4",
     "crates/runtime-core/src/hostdir.rs": "f5a9e09fc5dceff205b735de8c549d6e2615f04e09fcf27ba7e7839b925e8593",
     "third_party/node-core/upstream/path-metadata/lib/fs.js": "21e9604151bcdfdacec9ec6e127e8ba906fb1b4e9415fd0de3221b7e92a08ef3",
     "third_party/node-core/upstream/path-metadata/lib/internal/fs/promises.js": "bdb9f9c75509dbaade2ef68e7d8b1c6fff345f356b1459c8969696d48180ea49",
@@ -1112,7 +1112,7 @@
     "host/test/node-assertion-semantics.test.ts": "03a884cd87f744299d7dac96be21edc3d920b961e139ebe9fc299f4e793463bd",
     "host/test/fixtures/node-assertion-platform.cjs": "5cf9c33d8c856a9bfa48ba351e4225d03024809a10674f8708671a17d8e9c9cc",
     "host/test/fixtures/node-assertion-upstream.cjs": "e955f17a3fd2cf831ddd2739e10ba6003cd359ed8e9fecec9bc4d4f1eeb57464",
-    "packages/sets/local-supported.toml": "a533f1719ea58c3c83f971528af9a45c05b99b78ee8b8fcf28479f1db6bde83b",
+    "packages/sets/local-supported.toml": "20d230cc717fa80d58ec0fdb5026015c5f1ab83a6be823f11fcff27d0504abae",
     "tests/nodejs/outline/kernel-admission-integration.md": "d9dcad7fdae46a7faa9a1972b62055f008e078f08bb381b16d18434e8f560b81",
     "tests/nodejs/outline/assertion-error-implementation-dependencies.md": "23ace606a14ecf7d04aa29b0b041f50729a924a6c4ef4b029d39f0c0ff2cca28",
     "tests/nodejs/outline/assertion-error-finding-progress.json": "6178cb137c34812ee75d5e3feb87e024376ca1d749d936721351025c81815a8c",
@@ -1357,7 +1357,7 @@
     "host/test/node-loop-utilization.test.ts": "17607e7546fd7a40f0f16d52eca0a83f2745ebab203b444bfacc206e34c03097",
     "tests/nodejs/outline/loop-metrics-implementation-dependencies.md": "493122abd39ef5d51cdcb4c6dde8a2af3c3aaea27c54aa1d11d3edc4609b164e",
     "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
-    "tests/nodejs/outline/status-by-family.md": "14999fd85161d76f873c639fca2ac3d599a7f6e52d0f2d8404364b3c55b1f464",
+    "tests/nodejs/outline/status-by-family.md": "30093526d101383b3b353b9065a788e6fee9d572231cd326995fe5634cac5d9b",
     "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
     "host/test/fixtures/node-async-platform.cjs": "20a631ccfc33ad16ecb4866ba21065fa3979cf815f8fd4d13997e76466d0a538",
     "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
@@ -1706,7 +1706,49 @@
     "tests/nodejs/outline/module-hooks-finding-progress.json": "ae495d39bc4b8b9e723d3c1f7c8638c280fcbf964c426b92cbc4c18f96d450dd",
     "third_party/node-core/tests/module-hooks/README.md": "3bf1a06466dd18f9aa9dd5ca9747454f9a62562c3e305dabc012194e497bee79",
     "third_party/node-core/tests/module-hooks/upstream.cjs": "6186cac7f927267f623579c8e4f5216c3b83e60a0d378e92abdc7019cadf72aa",
-    "third_party/node-core/tests/module-hooks/control.cjs": "2aedb3e152d0ecc687ea0a44f949d566e3a95ee563f4bf09e45a5d67419fe278"
+    "third_party/node-core/tests/module-hooks/control.cjs": "2aedb3e152d0ecc687ea0a44f949d566e3a95ee563f4bf09e45a5d67419fe278",
+    "apps/browser-demos/deployment-base-vite-config.test.ts": "5ed0c8f712dde6f34103e2d09ff84ff2a4246c495dd3959ba6b9ee571cc73afa",
+    "apps/browser-demos/lib/init/service-worker-bridge.test.ts": "9c75332df0c7498e81a39454f4e3327c62c42333f8bd239b13e97881204a0773",
+    "apps/browser-demos/lib/init/service-worker-bridge.ts": "8f8a5353238485529b14adb81a38c5b947dd7e53c33431b0173891a5d3328dc3",
+    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "48f66f740a30a7f96bb0975f109b2a6417191a2030979f7da9a5aba4b236c489",
+    "apps/browser-demos/test/harper.spec.ts": "76cc98e92799826f76c07c441bb85e66b2dec1191f38115b99d08718bbe63794",
+    "apps/browser-demos/vite.config.ts": "3fa0de51067f2e7160be87a3add1c5b9366cea361504b1a1ad555845b9a2b224",
+    "docs/porting-guide.md": "0a235dbf96c141b584b8719c7816b701d4094c561dc73468b22a87e53455cb16",
+    "host/test/harper-smoke.test.ts": "75aa2efd8dc424446e3a85ba8dd3de9eb902b32795b3c54ad77a5e65567caf90",
+    "host/test/kernel-scratch-contract.test.ts": "b605c17f538726189c12d4416098710418e8714f8f0987dc39704331e9dac080",
+    "host/test/support/harper-lsp-probe.ts": "80c2b91092e14a8928cb121e2f2de7d7410a7ea2ea6cd38e1c9e4e977c71afb0",
+    "images/vfs/scripts/shell-lazy-archives.ts": "0be0e2e904a7b94000a25e96f7d76efe46854fdf4ec81560ab8df110944a9592",
+    "packages/registry/harper-browser-bundle/build-harper-browser-bundle.sh": "b8945577b0ef6e38d71fb644d9da578a12bcb00eed2ccaf6db25880ecee9da60",
+    "packages/registry/harper-browser-bundle/build.toml": "9580e72fec886b497a7c7723414d66014d43fe2f9d96aee09f0ee6cea81c7950",
+    "packages/registry/harper-browser-bundle/package.toml": "d7bbf00a51a8941a293480429929cd7f2df90e46a43971446a9c1ec08a6cf086",
+    "packages/registry/harper/build-harper.sh": "3904b1dd6cfe636e8dc440899352286f0aee7a0aaf7a845f5256bae76b2d2d17",
+    "packages/registry/harper/build.toml": "6eb544c28ce3de436ba1651129609732ae9331dfd622061c4204f9b5b78e794f",
+    "packages/registry/harper/package.toml": "2f2ca3db9f6e34d5f950c404cd9740e7810b6ec20546705122df266fed65ec63",
+    "packages/registry/harper/patches/chrono-0.4.45.patch": "a2ccf8ec5389baa14942791c514ed6fd36426dde9286367b5da6bb148c74ee88",
+    "packages/registry/harper/patches/cubecl-common-0.8.1.patch": "66bd09abf627bbbb233097789615cd848db49a6967d2ef651686547ae40b3270",
+    "packages/registry/harper/patches/dirs-7.0.0.patch": "9ef490f6d5600a3e9a9efdfd330df4e6cf22a49beb5629dd59713ebe3b8f4c55",
+    "packages/registry/harper/patches/getrandom-0.3.4.patch": "fd844ef2e32b4a6dc5f975021928ea19d671944e33aa447e48c6199ba47d2b5f",
+    "packages/registry/harper/patches/getrandom-0.4.3.patch": "2eaa2f142442e7539b0dc86576d469c416bf5491d094aa33845b1bbb831d3f14",
+    "packages/registry/harper/patches/mio-1.2.4.patch": "905f5ed7da23d002f4e61cec22ab127c1a7630604c698b9fecd3e198094847ae",
+    "packages/registry/harper/patches/open-5.4.4.patch": "afb12472069013e3a8cf56495a1751c2ec9e3052edd9217b5aa52768e1e7730b",
+    "packages/registry/harper/patches/parking_lot_core-0.9.12.patch": "6a6d9719a721c9f506db08123d49898f205798b0390272db4ffab1a0d58c1496",
+    "packages/registry/harper/patches/socket2-0.6.5.patch": "b40f0d005a34edca9e0b16ef416fb308c9c41aca60563c1d0ad34b2f9dba4554",
+    "packages/registry/harper/patches/tokio-1.53.3.patch": "9c6472da0ad4d6046e656beeab6f3b4106b4c61d5066f93b972c2bc4f2ee9325",
+    "packages/registry/harper/patches/tree-sitter-gitcommit-0.5.0.patch": "9d9524d51d8bba7c8de3386b5b583134b4416c0e7bb39e1eeb3cdc1b48008dbf",
+    "packages/registry/shell/build.toml": "c5968b2c1146a1f691ca1912ada2f14ad127406cd472f35924c80c4104dd9db5",
+    "packages/registry/shell/package.toml": "c013e54bd4ecbd33eb09da4e9fab4731ebb9173a61fe8b0190e3f65b90ec1a50",
+    "packages/registry/shell/source-rootfs-shell-dependencies.json": "a37dd1575e818dd2073c59bbfd20c2e0416d631e865410c1b71d57353240b90d",
+    "scripts/build-rust-sysroot.sh": "b78395930733ede830547087498a0d268cfe6f9c61348239aa5140d4b5d11483",
+    "scripts/package-rust-build-env.sh": "f1b398b864b7dc63f435d30f906207d76154f0847bdd615151242d57e6520104",
+    "sdk/rust/README.md": "83d546ae5221671a0cc7e2866ed5692aba4d6162502109b2cff2c8bcbc401987",
+    "tests/package-system/rust-package-workspace.test.ts": "4ac81a6016b08c32fdfa69cf463f45ba360b39cec50d86bd856fdb139d5547d1",
+    "tests/package-system/source-rootfs-shell-bridge.test.ts": "66271e90a660a94a9f5a680a82900a45aad54df7ff94abad646239db026923a3",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.md": "b80face9b26075e2f89af32cbb2ff74e359f33c4645cf4c803dbb3c2303d95a4",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.toml": "2fd87d25bc2570df181b009e2feae67426a1298fa4f815d49ef3f345c8856c82",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/repro/check.cjs": "0aab0a59a91cdb4ccae541eef3a938b8333bd7b0125a15420b9d0c580cef8811",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/repro/repro.py": "33b5058a0c49baf512ba9dd6df189c1093bb911cd193fd0e321d501370e1cb51",
+    "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/repro/run.sh": "38285b23e4a68dcbeec95e5eac51c4b25cd8ffbe40acf2d0fcf981eb83634e3a",
+    "tests/nodejs/outline/main-reconciliation-2026-11-06.json": "1baf3a773c11e74fd0820a5dc7d824c172f8926814816a68cb65a3a37f6a9611"
   },
   "changes": [
     {
@@ -5309,7 +5351,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated reviewed real ReadFile producer/worker capacity ownership, preserving original concrete allocations and normal package inputs/staging; source/ownership evidence identities bound without promoting prior native tests to guest passes."
+    "reason": "Integrated actual synchronous CJS hooks and source/cache transactions into current branch with fresh exact native comparisons, existing targeted loader/package checks and honest remaining ESM/backend boundaries."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -39707,17 +39749,22 @@
     "Shared callback policy compiles with explicit hook/context/queue boundary adapters and matches real native Node-API/libuv behavior in eight scenarios, with expected termination codes 1/17 retained. SpiderMonkey rooted/context/checkpoint adapter, engine/root-entry patch and changed DNS/FS/codec owners remain uncompiled. Full rejection events/modes/uncaught recovery, weak-reference/zero-ID/VM/worker and complete loop phases remain missing or unvalidated. Native addon loading in the reference does not imply a guest addon implementation."
   ],
   "mainReconciliation": {
-    "at": "2026-11-06T18:06:35.551717+00:00",
+    "at": "2026-11-06T18:13:29.692699+00:00",
     "originMain": "b92a1c1126ab065a7ffbfe6626a22b43951b3e51",
     "githubMain": "b92a1c1126ab065a7ffbfe6626a22b43951b3e51",
-    "head": "81c2e735a6263b0f8188fd0d9cb1e65358914d53",
-    "aheadBehind": "97\t1",
-    "scope": "Fresh official GitHub API ref equals fetched origin/main; branch ancestry differences recorded before safely merging main.",
-    "pendingMerge": true,
+    "sourceHeadBeforeMerge": "5fad4964a2372bb8631665942f28773a62f414a2",
+    "mergeParents": [
+      "5fad4964a2372bb8631665942f28773a62f414a2",
+      "b92a1c1126ab065a7ffbfe6626a22b43951b3e51"
+    ],
+    "aheadBehind": "99\t0",
+    "ancestryBasis": "Expected exact merge-parent graph, independently verified after commit.",
+    "pendingMerge": false,
     "evidence": {
-      "report": ".context/node26-module-hooks153-main.json",
-      "sha256": "c92dedaf6ab70259d8b0a5c22ba68c57da4eeba83e1d7f35d8f45a9488883cb0"
-    }
+      "report": "tests/nodejs/outline/main-reconciliation-2026-11-06.json",
+      "sha256": "1baf3a773c11e74fd0820a5dc7d824c172f8926814816a68cb65a3a37f6a9611"
+    },
+    "scope": "Normal clean merge preserves both reviewed core work and main, including imported patch-format whitespace diagnostics. Receipt is staged before merge commit creation; expected two-parent ancestry is checked afterward. No engine/runtime/full-product/overall/four-host validation."
   },
   "storageMaintenance": {
     "authorization": "User explicitly requested ./run.sh cache-gc and other disk cleanup while continuing",
@@ -40083,11 +40130,11 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/module-hooks-20261106T180639Z.tar.gz",
-    "sha256": "c2e3866842807a705fa7b6c323d5ac9625ac7e9d9b9f8dca88a567dc699df019",
-    "bytes": 14208162,
-    "scope": "Source153actual synchronous CJS hooks and identified native/component evidence; no API/family closure or current guest/fourhost artifact",
-    "stateFileNote": "Archived state precedes snapshot reference injection"
+    "path": ".context/node26-implementation-snapshots/main-reconcile153-20261106T181330Z.tar.gz",
+    "sha256": "29ccd5db2828fb3877f5cab106e386d77f26b04a38d0b1d9e23d87bed26a21ba",
+    "bytes": 8764925,
+    "scope": "Source153 clean-main-merge and exact source/evidence receipt; no current engine/runtime conformance.",
+    "stateFileNote": "Archived state precedes snapshot reference injection."
   },
   "currentScopedStaticChecks": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -43380,7 +43427,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated actual synchronous CJS hooks and source/cache transactions into current branch with fresh exact native comparisons, existing targeted loader/package checks and honest remaining ESM/backend boundaries."
+    "reason": "Reconciled current source153 with fetched main through a clean normal merge; preserved exact Node pin/core source and unrelated tracked file bytes; imported whitespace nonpass recorded without modifying upstream patch files."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -48546,6 +48593,13 @@
       "sha256": "a21b777c8485fa437cca6045be29a733968f879117b16b03bfadfb079fbb996a",
       "bytes": 14081048,
       "scope": "Source152actualproducer/worker capacity integration plus identified prior component/native controls; no accepted current guest/fourhost artifact",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/module-hooks-20261106T180639Z.tar.gz",
+      "sha256": "c2e3866842807a705fa7b6c323d5ac9625ac7e9d9b9f8dca88a567dc699df019",
+      "bytes": 14208162,
+      "scope": "Source153actual synchronous CJS hooks and identified native/component evidence; no API/family closure or current guest/fourhost artifact",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -72440,5 +72494,20 @@
     "individualApiClosure": false,
     "implementationComplete": false,
     "acceptedPlatformLimits": []
-  }
+  },
+  "mainReconciliationHistory": [
+    {
+      "at": "2026-11-06T18:06:35.551717+00:00",
+      "originMain": "b92a1c1126ab065a7ffbfe6626a22b43951b3e51",
+      "githubMain": "b92a1c1126ab065a7ffbfe6626a22b43951b3e51",
+      "head": "81c2e735a6263b0f8188fd0d9cb1e65358914d53",
+      "aheadBehind": "97\t1",
+      "scope": "Fresh official GitHub API ref equals fetched origin/main; branch ancestry differences recorded before safely merging main.",
+      "pendingMerge": true,
+      "evidence": {
+        "report": ".context/node26-module-hooks153-main.json",
+        "sha256": "c92dedaf6ab70259d8b0a5c22ba68c57da4eeba83e1d7f35d8f45a9488883cb0"
+      }
+    }
+  ]
 }
