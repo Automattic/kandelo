@@ -481,6 +481,43 @@ remain pending; the old preview remains identified as revision 37.
 The new target-OS waits pass 159/159 browser cases and four standard-library
 builds without compiler or collector edits.
 
+### Revision-39 artifacts and first consumers — 2026-11-06
+
+The two-thread image and common service setting publish normally in
+`frankenphp-measured-pool-budget-cohort-1106-143439-3a19`: all 184 nodes and
+consumer admission pass in 7m47s (180 cached, four published). The image is
+79,417,372 bytes, SHA-256
+`b5d9a0326b57ac4f4c808cdbd72e068f9a403682be37f8d4652ae26c7b8de438`.
+The kernel remains `bfdf6ce5`, ABI 55, and Go remains `5834adc`.
+
+Both real Node service workflows pass in 44s, now requiring their actual
+logs to report two PHP threads, completing PHP draining, normal exits and
+cooperative retirement. The new port-5454 preview passes image identity and
+Chromium/Firefox login and Appearance Editor checks (2/2, 2m53s).
+Its URL/identity is `.context/frankenphp-rev39-admitted-preview-artifacts.json`.
+The full three-engine visible UI selection is now running. Evidence:
+`frankenphp-rev39-node-services-1106-144615-21b6`,
+`.context/frankenphp-node-image-n9CBTl/`,
+`frankenphp-rev39-preview-identity-ui-1106-144639-918e`.
+
+The Go sample package, revision 26, independently passes its actual C VFS
+launcher in Node and all three browser launch cases (36s), with matching ABI
+identity, expected output, empty Node stderr/diagnostics and zero fork count.
+Evidence: `go-final-package-entry-rev26-1106-144145-bdfa`,
+`.context/go-package-final-B5Ocvc/`. A separate normal cached benchmark
+projection also passes all 184 nodes and admission in 3m58s; provisioning
+is not a timing comparison.
+
+The updated Node comparison configuration also passes a functional smoke
+with fresh parent processes for FPM and Caddy. It requires six configured
+FPM children and six PHP threads from the actual Caddy log, preserving both
+service logs and rejecting restarts or fatal traces. The report records the
+observed PHP thread count. Evidence:
+`wordpress-rev39-matched-node-pools-1106-145232-27f3`,
+`.context/wordpress-node-pool-smoke-HpLw7M/`. It runs for 25 seconds under
+concurrent UI validation and supplies no performance conclusion. Quiet
+sustained measurements remain pending.
+
 ### Measured service budget and common pool setting — 2026-11-06
 
 The revision-38 six-thread WebKit repetition still hits a native kill at

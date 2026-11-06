@@ -51,6 +51,7 @@ interface RoundResult {
   throughputDurationMs: number;
   nodeProcessId?: number;
   serviceLog: string;
+  phpThreads?: number;
   soak?: SoakResult;
 }
 
@@ -182,7 +183,7 @@ function serviceName(profile: Profile): string {
     profile === "wordpress-frankenphp-caddy" ? "frankenphp-caddy" : "frankenphp-classic";
 }
 
-function validateServiceLog(profile: Profile, log: string): void {
+function validateServiceLog(profile: Profile, log: string): number | undefined {
   if (/^(?:panic:|fatal error:)/m.test(log)) {
     throw new Error(`${profile} crashed during the measurement:\n${log.slice(-4000)}`);
   }
@@ -192,6 +193,10 @@ function validateServiceLog(profile: Profile, log: string): void {
     const starts = log.split(marker).length - 1;
     // A supervisor can restore HTTP after a crash; that is not sustained uptime.
     if (starts !== 1) throw new Error(`${profile} expected one startup, found ${starts}:\n${log.slice(-4000)}`);
+    const pool = profile === "wordpress-frankenphp-caddy"
+      ? /"num_threads":(\d+)/.exec(log) : /num_threads=(\d+)/.exec(log);
+    if (!pool) throw new Error(`${profile} did not report its PHP thread count`);
+    return Number(pool[1]);
   }
 }
 
@@ -228,6 +233,9 @@ async function measureNode(profile: Profile, round: number, options: Options, im
       const serviceConfigPath = `/etc/dinit.d/${target}`;
       const serviceConfig = readVfsText(fs, serviceConfigPath);
       configureWordPressRuntime(fs, { port, phpFpmWorkers: 6, frankenPhpThreads: 6 });
+      if (!/^pm\.max_children\s*=\s*6\s*$/m.test(readVfsText(fs, "/etc/php-fpm.conf"))) {
+        throw new Error("Node comparison did not configure six PHP-FPM children");
+      }
       // Preserve the shipped service log; the demo helper routes it to stdio.
       writeVfsFile(fs, serviceConfigPath, serviceConfig);
       const smtpScript = "/usr/local/bin/start-msmtpd";
@@ -292,11 +300,14 @@ async function measureNode(profile: Profile, round: number, options: Options, im
     const logBytes = await host.readFileFromVfs(`/var/log/${target}.log`);
     if (!logBytes) throw new Error(`Missing ${profile} service log`);
     const serviceLog = new TextDecoder().decode(logBytes);
-    validateServiceLog(profile, serviceLog);
+    const phpThreads = validateServiceLog(profile, serviceLog);
+    if (profile !== "wordpress-sqlite" && phpThreads !== 6) {
+      throw new Error(`Node comparison requires six PHP threads, received ${phpThreads}`);
+    }
     return {
       host: "node", profile, round, startupMs, latenciesMs,
       throughputRequests: options.clients * options.concurrentSamples,
-      throughputDurationMs, soak, serviceLog,
+      throughputDurationMs, soak, serviceLog, phpThreads,
       nodeProcessId: process.pid,
     };
   } finally {
@@ -437,13 +448,13 @@ async function measureBrowser(
   ) : undefined;
   // Inspect only after the timed and RSS phases, through the ordinary app UI.
   const serviceLog = await readBrowserServiceLog(page, profile);
-  validateServiceLog(profile, serviceLog);
+  const phpThreads = validateServiceLog(profile, serviceLog);
   return {
     host: "browser", profile, round, startupMs,
     latenciesMs: measurements.latenciesMs,
     throughputRequests: options.clients * options.concurrentSamples,
     throughputDurationMs: measurements.throughputDurationMs,
-    soak, serviceLog,
+    soak, serviceLog, phpThreads,
   };
 }
 
