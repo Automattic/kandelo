@@ -32,4 +32,23 @@ describe("klogctl", () => {
     expect(result.stdout).toBe("klogctl-ok\n");
     expect(result.stderr).toBe("");
   });
+
+  // The program branches on its own `geteuid()`, so running it unprivileged
+  // exercises the other half of the clear gate: reads stay unrestricted, and
+  // the clearing actions refuse with EPERM — including when they are also
+  // handed a buffer they do not take, which must not downgrade the refusal to
+  // EINVAL and hide the authority failure behind an unrelated one.
+  it("refuses a non-root clear while leaving its reads alone", async () => {
+    const result = await runCentralizedProgram({
+      programPath,
+      timeout: 60_000,
+      useDefaultRootfs: false,
+      uid: 1000,
+      gid: 1000,
+    });
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe("klogctl-ok\n");
+    expect(result.stderr).toBe("");
+  });
 });

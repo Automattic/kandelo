@@ -110,6 +110,43 @@ header-plus-text bytes, because a caller sizes a buffer from it and then
 reads; reporting the stored count would under-size the buffer and lose
 records. Action 10 (`SIZE_BUFFER`) reports the ring's fixed 128 KiB.
 
+### Why the kernel's memory minimum moved without a kernel-host bump
+
+Regenerating the snapshot raised `kernel_imports.minimum_pages` from 19 to 21:
+the two pages (128 KiB) the kernel message ring occupies as static data. That
+section is kernel-host surface, so the question is whether it needs a
+`HOST_ADAPTER_VERSION` bump. It does not, and the reasoning is worth recording
+because the next static-data growth will raise the same question.
+
+`HOST_ADAPTER_VERSION` is bumped for a kernel-host change that is
+*incompatible* — a new or changed kernel export, a new kernel host import, a
+wire format, host-adapter metadata. `minimum_pages` is none of those. It is a
+recorded observation of the kernel Wasm's linker-derived size, not an enforced
+contract term: nothing reads it. `xtask dump-abi` writes it as evidence and
+`wasm_artifact::imported_memory_minimum_pages` has no callers.
+
+The only real requirement is that the memory the host supplies is at least the
+minimum the kernel declares. The host creates kernel memory with
+`initial: 24` (`host/src/kernel.ts`), unchanged since the kernel moved back to
+wasm32, and its comment states the intent directly: the figure "must remain
+above the kernel Wasm's linker-derived minimum and leaves headroom for future
+static data without re-tuning host construction each time." Twenty-one pages
+sit inside that with three pages spare, and no host that can legally pair with
+this kernel supplies fewer — the kernel and host ship from one tree and check
+each other's `HOST_ADAPTER_VERSION` exactly at boot.
+
+Precedent agrees. The only previous move, 18 to 19, rode along in a commit
+that added sixteen host imports and changed `kernel_exports` and
+`host_adapter`; those are what earned that bump, not the page count. A
+`minimum_pages` rise that stays under the host's `initial` has never been
+treated as breaking, and treating it as breaking would bump the kernel-host
+epoch on almost every kernel change that adds static data.
+
+A rise that reached or passed `initial: 24` would be a different matter: it
+would make instantiation fail, and it needs the host's figure raised — with
+the `WebAssembly.Memory` reservation cost that implies on WebKit — rather than
+a version bump alone.
+
 Routing the syscall adds its number, its pointer-argument descriptor and that
 descriptor's copy-out bound to the program surface, and the program contract
 digest is exact, so this is a deliberately new supported program baseline.

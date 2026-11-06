@@ -148,6 +148,14 @@ int main(void)
 		if (klogctl(KLOG_CLEAR, NULL, 0) != -1 || errno != EPERM) {
 			fail("non-root CLEAR should be EPERM");
 		}
+		/* Authority is decided before request shape: passing a buffer
+		 * CLEAR does not take must not turn EPERM into EINVAL, or the
+		 * refusal a caller sees depends on an unrelated mistake. */
+		errno = 0;
+		if (klogctl(KLOG_CLEAR, buffer, (int)sizeof buffer) != -1
+		    || errno != EPERM) {
+			fail("non-root CLEAR with a buffer should still be EPERM");
+		}
 		errno = 0;
 		if (klogctl(KLOG_READ_CLEAR, buffer, (int)sizeof buffer) != -1
 		    || errno != EPERM) {

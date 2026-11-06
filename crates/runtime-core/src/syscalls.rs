@@ -19225,13 +19225,23 @@ fn syslog_action(
             syslog_count(written)
         }
         SYSLOG_ACTION_CLEAR => {
-            syslog_reject_output_buffer(buf)?;
+            // Authority first, request shape second: a caller without the
+            // privilege to clear must hear `EPERM` whatever else it got
+            // wrong, or the refusal it sees depends on an unrelated mistake.
             if uid != 0 {
                 return Err(Errno::EPERM);
             }
+            syslog_reject_output_buffer(buf)?;
             ring.clear();
             Ok(0)
         }
+        // Pairs with `SYSLOG_ACTION_READ`, not `READ_ALL`: it counts what is
+        // left after the shared cursor, which is exactly what the next `READ`
+        // will hand back. `READ_ALL` ignores the cursor and returns every live
+        // record, so it is always at least this large and usually larger —
+        // size a `READ_ALL` buffer from `SIZE_BUFFER` instead. Reading this as
+        // "bytes a `READ_ALL` would return" silently loses the oldest records,
+        // which is a mistake worth naming here because it is easy to make.
         SYSLOG_ACTION_SIZE_UNREAD => {
             syslog_reject_output_buffer(buf)?;
             syslog_count(syslog_unread_rendered_bytes(ring, *cursor))
@@ -56870,6 +56880,21 @@ mod syslog_tests {
             syslog_action(&mut ring, &mut cursor, SYSLOG_ACTION_CLEAR, None, USER),
             Err(Errno::EPERM),
         );
+        // Authority is decided before request shape, so a non-root caller
+        // hears EPERM even when it also passed a buffer the action does not
+        // take. Otherwise the refusal a caller sees would depend on an
+        // unrelated mistake and hide the one that matters.
+        assert_eq!(
+            syslog_action(
+                &mut ring,
+                &mut cursor,
+                SYSLOG_ACTION_CLEAR,
+                Some(&mut out),
+                USER
+            ),
+            Err(Errno::EPERM),
+        );
+
         // A refused clear destroys nothing, and reads stay unrestricted.
         assert_eq!(
             syslog_action(
@@ -56981,6 +57006,81 @@ mod syslog_tests {
                 ROOT
             ),
             Ok(b"<6>something to read\n".len() as i32),
+        );
+    }
+
+    #[test]
+    fn size_unread_sizes_a_read_not_a_read_all() {
+        // SIZE_UNREAD counts what is left after the shared cursor, so it
+        // sizes the next READ exactly. It is NOT the size of a READ_ALL
+        // buffer: READ_ALL ignores the cursor and returns every live record,
+        // so once a READ has advanced the cursor READ_ALL is strictly larger.
+        // Sizing a READ_ALL buffer from SIZE_UNREAD drops the oldest records,
+        // which is why this pairing is pinned rather than left to a comment.
+        let mut ring = ring();
+        ring.push(0, 6, 1, b"one");
+        ring.push(0, 6, 2, b"two");
+        ring.push(0, 6, 3, b"three");
+        let mut cursor = 0;
+
+        let every_record = b"<6>one\n<6>two\n<6>three\n";
+        let after_first = b"<6>two\n<6>three\n";
+
+        // Consume exactly the first record, leaving the cursor mid-log.
+        let mut one = [0u8; b"<6>one\n".len()];
+        assert_eq!(
+            syslog_action(&mut ring, &mut cursor, SYSLOG_ACTION_READ, Some(&mut one), USER),
+            Ok(one.len() as i32),
+        );
+        assert_eq!(&one, b"<6>one\n");
+        assert_eq!(cursor, 1);
+
+        // SIZE_UNREAD now describes the remainder, not the whole log.
+        let unread = syslog_action(
+            &mut ring,
+            &mut cursor,
+            SYSLOG_ACTION_SIZE_UNREAD,
+            None,
+            USER,
+        )
+        .unwrap();
+        assert_eq!(unread, after_first.len() as i32);
+
+        // READ_ALL is strictly larger: that is the trap this test exists for.
+        let mut big = buffer();
+        let read_all = syslog_action(
+            &mut ring,
+            &mut cursor,
+            SYSLOG_ACTION_READ_ALL,
+            Some(&mut big),
+            USER,
+        )
+        .unwrap();
+        assert_eq!(&big[..read_all as usize], every_record.as_slice());
+        assert!(
+            read_all > unread,
+            "READ_ALL ({read_all}) must exceed SIZE_UNREAD ({unread}) once the \
+             cursor has moved; sizing a READ_ALL buffer from SIZE_UNREAD would \
+             drop the oldest records",
+        );
+
+        // A buffer sized from SIZE_UNREAD holds the next READ exactly: no
+        // truncation, nothing left behind.
+        let mut sized = alloc::vec![0u8; unread as usize];
+        assert_eq!(
+            syslog_action(
+                &mut ring,
+                &mut cursor,
+                SYSLOG_ACTION_READ,
+                Some(&mut sized),
+                USER
+            ),
+            Ok(unread),
+        );
+        assert_eq!(sized.as_slice(), after_first.as_slice());
+        assert_eq!(
+            syslog_action(&mut ring, &mut cursor, SYSLOG_ACTION_SIZE_UNREAD, None, USER),
+            Ok(0),
         );
     }
 
