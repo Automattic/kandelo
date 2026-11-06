@@ -1,21 +1,33 @@
 # Browser Support
 
-> **Contributor note — dual-host parity is load-bearing.** The browser host is a peer of the Node.js host, not a follower. Any change touching host-runtime behavior MUST land symmetrically on both hosts, **in the same PR**. See [`CLAUDE.md`](../CLAUDE.md#two-hosts-browser-and-nodejs--dual-host-parity-is-load-bearing) for the hard requirements. PR #388 (brk-base) and PR #410 (worker exit message) both shipped one-sided fixes that left browser behavior broken for users; those are the failure modes this rule exists to prevent.
+> **Contributor note — dual-host parity is load-bearing.** The browser host is a peer of the Node.js host, not a follower. Any change touching host-runtime behavior MUST land symmetrically on both hosts, **in the same PR**, unless a documented platform boundary explains the difference. See [`CLAUDE.md`](../CLAUDE.md#host-runtime-contract) for the requirements.
 
 ## Overview
 
-Kandelo runs in modern browsers with SharedArrayBuffer support (Chrome 91+, Firefox 79+, Safari 16.4+). The shared-kernel architecture uses one kernel Wasm instance in a dedicated web worker, with each process running in a sub-worker.
+Kandelo uses SharedArrayBuffer, workers, `Atomics.waitAsync`, and WebAssembly
+features whose availability varies by browser engine and guest architecture.
+SharedArrayBuffer support alone does not establish support for a browser
+version. The engine-specific validation and limitations below distinguish
+wasm32, wasm64, and host capabilities. The shared-kernel architecture uses
+one kernel Wasm instance in a dedicated worker, with each process running in
+a sub-worker.
 
 ## Required HTTP Headers
 
-SharedArrayBuffer requires cross-origin isolation:
+SharedArrayBuffer requires a secure context (HTTPS, or a trustworthy local
+address such as `127.0.0.1`) and cross-origin isolation:
 
 ```
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-Without these headers, `SharedArrayBuffer` is undefined and the kernel cannot initialize.
+Without cross-origin isolation, `SharedArrayBuffer` is unavailable and the
+kernel cannot initialize. The Vite development server sends these headers.
+Production builds include an isolation service worker for hosts that cannot
+set them directly; its first activation may require a reload. An insecure
+remote HTTP origin cannot be repaired by that service worker. See
+[Directory-scoped production hosting](#directory-scoped-production-hosting).
 
 ## Architecture
 
@@ -2966,12 +2978,10 @@ inline input, 2 MiB inflated per input, aggregate input size, 32 KiB
 parameters JSON. Zero-byte inputs are accepted; the dialog simply skips
 empty scripts during authoring.
 
-Scripts currently run without a confirmation step because every machine the
-browser app boots is ephemeral. This is a load-bearing boundary: before any
-persistent or restored-machine feature ships, script links must gain an
-explicit show-the-script consent step (see the warning at the execution
-site in `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` and
-`docs/superpowers/specs/2026-09-21-script-bearing-links-design.md`).
+Scripts currently run without a confirmation step. A setup link describes
+starting inputs, not a saved computer's live filesystem. The earlier
+ephemeral-only rationale no longer describes the browser's disk-backed
+computers; it must not be used as a persistence or isolation guarantee.
 
 ### Kandelo demo metadata
 
@@ -3433,10 +3443,12 @@ The standalone MariaDB demo and MariaDB test images run `mariadbd` as the
 therefore serialized as `101:101` with mode `0775`; `/tmp` remains a
 root-owned `01777` sticky directory.
 
-Generated VFS images are `.gitignore`d rather than committed. Package-backed
-images can be materialized from a current public package archive; the normal
-resolver falls back to the package's source recipe when needed. The `run.sh`
-script handles this automatically before starting the browser.
+Generated VFS images are `.gitignore`d rather than committed. The normal local
+build uses the supported package recipes and content-addressed source cache,
+then publishes a validated projection into `local-binaries/source-only-v1`.
+It has no remote prebuilt-binary fallback. `./run.sh browser` prepares that
+projection before starting Vite. Serving an image's lazy assets over HTTP at
+runtime is a separate operation from resolving a package for a local build.
 
 ### Building VFS images
 
