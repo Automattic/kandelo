@@ -18,10 +18,11 @@ incomplete or limited by WebAssembly and browser security rules.
 | WordPress, nginx, PHP, MariaDB, SQLite | Run web apps and databases |
 | Python, Ruby, Perl | Run scripts and language interpreters |
 | SpiderMonkey-based Node.js runtime | Run JavaScript with a Node.js-compatible API |
+| Clang/LLVM, C/C++ SDK | Compile and run C and C++ inside Kandelo |
 | Git, Vim, nano | Work with source code in a terminal |
 | bash, dash, GNU coreutils | Use shells, pipes, and familiar command-line tools |
-| Freeciv | Play with the native client and dedicated server |
-| DOOM, Quake | Play games with graphics and audio |
+| Freeciv | Play single-player or multiplayer strategy games |
+| DOOM, Quake | Play single-player or multiplayer games with graphics and audio |
 | LÖVE | Run Lua games |
 
 See [software examples and versions](packages/README.md) for more. These are
@@ -59,6 +60,10 @@ The **Library** creates and reopens computers from Base Shell, Web Stack, or
 WordPress images. **Activities** starts installed apps on the running computer
 without rebooting it. Apps share that computer's files and processes.
 
+DOOM, Quake, and Freeciv support multiplayer through browser network sessions.
+Use the dock's network panel to invite friends; see
+[multiplayer setup](docs-site/guide/current-ui.md#network-sessions).
+
 Computers use browser disk storage by default. Temporary computers may be
 cleaned up after 24 hours without opening them; keep one through Library to
 retain it. Browser storage is not a backup.
@@ -66,6 +71,28 @@ retain it. Browser storage is not a backup.
 **Persistence is experimental:** saved computers from this release will not
 work in the next release. Export important files before updating Kandelo.
 See [computer storage and retention](docs/browser-support.md#computer-library-and-retention).
+
+### Build C and C++ inside Kandelo
+
+Create a **Base Shell** computer and open its terminal. The `cc` and `c++`
+commands download the compiler tools on first use. Try this example:
+
+```sh
+cat > /tmp/hello.c <<'C'
+#include <stdio.h>
+int main(void) { puts("Hello, Kandelo!"); return 0; }
+C
+cc /tmp/hello.c -o /tmp/hello
+/tmp/hello
+
+# Build and run the same example as C++
+cp /tmp/hello.c /tmp/hello.cpp
+c++ /tmp/hello.cpp -o /tmp/hello-cpp
+/tmp/hello-cpp
+```
+
+See the [in-Kandelo compiler guide](docs/sdk-guide.md#compile-inside-the-base-shell)
+for details and current limits.
 
 ## How it works
 
