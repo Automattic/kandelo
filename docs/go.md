@@ -69,6 +69,16 @@ runtime budget; it excludes embedded PHP allocations and browser-engine
 memory. Whole-service memory accounting and sustained reclamation checks
 remain release work.
 
+The allocation/reuse fixture makes this distinction observable. With a soft
+32 MiB Go limit, Node holds a touched 32 MiB C allocation and a 64 MiB Go
+live set. After Go collection/scavenging, `HeapReleased` rises to about
+67 MiB and Go's accounted budget falls to about 19 MiB, while linear memory
+stays at about 141 MiB. Three subsequent 64 MiB allocations reuse that same
+linear size. This demonstrates reuse and the limits of Go's counters; it
+does not measure physical page reclamation. The fixture also passes in
+Chromium, Firefox and WebKit. See `tests/go/memory-accounting` and the
+implementation log for the exact run scope.
+
 Go values and C addresses have different widths in this target. Raw C
 address fields are not Go-managed pointers; use typed C accessors for layouts
 that cross this boundary. Go main return and `os.Exit` bypass registered C

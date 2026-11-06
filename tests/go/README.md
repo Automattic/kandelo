@@ -36,6 +36,29 @@ The script stamps only the binaries it rebuilt with this checkout's
 fixture digest to match the kernel, so run the fixture script rather than
 building individual probes directly with `go build`.
 
+The `wait-checkpoints` runtime fixture observes the private host-wait policy
+and calls the target's runtime sleep directly. Its test-only
+`-ldflags=-checklinkname=false` permits those private references; production
+recipes keep normal linkname checking. Plain-Go and real cgo builds require
+the host checkpoint to update the policy without shortening three 350 ms
+sleeps. The cgo variant also executes a linked C scalar call. The normal
+browser inventory runs both variants in each engine. This verifies producer
+integration and timing, not physical memory reclamation or an engine defect.
+
+The `memory-accounting` cgo fixture touches a 32 MiB C allocation and repeats
+64 MiB Go allocation/collection cycles with a soft 32 MiB Go limit. It reports
+Go heap, released-page and budget counters alongside C's direct Wasm memory
+size. It requires dead objects to collect and subsequent allocations to reuse
+bounded linear memory; it does not require that memory to shrink or infer
+physical reclamation from `HeapReleased`. Run it separately in Node with:
+
+```sh
+scripts/dev-shell.sh bash tests/go/memory-accounting/build.sh
+scripts/dev-shell.sh node --import tsx tests/go/memory-accounting/run.ts .context/go-memory-accounting/probe.wasm local-binaries/source-only-v1/kernel.wasm
+```
+
+The standard fixture builder and browser inventory include this probe too.
+
 The separate retirement fixture blocks a live Go guest in a pipe read,
 then destroys the machine. It observes the host's drain progress to require
 that the guest unwinds before forced worker termination. Both plain Go and

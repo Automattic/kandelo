@@ -18,10 +18,11 @@ The declared-tool cohort for WordPress revision 37 passes all 184 nodes,
 all 11 products, and published-consumer admission in 20m36s (172 cached,
 12 published). Its image is 79,342,248 bytes, SHA-256
 `389ec37e63422e400b7c683031eb803ffb1c975d8242606f4aff49c1bbdeeff5`.
-Full app validation of this rebuilt cohort is pending. The existing web app
-on port 5417 still pins the earlier `79c47b29` image; do not mix its lazy
-asset snapshots with the rebuilt cohort. The preview URL and HTTP identity record are in
-`.context/frankenphp-preview-artifacts.json`.
+The rebuilt cohort passes Chromium/Firefox homepage, demo login and
+Appearance/site-editor checks (2/2, 2m48s). The verified preview now runs on
+port 5451; its URL and checked HTTP identity are in
+`.context/frankenphp-current-preview-artifacts.json`. The older port-5417
+server pins the earlier `79c47b29` image. Full app validation remains open.
 
 - The current plain-Go/cgo regular-file regressions fail before the
   pollability correction and pass afterward in Node and all three browsers.
@@ -351,13 +352,68 @@ fixture does not reproduce the exact React export corruption; the real
 application rerun remains necessary. Evidence: `.context/vite-cache-after.log`;
 before: `.context/vite-cache-before-native-options.log`.
 
-The full memory/lifecycle gate is rerunning in
-`frankenphp-cache-isolated-browser-memory-1106-123943-2fad` on port 5447.
-The earlier port-5417 server still holds its old image snapshot. A fresh
-normal `./run.sh browser` is preparing the current cohort on port 5451 as
-`frankenphp-current-cohort-preview-1106-124155-06e7`; its identity and real
-Chromium/Firefox UI verification are separate pending checks. No rebuilt
-preview URL is claimed verified until both succeed.
+The first rerun (`frankenphp-cache-isolated-browser-memory-1106-123943-2fad`)
+fails before browser launch because the intentionally aborted earlier run
+left its Vite process group listening on 5447. Exact process ownership,
+creation time, working directory and original job records identify that
+orphan; only that owned group is retired. The new full gate is
+`frankenphp-cache-and-port-browser-memory-1106-125850-da11`, still running.
+The ordinary rebuilt preview on 5451 passes image size/hash checks and
+Chromium/Firefox login/site-editor cases (2/2, 2m48s). Evidence:
+`.context/frankenphp-current-preview-ui/`.
+
+### Runtime wait coverage checkpoint — 2026-11-06
+
+The Go target's mutex, scheduler-note, bootstrap-acknowledgment and runtime
+sleep waits now share the existing bounded host-checkpoint primitive used
+by the syscall channel. Predicate loops and note deadlines remain intact;
+finite sleep and bootstrap waits retain their total timeout across bounded
+intervals. The change touches three target OS files, not the compiler,
+collector or upstream packages. Package recipes still pin `1b0cf580` until
+this checkpoint completes validation and is pushed.
+
+A runtime-specific probe fails before the change: a 350 ms sleep leaves a
+distinct 50 ms policy sentinel unchanged and exits with a panic. Afterward,
+plain-Go and actual linked-cgo variants pass three sleeps each in Node,
+updating to the host's unbounded policy without shortening the requested
+duration. The private-symbol linker flag applies only to this whitebox
+fixture. The full three-engine Go inventory passes 159/159 in 8m08s,
+including scheduler, clone handoff, locked-thread retirement, sync and
+network deadline coverage. The separate accounting fixture adds three
+browser passes. All four standard
+library compile gates pass: Kandelo with and without cgo, js and wasip1.
+Evidence: `.context/go-wait-before-linked.log`,
+`.context/go-wait-after.log`, `.context/go-wait-node-modes.log`, and job
+`go-runtime-wait-fixtures-and-stdlib-1106-130517-515c`.
+
+This closes a producer-integration gap; it does not establish that missing
+checkpoints caused the WebKit footprint kill. The existing blocked-wait GC
+workaround remains suspected, and synchronized native measurements remain
+necessary.
+
+### Allocation, scavenging and reuse — 2026-11-06
+
+The new real-cgo memory-accounting fixture passes Node and all three
+browsers (3/3 browser cases, 13.1s). It touches 32 MiB allocated by C,
+repeats four 64 MiB Go allocations with a soft 32 MiB Go limit, invokes
+Go's ordinary collection/scavenging API between rounds, and reports a
+direct C Wasm-memory size beside Go counters. Dead Go objects collect and
+the repeated allocations reuse bounded linear memory.
+
+In Node, linear memory rises from 42,991,616 bytes initially to 76,873,728
+with C memory live, then 148,176,896 with the first Go allocation. It stays
+at that size through every collection, reuse and C free. After the final
+Go collection, HeapReleased is 70,533,120 bytes and Sys minus HeapReleased
+is 20,168,704 bytes; neither figure means physical backing was discarded.
+The current no-op target scavenging hook is unchanged. This establishes
+accounting and reuse behavior, not RSS or whole-service budget enforcement.
+Evidence: `.context/go-memory-accounting-node.log` and
+`.context/go-memory-accounting-browser.log`.
+
+The fixture's first browser-build attempt rejects an absolute Go package
+directory in GOPATH mode before publication. Running from the fixture's
+directory fixes that build error; the normal fixture builder then passes.
+No production toolchain change is made for this test.
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task.

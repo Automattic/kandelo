@@ -43,6 +43,18 @@ type Probe = {
 
 const probes: Probe[] = [
   {
+    name: "Go and C memory accounting distinguishes scavenging from linear-memory reuse",
+    file: "memory-accounting.wasm",
+    argv: ["go-memory-accounting"],
+    stdout: ["GO MEMORY ACCOUNTING PASS"],
+  },
+  ...[0, 1].map(cgo => ({
+    name: `Go runtime wait checkpoints retain the sleep duration (cgo=${cgo})`,
+    file: `wait-checkpoints-${cgo}.wasm`,
+    argv: ["go-wait-checkpoints"],
+    stdout: ["GO WAIT CHECKPOINT PASS"],
+  })),
+  {
     name: "Go reports kernel-owned credentials and supplementary groups",
     file: "credentials-basic.wasm",
     argv: ["go-credentials-basic"],

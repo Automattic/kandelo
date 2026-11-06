@@ -152,6 +152,16 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   `JSC-BLOCKED-WAIT-GC-STARVATION`; adding the missing Go producer hook does
   not prove that it caused a particular WordPress stall. Reuse that registry
   entry and mark the fork's code site instead of claiming a new engine bug.
+  Cover mutex contention, scheduler notes, clone acknowledgments and runtime
+  sleeps through the same `kandeloWait32Step` primitive. Recheck each original
+  wake predicate after an interval; a checkpoint timeout is not the caller's
+  final timeout. Keep scheduler-note absolute deadlines and account for the
+  entire finite sleep/bootstrap budget. Bootstrap and lock waits can run
+  without a usable syscall channel, so do not introduce `nanotime` channel
+  calls there merely to slice a wait. Keep the host import nosplit and free
+  of Go allocation. The private-symbol sleep fixture verifies the policy and
+  minimum duration in plain Go/cgo; upstream sync, scheduler and deadline
+  cases exercise real wake behavior. Neither proves the suspected GC cause.
 - Test a declared slot count with distinct live locked Ms, not only many
   sequential starts. The 48-live-M/64-slot probe exposed browser teardown
   latency after the guest had exited: a per-thread 250 ms settlement was

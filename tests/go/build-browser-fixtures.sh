@@ -49,6 +49,33 @@ build_probe scheduler exit-worker ./exit-worker
 build_probe scheduler concurrent-clone ./concurrent-clone
 build_probe scheduler locked-thread ./locked-thread
 build_probe scheduler locked-exit ./locked-exit
+for cgo_mode in 0 1; do
+  (
+    cd "$repo_root/tests/go/wait-checkpoints"
+    # This runtime fixture observes private OS wait state. The production
+    # toolchain and packages retain Go's normal linkname checks.
+    GO111MODULE=off GOOS=kandelo GOARCH=wasm CGO_ENABLED="$cgo_mode" CC=wasm32posix-cc \
+      "$go_bin" build -ldflags=-checklinkname=false \
+      -o "$output_dir/wait-checkpoints-$cgo_mode-raw.wasm" .
+  )
+  if [[ "$cgo_mode" == 1 ]]; then
+    "$repo_root/scripts/run-wasm-fork-instrument.sh" "$output_dir/wait-checkpoints-$cgo_mode-raw.wasm" \
+      -o "$output_dir/wait-checkpoints-$cgo_mode.wasm"
+    rm "$output_dir/wait-checkpoints-$cgo_mode-raw.wasm"
+  else
+    mv "$output_dir/wait-checkpoints-$cgo_mode-raw.wasm" "$output_dir/wait-checkpoints-$cgo_mode.wasm"
+  fi
+  record_built_program_output "$output_dir/wait-checkpoints-$cgo_mode.wasm"
+done
+(
+  cd "$repo_root/tests/go/memory-accounting"
+  GO111MODULE=off GOOS=kandelo GOARCH=wasm CGO_ENABLED=1 CC=wasm32posix-cc \
+    "$go_bin" build -o "$output_dir/memory-accounting-raw.wasm" .
+)
+"$repo_root/scripts/run-wasm-fork-instrument.sh" "$output_dir/memory-accounting-raw.wasm" \
+  -o "$output_dir/memory-accounting.wasm"
+rm "$output_dir/memory-accounting-raw.wasm"
+record_built_program_output "$output_dir/memory-accounting.wasm"
 (
   cd "$repo_root/tests/go/scheduler/slot-pressure"
   GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" build \
