@@ -4944,7 +4944,11 @@ to do with. It is independent of drag and drop; the design is
   every stream from `read()` has closed, so an ignored output is released at
   once. A stored output may be read any number of times, by range; a
   streamed one once. Nothing in the platform turns an output into a file or
-  a download.
+  a download. The browser app opens an output of type
+  `application/x-kandelo-terminal-command` as a terminal running the
+  command it carries instead of offering it in its tray (see "Terminal
+  requests" in `docs/browser-support.md`); that is the app's use of an
+  output, not a platform behavior.
 - **Quotas.** `work/` and `outbox/` together hold at most min(256 MiB, a
   quarter of the kernel's maximum memory), because those bytes live in
   kernel memory; past it writes fail with `ENOSPC`. The kernel stages at

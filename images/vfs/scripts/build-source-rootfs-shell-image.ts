@@ -395,7 +395,8 @@ status "extracted into $GAMES; add it from the launcher"
  * `retro-run game.sfc`, passing any further options (`--state FILE`) to the
  * emulator. With no argument it runs the NES starter ROM.
  * `retro-run --identify FILE` prints the system it detected (nes, md, sms, gg
- * or sfc) and exits 0, or exits 1 when FILE is not a ROM.
+ * or sfc) and exits 0, or exits 1 when FILE is not a ROM. `retro-run --keys
+ * [FILE]` prints which key is which button for that ROM's emulator.
  *
  * WHY it reads the ROM instead of trusting its extension: dumps circulate with
  * wrong or generic extensions (.bin, .smc for a HiROM game), so the system is
@@ -416,8 +417,11 @@ const RETRO_RUN_SCRIPT = `#!/bin/bash
 # ROM's first 64 KiB once and does everything else with bash builtins. Probing
 # each offset with its own dd|od|tr pipeline took about 25 processes to reach
 # the SNES test, and seconds before a SNES game started.
-IDENTIFY=""
-if [ "\${1:-}" = --identify ]; then IDENTIFY=1; shift; fi
+IDENTIFY=""; KEYS=""
+case "\${1:-}" in
+    --identify) IDENTIFY=1; shift ;;
+    --keys) KEYS=1; shift ;;
+esac
 ROM=\${1:-/usr/share/retro-emulators/roms/240pee.nes}
 RUN=\${XDG_RUNTIME_DIR:-/run/user/$UID}/retro
 
@@ -490,7 +494,62 @@ case "$ROM" in /*) ;; *) ROM="$PWD/$ROM" ;; esac
 [ -d "$RUN" ] || mkdir -p "$RUN" || exit 1
 LINK="$RUN/$BASE.$EXT"
 ln -sf "$ROM" "$LINK" || exit 1
+[ -n "$KEYS" ] && exec "$CORE" "$LINK" --keys
 exec "$CORE" "$LINK" "\${@:2}"
+`;
+
+/**
+ * kandelo-terminal, written eagerly to /usr/bin/kandelo-terminal: asks the
+ * page showing the machine to open a terminal with a command typed at its
+ * prompt (web-libs/kandelo-session/src/terminal-request.ts). The ROM exchange
+ * handler uses it so a dropped game is a visible, repeatable command.
+ */
+const KANDELO_TERMINAL_SCRIPT = `#!/bin/sh
+# kandelo-terminal [--display] [--title TITLE] COMMAND-LINE
+#
+# Ask the page showing this machine to open a terminal and type COMMAND-LINE
+# at its prompt, as the user would, so the command is visible and can be run
+# again from that terminal's history. COMMAND-LINE is one shell command line,
+# used as written. --display: the command draws on the framebuffer, so the
+# page stops whatever holds the display and shows it.
+#
+# The request is a Kandelo exchange output of type
+# application/x-kandelo-terminal-command. Publishing it fails, and so does
+# this command (exit 1), when nothing outside the machine takes outputs; a
+# page that does not open terminals keeps it as an ordinary output.
+usage() {
+    echo "usage: kandelo-terminal [--display] [--title TITLE] COMMAND-LINE" >&2
+    exit 2
+}
+display=""
+title=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --display) display=1; shift ;;
+        --title) [ $# -ge 2 ] || usage; title=$2; shift 2 ;;
+        --) shift; break ;;
+        -*) usage ;;
+        *) break ;;
+    esac
+done
+[ $# -eq 1 ] && [ -n "$1" ] || usage
+command=$1
+[ -n "$title" ] || title=$command
+
+json_string() {
+    printf '"%s"' "$(printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g')"
+}
+file=$(mktemp "\${KANDELO_WORK:-\${TMPDIR:-/tmp}}/terminal-request.XXXXXX") || exit 1
+{
+    printf '{"version":1,"command":%s,"title":%s' "$(json_string "$command")" "$(json_string "$title")"
+    [ -z "$display" ] || printf ',"display":"framebuffer"'
+    printf '}\\n'
+} > "$file" || { rm -f "$file"; exit 1; }
+kandelo-publish --mime application/x-kandelo-terminal-command \\
+    --name "terminal-\${file##*.}.json" "$file" >/dev/null
+rc=$?
+rm -f "$file"
+exit $rc
 `;
 
 /**
@@ -555,6 +614,17 @@ done
 path=\${rom#"$batch"/}
 name=\${rom##*/}
 
+# The game runs as a command in a terminal of its own, typed at the prompt:
+# the user sees what the drop ran, and once the game exits, Up and Enter run
+# it again. kandelo-terminal asks the page for that terminal. Where nothing
+# outside the machine opens one (the Node host, or no page taking outputs),
+# the game starts in the background instead, as below.
+quoted=$(printf '%s' "$path" | sed "s/'/'\\\\\\\\''/g")
+if /usr/bin/kandelo-terminal --display --title "$name" "retro-run ~/roms/'$quoted'" 2>/dev/null; then
+    status "opened a terminal: retro-run ~/roms/$path"
+    exit 0
+fi
+
 old=$(cat "$PIDFILE" 2>/dev/null)
 if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
     status "stopping the current game"
@@ -577,7 +647,9 @@ tries=0
 while :; do
     [ "$(cat "$PIDFILE" 2>/dev/null)" = "$pid" ] && { status "playing $name"; exit 0; }
     if ! kill -0 "$pid" 2>/dev/null; then
-        why=$(grep -v '^\\[' "$LOG" | tail -n 1)
+        # The emulator's own lines start with "[" and its key list with
+        # "Keys for" or two spaces; the last other line is the error.
+        why=$(grep -v -e '^\\[' -e '^Keys for ' -e '^  ' "$LOG" | tail -n 1)
         [ -n "$why" ] || why=$(tail -n 1 "$LOG")
         case "$why" in
             "open /dev/fb0: "*busy*) why="another program holds the display; stop it and drop the ROM again" ;;
@@ -1964,6 +2036,7 @@ export async function buildSourceRootfsShellImage(
   // picks one for a ROM is eager. A dropped ROM runs through it too (the
   // retro ROM exchange handler below).
   writeVfsBinary(fs, "/usr/bin/retro-run", new TextEncoder().encode(RETRO_RUN_SCRIPT), 0o755);
+  writeVfsBinary(fs, "/usr/bin/kandelo-terminal", new TextEncoder().encode(KANDELO_TERMINAL_SCRIPT), 0o755);
   // The image's Kandelo exchange handlers and their rules. The rules
   // go in the image's rule directory, which the base rootfs declares
   // (images/rootfs/MANIFEST) with the ownership kxchgd checks; creating it

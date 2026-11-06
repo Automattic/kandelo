@@ -1736,10 +1736,15 @@ and named for the emulator it is:
 
 A 240p test suite ROM for each is under `/usr/share/retro-emulators/roms`.
 Nothing is fetched until an emulator runs. Each takes
-`ROM [--state FILE | --info]` and reads the system from the ROM's
+`ROM [--state FILE | --info | --keys]` and reads the system from the ROM's
 extension. The emulator draws on `/dev/fb0`, plays through `/dev/dsp` and
-reads the keyboard as a joypad (arrows, Enter for Start, Right Shift for
-Select; Z, X, A, S, Q and W for the face and shoulder buttons).
+reads the keyboard as a joypad: the arrows, Enter, Right Shift, Z, X, A,
+S, Q and W are the D-pad, Start, Select and the face and shoulder buttons.
+What each key is on a given system comes from the core itself: every
+libretro core names its buttons (`RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS`),
+so Genesis Plus GX calls Right Shift "Mode" and X "C". The emulator prints
+that list when a game starts, before it takes the keyboard, and `--keys`
+prints it and exits. F5 saves a state and Ctrl+C quits.
 
 `retro-run ROM` (eager, `/usr/bin/retro-run`) chooses the emulator from
 the ROM's own bytes, not its name: the iNES magic, the Mega Drive `SEGA`
@@ -1748,7 +1753,8 @@ header checksum. A file that matches none of them is refused with a
 message. It passes further options to the emulator. With no argument it
 runs the NES test suite. `retro-run --identify FILE` prints the system it
 detected (`nes`, `md`, `sms`, `gg` or `sfc`) and exits 0, or exits 1 when
-the file is not a ROM.
+the file is not a ROM. `retro-run --keys [FILE]` prints the key list for
+that ROM's emulator.
 
 Dropping a ROM, or a folder holding ROMs, on a machine plays it. ROMs are
 recognised by their contents, because collections name them `.rom`, `.bin`
@@ -1758,33 +1764,74 @@ every drop that the game machines' rules do not, and
 each file whose name could be a ROM (a console extension, `.rom`, `.bin`,
 or none). A drop with no ROM in it goes to `exchange-save`, so it is saved
 to `~/Downloads` as before. Otherwise the handler copies the drop into
-`~/roms` as it arrived (a folder keeps its contents), stops the emulator if
-one is playing, starts `retro-run` on the first ROM in path order in the
-background, and reports "playing NAME" once the emulator holds the display,
-or the emulator's own error. The machine's view switches to the display
-when the emulator binds `/dev/fb0`. A display already held by another
-program is not taken: the drop fails with a message saying so. Files over
-16 MiB are left to the catch-all.
+`~/roms` as it arrived (a folder keeps its contents) and runs
+`kandelo-terminal --display "retro-run ~/roms/NAME"` for the first ROM in
+path order (see "Terminal requests" below). The page opens a new terminal
+with that command typed at its prompt, stops whatever holds the display,
+and shows the display, so the user sees what the drop ran; once the game
+exits, Up and Enter in that terminal run it again. The drop's status reads
+"opened a terminal: retro-run ~/roms/NAME". Files over 16 MiB are left to
+the catch-all.
 
-The handler's emulator has no terminal (kxchgd starts handlers with stdin
-on `/dev/null`), so it reads keys from `/dev/input/event0`, which the
-framebuffer canvas feeds while it has focus (see "Framebuffer
-(`/dev/fb0`)"). Started from a terminal, the emulator reads the terminal
-instead. Either way Esc quits it (the keyboard is read raw, so Ctrl+C is
-just a key). The emulator keeps its boot-lifetime files in the user's
-runtime directory, `$XDG_RUNTIME_DIR` or `/run/user/<uid>`: its pid in
-`retro.pid`, and the state F5 saves in `retro.state`, which
+Where nothing outside the machine opens terminals (the Node host, or no
+listener for exchange outputs), `kandelo-terminal` fails and the handler
+starts the game in the background instead: it stops the emulator if one is
+playing, starts `retro-run`, and reports "playing NAME" once the emulator
+holds the display, or the emulator's own error. A display already held by
+another program is not taken there: the drop fails with a message saying
+so.
+
+An emulator started in the background has no terminal (kxchgd starts
+handlers with stdin on `/dev/null`), so it reads keys from
+`/dev/input/event0`, which the framebuffer canvas feeds while it has focus
+(see "Framebuffer (`/dev/fb0`)"). Started from a terminal, including one a
+drop opened, the emulator reads the terminal instead. Either way Ctrl+C quits it. The keyboard is read raw, so no
+terminal turns Ctrl+C into a signal; the emulator acts on the chord itself.
+Esc alone does nothing, so a stray press does not end a game. The emulator
+keeps its boot-lifetime files in the user's runtime directory,
+`$XDG_RUNTIME_DIR` or `/run/user/<uid>`: its pid in `retro.pid`, and the
+state F5 saves in `retro.state`, which
 `retro-run ROM --state FILE` restores. The drop handler logs the
 emulator's output to `retro.log` there.
 
 Gated in Node by `host/test/retro-emulators-cli-smoke.test.ts` (each
-emulator initialises its core; a European ROM's name sets PAL timing; with
-no terminal the emulator reads `/dev/input/event0` and Esc there quits it)
+emulator initialises its core and lists its keys by the core's button
+names; a European ROM's name sets PAL timing; with no terminal the emulator
+reads `/dev/input/event0`, ignores Esc and quits on Ctrl+C there)
 and in the browser by `apps/browser-demos/test/retro-rom-drop.spec.ts` (a
-dropped ROM plays and takes keys, a SNES ROM named `.rom` still starts
-Snes9x, a second drop replaces the game, Esc releases the display, a ROM
-with no extension plays, and a file that is not a ROM is saved to
-`~/Downloads`).
+dropped ROM opens a terminal with its command and plays, takes keys, keeps
+running on Esc and quits on Ctrl+C, after which Up and Enter in that
+terminal run it again; a SNES ROM named `.rom` still starts Snes9x, a later
+drop replaces the game, a ROM with no extension plays, and a file that is
+not a ROM is saved to `~/Downloads`). The request format and its routing
+are covered by `web-libs/kandelo-session/test/terminal-request.test.ts` and
+`exchange-session.test.ts`.
+
+#### Terminal requests
+
+A program in the machine can ask the page for a terminal running a
+command: `kandelo-terminal [--display] [--title TITLE] COMMAND-LINE`
+(`/usr/bin/kandelo-terminal` in the shell image). It publishes a Kandelo
+exchange output of type `application/x-kandelo-terminal-command`, a small
+JSON object `{"version": 1, "command": …, "title": …, "display":
+"framebuffer"}` (`web-libs/kandelo-session/src/terminal-request.ts`).
+`ExchangeSession` hands such outputs to the app's handler instead of the
+output tray, and the app opens them as an activity: a new terminal tab
+labelled with the title, the command typed at its prompt, and for
+`--display` the display owner stopped and the display shown. The command
+runs as that terminal's login user, the same account a guest publisher
+already is, so a request grants nothing a program in the machine could not
+do itself.
+
+The request is untrusted input. A command must be one line of at most 2,048
+characters with no control characters, because it is typed into a shell;
+the title is shortened to 80 characters; unknown fields, other versions and
+requests over 4 KiB are refused, and a refusal or a failed launch is shown
+as a failed entry with its reason. Activities' limits apply (32 per
+computer, one starting at a time). A page without a handler keeps the
+request as an ordinary output in the tray, and with no output listener at
+all the publish fails with `ENXIO`, so `kandelo-terminal` exits 1 and its
+caller can fall back.
 
 ### Kandelo session UI
 

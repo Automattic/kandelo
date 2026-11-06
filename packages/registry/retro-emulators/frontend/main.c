@@ -15,11 +15,14 @@
  * calling thread. The frontend uses no threads, no SDL and no GL; pixel
  * conversion and frame pacing happen here.
  *
- * Usage: <program> <rom-path> [--state <state-path> | --info]
+ * Usage: <program> <rom-path> [--state <state-path> | --info | --keys]
+ *
+ * --keys prints which key is which of the core's buttons and exits; the same
+ * list is printed to stderr when a game starts.
  *
  * SIGUSR1 (or F5) writes a save state to $XDG_RUNTIME_DIR/retro.state (by
  * default /run/user/<uid>/retro.state), which
- * --state restores; see the save-request protocol below. Esc quits.
+ * --state restores; see the save-request protocol below. Ctrl+C quits.
  */
 
 #define _DEFAULT_SOURCE
@@ -241,15 +244,19 @@ static void dsp_open(double sample_rate)
 static int g_input_fd = STDIN_FILENO;
 static bool g_input_evdev = false;
 
-/* Esc quits: the emulator takes the keyboard raw, so Ctrl+C is a keypress,
- * and a ROM dropped on the machine starts it with no terminal at all. */
+/* Ctrl+C quits, as it stops a program in a terminal. The emulator reads the
+ * keyboard raw (a terminal in raw mode, or the evdev device), so no terminal
+ * turns Ctrl+C into SIGINT for it: the frontend sees the two keys and acts on
+ * the chord itself. A lone Esc does nothing; it was too easy to press by
+ * accident in the middle of a game. */
 static volatile sig_atomic_t g_quit_requested = 0;
 
 static void key_event(unsigned kc, bool pressed)
 {
     if (kc >= 128) return;
-    if (kc == KEY_ESC) {
-        if (pressed) g_quit_requested = 1;
+    if (kc == KEY_C && pressed
+        && (g_keystate[KEY_LEFTCTRL] || g_keystate[KEY_RIGHTCTRL])) {
+        g_quit_requested = 1;
         return;
     }
     if (kc == KEY_F5) {
@@ -501,30 +508,71 @@ static size_t audio_sample_batch(const int16_t *data, size_t frames)
 
 static void input_poll(void) { input_drain(); }
 
+/* RETRO_DEVICE_ID_JOYPAD_* -> Linux keycode, and the key's printed name. */
+static const struct { uint8_t keycode; const char *key; } g_joypad_keys[16] = {
+    [RETRO_DEVICE_ID_JOYPAD_UP]     = { KEY_UP,         "Up" },
+    [RETRO_DEVICE_ID_JOYPAD_DOWN]   = { KEY_DOWN,       "Down" },
+    [RETRO_DEVICE_ID_JOYPAD_LEFT]   = { KEY_LEFT,       "Left" },
+    [RETRO_DEVICE_ID_JOYPAD_RIGHT]  = { KEY_RIGHT,      "Right" },
+    [RETRO_DEVICE_ID_JOYPAD_START]  = { KEY_ENTER,      "Enter" },
+    [RETRO_DEVICE_ID_JOYPAD_SELECT] = { KEY_RIGHTSHIFT, "Right Shift" },
+    [RETRO_DEVICE_ID_JOYPAD_B]      = { KEY_Z,          "Z" },
+    [RETRO_DEVICE_ID_JOYPAD_A]      = { KEY_X,          "X" },
+    [RETRO_DEVICE_ID_JOYPAD_Y]      = { KEY_A,          "A" },
+    [RETRO_DEVICE_ID_JOYPAD_X]      = { KEY_S,          "S" },
+    [RETRO_DEVICE_ID_JOYPAD_L]      = { KEY_Q,          "Q" },
+    [RETRO_DEVICE_ID_JOYPAD_R]      = { KEY_W,          "W" },
+};
+
+/* What the core calls each player-one joypad button, from its
+ * SET_INPUT_DESCRIPTORS (copied: the core's array need not outlive the call).
+ * The same key is a different button on each system, and some cores give a
+ * button a second job (FCEUmm's L and R change Famicom Disk System disks), so
+ * the core's own names are the only honest key list. */
+static char g_button_name[16][64];
+
+static void set_input_descriptors(const struct retro_input_descriptor *desc)
+{
+    memset(g_button_name, 0, sizeof g_button_name);
+    for (; desc && desc->description; desc++) {
+        if (desc->port != 0 || desc->device != RETRO_DEVICE_JOYPAD
+            || desc->index != 0 || desc->id >= 16) continue;
+        snprintf(g_button_name[desc->id], sizeof g_button_name[desc->id],
+                 "%s", desc->description);
+    }
+}
+
+/* The key list, in the order a player looks for it: the D-pad, Start and
+ * Select, then the other buttons. A button the core names nothing is one it
+ * does not use, so it is left out. */
+static void print_keys(FILE *out, const char *core)
+{
+    static const unsigned order[] = {
+        RETRO_DEVICE_ID_JOYPAD_UP, RETRO_DEVICE_ID_JOYPAD_DOWN,
+        RETRO_DEVICE_ID_JOYPAD_LEFT, RETRO_DEVICE_ID_JOYPAD_RIGHT,
+        RETRO_DEVICE_ID_JOYPAD_START, RETRO_DEVICE_ID_JOYPAD_SELECT,
+        RETRO_DEVICE_ID_JOYPAD_B, RETRO_DEVICE_ID_JOYPAD_A,
+        RETRO_DEVICE_ID_JOYPAD_Y, RETRO_DEVICE_ID_JOYPAD_X,
+        RETRO_DEVICE_ID_JOYPAD_L, RETRO_DEVICE_ID_JOYPAD_R,
+    };
+    fprintf(out, "Keys for %s:\n", core);
+    for (size_t i = 0; i < sizeof order / sizeof order[0]; i++) {
+        unsigned id = order[i];
+        if (!g_button_name[id][0]) continue;
+        fprintf(out, "  %-12s %s\n", g_joypad_keys[id].key, g_button_name[id]);
+    }
+    fprintf(out, "  %-12s %s\n", "F5", "save a state");
+    fprintf(out, "  %-12s %s\n", "Ctrl+C", "quit");
+}
+
 static int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 {
     (void)index;
     if (port != 0 || device != RETRO_DEVICE_JOYPAD) return 0;
-
-    /* RETRO_DEVICE_ID_JOYPAD_* -> Linux 7-bit keycode (browser-controls.ts map). */
-    static const int8_t map[16] = {
-        [RETRO_DEVICE_ID_JOYPAD_B]      = 44,  /* Z */
-        [RETRO_DEVICE_ID_JOYPAD_Y]      = 30,  /* A */
-        [RETRO_DEVICE_ID_JOYPAD_SELECT] = 54,  /* RightShift */
-        [RETRO_DEVICE_ID_JOYPAD_START]  = 28,  /* Enter */
-        [RETRO_DEVICE_ID_JOYPAD_UP]     = 103, /* ArrowUp */
-        [RETRO_DEVICE_ID_JOYPAD_DOWN]   = 108, /* ArrowDown */
-        [RETRO_DEVICE_ID_JOYPAD_LEFT]   = 105, /* ArrowLeft */
-        [RETRO_DEVICE_ID_JOYPAD_RIGHT]  = 106, /* ArrowRight */
-        [RETRO_DEVICE_ID_JOYPAD_A]      = 45,  /* X */
-        [RETRO_DEVICE_ID_JOYPAD_X]      = 31,  /* S */
-        [RETRO_DEVICE_ID_JOYPAD_L]      = 16,  /* Q */
-        [RETRO_DEVICE_ID_JOYPAD_R]      = 17,  /* W */
-    };
     if (id >= 16) return 0;
-    int8_t kc = map[id];
-    if (kc <= 0) return 0;
-    return (g_keystate[(uint8_t)kc] || g_keylatch[(uint8_t)kc]) ? 1 : 0;
+    uint8_t kc = g_joypad_keys[id].keycode;
+    if (kc == 0) return 0;
+    return (g_keystate[kc] || g_keylatch[kc]) ? 1 : 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -557,6 +605,10 @@ static bool environ_cb(unsigned cmd, void *data)
         fprintf(stderr, "[retro] pixel format = %d\n", (int)fmt);
         return true;
     }
+
+    case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
+        set_input_descriptors((const struct retro_input_descriptor *)data);
+        return true;
 
     case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
     case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
@@ -802,15 +854,19 @@ static int write_save_state(void)
 int main(int argc, char **argv)
 {
     const char *state_path = NULL;
-    bool info_only = false;
+    bool info_only = false, keys_only = false;
     if (argc == 4 && strcmp(argv[2], "--state") == 0) {
         state_path = argv[3];
     } else if (argc == 3 && strcmp(argv[2], "--info") == 0) {
         /* Load the ROM, report the core's timing, and exit: what the core
          * decided about the content, without needing a display. */
         info_only = true;
+    } else if (argc == 3 && strcmp(argv[2], "--keys") == 0) {
+        /* Load the ROM, print the key list the core's button names give, and
+         * exit: what a player needs to know, without a display. */
+        keys_only = true;
     } else if (argc != 2) {
-        fprintf(stderr, "usage: %s <rom> [--state <state-path> | --info]\n", argv[0]);
+        fprintf(stderr, "usage: %s <rom> [--state <state-path> | --info | --keys]\n", argv[0]);
         return 2;
     }
 
@@ -883,6 +939,15 @@ int main(int argc, char **argv)
     fprintf(stderr, "[retro] av: %ux%u fps=%.3f rate=%.0f\n",
             g_av.geometry.base_width, g_av.geometry.base_height, fps, srate);
     if (info_only) return 0;
+
+    const char *core_name = sysinfo.library_name ? sysinfo.library_name : self;
+    if (keys_only) {
+        print_keys(stdout, core_name);
+        return 0;
+    }
+    /* Before the keyboard is taken: started from a terminal, the player sees
+     * the keys there. */
+    print_keys(stderr, core_name);
 
     if (fb_open() < 0) return 1;
     dsp_open(srate);

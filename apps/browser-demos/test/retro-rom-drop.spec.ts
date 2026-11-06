@@ -1,15 +1,16 @@
 // A ROM dropped on a shell machine plays: Kandelo exchange hands it to the
-// machine's agent (kxchgd), whose retro rule keeps it in ~/roms and starts the
-// emulator on it in the background (images/vfs/scripts/
-// build-source-rootfs-shell-image.ts, RETRO_LOAD_ROM_HANDLER).
+// machine's agent (kxchgd), whose retro rule keeps it in ~/roms and asks the
+// page, through kandelo-terminal, for a terminal with `retro-run ROM` typed at
+// its prompt (images/vfs/scripts/build-source-rootfs-shell-image.ts,
+// RETRO_LOAD_ROM_HANDLER; web-libs/kandelo-session/src/terminal-request.ts).
 //
 // What this has to prove, beyond "a canvas has colours":
 //
-// - The emulator a handler starts has no terminal, so its keys must arrive
-//   through the machine keyboard device (/dev/input/event0), which the
-//   framebuffer canvas feeds while focused. The starter ROMs are static
-//   test-suite menus, so a frame that changes after a key press changed
-//   because of the key, and Esc, which quits, must end the emulator.
+// - The game is an ordinary command in an ordinary terminal: the terminal
+//   shows the command, and after Ctrl+C, Up and Enter run it again.
+// - Keys reach it: the starter ROMs are static test-suite menus, so a frame
+//   that changes after a key press changed because of the key. Ctrl+C, which
+//   quits, must end the emulator; Esc alone must not.
 // - ROMs are recognised by their bytes, not their names, because collections
 //   name them .rom or nothing at all: the SNES ROM is dropped as Suite.rom
 //   and still runs on Snes9x, and a ROM with no extension plays.
@@ -105,7 +106,13 @@ async function settledFrame(canvas: Locator): Promise<number> {
   return last.digest;
 }
 
-test("a ROM dropped on the shell plays, takes keys without a terminal, and Esc quits", async ({ page }) => {
+/** The visible terminal's text. */
+function activeTerminalText(page: Page): Promise<string> {
+  return page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").first()
+    .evaluate((node) => node.textContent ?? "");
+}
+
+test("a dropped ROM runs as a command in its own terminal, which can run it again", async ({ page }) => {
   test.setTimeout(600_000);
   requireStarterRoms();
   await gotoMachineOrSkip(page, "shell");
@@ -115,44 +122,75 @@ test("a ROM dropped on the shell plays, takes keys without a terminal, and Esc q
     { timeout: 180_000 },
   ).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
 
-  // Dropped on the terminal. The view switches to the display by itself
-  // once the emulator binds /dev/fb0.
+  // Dropped on the terminal: the handler asks the page for a terminal of its
+  // own with the command typed at the prompt, and the view switches to the
+  // display the game draws on.
   await dropFile(page, page.locator(".kshell-surface").first(), "Test Suite (U).nes", readFileSync(NES_ROM));
-  await expect.poll(() => batchStatus(page), { timeout: 180_000 }).toBe("playing Test Suite (U).nes");
+  await expect.poll(() => batchStatus(page), { timeout: 180_000 })
+    .toBe("opened a terminal: retro-run ~/roms/Test Suite (U).nes");
   const canvas = page.locator("canvas.kframebuffer-canvas").first();
-  await expect(canvas).toBeVisible({ timeout: 30_000 });
+  await expect(canvas).toBeVisible({ timeout: 60_000 });
   await awaitRender(canvas);
   const nesPid = await boundPid(page);
   expect(nesPid).not.toBeNull();
 
-  // Keys reach it only through /dev/input/event0: it has no terminal. The
-  // suite opens on a static credits screen that Right pages through.
+  // Keys reach it through its terminal. The suite opens on a static credits
+  // screen that Right pages through.
   await canvas.focus();
   const settled = await settledFrame(canvas);
   await page.keyboard.press("ArrowRight");
   await expect.poll(async () => (await frameSummary(canvas)).digest, { timeout: 30_000 })
     .not.toBe(settled);
 
-  // A second drop replaces the game. The SNES ROM is named .rom, as ROM
-  // collections often do; the launcher reads its header to pick Snes9x.
-  await dropFile(page, page.locator(".kframebuffer-surface").first(), "Suite.rom", readFileSync(SNES_ROM));
-  await expect.poll(() => batchStatus(page), { timeout: 240_000 }).toBe("playing Suite.rom");
-  await expect.poll(() => boundPid(page), { timeout: 60_000 }).not.toBe(nesPid);
-  expect(await boundPid(page)).not.toBeNull();
-  await awaitRender(canvas);
-
-  // Esc quits: the display loses its owner.
-  await canvas.focus();
+  // Esc alone does nothing: the game keeps the display.
   await page.keyboard.press("Escape");
+  await page.waitForTimeout(2_000);
+  expect(await boundPid(page)).toBe(nesPid);
+
+  // Ctrl+C quits, back to the terminal's prompt.
+  await page.keyboard.press("Control+c");
   await expect.poll(() => boundPid(page), { timeout: 30_000 }).toBeNull();
 
-  // A ROM with no extension at all plays: it is recognised by its bytes.
-  const surface = page.locator(".kshell-surface, .kframebuffer-surface").first();
-  await dropFile(page, surface, "testsuite", readFileSync(NES_ROM));
-  await expect.poll(() => batchStatus(page), { timeout: 120_000 }).toBe("playing testsuite");
-  await expect.poll(() => boundPid(page), { timeout: 30_000 }).not.toBeNull();
+  // That terminal shows the command, the key list the emulator printed,
+  // and a prompt; Up and Enter run the game again.
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  await expect.poll(() => activeTerminalText(page), { timeout: 30_000 })
+    .toContain("retro-run ~/roms/'Test Suite (U).nes'");
+  expect(await activeTerminalText(page)).toContain("Keys for FCEUmm:");
+  await expect.poll(() => activeTerminalText(page), { timeout: 30_000 })
+    .toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
+  await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-screen").click();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
+  await expect.poll(async () => {
+    const pid = await boundPid(page);
+    return pid !== null && pid !== nesPid;
+  }, { timeout: 60_000 }).toBe(true);
   await canvas.focus();
-  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+c");
+  await expect.poll(() => boundPid(page), { timeout: 30_000 }).toBeNull();
+
+  // ROMs are recognised by their bytes: a SNES ROM named .rom starts Snes9x.
+  const surface = page.locator(".kshell-surface, .kframebuffer-surface").first();
+  await dropFile(page, surface, "Suite.rom", readFileSync(SNES_ROM));
+  await expect.poll(() => batchStatus(page), { timeout: 240_000 })
+    .toBe("opened a terminal: retro-run ~/roms/Suite.rom");
+  await expect.poll(() => boundPid(page), { timeout: 120_000 }).not.toBeNull();
+  await awaitRender(canvas);
+
+  // A second drop replaces the game that is playing; a ROM with no
+  // extension plays too.
+  const snesPid = await boundPid(page);
+  await dropFile(page, surface, "testsuite", readFileSync(NES_ROM));
+  await expect.poll(() => batchStatus(page), { timeout: 120_000 })
+    .toBe("opened a terminal: retro-run ~/roms/testsuite");
+  // The old game stops first (no owner for a moment), then the new one binds.
+  await expect.poll(async () => {
+    const pid = await boundPid(page);
+    return pid !== null && pid !== snesPid;
+  }, { timeout: 60_000 }).toBe(true);
+  await canvas.focus();
+  await page.keyboard.press("Control+c");
   await expect.poll(() => boundPid(page), { timeout: 30_000 }).toBeNull();
 
   // A file whose name could be a ROM but whose bytes are not is saved, as
