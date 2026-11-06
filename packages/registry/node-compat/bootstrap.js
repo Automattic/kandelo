@@ -792,7 +792,9 @@ const process = (() => {
         execPath: '/usr/bin/node',
         pid: os.getpid(),
         ppid: 0,  // Not easily available
-        exitCode: 0,
+        // Absence is observable: applications use an assigned exitCode to
+        // distinguish a requested shutdown from a running process.
+        exitCode: undefined,
         _exiting: false,
 
         cwd() { return _cwd; },
@@ -804,10 +806,13 @@ const process = (() => {
         },
 
         exit(code) {
-            proc.exitCode = code !== undefined ? code : proc.exitCode;
-            proc._exiting = true;
-            proc.emit('exit', proc.exitCode);
-            std.exit(proc.exitCode);
+            if (arguments.length !== 0) proc.exitCode = code;
+            if (!proc._exiting) {
+                proc._exiting = true;
+                proc.emit('exit', proc.exitCode === undefined ? 0 : proc.exitCode);
+            }
+            // Exit listeners can still assign the final status.
+            std.exit(proc.exitCode === undefined ? 0 : proc.exitCode);
         },
 
         abort() {
@@ -888,6 +893,31 @@ const process = (() => {
         // to detect glibc-vs-musl when /usr/bin/ldd is unavailable.
         report: {
             getReport() { return { sharedObjects: ['/lib/ld-musl-wasm32.so.1'] }; },
+        },
+    });
+
+    // Node stores a validated integer in its native int32 exit-info field.
+    // Clearing with null or undefined restores absence, rather than storing
+    // either value as the status passed to exit listeners.
+    let exitCode;
+    Object.defineProperty(proc, 'exitCode', {
+        enumerable: true,
+        configurable: false,
+        get() { return exitCode; },
+        set(code) {
+            if (code === null || code === undefined) { exitCode = undefined; return; }
+            let value = code;
+            if (typeof code === 'string' && code !== '') value = Number(code);
+            let error;
+            if (typeof value !== 'number' || (typeof code === 'string' && Number.isNaN(value))) {
+                error = new TypeError('The code argument must be a number');
+                error.code = 'ERR_INVALID_ARG_TYPE';
+            } else if (!Number.isSafeInteger(value)) {
+                error = new RangeError('The code argument must be a safe integer');
+                error.code = 'ERR_OUT_OF_RANGE';
+            }
+            if (error) throw error;
+            exitCode = value | 0;
         },
     });
 
@@ -1076,10 +1106,8 @@ function _createReadStream(fd) {
     if (_stdin) return _stdin;
     // Real readable-stream surface for stdin. TUI libraries (readline,
     // prompts, etc.) call resume()+on('data',cb) and expect bytes from fd 0.
-    // The previous stub turned every method into a no-op, so TUIs rendered
-    // their initial frame and the runtime loop exited immediately because no
-    // jobs/timers/watches were live. Wiring through os.setReadHandler keeps
-    // the loop alive and delivers keystrokes.
+    // SpiderMonkey uses cancellable native read promises; QuickJS uses its
+    // real os.setReadHandler. Both deliver pipe EOF and terminal input.
     const listeners = new Map(); // event → cb[]
     const READ_BUF = new ArrayBuffer(4096);
     const READ_VIEW = new Uint8Array(READ_BUF);
@@ -1087,10 +1115,19 @@ function _createReadStream(fd) {
     let ended = false;
     let _encoding = null;
     let _decoder = null;
+    const nativeRead = typeof _nodeNative.__kandeloFdReadControl === 'function';
+    let pendingRead = null;
+    let pendingChunk = null;
+    let deliveryScheduled = false;
+    let referenced = true;
+    let destroyed = false;
 
     function _emit(event, ...args) {
         const arr = listeners.get(event);
-        if (!arr || arr.length === 0) return false;
+        if (!arr || arr.length === 0) {
+            if (event === 'error') throw args[0] instanceof Error ? args[0] : new Error(String(args[0]));
+            return false;
+        }
         for (const cb of arr.slice()) {
             try { cb(...args); }
             catch (e) { Promise.reject(e); }
@@ -1098,44 +1135,99 @@ function _createReadStream(fd) {
         return true;
     }
 
-    function _onReadable() {
-        let n;
-        try { n = os.read(fd, READ_BUF, 0, READ_VIEW.byteLength); }
-        catch (e) { _emit('error', e); return; }
-        if (n <= 0) {
-            // EOF (or unexpected) → stop pumping and emit end.
+    function _acceptBytes(bytes) {
+        if (bytes.byteLength === 0) {
             ended = true;
             _uninstall();
+            s.readable = false;
+            s.readableEnded = true;
             _emit('end');
             _emit('close');
             return;
         }
-        const slice = READ_VIEW.subarray(0, n);
         if (_encoding === 'utf8' || _encoding === 'utf-8') {
             if (!_decoder) _decoder = new TextDecoder('utf-8', { fatal: false });
-            _emit('data', _decoder.decode(slice, { stream: true }));
+            _emit('data', _decoder.decode(bytes, { stream: true }));
         } else {
-            const copy = new Uint8Array(n);
-            copy.set(slice);
+            const copy = Buffer.alloc(bytes.byteLength);
+            copy.set(bytes);
             _emit('data', copy);
         }
     }
 
+    function _readError(error) {
+        ended = true;
+        _uninstall();
+        s.readable = false;
+        _emit('error', error instanceof Error ? error : new Error(String(error)));
+        _emit('close');
+    }
+
+    function _pumpNative() {
+        if (!watchInstalled || ended || destroyed || pendingRead || deliveryScheduled) return;
+        if (pendingChunk !== null) {
+            deliveryScheduled = true;
+            queueMicrotask(() => {
+                deliveryScheduled = false;
+                if (!watchInstalled || ended || destroyed) return;
+                const chunk = pendingChunk;
+                pendingChunk = null;
+                _acceptBytes(chunk);
+                _pumpNative();
+            });
+            return;
+        }
+        const request = { promise: _nodeNative.__kandeloFdRead(fd, 4096, true), cancelled: false };
+        pendingRead = request;
+        if (!referenced) _nodeNative.__kandeloFdReadControl(request.promise, false);
+        request.promise.then(bytes => {
+            pendingRead = null;
+            if (destroyed) return;
+            pendingChunk = bytes;
+            _pumpNative();
+        }, error => {
+            pendingRead = null;
+            if (!request.cancelled && !destroyed) {
+                _readError(error);
+            }
+            _pumpNative();
+        });
+    }
+
+    function _onReadable() {
+        let n;
+        try { n = os.read(fd, READ_BUF, 0, READ_VIEW.byteLength); }
+        catch (e) { _readError(e); return; }
+        if (n < 0) {
+            if (n === -11 || n === -4) return; // EAGAIN / EINTR are not EOF.
+            try { _throwErrno(-n, 'read'); }
+            catch (error) { _readError(error); }
+            return;
+        }
+        _acceptBytes(READ_VIEW.subarray(0, n));
+    }
+
     function _install() {
-        if (watchInstalled || ended) return;
-        os.setReadHandler(fd, _onReadable);
+        if (watchInstalled || ended || destroyed) return;
         watchInstalled = true;
+        if (nativeRead) _pumpNative();
+        else os.setReadHandler(fd, _onReadable);
     }
 
     function _uninstall() {
         if (!watchInstalled) return;
-        os.setReadHandler(fd, null);
         watchInstalled = false;
+        if (nativeRead) {
+            if (pendingRead && !pendingRead.cancelled) {
+                pendingRead.cancelled = _nodeNative.__kandeloFdReadControl(pendingRead.promise, null);
+            }
+        } else os.setReadHandler(fd, null);
     }
 
     const s = {
         fd,
         readable: true,
+        readableEnded: false,
         isTTY: os.isatty(fd),
         isRaw: false,
         read() { return null; },
@@ -1171,7 +1263,7 @@ function _createReadStream(fd) {
         },
         resume() { _install(); return s; },
         pause() { _uninstall(); return s; },
-        pipe(dest) { return dest; },
+        pipe(dest, options) { return stream.Stream.prototype.pipe.call(s, dest, options); },
         unpipe() { return s; },
         setEncoding(enc) {
             _encoding = enc;
@@ -1192,9 +1284,17 @@ function _createReadStream(fd) {
             s.isRaw = want;
             return s;
         },
-        unref() { return s; },
-        ref() { return s; },
-        destroy() { _uninstall(); listeners.clear(); return s; },
+        unref() {
+            referenced = false;
+            if (nativeRead && pendingRead) _nodeNative.__kandeloFdReadControl(pendingRead.promise, false);
+            return s;
+        },
+        ref() {
+            referenced = true;
+            if (nativeRead && pendingRead) _nodeNative.__kandeloFdReadControl(pendingRead.promise, true);
+            return s;
+        },
+        destroy() { destroyed = true; _uninstall(); pendingChunk = null; listeners.clear(); return s; },
     };
     _stdin = s;
     return s;
@@ -1264,10 +1364,22 @@ const fs = (() => {
     }
 
     function _pathToString(p) {
-        if (typeof p === 'string') return p;
-        if (p instanceof URL) return p.pathname;
-        if (Buffer.isBuffer(p)) return p.toString();
-        throw new TypeError('path must be a string, Buffer, or URL');
+        let result;
+        if (typeof p === 'string') result = p;
+        else if (p instanceof URL) result = url.fileURLToPath(p);
+        else if (Buffer.isBuffer(p)) result = p.toString();
+        else {
+            const error = new TypeError('path must be a string, Buffer, or URL');
+            error.code = 'ERR_INVALID_ARG_TYPE';
+            throw error;
+        }
+        // Do not let a decoded %00 truncate a pathname at the C bridge.
+        if (result.indexOf('\0') !== -1) {
+            const error = new TypeError('The path argument must not contain null bytes');
+            error.code = 'ERR_INVALID_ARG_VALUE';
+            throw error;
+        }
+        return result;
     }
 
     function _flagsToMode(flags) {
@@ -1357,8 +1469,16 @@ const fs = (() => {
         } else {
             buf = new TextEncoder().encode(String(data));
         }
-        os.write(fd, buf.buffer, buf.byteOffset, buf.byteLength);
-        os.close(fd);
+        try {
+            let written = 0;
+            while (written < buf.byteLength) {
+                const n = writeSync(fd, buf, written, buf.byteLength - written);
+                if (n === 0) _throwErrno(5, 'write', p);
+                written += n;
+            }
+        } finally {
+            closeSync(fd);
+        }
     }
 
     function appendFileSync(filepath, data, options) {
@@ -1497,9 +1617,26 @@ const fs = (() => {
 
     function chmodSync(filepath, mode) {
         const p = _pathToString(filepath);
-        const [, err] = os.stat(p);
+        if (typeof mode === 'string') {
+            if (!/^[0-7]+$/.test(mode)) {
+                const error = new TypeError('The mode argument must be an octal string');
+                error.code = 'ERR_INVALID_ARG_VALUE';
+                throw error;
+            }
+            mode = parseInt(mode, 8);
+        }
+        if (typeof mode !== 'number') {
+            const error = new TypeError('The mode argument must be a number or octal string');
+            error.code = 'ERR_INVALID_ARG_TYPE';
+            throw error;
+        }
+        if (!Number.isInteger(mode) || mode < 0 || mode > 0xffffffff) {
+            const error = new RangeError('The mode argument must be a 32-bit unsigned integer');
+            error.code = 'ERR_OUT_OF_RANGE';
+            throw error;
+        }
+        const err = typeof os.chmod === 'function' ? os.chmod(p, mode) : -38;
         if (err !== 0) _throwErrno(-err, 'chmod', p);
-        void mode;
     }
 
     function chownSync(filepath, uid, gid) {
@@ -1541,14 +1678,20 @@ const fs = (() => {
     }
 
     function closeSync(fd) {
-        os.close(fd);
+        const result = os.close(fd);
+        if (result < 0) _throwErrno(-result, 'close');
     }
 
     function readSync(fd, buffer, offset, length, position) {
         if (position !== null && position !== undefined) {
-            os.seek(fd, position, std.SEEK_SET);
+            const result = os.seek(fd, position, std.SEEK_SET);
+            if (result < 0) _throwErrno(-result, 'read');
         }
-        return os.read(fd, buffer.buffer, buffer.byteOffset + (offset || 0), length || buffer.length);
+        const start = offset ?? 0;
+        const result = os.read(fd, buffer.buffer, buffer.byteOffset + start,
+            length ?? (buffer.byteLength - start));
+        if (result < 0) _throwErrno(-result, 'read');
+        return result;
     }
 
     function writeSync(fd, data, offsetOrPosition, lengthOrEncoding, position) {
@@ -1556,18 +1699,24 @@ const fs = (() => {
         if (typeof data === 'string') {
             buf = new TextEncoder().encode(data);
             if (typeof offsetOrPosition === 'number') {
-                os.seek(fd, offsetOrPosition, std.SEEK_SET);
+                const result = os.seek(fd, offsetOrPosition, std.SEEK_SET);
+                if (result < 0) _throwErrno(-result, 'write');
             }
         } else {
             buf = data;
-            const offset = offsetOrPosition || 0;
-            const length = lengthOrEncoding || (buf.length - offset);
+            const offset = offsetOrPosition ?? 0;
+            const length = lengthOrEncoding ?? (buf.byteLength - offset);
             if (position !== null && position !== undefined) {
-                os.seek(fd, position, std.SEEK_SET);
+                const result = os.seek(fd, position, std.SEEK_SET);
+                if (result < 0) _throwErrno(-result, 'write');
             }
-            return os.write(fd, buf.buffer, buf.byteOffset + offset, length);
+            const result = os.write(fd, buf.buffer, buf.byteOffset + offset, length);
+            if (result < 0) _throwErrno(-result, 'write');
+            return result;
         }
-        return os.write(fd, buf.buffer, 0, buf.length);
+        const result = os.write(fd, buf.buffer, 0, buf.length);
+        if (result < 0) _throwErrno(-result, 'write');
+        return result;
     }
 
     // fs-minipass guards on `if (!fs.writev)` and falls back to
@@ -1578,10 +1727,37 @@ const fs = (() => {
             const len = buf.byteLength ?? buf.length;
             if (!len) continue;
             const pos = position == null ? null : position + total;
-            total += writeSync(fd, buf, 0, len, pos);
+            let written;
+            try {
+                written = writeSync(fd, buf, 0, len, pos);
+            } catch (error) {
+                if (total === 0) throw error;
+                return total;
+            }
+            total += written;
+            if (written !== len) break;
         }
         return total;
     }
+
+    function _syncDescriptor(fd, syscall) {
+        if (typeof fd !== 'number') {
+            const error = new TypeError('The fd argument must be a number');
+            error.code = 'ERR_INVALID_ARG_TYPE';
+            throw error;
+        }
+        if (!Number.isInteger(fd) || fd < 0 || fd > 0x7fffffff) {
+            const error = new RangeError('The fd argument must be a non-negative 32-bit integer');
+            error.code = 'ERR_OUT_OF_RANGE';
+            throw error;
+        }
+        const err = typeof os.fsync === 'function' ? os.fsync(fd) : -38;
+        if (err !== 0) _throwErrno(-err, syscall);
+    }
+
+    function fsyncSync(fd) { return _syncDescriptor(fd, 'fsync'); }
+    // The kernel implements fdatasync with the same durability barrier.
+    function fdatasyncSync(fd) { return _syncDescriptor(fd, 'fdatasync'); }
 
     function fstatSync(fd) {
         // Use /proc/self/fd approach or direct syscall
@@ -1615,12 +1791,12 @@ const fs = (() => {
             this._closed = false;
         }
 
-        _assertOpen() {
+        _assertOpen(syscall = 'close') {
             if (this._closed) {
                 const err = new Error('file closed');
                 err.code = 'EBADF';
                 err.errno = -9;
-                err.syscall = 'close';
+                err.syscall = syscall;
                 throw err;
             }
         }
@@ -1647,6 +1823,16 @@ const fs = (() => {
             this._assertOpen();
             const bytesWritten = writevSync(this.fd, buffers, position);
             return { bytesWritten, buffers };
+        }
+
+        async sync() {
+            this._assertOpen('fsync');
+            return fsyncSync(this.fd);
+        }
+
+        async datasync() {
+            this._assertOpen('fdatasync');
+            return fdatasyncSync(this.fd);
         }
 
         async stat() {
@@ -1752,9 +1938,9 @@ const fs = (() => {
         fchmodSync,
         fchownSync,
         futimesSync,
-        // No fsync/ftruncate primitive in the qjs:os native module (see
-        // truncateSync above) — honest throwing stubs, not silent no-ops.
-        fsyncSync: _notImpl('fs', 'fsyncSync'),
+        fsyncSync,
+        fdatasyncSync,
+        // No ftruncate primitive in the qjs:os native module.
         ftruncateSync: _notImpl('fs', 'ftruncateSync'),
         // No statfs primitive either; mirrors fs/promises.statfs (honest stub).
         statfsSync: _notImpl('fs', 'statfsSync'),
@@ -1791,9 +1977,8 @@ const fs = (() => {
         fchmod: _callbackify(fchmodSync),
         fchown: _callbackify(fchownSync),
         futimes: _callbackify(futimesSync),
-        // Callbackified over fsyncSync (looked up lazily on `mod`), so while
-        // fsyncSync is a throwing stub the same error reaches the callback.
-        fsync: _callbackify((...a) => mod.fsyncSync(...a)),
+        fsync: _callbackify(fsyncSync),
+        fdatasync: _callbackify(fdatasyncSync),
         read(fd, buffer, offset, length, position, cb) {
             try {
                 const n = readSync(fd, buffer, offset, length, position);
@@ -1806,7 +1991,7 @@ const fs = (() => {
             const cb = rest.pop();
             try {
                 const n = writeSync(fd, data, ...rest);
-                queueMicrotask(() => cb(null, n));
+                queueMicrotask(() => cb(null, n, data));
             } catch (err) {
                 queueMicrotask(() => cb(err));
             }
@@ -2457,6 +2642,8 @@ const stream = (() => {
 // url module
 // ============================================================
 
+const _nodeWebPlatform = _createNodeWebPlatform();
+
 const url = (() => {
     function parse(urlStr, parseQueryString) {
         // `new URL(URL_instance)` is valid in WHATWG; coerce to string so the
@@ -2536,7 +2723,41 @@ const url = (() => {
         return result;
     }
 
-    function format(urlObj) {
+    function format(urlObj, options) {
+        if (urlObj instanceof URLClass) {
+            if (options && (typeof options !== 'object' || Array.isArray(options))) {
+                const error = new TypeError('The options argument must be an object');
+                error.code = 'ERR_INVALID_ARG_TYPE';
+                throw error;
+            }
+            // Work on a copy: formatting must not mutate the input URL or its
+            // live searchParams. Preserve default serialization, including
+            // opaque paths and empty query/fragment delimiters.
+            const copy = new URLClass(urlObj.href);
+            if (options) {
+                if (options.auth != null && !options.auth) { copy.username = ''; copy.password = ''; }
+                if (options.fragment != null && !options.fragment) copy.hash = '';
+                if (options.search != null && !options.search) copy.search = '';
+                if (options.unicode) {
+                    const hostname = copy.hostname;
+                    if (hostname && !hostname.startsWith('[')) {
+                        const decoded = _nodeWebPlatform.domainToUnicode(hostname);
+                        const href = copy.href;
+                        const authorityStart = href.indexOf('//') + 2;
+                        const hostStart = authorityStart + (copy.username || copy.password
+                            ? (copy.username + (copy.password ? ':' + copy.password : '') + '@').length : 0);
+                        return href.slice(0, hostStart) + decoded.domain + href.slice(hostStart + hostname.length);
+                    }
+                }
+            }
+            return copy.href;
+        }
+        if (typeof urlObj === 'string') urlObj = parse(urlObj);
+        if (!urlObj || typeof urlObj !== 'object') {
+            const error = new TypeError('The urlObject argument must be an object or string');
+            error.code = 'ERR_INVALID_ARG_TYPE';
+            throw error;
+        }
         let result = '';
         if (urlObj.protocol) result += urlObj.protocol + '//';
         if (urlObj.auth) result += urlObj.auth + '@';
@@ -2566,79 +2787,50 @@ const url = (() => {
         return format(result);
     }
 
-    const SearchParamsClass = class URLSearchParams {
-        constructor(init) {
-            this._params = {};
-            if (typeof init === 'string') {
-                const qs = init.startsWith('?') ? init.slice(1) : init;
-                if (qs) {
-                    for (const pair of qs.split('&')) {
-                        const [k, v] = pair.split('=').map(decodeURIComponent);
-                        this._params[k] = v;
-                    }
-                }
-            }
-        }
-        get(key) { return this._params[key]; }
-        set(key, val) { this._params[key] = String(val); }
-        has(key) { return key in this._params; }
-        append(key, val) { if (!(key in this._params)) this._params[key] = String(val); }
-        delete(key) { delete this._params[key]; }
-        getAll(key) { return key in this._params ? [this._params[key]] : []; }
-        *entries() {
-            for (const k of Object.keys(this._params)) yield [k, this._params[k]];
-        }
-        *keys() { for (const k of Object.keys(this._params)) yield k; }
-        *values() { for (const k of Object.keys(this._params)) yield this._params[k]; }
-        [Symbol.iterator]() { return this.entries(); }
-        forEach(cb, thisArg) {
-            for (const k of Object.keys(this._params)) cb.call(thisArg, this._params[k], k, this);
-        }
-        toString() {
-            return Object.entries(this._params)
-                .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v))
-                .join('&');
-        }
-    };
-    const URLClass = class URL {
-        constructor(input, base) {
-            const parsed = parse(base ? resolve(base, input) : input);
-            // hosted-git-info wraps `new URL(...)` in try/catch and falls back
-            // when the first attempt is invalid; without throwing on missing
-            // protocol, the fallback never runs and downstream code reads a
-            // null hostname.
-            if (!parsed.protocol) throw new TypeError(`Invalid URL: ${input}`);
-            Object.assign(this, parsed);
-            // WHATWG URL: missing components are '' not null. minipass-fetch
-            // builds `path = pathname + search` via template literal, which
-            // turns null into the literal string "null".
-            for (const k of ['search', 'port', 'hostname', 'host']) {
-                if (this[k] == null) this[k] = '';
-            }
-            this.searchParams = new SearchParamsClass(this.search ? this.search.slice(1) : '');
-        }
-        toString() { return format(this); }
-    };
+    // Share a standards parser instead of maintaining a second partial URL
+    // state machine here. In particular, query mutation must update href and
+    // canParse must reject the same invalid input as the constructor.
+    const { URL: URLClass, URLSearchParams: SearchParamsClass } = _nodeWebPlatform;
     function fileURLToPath(u) {
-        // Accept URL instance or string. Strip "file://", decode %XX.
-        const s = typeof u === 'string' ? u : (u && u.href);
-        if (typeof s !== 'string') {
-            throw new TypeError('fileURLToPath: expected URL or string');
+        if (typeof u === 'string') u = new URLClass(u);
+        if (!(u instanceof URLClass)) {
+            const error = new TypeError('The path argument must be a string or URL');
+            error.code = 'ERR_INVALID_ARG_TYPE';
+            throw error;
         }
-        if (!s.startsWith('file://')) {
-            throw new TypeError('fileURLToPath: only file: URLs supported');
+        if (u.protocol !== 'file:') {
+            const error = new TypeError('The URL must be of scheme file');
+            error.code = 'ERR_INVALID_URL_SCHEME';
+            throw error;
         }
-        let p = s.slice('file://'.length);
-        // Optional host segment is dropped; only the path portion is kept.
-        const slash = p.indexOf('/');
-        if (slash > 0) p = p.slice(slash);
-        else if (slash !== 0) p = '/' + p;
-        return decodeURIComponent(p);
+        if (u.hostname !== '') {
+            const error = new TypeError('File URL host must be localhost or empty on POSIX');
+            error.code = 'ERR_INVALID_FILE_URL_HOST';
+            throw error;
+        }
+        if (/%2f/i.test(u.pathname)) {
+            const error = new TypeError('File URL path must not include encoded / characters');
+            error.code = 'ERR_INVALID_FILE_URL_PATH';
+            throw error;
+        }
+        return decodeURIComponent(u.pathname);
     }
     function pathToFileURL(p) {
-        if (typeof p !== 'string') p = String(p);
-        if (!p.startsWith('/')) p = '/' + p;
-        return new URLClass('file://' + encodeURI(p));
+        if (typeof p !== 'string') {
+            const error = new TypeError('The path argument must be a string');
+            error.code = 'ERR_INVALID_ARG_TYPE';
+            throw error;
+        }
+        const trailingSlash = p.endsWith('/');
+        p = path.resolve(p);
+        if (trailingSlash && !p.endsWith('/')) p += '/';
+        const result = new URLClass('file:///');
+        // pathname's setter percent-encodes Unicode and spaces, but leaves
+        // percent escapes and URL delimiters alone. Encode those literally.
+        result.pathname = p.replace(/%/g, '%25').replace(/\\/g, '%5C')
+            .replace(/\n/g, '%0A').replace(/\r/g, '%0D').replace(/\t/g, '%09')
+            .replace(/\?/g, '%3F').replace(/#/g, '%23');
+        return result;
     }
     return {
         parse, format, resolve,
@@ -2823,6 +3015,34 @@ const child_process = (() => {
     // follow-up); spawn/exec/execFile below are real streaming subprocesses.
     // ------------------------------------------------------------------
     const _nn = _nodeNative;
+    function _spawnWithPath(file, argv, env, actions, cwd) {
+        // Anchor without lexical normalization: the kernel must still walk
+        // symlinks and '..' in order. The exact-path native seam receives the
+        // same target regardless of its preflight's parent working directory.
+        const childCwd = cwd ? (cwd.startsWith('/') ? cwd : process.cwd() + '/' + cwd) : process.cwd();
+        const absolute = path => path.startsWith('/') ? path : childCwd + '/' + path;
+        if (file.includes('/')) return _nn.__kandeloSpawn(absolute(file), argv, env, actions, {});
+
+        // Node searches the CHILD environment's PATH. posix_spawn takes an
+        // exact path, and posix_spawnp would search the parent's environment,
+        // losing npm's node_modules/.bin entries and options.env overrides.
+        // Try execution directly: a stat/access precheck would race exec and
+        // would resolve relative entries against the wrong cwd.
+        const pathEntry = env.find(entry => entry.startsWith('PATH='));
+        const searchPath = pathEntry === undefined ? '/usr/bin:/bin' : pathEntry.slice(5);
+        let missing, denied;
+        for (const directory of searchPath.split(':')) {
+            const candidate = directory ? directory + '/' + file : file;
+            try { return _nn.__kandeloSpawn(absolute(candidate), argv, env, actions, {}); }
+            catch (err) {
+                if (err.code === 'EACCES') denied = err;
+                else if (err.code === 'ENOENT' || err.code === 'ENOTDIR') missing = err;
+                else throw err;
+            }
+        }
+        throw denied || missing;
+    }
+
     function _spawn(command, args, options) {
         // Node signature: spawn(cmd, [args], [options]) — args may be omitted and
         // options passed in its place. Extract options BEFORE normalizing args.
@@ -2872,7 +3092,7 @@ const child_process = (() => {
         child.killed = false;
 
         let pid;
-        try { pid = _nn.__kandeloSpawn(file, argv, env, actions, {}); }
+        try { pid = _spawnWithPath(file, argv, env, actions, options.cwd && String(options.cwd)); }
         catch (err) {
             // Close every pipe fd already created for this (failed) spawn — both
             // the child ends (parentClose) and the parent ends (legs). Without
@@ -4190,11 +4410,68 @@ const https = makeHttpModule({
 // Module system (require/module)
 // ============================================================
 
+// Validate byte input without decoding it: replacement characters would hide
+// malformed UTF-8, and the TextDecoder polyfill does not implement fatal mode.
+function _bufferInputBytes(input) {
+    const typedArrayName = Object.getOwnPropertyDescriptor(
+        Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
+    // The intrinsic brand getter excludes DataView, including across realms.
+    if (typedArrayName.call(input) !== undefined) {
+        const proto = Object.getPrototypeOf(Uint8Array.prototype);
+        const get = name => Object.getOwnPropertyDescriptor(proto, name).get.call(input);
+        return new Uint8Array(get('buffer'), get('byteOffset'), get('byteLength'));
+    }
+    for (const constructor of [ArrayBuffer,
+        typeof SharedArrayBuffer === 'function' ? SharedArrayBuffer : null]) {
+        if (!constructor) continue;
+        let isBuffer = false;
+        try {
+            Object.getOwnPropertyDescriptor(constructor.prototype, 'byteLength').get.call(input);
+            isBuffer = true;
+        } catch (_) { /* The intrinsic getter rejects other object brands. */ }
+        if (isBuffer) return new Uint8Array(input);
+    }
+    const error = new TypeError('The input argument must be a Buffer, TypedArray, or ArrayBuffer');
+    error.code = 'ERR_INVALID_ARG_TYPE';
+    throw error;
+}
+
+function _bufferIsAscii(input) {
+    const bytes = _bufferInputBytes(input);
+    for (let i = 0; i < bytes.length; i++) if (bytes[i] > 0x7f) return false;
+    return true;
+}
+
+function _bufferIsUtf8(input) {
+    const bytes = _bufferInputBytes(input);
+    for (let i = 0; i < bytes.length;) {
+        const first = bytes[i++];
+        if (first <= 0x7f) continue;
+        let remaining, lower = 0x80, upper = 0xbf;
+        if (first >= 0xc2 && first <= 0xdf) remaining = 1;
+        else if (first >= 0xe0 && first <= 0xef) {
+            remaining = 2;
+            if (first === 0xe0) lower = 0xa0; // shortest encoding
+            if (first === 0xed) upper = 0x9f; // exclude surrogate code points
+        } else if (first >= 0xf0 && first <= 0xf4) {
+            remaining = 3;
+            if (first === 0xf0) lower = 0x90;
+            if (first === 0xf4) upper = 0x8f; // U+10FFFF maximum
+        } else return false;
+        if (i + remaining > bytes.length || bytes[i] < lower || bytes[i] > upper) return false;
+        i++;
+        while (--remaining > 0) if (bytes[i] < 0x80 || bytes[i++] > 0xbf) return false;
+    }
+    return true;
+}
+
 const _builtinModules = {
     'path': path,
     'events': events,
     'buffer': {
         Buffer,
+        isAscii: _bufferIsAscii,
+        isUtf8: _bufferIsUtf8,
         // Node's buffer.constants (64-bit values).
         constants: { MAX_LENGTH: 0x7fffffff, MAX_STRING_LENGTH: 0x1fffffe8 },
     },
@@ -4572,16 +4849,7 @@ const _builtinModules = {
         return { createContext, isContext, runInContext, runInNewContext,
                  runInThisContext, Script, compileFunction };
     })(),
-    // Minimal stubs — undici/file-type/anthropic-sdk import these at module
-    // init even when their stream code paths aren't exercised by the agent's
-    // actual HTTP transport (which goes through our native socket/tls shim).
-    'stream/web': {
-        ReadableStream: class ReadableStream {},
-        WritableStream: class WritableStream {},
-        TransformStream: class TransformStream {},
-        ByteLengthQueuingStrategy: class ByteLengthQueuingStrategy {},
-        CountQueuingStrategy: class CountQueuingStrategy {},
-    },
+    'stream/web': _nodeWebPlatform.streams,
     'stream/promises': {
         // Sequential pipeline: pump each .pipe() in order; promise resolves
         // when the final destination emits 'finish' (or rejects on error).
@@ -5154,11 +5422,22 @@ function _rewriteStaticEsmImports(source) {
     );
 }
 
+// Natural shutdown retains the pre-event status if a listener clears the
+// assignment. Explicit process.exit() instead defaults an unset status to 0.
+function _runNaturalExit() {
+    const status = process.exitCode === undefined ? 0 : process.exitCode;
+    if (!process._exiting) {
+        process._exiting = true;
+        process.emit('exit', status);
+    }
+    std.exit(process.exitCode === undefined ? status : process.exitCode);
+}
+
 function _runCommonJsMain(filename) {
     const mainRequire = _makeRequire(filename);
     mainRequire(filename);
     if (typeof drainJobQueue === 'function') drainJobQueue();
-    process.exit(process.exitCode || 0);
+    _runNaturalExit();
 }
 
 function _formatThrownFailure(failure) {
@@ -5208,7 +5487,7 @@ function _runEsmMain(filename, source) {
         console.error(_formatThrownFailure(failure));
         process.exitCode = process.exitCode || 1;
     }
-    process.exit(process.exitCode || 0);
+    _runNaturalExit();
 }
 
 function _runMainScriptIfPresent() {
@@ -5415,9 +5694,7 @@ globalThis.URLSearchParams = url.URLSearchParams;
 // Web platform globals that modern Node exposes by default. undici/whatwg-
 // fetch reach for these at module init (e.g. `webidl.is.ReadableStream =
 // MakeTypeAssertion(ReadableStream)` in undici/lib/web/webidl/index.js).
-// We don't implement real semantics — just need the symbols to exist so
-// instanceof checks don't ReferenceError. The agent's --version path
-// doesn't actually exercise fetch; once it does, swap these for real impls.
+// Streams share the vendored implementation with fetch response bodies.
 const _streamWeb = _builtinModules['stream/web'];
 if (typeof globalThis.ReadableStream === 'undefined')
     globalThis.ReadableStream = _streamWeb.ReadableStream;
@@ -5715,13 +5992,11 @@ if (!console.group) {
 // WHATWG fetch + Headers/Response/Request/ReadableStream
 // ============================================================
 //
-// Bootstrap reserves stub globals for these (Response/Headers/Request) and a
-// stub `class ReadableStream {}` from the stream/web pseudo-module. None of
-// them actually do anything. Modern HTTP SDKs (undici, @anthropic-ai/sdk,
+// Modern HTTP SDKs (undici, @anthropic-ai/sdk,
 // the AWS SDK, etc.) call `fetch(url, { method:'POST', body, headers })`
 // and read the response via `await res.json()` or `res.body.getReader()`
-// (for streaming SSE). Without a real impl, fetch() ReferenceErrors. The
-// implementation is built on top of the existing http/https modules above.
+// (for streaming SSE). The transport uses the existing http/https modules;
+// response bodies use the same Web Streams classes as consumer-created streams.
 //
 (() => {
     class FetchHeaders {
@@ -5754,85 +6029,9 @@ if (!console.group) {
         [Symbol.iterator]() { return this._map.entries(); }
     }
 
-    // Minimal ReadableStream impl. Supports getReader().read(), async
-    // iteration, cancel, and the start({enqueue, close, error}) underlying
-    // source pattern used below. Not spec-perfect (no backpressure, no
-    // tee()) but enough for SSE consumption.
-    class MinReadableStream {
-        constructor(source) {
-            this._source = source || {};
-            this._queue = [];
-            this._closed = false;
-            this._err = null;
-            this._waiters = [];
-            this._locked = false;
-            const ctrl = {
-                enqueue: (chunk) => {
-                    if (this._closed) return;
-                    if (this._waiters.length > 0) {
-                        this._waiters.shift().resolve({ value: chunk, done: false });
-                    } else {
-                        this._queue.push(chunk);
-                    }
-                },
-                close: () => {
-                    this._closed = true;
-                    while (this._waiters.length > 0) {
-                        this._waiters.shift().resolve({ value: undefined, done: true });
-                    }
-                },
-                error: (e) => {
-                    this._err = e;
-                    this._closed = true;
-                    while (this._waiters.length > 0) this._waiters.shift().reject(e);
-                },
-                get desiredSize() { return 1; },
-            };
-            if (this._source.start) {
-                try {
-                    const r = this._source.start(ctrl);
-                    if (r && typeof r.then === 'function') r.catch(e => ctrl.error(e));
-                } catch (e) { ctrl.error(e); }
-            }
-        }
-        get locked() { return this._locked; }
-        getReader() {
-            if (this._locked) throw new TypeError('Stream is locked');
-            this._locked = true;
-            const stream = this;
-            return {
-                read: () => {
-                    if (stream._err) return Promise.reject(stream._err);
-                    if (stream._queue.length > 0) {
-                        return Promise.resolve({ value: stream._queue.shift(), done: false });
-                    }
-                    if (stream._closed) return Promise.resolve({ value: undefined, done: true });
-                    return new Promise((resolve, reject) => {
-                        stream._waiters.push({ resolve, reject });
-                    });
-                },
-                releaseLock: () => { stream._locked = false; },
-                cancel: (reason) => {
-                    stream._closed = true;
-                    try { stream._source.cancel && stream._source.cancel(reason); } catch {}
-                    return Promise.resolve();
-                },
-            };
-        }
-        [Symbol.asyncIterator]() {
-            const reader = this.getReader();
-            return {
-                next: () => reader.read(),
-                return: () => { reader.releaseLock(); return Promise.resolve({ value: undefined, done: true }); },
-                [Symbol.asyncIterator]() { return this; },
-            };
-        }
-        cancel(reason) {
-            this._closed = true;
-            try { this._source.cancel && this._source.cancel(reason); } catch {}
-            return Promise.resolve();
-        }
-    }
+    // HTTP bodies and consumer-created streams must use the same class.
+    // A start-only shim strands clients that wrap a body with a pull source.
+    const WebReadableStream = _nodeWebPlatform.streams.ReadableStream;
 
     class FetchResponse {
         constructor(body, init = {}) {
@@ -5846,10 +6045,10 @@ if (!console.group) {
             this.type = init.type || 'basic';
             this._bodyUsed = false;
             this._buffered = null;     // Uint8Array, if body was given as bytes/string
-            this._stream = null;       // MinReadableStream, if body was given as a stream
+            this._stream = null;       // WebReadableStream, if body was given as a stream
             if (body == null) {
                 /* empty */
-            } else if (body instanceof MinReadableStream) {
+            } else if (body instanceof WebReadableStream) {
                 this._stream = body;
             } else if (body instanceof Uint8Array) {
                 this._buffered = body;
@@ -5866,7 +6065,7 @@ if (!console.group) {
             if (this._stream) return this._stream;
             if (this._buffered) {
                 const bytes = this._buffered;
-                this._stream = new MinReadableStream({
+                this._stream = new WebReadableStream({
                     start(c) { c.enqueue(bytes); c.close(); },
                 });
                 this._buffered = null;
@@ -6005,7 +6204,7 @@ if (!console.group) {
                 if (settled) return;
                 settled = true;
 
-                resStream = new MinReadableStream({
+                resStream = new WebReadableStream({
                     start(c) {
                         resCtrl = c;
                         res.on('data', (chunk) => {
@@ -6068,12 +6267,10 @@ if (!console.group) {
     globalThis.Headers = FetchHeaders;
     globalThis.Response = FetchResponse;
     globalThis.Request = FetchRequest;
-    globalThis.ReadableStream = MinReadableStream;
-    // The `node:stream/web` pseudo-module also surfaces ReadableStream;
-    // some libraries import from there instead of the global. Replace the
-    // stub class with the real one.
+    globalThis.ReadableStream = WebReadableStream;
+    // Keep module and global constructor identity shared with response bodies.
     if (_builtinModules['stream/web']) {
-        _builtinModules['stream/web'].ReadableStream = MinReadableStream;
+        _builtinModules['stream/web'].ReadableStream = WebReadableStream;
     }
 })();
 

@@ -1,0 +1,80 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -793,6 +793,7 @@
+   SSL_CTX* tlsCtx = nullptr;
+   int tlsHandle = -1;
+   bool closeFdOnCleanup = false;
++  bool referenced = true;
+   pid_t childPid = -1;
+   KandeloSocketWatch* next = nullptr;
+ 
+@@ -830,7 +831,12 @@
+   }
+ }
+ 
+-static bool KandeloSocketHasWatches() { return gKandeloSocketWatches != nullptr; }
++static bool KandeloSocketHasWatches() {
++  for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
++    if (watch->referenced) return true;
++  }
++  return false;
++}
+ 
+ static bool KandeloResolvePromiseWithErrno(JSContext* cx, HandleObject promise,
+                                            int err, const char* fallback) {
+@@ -1269,7 +1275,47 @@
+ // pipe fds reuse them directly. Read resolves an empty ArrayBuffer on EOF
+ // (read()==0) rather than treating it as an error.
+ static bool KandeloNativeFdRead(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  // Stdio can arrive as a blocking descriptor. Only callers requesting this
++  // setup change its flags; existing asynchronous pipe readers keep their path.
++  if (args.length() >= 3 && args[2].isBoolean() && args[2].toBoolean()) {
++    int32_t fd;
++    if (!JS::ToInt32(cx, args[0], &fd)) return false;
++    if (KandeloSetNonblocking(fd) < 0) {
++      int err = errno;
++      RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
++      if (!promise) return false;
++      args.rval().setObject(*promise);
++      return KandeloResolvePromiseWithErrno(cx, promise, err, nullptr);
++    }
++  }
+   return KandeloNativeSocketRead(cx, argc, vp);
++}
++
++// Control one exact outstanding read, never a reused numeric descriptor.
++// A boolean changes loop liveness; null cancels without closing the fd.
++static bool KandeloNativeFdReadControl(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 2 || !args[0].isObject() ||
++      !(args[1].isBoolean() || args[1].isNull())) {
++    JS_ReportErrorASCII(cx, "read control requires a promise and boolean/null");
++    return false;
++  }
++  args.rval().setBoolean(false);
++  for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
++    if (watch->kind != KandeloSocketWatchKind::Read ||
++        watch->promise.get() != &args[0].toObject()) continue;
++    args.rval().setBoolean(true);
++    if (args[1].isBoolean()) {
++      watch->referenced = args[1].toBoolean();
++      return true;
++    }
++    RootedObject promise(cx, watch->promise);
++    KandeloSocketWatchUnlink(watch);
++    js_delete(watch);
++    return KandeloResolvePromiseWithErrno(cx, promise, ECANCELED, nullptr);
++  }
++  return true;
+ }
+ 
+ static bool KandeloNativeFdWrite(JSContext* cx, unsigned argc, Value* vp) {
+@@ -2506,6 +2552,7 @@
+       JS_FN("__kandeloPipe", KandeloNativePipe, 0, 0),
+       JS_FN("__kandeloSpawn", KandeloNativeSpawn, 5, 0),
+       JS_FN("__kandeloFdRead", KandeloNativeFdRead, 2, 0),
++      JS_FN("__kandeloFdReadControl", KandeloNativeFdReadControl, 2, 0),
+       JS_FN("__kandeloFdWrite", KandeloNativeFdWrite, 2, 0),
+       JS_FN("__kandeloFdClose", KandeloNativeFdClose, 1, 0),
+       JS_FN("__kandeloWaitPid", KandeloNativeWaitPid, 1, 0),
