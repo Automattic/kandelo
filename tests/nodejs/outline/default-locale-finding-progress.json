@@ -1,0 +1,103 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/process-contracts.md",
+    "findingIds": [
+      "PROC-012",
+      "PROC-015"
+    ],
+    "relatedFamilies": [
+      "processes",
+      "workers",
+      "engine"
+    ],
+    "scope": "Private actual runtime/default-locale prerequisite;not public OS/CPU/Navigator/config closure"
+  },
+  "sourceImplemented": [
+    "Actual original ICU/runtime locale identifier captured before lossy normalization;two native caches transactionally allocate/commit/reset/retire and report real owned allocation sizes",
+    "Private native OS dispatch canonicalizes actual runtime-owned identifier using pinned V8 policy and actual ICU;no public Intl/currentenv parsing",
+    "Actual bootstrap OS factory captures before userentry;later private calls read actual native state to observe explicit set/reset",
+    "Normal header input/staging and additive four-file engine0118 with exact verified Mozilla preimages;actual ICU77 dependency remains existing owner",
+    "Existing OS test transport explicitly obtains new private locale from same pinned native config dependency;public assertions unchanged"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-locale-source-r1/report.json",
+    "sha256": "f8ddfe2d5269a41ce0b730b16a837c575375b6bf5f20f5658c20290ec1d095bb",
+    "guardedInputs": 712,
+    "wholeNodeReferences": 7,
+    "engineFiles": 4,
+    "scope": "Actual runtime locale cache/private consumer/input+unity source,seven exact Node refs,actual header compiled against archive ICU77 and production JS/nativeICU78 dependency frontend control. No production SpiderMonkey/GC/guest linker/runtime/four-host proof;CPU APIs remain unsupported."
+  },
+  "nativeDependencyReview": {
+    "report": ".context/node26-locale-dependency-review/report.json",
+    "sha256": "d38f535a0aa8e512554592c5f6628e0697ba0c7d2cc15e9d293dc68a317cf04a",
+    "sealSha256": "0abf57bf25e31fb8d7026d365a26ed4a132ca1b64886ab65433456c8b058e375",
+    "scope": "Actual archive ICU77 header/API/export/static source linkage review and priorcompileonlyobject;not guest final link/runtime. Language-tag source matches78,other Locale/data equivalence unvalidated,no observed mismatch or accepted limit"
+  },
+  "nativeReferenceControls": {
+    "report": ".context/native-os-providers-agent/native/report.json",
+    "sha256": "292873bbfebcc7bca4120c6822c48795c1bddc8ad04e4ca91ac342840539a7d0",
+    "startupCases": 10,
+    "rerunThisSlice": false,
+    "scope": "Existing exact pinned startup locale observations only;Worker/before-first timing evidence retained alongside,not current guest proof"
+  },
+  "nativeComponentControls": {
+    "report": ".context/native-os-providers-agent/component/stdout.json",
+    "sha256": "0e0320b8893a4fbfd209dc1d41318c97ee8df3412eca3ec9ab09f081082e38f7",
+    "icu78Cases": 14,
+    "rerunThisSlice": false,
+    "scope": "Actual header against pinned ICU78/V8 plus extracted runtime/cache/caller-copy OOM/ownership with explicit VMdependencies;not Mozilla77runtime/JSAPI"
+  },
+  "affectedControls": {
+    "report": ".context/node26-locale-affected-r1.json",
+    "sha256": "daeba969083de12359ff42d7302a1a8bb426d29bd2085944ffda2b326b79ab17",
+    "passed": 21,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Seven OS native-dependency frontend controls and14package-source checks. Rootactual-header ICU77compile and productionfrontend/nativeICU78 dependency process recorded in sourceChecks,not guest conformance"
+  },
+  "packageChecks": {
+    "report": ".context/node26-locale-affected-r1.json",
+    "sha256": "daeba969083de12359ff42d7302a1a8bb426d29bd2085944ffda2b326b79ab17",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package checks within21aggregate,not extra passes"
+  },
+  "privateHandoff": {
+    "report": ".context/native-os-providers-agent/handoff.json",
+    "sha256": "a399cf4239e95c87017893be8512afde3cbe973673627c81bd8c772d7b461329",
+    "sealSha256": "7f577735d2136b5c573d8020afe443f581ebfcc5008fa61e2caf20f659412e2a",
+    "entries": 183,
+    "scope": "Immutable142localeproposal exactconsumer/runtimepostimages;root148integration andcurrentheader compile after independent dependency review"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/native-os-providers-agent/component/initial-header-warnings.log",
+      "sha256": "8a1e898049ec5ccd90d6b4c3779f51922a0ec5da20e25decaf343c8528c71220",
+      "kind": "original-external-header-control-compile",
+      "reason": "Pinned V8 header unused-parameter diagnostics in helper;externalheaders moved to-isystem while candidate/control warnings remain strict"
+    },
+    {
+      "report": ".context/native-os-providers-agent/inputs-before.json",
+      "sha256": "5ec93a7fb70c11b08693937b59da41af7de2098905b8a8470dc08b839b2d387a",
+      "kind": "original-missing-declared-header-input",
+      "reason": "Conservative sourcechecker rejected undeclarednewheader;actual recipe now declaresandstages it"
+    }
+  ],
+  "remaining": [
+    "Actual SpiderMonkey C++/JSAPI/layout/GC/realm/OOM/uncatchable/retirement and final guestICU77 link/runtime",
+    "Mozilla77 versus target78 Locale/data/default initialization equivalence;existing fourteen targetcases must runthrough actualrebuilt guest",
+    "Actual pre-userentry/Worker/env/native set-reset timing and publicIntl nonregression",
+    "Authoritative guest CPUcapacity/topology/affinity and measurements remain missing;Navigator/globaladmission/publicconfig integration remains gap",
+    "All19familiespartial;perAPIclosure and identified-artifact four-host conformance unestablished"
+  ],
+  "at": "2026-11-06T15:44:55.595894+00:00",
+  "recipeRevision": 148,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

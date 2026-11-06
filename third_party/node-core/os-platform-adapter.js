@@ -84,7 +84,15 @@ function _createNodeOSPlatform(platform) {
     (function(module,exports,require,primordials,internalBinding,process) {
         /* NODE_OS_MODULE */
     })(module,module.exports,require,primordials,internalBinding,process);
-    return { api:module.exports, install(target) {
+    function getDefaultLocale() { return result('default-locale',undefined,'getDefaultLocale'); }
+    // Node's ICU default is process initialization state, shared by Workers;
+    // capture it before user entry can mutate process.env. Later calls still
+    // read the runtime owner so explicit native set/reset is never JS-cached.
+    getDefaultLocale();
+    return { api:module.exports,
+        // Private config consumer: real runtime/ICU data, never public Intl.
+        getDefaultLocale,
+        install(target) {
         ObjectDefineProperties(target,ObjectGetOwnPropertyDescriptors(module.exports));
         return target;
     } };

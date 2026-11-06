@@ -1,0 +1,127 @@
+diff --git a/js/public/LocaleSensitive.h b/js/public/LocaleSensitive.h
+--- a/js/public/LocaleSensitive.h
++++ b/js/public/LocaleSensitive.h
+@@ -44,4 +44,13 @@
+  */
+ extern JS_PUBLIC_API JS::UniqueChars JS_GetDefaultLocale(JSContext* cx);
++
++/**
++ * Return an owned copy of the runtime's original default locale identifier.
++ * This is an ICU identifier, or an explicit JS_SetDefaultLocale input; it is
++ * not necessarily a canonical BCP-47 tag. It shares initialization/set/reset
++ * timing with JS_GetDefaultLocale and excludes per-realm locale overrides.
++ * Returns null on allocation failure, with an exception reported on cx.
++ */
++extern JS_PUBLIC_API JS::UniqueChars JS_GetDefaultLocaleIdentifier(JSContext* cx);
+
+ /** Reset the default locale to OS defaults. */
+diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
+--- a/js/src/jsapi.cpp
++++ b/js/src/jsapi.cpp
+@@ -3976,4 +3976,13 @@
+ }
+
++JS_PUBLIC_API UniqueChars JS_GetDefaultLocaleIdentifier(JSContext* cx) {
++  AssertHeapIsIdle();
++  if (const char* locale = cx->runtime()->getDefaultLocaleIdentifier()) {
++    return DuplicateString(cx, locale);
++  }
++
++  return nullptr;
++}
++
+ JS_PUBLIC_API void JS_ResetDefaultLocale(JSRuntime* rt) {
+   AssertHeapIsIdle();
+diff --git a/js/src/vm/Runtime.cpp b/js/src/vm/Runtime.cpp
+--- a/js/src/vm/Runtime.cpp
++++ b/js/src/vm/Runtime.cpp
+@@ -119,4 +119,5 @@
+       localeCallbacks(nullptr),
+       defaultLocale(nullptr),
++      defaultLocaleIdentifier(nullptr),
+       profilingScripts(false),
+       scriptAndCountsVector(nullptr),
+@@ -270,4 +271,5 @@
+
+   defaultLocale = nullptr;
++  defaultLocaleIdentifier = nullptr;
+   js_delete(jitRuntime_.ref());
+
+@@ -304,4 +306,10 @@
+                                        JS::RuntimeSizes* rtSizes) {
+   rtSizes->object += mallocSizeOf(this);
++  if (defaultLocale.ref()) {
++    rtSizes->sharedIntlData += mallocSizeOf(defaultLocale.ref().get());
++  }
++  if (defaultLocaleIdentifier.ref()) {
++    rtSizes->sharedIntlData += mallocSizeOf(defaultLocaleIdentifier.ref().get());
++  }
+
+   rtSizes->atomsTable += atoms().sizeOfIncludingThis(mallocSizeOf);
+@@ -519,9 +527,18 @@
+   }
+
++  UniqueChars identifier = DuplicateString(mainContextFromOwnThread(), locale);
++  if (!identifier) {
++    return false;
++  }
++
++  defaultLocaleIdentifier.ref() = std::move(identifier);
+   defaultLocale.ref() = std::move(newLocale);
+   return true;
+ }
+
+-void JSRuntime::resetDefaultLocale() { defaultLocale = nullptr; }
++void JSRuntime::resetDefaultLocale() {
++  defaultLocale = nullptr;
++  defaultLocaleIdentifier = nullptr;
++}
+
+ const char* JSRuntime::getDefaultLocale() {
+@@ -538,4 +555,11 @@
+ #endif
+
++  // Preserve the actual source before legacy normalization loses e.g. the
++  // distinction between C and explicit und. Do not reread process.env here.
++  UniqueChars identifier = DuplicateString(mainContextFromOwnThread(), locale ? locale : "");
++  if (!identifier) {
++    return nullptr;
++  }
++
+   // convert to a well-formed BCP 47 language tag
+   if (!locale || !strcmp(locale, "C")) {
+@@ -556,6 +580,15 @@
+   }
+
++  defaultLocaleIdentifier.ref() = std::move(identifier);
+   defaultLocale.ref() = std::move(lang);
+   return defaultLocale.ref().get();
++}
++
++const char* JSRuntime::getDefaultLocaleIdentifier() {
++  if (!getDefaultLocale()) {
++    return nullptr;
++  }
++  MOZ_ASSERT(defaultLocaleIdentifier.ref());
++  return defaultLocaleIdentifier.ref().get();
+ }
+
+diff --git a/js/src/vm/Runtime.h b/js/src/vm/Runtime.h
+--- a/js/src/vm/Runtime.h
++++ b/js/src/vm/Runtime.h
+@@ -689,4 +689,7 @@
+   /* Default locale for Internationalization API */
+   js::MainThreadData<js::UniqueChars> defaultLocale;
++  // Original ICU identifier or explicit embedding locale, before the legacy
++  // BCP-47 normalization above. Both caches commit and reset together.
++  js::MainThreadData<js::UniqueChars> defaultLocaleIdentifier;
+
+   /* If true, new scripts must be created with PC counter information. */
+@@ -790,4 +793,7 @@
+   const char* getDefaultLocale();
+
++  // Original identifier; runtime owns the string. No realm override or JS call.
++  const char* getDefaultLocaleIdentifier();
++
+   /* Garbage collector state. */
+   js::gc::GCRuntime gc;

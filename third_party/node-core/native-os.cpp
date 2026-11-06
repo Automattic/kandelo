@@ -1,5 +1,7 @@
 /* Actual POSIX OS state. Resource/CPU/interface measurement has no fake path. */
 #include "kandelo-node-os-operations.h"
+#include "kandelo-node-default-locale.h"
+#include "js/LocaleSensitive.h"
 namespace {
 static bool KandeloOSBytes(JSContext* cx,const std::string& text,MutableHandleValue value) {
   RootedObject bytes(cx,KandeloNewUint8ArrayCopy(cx,
@@ -62,6 +64,13 @@ static bool KandeloNativeOS(JSContext* cx,unsigned argc,Value* vp) {
       const auto result = kandelo::node_os::GetPriority(args[1].toInt32()); error = result.error;
       if (!error) value.setInt32(result.value);
     } else error = kandelo::node_os::SetPriority(args[1].toInt32(),args[2].toInt32());
+  } else if (strcmp(name,"default-locale") == 0) {
+    JS::UniqueChars identifier = JS_GetDefaultLocaleIdentifier(cx);
+    if (!identifier) return false;
+    const auto locale = kandelo::locale::DefaultLocale(identifier.get());
+    RootedString string(cx, JS_NewStringCopyN(cx, locale.data(), locale.size()));
+    if (!string) return false;
+    value.setString(string);
   } else if (strcmp(name,"endianness") == 0) {
     value.setBoolean(kandelo::node_os::IsBigEndian());
   } else { JS_ReportErrorASCII(cx,"Unknown OS operation"); return false; }

@@ -6002,6 +6002,21 @@ misses the target after hook. Shared uncaught recovery remains an implementation
 gap. Current SpiderMonkey/GC/realm/guest and four-host conformance are unvalidated.
 See [recursive copy scope](../tests/nodejs/outline/copy-directory-integration.md).
 
+### Runtime-owned Node default locale source
+
+The source148 candidate exposes a private locale provider over the engine's
+actual original default identifier and ICU canonicalization. Bootstrap captures
+initialization state before user code; later reads observe explicit native
+set/reset. The original and normalized runtime strings have transactional
+allocation, ownership and retirement, with independently owned caller copies.
+Public mutable Intl and later process.env changes do not supply this state.
+
+The existing Mozilla ICU77 sources supply the required headers and static link
+dependencies. Actual-header compilation and scoped native/frontend controls
+pass; the combined guest engine, ICU77 runtime behavior and four-host evidence
+remain unvalidated. CPU topology/capacity and measurements remain implementation
+gaps. See [default locale scope](../tests/nodejs/outline/default-locale-integration.md).
+
 ### Node stdio stream source candidate
 
 The Node compatibility source now routes process stdio through

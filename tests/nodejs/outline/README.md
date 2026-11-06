@@ -1,5 +1,12 @@
 # Node 26 core implementation outline
 
+Source checkpoint148 adds actual runtime-owned default-locale source and
+private bootstrap capture. Header compilation against real Mozilla ICU77 and
+21affected frontend/package checks pass; guest engine/ICU runtime and four-host
+conformance remain unvalidated. CPU APIs remain unsupported implementation gaps.
+See [locale scope](default-locale-integration.md).
+
+
 Source checkpoint147 integrates pinned recursive cp algorithms and actual native
 worker/resource ownership. Existing evidence retains16matching groups and one
 handled-callback after-hook nonpass. The combined engine and four-host runtime

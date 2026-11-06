@@ -16,6 +16,9 @@ exports.create=function create(options={}) {
  function operatingSystem(operation,first,second) {
   calls.push({operation,first,second});
   if(options.native)return options.native.operatingSystem(operation,first,second);
+  // Locale is an engine/ICU dependency, separate from the optional POSIX
+  // transport helper. Use the exact native reference's initialization owner.
+  if(operation==='default-locale')return {error:0,value:require('internal/test/binding').internalBinding('config').getDefaultLocale()};
   if(!helper) {
    // Normal source-only runs need no private compiled artifact. Native public
    // OS APIs supply a named dependency control; portable header evidence is

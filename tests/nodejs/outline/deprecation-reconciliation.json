@@ -61,7 +61,7 @@
     "third_party/node-core/module-syntax-platform-adapter.js": "814bc3e41ca6381a86c897d2fe7f12d6eec88d5c8a2a08236ecfc8681e27b62a",
     "third_party/node-core/network-ip-adapter.js": "5e34e498fc85f4485d941780175c52676e84743b6bc91f649ed215769dd6912b",
     "third_party/node-core/object-marks-platform-adapter.js": "d22d7faba25610d81b9f8db8f3e509cec6c78b0cdf14d8137d8d7f1863dc5bd6",
-    "third_party/node-core/os-platform-adapter.js": "43f9b979e5e5aa3309fa24e16a7eafa76274a0aa39a9ddf10e579bbb1e5cfe64",
+    "third_party/node-core/os-platform-adapter.js": "654a45a4e799959eab045fdf5737828202bc24dcd2edf8fa2526cbfc45243a57",
     "third_party/node-core/package-policy-adapter.js": "45f08b3839b9fc1852419860deb7e8452590975fcf15f302f7bb7567998c1bd3",
     "third_party/node-core/package-reader-adapter.js": "5b1c6cea7421a956779a24692850b3b2a3a212ff5973dc7e4f1c9f009e1819ce",
     "third_party/node-core/path-metadata-adapter.js": "788bcb3366e71d515a6642cb9f428ec37185b10754be6f69b8e39755b632fa5a",
