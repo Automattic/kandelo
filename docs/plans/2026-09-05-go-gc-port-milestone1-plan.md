@@ -5397,3 +5397,12 @@ Wasm mask type and lifecycle hooks remain stubs. The Go runtime guide now
 records these actual hook points and the required inherited-mask/foreign-
 callback validation. No Go source, compiler, package recipe, kernel, or ABI
 is changed by this review. The current image builds remain uninterrupted.
+
+The cgo guide's older link-only paragraph also described constructor arrays
+and callback/TLS work as entirely unfinished. It now matches the current
+linker and the existing constructor fixture: metadata-backed, zero-filled
+initializer storage is supported; referenced, relocated, exported, or
+nonzero arrays and explicit nonempty finalizer arrays remain rejected.
+Registered C exit handlers already have separate Go-return, `os.Exit`, C
+`exit`, and C `_exit` cases. This is a guidance correction; no runtime
+behavior changes or new test passes are claimed.

@@ -541,12 +541,15 @@ standard Go/C adapters. The normal `C.abs` build discovers SDK libc and
 executable glue without manual linker flags. Absent weak init/fini bounds
 resolve to zero. The fork now parses standard Wasm `INIT_FUNCS` linking
 metadata, orders C constructors by priority, and runs them after musl
-initialization through a C-ABI function-pointer table. Explicit nonempty
-`.init_array`/`.fini_array` segments still fail until their linker-owned
-layout and execution are implemented. The emitted module
+initialization through a C-ABI function-pointer table. It accepts zero-filled,
+unreferenced initializer-array storage only when its priority matches that
+metadata. Nonzero, relocated, exported, or referenced initializer arrays
+remain rejected; explicit nonempty `.fini_array` segments are also rejected.
+The emitted module
 passes the Node and Chromium process gate with empty stderr and no host
-diagnostics. Musl/PHP TLS conformance, C-to-Go adapters, and
-C-created-thread attachment remain. Do not treat the C shim's `_cgo_topofstack` call as
+diagnostics. Use the separate cgo TLS, callback, and pthread suites to
+validate musl/PHP TLS, C-to-Go adapters, and C-created-thread attachment.
+Do not treat the C shim's `_cgo_topofstack` call as
 a direct call to a Go-resumable function. The C-data path is only one link
 layer.
 
