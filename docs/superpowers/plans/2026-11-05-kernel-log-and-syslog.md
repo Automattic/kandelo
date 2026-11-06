@@ -625,7 +625,119 @@ git commit -m "Packages: Replace the posix-utils-lite logger fake with sysklogd'
 
 ---
 
-### Task 15: Documentation and full validation
+### Task 15: Program-digest tolerance (accepted-digest set + human affirmation)
+
+**Files:**
+- Modify: `tools/xtask/src/dump_abi.rs` (surface the existing classifier's additive/breaking verdict as machine-readable output)
+- Modify: `tools/xtask/src/local_abi_identity.rs`, `tools/xtask/src/supported_program_baseline.rs`
+- Modify: `host/src/constants.ts:2533` (admission: accept a guest digest in the accepted set, not only the current one)
+- Create: an accepted-digest record (extend `abi/supported-program-baseline.json` or a sibling artifact — your call, stated in the report)
+- Test: xtask unit tests; `host/test/` admission cases
+
+**Interfaces:**
+- Consumes: the classifier already in `dump_abi.rs` — `report.additive`, `report.breaking`, `breaking_sections`, `additive_top_level_section()`, and the shape comparators `classify_additive_array_by_number_name` / `..._by_name` / `..._object_by_key`
+- Produces: an accepted-digest set the host consults at admission, plus the affirmation record that authorizes extending it
+
+**Why this exists:** today a program carries ONE 32-byte hash over all 27 `abi_surfaces.program` sections, so admission can only compare for equality — you cannot partially match a hash. The classifier already knows, per section and per entry, whether a change was additive, and that knowledge is discarded before admission. This task stops discarding it.
+
+**The gate is human-asserted, not mechanical.** A change can be additive in schema and breaking in behavior: a new errno an existing syscall can now return, a reserved flag bit gaining meaning, a `repr(C)` struct gaining a field. No classifier can see those. So extending the accepted set requires BOTH the classifier calling every moved section additive AND an explicit author affirmation that the addition is behaviorally safe for existing programs. Never one without the other.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[test] fn an_additive_only_change_proposes_keeping_the_prior_digest_accepted()
+#[test] fn a_breaking_change_resets_the_accepted_set_to_the_current_digest_only()
+#[test] fn extending_the_accepted_set_without_an_affirmation_is_refused()
+#[test] fn an_affirmation_cannot_authorize_a_breaking_change()
+```
+
+```typescript
+it("admits a stamped guest whose digest is in the accepted set")
+it("still fails hard for a stamped guest outside the accepted set")
+it("still warns once and passes for an unstamped legacy guest")
+```
+
+- [ ] **Step 2: Run tests to verify they fail.** Expected: FAIL — no accepted-set concept exists.
+
+- [ ] **Step 3: Implement.** The classifier proposes; the affirmation authorizes; the host accepts set membership. Keep the existing hard failure for anything outside the set.
+
+- [ ] **Step 4: Run tests to verify they pass.**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "ABI: Accept additive program-surface changes with an author affirmation"
+```
+
+---
+
+### Task 16: Narrow the baseline guidance and the gate
+
+**Files:**
+- Modify: `docs/persistent-program-compatibility.md` (the passage at ~:79-86)
+- Modify: `tools/xtask/src/supported_program_baseline.rs` (compare against the declared ABI, not the literal value 55)
+- Modify: `host/test/supported-program-baseline.test.ts`
+
+**Interfaces:**
+- Consumes: Task 15's accepted-digest set
+- Produces: a gate that permits a deliberate epoch bump
+
+**Three defects to fix, all in the maintainer's own 2026-10-30 commit `a1f8442718`:**
+
+1. **It states a prohibition instead of the invariant.** Delete "refuses new program-surface fields as well as changed or removed fields, even if the ordinary snapshot classifier calls the change additive" and "do not work around that". Keep the true and non-obvious fact underneath: an additive program-surface change still invalidates every persisted program under strict digest equality, so being additive is not an exemption — it needs either a version bump or an affirmed accepted-set extension (Task 15).
+2. **The gate pins the literal value 55.** Change it to assert the baseline matches the *declared* ABI, so a deliberate bump is not refused.
+3. **The suite asserts the wrong thing.** `host/test/supported-program-baseline.test.ts` asserts the ABI-55 cohort RUNS on the current kernel, which strict-equality ABI cannot provide across any bump — those cases can only pass while ABI stays 55, making the suite incompatible with ever bumping. A v56 cohort cannot fix it: cohorts come from a pinned EARLIER main revision, and none exists at 56. **Flip the assertion** — once the declared ABI moves past the cohort's, assert the cohort is REFUSED with a legible reason, not that it executes. Do not mark these cases as expected failures; an XFAIL is green whatever the failure.
+
+- [ ] **Step 1: Write the failing tests**
+
+```typescript
+it("refuses the ABI-55 cohort with a legible reason when the declared ABI is newer")
+it("still runs a cohort whose ABI equals the declared ABI")
+```
+```rust
+#[test] fn the_gate_accepts_a_baseline_matching_the_declared_abi()
+#[test] fn the_gate_still_refuses_a_baseline_that_does_not_match()
+```
+
+- [ ] **Step 2: Run tests to verify they fail.**
+- [ ] **Step 3: Rewrite the guidance passage and the gate; flip the suite.**
+- [ ] **Step 4: Run tests to verify they pass.** The 8 previously-red cases must be green for the right reason — refusal asserted, not refusal ignored.
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "ABI: Let the program baseline move with a deliberate epoch bump"
+```
+
+---
+
+### Task 17: Settle this branch's epoch
+
+**Files:**
+- Modify: `crates/program-abi/src/lib.rs`, `abi/snapshot.json`, `abi/supported-program-baseline.json` and the accepted-digest record, as the outcome requires
+- Possibly restore: `crates/wasm-artifact/tests/supported_program_baseline_refusal.rs`
+
+**Interfaces:**
+- Consumes: Tasks 15 and 16
+
+**Why last:** with tolerance built, this branch's own change may no longer need the epoch bump — which is the outcome the maintainer originally wanted, reached correctly instead of by weakening the admission signal. Determine it empirically; do not assume either way.
+
+Three sections moved when `SYS_SYSLOG` was routed: `syscalls`, `syscall_arg_descriptors` and `channel_scalar_contract`. `syscall_arg_descriptors` is already in `additive_top_level_section()`; the other two are judged by the shape comparators and have not been checked.
+
+- [ ] **Step 1: Run the classifier against this branch's snapshot change and record its per-section verdict.**
+
+- [ ] **Step 2: Decide by that verdict.**
+  - **Every moved section additive** → drop the bump, return `ABI_VERSION` to 55, and extend the accepted set with the affirmation that syscall 304's prior contract was a fake-success stub (`304 => 0`) that nothing could usefully depend on. ABI-55 programs keep running.
+  - **Any moved section breaking** → keep ABI 56, keep the moved baseline, and restore the negative test proving an ABI-55 program is refused by an ABI-56 kernel.
+
+- [ ] **Step 3: Record the outcome and its reasoning in the report, quotably — it goes in the PR description.**
+
+- [ ] **Step 4: Run `cargo xtask check-program-baseline` and the host admission tests; report both.**
+
+- [ ] **Step 5: Commit**
+
+---
+
+### Task 18: Documentation and full validation
 
 **Files:**
 - Modify: `docs/posix-status.md` (the new facility; `dmesg`, `/dev/kmsg` and `klogctl` as non-POSIX by design; `klogctl` actions 6/7/8 unimplemented; userspace `/dev/kmsg` writes unimplemented)
