@@ -2,83 +2,81 @@
 
 ## Current checkpoint — 2026-11-06
 
-The work now extends beyond the original hello-world milestone below.
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
-on ABI 55 and main `21cfba152` (last fetched November 5).
+on ABI 55 and main `21cfba152` (last fetched November 5). The Go consumer
+recipes pin `5834adc306dddf6784c20e402deeabf643ad9c37`. Go's collector and
+code generator remain unchanged.
 
-All four Go consumer recipes pin validated source
-`5834adc306dddf6784c20e402deeabf643ad9c37`. WordPress revision 39 publishes
-through the normal 184-node build and consumer admission in 7m47s
-(180 cached, four published). Its image is 79,417,372 bytes, SHA-256
-`b5d9a0326b57ac4f4c808cdbd72e068f9a403682be37f8d4652ae26c7b8de438`.
-Both actual Node service workflows pass with two PHP threads, held-response
-draining, zero server/controller exits and cooperative retirement (44s).
-The artifact-verified port-5454 preview passes Chromium/Firefox demo login
-and Appearance Editor checks (2/2, 2m53s). Its URL and identity are in
-`.context/frankenphp-rev39-admitted-preview-artifacts.json`. Older preview
-ports retain their historical artifacts and are not the current preview.
+The current running static preview is port 5457, built from runtime
+correction `54e0b054a`. WordPress revision 39 is 79,416,985 bytes, SHA-256
+`52c13b187190ae24653bd50e939aaac6a15daef809a3b15df029bc2f70400ee3`;
+its kernel remains `bfdf6ce5`. Its image/group HTTP identities and the
+actual production worker's heap-checkpoint allocation are verified.
+`.context/frankenphp-production-preview-artifacts.json` records the URL
+and identities; the previous bundle is retained separately on port 5455.
+Both services use the measured two-PHP-thread default.
 
-The current runtime passes 159/159 ordinary Go browser cases, all four
-standard-library compile gates, plain-Go/cgo Node wait probes, three Node
-and nine browser callback checks, and ten Node signal modes plus two Node
-retirement and 57 browser signal/retirement cases. The normal Go sample
-revision 26 passes its Node C launcher and three browser cases. Allocation
-probes pass Node and all three browsers: Go's scavenger makes pages reusable,
-but linear memory does not shrink and PHP allocations remain outside the
-soft Go memory limit.
+On this corrected production preview, Firefox and WebKit each pass a
+five-minute actual Appearance Editor health interval, requiring one Caddy
+startup and no PHP or Go fatal errors (`5644`, 14m05s). Both Node service
+workflows pass held-response draining and cooperative retirement (`1cb4`,
+51s). Three WebKit Caddy/library save/upload/template/source-free reload
+repetitions finish two passes and one failure (`41e5`, 8m32s). The remaining
+failure is a native stack overflow in PHP's recursive optimizer CFG
+postorder traversal during a later admin request. The demo is not yet
+production-ready and that failure is not accepted as a completed gate.
 
-Matched WebKit pool controls complete a 90-second traffic interval and
-crash/restart/drain/retirement with one or two PHP threads. The two-thread
-native allocation bucket peaks at 10.61 GiB, settles near 5.6 GiB during
-traffic, and falls to 0.28 GiB thirty seconds after destruction. A six-thread
-run still exceeds WebKit's content-process footprint threshold. Revision 39
-uses the measured two-thread default through one common environment setting;
-Node comparison runs explicitly configure six FPM children and six PHP
-threads and verify the actual Caddy startup count. This is resource sizing,
-not proof that the per-thread native cost is solved or that long-term memory
-use is bounded. The detailed controls below preserve measurement scope.
+The current Go host passes all 162 ordinary browser cases across three
+engines (`3cdd`, 8m24s), three Node and nine browser callback cases (`2230`,
+37s), and ten Node signal modes, two Node retirements and 57 browser signal
+cases (`b41b`, 2m43s). All four standard-library compile gates and available
+upstream Node `os` inventory were validated on pinned Go source `5834adc`:
+224 tests/examples pass and 21 existing skips per plain/cgo mode. That is
+not the complete upstream Go suite. Current C signal/I/O conformance passes
+89 cases per host on Node and Chromium with two existing skips each, no
+failures/timeouts, using the same final kernel and rootfs (`c4d6`, 2m42s).
 
-The required memory/lifecycle gate passes on revision 39 in 20m20s: all
-18 browser cases, 239 ownership checks, seven boundary checks, three Node
-and seven Bun teardown cases, with no skipped/failed cases. The full
-revision-39 full UI passes all 27 cases across three engines and three
-profiles in 30m44s, including the same-image FPM control. The six all-engine service
-recovery/draining cases also pass in 4m44s. The gallery's separate FPM image
-returns HTTP 500 during a WebKit post save; that failed control is retained,
-and the same-image control now passes after the generic preview fix.
-The strict persistence rerun passes ten cases; two Firefox welcome-dialog
-selection failures then pass a targeted correction. The production
-frontend build and image identity checks pass, but its UI batch finishes
-26/27 (36m16s): WebKit Caddy reaches the authenticated dashboard, then
-the fixture waits for an already-dismissed Shortcuts popup. Strengthened
-upload-rendering/persistence finishes 11/12 (24m22s); WebKit Caddy/library
-returns a response-pump error after reload, after the actual uploaded PNG
-and saves had succeeded. Neither failure is accepted as a passing gate.
-Inspecting the shipped worker reveals a production-only defect: tree
-shaking removes the checkpoint's module-local allocation and leaves only
-the returned wait bound. A regression and bounded per-worker allocation
-root now pass all three engines; causation of the reload failure remains
-unproven, and the rebuilt production cohort is pending.
-Sustained comparisons and quiet nine-suite measurements remain open.
-The target supports cooperative
-signals, fatal Go tracebacks, shared libc cgo syscall dispatch, callbacks,
-worker retirement, and host heap safepoints. The latest eight-line runtime
-correction validates descriptor pollability at open, allowing Go's unchanged
-file code to restore blocking reads for regular files. It requires no compiler,
-standard library, dependency, kernel, or ABI patch.
+The missing production allocation was a host implementation defect:
+tree shaking removed a module-local buffer whose only reader was a test
+export. A private worker-global root now retains only the newest eight-byte
+ordinary buffer. Its production regression fails before the correction
+and passes afterwards in all three engines; the existing four checkpoint
+tests pass on both Node and Bun. The engine explanation behind checkpoint
+usage remains suspected. No timeout, memory ceiling or ABI is changed.
 
-Current C signal/I/O conformance passes 89 cases on Node and 89 on
-Chromium, with two existing skips per host and no failures/timeouts.
-Both hosts use the same admitted kernel/rootfs bytes and host sources.
-Related stop/continue host suites pass 185/185. On final source `5834adc`,
-the available upstream Node `os` inventory passes in both plain and cgo
-modes: 224 top-level tests/examples pass and 21 existing skips per mode,
-with empty guest stderr and host diagnostics. This is not the entire
-upstream Go test suite.
+A standalone unchanged PHP CFG traversal reproduces the finite native
+worker-stack boundary without Kandelo imports. Valid optimized PHP with
+768 conditionals reproduces the same frame in the real Caddy service;
+Chromium/Firefox and the smaller WebKit control pass. A small iterative
+traversal agrees with the original on 2,000 generated graphs and handles
+16,384-block chains/cycles in all three engines. The permanent real-PHP
+regression fails before the correction on WebKit; both Node controls pass.
+PHP revision 23 and PHP ZTS revision 9 now share that scoped algorithm patch,
+and WordPress advances to revision 40. The normal 184-node rebuild (`8a14`)
+is running. Real package pass-after and final-image gates remain pending.
 
-The dated entries below retain the evidence and failures behind this
-checkpoint. These results do not establish complete Go/POSIX conformance,
-production readiness, a physical-memory plateau, or superiority over PHP-FPM.
+The prior revision-39 memory/lifecycle gate passed all 18 browser, 239
+ownership, seven boundary, three Node and seven Bun cases (`ba3c`, 20m20s).
+The earlier source-served UI gate passed all 27 cases; the previous full
+production UI batch passed 26/27, and production persistence 11/12. Those
+results retain their recorded artifact/fixture scope and do not substitute
+for the final revision-40 gates.
+
+Memory controls distinguish guest linear memory, Go accounting, PHP
+allocations and engine/native costs. Go-released pages become reusable;
+linear memory does not shrink. The two-thread WebKit control's native
+category bucket peaks at 10.61 GiB and falls to 0.28 GiB thirty seconds after
+destruction. Six PHP threads can still exceed the content-process footprint
+limit. These are scoped observations, not a physical-memory hard cap or an
+indefinite plateau. Quiet sustained/fair PHP-FPM comparisons and alternating
+nine-suite Node/Chromium measurements remain unrun. The provisioned baseline
+`5e25c7365` is an intermediate PR revision, not main; no speed advantage or
+main-relative performance claim is established.
+
+The dated entries below preserve historical failures, repairs and exact
+measurement scopes. Broader Go/POSIX boundaries remain explicit: child
+credentials, inherited blocked masks, native HostFS path/helper distribution,
+additional cgo initialization/finalization forms and full upstream conformance.
 
 ### Production checkpoint allocation correction — 2026-11-06
 
@@ -219,37 +217,71 @@ Keep optimizer behavior, timeout limits and Go's compiler/collector intact.
 Final production recovery, full UI/memory gates and sustained/fair timings
 remain required after any package correction.
 
+### PHP CFG traversal portability correction — 2026-11-06
+
+A real optimized PHP probe on the unchanged image passes 96 conditionals
+in all three engines. At 768 conditionals Chromium/Firefox still return
+correct values twice, while WebKit reports the same recursive Wasm function
+7275 and loses the PHP worker. OPcache is loaded and its normal optimization
+mask remains `0x7ffebfff`. Evidence: `3d97` (35s),
+`.context/real-php-cfg-original.json`. The earlier `1726` attempt is only a
+fixture setup failure: guessed source-asset URLs returned HTML. The corrected
+probe serves normally admitted image/kernel files, checks their hashes in
+the browser, and uses the ordinary image-owned lazy transport.
+
+The permanent service regression now exercises 96/768-condition PHP files
+twice, checking results, OPcache's unchanged optimization mask and actual
+file-cache entries. On the old artifact the WebKit Caddy case fails at the
+768-condition request (`11dd`, 44s); both Node service controls pass
+(`dc93`, 42s). No failure is accepted or skipped.
+
+The candidate common PHP recipe replaces only the internal CFG postorder
+recursion with an explicit traversal frame array. Each frame stores the
+block and next successor; first visitation still marks `-2`, successor order
+is unchanged, and completion assigns the same postorder number. At most one
+frame per block is live. `safe_emalloc` checks the `8 * blocks_count`
+allocation, and `efree` releases it after traversal. This memory belongs to
+PHP, outside Go's soft memory limit; freeing it establishes reuse, not
+physical page reclamation. No optimizer pass or timeout is disabled.
+
+A standalone prototype agrees exactly with the unchanged recursive traversal
+on 2,000 generated branching/cyclic graphs (up to 128 blocks), and handles
+chains/cycles of 16,384 blocks in cold workers across all three engines.
+All 18 probe cases per engine pass, including repeated equivalence checks:
+`.context/php-cfg-depth-worker-iterative.json`. The patch applies to the
+verified PHP 8.5.12 source. It is a portable algorithm correction at the
+already documented native worker-stack boundary, not a Kandelo POSIX stub,
+Go collector/code-generator change, or engine specification-defect claim.
+That deliberate runtime boundary does not require a new workaround entry
+under the registry's "What gets an entry" rules.
+
+PHP revision 23 and PHP ZTS revision 9 share the patch and declare it as an
+input. WordPress advances to revision 40. The normal 184-node rebuild
+(`8a14`) is running with one package at a time. The Mac has about 14.8 GiB
+free plus reusable inactive pages before this build, allowing the previously
+measured instrumenter peak without closing other applications. Actual
+package/browser pass-after and final-image gates remain pending.
+
 ### Remaining release gates
 
-1. The full memory/lifecycle gate on revision 39 is complete. Vite cache
-   isolation and all 18 three-engine lifecycle cases pass.
-   The terminal-channel wake fix has a fail-before/pass-after regression
-   and real service repetitions. The exact waiter order behind the
-   original intermittent dinit retirement was not captured.
-2. Browser PHP draining and retirement for Caddy on WebKit are complete.
-   Continue bounding the workload memory use behind the observed native
-   content-process kill; a same-URL reload is distinct from a Go exit.
-3. Finish the full visible login, editor, post/template-save, and crash
-   recovery workflows on the rebuilt revision-39 cohort. Resolve the earlier intermittent
-   classic WebKit health/navigation failures; their cause remains unknown.
-4. Finish sustained traffic/memory checks, paired PHP-FPM/classic/Caddy
-   comparisons, and all nine Node/Chromium incremental before/after
-   benchmark suites. The baseline retry completes all 160 nodes (151 cached,
-   nine published) in 21m06s after initializing the exact pinned Rust libc
-   submodule. All nine Node and nine Chromium suites are now provisioned;
-   provisioning under build load is not a performance comparison. Browser
-   RSS sampling now uses declared psutil after Nix Darwin `ps` rejected
-   its RSS query for a missing entitlement. A real four-process Chromium
-   sample and coherent tool-input rebuild pass; full WordPress sampling
-   remains pending. The
-   baseline commit `5e25c7365` is an intermediate branch revision, so those
-   comparisons cannot establish superiority over main.
-5. Review the remaining general Go/POSIX gaps: child credentials, inherited
-   blocked signal masks, native HostFS path/helper distribution, broader
-   cgo initializer/finalizer and concurrency coverage, and wider upstream
-   conformance. Keep unsupported behavior explicit.
-6. Push validated checkpoints, update this log, the draft PR and guidance,
-   and keep the verified current-image preview running.
+1. Complete the normal PHP 23/ZTS 9/WordPress 40 publication and actual
+   pass-after for the real optimized-PHP regression on Node/all three
+   browsers. Preserve optimizer configuration and exact results.
+2. Repeat the full visible login, editor, post/template saves, uploads,
+   source-free persistence/crash recovery, service drain/restart and
+   five-minute real-editor checks on coherent final production artifacts.
+3. Repeat the full browser memory/lifecycle gate on the final cohort.
+   Prior revision-39 evidence is preserved, including Vite cache isolation,
+   terminal-channel wake regression and all-engine service retirement.
+4. Finish sustained traffic/RSS checks, paired PHP-FPM/classic/Caddy
+   measurements and the three alternating rounds of all nine Node/Chromium
+   suites. Both cohorts are provisioned; refresh the candidate after PHP
+   changes. Report the intermediate baseline and pool/cache differences.
+5. Review broader Go/POSIX gaps and document exact support boundaries.
+   Keep six-thread WebKit footprint limits and reusable-versus-physical
+   memory distinctions explicit.
+6. Push validated checkpoints, update this log, draft PR and guidance,
+   and keep the verified final-image preview running.
 
 ### Terminal-channel notification checkpoint — 2026-11-06
 

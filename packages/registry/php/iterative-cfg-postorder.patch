@@ -1,0 +1,57 @@
+--- a/Zend/Optimizer/zend_cfg.c
++++ b/Zend/Optimizer/zend_cfg.c
+@@ -654,20 +654,36 @@
+ /* }}} */
+ 
+ /* Computes a postorder numbering of the CFG */
+-static void compute_postnum_recursive(
++static void compute_postnum(
+ 		int *postnum, int *cur, const zend_cfg *cfg, int block_num) /* {{{ */
+ {
+-	int s;
+-	zend_basic_block *block = &cfg->blocks[block_num];
++	typedef struct {
++		int block_num;
++		int next_successor;
++	} traversal_frame;
+ 	if (postnum[block_num] != -1) {
+ 		return;
+ 	}
+-
+-	postnum[block_num] = -2; /* Marker for "currently visiting" */
+-	for (s = 0; s < block->successors_count; s++) {
+-		compute_postnum_recursive(postnum, cur, cfg, block->successors[s]);
+-	}
+-	postnum[block_num] = (*cur)++;
++	/* Preserve successor order without growing the native call stack. */
++	traversal_frame *stack = safe_emalloc(cfg->blocks_count, sizeof(*stack), 0);
++	int depth = 1;
++	stack[0] = (traversal_frame) {block_num, 0};
++	postnum[block_num] = -2;
++	while (depth > 0) {
++		traversal_frame *frame = &stack[depth - 1];
++		zend_basic_block *block = &cfg->blocks[frame->block_num];
++		if (frame->next_successor < block->successors_count) {
++			int successor = block->successors[frame->next_successor++];
++			if (postnum[successor] == -1) {
++				postnum[successor] = -2;
++				stack[depth++] = (traversal_frame) {successor, 0};
++			}
++		} else {
++			postnum[frame->block_num] = (*cur)++;
++			depth--;
++		}
++	}
++	efree(stack);
+ }
+ /* }}} */
+ 
+@@ -688,7 +704,7 @@
+ 	int *postnum = do_alloca(sizeof(int) * cfg->blocks_count, use_heap);
+ 	memset(postnum, -1, sizeof(int) * cfg->blocks_count);
+ 	j = 0;
+-	compute_postnum_recursive(postnum, &j, cfg, 0);
++	compute_postnum(postnum, &j, cfg, 0);
+ 
+ 	/* FIXME: move declarations */
+ 	blocks[0].idom = 0;

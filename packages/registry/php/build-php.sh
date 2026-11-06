@@ -205,6 +205,11 @@ cd "$SRC_DIR"
 # Apply patches for Wasm compatibility
 echo "==> Patching PHP for Wasm..."
 
+# A valid large opcode array can exceed a browser worker's native Wasm call
+# stack during CFG numbering. Preserve the upstream DFS order using explicit
+# PHP-allocated traversal frames, for both CLI/FPM and the ZTS embed library.
+git apply "$SCRIPT_DIR/iterative-cfg-postorder.patch"
+
 # The upstream no-phar test fixture is a self-extracting PHP stub embedded at
 # fixed byte offsets. It masks CRC values with the literal 0xffffffff; on
 # wasm32/PHP with 32-bit longs that literal is a float and PHP 8.3 emits

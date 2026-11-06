@@ -5,6 +5,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { resolveBinary } from "../../../host/src/binary-resolver";
+import {
+  phpOptimizerCfgProbe,
+  PHP_OPTIMIZER_CFG_CONDITIONS,
+  PHP_OPTIMIZER_DEFAULT_LEVEL,
+} from "../../../packages/registry/php/test/optimizer-cfg-probe";
 
 const imagePath = process.env.KANDELO_WORDPRESS_FRANKENPHP_VFS;
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -103,7 +108,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     });
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds }) => {
+    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds, optimizerProbes }) => {
       let readMemory: (() => Promise<unknown>) | undefined;
       const stage = async (message: string) => {
         let snapshot: unknown;
@@ -182,6 +187,9 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
           decoder.decode(template).replaceAll("@@APP_PATH@@", "/").replaceAll("@@PROTO@@", "http"),
         ));
         await kernel.writeFileToVfs("/var/www/html/__kandelo_opcache_target.php", new TextEncoder().encode("<?php return 1;"));
+        for (const probe of optimizerProbes) {
+          await kernel.writeFileToVfs(`/var/www/html/__kandelo_cfg_${probe.conditions}.php`, new TextEncoder().encode(probe.code));
+        }
         await kernel.writeFileToVfs("/var/www/html/__kandelo_opcache_probe.php", new TextEncoder().encode(`<?php
 header('Content-Type: application/json');
 $configuration = opcache_get_configuration();
@@ -231,6 +239,17 @@ echo json_encode([
           method: "GET", url: "/__kandelo_opcache_probe.php", headers: { Host: "localhost:8080" }, body: null,
         }, { timeoutMs: 30_000 });
         const opcacheBody = decoder.decode(opcacheResponse.body);
+        const optimizerChecks: { conditions: number; repeat: number; status: number; body: string }[] = [];
+        for (const probe of optimizerProbes) {
+          for (let repeat = 0; repeat < 2; repeat++) {
+            const response = await kernel.fetchInKernel(8080, {
+              method: "GET", url: `/__kandelo_cfg_${probe.conditions}.php`,
+              headers: { Host: "localhost:8080" }, body: null,
+            }, { timeoutMs: 30_000 });
+            optimizerChecks.push({ conditions: probe.conditions, repeat, status: response.status,
+              body: decoder.decode(response.body) });
+          }
+        }
         const login = await kernel.fetchInKernel(8080, {
           method: "GET", url: "/wp-login.php", headers: { Host: "localhost:8080" }, body: null,
         }, { timeoutMs: 30_000 });
@@ -372,6 +391,7 @@ echo json_encode([
           graceful,
           opcacheStatus: opcacheResponse.status,
           opcacheBody,
+          optimizerChecks,
           homepageStatus: homepage.status,
           homepageBody: decoder.decode(homepage.body),
           loginStatus: login.status,
@@ -418,6 +438,7 @@ echo json_encode([
       memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds,
       gracefulProbeUrl: new URL(`/@fs/${resolve(repoRoot, "host/test/support/frankenphp-graceful.ts")}`, baseURL!).href,
       runtimeUrlsModuleUrl: new URL("/lib/init/image-owned-runtime-urls.ts", baseURL!).href,
+      optimizerProbes: PHP_OPTIMIZER_CFG_CONDITIONS.map(conditions => ({ conditions, code: phpOptimizerCfgProbe(conditions) })),
     }).catch(async error => {
       const evidencePath = test.info().outputPath("browser-page-lifecycle.json");
       writeFileSync(evidencePath, JSON.stringify({ url: page.url(), lifecycle }, null, 2));
@@ -438,6 +459,12 @@ echo json_encode([
     expect(JSON.parse(result.opcacheBody)).toEqual({
       loaded: true, fileCacheOnly: true, compiled: true, cacheFilePresent: true,
     });
+    expect(result.optimizerChecks).toHaveLength(PHP_OPTIMIZER_CFG_CONDITIONS.length * 2);
+    for (const check of result.optimizerChecks) {
+      expect(check.status, check.body).toBe(200);
+      expect(JSON.parse(check.body)).toEqual({ answer: check.conditions, miss: 0, opcache: true,
+        optimizationLevel: PHP_OPTIMIZER_DEFAULT_LEVEL, cacheFilePresent: true });
+    }
     expect(result.homepageStatus, `${result.homepageBody.slice(-1000)}\n${result.serviceLog.slice(-3000)}\n${result.stderr.slice(-1000)}\n${JSON.stringify(result.diagnostics)}`).toBe(200);
     expect(result.homepageBody).toContain("WordPress on Kandelo");
     expect(result.homepageBody).not.toContain("id=\"setup\"");

@@ -10,6 +10,11 @@ import { writeVfsFile } from "../src/vfs/image-helpers";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import type { DestroyProgressEvent } from "../src/browser-kernel-protocol";
 import { observeProcessExits, verifyFrankenPhpGracefulShutdown } from "./support/frankenphp-graceful";
+import {
+  phpOptimizerCfgProbe,
+  PHP_OPTIMIZER_CFG_CONDITIONS,
+  PHP_OPTIMIZER_DEFAULT_LEVEL,
+} from "../../packages/registry/php/test/optimizer-cfg-probe";
 
 async function availablePort(): Promise<number> {
   const server = createServer();
@@ -33,6 +38,9 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
   const serviceConfigPath = `/etc/dinit.d/${service}`;
   const serviceConfig = readVfsText(fs, serviceConfigPath);
   configureWordPressRuntime(fs, { port });
+  for (const conditions of PHP_OPTIMIZER_CFG_CONDITIONS) {
+    writeVfsFile(fs, `/var/www/html/__kandelo_cfg_${conditions}.php`, phpOptimizerCfgProbe(conditions));
+  }
   // The demo helper routes logs to stdio; this test needs the image's log file.
   writeVfsFile(fs, serviceConfigPath, serviceConfig);
   const image = await fs.saveImage();
@@ -104,6 +112,14 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
     const response = await fetch(`http://127.0.0.1:${port}/`);
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("WordPress on Kandelo");
+    for (const conditions of PHP_OPTIMIZER_CFG_CONDITIONS) {
+      for (let repeat = 0; repeat < 2; repeat++) {
+        const optimized = await fetch(`http://127.0.0.1:${port}/__kandelo_cfg_${conditions}.php`);
+        expect(optimized.status).toBe(200);
+        expect(await optimized.json()).toEqual({ answer: conditions, miss: 0, opcache: true,
+          optimizationLevel: PHP_OPTIMIZER_DEFAULT_LEVEL, cacheFilePresent: true });
+      }
+    }
     let graceful: unknown;
     try {
       graceful = await verifyFrankenPhpGracefulShutdown(host, port, processExits.waitForExit, service);

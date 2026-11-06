@@ -134,6 +134,20 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   FrankenPHP+Caddy site-editor soaks and authenticated post edits in Chromium,
   Firefox, and WebKit (12/12 browser cases). This validates those workflows,
   not long-uptime or production performance.
+  Cgo also crosses into C code with its own native Wasm call frames. These
+  frames have an engine/worker limit independent of Go's growing goroutine
+  stacks, the C shadow stack in linear memory and `GOMEMLIMIT`. Match a
+  trapped C function against its archive-object disassembly when the final
+  module has no names. Reproduce the unchanged function in a cold dedicated
+  worker with no Kandelo imports; a main-page probe can have a different
+  stack limit. PHP's recursive CFG postorder traversal passes depth 512 and
+  overflows at 1024 in one such WebKit shape. Valid optimized PHP with 768
+  conditionals reproduces its failure in the real Caddy service. A scoped
+  iterative traversal must preserve numbering, optimizer configuration and
+  cached/uncached results; do not treat a larger linear-memory reservation
+  as a fix. The candidate PHP correction and its pending final validation
+  are recorded in the implementation plan. Finite native call depth is a
+  documented runtime boundary, not by itself evidence of an engine defect.
   Flattening counted repeats in `Simplify` changes lazy-capture semantics
   and is not an acceptable shortcut.
   Excluding only the top-level templates import does not remove the
