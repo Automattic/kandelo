@@ -1,4 +1,4 @@
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, resolve } from "node:path";
@@ -61,24 +61,36 @@ const artifactTest = test.extend<{ artifactUrls: { imageUrl: string; kernelUrl: 
 });
 
 for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
-  artifactTest(`WordPress on ${serviceName} serves PHP in the browser kernel host`, async ({ page, baseURL, browserName, artifactUrls }) => {
+  artifactTest(`WordPress on ${serviceName} serves PHP in the browser kernel host`, async ({ page, baseURL, browser, artifactUrls }) => {
     test.setTimeout(serviceName === "frankenphp-caddy" || parallelEditorRequests ? 300_000 : 240_000);
     test.skip(!imagePath, "Build the WordPress image and set KANDELO_WORDPRESS_FRANKENPHP_VFS");
     expect(baseURL).toBeTruthy();
     const { imageUrl, kernelUrl } = artifactUrls;
     const browserKernelUrl = new URL(`/@fs/${resolve(repoRoot, "host/src/browser-kernel-host.ts")}`, baseURL!).href;
     const lifecycle: string[] = [];
-    page.on("crash", () => lifecycle.push("page crashed"));
-    page.on("close", () => lifecycle.push("page closed"));
+    const record = (event: string) => lifecycle.push(`${new Date().toISOString()} ${event}`);
+    page.on("crash", () => record("page crashed"));
+    page.on("close", () => record("page closed"));
+    browser.on("disconnected", () => record("browser disconnected"));
     page.on("framenavigated", frame => {
-      if (frame === page.mainFrame()) lifecycle.push(`main frame: ${frame.url()}`);
+      if (frame === page.mainFrame()) record(`main frame: ${frame.url()}`);
     });
-    page.on("pageerror", error => lifecycle.push(`page error: ${error.message}`));
+    page.on("pageerror", error => record(`page error: ${error.message}`));
+    page.on("console", message => {
+      if (message.type() === "error" || message.type() === "warning") record(`console ${message.type()}: ${message.text()}`);
+    });
+    // Retain phase evidence outside the page if its execution context is lost.
+    await page.exposeFunction("recordFrankenPhpStage", (stage: string) => record(`stage: ${stage}`));
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, gracefulProbeUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName }) => {
+    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName }) => {
+      const stage = (message: string) => (globalThis as typeof globalThis & {
+        recordFrankenPhpStage: (message: string) => Promise<void>;
+      }).recordFrankenPhpStage(message);
+      await stage("loading artifacts");
       const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
       const { observeProcessExits, verifyFrankenPhpGracefulShutdown } = await import(/* @vite-ignore */ gracefulProbeUrl);
+      const { imageOwnedLazyAssetDirectory } = await import(/* @vite-ignore */ runtimeUrlsModuleUrl);
       const processExits = observeProcessExits();
       const [imageResponse, kernelResponse] = await Promise.all([fetch(imageUrl), fetch(kernelUrl)]);
       if (!imageResponse.ok || !kernelResponse.ok) throw new Error("WordPress test artifacts failed to load");
@@ -108,7 +120,12 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
       });
       kernel.subscribeDestroyProgress((event: { phase: string; completed: number; total: number }) => shutdown.push(event));
       try {
-        await kernel.initFromImage({ kernelWasm, vfsImage: new Uint8Array(imageBytes) });
+        await kernel.initFromImage({
+          kernelWasm, vfsImage: new Uint8Array(imageBytes),
+          // Use the app's ordinary transport for the image's deferred bodies.
+          lazyAssetDirectory: imageOwnedLazyAssetDirectory(),
+        });
+        await stage("kernel initialized");
         const template = await kernel.readFileFromVfs("/etc/wp-config-template.php");
         if (!template) throw new Error("WordPress config template missing");
         await kernel.writeFileToVfs("/var/www/html/wp-config.php", new TextEncoder().encode(
@@ -145,6 +162,7 @@ echo json_encode([
           exit.then((code: number) => { throw new Error(`dinit exited before readiness: ${code}`); }),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error("service readiness timeout")), 90_000)),
         ]);
+        await stage("service ready");
 
         let homepage: Awaited<ReturnType<typeof kernel.fetchInKernel>> | undefined;
         for (let attempt = 0; attempt < 300; attempt += 1) {
@@ -183,6 +201,7 @@ echo json_encode([
           }, body: null,
         }, { timeoutMs: 60_000 });
         const editorHtml = decoder.decode(editor.body);
+        await stage("WordPress login and editor complete");
         if (editorBurstRounds > 0) {
           const restNonce = /var wpApiSettings = \{[^;]*"nonce":"([^"]+)"/.exec(editorHtml)?.[1];
           const compressionNonce = /var compressionNonce = "([^"]+)"/.exec(editorHtml)?.[1];
@@ -238,6 +257,7 @@ echo json_encode([
             throw new Error(`Parallel editor requests returned ${JSON.stringify(parallel)}`);
           }
         }
+        await stage("editor burst and parallel requests complete");
         for (let index = 0; index < churnRequests; index += 1) {
           const isLogin = index % 2 === 1;
           const response = await kernel.fetchInKernel(8080, {
@@ -252,6 +272,7 @@ echo json_encode([
           }
         }
         let restarted = false;
+        await stage("request churn complete");
         if (serviceName === "frankenphp-caddy") {
           const listener = await kernel.pickListenerTarget(8080);
           if (!listener) throw new Error("FrankenPHP listener missing before restart test");
@@ -272,10 +293,12 @@ echo json_encode([
             await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
           }
           if (!restarted) throw new Error("FrankenPHP did not recover after SIGKILL");
+          await stage("Caddy recovered after SIGKILL");
         }
         const graceful = await verifyFrankenPhpGracefulShutdown(
           kernel, 8080, processExits.waitForExit, serviceName,
         );
+        await stage("held PHP request drained");
         const serviceLog = await kernel.readFileFromVfs(`/var/log/${serviceName}.log`);
         if (!serviceLog) throw new Error("FrankenPHP service log missing");
         return {
@@ -305,22 +328,31 @@ echo json_encode([
         ]);
         throw new Error(`${String(error)}\nstdout=${stdout.slice(-1000)}\nstderr=${stderr.slice(-1000)}\nlog=${log ? decoder.decode(log).slice(-3000) : "missing"}`);
       } finally {
+        await stage("stopping init and destroying machine");
         if (dinitPid !== 0) await kernel.signalProcess(dinitPid, 15).catch(() => {});
         if (dinitExit) await Promise.race([
           dinitExit.catch(() => -1),
           new Promise<number>((resolveWait) => setTimeout(() => resolveWait(-1), 5_000)),
         ]);
         await kernel.destroy();
+        await stage("machine destroyed");
       }
     }, {
       imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName,
       gracefulProbeUrl: new URL(`/@fs/${resolve(repoRoot, "host/test/support/frankenphp-graceful.ts")}`, baseURL!).href,
+      runtimeUrlsModuleUrl: new URL("/lib/init/image-owned-runtime-urls.ts", baseURL!).href,
     }).catch(async error => {
+      const evidencePath = test.info().outputPath("browser-page-lifecycle.json");
+      writeFileSync(evidencePath, JSON.stringify({ url: page.url(), lifecycle }, null, 2));
       await test.info().attach("browser-page-lifecycle", {
-        body: JSON.stringify({ url: page.url(), lifecycle }), contentType: "application/json",
+        path: evidencePath, contentType: "application/json",
       });
       throw error;
     });
+
+    const serviceLogPath = test.info().outputPath(`${serviceName}.log`);
+    writeFileSync(serviceLogPath, result.serviceLog);
+    await test.info().attach("guest-service-log", { path: serviceLogPath, contentType: "text/plain" });
 
     expect(result.opcacheStatus, `${result.opcacheBody}\n${result.serviceLog.slice(-3000)}`).toBe(200);
     expect(JSON.parse(result.opcacheBody)).toEqual({

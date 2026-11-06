@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "playwright";
 import { machineUrl } from "../apps/browser-demos/test/support/kandelo-machine.ts";
+import { clickDockTool } from "../apps/browser-demos/test/support/dock.ts";
 import { writeVfsFile } from "../host/src/vfs/image-helpers.ts";
 import {
   bootDinitServiceVfs,
@@ -49,6 +50,7 @@ interface RoundResult {
   throughputRequests: number;
   throughputDurationMs: number;
   nodeProcessId?: number;
+  serviceLog: string;
   soak?: SoakResult;
 }
 
@@ -172,9 +174,43 @@ async function fetchWordPress(url: string): Promise<void> {
   }
 }
 
-async function measureNode(profile: Profile, round: number, options: Options, imagePath: string): Promise<RoundResult> {
-  const target = profile === "wordpress-sqlite" ? "nginx" :
+function serviceName(profile: Profile): string {
+  return profile === "wordpress-sqlite" ? "nginx" :
     profile === "wordpress-frankenphp-caddy" ? "frankenphp-caddy" : "frankenphp-classic";
+}
+
+function validateServiceLog(profile: Profile, log: string): void {
+  if (/^(?:panic:|fatal error:)/m.test(log)) {
+    throw new Error(`${profile} crashed during the measurement:\n${log.slice(-4000)}`);
+  }
+  if (profile !== "wordpress-sqlite") {
+    const marker = profile === "wordpress-frankenphp-caddy"
+      ? "FrankenPHP started" : "FrankenPHP classic listening";
+    const starts = log.split(marker).length - 1;
+    // A supervisor can restore HTTP after a crash; that is not sustained uptime.
+    if (starts !== 1) throw new Error(`${profile} expected one startup, found ${starts}:\n${log.slice(-4000)}`);
+  }
+}
+
+async function readBrowserServiceLog(page: Page, profile: Profile): Promise<string> {
+  await clickDockTool(page, "Internals", { timeout: 5000 });
+  const inspector = page.getByRole("dialog", { name: "Internals" });
+  await inspector.getByRole("tab", { name: "VFS" }).click({ timeout: 5000 });
+  for (const segment of ["var", "log"]) {
+    await inspector.locator(".ktable tr", {
+      has: page.locator("td", { hasText: new RegExp(`^${segment}/$`) }),
+    }).click({ timeout: 5000 });
+  }
+  await inspector.locator(".ktable tr", {
+    has: page.locator("td", { hasText: `${serviceName(profile)}.log` }),
+  }).click({ timeout: 5000 });
+  const log = await inspector.locator(".kinternals-surface pre").last().textContent();
+  if (log === null) throw new Error(`Missing ${profile} service log`);
+  return log;
+}
+
+async function measureNode(profile: Profile, round: number, options: Options, imagePath: string): Promise<RoundResult> {
+  const target = serviceName(profile);
   const port = options.port + round * 4 + (profile === "wordpress-sqlite" ? 0 : 2);
   const smtpPort = port + 1;
   const start = performance.now();
@@ -186,7 +222,11 @@ async function measureNode(profile: Profile, round: number, options: Options, im
     maxWorkers: 12,
     maxPages: profile === "wordpress-frankenphp-caddy" ? 16384 : 4096,
     configure: (fs) => {
+      const serviceConfigPath = `/etc/dinit.d/${target}`;
+      const serviceConfig = readVfsText(fs, serviceConfigPath);
       configureWordPressRuntime(fs, { port });
+      // Preserve the shipped service log; the demo helper routes it to stdio.
+      writeVfsFile(fs, serviceConfigPath, serviceConfig);
       const smtpScript = "/usr/local/bin/start-msmtpd";
       const originalScript = readVfsText(fs, smtpScript);
       if (!originalScript.includes("--port=1025")) throw new Error("SMTP startup port contract changed");
@@ -213,6 +253,9 @@ async function measureNode(profile: Profile, round: number, options: Options, im
   try {
     const baseUrl = `http://127.0.0.1:${port}/`;
     await waitForHttp(baseUrl, 120_000, () => exited);
+    // nginx shares its listener across workers; its selected PID can rotate.
+    const listener = profile === "wordpress-sqlite" ? null : await host.pickListenerTarget(port);
+    if (profile !== "wordpress-sqlite" && !listener) throw new Error(`${profile} has no HTTP listener after readiness`);
     await fetchWordPress(baseUrl);
     const startupMs = performance.now() - start;
     const latenciesMs: number[] = [];
@@ -240,10 +283,17 @@ async function measureNode(profile: Profile, round: number, options: Options, im
         fetchWordPress(`${baseUrl}?kandelo_soak=${performance.now()}`))).then(() => {}),
       async () => process.memoryUsage.rss(), "whole-node-process",
     ) : undefined;
+    if (listener && (await host.pickListenerTarget(port))?.pid !== listener.pid) {
+      throw new Error(`${profile} HTTP server restarted during the measurement`);
+    }
+    const logBytes = await host.readFileFromVfs(`/var/log/${target}.log`);
+    if (!logBytes) throw new Error(`Missing ${profile} service log`);
+    const serviceLog = new TextDecoder().decode(logBytes);
+    validateServiceLog(profile, serviceLog);
     return {
       host: "node", profile, round, startupMs, latenciesMs,
       throughputRequests: options.clients * options.concurrentSamples,
-      throughputDurationMs, soak,
+      throughputDurationMs, soak, serviceLog,
       nodeProcessId: process.pid,
     };
   } finally {
@@ -289,22 +339,16 @@ function measureNodeIsolated(measurement: NodeMeasurement): Promise<RoundResult>
     });
     child.once("exit", (code, signal) => {
       clearTimeout(timer);
-      if (!failure && code === 0 && result?.nodeProcessId === child.pid) resolveResult(result);
+      if (!failure && code === 0 && result && result.nodeProcessId === child.pid) resolveResult(result);
       else reject(failure ?? new Error(`Node benchmark worker exited: ${code ?? signal}`));
     });
     child.send(measurement);
   });
 }
 
-async function browserImageDigest(page: Page, profiles: readonly Profile[]): Promise<string> {
-  const imageUrls = await Promise.all(profiles.map(async (profile) => {
-    const url = new URL(await machineUrl(page, profile), "http://kandelo.invalid");
-    return url.searchParams.get("vfs");
-  }));
-  const imageUrl = imageUrls[0];
-  if (!imageUrl || imageUrls[1] !== imageUrl) {
-    throw new Error("Browser profiles do not select the same VFS image");
-  }
+async function browserImageDigest(page: Page, machine: string): Promise<string> {
+  const imageUrl = new URL(machine).searchParams.get("vfs");
+  if (!imageUrl) throw new Error("Browser machine URL has no VFS image");
   const response = await page.request.get(new URL(imageUrl, page.url()).href);
   if (!response.ok()) throw new Error(`Browser VFS image fetch failed: ${response.status()}`);
   return createHash("sha256").update(await response.body()).digest("hex");
@@ -316,9 +360,14 @@ async function measureBrowser(
   profile: Profile,
   round: number,
   options: Options,
+  sharedMachineUrl: string,
 ): Promise<RoundResult> {
   const start = performance.now();
-  await page.goto(await machineUrl(page, profile));
+  const target = new URL(sharedMachineUrl);
+  // The gallery can put the FPM shortcut in a different multi-image product.
+  // Both measured profiles must use the one hash-verified WordPress image.
+  target.searchParams.set("profile", profile);
+  await page.goto(target.href);
   const title = profile === "wordpress-sqlite" ? "WordPress SQLite" :
     profile === "wordpress-frankenphp-caddy" ? "WordPress on FrankenPHP + Caddy" : "WordPress on FrankenPHP";
   const body = page.frameLocator(`iframe[title="${title}"]`).locator("body");
@@ -383,12 +432,15 @@ async function measureBrowser(
     }, options.clients),
     () => chromiumRss(browser), "chromium-process-rss-sum",
   ) : undefined;
+  // Inspect only after the timed and RSS phases, through the ordinary app UI.
+  const serviceLog = await readBrowserServiceLog(page, profile);
+  validateServiceLog(profile, serviceLog);
   return {
     host: "browser", profile, round, startupMs,
     latenciesMs: measurements.latenciesMs,
     throughputRequests: options.clients * options.concurrentSamples,
     throughputDurationMs: measurements.throughputDurationMs,
-    soak,
+    soak, serviceLog,
   };
 }
 
@@ -409,13 +461,15 @@ async function main(): Promise<void> {
   }
 
   if (options.host === "browser" || options.host === "both") {
+    let sharedMachineUrl: string;
     const browser = await chromium.launch();
     try {
       const context = await browser.newContext({ baseURL: options.browserBaseUrl });
       const probe = await context.newPage();
       try {
         await probe.goto(new URL("/trap-signal-test.html", options.browserBaseUrl).href);
-        const browserDigest = await browserImageDigest(probe, options.profiles);
+        sharedMachineUrl = new URL(await machineUrl(probe, options.profiles[1]!), options.browserBaseUrl).href;
+        const browserDigest = await browserImageDigest(probe, sharedMachineUrl);
         if (browserDigest !== imageDigest) {
           throw new Error(`Node/browser VFS image mismatch: ${imageDigest} != ${browserDigest}`);
         }
@@ -431,7 +485,7 @@ async function main(): Promise<void> {
         try {
           const context = await browser.newContext({ baseURL: options.browserBaseUrl });
           const page = await context.newPage();
-          const result = await measureBrowser(browser, page, profile, round, options);
+          const result = await measureBrowser(browser, page, profile, round, options, sharedMachineUrl);
           results.push(result);
           console.log(`browser round ${round + 1} ${profile}: ${percentile(result.latenciesMs, 0.5).toFixed(1)} ms median`);
         } finally {
@@ -471,15 +525,18 @@ async function main(): Promise<void> {
 }
 
 if (process.env.KANDELO_WORDPRESS_STACK_WORKER === "1") {
+  if (!process.send || !process.disconnect) throw new Error("Node measurement worker requires IPC");
+  const send = process.send.bind(process);
+  const disconnect = process.disconnect.bind(process);
   process.once("message", async (measurement: NodeMeasurement) => {
     try {
       const result = await measureNode(measurement.profile, measurement.round,
         measurement.options, measurement.imagePath);
-      process.send!(result, () => process.disconnect());
+      send(result, disconnect);
     } catch (error) {
       console.error(error);
       process.exitCode = 1;
-      process.disconnect();
+      disconnect();
     }
   });
 } else {

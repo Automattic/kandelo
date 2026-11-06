@@ -48,6 +48,14 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
 
 ## Memory, threads, and syscalls
 
+- For large Go/cgo browser workloads, retain native browser stderr alongside
+  guest service logs. A same-URL page reload and a lost evaluation context
+  can result from the content process exceeding its memory limit. Capture
+  navigation events and workload phases outside the page so they survive
+  that reload. Report the engine's footprint measurement separately from
+  RSS, shared memory reservations, and guest linear-memory size; none is a
+  substitute for the others. Use the actual limit and worker ownership
+  evidence to investigate memory use before choosing a runtime change.
 - Validate descriptor pollability in `netpollopen`, even when readiness
   interests are armed lazily. Go's ordinary `os.File` code needs the epoll
   registration error to clear `O_NONBLOCK` and disable deadlines on regular

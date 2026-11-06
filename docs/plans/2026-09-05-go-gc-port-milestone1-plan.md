@@ -4,97 +4,94 @@
 
 The work now extends beyond the original hello-world milestone below.
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
-on ABI 55 and latest main `21cfba152` (fetched again November 5).
+on ABI 55 and main `21cfba152` (last fetched November 5).
 
-The package source pin is `1b0cf58011c425efe571b67dc134513b0760ad83`,
-including cooperative Go signals, fatal Go tracebacks, shared libc cgo
-syscall dispatch, host heap-safepoint integration, and the tested callback
-system-stack correction. WordPress revision 36 adds classic HTTP graceful
-shutdown and aligned HTTP/service stop deadlines. That Go-`29e2118` build
-passes all 183 nodes and 11 products plus consumer admission. Node proves
-held-PHP request draining in both profiles. Browser draining and final-image
-editor/recovery checks remain pending; the revision-32 app evidence below
-remains tied to Go fork `c925e9c`.
+All four Go consumer recipes pin
+`1b0cf58011c425efe571b67dc134513b0760ad83`. The target supports cooperative
+signals, fatal Go tracebacks, shared libc cgo syscall dispatch, callbacks,
+worker retirement, and host heap safepoints. The latest eight-line runtime
+correction validates descriptor pollability at open, allowing Go's unchanged
+file code to restore blocking reads for regular files. It requires no compiler,
+standard library, dependency, kernel, or ABI patch.
 
-The source correction `1b0cf58` validates file pollability at open. Its two
-Node and six browser regressions, all four standard-library compile gates,
-and the full 153-case ordinary browser inventory pass. All four consumer
-recipes now pin it; WordPress revision 37 needs a normal rebuild before
-application correction can be established.
+WordPress revision 37 builds through the normal source union: 184/184
+nodes, all 11 products, and the published-consumer check pass in 19m56s.
+The image is 79,330,377 bytes with SHA-256
+`79c47b29053245fc4a295af30dfa41a1ea655b7515ec1654b9460fc2a15c1beb`.
+The normal Kandelo web app is running on loopback port 5417 and serves those
+exact bytes. The preview URL and HTTP identity record are in
+`.context/frankenphp-preview-artifacts.json`.
 
-- The revision-32 WordPress image runs actual embedded PHP through both
-  FrankenPHP classic and Caddy. Six visible Chromium cases prove
-  homepage/admin/editor behavior, post writes, and real template saves.
-  The classic profile's post, upload,
-  and homepage-template edits survive a browser-process crash in both
-  persistent storage modes with the original image source disabled.
-- The new Go runtime retirement fix passes plain-Go/cgo shutdown probes
-  in Node and all three browsers. The full image-backed Node `os` run
-  passes 215 cases with 21 skips. Broader browser coverage has 144 passes;
-  its three stale anonymous-executable expectations were corrected and
-  the six relevant byte/VFS launch cases pass on targeted rerun.
-- The serial source build refreshed all 178 nodes and 11 products and
-  passed its consumer check in 14m14s. The revision-32 image passed both
-  Node service and shutdown checks; its stronger browser-host run passed
-  five of six cases (WebKit classic lost its page context).
-- Caddy's three visible Firefox cases and both current-image Chromium
-  crash-durability modes pass. Standalone Caddy passes HTTP in Node and
-  all three browsers through the rebuilt revision-4 artifact.
-- Caddy also passes all three visible WebKit cases. The full WebKit UI
-  run is 4/6: classic post writes pass, while classic editor health and
-  template navigation remain intermittent failures.
-- Current source-level signal tests pass 51/51 across the three browsers;
-  ordinary/foreign callback regressions pass three Node probes and nine
-  browser cases. The complete cgo-enabled upstream Node `os` run passes
-  224 top-level tests/examples with 21 skips and clean guest diagnostics.
-- The current full Go browser inventory passes 150/150 across Chromium,
-  Firefox, and WebKit after correcting shared-host stop/continue retry
-  ownership. The related host suites pass 185/185.
+- The current plain-Go/cgo regular-file regressions fail before the
+  pollability correction and pass afterward in Node and all three browsers.
+  All four standard-library compile gates pass. The complete ordinary Go
+  browser inventory passes 153/153 across Chromium, Firefox, and WebKit.
+- Both actual revision-37 Node services pass startup, WordPress HTTP,
+  held-PHP draining after listener closure, and zero server/controller
+  exits. The initial two-case run also passes cooperative machine
+  retirement. A stronger rerun requires actual service log files; classic
+  passes, while Caddy again reaches a forced-retirement warning after its
+  normal PHP/server shutdown. This intermittent teardown gate remains open.
+- The visible Caddy UI case passes in Chromium and Firefox: homepage,
+  Shortcuts admin login, Appearance/site editor, template canvas blocks,
+  and 20 seconds of editor HTTP health. The real service log contains no
+  Go panic/fatal header.
+- The heavier current browser-host run passes five of six cases: both
+  profiles in Chromium/Firefox and classic in WebKit. Passing cases cover
+  real OPcache file-cache artifacts, login/editor HTTP, 40 request-churn
+  iterations, 20 editor burst rounds, ten parallel editor requests,
+  held-PHP draining, and cooperative retirement. Caddy also recovers after
+  intentional guest SIGKILL. WebKit Caddy loses its page context.
+- An isolated WebKit diagnostic then reproduces a same-URL reload during
+  classic request churn about 60 seconds after navigation. Phase evidence
+  and a trace are retained outside the page. Native browser stderr reports
+  a 21,182 MB footprint exceeding its 16,384 MB kill threshold. A plain-page
+  70-second control passes. The source of the memory use remains unknown.
 - Current C signal/I/O conformance passes 89 cases on Node and 89 on
-  Chromium, with two existing skips on each host and no failures or
-  timeouts. Both runs use identical admitted kernel/rootfs bytes and host
-  sources; the browser fixture's executable dependencies are included.
-- The final `go-hello` revision-24 package passes normal source publication,
-  Node C-to-Go VFS spawning with a zero fork count, and all three browser
-  VFS-launch cases. The two-package fixture is not a full app check.
-- Both final FrankenPHP profiles complete a real held PHP request after
-  SIGTERM closes the listener, then exit zero in Node. Classic's full test
-  passes. Caddy's first full test has a separate forced worker retirement
-  during machine destruction; its targeted rerun passes, so that failure
-  remains intermittent and under investigation.
-- Next: package the regular-file poll correction and require clean startup,
-  validate browser PHP shutdown, isolate the classic WebKit failures,
-  then establish sustained
-  traffic/memory behavior and current paired stack comparisons. Child
-  credentials, host-backed path limits, and broader conformance remain gaps.
+  Chromium, with two existing skips per host and no failures/timeouts.
+  Both hosts use the same admitted kernel/rootfs bytes and host sources.
+  The related stop/continue host suites pass 185/185.
+- The current revision-25 Go sample passes normal publication, Node C VFS
+  spawning, and all three browser launch cases, with matching ABI stamps
+  and no Node fork, stderr, or host diagnostics.
+- Earlier Go source `29e2118` passes 51 browser signal cases, three Node
+  and nine browser callback probes, the full cgo-enabled upstream Node
+  `os` inventory (224 top-level tests/examples, 21 skips). These
+  results remain tied to their recorded source/artifact identities.
+- Historical revision-32 app evidence covers post writes and real template
+  saves in Chromium for both FrankenPHP profiles; all three visible Caddy
+  cases pass in Firefox/WebKit. Classic crash recovery preserves a post,
+  exact uploaded image, and homepage template in both storage modes with
+  the original image source disabled. Current-image repetitions are pending.
 
 The dated entries below retain the evidence and failures behind this
-checkpoint. They must not be read as current production-readiness claims.
+checkpoint. These results do not establish complete Go/POSIX conformance,
+production readiness, a physical-memory plateau, or superiority over PHP-FPM.
 
 ### Remaining release gates
 
-1. Package and validate Go's regular-file poll correction: the preceding
-   Caddy build can panic during certificate reads and recover through
-   supervisor restart. Also
-   resolve the observed machine-retirement failure and retain forced
-   worker containment evidence.
-2. Prove that each real FrankenPHP service completes an in-flight PHP
-   request after SIGTERM and exits normally. The shared Node/browser probe
-   passes in Node; repeat it in browsers against the rebuilt image.
-3. Repeat visible login, Appearance → Editor, post/template saves, and
-   crash recovery on the final image. Resolve the intermittent classic
-   WebKit health/navigation and page-context failures; their cause remains
-   unknown. Earlier revision-32 Caddy workflows pass in all three engines.
+1. Resolve the intermittent machine-retirement failure after actual PHP
+   shutdown. Retain forced-containment evidence and identify the process
+   and channel state before changing runtime behavior.
+2. Complete browser PHP draining and retirement for Caddy on WebKit.
+   Reduce or explain the workload memory use behind the observed native
+   content-process kill; a same-URL reload is distinct from a Go exit.
+3. Repeat the full visible login, editor, post/template-save, and crash
+   recovery workflows on revision 37. Resolve the earlier intermittent
+   classic WebKit health/navigation failures; their cause remains unknown.
 4. Finish sustained traffic/memory checks, paired PHP-FPM/classic/Caddy
-   comparisons, and the nine-suite Node/Chromium incremental before/after
-   benchmark scope. Baseline `5e25c7365` is an intermediate branch revision,
-   so those comparisons cannot establish superiority over main.
+   comparisons, and all nine Node/Chromium incremental before/after
+   benchmark suites. The original baseline build drained after five hours
+   with three missing-Rust-submodule failures; its cached retry is running.
+   Browser RSS sampling also needs its missing declared `ps` tool. The
+   baseline commit `5e25c7365` is an intermediate branch revision, so those
+   comparisons cannot establish superiority over main.
 5. Review the remaining general Go/POSIX gaps: child credentials, inherited
    blocked signal masks, native HostFS path/helper distribution, broader
    cgo initializer/finalizer and concurrency coverage, and wider upstream
    conformance. Keep unsupported behavior explicit.
-6. Push the final validated checkpoint, update the draft PR and guidance,
-   and leave a verified current-image Kandelo web-app URL running.
+6. Push validated checkpoints, update this log, the draft PR and guidance,
+   and keep the verified current-image preview running.
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task.
@@ -5684,3 +5681,85 @@ rejects Go panic/fatal headers in the real service log, so supervisor
 recovery cannot hide a server crash. Broader current-image validation and
 performance measurements remain pending. Preview UI evidence is under
 `.context/frankenphp-preview-ui-IAnRUG/`.
+
+**2026-11-06 — Exercise heavier browser traffic and retain failure evidence.**
+The first six browser-host cases stop before PHP starts: the direct host
+fixture omits the app's lazy-asset transport, so the service controller
+cannot execute deferred `/usr/bin/id`. Using the existing
+`imageOwnedLazyAssetDirectory` helper fixes that fixture without rewriting
+the image or changing runtime resolution. The corrected run passes five
+cases in 3m42s: classic and Caddy on Chromium/Firefox, plus classic on WebKit.
+Those cases include real OPcache cache files, 40 request-churn iterations,
+20 editor burst rounds, ten parallel editor requests, held-PHP shutdown,
+and cooperative machine destruction. Caddy also recovers after deliberate
+SIGKILL. WebKit Caddy loses its page evaluation context.
+
+The browser fixture now saves service logs as actual artifact files and
+records workload phases outside the page. A bounded WebKit repetition
+stops at its first failure: classic reloads the same URL about 60 seconds
+after navigation, during request churn. A further native-log run passes
+classic and fails Caddy. The browser reports that its content-process
+footprint is 21,182 MB against a 16,384 MB kill threshold. This establishes
+the observed process-kill reason, not the source of the memory use or an
+engine defect. A separate plain-page 70-second control passes without a
+reload. Traces and phase evidence remain in
+`.context/frankenphp-webkit-host-n4geqB/` and
+`.context/frankenphp-webkit-host-R01rUZ/`.
+
+The Node log guard is strengthened too. Its shared demo setup removes the
+classic logfile directive, so the prior assertion could examine a `missing`
+placeholder. The test now preserves the image's original service config,
+requires the actual log and startup marker, and saves both profile logs.
+Classic passes. Caddy again completes the exact held PHP response and
+returns zero server/controller exits, with a clean service log, but machine
+destruction drains only three of four reported processes before forced
+retirement. Init has no recorded exit event. This preserves the separate
+intermittent teardown failure; the file-poll correction does not resolve it.
+Evidence is `.context/frankenphp-node-image-HCImlw/`.
+
+The current normal Go sample package (revision 25, source `1b0cf58`) also
+passes its C VFS launcher in Node and all three browsers: three browser
+cases, matching ABI stamps, expected markers, empty Node stderr and host
+diagnostics, and zero Node fork count. Its isolated two-package publication
+retains the known unrelated app pre-bundle warning; the selected probes
+have no runtime failure. Evidence is `.context/go-package-final-ubOYPz/`.
+
+The paired stack harness now preserves and checks actual service logs,
+rejects Go fatal traces and repeated FrankenPHP startup markers, and checks
+the Go server's listener identity across the measured workload. nginx's
+shared listener legitimately rotates between worker PIDs. The browser pair
+also selects both profiles inside the alternative's one hash-verified
+image: the gallery's FPM shortcut belongs to a different multi-image product.
+The previous two attempts correctly expose these fixture assumptions.
+Node then completes both profiles with 15-second RSS phases, but the browser
+RSS path stops because `ps` is absent from the declared dev shell. That
+tooling gate remains open. The corrected HTTP/log path without a soak passes all four Node/Chromium
+profile rounds for the FPM/Caddy pair in 2m28s, then all four for the
+FPM/classic pair in 2m22s. Both reports retain the actual service logs and
+exact image hash. These checks establish neither browser RSS nor long-term
+stability.
+All smoke runs occur under baseline-build load and support no speed claim.
+
+The branch's raw logs, job metadata, terminal results and observation index
+are retained in `.context/frankenphp-rev37-validation-evidence/`. Failure
+records remain separate from later observations. No Go/compiler, package,
+libc, SDK, or kernel change is made for these new findings.
+
+The paired smoke reports are `.context/wordpress-current-stack-J5Qam5/`
+and `.context/wordpress-current-stack-5D2PiL/`. The Node control uses six
+FPM children; the browser uses the image's current one-child FPM default.
+Both FrankenPHP profiles use six threads. This configuration difference is
+now explicit in the profiling guide. Ad hoc strict checking with the
+repo-pinned TypeScript 7 CLI still reports six diagnostics in imported
+files; it reports none in the benchmark itself. The three prior benchmark
+result/IPC type errors are corrected. This is not a full type-check pass.
+
+The original incremental-baseline job drains after five hours and reports
+three failures (`kandelo-cc`, `termchat`, `wasm-fork-instrument`), each from
+an uninitialized `sdk/rust/libc-upstream` submodule. Its successful source
+cache entries remain intact. The baseline's recorded libc gitlink
+`71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8` is initialized normally, and
+`go-baseline-wordpress-rust-ready-1106-021122-0abc` resumes the same source
+union. No baseline recipe or implementation is patched. Canonical baseline
+WordPress admission and the ninth Chromium provisioning case still await
+that build's terminal result.

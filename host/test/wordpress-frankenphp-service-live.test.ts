@@ -5,7 +5,8 @@ import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { expect, it } from "vitest";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
-import { configureWordPressRuntime, SERVICE_DEMO_ENV, waitForHttp } from "../../packages/registry/service-vfs-demo";
+import { configureWordPressRuntime, readVfsText, SERVICE_DEMO_ENV, waitForHttp } from "../../packages/registry/service-vfs-demo";
+import { writeVfsFile } from "../src/vfs/image-helpers";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import type { DestroyProgressEvent } from "../src/browser-kernel-protocol";
 import { observeProcessExits, verifyFrankenPhpGracefulShutdown } from "./support/frankenphp-graceful";
@@ -29,7 +30,11 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
   const port = await availablePort();
   const fs = KandeloImageFs.create();
   fs.loadImage(new Uint8Array(readFileSync(imagePath!)), { maxDecompressedBytes: 1024 * 1024 * 1024 });
+  const serviceConfigPath = `/etc/dinit.d/${service}`;
+  const serviceConfig = readVfsText(fs, serviceConfigPath);
   configureWordPressRuntime(fs, { port });
+  // The demo helper routes logs to stdio; this test needs the image's log file.
+  writeVfsFile(fs, serviceConfigPath, serviceConfig);
   const image = await fs.saveImage();
   const env = [
     ...SERVICE_DEMO_ENV,
@@ -114,8 +119,10 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
       throw new Error(`${String(error)}\n${reports.join("\n")}\n${logs.slice(-4000)}`, { cause: error });
     }
     const serviceLogBytes = await host.readFileFromVfs(`/var/log/${service}.log`);
-    const serviceLog = serviceLogBytes ? new TextDecoder().decode(serviceLogBytes) : "missing";
-    if (process.env.KANDELO_TEST_REPORT_DIR && serviceLogBytes) {
+    if (!serviceLogBytes) throw new Error(`Missing ${service} service log`);
+    const serviceLog = new TextDecoder().decode(serviceLogBytes);
+    expect(serviceLog).toContain(service === "frankenphp-caddy" ? "FrankenPHP started" : "FrankenPHP classic listening");
+    if (process.env.KANDELO_TEST_REPORT_DIR) {
       writeFileSync(join(process.env.KANDELO_TEST_REPORT_DIR, `${service}-service.log`), serviceLogBytes);
     }
     await host.destroy();

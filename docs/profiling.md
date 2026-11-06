@@ -407,6 +407,18 @@ digest, startup times, environment, median, p90, and throughput median across
 rounds. Node runs assign distinct HTTP and SMTP ports to prevent one demo
 or round from conflicting with another.
 
+The browser comparison resolves the alternative's gallery image once and
+selects both service profiles inside that image. The gallery's standalone
+FPM shortcut may belong to a different multi-image product, so using each
+shortcut independently would compare different image bytes. The shared
+browser image must still match the Node input's SHA-256.
+
+Each result also retains its real service log. Go panic/fatal headers or
+multiple FrankenPHP startup markers fail the measurement even if HTTP later
+recovers. Node also checks that the single-process Go server retains its
+listener PID. nginx legitimately distributes a shared listener across worker
+PIDs. Log inspection runs after the timed and RSS phases.
+
 First build and publish the WordPress source-only image. For browser runs,
 serve `apps/browser-demos` with its source-only Vite configuration on port
 5401. Then run the comparison from the repository root:
@@ -428,12 +440,17 @@ still required for broad platform performance claims.
 The comparison measures each complete HTTP stack, including its PHP
 execution mode. Both profiles use PHP 8.5 with file-cache-only OPcache;
 FrankenPHP embeds the thread-safe build and nginx uses PHP-FPM processes.
+Node configures six PHP-FPM children and six FrankenPHP threads. Browser
+runs use the image's shipped defaults: the current WordPress builder selects
+one PHP-FPM child and six FrankenPHP threads. Use the Node pair to compare
+equal maximum worker pools and the browser pair to compare those shipped
+stacks. Retain the actual image configuration when interpreting concurrency.
 The image prewarms the FPM file cache at build time. FrankenPHP builds its
 own compatible cache during requests, so cold-start and warm-request
 results must remain separate. Verify actual OPcache activation and warm
 both workloads before interpreting warm timings. Neither profile includes
 a full-page cache: these results cannot establish the performance of a
-cache-enabled visitor experience. The Caddy profile also requests a 1 GiB
+cache-enabled visitor experience. The Node Caddy profile requests a 1 GiB
 Wasm memory ceiling, versus 256 MiB for the nginx/PHP-FPM profile; this is
 an address-space ceiling, not a measurement of host physical memory.
 
