@@ -166,6 +166,8 @@ for (const demo of [
     expect(editorResult.status, `url=${page.url()} samples=${samples.join(",")} dock=${dockStatus}\n${editorResult.body}\npending=${pending.length}\n${pending.slice(0, 30).join("\n")}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(0, 10000)}\n${browserDiagnostics.slice(-100).join("\n")}`).toBe(200);
     expect(serviceLog).not.toMatch(/^Service-log inspection unavailable:/);
     expect(serviceLog.length).toBeGreaterThan(0);
+    // A supervisor restart can restore HTTP while hiding a Go server crash.
+    expect(serviceLog).not.toMatch(/^(?:panic:|fatal error:)/m);
 
     await expect(page.locator('.kdock-status-text[data-status="error"]')).toHaveCount(0);
   });

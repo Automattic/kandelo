@@ -5668,3 +5668,19 @@ The normal `./run.sh browser` preview is preparing its cached projection
 on port 5417. Browser startup/editor checks and the remaining current-image
 load, recovery, and performance gates are still pending. The original
 independent benchmark-baseline build continues without being restarted.
+
+The normal browser preparation then succeeds: 178/178 cached nodes, all
+11 products, and the published-consumer check. Its final artifact
+verification takes 981.9 seconds; no source package rebuild is needed.
+The persistent Vite preview is running on loopback port 5417. The gallery's
+ordinary image/profile URL resolves to the exact revision-37 SHA-256 and
+size above, checked against the actual HTTP response rather than inferred
+from a filename (`.context/frankenphp-preview-artifacts.json`).
+
+The visible Caddy UI test passes in Chromium and Firefox (two passes in
+2m50s): homepage, Shortcuts admin login, Appearance/site editor, template
+canvas blocks, and 20 seconds of editor HTTP health. The test now also
+rejects Go panic/fatal headers in the real service log, so supervisor
+recovery cannot hide a server crash. Broader current-image validation and
+performance measurements remain pending. Preview UI evidence is under
+`.context/frankenphp-preview-ui-IAnRUG/`.
