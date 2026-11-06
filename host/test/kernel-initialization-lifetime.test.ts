@@ -247,14 +247,28 @@ describe("optional KMS cursor transport negotiation", () => {
     await expect(kernel(engine.engine).init(memoryImportModule(4))).resolves.toBeUndefined();
   });
 
-  it("negotiates protocol 1 without a visible display", async () => {
-    const configure = vi.fn(() => 1);
+  it("negotiates protocol 2 without a visible display", async () => {
+    const configure = vi.fn((version: number) => version);
     const engine = installSuccessfulEngine(4, {
       kernel_kms_cursor_configure: configure,
       kernel_kms_cursor_read: vi.fn(() => 0),
     }, () => 4096);
-    await kernel(engine.engine).init(memoryImportModule(4));
-    expect(configure).toHaveBeenCalledExactlyOnceWith(1);
+    const k = kernel(engine.engine);
+    await k.init(memoryImportModule(4));
+    expect(configure).toHaveBeenCalledExactlyOnceWith(2);
+    expect(k.kms.cursorRecordLength).toBe(36);
+  });
+
+  it("falls back to protocol 1 on a kernel that predates shapes", async () => {
+    const configure = vi.fn((version: number) => version === 1 ? 1 : -95);
+    const engine = installSuccessfulEngine(4, {
+      kernel_kms_cursor_configure: configure,
+      kernel_kms_cursor_read: vi.fn(() => 0),
+    }, () => 4096);
+    const k = kernel(engine.engine);
+    await k.init(memoryImportModule(4));
+    expect(configure.mock.calls).toEqual([[2], [1]]);
+    expect(k.kms.cursorRecordLength).toBe(32);
   });
 
   it("rejects an incomplete cursor interface", async () => {

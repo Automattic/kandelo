@@ -2984,6 +2984,13 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     expect(await sized).toEqual({ width: 960, height: 540 });
   });
 
+  it("starts the pointer shape slot at the default shape, not hidden", () => {
+    const host = new LiveKernelHost();
+    host.attachKernel(makeKmsKernel() as any);
+    const handle = host.attachKmsDisplay(makeCanvas())!;
+    expect(Atomics.load(handle.stats, 9)).toBe(1);
+  });
+
   it("measures the size element of the latest attach, not the canvas", () => {
     withFakeResizeObserver(() => {
       const host = new LiveKernelHost();

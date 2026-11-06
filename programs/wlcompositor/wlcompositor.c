@@ -13,6 +13,7 @@
  *   xdg_wm_base + xdg_surface + xdg_toplevel  (incl. interactive move)
  *   wl_seat + wl_keyboard (keymap + modifiers) + wl_pointer
  *   wl_output
+ *   wp_cursor_shape_manager_v1  (when the host takes pointer shapes)
  *
  * v2 window management (what makes this a desktop, not a fullscreen
  * blitter):
@@ -23,7 +24,9 @@
  *     surface bottom→top and a focus border on the active window. No
  *     software cursor: the embedder (browser Modeset pane, remote
  *     viewer) shows the host pointer, which the input bridge maps
- *     absolutely onto the desktop;
+ *     absolutely onto the desktop. The client under the pointer names
+ *     its shape (wp_cursor_shape_v1), or hides it when it draws its own
+ *     cursor (wl_pointer.set_cursor with no surface);
  *   - pointer focus follows the topmost surface under the cursor
  *     (enter/leave with surface-local coordinates); a button press
  *     raises the window under the cursor and moves keyboard focus to it
@@ -108,6 +111,7 @@
 #include "ext-session-lock-v1-server-protocol.h"
 #include "ext-idle-notify-v1-server-protocol.h"
 #include "hyprland-global-shortcuts-v1-server-protocol.h"
+#include "cursor-shape-v1-server-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-names.h>
@@ -444,6 +448,10 @@ struct compositor {
     int surfaces_cap;                      /* capacity of both arrays */
     struct surface *kbd_focus;
     struct surface *ptr_focus;
+    /* The host takes pointer shapes (DRM_IOCTL_WPK_CURSOR_SHAPE), and the
+     * one it shows now. */
+    int cursor_shapes;
+    uint32_t cursor_shape;
 
     /* Mapped layer surfaces, in map order; composited by layer, not by
      * z-order, and never tiled. `usable` is the output minus their
@@ -2511,11 +2519,40 @@ static void keyboard_resource_destroy(struct wl_resource *r) {
     if (fd >= 0) close(fd);
 }
 
+/* `_IOW('d', 0xE2, struct { uint32_t crtc_id, shape; })`: the host
+ * pointer's shape, 0 to hide it or a wp_cursor_shape_device_v1 shape. */
+#define WPK_DRM_IOCTL_CURSOR_SHAPE 0x400864e2u
+#define WPK_CURSOR_SHAPE_HIDDEN 0u
+
+static void cursor_shape_set(uint32_t shape) {
+    if (!g.cursor_shapes || shape == g.cursor_shape) return;
+    struct { uint32_t crtc_id, shape; } req = { g.crtc_id, shape };
+    if (drmIoctl(g.card_fd, WPK_DRM_IOCTL_CURSOR_SHAPE, &req) != 0) return;
+    g.cursor_shape = shape;
+    printf("CURSOR_SHAPE shape=%u\n", shape);
+    fflush(stdout);
+}
+
+static void cursor_shapes_probe(void) {
+    g.cursor_shapes = 1;
+    g.cursor_shape = WPK_CURSOR_SHAPE_HIDDEN;
+    cursor_shape_set(WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
+    g.cursor_shapes = g.cursor_shape == WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT;
+}
+
+/* Only the client under the pointer sets its shape. */
+static int ptr_focus_owned_by(struct wl_client *c) {
+    return g.ptr_focus && g.ptr_focus->client == c;
+}
+
 static void pointer_set_cursor(struct wl_client *c, struct wl_resource *r,
                                uint32_t serial, struct wl_resource *surface,
                                int32_t hx, int32_t hy) {
-    /* No cursor sprite is drawn (the browser host pointer already sits at
-     * the mapped position), so client cursors are accepted and ignored. */
+    /* A cursor surface is not drawn: the host pointer keeps its default
+     * shape. No surface hides it, for a client that draws its own. */
+    if (!ptr_focus_owned_by(c)) return;
+    cursor_shape_set(surface ? WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT
+                             : WPK_CURSOR_SHAPE_HIDDEN);
 }
 static void pointer_release(struct wl_client *c, struct wl_resource *r) {
     wl_resource_destroy(r);
@@ -2617,6 +2654,7 @@ static void kbd_set_focus(struct surface *s) {
 /* Pointer focus follows the surface under the cursor. */
 static void ptr_set_focus(struct surface *s) {
     if (g.ptr_focus == s) return;
+    cursor_shape_set(WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
     uint32_t serial = wl_display_next_serial(g.display);
     if (g.ptr_focus) {
         for_each_seat_res(res, &g.pointers, g.ptr_focus->client) {
@@ -3348,6 +3386,58 @@ static void viewporter_bind(struct wl_client *c, void *data, uint32_t ver,
         wl_resource_create(c, &wp_viewporter_interface, (int)ver, id);
     if (!r) { wl_client_post_no_memory(c); return; }
     wl_resource_set_implementation(r, &viewporter_impl, NULL, NULL);
+}
+
+/* ====================================================================== */
+/* wp_cursor_shape_manager_v1: the host pointer's shape                   */
+/* ====================================================================== */
+
+static void cursor_shape_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void cursor_shape_device_set_shape(struct wl_client *c,
+                                          struct wl_resource *r,
+                                          uint32_t serial, uint32_t shape) {
+    if (shape < WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT ||
+        shape > WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ZOOM_OUT) {
+        wl_resource_post_error(r, WP_CURSOR_SHAPE_DEVICE_V1_ERROR_INVALID_SHAPE,
+                               "invalid shape %u", shape);
+        return;
+    }
+    if (ptr_focus_owned_by(c)) cursor_shape_set(shape);
+}
+static const struct wp_cursor_shape_device_v1_interface cursor_shape_device_impl = {
+    .destroy = cursor_shape_destroy,
+    .set_shape = cursor_shape_device_set_shape,
+};
+static void cursor_shape_device_create(struct wl_client *c,
+                                       struct wl_resource *r, uint32_t id) {
+    struct wl_resource *d = wl_resource_create(
+        c, &wp_cursor_shape_device_v1_interface, wl_resource_get_version(r), id);
+    if (!d) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(d, &cursor_shape_device_impl, NULL, NULL);
+}
+static void cursor_shape_get_pointer(struct wl_client *c, struct wl_resource *r,
+                                     uint32_t id, struct wl_resource *pointer) {
+    cursor_shape_device_create(c, r, id);
+}
+/* No tablet is advertised, so a tablet tool's device stays inert. */
+static void cursor_shape_get_tablet_tool(struct wl_client *c,
+                                         struct wl_resource *r, uint32_t id,
+                                         struct wl_resource *tool) {
+    cursor_shape_device_create(c, r, id);
+}
+static const struct wp_cursor_shape_manager_v1_interface cursor_shape_mgr_impl = {
+    .destroy = cursor_shape_destroy,
+    .get_pointer = cursor_shape_get_pointer,
+    .get_tablet_tool_v2 = cursor_shape_get_tablet_tool,
+};
+static void cursor_shape_mgr_bind(struct wl_client *c, void *data, uint32_t ver,
+                                  uint32_t id) {
+    struct wl_resource *r = wl_resource_create(
+        c, &wp_cursor_shape_manager_v1_interface, (int)ver, id);
+    if (!r) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(r, &cursor_shape_mgr_impl, NULL, NULL);
 }
 
 /* ====================================================================== */
@@ -6694,6 +6784,15 @@ int main(int argc, char *argv[]) {
         !wl_global_create(g.display, &wl_seat_interface, 5, NULL, seat_bind) ||
         !wl_global_create(g.display, &wl_output_interface, 4, NULL,
                           output_bind)) {
+        fprintf(stderr, "wl_global_create failed\n");
+        return 1;
+    }
+    /* Clients fall back to their own cursor themes when the host cannot
+     * take shapes. */
+    cursor_shapes_probe();
+    if (g.cursor_shapes &&
+        !wl_global_create(g.display, &wp_cursor_shape_manager_v1_interface, 1,
+                          NULL, cursor_shape_mgr_bind)) {
         fprintf(stderr, "wl_global_create failed\n");
         return 1;
     }

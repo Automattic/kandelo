@@ -150,6 +150,20 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     expect(Atomics.load(stats, 8)).toBe(456);
   });
 
+  it("publishes the master's pointer shape in slot 9 at vblank", () => {
+    const kernel = makeKernel();
+    const stats = new Int32Array(new SharedArrayBuffer(64));
+    kernel.attachKmsStats(1, stats.buffer as SharedArrayBuffer);
+    vi.advanceTimersByTime(17);
+    expect(Atomics.load(stats, 9)).toBe(1);
+    kernel.kms.cursorShape = 0;
+    vi.advanceTimersByTime(17);
+    expect(Atomics.load(stats, 9)).toBe(0);
+    kernel.kms.cursorShape = 16;
+    vi.advanceTimersByTime(17);
+    expect(Atomics.load(stats, 9)).toBe(16);
+  });
+
   it("tickVblank fills slots 5/6 from kernel kms_commit_count + kms_last_frame_us when SAB is sized for them", () => {
     const kernel = makeKernel({
       kernel_kms_commit_count: (_crtc: number) => 42n,

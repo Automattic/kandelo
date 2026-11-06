@@ -3486,8 +3486,9 @@ motion, warp, and shape changes. This keeps nonzero-hotspot cursors aligned
 without changing DRM semantics for other clients.
 
 Cursor transport adds no required Wasm import. The optional
-`kernel_kms_cursor_configure(version)` export accepts protocol 1 and returns
-1, or negative `ENOTSUP` for unknown versions. Until negotiation, cursor
+`kernel_kms_cursor_configure(version)` export accepts protocol 1 or 2 and
+returns the version it took, or negative `ENOTSUP` for unknown versions.
+Hosts ask for protocol 2 first and fall back to 1 for an older kernel. Until negotiation, cursor
 capabilities report zero and valid master cursor requests that reach the
 kernel fail `ENOTSUP` before retaining a buffer. An older host adapter can
 reject the unknown ioctl earlier with `EINVAL`; the zero capability is the
@@ -3505,6 +3506,27 @@ pending state before its buffer can be reused. The host drains this state
 inside the existing vblank kernel entry before reading pixels, using a
 scratch lease and owned copies. Records from retired owners are discarded.
 Older kernels without the exports remain loadable by new hosts.
+
+Protocol 2 adds the host pointer's shape. Its records are 36 bytes: the
+eight protocol-1 words, then the shape. `DRM_IOCTL_WPK_CURSOR_SHAPE`
+(`'d'` nr `0xE2`, `{ crtc_id, shape }`) sets it. Shape 0 hides the host
+pointer, for a guest that draws its own cursor in its frame. Shapes 1
+through 34 are the `wp_cursor_shape_device_v1` shapes, 1 being the default.
+The request fails `EINVAL` for a larger shape, `ENOENT` for a CRTC other
+than 1, `EACCES` without DRM master, and `ENOTSUP` when the host took only
+protocol 1. Dropping master resets the shape to the default. The host
+publishes the shape in display statistics slot 9, which starts at 1. The
+browser's Modeset pane shows it as the CSS cursor of a `hostPointer`
+surface, whose shape names are the CSS cursor names. The ioctl is additive
+under ABI 56.
+
+wlcompositor offers `wp_cursor_shape_manager_v1` only when its startup
+probe of that ioctl succeeds; clients fall back to their own cursor themes
+otherwise. Only the client under the pointer sets the shape. A
+`wl_pointer.set_cursor` with no surface hides the host pointer. A cursor
+surface is not drawn, and the host pointer takes the default shape. Pointer
+focus changes reset the shape to the default before the new client gets
+its enter event.
 
 `KmsRegistry` refreshes the packed cursor image from its producer mapping
 at vblank, using the shared GBM coherence boundary. It retains an owned
@@ -3563,7 +3585,7 @@ The stack is dual-host: the Node smoke gates (`host/test/{wpkdraw,libkwl,wlcompo
 
 The same `wlcompositor` binary is also a Hyprland-class tiling WM (PR14); the floating desktop above is simply its default layout, so `/?demo=wayland` is unchanged. `WLC_LAYOUT=dwindle` selects the tiler.
 
-- **Layout engine.** `compute_tiling(area, n)` is a pure function: it partitions the output among `n` windows by recursively splitting the remaining region along its longer side (Hyprland's dwindle default — near half to window *i*, remainder carried forward), insetting an outer gap from the screen edge and an inner gap between windows. `retile()` runs it over the mapped windows on the active workspace (in map order = z-order) and pushes each dictated size through the `xdg_toplevel.configure` path; `FLOATING` mode keeps the app_id placement rules and makes `retile()` a no-op. Because the tiler is pure, the Node gate predicts the exact partition and compares it against the emitted `TILE` markers. A surface enters that list only once it carries the `xdg_toplevel` role: a client's cursor surface (`wl_pointer.set_cursor` is accepted and ignored, since the host pointer already draws the sprite) commits a buffer under no role, and would otherwise map, take the keyboard, and claim a tile of its own. Waybar's cursor theme is the case that reaches it.
+- **Layout engine.** `compute_tiling(area, n)` is a pure function: it partitions the output among `n` windows by recursively splitting the remaining region along its longer side (Hyprland's dwindle default — near half to window *i*, remainder carried forward), insetting an outer gap from the screen edge and an inner gap between windows. `retile()` runs it over the mapped windows on the active workspace (in map order = z-order) and pushes each dictated size through the `xdg_toplevel.configure` path; `FLOATING` mode keeps the app_id placement rules and makes `retile()` a no-op. Because the tiler is pure, the Node gate predicts the exact partition and compares it against the emitted `TILE` markers. A surface enters that list only once it carries the `xdg_toplevel` role: a client's cursor surface (`wl_pointer.set_cursor` only sets the host pointer's default shape, since the host pointer draws the sprite) commits a buffer under no role, and would otherwise map, take the keyboard, and claim a tile of its own. Waybar's cursor theme is the case that reaches it.
 - **Workspaces.** Nine 1-based workspaces on the single output. Each surface carries a workspace id (assigned at first map); `surface_visible()` (mapped AND on the active workspace) gates compositing, input hit-testing, and tiling. `switch_workspace()` restores focus to the target's top window (z-order doubles as per-workspace focus memory); `move_focus_to_workspace()` sends the focused window away and re-tiles the remainder.
 - **`kwlctl` IPC.** A control + event socket at `/tmp/kwlctl-0` (the hyprctl analog), polled in the compositor's `wl_event_loop` alongside the wayland + libinput fds. Verbs: `clients` / `workspaces` / `activeworkspace` / `activewindow` / `monitors` / `workspacerules` / `theme` (JSON queries, each also accepted behind hyprctl's `j/` prefix), `dispatch <workspace N|focusworkspaceoncurrentmonitor N|movetoworkspace N|close|exec <path…>|theme <name|next|prev>|sendshortcut MODS, KEY|kandelo:sendshortcutiftag TAG, MODS, KEY, MODS, KEY>`, and `--listen` (a newline-delimited `event>>data` stream in Hyprland's socket2 format). `dispatch exec` uses the non-forking `posix_spawnp` (`SYS_SPAWN`) — a `fork()` from inside an event-loop callback would wedge the server — and accepted control fds are `CLOEXEC` so they don't leak into spawned children. The CLI client is `programs/wlcompositor/kwlctl.c` (`KWLCTL_SOCKET` overrides the path).
 - **Hyprland IPC compatibility.** The same command table and event bus are also served on Hyprland's own socket pair, where an unmodified Waybar looks for them: `/tmp/hypr/wlcompositor/.socket.sock` (request/reply) and `.socket2.sock` (the event stream, which needs no handshake — a client that connects is a listener). `main()` exports `HYPRLAND_INSTANCE_SIGNATURE=wlcompositor` and defaults `XDG_RUNTIME_DIR=/tmp`, so anything the compositor execs finds the directory. The query replies carry the `hyprctl -j` field set Waybar's `hyprland/*` modules read — window `class`/`title`/`workspace`/`floating`/`mapped`, workspace `id`/`name`/`monitor`/`windows`, and a single `virtual-0` monitor — and the events it subscribes to: `workspace`/`workspacev2`, `createworkspace`/`destroyworkspace` (+`v2`), `focusedmon`(`v2`), `activewindow`/`activewindowv2`, `openwindow`/`closewindow`, `movewindow`(`v2`), `windowtitle`(`v2`), in Hyprland's order: a new window's workspace is created, the window opens, then it takes focus. Window titles exist only for this: `xdg_toplevel.set_title` is stored on the surface and relayed, never drawn (clients keep their own CSD titlebars).

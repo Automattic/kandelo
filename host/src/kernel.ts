@@ -1700,7 +1700,10 @@ export class WasmPosixKernel {
       const configureCursor = exports.kernel_kms_cursor_configure;
       const readCursor = exports.kernel_kms_cursor_read;
       if (typeof configureCursor === "function" && typeof readCursor === "function") {
-        if (configureCursor(1) !== 1) throw new Error("Kernel rejected KMS cursor protocol 1");
+        // Protocol 2 adds the pointer shape. A kernel that predates it
+        // rejects 2 and still accepts 1.
+        if (configureCursor(2) === 2) this.kms.cursorRecordLength = 36;
+        else if (configureCursor(1) !== 1) throw new Error("Kernel rejected KMS cursor protocol 1");
       } else if (configureCursor || readCursor) {
         throw new Error("Kernel has an incomplete KMS cursor transport");
       }

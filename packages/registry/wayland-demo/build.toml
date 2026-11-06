@@ -34,6 +34,8 @@ inputs = [
   "packages/registry/wayland-protocols/xml/fractional-scale-v1.xml",
   "packages/registry/wayland-protocols/xml/ext-session-lock-v1.xml",
   "packages/registry/wayland-protocols/xml/ext-idle-notify-v1.xml",
+  "packages/registry/wayland-protocols/xml/cursor-shape-v1.xml",
+  "packages/registry/wayland-protocols/xml/tablet-unstable-v2.xml",
   "packages/registry/wayland-demo/desktops/data/applications/clock.desktop",
   "packages/registry/wayland-demo/desktops/data/applications/nano.desktop",
   "packages/registry/wayland-demo/desktops/data/applications/nethack.desktop",

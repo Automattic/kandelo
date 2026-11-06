@@ -17,6 +17,7 @@ import { useDockActions } from "./DockActions";
 import { useExchangeDrop } from "../app/exchange-drop";
 import { ExchangeDropOverlay, ExchangePickControl } from "../app/ExchangeToasts";
 import { useFittedCanvasStyle } from "./canvasFit";
+import { cssCursor } from "./cursor-shape";
 
 // modeset.c hardcodes 1920×1080 (CANVAS_W/CANVAS_H). The kernel-side
 // auto-attach resizes the OffscreenCanvas drawing buffer to match the
@@ -503,6 +504,17 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     cursor.style.width = canvas.style.width;
     cursor.style.height = canvas.style.height;
   }, [canvas, canvasStyle, presentation.hostPointer, host, crtcId]);
+  // A `hostPointer` guest still names the pointer's shape, and hides it
+  // when it draws its own cursor in its frame.
+  React.useEffect(() => {
+    if (!canvas || !handle || !presentation.hostPointer) return;
+    let frame = requestAnimationFrame(function follow() {
+      const shape = cssCursor(Atomics.load(handle.stats, 9));
+      if (canvas.style.cursor !== shape) canvas.style.cursor = shape;
+      frame = requestAnimationFrame(follow);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [canvas, handle, presentation.hostPointer]);
   const statusLabel = hasFrame
     ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs` +
       (RENDERER_LABELS[stats.renderer] ? ` · ${RENDERER_LABELS[stats.renderer]}` : "")
