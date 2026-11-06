@@ -5440,3 +5440,20 @@ No SDK file is changed: `sdk/bin` and `sdk/package.json` are global package
 cache inputs, so edits there would invalidate the active source builds.
 The overview's repository links resolve and `git diff --check` passes.
 This documentation adds no runtime or performance validation claim.
+
+**2026-11-05 — Reject an incomplete component-image shortcut.**
+The new Caddy producer passes normal source-cache admission while the full
+image is still building. A separately scoped component attempt combines it
+with the archived revision-32 image, but fails in six seconds before
+FrankenPHP starts: the service launcher cannot execute `/usr/bin/id`
+(`EIO`). Offline inspection confirms that `id` and its coreutils hard links
+are deferred image entries; the archive alone does not contain their bytes.
+This mixed-generation fixture does not establish PHP or Go shutdown behavior.
+
+The attempt is abandoned rather than manually replacing dependencies or
+duplicating the normal image builder's executable/companion closure. The
+temporary kernel override is removed from the Node test. The job
+`frankenphp-caddy-component-drain-1105-224725-a062` and the deferred-entry
+inspection remain under `.context/` as failure evidence. Normal coherent
+image publication remains the prerequisite for the real PHP shutdown gate;
+resolver integrity checks are unchanged.
