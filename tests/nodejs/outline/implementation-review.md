@@ -1,5 +1,11 @@
 # Broad implementation review
 
+The normal targeted engine149 build failed an actual Mozilla sorted-list gate.
+Source150 fixes three build lists; the unchanged upstream validator accepts
+41checked lists and14package-source checks pass. No current engine/runtime
+acceptance follows. See [build ordering scope](engine-build-order-integration.md).
+
+
 Source checkpoint149 integrates actual native execution ownership and outer
 callback recovery, preserving catchable nested errors and clear epochs.
 Four native helper compilations, six bounded component processes and36affected

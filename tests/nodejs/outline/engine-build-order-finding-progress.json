@@ -1,0 +1,69 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/engine-contracts.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "engine",
+      "workers",
+      "observability",
+      "native-integration"
+    ],
+    "scope": "Post-audit normal-build prerequisite: actual Mozilla sorted build-definition lists,not public API closure"
+  },
+  "sourceImplemented": [
+    "Correct actual public header/API-test/histogram source ordering without removing any entry or weakening Mozilla buildreader/assertions",
+    "Additive three-file engine0120 exactpre/postimages and normal source150 recipe;runtimealgorithms/nativeinterfaces unchanged"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-engine-build-order-source-r1/report.json",
+    "sha256": "40830152a52d5d34bcb5943ec7868069bb80f581e144e8a68b07d88f7a9a0c90",
+    "guardedInputs": 715,
+    "beforeUnsortedLists": 3,
+    "afterLiteralListsPassed": 41,
+    "engineFiles": 3,
+    "scope": "Exact unchanged Mozilla StrictOrderingOnAppendList validates literal source/export lists in threeactual currentmoz.build postimages. Threebefore failures/aftermatchingcontents in correctorder. This is targeted upstream build-definition source validation,not fullBuildReader/enginecompile/runtime/fourhost proof; normal149failure retained."
+  },
+  "packageChecks": {
+    "report": ".context/node26-engine-build-order-affected-r1.json",
+    "sha256": "f7a43098d0318b31a2a9329efe82499ec681a6020b3c727c46474bd1311efafe",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing14package-source checks only;no runtime/API acceptance"
+  },
+  "targetedEngineFailure": {
+    "report": ".context/node26-engine149-failure-final/report.json",
+    "sha256": "33136e63fd8d46d2b006e8809974dfc0499f91bb5e7c490662187810a4fc7dfa",
+    "revision": 149,
+    "exitCode": 1,
+    "scope": "Actual normal149engine resolve afterSDK/core/dependencyrefresh failed inMozilla buildreader publicEXPORTS list. Frozenidentitiesunchanged,no acceptedengine/JSAPI/guest/fourhostartifact"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-engine149-failure-final/output.log",
+      "sha256": "9bd397ed623f08c6c4246c916c073d2432dde8b5743d15234f80602f08ac2ca3",
+      "kind": "normal149-Mozilla-buildreader",
+      "reason": "Exact unsortedNativeLazyheader exportfailure retained;actual unchangedvalidator additionally findsJSAPItest/shellsource list mistakes"
+    },
+    {
+      "report": "/Users/brandon/.cache/kandelo/agent-jobs/jobs/node26-engine149-1106-110605-e6dc/output.log",
+      "sha256": "da4b0bac5b351d7757dba1a6baf1d1ae325bc026109b5941e5a9d7812ed2c94c",
+      "kind": "initial149-preflight-path",
+      "reason": "Ownpreflightpsnotin declaredPATH;failed before compilation. Explicit/bin/psinspection fix;normalr2 then reachedactualreader gate"
+    }
+  ],
+  "remaining": [
+    "Rerun normal selectedengine/dependencybuild for150;currentcombinedcandidate remainswithoutacceptedengine",
+    "ProductionC++/JSAPI/GC/realm/loop and identified-artifact fourhostconformance stillunestablished",
+    "Integrate reviewedReadFilecapacity,TCPalias/foundations/write spans,UDP andLocks/X509 privatework aftercoherentbuild steps;all19familiespartial"
+  ],
+  "at": "2026-11-06T17:23:49.809282+00:00",
+  "recipeRevision": 150,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

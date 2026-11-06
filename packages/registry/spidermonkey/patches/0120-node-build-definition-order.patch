@@ -1,0 +1,34 @@
+diff --git a/js/src/moz.build b/js/src/moz.build
+--- a/js/src/moz.build
++++ b/js/src/moz.build
+@@ -164,6 +164,6 @@
+     "../public/MemoryFunctions.h",
+     "../public/MemoryMetrics.h",
++    "../public/Modules.h",
+     "../public/NativeLazyDataProperty.h",
+-    "../public/Modules.h",
+     "../public/NativeStackLimits.h",
+     "../public/Object.h",
+diff --git a/js/src/jsapi-tests/moz.build b/js/src/jsapi-tests/moz.build
+--- a/js/src/jsapi-tests/moz.build
++++ b/js/src/jsapi-tests/moz.build
+@@ -94,7 +94,7 @@
+     "testMappedArrayBuffer.cpp",
+     "testMapSet.cpp",
+-    "testNativeLazyDataProperty.cpp",
+     "testMemoryAssociation.cpp",
+     "testMutedErrors.cpp",
++    "testNativeLazyDataProperty.cpp",
+     "testNewObject.cpp",
+     "testNewTargetInvokeConstructor.cpp",
+diff --git a/js/src/shell/moz.build b/js/src/shell/moz.build
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -74,6 +74,6 @@
+ SOURCES += [
+     "histogram-owner.cc",
++    "histogram-vendor/src/hdr_histogram.c",
+     "histogram-window.cc",
+-    "histogram-vendor/src/hdr_histogram.c",
+ ]
+ SOURCES["histogram-owner.cc"].flags += ["-std=c++20"]
