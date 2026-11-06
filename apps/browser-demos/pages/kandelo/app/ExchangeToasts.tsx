@@ -1,6 +1,9 @@
 /**
  * Kandelo exchange in the app: a toast per offered batch, the output tray,
- * and the file picker behind the dock's "Send files" button.
+ * and the file picker behind the dock's "Send files" button. A small
+ * `text/uri-list` output (what the guest's `xdg-open` publishes) is a link
+ * the machine asks to open; it shows every URI in full, and only a click on
+ * Open, which is the user activation `window.open` needs, opens it.
  *
  * Everything shown comes from the session's exchange view
  * (web-libs/kandelo-session/src/exchange-session.ts); the app only decides
@@ -17,6 +20,8 @@ import { useExchangeBatches, useExchangeOutputs, useKernelHost } from "../kernel
 import { pickedItems } from "./exchange-drop";
 
 const DONE_VISIBLE_MS = 6000;
+const LINK_MAX_BYTES = 8192;
+const LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
 function humanBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -144,8 +149,73 @@ const OutputRow: React.FC<{ output: ExchangeOutputView }> = ({ output }) => {
   );
 };
 
+function isLink(output: ExchangeOutputView): boolean {
+  return output.mimeType === "text/uri-list" && output.kind === "stored"
+    && output.size !== undefined && output.size <= LINK_MAX_BYTES;
+}
+
+/** RFC 2483: one URI per line; lines starting with '#' are comments. */
+function parseUriList(text: string): string[] {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+}
+
+function openable(uri: string): boolean {
+  try {
+    return LINK_PROTOCOLS.has(new URL(uri).protocol);
+  } catch {
+    return false;
+  }
+}
+
+const LinkRow: React.FC<{ output: ExchangeOutputView; machineTitle: string }> = ({ output, machineTitle }) => {
+  const host = useKernelHost();
+  const exchange = host.getExchange();
+  const [uris, setUris] = React.useState<string[] | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let current = true;
+    new Response(exchange.readOutput(output.id)).text().then(
+      (text) => { if (current) setUris(parseUriList(text)); },
+      (cause) => { if (current) setError(cause instanceof Error ? cause.message : String(cause)); },
+    );
+    return () => { current = false; };
+  }, [exchange, output.id]);
+  const open = () => {
+    for (const uri of uris ?? []) if (openable(uri)) window.open(uri, "_blank", "noopener,noreferrer");
+    exchange.finishOutput(output.id);
+  };
+  const refused = (uris ?? []).filter((uri) => !openable(uri));
+  return (
+    <div className="kdownload-toast kexchange-output" data-testid="exchange-link" data-output-name={output.name}>
+      <div className="kdownload-toast-top">
+        <span className="kdownload-toast-title">
+          {machineTitle} wants to open {uris && uris.length > 1 ? "links" : "a link"}
+        </span>
+      </div>
+      {error && <div className="kdownload-toast-detail">{error}</div>}
+      {(uris ?? []).map((uri) => (
+        <div key={uri} className="kdownload-toast-detail kexchange-link-uri" data-testid="exchange-link-uri">{uri}</div>
+      ))}
+      {refused.length > 0 && <div className="kdownload-toast-detail">Only http, https and mailto links open.</div>}
+      <div className="kexchange-output-actions">
+        <button
+          type="button"
+          disabled={!uris || uris.length === refused.length || output.withdrawn}
+          onClick={open}
+          data-testid="exchange-link-open"
+        >
+          Open
+        </button>
+        <button type="button" onClick={() => exchange.finishOutput(output.id)} data-testid="exchange-link-dismiss">
+          Dismiss
+        </button>
+      </div>
+    </div>
+  );
+};
+
 /** Batch toasts and the output tray. */
-export const ExchangeToasts: React.FC = () => {
+export const ExchangeToasts: React.FC<{ machineTitle: string }> = ({ machineTitle }) => {
   const host = useKernelHost();
   const batches = useExchangeBatches();
   const outputs = useExchangeOutputs();
@@ -154,7 +224,9 @@ export const ExchangeToasts: React.FC = () => {
   return (
     <aside className="kdownload-toasts kexchange-toasts" aria-label="Files sent to and from this machine" aria-live="polite">
       {batches.slice(-3).map((batch) => <BatchToast key={batch.key} batch={batch} onDismiss={dismiss} />)}
-      {outputs.map((output) => <OutputRow key={output.id} output={output} />)}
+      {outputs.map((output) => isLink(output)
+        ? <LinkRow key={output.id} output={output} machineTitle={machineTitle} />
+        : <OutputRow key={output.id} output={output} />)}
     </aside>
   );
 };

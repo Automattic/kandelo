@@ -38,3 +38,9 @@ fork_instrumentation = "disabled"
 name = "exchange-save"
 wasm = "exchange-save.wasm"
 fork_instrumentation = "disabled"
+
+# Publishes an http, https or mailto link as a text/uri-list output.
+[[outputs]]
+name = "xdg-open"
+wasm = "xdg-open.wasm"
+fork_instrumentation = "disabled"
