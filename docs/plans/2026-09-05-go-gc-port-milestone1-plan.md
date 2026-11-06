@@ -5301,3 +5301,26 @@ Branch-only diagnostic excerpts are kept in
 `.context/branch-failures/go-signals/`, following the repository's failure
 recording policy. The earlier committed baseline inventory remains intact;
 the progress log retains the branch commands, results, and root cause.
+
+
+The validation guide now records the observed staged-member/published-
+projection boundary so future consumers wait for finalization instead of
+misdiagnosing or overwriting an in-progress output. Go profiling guidance
+links the now-isolated Node stack benchmark and its RSS scope. These are
+documentation changes; they add no runtime validation claim.
+
+A separate revision-32 image staging diagnostic records roughly 99 MiB RSS
+before loading, 1179 MiB after image load, and 1658 MiB after saving the
+configured 500162899-byte image, before guest execution
+(`.context/wordpress-rev32-memory-stages-current.log`). This separates part
+of the harness cost from executing PHP/Go; it is not a decomposition of
+steady-state server footprint or a memory leak diagnosis.
+
+Baseline provisioning compiled PHP and both MariaDB architectures, then
+its direct `bootstrap rootfs` host step failed on missing login output.
+The corrected final preparation selects kernel, PHP, both MariaDB variants,
+and the rootfs package in one normal source-build closure before building
+the benchmark fixtures. Separate filtered bootstraps replace the published
+projection, so the final union matters. For the candidate, selecting
+`demanded` plus `mariadb64` preserves the normal eleven products while
+adding the memory64 database inputs required by the complete benchmark.

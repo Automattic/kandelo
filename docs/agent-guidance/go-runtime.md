@@ -663,6 +663,12 @@ requests, and restart. A compile or instantiation probe that never calls
 the program entry point cannot establish the cost of executing Go code or
 starting its C pthreads. Do not subtract samples from different binaries
 or VFS images and call the difference PHP or Caddy overhead.
+The [paired stack benchmark](../profiling.md#wordpress-stack) now isolates
+each Node round in a fresh child, records its PID, and waits for its exit
+before the next profile. Use its optional sustained-load phase for native
+RSS samples; an earlier round's retained pages must not be attributed to a
+later stack. Chromium samples sum process RSS and can double-count shared
+pages, so keep that quantity distinct from unique physical footprint.
 
 For Node diagnostics, record process RSS and, on macOS, physical footprint;
 V8's `--print-wasm-offheap-memory-size` is useful for an exit-time compiled

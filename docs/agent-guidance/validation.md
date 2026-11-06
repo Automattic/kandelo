@@ -68,6 +68,14 @@ run. For a lazy artifact size mismatch, check the selected image and
 executable identities and repair stale inputs. Do not relax size checks
 or substitute unrelated executable bytes.
 
+Check for an active source build before diagnosing a projection mismatch as
+cache corruption. A build can stage a newly rebuilt mirror member while the
+previous projection remains published until finalization. The observed rootfs
+size mismatch during the Go signal port was this intermediate state. Wait for
+the build to publish its complete cohort, then rerun consumers. Do not copy an
+older artifact over the new member, restamp it, or weaken integrity checks to
+make an in-progress projection usable.
+
 A spec must not skip because a binary or image the supported build produces
 is missing. Missing supported output is a build defect: fail with the reason,
 as `gotoMachineOrSkip` and `gotoApp` in
