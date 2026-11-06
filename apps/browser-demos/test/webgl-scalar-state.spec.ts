@@ -8,7 +8,7 @@ for(const journal of [false,true])for(const audit of [false,true])test(`scalar s
  const errors:string[]=[];page.on("pageerror",e=>errors.push(e.message));await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
  const result=await page.evaluate(async({source,journal,audit})=>{
   const load=(name:string)=>import(/* @vite-ignore */ `/@fs${source}${name}.ts`);
-  const [{GlContextRegistry},{GlMuxer},{GlProgramJournal},{prepareScalarState},{decodeAndDispatch},{withNativeBatch},{configureGlAudit,resetGlAuditForTesting},{nativeGlFault},{observeRendererLoss},O]=await Promise.all([load("registry"),load("muxer"),load("program-journal"),load("scalar-state"),load("bridge"),load("native-batch"),load("native-audit"),load("native-recovery"),load("renderer-loss"),load("ops")]);
+  const [{GlContextRegistry},{GlMuxer},{GlProgramJournal},{prepareScalarState},{decodeAndDispatch},nativeBatch,{configureGlAudit,resetGlAuditForTesting},{nativeGlFault},{observeRendererLoss},O]=await Promise.all([load("registry"),load("muxer"),load("program-journal"),load("scalar-state"),load("bridge"),load("native-batch"),load("native-audit"),load("native-recovery"),load("renderer-loss"),load("ops")]);
   const auditRows:any[]=[];if(audit)configureGlAudit({mode:"fatal",sink:(r:unknown)=>auditRows.push(r),fault:(m:string)=>nativeGlFault(m)});
   const canvas=document.createElement("canvas");canvas.width=canvas.height=16;const gl=canvas.getContext("webgl2",{preserveDrawingBuffer:true,antialias:false,premultipliedAlpha:false});if(!gl)throw new Error("WebGL2 unavailable");
   const reg=new GlContextRegistry();reg.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:65536});const b=reg.get(7,11)!;b.gl=gl;b.contextId=21;
@@ -28,7 +28,7 @@ for(const journal of [false,true])for(const audit of [false,true])test(`scalar s
    b.cmdbufView=bytes;const before=checks,Data=globalThis.DataView,Int=globalThis.Int32Array,Float=globalThis.Float32Array,map=Array.prototype.map,flat=Array.prototype.flatMap,set=WeakMap.prototype.set;
    const forbidden=()=>{throw new Error("late scalar CPU metadata allocation");};
    try{globalThis.DataView=new Proxy(Data,{construct:forbidden});globalThis.Int32Array=new Proxy(Int,{construct:forbidden});globalThis.Float32Array=new Proxy(Float,{construct:forbidden});Array.prototype.map=forbidden;Array.prototype.flatMap=forbidden;WeakMap.prototype.set=forbidden;
-    if(withNativeBatch(b,"scalar framebuffer batch",()=>decodeAndDispatch(b,0,bytes.length)))throw new Error("Scalar execution refused");
+    if(nativeBatch.withNativeBatch(b,"scalar framebuffer batch",()=>decodeAndDispatch(b,0,bytes.length)))throw new Error("Scalar execution refused");
    }finally{globalThis.DataView=Data;globalThis.Int32Array=Int;globalThis.Float32Array=Float;Array.prototype.map=map;Array.prototype.flatMap=flat;WeakMap.prototype.set=set;}
    nativeChecks.push(checks-before);
   };

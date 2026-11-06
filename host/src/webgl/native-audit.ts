@@ -53,6 +53,7 @@ export type GlAuditCause =
   | "wrong-error"      // predicted one error, native raised another
   | "missing-error"    // predicted an error, native accepted
   | "unattributed"     // an error appeared outside any audited call
+  | "batch-native-error" // an actual submitted-batch sample, not a per-call observation
   | "out-of-memory"    // boundary (D-50)
   | "context-lost"     // boundary
   | "guest-error-flags" // guest UMD prediction differs from the host oracle
@@ -105,6 +106,30 @@ const UNCHECKED_METHODS = new Set([
 /** Live binding: the hooks in hot paths test only this. */
 export let glAuditOn = false;
 let mode: GlAuditMode = "record";
+
+type FatalBatchPhase = "predicted" | "sample" | "exact";
+type GlAuditBatchHooks = {
+  configure(mode: GlAuditMode | undefined): void;
+  phase(gl: object): FatalBatchPhase | undefined;
+  identity(gl: object): object | undefined;
+  nativeCall(gl: object, deferred: boolean): void;
+  takeDeferred(gl: object): boolean;
+  readError(gl: object, error: number, next: () => number, reported?: boolean): never;
+  fail(gl: object, detail: string): never;
+};
+let batchHooks: GlAuditBatchHooks | undefined;
+/** The batch module registers after its live dispatcher is initialized. An
+ * already-configured realm must install the same adapter as a later configure;
+ * otherwise env/URL startup order could silently retain the per-call oracle. */
+export function registerGlAuditBatchHooks(hooks: GlAuditBatchHooks): void {
+  if (batchHooks) throw new Error("GL audit batch hooks registered twice");
+  batchHooks = hooks;
+  hooks.configure(glAuditOn ? mode : undefined);
+}
+function fatalBatchPhase(gl: object): FatalBatchPhase | undefined {
+  return glAuditOn && mode === "fatal" ? batchHooks?.phase(gl) : undefined;
+}
+
 let sink: GlAuditSink | null = null;
 let fault: ((message: string) => never) | null = null;
 
@@ -134,12 +159,14 @@ export function configureGlAudit(options: {
   fault = options.fault;
   glAuditOn = true;
   installGetContextHook();
+  batchHooks?.configure(mode);
 }
 
 /** Test support: restore the default (off) state. */
 export function resetGlAuditForTesting(): void {
   glAuditOn = false; sink = null; fault = null; scope = null; sequence = 0;
   nextPrediction = null; activePrediction = null; occurrences.clear();
+  batchHooks?.configure(undefined);
 }
 
 /** Compare before consuming a locally returned flag. No native query is
@@ -239,7 +266,35 @@ export function predictNextNativeCall(prediction: NativePrediction): void {
 
 // ------------------------------------------------------- instrumentation
 
-type AuditState = { pending: number[]; nativeGetError: () => number };
+// Distinguish an older exact oracle flag from an observation in this batch.
+// The token is empty: flags must not retain any logical owner or guest memory.
+type PendingNativeFlag = { error: number; batch?: object };
+type AuditState = { gl:object; pending: PendingNativeFlag[]; nativeGetError: () => number };
+function takeBatchFlag(state: AuditState, batch: object): PendingNativeFlag | undefined {
+  const index=state.pending.findIndex(flag=>flag.batch===batch);
+  return index<0?undefined:state.pending.splice(index,1)[0];
+}
+function nextBatchFlag(state:AuditState,batch:object):number {
+  return takeBatchFlag(state,batch)?.error ?? state.nativeGetError();
+}
+/** A transition to exact checking first fences older deferred native work.
+ * Otherwise its flag could be blamed on the next bookkeeping operation, or a
+ * receiver could publish after a different call already poisoned the batch. */
+function beforeExactOracle(state:AuditState,gl:object):0|undefined {
+  const batch=batchHooks?.identity(gl);
+  if(!batch)return undefined;
+  const held=takeBatchFlag(state,batch);
+  if(held)batchHooks!.readError(gl,held.error,()=>nextBatchFlag(state,batch),true);
+  if(batchHooks!.takeDeferred(gl)) {
+    const error=state.nativeGetError();
+    if(error)batchHooks!.readError(gl,error,()=>nextBatchFlag(state,batch));
+    return 0; // A real zero observation, reusable by an explicit getError.
+  }
+  return undefined;
+}
+function retainNativeFlag(state:AuditState,error:number,batch?:object):void {
+  if(!state.pending.some(flag=>flag.error===error&&flag.batch===batch))state.pending.push({error,batch});
+}
 const instrumented = new WeakMap<object, AuditState>();
 
 /** Instrument one WebGL 2 context (idempotent; inert with the audit off).
@@ -251,7 +306,7 @@ export function auditGlContext<T extends object | null>(gl: T): T {
   const context = gl as unknown as Record<string, unknown>;
   const nativeGetErrorMethod = context.getError as (() => number) | undefined;
   if (typeof nativeGetErrorMethod !== "function") return gl;
-  const state: AuditState = { pending: [], nativeGetError: () => Reflect.apply(nativeGetErrorMethod, gl, []) as number };
+  const state: AuditState = { gl, pending: [], nativeGetError: () => Reflect.apply(nativeGetErrorMethod, gl, []) as number };
   instrumented.set(gl, state);
   const seen = new Set<string>();
   for (let proto = Object.getPrototypeOf(gl); proto && proto !== Object.prototype; proto = Object.getPrototypeOf(proto)) {
@@ -263,20 +318,43 @@ export function auditGlContext<T extends object | null>(gl: T): T {
       const native = descriptor.value as (...args: unknown[]) => unknown;
       Object.defineProperty(gl, name, { configurable: true, writable: true, enumerable: false,
         value: function audited(...args: unknown[]) {
+          if (!glAuditOn) return Reflect.apply(native, gl, args);
           const prediction = nextPrediction ?? activePrediction
             ?? (scope ? nativePredictionGap(scope.opCode, scope.queryCode, scope.entry, name) ?? null : null);
           nextPrediction = null;
-          const result = Reflect.apply(native, gl, args);
-          observe(state, name, args, prediction);
+          const phase=fatalBatchPhase(gl);
+          if(phase&&(phase==="exact"||prediction||state.pending.length))beforeExactOracle(state,gl);
+          let result:unknown;
+          try {result=Reflect.apply(native,gl,args);}
+          catch(error) {
+            if(phase)batchHooks!.fail(gl,`native call threw ${String(error)}`);
+            throw error;
+          }
+          // Undefined means host-validated acceptance. Error predictions and
+          // remaining native-decides gaps still need the independent exact
+          // oracle. In fatal guest batches the real boundary sample owns all
+          // other flags; a fabricated per-call NO_ERROR would prove nothing.
+          if(prediction||phase!=="predicted")observe(state,name,args,prediction);
+          if(phase)batchHooks!.nativeCall(gl,!prediction&&phase==="predicted");
           return result;
         } });
     }
   }
   Object.defineProperty(gl, "getError", { configurable: true, writable: true, enumerable: false,
     value: function auditedGetError(): number {
-      if (state.pending.length) return state.pending.shift()!;
-      const error = state.nativeGetError();
-      if (error !== 0) report(classify(error, undefined, true), "getError", [], error, undefined);
+      const phase=fatalBatchPhase(gl),batch=phase?batchHooks?.identity(gl):undefined;
+      // Older oracle flags retain ordinary drain semantics. Only observations
+      // belonging to THIS submission can participate in its boundary sample.
+      if(phase==="sample"&&batch)return nextBatchFlag(state,batch);
+      const observedZero=phase?beforeExactOracle(state,gl):undefined;
+      const held=state.pending.shift();
+      if(held) {
+        if(batch&&held.batch===batch)batchHooks!.readError(gl,held.error,()=>nextBatchFlag(state,batch),true);
+        return held.error;
+      }
+      const error=observedZero===0?0:state.nativeGetError();
+      if(error!==0&&batch)batchHooks!.readError(gl,error,()=>nextBatchFlag(state,batch));
+      if(error!==0&&glAuditOn)report(classify(error,undefined,true),"getError",[],error,undefined);
       return error;
     } });
   report({ kind: "context", cause: "instrumented" }, "getContext", ["webgl2"], 0, undefined);
@@ -301,14 +379,56 @@ function installGetContextHook(): void {
   }
 }
 
+/** Attribute a REAL native sample to its submitted owner. The batch marks
+ * reset and enforces fatal/OOM policy after this record; throwing from the
+ * per-call reporter first would leave that ownership transition incomplete. */
+export function reportGlAuditBatchError(owner: {gl: WebGL2RenderingContext; pid: number; sessionId: number},
+    error: number, label: string, batch: number): void {
+  const phase = fatalBatchPhase(owner.gl);
+  if (!phase) return;
+  const previous = scope;
+  scope = {entry:previous?.entry ?? "native-batch",entryArgs:previous?.entryArgs ?? [],
+    pid:owner.pid,session:owner.sessionId,batch,op:null,opArgs:null,opCode:null,queryCode:null};
+  try {
+    const classification = error === GL_OUT_OF_MEMORY ? {kind:"boundary" as const,cause:"out-of-memory" as const}
+      : error === CONTEXT_LOST_WEBGL ? {kind:"boundary" as const,cause:"context-lost" as const}
+      : {kind:"divergence" as const,cause:"batch-native-error" as const};
+    report(classification,"nativeBatchSample",[label],error,undefined,true);
+  } finally { scope = previous; }
+}
+
 function observe(state: AuditState, method: string, args: readonly unknown[], prediction: NativePrediction | null): void {
+  const batch=fatalBatchPhase(state.gl)?batchHooks?.identity(state.gl):undefined;
+  if(batch) {
+    const errors:number[]=[];
+    for(let i=0;i<32;i++){const error=state.nativeGetError();if(!error)break;errors.push(error);}
+    // Preserve allocation custody: an exact OOM oracle hands the native result
+    // back to its reserved receiver before the caller's post-check resets it.
+    // A tagged unconsumed boundary still fences the next call/final sample.
+    const ordered=errors.includes(GL_OUT_OF_MEMORY)?[GL_OUT_OF_MEMORY,...errors.filter(e=>e!==GL_OUT_OF_MEMORY)]:errors;
+    for(const error of ordered)retainNativeFlag(state,error,classify(error,prediction??undefined,false)?batch:undefined);
+    for(const error of errors)report(classify(error,prediction??undefined,false),method,args,error,prediction??undefined,true);
+    if(!errors.length&&prediction?.kind==="error") {
+      report({kind:"divergence",cause:"missing-error"},method,args,0,prediction,true);
+      batchHooks!.fail(state.gl,`native audit missing-error: ${method} returned NO_ERROR`);
+    }
+    if(!errors.includes(GL_OUT_OF_MEMORY)) {
+      const unexpected=errors.find(error=>classify(error,prediction??undefined,false)?.kind==="divergence");
+      if(unexpected!==undefined) {
+        const index=state.pending.findIndex(flag=>flag.error===unexpected&&flag.batch===batch);
+        if(index>=0)state.pending.splice(index,1);
+        batchHooks!.readError(state.gl,unexpected,()=>nextBatchFlag(state,batch),true);
+      }
+    }
+    return;
+  }
   let raised = false;
   for (let i = 0; i < 32; i++) {
     const error = state.nativeGetError();
     if (error === 0) break;
     raised = true;
     // GL flag semantics: a flag already set records nothing new.
-    if (!state.pending.includes(error)) state.pending.push(error);
+    retainNativeFlag(state,error);
     report(classify(error, prediction ?? undefined, false), method, args, error, prediction ?? undefined);
   }
   if (!raised && prediction?.kind === "error")
@@ -326,7 +446,7 @@ function classify(error: number, prediction: NativePrediction | undefined, unatt
 }
 
 function report(classification: { kind: GlAuditRecord["kind"]; cause: GlAuditCause } | null, method: string,
-    args: readonly unknown[], error: number, prediction: NativePrediction | undefined): void {
+    args: readonly unknown[], error: number, prediction: NativePrediction | undefined, batchWillEnforceFatal = false): void {
   if (!classification) return;
   const stack = callerStack();
   const site = stack[0] ?? "unknown";
@@ -347,7 +467,7 @@ function report(classification: { kind: GlAuditRecord["kind"]; cause: GlAuditCau
   if (occurrence <= DELIVERED_PER_SIGNATURE || mode === "fatal" || record.kind === "context") {
     try { sink?.(record); } catch { /* A failed diagnostic must not change GL behavior. */ }
   }
-  if (mode === "fatal" && record.kind === "divergence") {
+  if (mode === "fatal" && record.kind === "divergence" && !batchWillEnforceFatal) {
     fault?.(`GL audit divergence (${record.cause}): ${record.call} raised ${record.observed}, predicted ${record.predicted}; ` +
       `${record.entry} pid ${record.pid ?? "?"} session ${record.session ?? "?"} batch ${record.batch} op ${record.op ?? "?"}` +
       `${record.opArgs ? ` ${record.opArgs}` : ""} at ${site}`);

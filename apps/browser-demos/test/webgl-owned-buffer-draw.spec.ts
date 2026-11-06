@@ -9,7 +9,7 @@ for(const capture of [false,true])for(const audit of [false,true])test(`owned VB
  const result=await page.evaluate(async({source,capture,audit})=>{
   const load=(n:string)=>import(/* @vite-ignore */ `/@fs${source}${n}.ts`);
   const [{GlContextRegistry},{GlMuxer},{runGlQuery},{decodeAndDispatch},{bindBufferObject,replaceBufferData},
-   {deleteBufferNames,collectRetiredBuffers},{withNativeBatch},{configureGlAudit,resetGlAuditForTesting},{nativeGlFault}]=await Promise.all([
+   {deleteBufferNames,collectRetiredBuffers},nativeBatch,{configureGlAudit,resetGlAuditForTesting},{nativeGlFault}]=await Promise.all([
    load("registry"),load("muxer"),load("query"),load("bridge"),load("buffer-storage"),load("buffer-references"),load("native-batch"),load("native-audit"),load("native-recovery")]);
   const auditRows:any[]=[];if(audit)configureGlAudit({mode:"fatal",sink:(r:unknown)=>auditRows.push(r),fault:(m:string)=>nativeGlFault(m)});
   const canvas=document.createElement("canvas");canvas.width=canvas.height=16;const gl=canvas.getContext("webgl2",{preserveDrawingBuffer:true});if(!gl)throw new Error("WebGL2 unavailable");
@@ -25,7 +25,7 @@ for(const capture of [false,true])for(const audit of [false,true])test(`owned VB
   const bytes=new Uint8Array(new Float32Array([-1,-1,1,-1,0,1]).buffer);
   b.vertexArrays.get(0)!.attributes.set(0,{buffer:original,enabled:true,size:2,type:0x1406,normalized:false,stride:0,offset:0});
   if(capture){replaceBufferData(b,ARRAY,bytes,STATIC);if(query([11,3,id,0,1,0])[4]!==24)throw new Error("Static capture failed");}
-  else if(withNativeBatch(b,"owned-definition",()=>emit(0x107,[id,0,1,ARRAY,24,STATIC],bytes)))throw new Error("Definition reset");
+  else if(nativeBatch.withNativeBatch(b,"owned-definition",()=>emit(0x107,[id,0,1,ARRAY,24,STATIC],bytes)))throw new Error("Definition reset");
   const peer=make(12);if(!registry.shareObjects(1,12,0)||!bindBufferObject(peer,ARRAY,7))throw new Error("Peer failed");replaceBufferData(peer,ARRAY,new Uint8Array([8,9]),STATIC);
   bindBufferObject(b,ARRAY,0);deleteBufferNames(peer,[7]);collectRetiredBuffers(peer);const originalHeld=gl.isBuffer(original);
   if(!bindBufferObject(peer,ARRAY,7))throw new Error("Reuse failed");const replacement=peer.buffers.get(7)!;
@@ -36,7 +36,7 @@ for(const capture of [false,true])for(const audit of [false,true])test(`owned VB
   const vao=gl.createVertexArray();gl.bindVertexArray(vao);gl.bindBuffer(ARRAY,original);gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);gl.enableVertexAttribArray(0);gl.bindBuffer(ARRAY,b.shadow.arrayBuffer);
   b.currentProgram=program;gl.useProgram(program);gl.viewport(0,0,16,16);gl.clearColor(0,0,0,1);gl.clear(gl.COLOR_BUFFER_BIT);
   const before=errorReads;
-  if(withNativeBatch(b,"owned-buffer-draw",()=>emit(0x507,[id,4,0,3,1,0,0,1,2,0x1406,0,0,0])))throw new Error("Draw reset");
+  if(nativeBatch.withNativeBatch(b,"owned-buffer-draw",()=>emit(0x507,[id,4,0,3,1,0,0,1,2,0x1406,0,0,0])))throw new Error("Draw reset");
   const drawNativeChecks=errorReads-before,pointerRestored=gl.getVertexAttrib(0,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING)===original;
   const pixel=new Uint8Array(4);gl.readPixels(8,8,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);const ordinaryBytes=b.bufferStores.get(original)!.size;
   b.currentProgram=null;gl.useProgram(null);gl.deleteProgram(program);gl.deleteShader(v);gl.deleteShader(f);gl.bindVertexArray(null);gl.deleteVertexArray(vao);gl.bindBuffer(ARRAY,peer.shadow.arrayBuffer);

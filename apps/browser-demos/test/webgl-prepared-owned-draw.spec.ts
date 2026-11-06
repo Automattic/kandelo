@@ -9,7 +9,7 @@ for(const audit of [false,true])test(`cold-owned two-sampler ALPHA and current p
  const result=await page.evaluate(async({source,audit})=>{
   const load=(name:string)=>import(/* @vite-ignore */ `/@fs${source}${name}.ts`);
   const [{GlContextRegistry},{GlMuxer},{PreparedOwnedDraw},{recordLinkedSources},{recordTextureLevel},{setTextureFilters},
-   {framebufferInputsChanged},{withNativeBatch},{configureGlAudit,resetGlAuditForTesting},{nativeGlFault},{uniformLayout},{decodeAndDispatch},{OP_UNIFORM1I},{RENDERER_LOST},{runGlQuery},{bindBufferObject,replaceBufferData}]=await Promise.all([
+   {framebufferInputsChanged},nativeBatch,{configureGlAudit,resetGlAuditForTesting},{nativeGlFault},{uniformLayout},{decodeAndDispatch},{OP_UNIFORM1I},{RENDERER_LOST},{runGlQuery},{bindBufferObject,replaceBufferData}]=await Promise.all([
    load("registry"),load("muxer"),load("prepared-owned-draw"),load("reversed-depth"),load("texture-levels"),load("lod-switchover"),
    load("framebuffer-revision"),load("native-batch"),load("native-audit"),load("native-recovery"),load("uniform-layout"),load("bridge"),load("ops"),load("renderer-loss"),load("query"),load("buffer-storage")]);
   const auditRows:any[]=[];if(audit)configureGlAudit({mode:"fatal",sink:(r:unknown)=>auditRows.push(r),fault:(m:string)=>nativeGlFault(m)});
@@ -48,7 +48,7 @@ for(const audit of [false,true])test(`cold-owned two-sampler ALPHA and current p
    try{
     globalThis.Float32Array=new Proxy(Float,{construct:forbidden});globalThis.Int32Array=new Proxy(Int,{construct:forbidden});globalThis.DataView=new Proxy(Data,{construct:forbidden});
     Array.prototype.map=forbidden;Array.prototype.flatMap=forbidden;WeakMap.prototype.set=forbidden;
-    b.cmdbufView=wire;if(withNativeBatch(b,"prepared two-sampler wire draw",()=>decodeAndDispatch(b,0,wire.byteLength)))throw new Error("Owned draw reset");
+    b.cmdbufView=wire;if(nativeBatch.withNativeBatch(b,"prepared two-sampler wire draw",()=>decodeAndDispatch(b,0,wire.byteLength)))throw new Error("Owned draw reset");
    }finally{globalThis.Float32Array=Float;globalThis.Int32Array=Int;globalThis.DataView=Data;Array.prototype.map=map;Array.prototype.flatMap=flatMap;WeakMap.prototype.set=MapSet;}
    checks.push(errorReads-before);const pixel=new Uint8Array(4);gl.readPixels(8,8,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);samples.push([...pixel]);};
   // A token proves cold readiness, not immutable public context state. Raw
@@ -58,7 +58,7 @@ for(const audit of [false,true])test(`cold-owned two-sampler ALPHA and current p
   for(const kind of ["program","texture","stencil","framebuffer"]){
    const program=b.currentProgram,input=b.shadow.textureUnits[0],ref=b.shadow.stencil.back.ref,fbo=b.shadow.fbo;
    if(kind==="program")b.currentProgram=null;else if(kind==="texture")b.shadow.textureUnits[0]=textures[1];else if(kind==="stencil")b.shadow.stencil.back.ref=1;else b.shadow.fbo={} as WebGLFramebuffer;
-   const before=drawCalls;b.cmdbufView=wire;const rc=withNativeBatch(b,"stale owned wire",()=>decodeAndDispatch(b,0,wire.byteLength));
+   const before=drawCalls;b.cmdbufView=wire;const rc=nativeBatch.withNativeBatch(b,"stale owned wire",()=>decodeAndDispatch(b,0,wire.byteLength));
    staleCases.push(rc,drawCalls-before,...b.errors);b.errors.length=0;b.currentProgram=program;b.shadow.textureUnits[0]=input;b.shadow.stencil.back.ref=ref;b.shadow.fbo=fbo;
   }
   const malformed=new Uint8Array(wire.byteLength+7);malformed.set(wire);new DataView(malformed.buffer).setUint16(wire.byteLength,0x0001,true);new DataView(malformed.buffer).setUint16(wire.byteLength+2,8,true);const beforeMalformed=drawCalls;b.cmdbufView=malformed;const malformedResult=decodeAndDispatch(b,0,malformed.byteLength),malformedWrites=drawCalls-beforeMalformed;
@@ -85,8 +85,8 @@ for(const audit of [false,true])test(`cold-owned two-sampler ALPHA and current p
   const layout=uniformLayout(b,primary)!,imageLocation=layout.entries.find((entry:any)=>entry.name==="image")!.location;
   const setter=new Uint8Array(12),setterView=new DataView(setter.buffer);setterView.setUint16(0,OP_UNIFORM1I,true);setterView.setUint16(2,8,true);setterView.setInt32(4,imageLocation,true);setterView.setInt32(8,1,true);b.cmdbufView=setter;
   const uniform1i=gl.uniform1i.bind(gl);let rejected=0;gl.uniform1i=()=>{rejected++;pendingControlledNativeError=0x505;};
-  let reset:number;try{reset=withNativeBatch(b,"controlled rejected shared uniform",()=>decodeAndDispatch(b,0,setter.byteLength));}finally{gl.uniform1i=uniform1i;}
-  const pixelAfterReset=new Uint8Array(4);if(withNativeBatch(peer,"healthy peer after rejected uniform",()=>peerProof.issue(draw)?0:-5))throw new Error("Healthy peer reset");gl.readPixels(8,8,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixelAfterReset);
+  let reset:number;try{reset=nativeBatch.withNativeBatch(b,"controlled rejected shared uniform",()=>decodeAndDispatch(b,0,setter.byteLength));}finally{gl.uniform1i=uniform1i;}
+  const pixelAfterReset=new Uint8Array(4);if(nativeBatch.withNativeBatch(peer,"healthy peer after rejected uniform",()=>peerProof.issue(draw)?0:-5))throw new Error("Healthy peer reset");gl.readPixels(8,8,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixelAfterReset);
   const controlledRecovery={reset,rejected,expectedReset:RENDERER_LOST,pixel:[...pixelAfterReset],nativeImage:getUniform(primary,getUniformLocation(primary,"image")!)};if(!peerProof.retire())throw new Error("Peer proof retirement refused");peerExecution.release();
   const logicalErrors=[...b.errors,...peer.errors],nativeClean=gl.getError()===0;b.programJournal!.retire();const retired=!proof.matches();b.currentProgram=b.shadow.currentProgram=null;b.currentProgramId=0;gl.useProgram(null);execution.release();registry.unbind(1);gl.deleteProgram(primary);gl.deleteShader(vs);gl.deleteShader(fs);gl.deleteTexture(textures[0]);gl.deleteTexture(textures[1]);gl.deleteBuffer(buffer);gl.deleteVertexArray(vao);resetGlAuditForTesting();return {samples,checks,cold,warm,logicalErrors,nativeClean,retired,auditRows,failures,controlledRecovery,staleCases,malformedResult,malformedWrites,inlineCold,inlineWarm};
  },{source,audit});

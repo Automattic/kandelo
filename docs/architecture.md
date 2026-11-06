@@ -7455,3 +7455,36 @@ These controls do not establish B1 completion. Final application/conformance
 checks, measurements and the complete normal preview remain required. Ordinary
 GL now shares reusable decoding, whose CPU cost remains unmeasured. Retaining
 storage alone does not prove every later CPU emulation receiver exists.
+
+### Fatal native-error audit and submitted batches
+
+The native error audit has two evidence modes. Record mode retains the
+per-method native oracle for inventory and localization. Fatal mode follows
+the production submission boundary for host-accepted work: validated native
+calls do not independently read `getError`, and the submitted batch samples
+the real native error queue. Explicit error predictions, remaining
+native-decides paths, and private bookkeeping retain exact checks. Before
+crossing into an exact check, the audit fences earlier deferred work so its
+error cannot be attributed to the next operation or authorize publication.
+Unexpected flags reset the original logical owner before the fatal boundary;
+native out-of-memory retains its documented context-reset policy.
+
+Oracle-held flags distinguish older observations from observations in the
+current submission. A current exact boundary cannot disappear merely because
+a utility omitted its own drain; an older held flag cannot become a new
+batch failure. The submission identity is an empty token, without a logical
+binding, guest memory or a cleanup callback. An allocation result reaches its
+reserved native receiver before an exact out-of-memory post-check resets the
+context. Batch diagnostics describe actual observed flags at their real
+boundary and do not claim a fabricated per-method `NO_ERROR` result.
+
+The internal `withNativeBatch` dispatcher is a live ESM binding. Audit
+configuration installs its fatal adapter, and reset/record configuration
+restores the original production body. Production callers use ESM imports;
+dynamic test consumers retain the module namespace. Copying/destructuring
+this internal callable is forbidden by the source lifetime guard, including
+common literal element and string-key captures. This is an internal caller
+constraint, not a guest API or wire ABI change. The guard checks supported
+callers and common capture forms; it is not a general JavaScript alias
+interpreter. Configure-before-import and configure/reset/reconfigure controls
+protect module initialization and import cycles.

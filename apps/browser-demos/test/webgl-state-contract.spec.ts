@@ -2178,7 +2178,7 @@ for (const existing of [false,true]) for (const audit of [false,true]) {
       const base = `/@fs${root}host/src/webgl/`;
       const {GlContextRegistry} = await import(base+"registry.ts");
       const {bindBufferObject,replaceBufferData} = await import(base+"buffer-storage.ts");
-      const {withNativeBatch} = await import(base+"native-batch.ts");
+      const nativeBatch = await import(base+"native-batch.ts");
       const {rendererLost} = await import(base+"renderer-loss.ts");
       const {configureGlAudit,resetGlAuditForTesting} = await import(base+"native-audit.ts");
       const {NativeGlFault} = await import(base+"native-recovery.ts");
@@ -2213,12 +2213,12 @@ for (const existing of [false,true]) for (const audit of [false,true]) {
       setGlDiagnosticReporter(value => diagnostics.push(value.message));
       if (audit) configureGlAudit({mode:"fatal",sink:() => {},fault:(message: string) => {throw new NativeGlFault(message);}});
       try {
-        const reset = withNativeBatch(b,"private buffer copy OOM",() => bindBufferObject(b,gl.ELEMENT_ARRAY_BUFFER,17) ? 0 : -5);
+        const reset = nativeBatch.withNativeBatch(b,"private buffer copy OOM",() => bindBufferObject(b,gl.ELEMENT_ARRAY_BUFFER,17) ? 0 : -5);
         const restored = gl.getParameter(gl.COPY_READ_BUFFER_BINDING) === null &&
           gl.getParameter(gl.COPY_WRITE_BUFFER_BINDING) === null && gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING) === null;
         const invalid = existing ? store.views.get(gl.ELEMENT_ARRAY_BUFFER)!.valid === false : !store.views.has(gl.ELEMENT_ARRAY_BUFFER);
         const beforePeer = live.size;
-        const healthy = withNativeBatch(peer,"healthy peer after copy OOM",() => bindBufferObject(peer,gl.ELEMENT_ARRAY_BUFFER,17) ? 0 : -5);
+        const healthy = nativeBatch.withNativeBatch(peer,"healthy peer after copy OOM",() => bindBufferObject(peer,gl.ELEMENT_ARRAY_BUFFER,17) ? 0 : -5);
         const bytes = new Uint8Array(4), view = store.views.get(gl.ELEMENT_ARRAY_BUFFER)!;
         gl.bindBuffer(gl.COPY_READ_BUFFER,view.native); gl.getBufferSubData(gl.COPY_READ_BUFFER,0,bytes); gl.bindBuffer(gl.COPY_READ_BUFFER,null);
         const nativeError = gl.getError(), lost = [rendererLost(b),rendererLost(peer)];

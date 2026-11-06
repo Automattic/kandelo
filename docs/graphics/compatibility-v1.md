@@ -25407,3 +25407,55 @@ reply custody, the complete final-context audit and remaining B1 hot paths and
 application measurements remain open. No application performance/native-feel
 claim or new preview follows. No new boundary, deferral or reduced acceptance
 criterion applies.
+
+## Fatal-audit batch sampling follow-up, 2026-11-06
+
+A focused guest reproduction of the historical Chromium shader-operator
+estimator failures exposed a second native error reader. The outer batch
+counter showed one public read, while the configured audit captured the
+original native getter and sampled it after native methods. On source
+`08558a7f9b`, the same 24,320-draw control produced790 native reads in
+production and633,925 in fatal audit mode. Its real renderer was ANGLE Metal
+on Apple M5 Max. These are bounded diagnostic counts, not desktop latency,
+full CTS acceptance or a performance comparison against main. Historical
+estimator failures remain unwaived until the actual guest suites are rerun.
+
+The follow-up makes fatal audit cooperate with submission ownership while
+preserving record-mode per-call inventory and exact bookkeeping/error/gap
+oracles. Before an exact transition it fences prior deferred flags; mixed
+failures retain out-of-memory precedence. Held flags carry an empty
+submission token so older observations cannot poison the next batch and a
+new exact boundary cannot be silently discarded. Reserved allocation results
+remain owned before reset. Unexpected flags are attributed to the original
+logical context before its fatal boundary, without inventing a per-call
+native result. The ordinary production submission body is retained.
+
+Nested calls share that physical submission and its token. An independent
+review control initially returned success while leaving a nested exact OOM
+queued; the corrected control returns the context reset. False-idle native
+replay and predicted-to-exact transitions also have causal failure controls.
+
+| Evidence | Scope and result |
+| --- | --- |
+| `graphics-fatal-batch-final64-1106-020221-63b4` | PASS8s:64 focused controls, full host source compiler and new host-test compiler0; includes nesting, mixed exact checks, older flags, OOM precedence and import/configuration lifetime |
+| `graphics-fatal-batch-final-gpu-1106-015120-3e06` | PASS1m07: three engines each read the original native getter once for accepted submitted work; pixels and guilty-context/healthy-peer checks pass |
+| R518 combined source check | Graphics2348/92 and all118 ownership checks pass. Broader321 browser cases remain in progress. Its app-compiler stage initially lacked the generated portable product catalog; that provisioning failure remains recorded |
+| `graphics-fatal-audit-integration-types-r-1106-023020-3a6f` | PASS12s on integration: normal catalog generation, full host and both complete app compiler contexts0, source and nine normal product/tool hashes unchanged |
+
+The fixed miniature C diagnostic observes fatal native reads decrease from
+633925 to1053, with production still790 and native GL method counts unchanged.
+Its nonalternating timings under concurrent load do not establish desktop
+performance or neutrality. Replaying the upstream estimator criteria still
+finds a nonpositive slope in one candidate miniature workload. That control
+omits the actual CTS calibration/session scaffolding; it neither closes nor
+explains the unwaived upstream estimator failures. Full current-runtime CTS,
+normal-product C consumers and application measurements remain required.
+
+Focused evidence and exact source hashes are retained under
+`.context/graphics-audit-batch-fatal-08558a-runs/`; the causal clock/shader/guest
+measurements are under
+`.context/graphics-cts-estimator-investigation-20261106/`. The existing
+program56/host3/GL17/fork21 ABI family is unchanged. These focused
+controls do not replace normal-product C consumers, three-engine CTS and
+desktop gates, the combined ownership/graphics gates, or matched ship-bar
+measurements.

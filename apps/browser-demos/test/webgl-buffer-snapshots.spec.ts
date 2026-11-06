@@ -10,7 +10,7 @@ for(const audit of [false,true])test(`owned buffer snapshots survive shared repl
   const result=await page.evaluate(async({source,audit})=>{
     const load=(name:string)=>import(/* @vite-ignore */ `/@fs${source}${name}.ts`);
     const [{GlContextRegistry},{GlMuxer},{GlProgramJournal},{bindBufferObject,replaceBufferData,updateBufferData},
-      {deleteBufferNames,collectRetiredBuffers},{withNativeBatch},{configureGlAudit,resetGlAuditForTesting},{nativeGlFault},{runGlQuery},{decodeAndDispatch}]=await Promise.all([
+      {deleteBufferNames,collectRetiredBuffers},nativeBatch,{configureGlAudit,resetGlAuditForTesting},{nativeGlFault},{runGlQuery},{decodeAndDispatch}]=await Promise.all([
       load("registry"),load("muxer"),load("program-journal"),load("buffer-storage"),load("buffer-references"),load("native-batch"),load("native-audit"),load("native-recovery"),load("query"),load("bridge")]);
     const auditRows:any[]=[];
     if(audit)configureGlAudit({mode:"fatal",sink:(r:unknown)=>auditRows.push(r),fault:(message:string)=>nativeGlFault(message)});
@@ -34,7 +34,7 @@ for(const audit of [false,true])test(`owned buffer snapshots survive shared repl
     const command=new Uint8Array(4+24+bytes.byteLength),wire=new DataView(command.buffer);
     wire.setUint16(0,0x107,true);wire.setUint16(2,command.byteLength-4,true);
     [journal.id,0,1,ARRAY,bytes.byteLength,STATIC].forEach((word,i)=>wire.setUint32(4+i*4,word,true));command.set(bytes,28);b.cmdbufView=command;
-    if(withNativeBatch(b,"real-snapshot-definition",()=>{if(decodeAndDispatch(b,0,command.byteLength)!==0)throw new Error("Snapshot wire definition rejected");})!==0)throw new Error("Definition reset context");
+    if(nativeBatch.withNativeBatch(b,"real-snapshot-definition",()=>{if(decodeAndDispatch(b,0,command.byteLength)!==0)throw new Error("Snapshot wire definition rejected");})!==0)throw new Error("Definition reset context");
     const warmNativeChecks=errorReads-before,copy=journal.resolveBufferSnapshot(0,1,original,bytes.byteLength);
     if(!copy||copy===original)throw new Error("Snapshot did not own independent storage");
     const peer=make(12);if(!registry.shareObjects(1,12,0)||!bindBufferObject(peer,ARRAY,7))throw new Error("Shared peer failed");

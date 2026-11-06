@@ -565,7 +565,7 @@ it("warms scalar capabilities during real context admission and allocates nothin
  expect(kernel.gl.get(8,12)!.wirePayload??null).toBeNull();kernel.releaseProcessViews(8);
 });
 for(const journal of [false,true])for(const extended of [false,true])it(`keeps first/warm scalar receivers allocation-safe (journal ${journal}, extended ${extended})`,async()=>{
- const {withNativeBatch}=await import("../src/webgl/native-batch.js"),f=await realScalarContext(extended,journal),b=f.b;
+ const nativeBatch=await import("../src/webgl/native-batch.js"),f=await realScalarContext(extended,journal),b=f.b;
  const records:{bytes:Uint8Array;field:string;values:number[]}[]=[];
  const add=(op:number,field:string,values:number[],floating=false)=>{const bytes=new Uint8Array(4+values.length*4),v=new DataView(bytes.buffer);v.setUint16(0,op,true);v.setUint16(2,values.length*4,true);for(let i=0;i<values.length;i++)floating?v.setFloat32(4+i*4,values[i],true):v.setInt32(4+i*4,values[i],true);records.push({bytes,field,values});};
  add(O.OP_VIEWPORT,"viewport",[1,2,5000,5000]);add(O.OP_SCISSOR,"scissor",[3,4,12,13]);add(O.OP_CLEAR_COLOR,"clearColor",[-1,2,.25,.5],true);
@@ -577,7 +577,7 @@ for(const journal of [false,true])for(const extended of [false,true])it(`keeps f
  try{
   const forbidden=()=>{throw new Error("late scalar CPU allocation");};
   globalThis.DataView=new Proxy(Data,{construct:forbidden});globalThis.Int32Array=new Proxy(Int,{construct:forbidden});globalThis.Float32Array=new Proxy(Float,{construct:forbidden});Array.prototype.map=forbidden;Array.prototype.flatMap=forbidden;WeakMap.prototype.set=forbidden;
-  for(let round=0;round<2;round++)for(const record of records){b.cmdbufView=record.bytes;expect(withNativeBatch(b,"exact scalar",()=>decodeAndDispatch(b,0,record.bytes.length))).toBe(0);}
+  for(let round=0;round<2;round++)for(const record of records){b.cmdbufView=record.bytes;expect(nativeBatch.withNativeBatch(b,"exact scalar",()=>decodeAndDispatch(b,0,record.bytes.length))).toBe(0);}
  }finally{globalThis.DataView=Data;globalThis.Int32Array=Int;globalThis.Float32Array=Float;Array.prototype.map=map;Array.prototype.flatMap=flat;WeakMap.prototype.set=set;}
  expect(f.counts()).toEqual(cold);expect(b.errors).toEqual([]);expect(rows.viewport).toEqual([1,2,4096,3072]);expect(rows.scissor).toEqual([3,4,12,13]);expect(rows.clearColor).toEqual(extended?[-1,2,.25,.5]:[0,1,.25,.5]);expect(rows.blendColor).toEqual(extended?[-1,2,.25,.5]:[0,1,.25,.5]);expect(rows.colorMask).toEqual([true,false,true,false]);expect(rows.depthRange).toEqual([.75,.25]);f.done();
 });
@@ -592,8 +592,8 @@ for(const journal of [false,true])it(`keeps full scalar batch preflight atomic a
 });
 
 for(const journal of [false,true])for(const op of [O.OP_DEPTH_RANGEF,O.OP_BLEND_FUNC_SEPARATE])it(`preserves native scalar exception reset ownership (journal ${journal}, op ${op})`,async()=>{
- const {withNativeBatch}=await import("../src/webgl/native-batch.js"),{RENDERER_LOST,rendererLost}=await import("../src/webgl/renderer-loss.js"),f=await realScalarContext(false,journal),b=f.b;
+ const nativeBatch=await import("../src/webgl/native-batch.js"),{RENDERER_LOST,rendererLost}=await import("../src/webgl/renderer-loss.js"),f=await realScalarContext(false,journal),b=f.b;
  const values=op===O.OP_DEPTH_RANGEF?[.25,.75]:[1,0,1,0],bytes=new Uint8Array(4+values.length*4),v=new DataView(bytes.buffer);v.setUint16(0,op,true);v.setUint16(2,values.length*4,true);for(let i=0;i<values.length;i++)op===O.OP_DEPTH_RANGEF?v.setFloat32(4+i*4,values[i],true):v.setUint32(4+i*4,values[i],true);b.cmdbufView=bytes;
  const method=op===O.OP_DEPTH_RANGEF?"depthRange":"blendFuncSeparate",ordinary=f.gl[method];f.gl[method]=()=>{throw new Error("injected native scalar exception");};
- try{expect(withNativeBatch(b,"scalar native exception",()=>decodeAndDispatch(b,0,bytes.length))).toBe(RENDERER_LOST);expect(rendererLost(b)).toBe(true);expect(b.errors).toEqual([]);expect(b.wirePayload!.byteLength).toBe(0);}finally{f.gl[method]=ordinary;f.done();}
+ try{expect(nativeBatch.withNativeBatch(b,"scalar native exception",()=>decodeAndDispatch(b,0,bytes.length))).toBe(RENDERER_LOST);expect(rendererLost(b)).toBe(true);expect(b.errors).toEqual([]);expect(b.wirePayload!.byteLength).toBe(0);}finally{f.gl[method]=ordinary;f.done();}
 });

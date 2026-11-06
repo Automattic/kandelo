@@ -9,7 +9,7 @@ for(const audit of [false,true])test(`cold owned inline upload preserves first, 
  const source=fileURLToPath(new URL("../../../host/src/webgl/",import.meta.url));
  const result=await page.evaluate(async({source,audit})=>{
   const load=(name:string)=>import(/* @vite-ignore */ `/@fs${source}${name}.ts`);
-  const [{GlContextRegistry},{GlMuxer},{GlInlineDraws},{withNativeBatch},{configureGlAudit,resetGlAuditForTesting},{nativeGlFault}]=await Promise.all([
+  const [{GlContextRegistry},{GlMuxer},{GlInlineDraws},nativeBatch,{configureGlAudit,resetGlAuditForTesting},{nativeGlFault}]=await Promise.all([
    load("registry"),load("muxer"),load("owned-inline-draw"),load("native-batch"),load("native-audit"),load("native-recovery")]);
   const auditRows:any[]=[];if(audit)configureGlAudit({mode:"fatal",sink:(value:any)=>auditRows.push(value),fault:(message:string)=>nativeGlFault(message)});
   const canvas=document.createElement("canvas");canvas.width=canvas.height=16;
@@ -49,7 +49,7 @@ for(const audit of [false,true])test(`cold owned inline upload preserves first, 
    const originalMap=Array.prototype.map,flat=Array.prototype.flatMap,set=WeakMap.prototype.set,TypedArray=globalThis.Uint8Array;
    try{
     if(i){const forbidden=()=>{throw new Error("injected warm inline metadata refusal");};Array.prototype.map=forbidden;Array.prototype.flatMap=forbidden;WeakMap.prototype.set=forbidden;globalThis.Uint8Array=class extends TypedArray{constructor(){throw new Error("warm inline typed-array allocation");}} as typeof Uint8Array;}
-    if(withNativeBatch(b,"owned inline real pixels",()=>{if(!(i===3?bank.drawPreparedCompact(b,wires[i],proof):bank.drawPrepared(b,wires[i],proof)))throw new Error("inline refused");}))throw new Error("inline reset");
+    if(nativeBatch.withNativeBatch(b,"owned inline real pixels",()=>{if(!(i===3?bank.drawPreparedCompact(b,wires[i],proof):bank.drawPrepared(b,wires[i],proof)))throw new Error("inline refused");}))throw new Error("inline reset");
    }finally{Array.prototype.map=originalMap;Array.prototype.flatMap=flat;WeakMap.prototype.set=set;globalThis.Uint8Array=TypedArray;}
    samples.push(errorReads-before);gl.readPixels(8,8,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);pixels.push(Array.from(pixel));
    if(gl.getParameter(gl.ARRAY_BUFFER_BINDING)!==publicArray)throw new Error("public selection was not restored");

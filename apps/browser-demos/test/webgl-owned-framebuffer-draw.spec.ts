@@ -8,7 +8,7 @@ for(const audit of [false,true])test(`retained offscreen target/input generation
  const source=fileURLToPath(new URL("../../../host/src/webgl/",import.meta.url));
  const result=await page.evaluate(async({source,audit})=>{
   const load=(name:string)=>import(/* @vite-ignore */ `/@fs${source}${name}.ts`);
-  const [{GlContextRegistry},{GlMuxer},{runGlQuery},{decodeAndDispatch},{bindBufferObject},{imageTextureOperation,textureNative,registerImageSource,importImageStorage},{recordTextureLevel},{setTextureFilters},{storageWrites},{withNativeBatch},{configureGlAudit,resetGlAuditForTesting},{nativeGlFault}]=await Promise.all([
+  const [{GlContextRegistry},{GlMuxer},{runGlQuery},{decodeAndDispatch},{bindBufferObject},{imageTextureOperation,textureNative,registerImageSource,importImageStorage},{recordTextureLevel},{setTextureFilters},{storageWrites},nativeBatch,{configureGlAudit,resetGlAuditForTesting},{nativeGlFault}]=await Promise.all([
    load("registry"),load("muxer"),load("query"),load("bridge"),load("buffer-storage"),load("image-storage"),load("texture-levels"),load("lod-switchover"),load("image-writes"),load("native-batch"),load("native-audit"),load("native-recovery")]);
   const rows:any[]=[];if(audit)configureGlAudit({mode:"fatal",sink:(value:any)=>rows.push(value),fault:(message:string)=>nativeGlFault(message)});
   const canvas=document.createElement("canvas");canvas.width=canvas.height=16;const gl=canvas.getContext("webgl2",{preserveDrawingBuffer:true})!;if(!gl)throw new Error("WebGL2 unavailable");
@@ -22,7 +22,7 @@ for(const audit of [false,true])test(`retained offscreen target/input generation
   const id=query([1,1,8])[3];if(query([10,2,id,2])[4]!==2)throw new Error("buffer bank refused");
   bindBufferObject(b,0x8892,7);const original=b.buffers.get(7)!;const vertex=new Uint8Array(new Float32Array([-1,-1,1,-1,0,1]).buffer);
   b.vertexArrays.get(0)!.attributes.set(0,{enabled:true,buffer:original,size:2,type:gl.FLOAT,normalized:false,stride:0,offset:0});
-  if(withNativeBatch(b,"offscreen-buffer",()=>emit(0x107,[id,0,1,0x8892,vertex.length,gl.STATIC_DRAW],vertex)))throw new Error("buffer reset");
+  if(nativeBatch.withNativeBatch(b,"offscreen-buffer",()=>emit(0x107,[id,0,1,0x8892,vertex.length,gl.STATIC_DRAW],vertex)))throw new Error("buffer reset");
   const spec=(format:number,width=4)=>({width,height:width,internalFormat:format===gl.ALPHA?gl.ALPHA:gl.RGBA8,format,type:gl.UNSIGNED_BYTE,compressed:false,gles:{internalFormat:format,format,type:gl.UNSIGNED_BYTE,expanded:false,colorRenderable:format===gl.RGBA,depth:false,stencil:false}});
   const texture=(name:number,format:number,width=4)=>{const object=gl.createTexture()!;gl.bindTexture(gl.TEXTURE_2D,object);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);gl.texImage2D(gl.TEXTURE_2D,0,format===gl.ALPHA?gl.ALPHA:gl.RGBA8,width,width,0,format,gl.UNSIGNED_BYTE,new Uint8Array(width*width*(format===gl.ALPHA?1:4)).fill(255));b.textures.set(name,object);setTextureFilters(object,gl.NEAREST,gl.NEAREST);recordTextureLevel(object,gl.TEXTURE_2D,0,spec(format,width));return object;};
   const target=texture(1,gl.RGBA,16),alpha=texture(2,gl.ALPHA),palette=texture(3,gl.RGBA),fbo=gl.createFramebuffer()!;
@@ -41,9 +41,9 @@ for(const audit of [false,true])test(`retained offscreen target/input generation
   const oldWrites=storageWrites(target),newWrites=storageWrites(replacement),beforeOld=oldWrites.count,beforeNew=newWrites.count;
   const pixels:number[][]=[];const checks:number[]=[],clearChecks:number[]=[];
   for(let i=0;i<2;i++){
-    gl.clearColor(0,0,0,1);let clearBefore=errorReads;if(withNativeBatch(b,"offscreen-owned-clear",()=>emit(0x509,[id,0,1,gl.COLOR_BUFFER_BIT])))throw new Error("clear reset");clearChecks.push(errorReads-clearBefore);
+    gl.clearColor(0,0,0,1);let clearBefore=errorReads;if(nativeBatch.withNativeBatch(b,"offscreen-owned-clear",()=>emit(0x509,[id,0,1,gl.COLOR_BUFFER_BIT])))throw new Error("clear reset");clearChecks.push(errorReads-clearBefore);
     gl.uniform4f(gl.getUniformLocation(program,"tint"),i?.8:.2,i?.2:.6,i?.6:.8,1);
-    const before=errorReads;if(withNativeBatch(b,"offscreen-owned-draw",()=>emit(0x508,[id,4,0,3,1,0,1,0,0,1,2,gl.FLOAT,0,0,0])))throw new Error("draw reset");checks.push(errorReads-before);
+    const before=errorReads;if(nativeBatch.withNativeBatch(b,"offscreen-owned-draw",()=>emit(0x508,[id,4,0,3,1,0,1,0,0,1,2,gl.FLOAT,0,0,0])))throw new Error("draw reset");checks.push(errorReads-before);
     const capture=(b.programJournal as any).framebufferDrawChanges(0,1);gl.bindFramebuffer(gl.READ_FRAMEBUFFER,capture.view.shadow.fbo);const pixel=new Uint8Array(4);gl.readPixels(8,8,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);pixels.push([...pixel]);gl.bindFramebuffer(gl.READ_FRAMEBUFFER,b.shadow.readFbo);
   }
   const counters={old:oldWrites.count-beforeOld,replacement:newWrites.count-beforeNew};
