@@ -57,6 +57,29 @@ explicitly wants to wait until all changes are integrated into a normally
 built preview that passes its required checks. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Frozen full-audit Chromium result, 2026-11-05 (R406)
+
+The full fatal-audit job `graphics-cts-full-audit-r406-1105-131623-15de`
+has completed its Chromium GLES2 leg on frozen source
+`a61a31c4d88911aaadc7b794ccc08411debd42c6`; the other engines/suites continue.
+Exact command is `bash scripts/run-graphics-cts.sh gles2 chromium all --strict`
+inside the recorded dev-shell wrapper. The leg fails after27091 seconds:
+19825 unique cases,19382 Pass,415 NotSupported,three QualityWarning,three
+CompatibilityWarning,eight Fail,ten Timeout and four InternalError; zero
+Crash/Missing and no accounting errors. The Playwright driver's233 passing
+chunks do not make these22 non-passing guest cases a passing suite.
+
+Four functional macro/scope and four compiler-multiplication failures have
+later direct controls in R449/R456; actual-guest confirmation is still required.
+Four dynamic-buffer API cases and six shader-operator cases time out. Four
+shader-operator estimators report nonpositive slopes or strongly negative
+operation costs; these remain failures to investigate, not accepted allowances.
+Exact case paths, source/artifact identities and raw results remain under
+`.context/graphics-cts-full-audit-r406/gles2-chromium/`; compact counts,
+case records and evidence hashes are in
+`.context/graphics-cts-chromium-audit-judgment-r458/`. This historical one-engine
+result does not establish current-tree conformance or an audit-clean claim.
+
 ## Long products and structure-type hiding, 2026-11-05 (R456)
 
 The native retry now decomposes proven long flat float/vector products into
