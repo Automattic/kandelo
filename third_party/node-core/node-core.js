@@ -98468,6 +98468,179 @@ module.exports = {
     return { ...module.exports, binding };
 }
 
+// Exact public ELD lifecycle over a native sampler and real histogram material.
+function _createNodeEventLoopDelayPlatform(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { ObjectCreate, ObjectDefineProperty, ObjectGetOwnPropertyNames,
+        ReflectApply, Error, RangeError, TypeError, ObjectPrototypeHasOwnProperty } = primordials;
+    function call(name, owner, ...args) {
+        const packet = platform.native.eventLoopDelayOperation(name, owner, ...args);
+        if (!ObjectPrototypeHasOwnProperty(packet, 'error')) return packet.value;
+        const record = packet.error;
+        const Constructor = record.name === 'RangeError' ? RangeError : record.name === 'TypeError' ? TypeError : Error;
+        const error = new Constructor(record.message);
+        if (ObjectPrototypeHasOwnProperty(record, 'code')) {
+            ObjectDefineProperty(error, 'code', { __proto__: null, value: record.code,
+                writable: true, configurable: true, enumerable: true });
+        }
+        throw error;
+    }
+    const histogram = platform.histogram;
+    const nativeHistogramPrototype = histogram.binding.Histogram.prototype;
+    const prototype = ObjectCreate(nativeHistogramPrototype);
+    for (const name of ObjectGetOwnPropertyNames(nativeHistogramPrototype)) {
+        if (name === 'constructor' || typeof nativeHistogramPrototype[name] !== 'function') continue;
+        const method = nativeHistogramPrototype[name];
+        ObjectDefineProperty(prototype, name, { __proto__: null, configurable: true, writable: true,
+            value: function(...args) { return ReflectApply(method, call('material', this), args); } });
+    }
+    for (const name of ['start', 'stop']) {
+        ObjectDefineProperty(prototype, name, { __proto__: null, configurable: true, writable: true,
+            value: function(reset) { call(name, this, reset === true); } });
+    }
+    const binding = { createELDHistogram(resolution, iteration, lowest, highest, figures) {
+        return call('create', prototype, resolution, iteration, lowest, highest, figures);
+    } };
+    const module = { exports: {} };
+    (function(module, exports, require, primordials, internalBinding) {
+        'use strict';
+const {
+  BigInt,
+  Symbol,
+  SymbolDispose,
+} = primordials;
+
+const {
+  codes: {
+    ERR_ILLEGAL_CONSTRUCTOR,
+    ERR_INVALID_THIS,
+  },
+} = require('internal/errors');
+
+const {
+  createELDHistogram,
+} = internalBinding('performance');
+
+const {
+  validateBoolean,
+  validateInteger,
+  validateObject,
+} = require('internal/validators');
+
+const {
+  Histogram,
+  kHandle,
+  kMaxInt64,
+  kSkipThrow,
+  validateHistogramOptions,
+} = require('internal/histogram');
+
+const {
+  kEmptyObject,
+} = require('internal/util');
+
+const {
+  markTransferMode,
+} = require('internal/worker/js_transferable');
+
+const kEnabled = Symbol('kEnabled');
+
+// Default histogram options. The lowest discernible delay is in nanoseconds,
+// and its default depends on the sampling mode.
+const kDefaultIntervalLowest = 1000;
+const kDefaultIterationLowest = 1;
+const kDefaultFigures = 3;
+
+class ELDHistogram extends Histogram {
+  constructor(skipThrowSymbol = undefined) {
+    if (skipThrowSymbol !== kSkipThrow) {
+      throw new ERR_ILLEGAL_CONSTRUCTOR();
+    }
+    super(skipThrowSymbol);
+  }
+
+  /**
+   * @returns {boolean}
+   */
+  enable() {
+    if (this[kEnabled] === undefined)
+      throw new ERR_INVALID_THIS('ELDHistogram');
+    if (this[kEnabled]) return false;
+    this[kEnabled] = true;
+    this[kHandle].start();
+    return true;
+  }
+
+  /**
+   * @returns {boolean}
+   */
+  disable() {
+    if (this[kEnabled] === undefined)
+      throw new ERR_INVALID_THIS('ELDHistogram');
+    if (!this[kEnabled]) return false;
+    this[kEnabled] = false;
+    this[kHandle].stop();
+    return true;
+  }
+
+  [SymbolDispose]() {
+    this.disable();
+  }
+}
+
+/**
+ * @param {{
+ *   samplePerIteration? : boolean,
+ *   resolution? : number,
+ *   lowest? : number|bigint,
+ *   highest? : number|bigint,
+ *   figures? : number,
+ * }} [options]
+ * @returns {ELDHistogram}
+ */
+function monitorEventLoopDelay(options = kEmptyObject) {
+  validateObject(options, 'options');
+
+  const { samplePerIteration = false, resolution = 10 } = options;
+  validateBoolean(samplePerIteration, 'options.samplePerIteration');
+  validateInteger(resolution, 'options.resolution', 1);
+
+  const {
+    lowest = samplePerIteration ?
+      kDefaultIterationLowest : kDefaultIntervalLowest,
+    highest = kMaxInt64,
+    figures = kDefaultFigures,
+  } = options;
+  validateHistogramOptions(lowest, highest, figures);
+
+  // Throws if the native histogram cannot be created with these options.
+  const handle = createELDHistogram(
+    resolution, samplePerIteration, BigInt(lowest), BigInt(highest), figures);
+
+  const histogram = new ELDHistogram(kSkipThrow);
+  markTransferMode(histogram, true, false);
+  histogram[kEnabled] = false;
+  histogram[kHandle] = handle;
+  return histogram;
+}
+
+module.exports = monitorEventLoopDelay;
+
+    })(module, module.exports, name => {
+        if (name === 'internal/histogram') return histogram;
+        if (name === 'internal/errors') return platform.values.errors;
+        if (name === 'internal/validators') return platform.values.validators;
+        if (name === 'internal/util') return platform.values.util;
+        if (name === 'internal/worker/js_transferable') return platform.cloneProtocol;
+        throw new Error('Unexpected event-loop-delay dependency: ' + name);
+    }, primordials, name => {
+        if (name === 'performance') return binding;
+        throw new Error('Unexpected event-loop-delay binding: ' + name);
+    });
+    return { monitorEventLoopDelay: module.exports, binding };
+}
+
 // Pinned timeline/entry/observer state over actual clock/clone/event owners.
 // Native milestones, loop metrics, histograms and GC/network producers remain
 // separate prerequisites; missing measurements never become zero statistics.
@@ -100412,7 +100585,7 @@ module.exports = {
     const api = { performance, Performance, PerformanceMark, PerformanceMeasure, PerformanceResourceTiming,
         PerformanceObserver, PerformanceObserverEntryList, PerformanceEntry: entryModule.exports.PerformanceEntry,
         timerify: require('internal/perf/timerify'), eventLoopUtilization: require('internal/perf/event_loop_utilization').eventLoopUtilization };
-    api.monitorEventLoopDelay = function() { return unavailable('performance monitorEventLoopDelay native scheduling'); };
+    api.monitorEventLoopDelay = platform.eventLoopDelay.monitorEventLoopDelay;
     for (const name of ['createHistogram', 'createSlidingWindowHistogram', 'importHistogram'])
         api[name] = platform.histogram[name];
     modules.set('perf_hooks', api);

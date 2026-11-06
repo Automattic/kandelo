@@ -5261,5 +5261,13 @@
         "sha256": "16c2c72f457397cb21048bf0e096117bbf03758b2dc964b47c91c90a79846a9c"
       }
     }
+  },
+  "eventLoopDelayPlatform": {
+    "sources": {
+      "publicWrapper": {
+        "path": "upstream/event-loop-delay-reference/lib/internal/perf/event_loop_delay.js",
+        "sha256": "81a2745d8329d2674ef54d0b56c0a510c9f6d3c9fbb794fe447f2b7eb5075c0f"
+      }
+    }
   }
 }

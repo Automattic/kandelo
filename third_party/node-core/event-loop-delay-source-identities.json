@@ -1,0 +1,13 @@
+{
+  "version": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "files": {
+    "lib/internal/perf/event_loop_delay.js": "81a2745d8329d2674ef54d0b56c0a510c9f6d3c9fbb794fe447f2b7eb5075c0f",
+    "src/node_perf.cc": "1102c1c7a2d734c523e23cf8ceb3cb039cada5d76dfc1f2b2bcf7e54c92c9d27",
+    "src/handle_wrap.cc": "20f94b3dc1569f2b90116500dc6c7546b0b92b38f1398281f7b90d5b37f6751b",
+    "src/async_wrap.h": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6",
+    "deps/uv/src/timer.c": "5a2326203a3ac21b16093e0928db393e00caf919c1ede5316ac7174b72daf217",
+    "deps/uv/src/unix/core.c": "18bfd5f2045417f8ace5d76e222bf7441b31ead5fc2cbaf6225965e0afea8767",
+    "src/env.cc": "1b300917d1ec6e7c93d67638f28e88eda68157f08c22f884e6c4e464750cede8"
+  }
+}

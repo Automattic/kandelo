@@ -1,0 +1,97 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -1872,6 +1872,7 @@
+
+ static bool KandeloNativeMonotonicTime(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
++  KandeloELDUpdateCachedTime(cx);
+   args.rval().setDouble(KandeloMonotonicMilliseconds());
+   return true;
+ }
+@@ -3513,6 +3514,9 @@
+   }
+   RootedObject resource(cx, &args[0].toObject());
+   RootedObject unwrapped(cx, js::CheckedUnwrapStatic(resource));
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloELDClass) {
++    return KandeloELDResourceInfo(cx, unwrapped, args.rval());
++  }
+   if (unwrapped && JS::GetClass(unwrapped) == &KandeloCodecClass) {
+     return KandeloCodecResourceInfo(cx, unwrapped, args.rval());
+   }
+@@ -4111,6 +4115,7 @@
+       JS_FN("performanceNow", KandeloNativePerformanceNow, 0, 0),
+       JS_FN("performanceTimeOrigin", KandeloNativePerformanceTimeOrigin, 0, 0),
+       JS_FN("performanceLoopState", KandeloNativePerformanceLoopState, 0, 0),
++      JS_FN("eventLoopDelayOperation", KandeloNativeEventLoopDelayOperation, 2, 0),
+       JS_FN("getUvErrorData", KandeloNativeUvErrorData, 0, 0),
+       JS_FN("environment", KandeloNativeEnvironment, 3, 0),
+       JS_FN("processUmask", KandeloNativeProcessUmask, 1, 0),
+@@ -5488,7 +5493,7 @@
+       if (!timerReferences && !KandeloSocketHasWatches(cx) &&
+           !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
+           !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx) &&
+-          !KandeloLocksHaveReferences(cx)) {
++          !KandeloLocksHaveReferences(cx) && !KandeloELDHasClosing(cx)) {
+         if (beforeExitEmittedForIdle) return;
+         beforeExitEmittedForIdle = true;
+         double ignored;
+@@ -5505,6 +5510,11 @@
+       // must emit again; microtasks alone do not manufacture another turn.
+       beforeExitEmittedForIdle = false;
+     }
++
++    if (IsKandeloNodeMode() && !KandeloELDUpdateAndRunTimers(cx)) {
++      AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++    }
++    KandeloELDTurn eldTurn(cx, IsKandeloNodeMode());
+
+     // Run tasks (only finalization registry clean tasks are possible).
+     bool ranTasks = MaybeRunFinalizationRegistryCleanupTasks(cx);
+@@ -5577,7 +5587,7 @@
+         !KandeloSocketHasWatches(cx) && !timersPending &&
+         !KandeloNativeWorkPending(cx) && !KandeloFsGcErrorsPending(cx) &&
+           !KandeloPortsHaveReferences(cx) && !KandeloWorkersHaveReferences(cx) &&
+-          !KandeloLocksHaveReferences(cx)) {
++          !KandeloLocksHaveReferences(cx) && !KandeloELDHasClosing(cx)) {
+       if (IsKandeloNodeMode()) continue;
+       break;
+     }
+@@ -5592,9 +5602,18 @@
+           sleepUs = useconds_t(wantUs);
+         }
+       }
+-      if (IsKandeloNodeMode()) sc->kandeloPerformanceLoop.BeginIdle();
+-      if (!KandeloWaitForLocksReady(cx, sleepUs)) usleep(sleepUs);
+-      if (IsKandeloNodeMode()) sc->kandeloPerformanceLoop.EndIdle();
++      // Existing chosen waits are zero or one millisecond. An unreferenced
++      // ELD timer may shorten a live provider deadline, never extend it.
++      if (IsKandeloNodeMode()) {
++        const int timeout = KandeloELDBackendTimeout(cx, int(sleepUs / 1000), true);
++        if (timeout >= 0 && useconds_t(timeout) * 1000 < sleepUs)
++          sleepUs = useconds_t(timeout) * 1000;
++      }
++      eldTurn.Wait(int(sleepUs / 1000), [&] {
++        if (IsKandeloNodeMode()) sc->kandeloPerformanceLoop.BeginIdle();
++        if (!KandeloWaitForLocksReady(cx, sleepUs)) usleep(sleepUs);
++        if (IsKandeloNodeMode()) sc->kandeloPerformanceLoop.EndIdle();
++      });
+     }
+   }
+ }
+@@ -11468,6 +11487,7 @@
+
+
+ static bool RunKandeloNodeBootstrap(JSContext* cx) {
++  if (!KandeloELDInitializeContext(cx)) return false;
+   if (!DefineKandeloNodeNative(cx)) {
+     return false;
+   }
+@@ -16726,6 +16746,7 @@
+   KandeloShutdownNativeWork(this);
+   KandeloShutdownChildWatches(cx_);
+   KandeloShutdownPorts(cx_);
++  KandeloELDShutdown(cx_);
+   KandeloShutdownHistograms(cx_);
+   KandeloShutdownNativeAsync(this);
+   markObservers.reset();

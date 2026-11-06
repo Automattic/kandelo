@@ -1,5 +1,12 @@
 # Broad implementation review
 
+Source checkpoint139 adds native event-loop-delay samplers and deferred-close
+ownership beneath the pinned public wrapper. Portable/native-host controls and39
+affected/package checks pass; actual Kandelo phase/GC/clone/realm/four-host
+behavior remains uncompiled/unvalidated. See the
+[ELD integration scope](event-loop-delay-integration.md).
+
+
 Source checkpoint138 integrates the complete pinned OutgoingMessage and actual
 request framing/socket completion paths. Twenty focused dependency-runner groups
 and20 source-only header/package checks pass; these are not guest/four-host

@@ -13,17 +13,18 @@ struct KandeloHistogramCloneData {
 static constexpr uint32_t KandeloHistogramCloneTag = JS_SCTAG_USER_MIN + 114;
 static bool KandeloHistogramWriteClone(JSContext* cx, JSStructuredCloneWriter* writer,
     HandleObject object, bool* sameProcess, void* closure) {
-  if (JS::GetClass(object) != &KandeloHistogramClass)
-    return cx->reportKandeloCloneError("Object is not a cloneable native histogram");
+  std::shared_ptr<Histogram> material;
+  if (JS::GetClass(object) == &KandeloHistogramClass) {
+    const auto slot = JS::GetReservedSlot(object, 0);
+    if (!slot.isUndefined()) material = static_cast<HistogramBindingState*>(slot.toPrivate())->histogram;
+  } else material = KandeloELDCloneMaterial(object);
+  if (!material) return cx->reportKandeloCloneError("Object is not a cloneable native histogram");
   auto* data = static_cast<KandeloHistogramCloneData*>(closure);
   if (!data || data->histograms.size() >= UINT32_MAX)
     return cx->reportKandeloCloneError("Histogram clone ownership is unavailable");
-  const auto slot = JS::GetReservedSlot(object, 0);
-  if (slot.isUndefined()) return cx->reportKandeloCloneError("Uninitialized native histogram");
-  auto* owner = static_cast<HistogramBindingState*>(slot.toPrivate());
   try {
     const uint32_t index = uint32_t(data->histograms.size());
-    data->histograms.push_back(owner->histogram);
+    data->histograms.push_back(std::move(material));
     data->AccountMemory();
     // Aborted writes retain material only until their serialization packet is
     // destroyed. Neither the byte stream nor a global token registry owns it.

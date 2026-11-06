@@ -21,8 +21,20 @@ describe.skipIf(process.versions.node!==target.version)('Performance timeline wi
   }
   it('connects factories to the explicit native histogram dependency',()=>{
     const {api}=create();
-    for(const name of ['createHistogram','createSlidingWindowHistogram','importHistogram'])
+    for(const name of ['createHistogram','createSlidingWindowHistogram','importHistogram','monitorEventLoopDelay'])
       expect(api[name]).toBe(native[name]);
+    // This fixture supplies the actual native producer. Its lifecycle is a
+    // dependency control, not evidence for Kandelo loop phases or JSAPI.
+    const monitor=api.monitorEventLoopDelay({resolution:5});
+    try {
+      expect(monitor.countBigInt).toBe(0n);
+      expect(monitor.disable()).toBe(false);
+      expect(monitor.enable()).toBe(true);
+      expect(monitor.enable()).toBe(false);
+      expect(monitor.disable()).toBe(true);
+      expect(monitor.disable()).toBe(false);
+      monitor.reset(); expect(monitor.countBigInt).toBe(0n);
+    } finally { monitor[Symbol.dispose](); }
   });
   it('routes histogram calls and direct clones through production native owners',()=>{
     const calls: unknown[] = [], value = {}, transfer = [], packet = {}, result = {};
@@ -42,7 +54,7 @@ describe.skipIf(process.versions.node!==target.version)('Performance timeline wi
   });
   it('keeps unmeasured native capabilities as explicit failures',()=>{
     const {api}=create();
-    for(const name of ['monitorEventLoopDelay','eventLoopUtilization'])
+    for(const name of ['eventLoopUtilization'])
       expect(()=>api[name]()).toThrow(expect.objectContaining({code:'ERR_METHOD_NOT_IMPLEMENTED'}));
     expect(()=>api.performance.nodeTiming.nodeStart).toThrow(expect.objectContaining({code:'ERR_METHOD_NOT_IMPLEMENTED'}));
     expect(()=>api.performance.nodeTiming.uvMetricsInfo).toThrow(expect.objectContaining({code:'ERR_METHOD_NOT_IMPLEMENTED'}));

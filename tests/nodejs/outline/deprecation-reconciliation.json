@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "b98f626fa64b9852a9559dd39e6361417a3b6f77ee0a830c7023ca7a32510749",
+    "packages/registry/node-compat/bootstrap.js": "2a8ea5d22f2342a1264f3f5d6a0915e2495a855931e95b7b80a9fb056d9e9f4f",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "94571bdb312f00d9bd7d1553a271fd30c9ba7f3d43c74d0ff3258c1aad2d5fe4",
@@ -32,6 +32,7 @@
     "third_party/node-core/dns-lookup-platform-adapter.js": "73cbbdfaeb7177898cb2647bc8fcced16630a687893087ed72fa5c0e8d1459cd",
     "third_party/node-core/domain-platform-adapter.js": "79e745f8827b7d0420336262b4496bfeea31c0f045d71f9bf1a6abb05b8f3964",
     "third_party/node-core/dotenv-platform-adapter.js": "2b88d630708168641b9b852a6cc969bd7a655c3a5468b89eae03005df4681f23",
+    "third_party/node-core/event-loop-delay-platform-adapter.js": "37ed94c3eb86ecda79c69f3ac563d5878bf2e965741ca3f45b1ef15c8510728f",
     "third_party/node-core/event-platform-adapter.js": "83c398737e7a7fa0af9b86f10ee289057b10f2a210e7a31a0025301e2e1773ed",
     "third_party/node-core/fd-stream-platform-adapter.js": "e898a6d9ffed720e02af213730af9e4f9e703c7a9097fa445dc8d14ab1fec242",
     "third_party/node-core/file-jobs-adapter.js": "421c39f5139be3c48861f6e881eba2520118d621d757c1cfa40351aa41168a60",
@@ -64,7 +65,7 @@
     "third_party/node-core/package-reader-adapter.js": "5b1c6cea7421a956779a24692850b3b2a3a212ff5973dc7e4f1c9f009e1819ce",
     "third_party/node-core/path-metadata-adapter.js": "788bcb3366e71d515a6642cb9f428ec37185b10754be6f69b8e39755b632fa5a",
     "third_party/node-core/path-platform-adapter.js": "ea6f20759e080a0128db19ee90913e5a0cecc07b94da5751c121db1706886c88",
-    "third_party/node-core/performance-observer-adapter.js": "120b13c5b62673b2c1e96ccafe3953bd514627717096b010cb48973ccca104cd",
+    "third_party/node-core/performance-observer-adapter.js": "bda107bcc11475c7000add254580c5d927c0eb2bbaa0b4804e48950716f34d57",
     "third_party/node-core/ports-platform-adapter.js": "78ce9062fe07a24fff35326eea22b461d84b32beab78edd50547e79e3d97fedf",
     "third_party/node-core/process-clock-adapter.js": "f88ea5cdc9890104bf5ff8075a586cad55da60f41bfafebdb9de199748baaeca",
     "third_party/node-core/process-lifetime-adapter.js": "c10aa4e4f2c8e1701f5fd6d6958cf32ec6870070d46e9f33b7b5ca7947f16fff",

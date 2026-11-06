@@ -1570,6 +1570,13 @@ if histogram_adapter.count('/* NODE_HISTOGRAM_PUBLIC_WRAPPER */') != 1:
     raise ValueError('Review histogram public wrapper marker')
 bundle += histogram_adapter.replace('/* NODE_HISTOGRAM_PUBLIC_WRAPPER */', histogram_wrapper) + '\n'
 
+eld_spec = manifest['eventLoopDelayPlatform']
+eld_wrapper = selected_platform_source(eld_spec, 'publicWrapper')
+eld_adapter = (root / 'event-loop-delay-platform-adapter.js').read_text()
+if eld_adapter.count('/* NODE_EVENT_LOOP_DELAY_PUBLIC_WRAPPER */') != 1:
+    raise ValueError('Review ELD public wrapper marker')
+bundle += eld_adapter.replace('/* NODE_EVENT_LOOP_DELAY_PUBLIC_WRAPPER */', eld_wrapper) + '\n'
+
 perf_spec = manifest['performanceObserverPlatform']
 performance = (root / 'performance-observer-adapter.js').read_text()
 body = selected_platform_section(perf_spec, 'observerBody')

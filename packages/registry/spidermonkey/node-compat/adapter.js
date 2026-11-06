@@ -479,6 +479,7 @@
         digestNames() { return native.digestNames(); },
         getOpenSSLVersion() { return native.getOpenSSLVersion(); },
         timingSafeEqual(a, b) { return native.timingSafeEqual(a, b); },
+        eventLoopDelayOperation(...args) { return native.eventLoopDelayOperation(...args); },
         histogramOperation(...args) { return native.histogramOperation(...args); },
         port(operation, owner, value) { return native.port(operation, owner, value); },
         locks(...args) { return native.locks(...args); },

@@ -14,6 +14,7 @@ exports.create=function create(overrides={}) {
     signals:os.constants.signals,getDOMException:()=>DOMException});
   return factories.perf({values,util,process,setImmediate,event,structuredClone,
     histogram:require('internal/histogram'),
+    eventLoopDelay:nativePerf, // Explicit native producer dependency; no guest phase/GC claim.
     native:{performanceNow:nativeNow,performanceTimeOrigin:()=>nativePerformance.timeOrigin,
       ...overrides}});
 };

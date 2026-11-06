@@ -1,5 +1,11 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/event-loop-delay.h",
+  "third_party/node-core/event-loop-delay-lifetime.h",
+  "third_party/node-core/event-loop-delay-native.cpp",
+  "third_party/node-core/event-loop-delay-platform-adapter.js",
+  "third_party/node-core/event-loop-delay-source-identities.json",
+  "third_party/node-core/upstream/event-loop-delay-reference",
   "packages/registry/spidermonkey/patches/0109-node-vm-module-records.patch",
   "third_party/node-core/generate-histogram-owner.py",
   "third_party/node-core/histogram-source-identities.json",
@@ -536,4 +542,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 138
+revision = 139

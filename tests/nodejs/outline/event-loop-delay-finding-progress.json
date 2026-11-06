@@ -1,0 +1,97 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/performance-contracts.md",
+    "requirements": "tests/nodejs/audit/performance-requirements.json",
+    "findingIds": [],
+    "relatedFamilies": [
+      "observability",
+      "async",
+      "workers",
+      "engine",
+      "values"
+    ],
+    "scope": "Real ELD native loop/lifetime/material prerequisite;not full perf/histogram/clone/family closure"
+  },
+  "sourceImplemented": [
+    "Pinned monitorEventLoopDelay wrapper over actual native interval/iteration histogram producers and real cached clock/loop hooks",
+    "Unreferenced samplers,pending close cleanup liveness and explicit retained owner/vector-capacity claims;intrusive LIFO GC-to-native-close state transfer",
+    "Checked/wrapped material,captured own coded errors,current default-trigger lifecycle and clone-material packet ownership",
+    "Additive shell patch preserves actual provider rotation,locks,VM/target/HTTP/native-memory owners and primary context shutdown order"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-eld-source-r1/report.json",
+    "sha256": "6eedf3a55627882806ddec93085779dfe7033e056ccc3ce0b643b8a7a2dfb058",
+    "guardedInputs": 685,
+    "wholeNodeReferences": 7,
+    "scope": "Exact source/native-loop registration/close-liveness/hooks and current recipe/bootstrap/bundle/staging/unity checks only. Seven complete Node references match archive. Not real JSAPI compilation/GC/phase/close/clone/worker/realm or four-host acceptance. Closing-list transfer is allocation-free; existing NativeAsync.Finalized queue remains a separate allocation-failure owner."
+  },
+  "nativeControls": {
+    "report": ".context/node26-eld-controls-r1.json",
+    "sha256": "bad44b70359af2cd5c3025c9ec60dd7027cd5a2ffed222bb715886bb00100be9",
+    "nativeCompileCommands": 5,
+    "formulaComparisons": 8,
+    "optionComparisons": 11,
+    "liveModes": 2,
+    "unrefExitProcesses": 4,
+    "stateLifetimes": 1536,
+    "constructionFaultPositions": 40,
+    "ownCodeClasses": 3,
+    "scope": "Actual portable histogram/ELD/state/retained-memory source and pinned wrapper/native NAPI/libuv dependency controls. Native async lifetime is a primitive test dependency,not production destroy-vector/JSAPI/GC/phase/clone proof. Five standalone native compile commands,no engine/package/kernel/product build. No four-host conformance."
+  },
+  "affectedControls": {
+    "report": ".context/node26-eld-affected-r2.json",
+    "sha256": "f3b1327f3a0e10f16e3ab5c91ae66e91a830004b8f4eb9b3dbbb10b5b46dc9ff",
+    "passed": 39,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "25affected performance/ELU/VM groups+14package source checks;native dependencies,not actual loop/JSAPI/GC"
+  },
+  "packageChecks": {
+    "report": ".context/node26-eld-affected-r2.json",
+    "sha256": "f3b1327f3a0e10f16e3ab5c91ae66e91a830004b8f4eb9b3dbbb10b5b46dc9ff",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package checks within39aggregate,not extra runtime passes"
+  },
+  "privateHandoff": {
+    "report": ".context/eld-recovery-agent/handoff.json",
+    "sha256": "767ed49dffa80fb83e3528cdfe57b4259cb6945c1aef96c47045688f65c67e25",
+    "sealSha256": "a0cb66a9760bbcd096042a1099e6b26cf08c8feb2a355949f0bcf1c32c66abc8",
+    "scope": "Exact sealed producer/corrected owner identities verified;root additive current integration and controls separate"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-eld-affected-r1.json",
+      "sha256": "e9df7b2c5b0ad85a8c4910ba49c6f408b13663827aa7f89bafd6b32b1bf7d571",
+      "kind": "obsolete-local-negative-expectation",
+      "reason": "38pass1nonpass: old unsupported-monitor assertion conflicts with new real dependency;replaced by lifecycle controls,remaining unavailable metrics assertions retained"
+    },
+    {
+      "report": ".context/node26-eld-integration-r1.log",
+      "sha256": "969864dcbf236f4c47f7b608b1e7efcea8e0389ba93ced4fc00ff81426f1b6cd",
+      "kind": "shared-source-patch-context",
+      "reason": "Existing VM header/manifest insertion changed old135staging context;root reconciles additive ELD entries without losing VM"
+    },
+    {
+      "report": ".context/histogram-owner-agent/review-fixes/slice-two/handoff.md",
+      "sha256": "b81080f68440dba62930e80ed3e3a764c08926557553b4bfd50512417a431f7d",
+      "kind": "prior-native-and-sanitizer-nonpasses",
+      "reason": "Original histogram sanitizer timeout/nonacceptance and other prior failures retained;not exclusions"
+    }
+  ],
+  "remaining": [
+    "Compile actual combined engine/JSAPI and validate phase/clock/GC/realm/security/OOM/close/shutdown behavior across four hosts",
+    "Exercise real clone packet/abort/contextless ownership and generic async destroy-vector failure handling;primitive controls do not prove these",
+    "Integrate actual backing-store bridge/consumers,TLS trust,real StatWatcher and lazy data properties;all19families partial"
+  ],
+  "at": "2026-11-06T05:14:39.418482+00:00",
+  "recipeRevision": 139,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

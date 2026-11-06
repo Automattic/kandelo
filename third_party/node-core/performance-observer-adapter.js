@@ -105,7 +105,7 @@ function _createNodePerformanceObserverPlatform(platform) {
     const api = { performance, Performance, PerformanceMark, PerformanceMeasure, PerformanceResourceTiming,
         PerformanceObserver, PerformanceObserverEntryList, PerformanceEntry: entryModule.exports.PerformanceEntry,
         timerify: require('internal/perf/timerify'), eventLoopUtilization: require('internal/perf/event_loop_utilization').eventLoopUtilization };
-    api.monitorEventLoopDelay = function() { return unavailable('performance monitorEventLoopDelay native scheduling'); };
+    api.monitorEventLoopDelay = platform.eventLoopDelay.monitorEventLoopDelay;
     for (const name of ['createHistogram', 'createSlidingWindowHistogram', 'importHistogram'])
         api[name] = platform.histogram[name];
     modules.set('perf_hooks', api);
