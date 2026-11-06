@@ -67,8 +67,9 @@ checkpoint. They must not be read as current production-readiness claims.
 
 ### Remaining release gates
 
-1. Fix Go regular-file poll registration: Caddy can panic with EPERM during
-   certificate-file reads and recover through supervisor restart. Also
+1. Package and validate Go's regular-file poll correction: the preceding
+   Caddy build can panic during certificate reads and recover through
+   supervisor restart. Also
    resolve the observed machine-retirement failure and retain forced
    worker containment evidence.
 2. Prove that each real FrankenPHP service completes an in-flight PHP
@@ -5596,3 +5597,29 @@ tries to arm epoll when a deferred VFS read returns EAGAIN. The next step is
 a deterministic regular-file deadline regression and a target-runtime
 registration correction, preserving the ordinary blocking-file fallback.
 No compiler, library, or kernel patch has yet been applied for this failure.
+
+**2026-11-06 — Correct target-runtime descriptor pollability.**
+The extended `netpoll-basic` fixture fails deterministically on the preceding
+Go source in both plain-Go and cgo modes: a regular file incorrectly accepts
+a deadline instead of returning `os.ErrNoDeadline`. Go fork commit
+`1b0cf58011c425efe571b67dc134513b0760ad83` (pushed) changes only the target's
+`netpollopen`: probe epoll registration, return its error, and remove a
+successful probe interest. Go's unchanged `os.File` code then restores
+blocking I/O for unsupported descriptors. Removing the probe also preserves
+the existing lazy poller's idle-HUP behavior. The change has eight inserted
+lines and one deletion; no compiler, dependency, kernel, or ABI change.
+
+| Mode | Before | After |
+| --- | --- | --- |
+| Plain Go | Exit 2: regular file accepts deadline | Exit 0: full netpoll probe |
+| Cgo | Exit 2: regular file accepts deadline | Exit 0: full netpoll probe |
+
+Both after-runs have the expected marker, empty guest stderr, and no host
+diagnostics. The probe retains TCP deadline/readiness, close-unblocks-read,
+and blocking-pipe scheduler checks. Both modes pass in Chromium, Firefox,
+and WebKit: six browser cases. The normal fixture rebuild and all four
+standard-library compile gates also pass (Kandelo cgo off/on, js/wasm,
+wasip1/wasm). The full ordinary Go browser inventory is now running before
+consumer pins change. The packaged image still uses `29e2118`; actual Caddy
+clean startup, browser PHP draining, and machine retirement need a rebuilt
+consumer image. No application-level correction is claimed yet.

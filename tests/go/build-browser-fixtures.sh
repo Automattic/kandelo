@@ -64,6 +64,15 @@ record_built_program_output "$output_dir/slot-pressure-1024.wasm"
 build_probe scheduler sysmon ./sysmon
 build_probe socket-basic socket-basic
 build_probe netpoll-basic netpoll-basic
+(
+  cd "$repo_root/tests/go/netpoll-basic"
+  GO111MODULE=off GOOS=kandelo GOARCH=wasm CGO_ENABLED=1 CC=wasm32posix-cc \
+    "$go_bin" build -o "$output_dir/netpoll-cgo-basic-raw.wasm" .
+)
+"$repo_root/scripts/run-wasm-fork-instrument.sh" "$output_dir/netpoll-cgo-basic-raw.wasm" \
+  -o "$output_dir/netpoll-cgo-basic.wasm"
+rm "$output_dir/netpoll-cgo-basic-raw.wasm"
+record_built_program_output "$output_dir/netpoll-cgo-basic.wasm"
 build_probe net-basic net-basic
 build_probe http-basic http-basic
 build_probe regexp-stack regexp-stack

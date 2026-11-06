@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"syscall"
@@ -38,6 +39,7 @@ func blockingPipe() {
 }
 
 func main() {
+	regularFile()
 	runtime.GOMAXPROCS(2)
 	listener, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
 	must(err)
@@ -102,4 +104,26 @@ func main() {
 	}
 	blockingPipe()
 	fmt.Println("GO NETPOLL PASS")
+}
+
+func regularFile() {
+	must(os.MkdirAll("/tmp", 0o777))
+	file, err := os.CreateTemp("/tmp", "go-netpoll-regular-")
+	must(err)
+	defer os.Remove(file.Name())
+	defer file.Close()
+	for _, setDeadline := range []func(time.Time) error{file.SetReadDeadline, file.SetWriteDeadline} {
+		if err := setDeadline(time.Now().Add(time.Second)); !errors.Is(err, os.ErrNoDeadline) {
+			panic(fmt.Sprintf("regular file accepted a poll deadline: %v", err))
+		}
+	}
+	_, err = file.WriteString("regular file remains blocking")
+	must(err)
+	_, err = file.Seek(0, io.SeekStart)
+	must(err)
+	contents, err := io.ReadAll(file)
+	must(err)
+	if string(contents) != "regular file remains blocking" {
+		panic("regular file read mismatch")
+	}
 }

@@ -48,6 +48,18 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
 
 ## Memory, threads, and syscalls
 
+- Validate descriptor pollability in `netpollopen`, even when readiness
+  interests are armed lazily. Go's ordinary `os.File` code needs the epoll
+  registration error to clear `O_NONBLOCK` and disable deadlines on regular
+  files. Reporting success first can turn a deferred VFS file read into
+  EAGAIN followed by a fatal EPERM at `netpollarm`. A temporary registration
+  probe must remove successful interests so idle HUP notifications cannot
+  spin the lazy poller. Keep the kernel's correct rejection of non-epoll
+  descriptors; do not special-case certificate paths or Caddy.
+  `tests/go/netpoll-basic` checks regular-file deadline rejection and I/O,
+  socket deadlines/readiness/close, and blocking-pipe scheduler release in
+  plain Go and cgo. A supervisor restart can hide the initial fatal exit,
+  so application validation must inspect service logs too.
 - Go's public `syscall.Mmap`, `Munmap`, and `Msync` now use the same
   Kandelo channel and mapping manager as the C SDK and Go runtime.
   The `syscall` test covers anonymous, file-backed private, file-backed

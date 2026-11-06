@@ -407,9 +407,15 @@ const probes: Probe[] = [
     stdout: ["GO SOCKET PASS"],
   },
   {
-    name: "Go runtime TCP readiness and blocking syscall scheduler release",
+    name: "Go runtime regular-file pollability, TCP readiness, and blocking syscall scheduler release",
     file: "netpoll-basic.wasm",
     argv: ["go-netpoll-basic"],
+    stdout: ["GO NETPOLL PASS"],
+  },
+  {
+    name: "Go cgo runtime regular-file pollability, TCP readiness, and blocking syscall scheduler release",
+    file: "netpoll-cgo-basic.wasm",
+    argv: ["go-netpoll-cgo-basic"],
     stdout: ["GO NETPOLL PASS"],
   },
   {

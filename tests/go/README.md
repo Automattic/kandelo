@@ -318,8 +318,9 @@ opt-in because the external Go fork is not provisioned by the normal browser
 suite; without `KANDELO_GO_BROWSER_TESTS=1`, Playwright reports them as skipped.
 The socket probe covers address conversion, socket options, bind, listen,
 connect, accept, peer/local names, and stream read/write on both hosts. The
-netpoll probe wraps a nonblocking
-TCP socket in `os.NewFile` to exercise deadline expiry, data readiness,
+netpoll probe rejects regular-file deadlines with `os.ErrNoDeadline`,
+preserving blocking file reads, in plain-Go and cgo variants. It also wraps a
+nonblocking TCP socket in `os.NewFile` to exercise deadline expiry, data readiness,
 and close-unblocks-read through the runtime poller. It also checks that a
 blocking `syscall.Read` cannot starve a timer-driven writer when there is
 only one P. The `net` probe uses
