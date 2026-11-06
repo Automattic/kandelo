@@ -25620,3 +25620,27 @@ B1 and its complete preview remain incomplete: the ownership defect,
 remaining stage/application/conformance and physical latency gates are open.
 These consumer/build passes do not replace full dEQP, desktop, memory,
 POSIX, benchmark or final acceptance. ABI56/host3/GL17/fork21 is unchanged.
+
+## Maintainer-requested B1 snapshot preview, 2026-11-06
+
+After the normal build and complete1074-browser/28-Node consumer pass, the
+maintainer explicitly requested this running preview regardless of the newly
+reproduced B1 descriptor-reuse blocker. This changes preview availability
+only: the ownership fix, remaining stage gates and full native-feel/final
+acceptance remain required. It does not declare complete B1 admission.
+
+The separate preview is `http://localhost:6271/pages/kandelo/`, served from the
+immutable normal R494/R524 tree at
+`ebdd15fbce09fee47b2206aab3f479bfb1c7d2b8`. Job
+`graphics-b1-preview-r539-1106-104115-e491` runs the ordinary Vite/runtime
+plugins with a private cache and normal SourceOnly product projection.
+Production error handling is selected; no diagnostic kperf overlay or fatal
+audit setting is enabled. The existing5693 preview was not changed or stopped.
+
+HTTP returned200, and a new native Brave tab booted the normal Sway profile;
+its visible KMS status reports the2810x1580 WebGL2-GL surface with329 flips.
+This is a manual availability observation, not a latency measurement or full
+application acceptance. Exact launcher, source/build identity, availability
+scope and HTTP response are in `.context/graphics-b1-preview-r539/`.
+The published descriptor-reuse defect remains open and is being fixed at its
+kernel/resource-ownership layer before complete B1 admission.
