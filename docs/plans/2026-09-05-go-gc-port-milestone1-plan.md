@@ -5369,3 +5369,15 @@ dormant product status. The benchmark-only baseline set admits that recipe
 and publishes it with the existing prerequisite union; source caches and
 the baseline's own SDK remain authoritative. Application execution and the
 quiet-machine incremental comparison are still pending.
+
+The benchmark-only union then publishes successfully in 1m27s
+(`go-baseline-benchmark-union-1105-204443-7a7b`), reusing all 41 package
+nodes. Normal source-only admission confirms both database images together
+with PHP and the rootfs. All nine Node suites execute in one single-round
+provisioning run (`go-baseline-node-all-suite-provisioning-1105-204853-39a2`,
+37 seconds). All four MariaDB Chromium suites also execute
+(`go-baseline-browser-databases-1105-205000-b550`, 31 seconds), bringing the
+browser provisioning scope to eight of nine suites. These are executions
+under compiler load, not before/after performance evidence. The baseline's
+full canonical WordPress image is building through the normal package graph
+before the ninth browser suite; no smaller substitute image is used.
