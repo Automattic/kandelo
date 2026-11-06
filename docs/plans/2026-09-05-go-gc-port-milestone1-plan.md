@@ -42,6 +42,10 @@ below remains tied to Go fork `c925e9c`.
 - The current full Go browser inventory passes 150/150 across Chromium,
   Firefox, and WebKit after correcting shared-host stop/continue retry
   ownership. The related host suites pass 185/185.
+- Current C signal/I/O conformance passes 89 cases on Node and 89 on
+  Chromium, with two existing skips on each host and no failures or
+  timeouts. Both runs use identical admitted kernel/rootfs bytes and host
+  sources; the browser fixture's executable dependencies are included.
 - Next: finish the consumer rebuild and validate actual PHP shutdown,
   isolate the classic WebKit failures, then establish sustained
   traffic/memory behavior and current paired stack comparisons. Child
@@ -61,8 +65,7 @@ checkpoint. They must not be read as current production-readiness claims.
    crash recovery on the final image. Resolve the intermittent classic
    WebKit health/navigation and page-context failures; their cause remains
    unknown. Earlier revision-32 Caddy workflows pass in all three engines.
-4. Rerun C signal/I/O conformance after coherent source-product publication.
-   Finish sustained traffic/memory checks, paired PHP-FPM/classic/Caddy
+4. Finish sustained traffic/memory checks, paired PHP-FPM/classic/Caddy
    comparisons, and the nine-suite Node/Chromium incremental before/after
    benchmark scope. Baseline `5e25c7365` is an intermediate branch revision,
    so those comparisons cannot establish superiority over main.
@@ -5504,3 +5507,29 @@ checker, and add the four validation-only filters. The resulting 52 explicit
 filters form one normal source-build union. The existing published-consumer
 checker runs after publication too. No planner or integrity rule changes.
 The corrected job is `go-final-php-drain-union-1105-231210-da9d`.
+
+**2026-11-05 — Complete current C signal/I/O conformance on both hosts.**
+The normal builder publishes a separate kernel/rootfs validation projection
+while the WordPress build continues. All 22 package nodes reuse verified
+source-cache entries. An initial admission command uses the wrong rootfs
+alias and stops before tests; the corrected canonical request is
+`programs/rootfs.vfs.zst`.
+
+Node then passes 89 cases with two existing skips, zero failures, and zero
+timeouts (`go-current-c-conformance-admitted-1105-232220-006d`). Chromium's
+first attempt records 89 runner errors and two skips before guest execution:
+its shared exec fixture imports dash, which the rootfs-only closure does not
+include. A normal 23-node publication adds dash, reuses every cached node,
+and admits all five exec fixture imports. The browser-only rerun passes
+89 cases with two existing skips, zero failures/errors, and zero timeouts
+(`go-current-c-browser-with-dash-1105-232853-bd37`, 2m58s). Node is not
+unnecessarily rerun. The skips are the existing implementation-defined
+`signal()`/SA_RESTART cases; no allowance changes.
+
+Both hosts use the same ABI-55 kernel (`86e9efa8…`), 173,194-byte rootfs
+(`fcfddca5…`), and identical host source hashes. The artifact records, raw
+logs, initial failures, and evidence index remain in `.context/`. This closes
+the targeted C signal/I/O gate; it establishes neither full POSIX/Go
+conformance nor FrankenPHP application shutdown. The WordPress revision-36
+build has advanced through MariaDB64 into the new classic executable; the
+baseline build remains separate.
