@@ -649,6 +649,24 @@ function essl3Translation(): void {
     // controls reject this; both native-compatible and translated paths must
     // keep the parameter read before the local declaration, and its new value
     // after it. A second shader forces partner translation during link.
+    // One product exceeds the native expression-depth budget. Compare its
+    // lowered straight-line result with a uniform-bounded sequential loop;
+    // the latter also requires native ES100 validation followed by ES300.
+    { name: "long-product-fragment", vertex: VARYING_VERTEX, rejected: ["fragment"], ints:{n:1000}, uniforms:{a:[1.0001,0.9999,1.0,1.0]},
+      fragment: "precision mediump float;uniform highp vec4 a;uniform int n;void main(){highp vec4 value="+Array(1001).fill("a").join("*")+";highp vec4 reference=a;for(int i=0;i<n;i++)reference=reference*a;gl_FragColor=distance(value,reference)<0.0002?vec4(0.0,1.0,0.0,1.0):vec4(1.0,0.0,0.0,1.0);}" },
+    { name: "long-product-vertex", rejected: ["vertex"], ints:{n:1000}, uniforms:{a:[1.0001,0.9999,1.0,1.0]},
+      vertex: "uniform highp vec4 a;uniform int n;varying mediump vec4 v;void main(){highp vec4 value="+Array(1001).fill("a").join("*")+";highp vec4 reference=a;for(int i=0;i<n;i++)reference=reference*a;v=distance(value,reference)<0.0002?vec4(0.0,1.0,0.0,1.0):vec4(1.0,0.0,0.0,1.0);gl_Position=vec4(0.0,0.0,0.0,1.0);gl_PointSize=1.0;}",
+      fragment: "precision mediump float;varying vec4 v;void main(){gl_FragColor=v;}" },
+    { name:"struct-type-shadow-scalar",vertex:VARYING_VERTEX,rejected:[],ints:{u:2},
+      fragment:okFragment("uniform int u;struct S{int val;};","int S=S(u).val;","S==2")},
+    { name:"struct-type-shadow-aggregate",vertex:VARYING_VERTEX,rejected:[],ints:{u:2},
+      fragment:okFragment("uniform int u;struct S{int val;};","S S=S(u);","S.val==2")},
+    { name:"struct-type-shadow-scope-end",vertex:VARYING_VERTEX,rejected:[],ints:{u:2},
+      fragment:okFragment("uniform int u;struct S{int val;};","int value=0;{int S=S(u).val;value=S;}int after=S(u+1).val;","value==2&&after==3")},
+    { name:"struct-type-shadow-member",vertex:VARYING_VERTEX,rejected:[],ints:{u:2},
+      fragment:okFragment("uniform int u;struct S{int S;};","S S=S(u);","S.S==2")},
+    { name:"struct-type-shadow-comma",vertex:VARYING_VERTEX,rejected:[],ints:{u:2},
+      fragment:okFragment("uniform int u;struct S{int val;};","int S=S(u).val,x=S;","x==2")},
     { name: "parameter-shadow-native", vertex: VARYING_VERTEX, rejected: ["fragment"],
       fragment: okFragment("int f(int inp,int x){int before=x;int x=5;return inp+x-5+before;}", "", "f(2,42)==44") },
     { name: "parameter-shadow-translated", vertex: VARYING_VERTEX, rejected: ["fragment"], ints: {n:4},
@@ -685,7 +703,9 @@ function essl3Translation(): void {
     const at = (uniform: string) => gl.getUniformLocation(built.program!, programNativeName(built.program!, uniform));
     for (const [uniform, value] of Object.entries(c.ints ?? {})) gl.uniform1i(at(uniform), value);
     for (const [uniform, value] of Object.entries(c.uniforms ?? {}))
-      if (uniform === "t") gl.uniform1i(at(uniform), value as number); else gl.uniform1f(at(uniform), value as number);
+      if (uniform === "t") gl.uniform1i(at(uniform), value as number);
+      else if (Array.isArray(value)) gl.uniform4fv(at(uniform), value);
+      else gl.uniform1f(at(uniform), value);
     for (const [index, value] of Object.entries(c.attributes ?? {})) gl.vertexAttrib4fv(Number(index), value);
     gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.POINTS, 0, 1);
@@ -711,6 +731,11 @@ function essl3Translation(): void {
   // Shaders ES 1.00 rejects stay rejected: each also needs the translation
   // (a uniform loop bound), so only the translated compile could accept it.
   const invalid: { name: string; vertex?: string; fragment: string; link?: boolean }[] = [
+    { name: "long-product-type-mismatch", fragment: "precision mediump float;uniform highp vec4 a;void main(){highp float value="+Array(1001).fill("a").join("*")+";gl_FragColor=vec4(value);}" },
+    { name: "long-product-undefined-name", fragment: "precision mediump float;uniform highp vec4 a;void main(){highp vec4 value="+Array.from({length:1001},(_,i)=>i===500?"missing":"a").join("*")+";gl_FragColor=value;}" },
+    {name:"struct-type-shadow-duplicate",fragment:okFragment("struct S{int val;};","int S=1;int S=2;","S==2")},
+    {name:"struct-type-shadow-const-write",fragment:okFragment("struct S{int val;};","const int S=1;S=2;","S==2")},
+    {name:"struct-type-shadow-constructor-after-declaration",fragment:okFragment("struct S{int val;};","int S=1;int value=S(2).val;","value==2")},
     { name: "parameter-scope-duplicate-local", fragment: okFragment("int f(int x){int y=1;int y=2;return y;}", "", "f(1)==1") },
     { name: "parameter-scope-duplicate-parameter", fragment: okFragment("int f(int x,int x){return x;}", "", "f(1,2)==1") },
     { name: "macro-defined-malformed-operand", fragment: "precision mediump float;\n#define A defined(B,C)\n#if A\n#endif\nvoid main(){gl_FragColor=vec4(0.0,1.0,0.0,1.0);}" },

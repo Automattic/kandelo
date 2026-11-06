@@ -1,3 +1,4 @@
+import { lowerLongProducts } from "./essl100-products.js";
 import { compatibleEssl100Source } from "./essl100-native-source.js";
 import { lowerSamplerArrayLookups } from "./sampler-arrays.js";
 /**
@@ -16,15 +17,16 @@ import { lowerSamplerArrayLookups } from "./sampler-arrays.js";
  * called by CompileShader in bridge.ts), once per CompileShader; no draw
  * pays for it.
  *
- * Two ES100 spellings need native-compatible source first: macro-produced
- * defined expressions and a function body's scope inside its parameters.
- * Failed native compiles retry only these token-preserving normalizations;
- * the same ES100 parser/type checker still decides validity. See
- * essl100-native-source.ts and the runtime registry for the scope control.
+ * Failed native compiles can retry compatible ES100 source: macro-produced
+ * defined expressions, a function body's scope inside its parameters,
+ * local structure-type hiding, and bounded left-fold product prefixes.
+ * These transforms preserve bindings and evaluation order; the same ES100
+ * parser/type checker still decides validity. See essl100-native-source.ts,
+ * essl100-products.ts and the runtime registry for scope controls.
  *
- * Which shaders. The engine's own ESSL 1.00 front end (ANGLE in Chromium,
- * Firefox and WebKit) stays the judge of ES 1.00 validity: CompileShader
- * first compiles the guest's 1.00 source. ANGLE runs its Appendix A pass
+ * Which shaders. The engine's native ESSL 1.00 front end stays the judge
+ * of ES 1.00 validity: CompileShader first compiles the guest's 1.00 source.
+ * The Appendix A pass
  * (ValidateLimitations) only after the shader parsed and type-checked
  * without error, and each of its messages is unique to that pass, so an
  * info log whose every error is one of LIMITATION_MESSAGES belongs to a shader
@@ -257,6 +259,16 @@ export function compileGuestShader(gl: WebGL2RenderingContext, shader: WebGLShad
   let validation = derivativeValidationSource(source, fragment);
   gl.shaderSource(shader, validation ?? source); gl.compileShader(shader);
   let compiled = !!gl.getShaderParameter(shader, COMPILE_STATUS);
+  if (!compiled && /ERROR:\s*Expression too complex\./.test(gl.getShaderInfoLog(shader) ?? "")) {
+    const lowered = lowerLongProducts(source);
+    if (lowered !== source) {
+      source = lowered;
+      validation = derivativeValidationSource(source, fragment);
+      gl.shaderSource(shader, validation ?? source); gl.compileShader(shader);
+      compiled = !!gl.getShaderParameter(shader, COMPILE_STATUS);
+      if (compiled || onlyAppendixALimitations(gl.getShaderInfoLog(shader) ?? "")) compatibleSources.set(shader, source);
+    }
+  }
   if (!compiled && !onlyAppendixALimitations(gl.getShaderInfoLog(shader) ?? "")) {
     const normalized = compatibleEssl100Source(source);
     if (normalized !== source) {
@@ -1117,5 +1129,10 @@ export function translateEssl100(source: string, fragment: boolean, lodSwitch?: 
     const assignments = deferred.map(d => `${out[d.from - 1]} = ${out.slice(d.from + 1, d.to).join(" ")};`).join(" ");
     body += `\nvoid main() { ${assignments} ${PRIVATE}main(); }`;
   }
-  return { text: `${header.join("\n")}\n${body}${samplerArrayHelpers.length ? `\n${samplerArrayHelpers.join("\n")}` : ""}\n`, cube, ...(lod?.gaps.length ? { lodSwitchGaps: lod.gaps } : {}) };
+  // A shader can reach ES300 through an Appendix A rejection before the
+  // native ES100 compiler checks its expression budget. Lower emitted text
+  // too: private variants call this translator directly and must not recreate
+  // an expression that only the public compile path knew how to decompose.
+  const translated = `${header.join("\n")}\n${body}${samplerArrayHelpers.length ? `\n${samplerArrayHelpers.join("\n")}` : ""}\n`;
+  return { text: lowerLongProducts(translated), cube, ...(lod?.gaps.length ? { lodSwitchGaps: lod.gaps } : {}) };
 }

@@ -3472,14 +3472,18 @@ Firefox, Linux and Windows have not been checked.
   Kandelo records whether the program was linked when it was validated and
   answers false when it was not, on every engine.
 - The GLSL ES 1.00 compiler rejects a local variable that hides a struct
-  type of the same name (`int S = S(u).val;`), which section 4.2 allows.
+  type of the same name (`int S = S(u).val;`), which section 4.2 allows
+  ([`FIREFOX-ESSL100-STRUCT-HIDING`](../tests/runtime-workarounds/FIREFOX-ESSL100-STRUCT-HIDING/entry.md)).
+  After a failed native compile, Kandelo renames that local and its lexical
+  uses, retaining the outer constructor binding in its initializer. Public
+  types and member names remain intact, and duplicate locals stay invalid.
 - A fragment alone in its 2x2 pixel quad at the shared edge of two
   triangles in one draw can get the mipmap level of the other triangle.
 
-The last two have no workaround (one would need a GLSL scope rewriter, the
-other one draw per triangle), so guest programs see them on Firefox and the
-corresponding dEQP-GLES2 cases fail there. The reproductions and results
-are in
+The shared-edge mipmap defect still has no workaround; guest programs see
+it on Firefox and the corresponding dEQP-GLES2 cases fail there. This is an
+open correctness failure, not an allowed conformance difference. Historical
+reproductions and results for both defects are in
 [`docs/measurements/2026-11-02-firefox-gles2-shader-scope-and-edge-lod.md`](measurements/2026-11-02-firefox-gles2-shader-scope-and-edge-lod.md).
 
 ### WebKit page-process crash when thread workers end

@@ -1352,7 +1352,8 @@ compiler fix does not substitute for those gates.
 R449 repairs the native ESSL100 macro-conditional and function-parameter/body
 scope controls with the original native validator retained. Its combined
 graphics/compiler/shader/registry checks pass. Direct pinned CTS programs
-still expose four Firefox struct-hiding failures; long multiplication
-expressions and final actual-guest GLES2/EGL execution remain required in this
-iteration. Direct shader checks do not establish conformance, B1 completion or
-native desktop feel.
+initially expose four Firefox struct-hiding failures. R456 closes those direct
+controls and the12 captured long-multiplication compiler controls across three
+engines; its graphics/compiler/shader/registry checks pass. Final actual-guest
+GLES2/EGL execution remains required in this iteration. Direct shader checks do
+not establish conformance, B1 completion or native desktop feel.

@@ -1,3 +1,5 @@
+import {hideStructLocals} from "../src/webgl/essl100-struct-scope.js";
+import {lowerLongProducts} from "../src/webgl/essl100-products.js";
 import { compatibleEssl100Source, nestedFunctionBodySource } from "../src/webgl/essl100-native-source.js";
 import { describe, expect, it } from "vitest";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
@@ -514,5 +516,94 @@ describe("compiling and linking through the host", () => {
     expect(prepareLinkLanguages(context, [translated, partner] as unknown as WebGLShader[])).toBe(true);
     expect(partner.source).toBe(vertex);
     expect(partner.compiled).toBe(true);
+  });
+});
+
+
+describe("bounded native expression lowering",()=>{
+  const shader=(terms:string[],precision="highp",target="value")=>
+    `uniform highp float a;uniform highp float b;uniform highp float c;void main(){${precision} float ${target}=${terms.join("*")};gl_Position=vec4(${target});}`;
+  it("preserves the left fold and precision across long pure products",()=>{
+    const terms=Array.from({length:1001},(_,i)=>["a","b","c"][i%3]);
+    const source=shader(terms),lowered=lowerLongProducts(source);
+    expect(lowered).not.toBe(source);
+    const f=Math.fround,values=new Map([["a",f(1e20)],["b",f(1e-20)],["c",f(1.0000001192092896)]]);
+    const expected=terms.slice(1).reduce((v,n)=>f(v*values.get(n)!),values.get(terms[0])!);
+    const chunks=Array.from({length:Math.ceil(terms.length/128)},(_,i)=>terms.slice(i*128,i*128+128));
+    const reassociated=chunks.map(chunk=>chunk.slice(1).reduce((v,n)=>f(v*values.get(n)!),values.get(chunk[0])!))
+      .reduce((v,n)=>f(v*n));
+    expect(reassociated).not.toBe(expected); // This input distinguishes the tempting wrong chunk fold.
+
+    for(const [,name,expression] of lowered.matchAll(/highp float (\w+)\s*=\s*([A-Za-z0-9_* ]+);/g)){
+      const operands=expression.split("*").map(n=>values.get(n.trim())!);
+      expect(operands.every(n=>n!==undefined)).toBe(true);
+      values.set(name,operands.slice(1).reduce((v,n)=>f(v*n),operands[0]));
+    }
+    expect(values.get("value")).toBe(expected);
+  });
+  it("does not guess macro expansion, shadowed declarations, calls or precision",()=>{
+    const terms=Array(1001).fill("a"),source=shader(terms);
+    for(const unknown of ["#define a b\n"+source,source.replace("uniform highp float a;","uniform highp float a;uniform highp float a;"),
+      source.replace("highp float value=","mediump float value="),source.replace(terms.join("*"),Array(1001).fill("f()").join("*")),
+      source.replace("highp float value=","const highp float value=")])expect(lowerLongProducts(unknown)).toBe(unknown);
+  });
+  it("does not split controlled declarations or parenthesized for headers",()=>{
+    const product=Array(1001).fill("a").join("*");
+    const prelude="uniform highp float a;uniform bool flag;void main(){";
+    for(const statement of [`for(highp float value=${product};value<1.0;value+=1.0){}`,
+      `if(flag) highp float value=${product};`, `if(flag){}else highp float value=${product};`,
+      `while(flag) highp float value=${product};`, `do highp float value=${product};while(flag);`]){
+      const source=prelude+statement+"}";expect(lowerLongProducts(source)).toBe(source);
+    }
+  });
+  it("preserves directives inside a multiline initializer and macro bindings",()=>{
+    const source=shader(Array(1001).fill("a"));
+    for(const directive of ["#line 90", "#pragma optimize(off)", "/* comment */ #line 90"]){
+      const withDirective=source.replace("a*a",`a*\n${directive}\na`);
+      expect(lowerLongProducts(withDirective)).toBe(withDirective);
+    }
+    const macro="/* lead */ #define a b\n"+source;
+    expect(lowerLongProducts(macro)).toBe(macro);
+  });
+  it("keeps short products and self-shadowing initializers unchanged",()=>{
+    const short=shader(Array(20).fill("a"));expect(lowerLongProducts(short)).toBe(short);
+    const shadow=shader(Array(1001).fill("a"),"highp","a");expect(lowerLongProducts(shadow)).toBe(shadow);
+  });
+  it("avoids private-name collisions and preserves subsequent source lines",()=>{
+    const original=shader(Array(1001).fill("a")).replace("void main()", "uniform highp float kandelo_product_0;\nvoid main()").replace("a*a", "a*\na");
+    const lowered=lowerLongProducts(original);
+    expect(lowered).not.toContain("kandelo_product_0=");
+    expect(lowered.split("\n")).toHaveLength(original.split("\n").length);
+  });
+});
+
+
+describe("ES100 local variables hiding structure types",()=>{
+  const prefix="struct S{int val;};uniform int u;";
+  it("publishes a local only after its initializer and before the next comma",()=>{
+    const result=hideStructLocals(prefix+"void main(){int S=S(u).val,x=S;}");
+    expect(result).toMatch(/int (kandelo_struct_local_\d+)=S\(u\)\.val,x=\1;/);
+  });
+  it("restores outer bindings and preserves member namespaces",()=>{
+    const source="struct S{int S;};uniform int u;void main(){{S S=S(u);int v=S.S;}int v=S(u).S;}";
+    const result=hideStructLocals(source);expect(result).toContain("struct S{int S;}");
+    expect(result).toMatch(/S (kandelo_struct_local_\d+)=S\(u\);int v=\1\.S;/);
+    expect(result).toContain("}int v=S(u).S;");
+  });
+  it("does not launder duplicate or readonly bindings into new variables",()=>{
+    const duplicate=hideStructLocals(prefix+"void main(){int S=1;int S=2;}");
+    expect(duplicate).toMatch(/int (kandelo_struct_local_\d+)=1;int \1=2;/);
+    const readonly=hideStructLocals(prefix+"void main(){const int S=1;S=2;}");
+    expect(readonly).toMatch(/const int (kandelo_struct_local_\d+)=1;\1=2;/);
+  });
+  it("keeps hidden type uses hidden instead of exposing the global constructor",()=>{
+    const result=hideStructLocals(prefix+"void main(){int S=1;S(2);}");
+    expect(result).toMatch(/int (kandelo_struct_local_\d+)=1;\1\(2\);/);
+  });
+  it("leaves unproven macro, conditional, local-type and array bindings intact",()=>{
+    for(const source of ["/* comment */ #define S T\n"+prefix+"void main(){int S=1;}",
+      prefix+"void main(){#if GL_ES\nint S=1;\n#endif\n}",
+      prefix+"void main(){struct T{int x;};int S=1;}",prefix+"void main(){S S[2];}",prefix+"void f(int S){int x=S;}"])
+      expect(hideStructLocals(source)).toBe(source);
   });
 });

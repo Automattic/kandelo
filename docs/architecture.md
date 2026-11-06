@@ -4113,6 +4113,38 @@ compile-only work and introduces no draw/frame cost for unused features.
 See the standalone WebGL scope control in
 `tests/runtime-workarounds/WEBGL-ESSL100-PARAMETER-SCOPE/`.
 
+Firefox also rejects a local that hides a global structure type when the
+initializer uses a dynamic constructor. A failed-native-compile retry
+alpha-renames only the proven local binding and its lexical references.
+Each initializer sees the preceding binding; publishing an alias sooner
+would turn its constructor into a variable reference. Same-scope duplicates
+reuse the alias so they remain invalid. Member selectors and public types
+retain their own namespaces. Conditional/macro bindings, local structures,
+arrays and colliding parameter names remain unchanged when this lexical
+proof cannot establish ownership. The standalone reproduction and removal
+criteria are in `tests/runtime-workarounds/FIREFOX-ESSL100-STRUCT-HIDING/`.
+This adds compilation work, with no per-frame feature bookkeeping.
+
+A native expression-complexity rejection can also decompose a long flat
+float/vector product into bounded local prefixes. The proof requires
+unambiguous identifier operands with the same explicit type and precision.
+Only standalone local declarations in proven function compound blocks are
+split: for headers, unbraced controlled statements and initializer ranges
+containing directives remain intact. In addition,
+macro-expanded operands, calls, const results and self-shadowing
+initializers remain with native validation. Every prefix is the original
+left fold, placed first in the next expression. Multiplying independently
+computed chunks would reassociate operations and change rounding. Private
+names cannot capture guest identifiers, and subsequent source lines retain
+their numbering. The same ES100 compiler validates the transformed full
+shader; its accepted source also supplies private executable rebuilds.
+The native ES100 retry runs only after an expression-complexity rejection;
+ES300 output also applies the decomposition because an Appendix A rejection
+can precede the native expression-budget check. Private variants therefore
+receive the same bounded expressions. This adds compile-time work, with no
+new per-draw/frame lookup. No application or compile-time performance
+improvement is claimed.
+
 The translation works on the shader after preprocessing
 (`host/src/webgl/essl-preprocessor.ts`, ES 1.00 rules for input ANGLE has
 already accepted), so each decision is about code the compiler parsed, not

@@ -1,3 +1,4 @@
+import {hideStructLocals} from "./essl100-struct-scope.js";
 import { glslTokens } from "./glsl-tokens.js";
 import { macroDefinedConditionalSource } from "./essl-preprocessor.js";
 
@@ -32,5 +33,5 @@ export function nestedFunctionBodySource(source: string): string {
  * not implement. Normalize only these spellings, then let the SAME ES100
  * validator judge all remaining syntax/types before considering ES300. */
 export function compatibleEssl100Source(source: string): string {
-  return nestedFunctionBodySource(macroDefinedConditionalSource(source));
+  return hideStructLocals(nestedFunctionBodySource(macroDefinedConditionalSource(source)));
 }

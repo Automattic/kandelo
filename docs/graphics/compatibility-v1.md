@@ -57,6 +57,36 @@ explicitly wants to wait until all changes are integrated into a normally
 built preview that passes its required checks. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Long products and structure-type hiding, 2026-11-05 (R456)
+
+The native retry now decomposes proven long flat float/vector products into
+bounded left-fold prefixes with the same explicit type/precision. It preserves
+operand order and declines ambiguous bindings, macros, directives, const
+results, for headers and unbraced controlled statements. ES300 emission uses
+the same decomposition so private variants cannot recreate the rejected
+expression. A separate lexical transform gives private names to local variables
+hiding global structure types, preserving initializer bindings, member names,
+scope exit and native rejection of same-scope duplicates. Unproven bindings
+remain with native validation. The original guest source query remains intact.
+Why comments explain the binding, rounding and atomic-abandonment invariants;
+neither transform adds a per-draw/frame pass.
+
+Combined integration job
+`graphics-cts-shader-integration-r456-1105-213731-f6cd` passes1m23 through
+`.context/graphics-cts-shader-integration-r456/validate.sh`: graphics2237/89,
+full host compiler0, registry20 entries/56 sites, evidence classes and frozen
+input hashes. The shader harness passes297 Chromium,294 Firefox and297 WebKit
+checks, zero hard failures, with the same Firefox one inconclusive and two
+registered depth-range controls. All614 pinned preprocessor/scoping programs
+per engine meet their declared expectations, including invalid-program
+controls. All12 captured multiplication shaders compile through production
+while their12 raw-native controls reject expression complexity. The standalone
+Firefox155 structure-hiding reproduction matches its recorded result with
+zero harness failures; reporting remains human-only and native component
+attribution unestablished. These are direct compiler/link/pixel controls, not
+actual-guest full dEQP completion, performance or B1/preview acceptance. ABI
+program56/host3/GL17/fork21 and the snapshot remain unchanged.
+
 ## Native-compatible ESSL100 validation, 2026-11-05 (R449)
 
 The host now retries two native-rejected ESSL100 spellings without changing
