@@ -13,6 +13,12 @@ Use precise language:
 
 ## Test fixtures must observe the actual contract
 
+For graceful server shutdown, hold a real request until the listener has
+closed, then release it and require the complete response and normal process
+exit. Observing SIGTERM dispatch alone can release the request before the
+shutdown handler runs. Syscall traces record entry, so verify actual listener
+state through the kernel-owned network API after a close event.
+
 Stream large browser fixtures over test-owned HTTP rather than passing
 numeric byte arrays to `page.evaluate` or large bodies to `route.fulfill`.
 The latter base64-encodes bytes on the debugging protocol: the 104 MB Caddy

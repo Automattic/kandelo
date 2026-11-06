@@ -76,8 +76,10 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     page.on("pageerror", error => lifecycle.push(`page error: ${error.message}`));
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName }) => {
+    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, gracefulProbeUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName }) => {
       const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
+      const { observeProcessExits, verifyFrankenPhpGracefulShutdown } = await import(/* @vite-ignore */ gracefulProbeUrl);
+      const processExits = observeProcessExits();
       const [imageResponse, kernelResponse] = await Promise.all([fetch(imageUrl), fetch(kernelUrl)]);
       if (!imageResponse.ok || !kernelResponse.ok) throw new Error("WordPress test artifacts failed to load");
       const [imageBytes, kernelWasm] = await Promise.all([
@@ -102,6 +104,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
         },
         onStderr: (data: Uint8Array) => { stderr += decoder.decode(data); },
         onHostDiagnostic: (diagnostic: unknown) => diagnostics.push(diagnostic),
+        onProcessEvent: processExits.onEvent,
       });
       kernel.subscribeDestroyProgress((event: { phase: string; completed: number; total: number }) => shutdown.push(event));
       try {
@@ -272,7 +275,11 @@ echo json_encode([
         }
         const serviceLog = await kernel.readFileFromVfs(`/var/log/${serviceName}.log`);
         if (!serviceLog) throw new Error("FrankenPHP service log missing");
+        const graceful = serviceName === "frankenphp-caddy"
+          ? await verifyFrankenPhpGracefulShutdown(kernel, 8080, processExits.waitForExit)
+          : undefined;
         return {
+          graceful,
           opcacheStatus: opcacheResponse.status,
           opcacheBody,
           homepageStatus: homepage.status,
@@ -305,7 +312,10 @@ echo json_encode([
         ]);
         await kernel.destroy();
       }
-    }, { imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName }).catch(async error => {
+    }, {
+      imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName,
+      gracefulProbeUrl: new URL(`/@fs/${resolve(repoRoot, "host/test/support/frankenphp-graceful.ts")}`, baseURL!).href,
+    }).catch(async error => {
       await test.info().attach("browser-page-lifecycle", {
         body: JSON.stringify({ url: page.url(), lifecycle }), contentType: "application/json",
       });
@@ -326,7 +336,10 @@ echo json_encode([
     expect(result.churnCompleted).toBe(churnRequests);
     expect(result.editorBurstCompleted).toBe(editorBurstRounds);
     expect(result.parallelEditorCompleted).toBe(parallelEditorRequests);
-    if (serviceName === "frankenphp-caddy") expect(result.restarted).toBe(true);
+    if (serviceName === "frankenphp-caddy") {
+      expect(result.restarted).toBe(true);
+      expect(result.graceful).toMatchObject({ listenerClosed: true, status: 200, serverExit: 0, stopExit: 0 });
+    }
     expect(result.serviceLog).toContain(serviceName === "frankenphp-caddy" ? '"num_threads":6' : "num_threads=6");
     expect(result.diagnostics).toEqual([]);
     const drained = result.shutdown.filter(event => event.phase === "draining").at(-1);

@@ -7,6 +7,7 @@ import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { configureWordPressRuntime, SERVICE_DEMO_ENV, waitForHttp } from "../../packages/registry/service-vfs-demo";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import type { DestroyProgressEvent } from "../src/browser-kernel-protocol";
+import { observeProcessExits, verifyFrankenPhpGracefulShutdown } from "./support/frankenphp-graceful";
 
 async function availablePort(): Promise<number> {
   const server = createServer();
@@ -38,6 +39,7 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
   let logs = "";
   const diagnostics: unknown[] = [];
   const shutdown: DestroyProgressEvent[] = [];
+  const processExits = observeProcessExits();
   const append = (_pid: number, data: Uint8Array) => {
     logs = (logs + new TextDecoder().decode(data)).slice(-100_000);
   };
@@ -49,6 +51,7 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
     onStdout: append,
     onStderr: append,
     onHostDiagnostic: diagnostic => diagnostics.push(diagnostic),
+    onProcessEvent: processExits.onEvent,
   });
   host.subscribeDestroyProgress(event => shutdown.push(event));
   try {
@@ -91,6 +94,10 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
     const response = await fetch(`http://127.0.0.1:${port}/`);
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("WordPress on Kandelo");
+    if (service === "frankenphp-caddy") {
+      const graceful = await verifyFrankenPhpGracefulShutdown(host, port, processExits.waitForExit);
+      expect(graceful).toMatchObject({ listenerClosed: true, status: 200, serverExit: 0, stopExit: 0 });
+    }
     await host.destroy();
     const drained = shutdown.filter(event => event.phase === "draining").at(-1);
     expect(drained, JSON.stringify(shutdown)).toBeDefined();

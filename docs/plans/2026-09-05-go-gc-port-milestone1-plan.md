@@ -5406,3 +5406,20 @@ nonzero arrays and explicit nonempty finalizer arrays remain rejected.
 Registered C exit handlers already have separate Go-return, `os.Exit`, C
 `exit`, and C `_exit` cases. This is a guidance correction; no runtime
 behavior changes or new test passes are claimed.
+
+**2026-11-05 — Strengthen the prepared PHP shutdown gate.**
+The shared Node/browser probe now holds PHP until SIGTERM is observed and
+Rust's listener table confirms that the server has stopped listening. Only
+then does it release the request, require the exact HTTP response, and
+require both server and dinitctl exit status zero. This closes a fixture race:
+releasing PHP immediately after the signal syscall could finish the request
+before the shutdown handler starts. Close traces record syscall entry, so
+the probe checks real network state rather than assuming completion.
+Caddy 2.10.2's selected Unix listener wrapper closes the underlying listener
+on HTTP shutdown, matching this barrier.
+
+The helper passes strict checking with the repository host TypeScript
+compiler (`.context/frankenphp-graceful-listener-typecheck.log`). An initial
+root-level npx attempt selected an unrelated `tsc` command and failed before
+checking the file; it was corrected to the declared host compiler. Actual
+Node/browser execution of this stronger gate still awaits image publication.
