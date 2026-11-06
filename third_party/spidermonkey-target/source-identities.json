@@ -1,0 +1,45 @@
+{
+  "mozillaVersion": "140.11.0esr",
+  "archiveSha256": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028",
+  "base": "e3dcbe2c9be6e95f481e9a1562fb020faebf5b89",
+  "target": "wasm32-unknown-kandelo",
+  "llvmTarget": "wasm32-unknown-unknown",
+  "rustDependencyTarget": "wasm32-unknown-unknown",
+  "engineFiles": {
+    "build/autoconf/config.sub": {
+      "raw": "11c54f55c3ac99e5d2c3dc2bb0bcccbf69f8223cc68f6b2438daa806cf0d16d8",
+      "pre": "11c54f55c3ac99e5d2c3dc2bb0bcccbf69f8223cc68f6b2438daa806cf0d16d8",
+      "post": "4769ed6478f26b005e7cfc5193242b44b74d31cc08c329297c7f01b084600cb0"
+    },
+    "build/moz.configure/init.configure": {
+      "raw": "9cd59fd234136cc12aaf1e4b4690231b697319de5f7529935289fbab52f0f1b2",
+      "pre": "9cd59fd234136cc12aaf1e4b4690231b697319de5f7529935289fbab52f0f1b2",
+      "post": "29168e5018c1488af7f1f87154e624cbadaed929a8d89e8dcc6d9bb807b9aebd"
+    },
+    "build/moz.configure/rust.configure": {
+      "raw": "0282fba24fe682053e03a3cf470af0e814a51d004db7c8b6fa32f90368c91f70",
+      "pre": "9d2286a9eaa046689f8ddfc311472fb019834ad36a5a828b3575be4e5d1fc6c4",
+      "post": "fc219f258c8b445c8e83b167b772a667e52d7837351e019e0dc61ad2779fb7ec"
+    },
+    "js/src/build/moz.build": {
+      "raw": "9f931252861ea404999aa1338de71a3beccb30845e80df8de17cc40986423c55",
+      "pre": "9f931252861ea404999aa1338de71a3beccb30845e80df8de17cc40986423c55",
+      "post": "04aa109a38c8b8b341542fd4d57b64c17ca41957f59d174e8af25a7d3f07e730"
+    },
+    "js/src/threading/posix/PosixThread.cpp": {
+      "raw": "f07d2612433db5c8365192c35c89fd9f8e3f3a3d170828f375b7f8fa03e22af8",
+      "pre": "f07d2612433db5c8365192c35c89fd9f8e3f3a3d170828f375b7f8fa03e22af8",
+      "post": "bd2c3ece9b50f97774af3c31684f36391b2608cd8a7e909bb7c11409ffa70fcd"
+    },
+    "python/mozbuild/mozbuild/configure/constants.py": {
+      "raw": "f10335117865cb8bbbd34e0dcbada98fb35f323700089c3b20e160f5393ec7e3",
+      "pre": "f10335117865cb8bbbd34e0dcbada98fb35f323700089c3b20e160f5393ec7e3",
+      "post": "9993cf41eab5c89024ecb81562d0d61cbdf9bda6a66518f155960d198d90a379"
+    }
+  },
+  "affectingInheritedPatch": {
+    "path": "packages/registry/spidermonkey/patches/0002-map-kandelo-wasm-linux-rust-target.patch",
+    "sha256": "7deeacd2052e7a964aa5ac0147bc313c1d28b5bda7e817fda705660203eecbcf"
+  },
+  "newEnginePatchSha256": "6eabe306763eb18f6dd5b6e5d8b543b802eb6bc9fa032c86165e7e87e3eadc49"
+}

@@ -443,12 +443,11 @@ fi
 cat > "$MOZCONFIG_PATH" <<EOF
 export RUSTFLAGS="\${RUSTFLAGS:+\$RUSTFLAGS }$WASM_RUSTFLAGS"
 ac_add_options --enable-project=js
-ac_add_options --target=wasm32-unknown-linux-musl
+ac_add_options --target=wasm32-unknown-kandelo
 ac_add_options --disable-debug
 ac_add_options --enable-optimize="-O2"
 ac_add_options --disable-jit
 ac_add_options --disable-jemalloc
-ac_add_options --disable-stdcxx-compat
 ac_add_options --without-system-zlib
 ac_add_options --with-intl-api
 ac_add_options --enable-icu4x
@@ -468,10 +467,12 @@ export MOZCONFIG="$MOZCONFIG_PATH"
 export MOZBUILD_STATE_PATH
 export MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=system
 
-TARGET_OS_DEFINES="${WASM_POSIX_TARGET_OS_DEFINES:--D__linux__=1 -D__unix__=1}"
-export CC="${WASM_POSIX_TARGET_CC:-wasm32posix-cc} $TARGET_OS_DEFINES"
-export CXX="${WASM_POSIX_TARGET_CXX:-wasm32posix-c++} $TARGET_OS_DEFINES"
-export AS="${WASM_POSIX_TARGET_AS:-wasm32posix-cc} $TARGET_OS_DEFINES"
+# Mozilla's explicit Kandelo target checks this recipe-local identity together
+# with the SDK's actual Wasm/Unix macros; it rejects Linux/WASI/Emscripten.
+# The SDK's LLVM code-generation triple remains wasm32-unknown-unknown.
+export CC="${WASM_POSIX_TARGET_CC:-wasm32posix-cc} -D__kandelo__=1"
+export CXX="${WASM_POSIX_TARGET_CXX:-wasm32posix-c++} -D__kandelo__=1"
+export AS="${WASM_POSIX_TARGET_AS:-wasm32posix-cc} -D__kandelo__=1"
 export AR="${WASM_POSIX_TARGET_AR:-wasm32posix-ar}"
 export RANLIB="${WASM_POSIX_TARGET_RANLIB:-wasm32posix-ranlib}"
 export NM="${WASM_POSIX_TARGET_NM:-wasm32posix-nm}"

@@ -1,5 +1,12 @@
 # Pinned Node core algorithms
 
+Source checkpoint137 selects the explicit Kandelo/Unix SpiderMonkey target
+without Linux identity, preserving actual Wasm/musl owners and generic Rust
+identity. Exact source/configure controls and14 package checks pass; complete
+configure, engine and four-host behavior remain unvalidated. See the
+[target configuration scope](../../tests/nodejs/outline/target-config-integration.md).
+
+
 Source checkpoint 136 adds real source/synthetic module records, graph linking,
 live namespaces and evaluation ownership beneath the pinned public VM classes.
 The real CLI now owns the experimental flag instead of leaving the JS gate

@@ -1,0 +1,80 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/engine-contracts.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "engine",
+      "native-integration",
+      "processes",
+      "workers",
+      "values"
+    ],
+    "scope": "Truthful shared target/configuration prerequisite,not API or family closure"
+  },
+  "sourceImplemented": [
+    "Explicit supported wasm32 Kandelo OS/kernel/Unix admission and recipe-local marker replace inherited Linux tuple/macro",
+    "Rust generic Wasm cfg remains unknown while real C/Wasm dependency selection is admitted",
+    "Actual musl thread-name truncation and configure-probed dynamic-loader dependency preserved;generic existing library/clock/entropy owners selected"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-target-source-r1/report.json",
+    "sha256": "9a6897a8c6b9889214426aec9013f7084da4809cedeefb78de355409f946c5d9",
+    "guardedInputs": 676,
+    "engineFiles": 6,
+    "scope": "Six exact Mozilla source pre/postimages,recipe and dependency target selection,source input closure,bundle check,shell syntax and exact configure function/SDK-preprocessing controls. Not whole configure,engine build,link,guest or four-host conformance. Explicit preexisting SDK driver/plugin selected; no provisioning or global freshness claim."
+  },
+  "configureControls": {
+    "report": ".context/node26-target-controls-r1/configure-controls.json",
+    "sha256": "87fff491adc77e500deb3fdf816330ca88052b8716cc4c759f066f4aa55222bb",
+    "rows": 12,
+    "scope": "Exact pinned configure function-body controls + actual SDK preprocessing/config.sub/rustc target-list; not complete configure, compile, link, engine or guest proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-target-package-r2.json",
+    "sha256": "84ba3d481452274152b3d3409fd47ab5d17f2b8dd68396e1d2901e03631a8257",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Source-only package input checks;not runtime/API conformance"
+  },
+  "privateHandoff": {
+    "report": ".context/spidermonkey-target-agent/handoff.json",
+    "sha256": "65bcf08fa390c363717c7dbcdd0d2fc9b5cfdbab24c0e299aa82ad6dcceda9cf",
+    "sealSha256": "dce86517145dfbb62ca4857b8964395bcd4352995d14e8a3914717f26b0c48d5",
+    "scope": "Exact sealed source/evidence verified;historical SDK syntax and native test-double policy controls separately scoped"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-target-prepublication/whitespace-nonpass.log",
+      "sha256": "fa23da67a7a9f6bf950d2aacf93736972bb59c695f3abd4bbf1f4bc7960203a1",
+      "kind": "patch-file-format",
+      "reason": "Final staged whitespace gate caught context tabs/blank spaces inside the imported patch;format normalized with unchanged six postimages"
+    },
+    {
+      "report": ".context/node26-target-package-r1.log",
+      "sha256": "22120f7ed94eb6eb2a34832304ff788a08ad5653030520c0067b4e7f145ecb1e",
+      "kind": "harness-startup",
+      "reason": "Wrong Vitest installation path;exit1,no tests collected"
+    },
+    {
+      "report": ".context/spidermonkey-target-agent/seal-initial-pycache.log",
+      "sha256": "fef08f1747fd6750bdf27f759e19954cdce1f7735e9e5fd914450ac6fd7a18c2",
+      "kind": "source-seal-input",
+      "reason": "Unexpected generated Python bytecode excluded by disabling bytecode generation;initial failure retained"
+    }
+  ],
+  "remaining": [
+    "Full normal configure,C++/Rust/backend/link and current guest/four-host validation still required",
+    "Real process-birth precision,generic Rust std and previously audited platform/API gaps remain open",
+    "Review main SDK/image freshness before targeted engine build;integrate corrected ELD/HTTP/backing-store/TLS/lazy-property proposals without full product rebuild"
+  ],
+  "at": "2026-11-06T04:50:25.905238+00:00",
+  "recipeRevision": 137,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

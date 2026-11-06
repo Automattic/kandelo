@@ -1,0 +1,149 @@
+diff --git a/build/autoconf/config.sub b/build/autoconf/config.sub
+--- a/build/autoconf/config.sub
++++ b/build/autoconf/config.sub
+@@ -2029,0 +2030 @@
++	| kandelo* \
+diff --git a/build/moz.configure/init.configure b/build/moz.configure/init.configure
+--- a/build/moz.configure/init.configure
++++ b/build/moz.configure/init.configure
+@@ -473,6 +473,11 @@
+     elif os.startswith("linux"):
+         canonical_os = "GNU"
+         canonical_kernel = "Linux"
++    elif os == "kandelo":
++        # This port supplies its own POSIX/musl ABI; it is not Linux or WASI.
++        if cpu != "wasm32":
++            raise ValueError("Unsupported Kandelo CPU: %s" % cpu)
++        canonical_os = canonical_kernel = "Kandelo"
+     elif os.startswith("kfreebsd") and os.endswith("-gnu"):
+         canonical_os = "GNU"
+         canonical_kernel = "kFreeBSD"
+@@ -852,6 +857,15 @@
+
+
+ @depends(target)
++def target_is_kandelo(target):
++    if target.kernel == "Kandelo":
++        return True
++
++
++set_define("XP_KANDELO", target_is_kandelo)
++
++
++@depends(target)
+ def target_is_darwin(target):
+     if target.kernel == "Darwin":
+         return True
+diff --git a/build/moz.configure/rust.configure b/build/moz.configure/rust.configure
+--- a/build/moz.configure/rust.configure
++++ b/build/moz.configure/rust.configure
+@@ -267,7 +267,11 @@
+             info = split_triplet(t, allow_wasi=True)
+         except ValueError:
+             if t == "wasm32-unknown-unknown":
+-                info = split_triplet("wasm32-unknown-linux-musl", allow_wasi=True)
++                # Preserve Rust's generic Wasm identity. It has no OS/kernel;
++                # do not classify this target as Linux or Kandelo.
++                info = namespace(
++                    cpu="wasm32", endianness="little", os=None, kernel=None
++                )
+             elif t.startswith("thumb"):
+                 cpu, rest = t.split("-", 1)
+                 retry = "-".join(("arm", rest))
+@@ -294,6 +298,16 @@
+     # munging to get the correct option to rustc.
+     # We correlate the autoconf-derived targets with the list of targets
+     # rustc gives us with --print target-list.
++    if host_or_target.kernel == "Kandelo" and host_or_target.cpu == "wasm32":
++        # The existing engine dependency objects use generic Wasm codegen,
++        # C ABI calls and an explicit custom getrandom implementation. Select
++        # that supported target without changing its Rust cfg/platform facts.
++        # Full Kandelo Rust std adoption is a separate toolchain transition.
++        candidates = rust_supported_targets.get(("wasm32", "little", None), [])
++        if len(candidates) == 1:
++            return candidates[0].rust_target
++        die("Generic wasm32 Rust dependency target is unavailable for Kandelo")
++
+     candidates = rust_supported_targets.get(
+         (host_or_target.cpu, host_or_target.endianness, host_or_target.os), []
+     )
+@@ -377,15 +391,6 @@
+                     ) and c.rust_target.endswith(suffix):
+                         return c.rust_target
+
+-        # Kandelo's C/C++ side is configured as wasm32-unknown-linux-musl so
+-        # Mozilla enables the POSIX/Linux code paths. Rust's usable std target
+-        # in the pinned toolchain is wasm32-unknown-unknown, and the Rust code
+-        # linked into the JS shell does not provide the syscall ABI boundary.
+-        if host_or_target.cpu == "wasm32" and host_or_target.kernel == "Linux":
+-            narrowed = [c for c in candidates if c.rust_target == "wasm32-unknown-unknown"]
+-            if len(narrowed) == 1:
+-                return narrowed[0].rust_target
+-
+         # See if we can narrow down on the exact alias.
+         # We use the sub_configure_alias to keep support mingw32 triplets as input.
+         narrowed = [
+diff --git a/js/src/build/moz.build b/js/src/build/moz.build
+--- a/js/src/build/moz.build
++++ b/js/src/build/moz.build
+@@ -74,6 +74,10 @@
+     OS_LIBS += [
+         "dl",
+     ]
++elif CONFIG["OS_ARCH"] == "Kandelo":
++    # The existing configure probe selects the real SDK dl implementation;
++    # weak libc stubs are not a substitute for the dynamic-loading owner.
++    OS_LIBS += CONFIG["DL_LIBS"]
+
+ if CONFIG["OS_ARCH"] == "SunOS":
+     OS_LIBS += [
+diff --git a/js/src/threading/posix/PosixThread.cpp b/js/src/threading/posix/PosixThread.cpp
+--- a/js/src/threading/posix/PosixThread.cpp
++++ b/js/src/threading/posix/PosixThread.cpp
+@@ -90,13 +90,14 @@
+ void ThisThread::SetName(const char* name) {
+   MOZ_RELEASE_ASSERT(name);
+
+-#if (defined(__APPLE__) && defined(__MACH__)) || defined(__linux__)
++#if (defined(__APPLE__) && defined(__MACH__)) || defined(__linux__) || \
++    defined(XP_KANDELO)
+ #  if defined(XP_DARWIN)
+   // Mac OS X has a length limit of 63 characters, but there is no API
+   // exposing it.
+ #    define SETNAME_LENGTH_CONSTRAINT 63
+ #  else
+-  // On linux the name may not be longer than 16 bytes, including
++  // On Linux and Kandelo musl the name may not be longer than 16 bytes, including
+   // the null terminator. Truncate the name to 15 characters.
+ #    define SETNAME_LENGTH_CONSTRAINT 15
+ #  endif
+diff --git a/python/mozbuild/mozbuild/configure/constants.py b/python/mozbuild/mozbuild/configure/constants.py
+--- a/python/mozbuild/mozbuild/configure/constants.py
++++ b/python/mozbuild/mozbuild/configure/constants.py
+@@ -37,6 +37,7 @@
+         "FreeBSD",
+         "GNU",
+         "iOS",
++        "Kandelo",
+         "NetBSD",
+         "OpenBSD",
+         "OSX",
+@@ -52,6 +53,7 @@
+         "DragonFly",
+         "FreeBSD",
+         "kFreeBSD",
++        "Kandelo",
+         "Linux",
+         "NetBSD",
+         "OpenBSD",
+@@ -144,6 +146,10 @@
+     "FreeBSD": "__FreeBSD__",
+     "kFreeBSD": "__FreeBSD_kernel__",
+     "Linux": "__linux__",
++    "Kandelo": (
++        "__kandelo__ && __wasm32__ && __unix__"
++        " && !__linux__ && !__wasi__ && !__EMSCRIPTEN__"
++    ),
+     "NetBSD": "__NetBSD__",
+     "OpenBSD": "__OpenBSD__",
+     "SunOS": "__sun__",
