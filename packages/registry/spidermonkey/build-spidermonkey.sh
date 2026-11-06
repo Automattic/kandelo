@@ -376,6 +376,12 @@ python3 "$REPO_ROOT/third_party/node-core/generate-sqlite-constants.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-sqlite-constants.h"
 cp "$REPO_ROOT/third_party/node-core/callback-scope.h" "$SRC_DIR/js/src/shell/kandelo-node-callback-scope.h"
 cp "$REPO_ROOT/third_party/node-core/native-retained-memory.h" "$SRC_DIR/js/src/shell/native-retained-memory.h"
+# The VM's native capability boundary stays C++17; only this existing C++20
+# shell embedding consumes the canonical retained-memory owner implementation.
+cp "$SRC_DIR/js/public/experimental/KandeloBackingCapabilities.h" \
+    "$SRC_DIR/js/src/shell/kandelo-node-backing-capabilities.h"
+cp "$REPO_ROOT/third_party/node-core/retained-backing-store.h" \
+    "$SRC_DIR/js/src/shell/retained-backing-store.h"
 cp "$REPO_ROOT/third_party/node-core/removal-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-removal-operations.h"
 cp "$REPO_ROOT/third_party/node-core/directory-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-directory-operations.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-fs-constants.py" \

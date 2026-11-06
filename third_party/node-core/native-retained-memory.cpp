@@ -7,6 +7,7 @@ static bool IsKandeloNodeMode();
 namespace {
 struct KandeloNativeMemoryAccount {
   kandelo::memory::AccountHandle account = std::make_shared<kandelo::memory::Account>();
+  JS::KandeloBacking::AccountRef backingAccount = KandeloMakeBackingAccount(account);
   JS::PersistentRootedObject anchor;
   const pthread_t thread = pthread_self();
   kandelo::memory::CreditBalance credit;
@@ -29,6 +30,10 @@ static kandelo::memory::AccountHandle KandeloNativeMemoryOwner(JSContext* cx) {
   const auto found = kandeloNativeMemoryAccounts.find(cx);
   return found == kandeloNativeMemoryAccounts.end() ? nullptr : found->second->account;
 }
+static JS::KandeloBacking::AccountRef KandeloNativeBackingAccount(JSContext* cx) noexcept {
+  const auto found = kandeloNativeMemoryAccounts.find(cx);
+  return found == kandeloNativeMemoryAccounts.end() ? JS::KandeloBacking::AccountRef{} : found->second->backingAccount;
+}
 static JSObject* KandeloNativeMemoryEnvironment(JSContext* cx) {
   const auto found = kandeloNativeMemoryAccounts.find(cx);
   return found == kandeloNativeMemoryAccounts.end() ? nullptr : found->second->anchor.get();
@@ -43,6 +48,9 @@ class KandeloNativeMemoryEnvironmentScope {
  public:
   KandeloNativeMemoryEnvironmentScope(JSContext* cx, HandleObject primaryEnvironment) {
     if (!IsKandeloNodeMode()) { ready_ = true; return; }
+    if (!KandeloRegisterBackingCapabilities()) {
+      JS_ReportErrorASCII(cx, "Backing allocation provider is already registered"); return;
+    }
     // Called only by the actual main/shell-worker/Node-worker environment
     // entries, whose existing RootedObject already owns this global lifetime.
     MOZ_RELEASE_ASSERT(!kandeloNativeMemoryAccounts.count(cx));

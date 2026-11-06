@@ -1,0 +1,95 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem-contracts.md",
+    "findingIds": [
+      "FS-011"
+    ],
+    "relatedFamilies": [
+      "values",
+      "filesystem",
+      "streams",
+      "network",
+      "compression",
+      "crypto",
+      "workers",
+      "engine"
+    ],
+    "scope": "Shared real allocation/captured-span foundation;public accepted-kind/native-work/codec/UDP routing and API closure remain open"
+  },
+  "sourceImplemented": [
+    "Actual allocator-owned committed store and immutable original view span,sharing existing process memory ledger",
+    "Twelve-file C++17 engine owner/slots/inline/RAB/transfer/shared/Wasm/clone-sidecar paths;real C++20 native capability/factory and primary-account lookup",
+    "Root controller-record owner/span claims replace wrong fallback projection while truly contextless material remains pending",
+    "Declared native factory-before-memory and actual patched capability header staging;existing consumer paths preserved"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-backing-source-r1/report.json",
+    "sha256": "04f012210b9530165f81b0021bbc35b20ff88f000118fb56707c194b84812c40",
+    "guardedInputs": 687,
+    "engineFiles": 12,
+    "scope": "Actual ownership engine/factory/retained primitive source,exact existing/new12file composition,slot source expressions,declared input and unity staging. Actual C++17/C++20 native helper boundaries compiled separately,not VM/JSAPI/GC/Wasm/clone transport or four-host conformance. Native-work/FS/codec/UDP routing remains unchanged and incomplete."
+  },
+  "nativeControls": {
+    "report": ".context/node26-backing-controls-r1/after-report.json",
+    "sha256": "57abe7cc6595271ea44d555d6186308aec3617d45a9443d1afdf00e2e37ac22a",
+    "passed": true,
+    "sharedThreads": 8,
+    "iterationsPerThread": 1000,
+    "scope": "Actual factory/primitive/ledger known-account projection and existing ownership controls;VM/raw deallocation/account resolver are explicit test dependencies. No real JSAPI/GC/four-host proof."
+  },
+  "primitiveControls": {
+    "report": ".context/node26-backing-primitive-r1.log",
+    "sha256": "bf8a938a80359f1d25d1051656b95a1efb853925fd26e589e0ce497e506424d3",
+    "allocationRollbackPositions": 6,
+    "nativeThreads": 8,
+    "scope": "Actual unchanged primitive + strict C++17 capability/transfer header object;not actual engine/JSAPI/GC/zone behavior"
+  },
+  "packageChecks": {
+    "report": ".context/node26-backing-package-r1.json",
+    "sha256": "1c2c025f97a1da2bb401a6651ae49adb06b1eb8b30cd690507562b8a4240baeb",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Source-only declared input checks;not API conformance"
+  },
+  "privateHandoff": {
+    "report": ".context/datagram-owner-agent/backing-store-bridge/identities.json",
+    "sha256": "b0bb3e9ec9f2ae7d0ad14d1fc6583e761779fae02e5f92700d4fcdcd84e18096",
+    "sealSha256": "e799f03b921b7906ac9e47cc9c92644236078c6b2dc8cb8c8cd1fe74e6d26eff",
+    "scope": "Exact sealed source/native/reference identities verified;historical V8/UDP observations are not candidate passes"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-backing-controls-r1/before-report.json",
+      "sha256": "a9f1236bed375d98c02ca0ddcd43590c7001bd856c8926a32ca77f20461c5b72",
+      "kind": "native-controller-projection",
+      "reason": "Original actual factory leaves136controller bytes pending/projected to unrelated account;exit1,reaped;identical assertion passes after real owner/span claims"
+    },
+    {
+      "report": ".context/datagram-owner-agent/backing-store-bridge/handoff.md",
+      "sha256": "765f9140163325b60589d34b12b73021faac400ea51cfef8eed8bf8ed3136100",
+      "kind": "prior-native-assumption-and-harness-nonpasses",
+      "reason": "Original RAB transfer/detached-view assumptions,fixture compile/include/runner failures retained in immutable seal;no runtime defect claim"
+    },
+    {
+      "report": ".context/histogram-owner-agent/review-fixes/slice-two/handoff.md",
+      "sha256": "b81080f68440dba62930e80ed3e3a764c08926557553b4bfd50512417a431f7d",
+      "kind": "prior-sanitizer-nonpasses",
+      "reason": "Prior sanitizer timeout/nonacceptance unchanged;no sanitizer pass claimed"
+    }
+  ],
+  "remaining": [
+    "Route real native-work/FS/codec/UDP consumers and actual embedder-owned allocations without strict-kind narrowing,early copies or async-init/list rereads",
+    "Compile actual combined engine/JSAPI/JIT/GC and validate real zone/realm/worker/Wasm/clone/abort/pressure across all four hosts",
+    "Integrate shared setOwnProperty correction,TLS/native-lazy consumer/watchers;all19families remain partial"
+  ],
+  "at": "2026-11-06T05:50:24.538732+00:00",
+  "recipeRevision": 140,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

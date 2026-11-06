@@ -23,6 +23,8 @@ inputs = [
   "third_party/node-core/upstream/histogram-reference",
   "third_party/node-core/native-retained-memory.h",
   "third_party/node-core/native-retained-memory.cpp",
+  "third_party/node-core/native-backing-store.cpp",
+  "third_party/node-core/retained-backing-store.h",
   "packages/registry/spidermonkey/build-spidermonkey.sh",
   "packages/registry/spidermonkey/node-compat/adapter.js",
   "packages/registry/spidermonkey/node-compat/suffix.js",
@@ -542,4 +544,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 139
+revision = 140

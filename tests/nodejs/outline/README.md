@@ -1,5 +1,12 @@
 # Node 26 core implementation outline
 
+Source checkpoint140 adds actual retained-backing engine/native capabilities
+and correct known-owner controller accounting. Portable ownership controls and14
+package checks pass; production byte-consumer routing, VM/GC/transport and all
+four hosts remain unvalidated. See the
+[backing-store scope](backing-store-integration.md).
+
+
 Source checkpoint139 adds native event-loop-delay samplers and deferred-close
 ownership beneath the pinned public wrapper. Portable/native-host controls and39
 affected/package checks pass; actual Kandelo phase/GC/clone/realm/four-host

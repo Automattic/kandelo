@@ -1,0 +1,1044 @@
+--- a/js/public/StructuredClone.h
++++ b/js/public/StructuredClone.h
+@@ -18,6 +18,7 @@
+ #include "jstypes.h"
+
+ #include "js/AllocPolicy.h"
++#include "js/experimental/KandeloBackingTransfers.h"
+ #include "js/RootingAPI.h"
+ #include "js/TypeDecls.h"
+ #include "js/Vector.h"
+@@ -483,6 +484,7 @@
+   OwnTransferablePolicy ownTransferables_ =
+       OwnTransferablePolicy::NoTransferables;
+   js::SharedArrayRawBufferRefs refsHeld_;
++  std::shared_ptr<JS::KandeloBacking::Transfers> kandeloBackingTransfers_;
+
+   using StringBuffers =
+       js::Vector<RefPtr<mozilla::StringBuffer>, 4, js::SystemAllocPolicy>;
+@@ -544,6 +546,13 @@
+     scope_ = newScope;
+   }
+
++  std::shared_ptr<JS::KandeloBacking::TransferEntry> kandeloBackingTransfer(size_t index) const {
++    return kandeloBackingTransfers_ ? kandeloBackingTransfers_->Get(index) : nullptr;
++  }
++  size_t holdKandeloBackingTransfer(std::shared_ptr<JS::KandeloBacking::TransferEntry> entry) {
++    if (!kandeloBackingTransfers_) kandeloBackingTransfers_ = std::make_shared<JS::KandeloBacking::Transfers>();
++    return kandeloBackingTransfers_->Add(std::move(entry));
++  }
+   size_t Size() const { return bufList_.Size(); }
+
+   const Iterator Start() const { return bufList_.Iter(); }
+@@ -619,6 +628,12 @@
+   // Append the entire contents of other's bufList_ to our own.
+   [[nodiscard]] bool Append(const JSStructuredCloneData& other) {
+     MOZ_ASSERT(scope() == other.scope());
++    // Owned same-process capability tables cannot be manufactured by copying
++    // encoded bytes. Preserve the real table only for a whole empty copy.
++    if (other.kandeloBackingTransfers_) {
++      if (Size()) return false;
++      kandeloBackingTransfers_ = other.kandeloBackingTransfers_;
++    }
+     return other.ForEachDataChunk(
+         [&](const char* data, size_t size) { return AppendBytes(data, size); });
+   }
+--- /dev/null
++++ b/js/public/experimental/KandeloBackingCapabilities.h
+@@ -0,0 +1,51 @@
++#ifndef js_experimental_KandeloBackingCapabilities_h
++#define js_experimental_KandeloBackingCapabilities_h
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++struct JSContext;
++namespace JS::KandeloBacking {
++// C++17 embedding boundary. No Node headers, JS roots or context pointers live
++// in these owned capabilities. Provider code must remain loaded process-wide.
++class Account { public: virtual ~Account() = default; virtual const void* Provider() const noexcept = 0; };
++using AccountRef = std::shared_ptr<Account>;
++class Allocation;
++using AllocationRef = std::shared_ptr<Allocation>;
++class Owner { public: virtual ~Owner() = default; virtual AllocationRef Store() const noexcept = 0; };
++using OwnerRef = std::unique_ptr<Owner>;
++class Span {
++ public:
++  virtual ~Span() = default;
++  virtual uint8_t* Data() const noexcept = 0;
++  virtual size_t Length() const noexcept = 0;
++  virtual size_t Offset() const noexcept = 0;
++  virtual size_t Capacity() const noexcept = 0;
++  virtual AllocationRef Store() const noexcept = 0;
++  virtual bool Shared() const noexcept = 0;
++};
++using SpanRef = std::shared_ptr<Span>;
++using Release = void (*)(void*, size_t, void*) noexcept;
++class Allocation {
++ public:
++  virtual ~Allocation() = default;
++  virtual uint8_t* Data() const noexcept = 0;
++  virtual size_t Capacity() const noexcept = 0;
++  virtual void Commit() noexcept = 0;
++  virtual bool Committed() const noexcept = 0;
++  virtual bool Shared() const noexcept = 0;
++  virtual void SynchronizeJsOwners(size_t) noexcept = 0;
++  virtual OwnerRef MakeOwner(const AccountRef&, bool engineAccountsPayload) = 0;
++  virtual SpanRef Capture(size_t, size_t, const AccountRef&) = 0;
++};
++class Metadata {
++ public: virtual ~Metadata() = default; virtual void Resize(size_t) noexcept = 0;
++};
++using MetadataRef = std::shared_ptr<Metadata>;
++struct Hooks {
++  const void* provider;
++  AccountRef (*resolveAccount)(JSContext*) noexcept;
++  AllocationRef (*prepare)(uint8_t*, size_t, Release, void*, bool);
++  MetadataRef (*metadata)(size_t, const AccountRef&);
++};
++}  // namespace JS::KandeloBacking
++#endif
+--- /dev/null
++++ b/js/public/experimental/KandeloBackingStore.h
+@@ -0,0 +1,22 @@
++#ifndef js_experimental_KandeloBackingStore_h
++#define js_experimental_KandeloBackingStore_h
++#include "jstypes.h"
++
++#include "js/experimental/KandeloBackingCapabilities.h"
++#include "js/RootingAPI.h"
++namespace JS::KandeloBacking {
++// One immutable process provider. Re-registration accepts only that same
++// provider; retiring an environment affects lookup, never retained capability
++// code or other environments. All lookup calls run on the supplied cx thread.
++extern JS_PUBLIC_API bool Register(const Hooks*) noexcept;
++extern JS_PUBLIC_API AccountRef ResolveAccount(JSContext*) noexcept;
++extern JS_PUBLIC_API AllocationRef Prepare(uint8_t*, size_t, Release, void*, bool shared = false);
++extern JS_PUBLIC_API MetadataRef TrackMetadata(size_t, const AccountRef& = {});
++// Capture real initial view span and actual allocation owner. No length pin or
++// JS property/list reads. A missing true backing owner fails; never copy a send.
++// An embedder must supply its actual prepared deallocation capability for
++// USER_OWNED storage. Success consumes deallocation authority; failure does not.
++extern JS_PUBLIC_API bool InstallUserOwned(JSContext*, JS::HandleObject buffer, const AllocationRef&);
++extern JS_PUBLIC_API SpanRef Acquire(JSContext*, JS::HandleObject view);
++}
++#endif
+--- /dev/null
++++ b/js/public/experimental/KandeloBackingTransfers.h
+@@ -0,0 +1,63 @@
++#ifndef js_experimental_KandeloBackingTransfers_h
++#define js_experimental_KandeloBackingTransfers_h
++#include <mutex>
++#include <vector>
++
++#include "js/experimental/KandeloBackingCapabilities.h"
++namespace JS::KandeloBacking {
++MetadataRef TrackMetadata(size_t, const AccountRef&);
++class TransferEntry {
++  std::mutex mutex_;
++  AllocationRef allocation_;
++  enum State { Available, Reading, Consumed, Aborted } state_ = Available;
++  MetadataRef material_;
++ public:
++  const uint32_t kind;
++  const size_t byteLength, maxByteLength;
++  const bool resizable;
++  void (*const externalFree)(void*, void*);
++  void* const externalUser;
++  TransferEntry(AllocationRef allocation, uint32_t kind, size_t bytes, size_t maximum,
++                bool resizable, void (*free)(void*,void*), void* user)
++      : allocation_(std::move(allocation)), material_(TrackMetadata(sizeof(TransferEntry), {})),
++        kind(kind), byteLength(bytes), maxByteLength(maximum), resizable(resizable), externalFree(free), externalUser(user) {}
++  AllocationRef BeginRead() {
++    std::lock_guard lock(mutex_);
++    if (state_ != Available || !allocation_) return {};
++    state_ = Reading; return allocation_;
++  }
++  bool CommitRead() {
++    AllocationRef old;
++    { std::lock_guard lock(mutex_); if (state_ != Reading) return false;
++      state_ = Consumed; old = std::move(allocation_); }
++    return true;
++  }
++  void CancelRead() { std::lock_guard lock(mutex_); if (state_ == Reading) state_ = Available; }
++  void Abort() {
++    AllocationRef old;
++    { std::lock_guard lock(mutex_); if (state_ == Consumed) return;
++      state_ = Aborted; old = std::move(allocation_); }
++  }
++};
++class Transfers {
++  mutable std::mutex mutex_;
++  std::vector<std::shared_ptr<TransferEntry>> entries_;
++  MetadataRef material_ = TrackMetadata(sizeof(Transfers), {});
++ public:
++  ~Transfers() { Abort(); }
++  size_t Add(std::shared_ptr<TransferEntry> entry) {
++    std::lock_guard lock(mutex_); const size_t index = entries_.size(); entries_.push_back(std::move(entry));
++    if (material_) material_->Resize(sizeof(Transfers) + entries_.capacity()*sizeof(entries_[0]));
++    return index;
++  }
++  std::shared_ptr<TransferEntry> Get(size_t index) const {
++    std::lock_guard lock(mutex_); return index < entries_.size() ? entries_[index] : nullptr;
++  }
++  void Abort() {
++    std::vector<std::shared_ptr<TransferEntry>> old;
++    { std::lock_guard lock(mutex_); old.swap(entries_); if (material_) material_->Resize(sizeof(Transfers)); }
++    for (auto& entry : old) entry->Abort();
++  }
++};
++} // namespace JS::KandeloBacking
++#endif
+--- a/js/src/moz.build
++++ b/js/src/moz.build
+@@ -247,6 +247,9 @@
+     "../public/experimental/Intl.h",
+     "../public/experimental/JitInfo.h",
+     "../public/experimental/JSStencil.h",
++    "../public/experimental/KandeloBackingCapabilities.h",
++    "../public/experimental/KandeloBackingStore.h",
++    "../public/experimental/KandeloBackingTransfers.h",
+     "../public/experimental/LoggingInterface.h",
+     "../public/experimental/PCCountProfiling.h",
+     "../public/experimental/SourceHook.h",
+@@ -392,6 +395,7 @@
+     "vm/JSONParser.cpp",
+     "vm/JSONPrinter.cpp",
+     "vm/JSScript.cpp",
++    "vm/KandeloBackingStore.cpp",
+     "vm/List.cpp",
+     "vm/Logging.cpp",
+     "vm/MemoryMetrics.cpp",
+--- a/js/src/vm/ArrayBufferObject.cpp
++++ b/js/src/vm/ArrayBufferObject.cpp
+@@ -18,6 +18,7 @@
+ #include <algorithm>  // std::max, std::min
+ #include <memory>     // std::uninitialized_copy_n
+ #include <string.h>
++
+ #if !defined(XP_WIN) && !defined(__wasi__)
+ #  include <sys/mman.h>
+ #endif
+@@ -46,6 +47,7 @@
+ #include "vm/Interpreter.h"
+ #include "vm/JSContext.h"
+ #include "vm/JSObject.h"
++#include "vm/KandeloBackingStore.h"
+ #include "vm/SelfHosting.h"
+ #include "vm/SharedArrayObject.h"
+ #include "vm/Warnings.h"  // js::WarnNumberASCII
+@@ -1107,6 +1109,8 @@
+     buffer->setDataPointer(BufferContents::createNoData());
+   }
+
++  // Zero-byte/no-data buffers can still own native metadata.
++  buffer->clearKandeloBackingOwner();
+   buffer->setByteLength(0);
+   buffer->setIsDetached();
+   if (buffer->isResizable()) {
+@@ -1653,6 +1657,16 @@
+ }
+
+ void ArrayBufferObject::releaseData(JS::GCContext* gcx) {
++  if (kandeloBackingOwner()) {
++    // The real native allocation controller is now authoritative. Retire this
++    // JS cell's existing charge, then its ownership; a lease/packet may survive.
++    if (isMalloced() || isMapped())
++      gcx->removeCellMemory(this, associatedBytes(), MemoryUse::ArrayBufferContents);
++    else if (isWasm())
++      gcx->removeCellMemory(this, byteLength(), MemoryUse::ArrayBufferContents);
++    clearKandeloBackingOwner();
++    return;
++  }
+   switch (bufferKind()) {
+     case INLINE_DATA:
+       // Inline data doesn't require releasing.
+@@ -1693,6 +1707,9 @@
+ }
+
+ void ArrayBufferObject::setDataPointer(BufferContents contents) {
++  if (contents.kind() == NO_DATA && !contents.retained()) clearKandeloBackingOwner();
++  MOZ_ASSERT_IF(contents.retained(), kandeloBackingOwner() &&
++      kandeloBackingOwner()->Store() == contents.retained());
+   setFixedSlot(DATA_SLOT, PrivateValue(contents.data()));
+   setFlags((flags() & ~KIND_MASK) | contents.kind());
+
+@@ -1709,6 +1726,7 @@
+
+ inline size_t ArrayBufferObject::associatedBytes() const {
+   if (isMalloced()) {
++    if (auto* owner = kandeloBackingOwner()) return owner->Store()->Capacity();
+     return maxByteLength();
+   }
+   if (isMapped()) {
+@@ -1861,6 +1879,11 @@
+   }
+
+   MOZ_ASSERT(newBuf->isNoData());
++  JS::KandeloBacking::OwnerRef retainedOwner;
++  if (auto* original = oldBuf->kandeloBackingOwner()) {
++    retainedOwner = PrepareKandeloBackingOwner(cx, original->Store(), true);
++    if (!retainedOwner) { cx->clearPendingException(); return nullptr; }
++  }
+
+   if (!oldBuf->contents().wasmBuffer()->growToPagesInPlace(newPages)) {
+     return nullptr;
+@@ -1868,6 +1891,7 @@
+
+   // Extract the grown contents from |oldBuf|.
+   BufferContents oldContents = oldBuf->contents();
++  if (retainedOwner) newBuf->setKandeloBackingOwner(retainedOwner.release());
+
+   // Overwrite |oldBuf|'s data pointer *without* releasing old data.
+   oldBuf->setDataPointer(BufferContents::createNoData());
+@@ -2036,6 +2060,7 @@
+
+ ArrayBufferObject* ArrayBufferObject::createForContents(
+     JSContext* cx, size_t nbytes, BufferContents contents) {
++  if (contents.retained()) return createForRetainedContents(cx, nbytes, nbytes, false, contents);
+   MOZ_ASSERT(contents);
+   MOZ_ASSERT(contents.kind() != INLINE_DATA);
+   MOZ_ASSERT(contents.kind() != NO_DATA);
+@@ -2287,6 +2312,21 @@
+   MOZ_ASSERT(newByteLength <= ArrayBufferObject::ByteLengthLimit,
+              "caller must validate the byte count it passes");
+
++  if (source->kandeloBackingOwner()) {
++    if (newByteLength && !source->isResizable() && newByteLength == source->byteLength()) {
++      BufferContents contents = source->contents();
++      Rooted<ArrayBufferObject*> destination(cx, createForRetainedContents(cx, newByteLength, newByteLength, false, contents, false));
++      if (!destination) return nullptr;
++      // Destination ownership is concrete before retiring source authority.
++      if (source->isMalloced() || source->isMapped()) RemoveCellMemory(source, source->associatedBytes(), MemoryUse::ArrayBufferContents);
++      source->setDataPointer(BufferContents::createNoData()); detach(cx, source);
++      if (destination->isMalloced() || destination->isMapped()) AddCellMemory(destination, destination->associatedBytes(), MemoryUse::ArrayBufferContents);
++      return destination;
++    }
++    auto* destination = ArrayBufferObject::copy(cx, newByteLength, source);
++    if (!destination) return nullptr;
++    detach(cx, source); return destination;
++  }
+   if (newByteLength > FixedLengthArrayBufferObject::MaxInlineBytes &&
+       source->isMalloced()) {
+     if (newByteLength == source->associatedBytes()) {
+@@ -2409,6 +2449,15 @@
+   MOZ_ASSERT(!source->isLengthPinned());
+   MOZ_ASSERT(newByteLength <= source->maxByteLength());
+
++  if (source->kandeloBackingOwner()) {
++    // Node's pinned V8 CopyArrayBufferAndDetach reuses only a fixed store with
++    // unchanged nonzero length. A RAB transfer allocates its real destination;
++    // pending native users retain the original allocation, not a byte snapshot.
++    auto* destination = ResizableArrayBufferObject::copy(cx, newByteLength, source);
++    if (!destination) return nullptr;
++    ArrayBufferObject::detach(cx, source);
++    return destination;
++  }
+   if (source->maxByteLength() > ResizableArrayBufferObject::MaxInlineBytes &&
+       source->isMalloced()) {
+     return copyAndDetachSteal(cx, newByteLength, source);
+@@ -2559,12 +2608,18 @@
+     return nullptr;
+   }
+
++  JS::KandeloBacking::OwnerRef retainedOwner;
++  if (auto* original = donor->kandeloBackingOwner()) {
++    retainedOwner = PrepareKandeloBackingOwner(cx, original->Store(), true);
++    if (!retainedOwner) return nullptr;
++  }
+   RemoveCellMemory(donor, donor->byteLength(), MemoryUse::ArrayBufferContents);
+
+   MOZ_RELEASE_ASSERT(donor->isWasm());
+   // The only flag allowed to be set on the `donor` is the resizable flag.
+   MOZ_RELEASE_ASSERT((donor->flags() & ~KIND_MASK & ~RESIZABLE) == 0);
+-  BufferContents contents(donor->dataPointer(), WASM);
++  BufferContents contents = donor->contents();
++  if (retainedOwner) buffer->setKandeloBackingOwner(retainedOwner.release());
+   size_t byteLength = donor->byteLength();
+   [[maybe_unused]] size_t maxByteLength = donor->wasmClampedMaxByteLength();
+
+@@ -2596,6 +2651,11 @@
+     JSContext* cx, Handle<ArrayBufferObject*> buffer) {
+   CheckStealPreconditions(buffer, cx);
+
++  if (buffer->kandeloBackingOwner()) {
++    ArrayBufferContents destination = NewCopiedBufferContents(cx, buffer);
++    if (!destination) return nullptr;
++    detach(cx, buffer); return destination.release();
++  }
+   switch (buffer->bufferKind()) {
+     case MALLOCED_ARRAYBUFFER_CONTENTS_ARENA:
+     case MALLOCED_UNKNOWN_ARENA: {
+@@ -2729,6 +2789,118 @@
+
+   MOZ_ASSERT_UNREACHABLE("garbage kind computed");
+   return BufferContents::createFailed();
++}
++
++JS::KandeloBacking::Owner* ArrayBufferObject::kandeloBackingOwner() const {
++  const uint8_t slot = is<ResizableArrayBufferObject>()
++      ? ResizableArrayBufferObject::KANDELO_OWNER_SLOT : FixedLengthArrayBufferObject::KANDELO_OWNER_SLOT;
++  const Value value = getFixedSlot(slot);
++  return value.isUndefined() ? nullptr : static_cast<JS::KandeloBacking::Owner*>(value.toPrivate());
++}
++void ArrayBufferObject::setKandeloBackingOwner(JS::KandeloBacking::Owner* owner) {
++  MOZ_ASSERT(!kandeloBackingOwner());
++  const uint8_t slot = is<ResizableArrayBufferObject>()
++      ? ResizableArrayBufferObject::KANDELO_OWNER_SLOT : FixedLengthArrayBufferObject::KANDELO_OWNER_SLOT;
++  setFixedSlot(slot, owner ? PrivateValue(owner) : UndefinedValue());
++}
++void ArrayBufferObject::clearKandeloBackingOwner() {
++  auto* owner = kandeloBackingOwner();
++  if (!owner) return;
++  const uint8_t slot = is<ResizableArrayBufferObject>()
++      ? ResizableArrayBufferObject::KANDELO_OWNER_SLOT : FixedLengthArrayBufferObject::KANDELO_OWNER_SLOT;
++  setFixedSlot(slot, UndefinedValue());
++  delete owner;
++}
++namespace {
++struct KandeloBackingFreePolicy {
++  ArrayBufferObject::BufferKind kind;
++  JS::BufferContentsFreeFunc external;
++  void* user;
++  size_t mappedLength;
++  JS::KandeloBacking::MetadataRef material;
++};
++void KandeloReleaseBackingAllocation(void* data, size_t, void* argument) noexcept {
++  std::unique_ptr<KandeloBackingFreePolicy> policy(static_cast<KandeloBackingFreePolicy*>(argument));
++  switch (policy->kind) {
++    case ArrayBufferObject::MALLOCED_ARRAYBUFFER_CONTENTS_ARENA:
++    case ArrayBufferObject::MALLOCED_UNKNOWN_ARENA: js_free(data); break;
++    case ArrayBufferObject::MAPPED: gc::DeallocateMappedContent(data, policy->mappedLength); break;
++    case ArrayBufferObject::EXTERNAL: policy->external(data, policy->user); break;
++    case ArrayBufferObject::WASM: WasmArrayRawBuffer::Release(data); break;
++    case ArrayBufferObject::NO_DATA: break;
++    default: MOZ_CRASH("unretained backing free policy");
++  }
++}
++}
++/* static */ bool ArrayBufferObject::ensureKandeloBackingOwner(JSContext* cx, Handle<ArrayBufferObject*> buffer) {
++  if (buffer->kandeloBackingOwner()) return true;
++  try {
++    size_t capacity = buffer->isWasm() ? buffer->wasmClampedMaxByteLength() : buffer->maxByteLength();
++    if (buffer->isMapped()) capacity = buffer->associatedBytes();
++    if (buffer->bufferKind() == USER_OWNED && capacity) {
++      JS_ReportErrorASCII(cx, "User-owned backing requires an actual embedder retain capability"); return false;
++    }
++    if (buffer->bufferKind() == INLINE_DATA && capacity) {
++      // This pin reserves RAB maximum storage at creation. Establish that same
++      // real capacity before capturing a span; do not pin its visible length.
++      ArrayBufferContents copy = AllocateArrayBufferContents(cx, capacity);
++      if (!copy) return false;
++      uint8_t* old = buffer->dataPointer();
++      if (buffer->byteLength()) memcpy(copy.get(), old, buffer->byteLength());
++      auto contents = BufferContents::createMallocedArrayBufferContentsArena(copy.release());
++      buffer->setDataPointer(contents);
++      AddCellMemory(buffer, capacity, MemoryUse::ArrayBufferContents);
++      if (auto* first = buffer->firstView()) first->as<ArrayBufferViewObject>().notifyBufferMoved(old, contents.data());
++      auto& views = ObjectRealm::get(buffer).innerViews.get();
++      if (auto* list = views.maybeViewsUnbarriered(buffer))
++        for (JSObject* view : *list) view->as<ArrayBufferViewObject>().notifyBufferMoved(old, contents.data());
++    }
++    auto contents = buffer->contents();
++    // Empty external/malloc allocations still own their actual free callback
++    // and metadata. Only inline/no-data/user-borrowed empty spans need no store.
++    const bool empty = capacity == 0 && (contents.kind() == INLINE_DATA || contents.kind() == NO_DATA || contents.kind() == USER_OWNED);
++    auto policy = std::make_unique<KandeloBackingFreePolicy>(KandeloBackingFreePolicy{
++        empty ? NO_DATA : contents.kind(), contents.freeFunc(), contents.freeUserData(), buffer->byteLength(),
++        JS::KandeloBacking::TrackMetadata(sizeof(KandeloBackingFreePolicy))});
++    auto allocation = JS::KandeloBacking::Prepare(empty ? nullptr : contents.data(), capacity,
++        KandeloReleaseBackingAllocation, policy.get());
++    if (!allocation) { JS_ReportErrorASCII(cx, "Backing ownership provider is unavailable"); return false; }
++    const bool engineAccounts = !empty && !buffer->isExternal();
++    auto owner = PrepareKandeloBackingOwner(cx, allocation, engineAccounts);
++    if (!owner) return false;
++    buffer->setKandeloBackingOwner(owner.release());
++    // A zero-length inline store has no movable byte allocation. Normalize its
++    // actual representation before cloning so a recipient never adopts a
++    // source object's inline pointer, including an end-of-cell empty pointer.
++    if (empty && contents.kind() == INLINE_DATA)
++      buffer->setDataPointer(BufferContents::createNoData().withRetained(allocation));
++    policy.release(); allocation->Commit();
++    return true;
++  } catch (const std::bad_alloc&) { ReportOutOfMemory(cx); return false; }
++}
++bool js::EnsureKandeloBackingOwner(JSContext* cx, Handle<ArrayBufferObject*> buffer) {
++  return ArrayBufferObject::ensureKandeloBackingOwner(cx, buffer);
++}
++/* static */ ArrayBufferObject* ArrayBufferObject::createForRetainedContents(JSContext* cx,
++    size_t byteLength, size_t maxByteLength, bool resizable, BufferContents contents, bool charge) {
++  MOZ_ASSERT(contents.retained());
++  auto owner = PrepareKandeloBackingOwner(cx, contents.retained(), (contents.kind() == MALLOCED_ARRAYBUFFER_CONTENTS_ARENA || contents.kind() == MALLOCED_UNKNOWN_ARENA || contents.kind() == MAPPED || contents.kind() == WASM));
++  if (!owner) return nullptr;
++  AutoSetNewObjectMetadata metadata(cx);
++  Rooted<ArrayBufferObject*> object(cx);
++  if (resizable) object = NewResizableArrayBufferObject(cx);
++  else {
++    size_t slots = FixedLengthArrayBufferObject::RESERVED_SLOTS;
++    if (contents.kind() == EXTERNAL) slots += HowMany(sizeof(FreeInfo), sizeof(Value));
++    object = NewArrayBufferObject<FixedLengthArrayBufferObject>(cx, nullptr, GetArrayBufferGCObjectKind(slots));
++  }
++  if (!object) return nullptr;
++  object->setKandeloBackingOwner(owner.release());
++  if (resizable) object->as<ResizableArrayBufferObject>().initialize(byteLength, maxByteLength, contents);
++  else object->as<FixedLengthArrayBufferObject>().initialize(byteLength, contents);
++  if (charge && (object->isMalloced() || object->isMapped())) AddCellMemory(object, object->associatedBytes(), MemoryUse::ArrayBufferContents);
++  else if (charge && object->isWasm()) AddCellMemory(object, byteLength, MemoryUse::ArrayBufferContents);
++  return object;
+ }
+
+ /* static */
+--- a/js/src/vm/ArrayBufferObject.h
++++ b/js/src/vm/ArrayBufferObject.h
+@@ -15,6 +15,7 @@
+ #include "gc/Memory.h"
+ #include "gc/ZoneAllocator.h"
+ #include "js/ArrayBuffer.h"
++#include "js/experimental/KandeloBackingStore.h"
+ #include "js/GCHashTable.h"
+ #include "vm/JSFunction.h"
+ #include "vm/JSObject.h"
+@@ -304,6 +305,7 @@
+     BufferKind kind_;
+     JS::BufferContentsFreeFunc free_;
+     void* freeUserData_;
++    JS::KandeloBacking::AllocationRef retained_;
+
+     friend class ArrayBufferObject;
+     friend class ResizableArrayBufferObject;
+@@ -412,6 +414,15 @@
+
+     explicit operator bool() const { return data_ != nullptr; }
+     WasmArrayRawBuffer* wasmBuffer() const;
++    static BufferContents createRetained(JS::KandeloBacking::AllocationRef allocation,
++        BufferKind kind, JS::BufferContentsFreeFunc freeFunc = nullptr, void* user = nullptr) {
++      MOZ_ASSERT(allocation);
++      return BufferContents(allocation->Data(), kind, freeFunc, user).withRetained(std::move(allocation));
++    }
++    const JS::KandeloBacking::AllocationRef& retained() const { return retained_; }
++    BufferContents withRetained(JS::KandeloBacking::AllocationRef value) const {
++      BufferContents copy = *this; copy.retained_ = std::move(value); return copy;
++    }
+   };
+
+   static const JSClass protoClass_;
+@@ -544,12 +555,19 @@
+   SharedMem<uint8_t*> dataPointerShared() const;
+   size_t byteLength() const;
+
++  JS::KandeloBacking::Owner* kandeloBackingOwner() const;
++  void setKandeloBackingOwner(JS::KandeloBacking::Owner* owner);
++  void clearKandeloBackingOwner();
++  static bool ensureKandeloBackingOwner(JSContext*, Handle<ArrayBufferObject*>);
++  static ArrayBufferObject* createForRetainedContents(JSContext*, size_t byteLength,
++      size_t maxByteLength, bool resizable, BufferContents contents, bool charge = true);
+   BufferContents contents() const {
++    auto* owner = kandeloBackingOwner();
+     if (isExternal()) {
+       return BufferContents(dataPointer(), EXTERNAL, freeInfo()->freeFunc,
+-                            freeInfo()->freeUserData);
+-    }
+-    return BufferContents(dataPointer(), bufferKind());
++                            freeInfo()->freeUserData).withRetained(owner ? owner->Store() : nullptr);
++    }
++    return BufferContents(dataPointer(), bufferKind()).withRetained(owner ? owner->Store() : nullptr);
+   }
+
+   void releaseData(JS::GCContext* gcx);
+@@ -678,8 +696,9 @@
+   bool hasInlineData() const { return dataPointer() == inlineDataPointer(); }
+
+  public:
+-  // Fixed-length ArrayBuffer objects don't have any additional reserved slots.
+-  static const uint8_t RESERVED_SLOTS = ArrayBufferObject::RESERVED_SLOTS;
++  // Append native ownership without changing the public/JIT-visible indices.
++  static const uint8_t KANDELO_OWNER_SLOT = ArrayBufferObject::RESERVED_SLOTS;
++  static const uint8_t RESERVED_SLOTS = ArrayBufferObject::RESERVED_SLOTS + 1;
+
+   /** The largest number of bytes that can be stored inline. */
+   static constexpr size_t MaxInlineBytes =
+@@ -745,7 +764,8 @@
+  public:
+   static const uint8_t MAX_BYTE_LENGTH_SLOT = ArrayBufferObject::RESERVED_SLOTS;
+
+-  static const uint8_t RESERVED_SLOTS = ArrayBufferObject::RESERVED_SLOTS + 1;
++  static const uint8_t KANDELO_OWNER_SLOT = ArrayBufferObject::RESERVED_SLOTS + 1;
++  static const uint8_t RESERVED_SLOTS = ArrayBufferObject::RESERVED_SLOTS + 2;
+
+   /** The largest number of bytes that can be stored inline. */
+   static constexpr size_t MaxInlineBytes =
+--- /dev/null
++++ b/js/src/vm/KandeloBackingStore.cpp
+@@ -0,0 +1,79 @@
++#include "vm/KandeloBackingStore.h"
++
++#include <atomic>
++#include <exception>
++#include <new>
++
++#include "jsapi.h"
++
++#include "js/experimental/TypedData.h"
++#include "vm/ArrayBufferObject.h"
++#include "vm/JSContext.h"
++#include "vm/SharedArrayObject.h"
++
++#include "vm/JSObject-inl.h"
++#include "vm/Realm-inl.h"
++using namespace js;
++namespace JS::KandeloBacking {
++static std::atomic<const Hooks*> provider{nullptr};
++bool Register(const Hooks* hooks) noexcept {
++  if (!hooks || !hooks->provider || !hooks->resolveAccount || !hooks->prepare || !hooks->metadata) return false;
++  const Hooks* expected = nullptr;
++  return provider.compare_exchange_strong(expected, hooks) || expected == hooks;
++}
++AccountRef ResolveAccount(JSContext* cx) noexcept {
++  const Hooks* hooks = provider.load();
++  return hooks ? hooks->resolveAccount(cx) : AccountRef{};
++}
++AllocationRef Prepare(uint8_t* data, size_t capacity, Release release, void* argument, bool shared) {
++  const Hooks* hooks = provider.load();
++  return hooks ? hooks->prepare(data, capacity, release, argument, shared) : AllocationRef{};
++}
++MetadataRef TrackMetadata(size_t bytes, const AccountRef& account) {
++  const Hooks* hooks = provider.load();
++  return hooks ? hooks->metadata(bytes, account) : MetadataRef{};
++}
++bool InstallUserOwned(JSContext* cx, HandleObject object, const AllocationRef& allocation) {
++  RootedObject actual(cx, JS::UnwrapArrayBuffer(object));
++  if (!actual) { JS_ReportErrorASCII(cx, "User backing capability requires an accessible ArrayBuffer"); return false; }
++  JSAutoRealm realm(cx, actual); auto* buffer = &actual->as<ArrayBufferObject>();
++  if (buffer->bufferKind() != ArrayBufferObject::USER_OWNED || buffer->kandeloBackingOwner() ||
++      !allocation || allocation->Shared() || allocation->Committed() || allocation->Data() != buffer->dataPointer() ||
++      allocation->Capacity() < buffer->maxByteLength()) {
++    JS_ReportErrorASCII(cx, "User backing capability does not own this prepared allocation"); return false;
++  }
++  auto owner = PrepareKandeloBackingOwner(cx, allocation, false); if (!owner) return false;
++  buffer->setKandeloBackingOwner(owner.release()); allocation->Commit(); return true;
++}
++SpanRef Acquire(JSContext* cx, HandleObject view) {
++  try {
++    RootedObject actual(cx, js::UnwrapArrayBufferView(view));
++    if (!actual) { JS_ReportErrorASCII(cx, "Backing lease requires an accessible actual byte view"); return {}; }
++    bool shared;
++    RootedObject buffer(cx, JS_GetArrayBufferViewBuffer(cx, actual, &shared));
++    if (!buffer) return {};
++    buffer = shared ? JS::UnwrapSharedArrayBuffer(buffer) : JS::UnwrapArrayBuffer(buffer);
++    if (!buffer) { JS_ReportErrorASCII(cx, "Backing lease access denied"); return {}; }
++    JSAutoRealm realm(cx, buffer);
++    // Native view metadata is captured once, before any later caller getter or
++    // async init hook. Detached/OOB input semantics remain the typed-data API's.
++    const size_t offset = JS_GetArrayBufferViewByteOffset(actual);
++    const size_t length = JS_GetArrayBufferViewByteLength(actual);
++    if (shared) {
++      Rooted<SharedArrayBufferObject*> backing(cx, &buffer->as<SharedArrayBufferObject>());
++      if (!EnsureKandeloBackingOwner(cx, backing)) return {};
++      return backing->kandeloBackingOwner()->Store()->Capture(offset, length, ResolveAccount(cx));
++    }
++    Rooted<ArrayBufferObject*> backing(cx, &buffer->as<ArrayBufferObject>());
++    if (!EnsureKandeloBackingOwner(cx, backing)) return {};
++    return backing->kandeloBackingOwner()->Store()->Capture(offset, length, ResolveAccount(cx));
++  } catch (const std::bad_alloc&) { ReportOutOfMemory(cx); return {}; }
++  catch (const std::exception& error) { JS_ReportErrorASCII(cx, "Backing lease: %s", error.what()); return {}; }
++}
++}  // namespace JS::KandeloBacking
++JS::KandeloBacking::OwnerRef js::PrepareKandeloBackingOwner(JSContext* cx,
++    const JS::KandeloBacking::AllocationRef& allocation, bool accounted) {
++  try { return allocation->MakeOwner(JS::KandeloBacking::ResolveAccount(cx), accounted); }
++  catch (const std::bad_alloc&) { ReportOutOfMemory(cx); return {}; }
++  catch (const std::exception& error) { JS_ReportErrorASCII(cx, "Backing owner: %s", error.what()); return {}; }
++}
+--- /dev/null
++++ b/js/src/vm/KandeloBackingStore.h
+@@ -0,0 +1,11 @@
++#ifndef vm_KandeloBackingStore_h
++#define vm_KandeloBackingStore_h
++#include "js/experimental/KandeloBackingStore.h"
++namespace js {
++class ArrayBufferObject;
++class SharedArrayBufferObject;
++bool EnsureKandeloBackingOwner(JSContext*, JS::Handle<ArrayBufferObject*>);
++bool EnsureKandeloBackingOwner(JSContext*, JS::Handle<SharedArrayBufferObject*>);
++JS::KandeloBacking::OwnerRef PrepareKandeloBackingOwner(JSContext*, const JS::KandeloBacking::AllocationRef&, bool);
++}
++#endif
+--- a/js/src/vm/SharedArrayObject.cpp
++++ b/js/src/vm/SharedArrayObject.cpp
+@@ -9,6 +9,9 @@
+ #include "mozilla/Atomics.h"
+ #include "mozilla/DebugOnly.h"
+ #include "mozilla/TaggedAnonymousMemory.h"
++
++#include <exception>
++#include <new>
+
+ #include "jsnum.h"
+
+@@ -22,6 +25,7 @@
+ #include "util/Memory.h"
+ #include "util/WindowsWrapper.h"
+ #include "vm/Interpreter.h"
++#include "vm/KandeloBackingStore.h"
+ #include "vm/SelfHosting.h"
+ #include "vm/SharedMem.h"
+ #include "wasm/WasmConstants.h"
+@@ -234,6 +238,12 @@
+ }
+
+ bool SharedArrayRawBuffer::addReference() {
++  JS::KandeloBacking::AllocationRef keep;
++  std::lock_guard lock(kandeloMutex);
++  if (!kandeloStore) { keep = kandeloWeakStore.lock(); if (keep) kandeloStore = keep; }
++  return kandeloAddReferenceLocked();
++}
++bool SharedArrayRawBuffer::kandeloAddReferenceLocked() {
+   MOZ_RELEASE_ASSERT(refcount_ > 0);
+
+   // Be careful never to overflow the refcount field.
+@@ -250,16 +260,15 @@
+ }
+
+ void SharedArrayRawBuffer::dropReference() {
+-  // Normally if the refcount is zero then the memory will have been unmapped
+-  // and this test may just crash, but if the memory has been retained for any
+-  // reason we will catch the underflow here.
+-  MOZ_RELEASE_ASSERT(refcount_ > 0);
+-
+-  // Drop the reference to the buffer.
+-  uint32_t new_refcount = --refcount_;  // Atomic.
+-  if (new_refcount) {
+-    return;
+-  }
++  // Lock before releasing our reference. Touching the object after a positive
++  // atomic decrement could race another last release, even just for metadata.
++  JS::KandeloBacking::AllocationRef retire;
++  uint32_t remaining;
++  { std::lock_guard lock(kandeloMutex);
++    MOZ_RELEASE_ASSERT(refcount_ > 0); remaining = --refcount_;
++    if (remaining == 1 && kandeloStore) retire = std::move(kandeloStore);
++  }
++  if (remaining) { retire.reset(); return; }
+
+   // This was the final reference, so release the buffer.
+   if (isWasm()) {
+@@ -744,7 +753,7 @@
+
+   cx->runtime()->incSABCount();
+
+-  if (!obj->acceptRawBuffer(buffer, length)) {
++  if (!obj->acceptRawBuffer(cx, buffer, length)) {
+     js::ReportOutOfMemory(cx);
+     return nullptr;
+   }
+@@ -752,9 +761,19 @@
+   return obj;
+ }
+
+-bool SharedArrayBufferObject::acceptRawBuffer(SharedArrayRawBuffer* buffer,
++bool SharedArrayBufferObject::acceptRawBuffer(JSContext* cx, SharedArrayRawBuffer* buffer,
+                                               size_t length) {
+   MOZ_ASSERT(!isInitialized());
++  try {
++  const auto account = JS::KandeloBacking::ResolveAccount(cx);
++  JS::KandeloBacking::AllocationRef allocation;
++  JS::KandeloBacking::OwnerRef owner;
++  std::unique_lock lock(buffer->kandeloMutex);
++  allocation = buffer->kandeloStore ? buffer->kandeloStore : buffer->kandeloWeakStore.lock();
++  if (allocation) {
++    owner = allocation->MakeOwner(account, false);
++    if (!owner) { lock.unlock(); ReportOutOfMemory(cx); return false; }
++  }
+   if (!zone()->addSharedMemory(buffer,
+                                SharedArrayMappedSize(buffer->isWasm(), length),
+                                MemoryUse::SharedArrayRawBuffer)) {
+@@ -763,11 +782,31 @@
+
+   setFixedSlot(RAWBUF_SLOT, PrivateValue(buffer));
+   setFixedSlot(LENGTH_SLOT, PrivateValue(length));
++  ++buffer->kandeloJsOwners;
++  if (allocation) {
++    buffer->kandeloStore = allocation;
++    allocation->SynchronizeJsOwners(buffer->kandeloJsOwners);
++    if (buffer->kandeloNativeHeader) buffer->kandeloNativeHeader->Resize(0);
++    setKandeloBackingOwner(owner.release());
++  }
+   MOZ_ASSERT(isInitialized());
+   return true;
++  } catch (const std::bad_alloc&) { ReportOutOfMemory(cx); return false; }
++  catch (const std::exception& error) { JS_ReportErrorASCII(cx, "Shared backing owner: %s", error.what()); return false; }
+ }
+
+ void SharedArrayBufferObject::dropRawBuffer() {
++  auto* raw = rawBufferObject();
++  JS::KandeloBacking::AllocationRef keep;
++  { std::lock_guard lock(raw->kandeloMutex);
++    MOZ_RELEASE_ASSERT(raw->kandeloJsOwners);
++    --raw->kandeloJsOwners;
++    if (raw->kandeloNativeHeader) raw->kandeloNativeHeader->Resize(raw->kandeloJsOwners ? 0 :
++        (raw->isWasm() ? gc::SystemPageSize() : sizeof(SharedArrayRawBuffer)));
++    if (raw->kandeloStore) raw->kandeloStore->SynchronizeJsOwners(raw->kandeloJsOwners);
++    else { keep = raw->kandeloWeakStore.lock(); if (keep) keep->SynchronizeJsOwners(raw->kandeloJsOwners); }
++  }
++  clearKandeloBackingOwner();
+   size_t length = byteLengthOrMaxByteLength();
+   size_t size = SharedArrayMappedSize(isWasm(), length);
+   zoneFromAnyThread()->removeSharedMemory(rawBufferObject(), size,
+@@ -856,7 +895,7 @@
+
+   cx->runtime()->incSABCount();
+
+-  if (!obj->acceptRawBuffer(buffer, initialSize)) {
++  if (!obj->acceptRawBuffer(cx, buffer, initialSize)) {
+     buffer->dropReference();
+     js::ReportOutOfMemory(cx);
+     return nullptr;
+@@ -1041,3 +1080,52 @@
+ JS_PUBLIC_API bool JS::ContainsSharedArrayBuffer(JSContext* cx) {
+   return cx->runtime()->hasLiveSABs();
+ }
++
++JS::KandeloBacking::Owner* SharedArrayBufferObject::kandeloBackingOwner() const {
++  const Value value = getFixedSlot(KANDELO_OWNER_SLOT);
++  return value.isUndefined() ? nullptr : static_cast<JS::KandeloBacking::Owner*>(value.toPrivate());
++}
++void SharedArrayBufferObject::setKandeloBackingOwner(JS::KandeloBacking::Owner* owner) {
++  MOZ_ASSERT(!kandeloBackingOwner()); setFixedSlot(KANDELO_OWNER_SLOT, PrivateValue(owner));
++}
++void SharedArrayBufferObject::clearKandeloBackingOwner() {
++  auto* owner = kandeloBackingOwner(); if (!owner) return;
++  setFixedSlot(KANDELO_OWNER_SLOT, UndefinedValue()); delete owner;
++}
++static void KandeloReleaseSharedBacking(void*, size_t, void* raw) noexcept {
++  static_cast<SharedArrayRawBuffer*>(raw)->dropReference();
++}
++bool js::EnsureKandeloBackingOwner(JSContext* cx, Handle<SharedArrayBufferObject*> buffer) {
++  if (buffer->kandeloBackingOwner()) return true;
++  try {
++    const auto account = JS::KandeloBacking::ResolveAccount(cx);
++    auto* raw = buffer->rawBufferObject();
++    JS::KandeloBacking::AllocationRef allocation;
++    JS::KandeloBacking::OwnerRef owner;
++    std::unique_lock lock(raw->kandeloMutex);
++    allocation = raw->kandeloStore ? raw->kandeloStore : raw->kandeloWeakStore.lock();
++    if (!allocation) {
++      size_t capacity = buffer->isWasm() ? raw->toWasmBuffer()->wasmClampedMaxPages().byteLength() : buffer->byteLengthOrMaxByteLength();
++      allocation = JS::KandeloBacking::Prepare(raw->dataPointerShared().unwrap(), capacity, KandeloReleaseSharedBacking, raw, true);
++      if (!allocation) { lock.unlock(); JS_ReportErrorASCII(cx, "Backing ownership provider is unavailable"); return false; }
++      owner = allocation->MakeOwner(account, false);
++      if (!owner) { lock.unlock(); ReportOutOfMemory(cx); return false; }
++      auto header = JS::KandeloBacking::TrackMetadata(raw->kandeloJsOwners ? 0 :
++          (raw->isWasm() ? gc::SystemPageSize() : sizeof(SharedArrayRawBuffer)));
++      if (!raw->kandeloAddReferenceLocked()) { lock.unlock(); JS_ReportErrorASCII(cx, "Shared backing reference overflow"); return false; }
++      // Everything after the extra raw reference is an infallible commit.
++      allocation->Commit(); allocation->SynchronizeJsOwners(raw->kandeloJsOwners);
++      raw->kandeloStore = allocation; raw->kandeloWeakStore = allocation;
++      raw->kandeloNativeHeader = std::move(header);
++      buffer->setKandeloBackingOwner(owner.release());
++    } else {
++      owner = allocation->MakeOwner(account, false);
++      if (!owner) { lock.unlock(); ReportOutOfMemory(cx); return false; }
++      raw->kandeloStore = allocation;
++      allocation->SynchronizeJsOwners(raw->kandeloJsOwners);
++      buffer->setKandeloBackingOwner(owner.release());
++    }
++    return true;
++  } catch (const std::bad_alloc&) { ReportOutOfMemory(cx); return false; }
++  catch (const std::exception& error) { JS_ReportErrorASCII(cx, "Shared backing owner: %s", error.what()); return false; }
++}
+--- a/js/src/vm/SharedArrayObject.h
++++ b/js/src/vm/SharedArrayObject.h
+@@ -9,10 +9,14 @@
+
+ #include "mozilla/Atomics.h"
+
++#include <memory>
++#include <mutex>
++
+ #include "jstypes.h"
+
+ #include "builtin/AtomicsObject.h"
+ #include "gc/Memory.h"
++#include "js/experimental/KandeloBackingStore.h"
+ #include "vm/ArrayBufferObject.h"
+ #include "wasm/WasmMemory.h"
+
+@@ -102,9 +106,16 @@
+
+   bool isGrowableJS() const { return isGrowableJS_; }
+
++  // Native-only state; no JS roots or context pointers cross raw-buffer owners.
++  std::mutex kandeloMutex;
++  size_t kandeloJsOwners = 0;
++  JS::KandeloBacking::AllocationRef kandeloStore;
++  std::weak_ptr<JS::KandeloBacking::Allocation> kandeloWeakStore;
++  JS::KandeloBacking::MetadataRef kandeloNativeHeader;
+   uint32_t refcount() const { return refcount_; }
+
+   [[nodiscard]] bool addReference();
++  [[nodiscard]] bool kandeloAddReferenceLocked(); // caller holds kandeloMutex
+   void dropReference();
+
+   // Try to grow this buffer to |newByteLength| bytes. Returns false when the
+@@ -267,7 +278,11 @@
+   static_assert(LENGTH_SLOT == ArrayBufferObject::BYTE_LENGTH_SLOT,
+                 "JIT code assumes the same slot is used for the length");
+
+-  static const uint8_t RESERVED_SLOTS = 2;
++  static const uint8_t KANDELO_OWNER_SLOT = 2;
++  static const uint8_t RESERVED_SLOTS = 3;
++  JS::KandeloBacking::Owner* kandeloBackingOwner() const;
++  void setKandeloBackingOwner(JS::KandeloBacking::Owner*);
++  void clearKandeloBackingOwner();
+
+   static const JSClass protoClass_;
+
+@@ -417,7 +432,7 @@
+                           uint64_t byteOffset, uint64_t byteLength);
+
+  private:
+-  [[nodiscard]] bool acceptRawBuffer(SharedArrayRawBuffer* buffer,
++  [[nodiscard]] bool acceptRawBuffer(JSContext* cx, SharedArrayRawBuffer* buffer,
+                                      size_t length);
+   void dropRawBuffer();
+ };
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -64,6 +64,7 @@
+ #include "vm/BigIntType.h"
+ #include "vm/ErrorObject.h"
+ #include "vm/JSContext.h"
++#include "vm/KandeloBackingStore.h"
+ #include "vm/PlainObject.h"  // js::PlainObject
+ #include "vm/RegExpObject.h"
+ #include "vm/SavedFrame.h"
+@@ -173,6 +174,7 @@
+   SCTAG_TRANSFER_MAP_PENDING_ENTRY,
+   SCTAG_TRANSFER_MAP_ARRAY_BUFFER,
+   SCTAG_TRANSFER_MAP_STORED_ARRAY_BUFFER,
++  SCTAG_TRANSFER_MAP_KANDELO_BACKING, // ephemeral same-process owned capability/index
+   SCTAG_TRANSFER_MAP_END_OF_BUILTIN_TYPES,
+
+   SCTAG_END_OF_BUILTIN_TYPES
+@@ -386,6 +388,7 @@
+   SCInput(JSContext* cx, const JSStructuredCloneData& data);
+
+   JSContext* context() const { return cx; }
++  const JSStructuredCloneData& cloneData() const { return cloneData_; }
+
+   static void getPtr(uint64_t data, void** ptr);
+   static void getPair(uint64_t data, uint32_t* tagp, uint32_t* datap);
+@@ -428,6 +431,7 @@
+
+   JSContext* cx;
+   BufferIterator point;
++  const JSStructuredCloneData& cloneData_;
+ };
+
+ }  // namespace js
+@@ -914,7 +918,7 @@
+ namespace js {
+
+ SCInput::SCInput(JSContext* cx, const JSStructuredCloneData& data)
+-    : cx(cx), point(data) {
++    : cx(cx), point(data), cloneData_(data) {
+   static_assert(JSStructuredCloneData::BufferList::kSegmentAlignment % 8 == 0,
+                 "structured clone buffer reads should be aligned");
+   MOZ_ASSERT(data.Size() % 8 == 0);
+@@ -1157,6 +1161,11 @@
+ // Transferables will use the JSStructuredCloneCallbacks::freeTransfer() to
+ // delete their transferables.
+ void JSStructuredCloneData::discardTransferables() {
++  auto retireBacking = mozilla::MakeScopeExit([&] {
++    if (ownTransferables_ == OwnTransferablePolicy::OwnsTransferablesIfAny && kandeloBackingTransfers_)
++      kandeloBackingTransfers_->Abort();
++    kandeloBackingTransfers_.reset();
++  });
+   if (!Size()) {
+     return;
+   }
+@@ -1241,7 +1250,9 @@
+       continue;
+     }
+
+-    if (ownership == JS::SCTAG_TMO_ALLOC_DATA) {
++    if (tag == SCTAG_TRANSFER_MAP_KANDELO_BACKING) {
++      if (auto entry = kandeloBackingTransfer(size_t(extraData))) entry->Abort();
++    } else if (ownership == JS::SCTAG_TMO_ALLOC_DATA) {
+       js_free(content);
+     } else if (ownership == JS::SCTAG_TMO_MAPPED_DATA) {
+       JS::ReleaseMappedArrayBufferContents(content, extraData);
+@@ -1364,7 +1375,9 @@
+     // but that is not currently implemented.
+
+     else if (unwrappedObj->is<ArrayBufferObject>()) {
+-      if (unwrappedObj->as<ArrayBufferObject>().isExternal()) {
++      if (unwrappedObj->as<ArrayBufferObject>().isExternal() &&
++          (!unwrappedObj->as<ArrayBufferObject>().kandeloBackingOwner() ||
++           output().scope() != JS::StructuredCloneScope::SameProcess)) {
+         return reportDataCloneError(JS_SCERR_TRANSFERABLE);
+       }
+     }
+@@ -2500,7 +2513,20 @@
+         return false;
+       }
+
+-      if (scope == JS::StructuredCloneScope::DifferentProcess ||
++      if (scope == JS::StructuredCloneScope::SameProcess && arrayBuffer->kandeloBackingOwner()) {
++        // The table owns the actual allocation before source detachment. Raw
++        // bytes contain only an index, never a forgeable native owner/JS slot.
++        try {
++          auto contents = arrayBuffer->contents();
++          auto entry = std::make_shared<JS::KandeloBacking::TransferEntry>(
++              contents.retained(), uint32_t(contents.kind()), arrayBuffer->byteLength(),
++              arrayBuffer->maxByteLength(), arrayBuffer->isResizable(), contents.freeFunc(), contents.freeUserData());
++          extraData = out.buf.holdKandeloBackingTransfer(std::move(entry));
++        } catch (const std::bad_alloc&) { ReportOutOfMemory(cx); return false; }
++        tag = SCTAG_TRANSFER_MAP_KANDELO_BACKING;
++        ownership = JS::SCTAG_TMO_CUSTOM; content = nullptr;
++        if (!JS::DetachArrayBuffer(cx, arrayBuffer)) return false;
++      } else if (scope == JS::StructuredCloneScope::DifferentProcess ||
+           scope == JS::StructuredCloneScope::DifferentProcessForIndexedDB ||
+           arrayBuffer->isResizable()) {
+         // Write Transferred ArrayBuffers in DifferentProcess scope at
+@@ -3463,6 +3489,7 @@
+
+     case SCTAG_TRANSFER_MAP_HEADER:
+     case SCTAG_TRANSFER_MAP_PENDING_ENTRY:
++    case SCTAG_TRANSFER_MAP_KANDELO_BACKING:
+       // We should be past all the transfer map tags.
+       JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
+                                 JSMSG_SC_BAD_SERIALIZED_DATA, "invalid input");
+@@ -3735,7 +3762,32 @@
+       return false;
+     }
+
+-    if (tag == SCTAG_TRANSFER_MAP_ARRAY_BUFFER) {
++    if (tag == SCTAG_TRANSFER_MAP_KANDELO_BACKING) {
++      if (allowedScope != JS::StructuredCloneScope::SameProcess || content || data != JS::SCTAG_TMO_CUSTOM ||
++          extraData > SIZE_MAX) { ReportDataCloneError(cx, callbacks, JS_SCERR_TRANSFERABLE, closure); return false; }
++      auto entry = in.cloneData().kandeloBackingTransfer(size_t(extraData));
++      auto allocation = entry ? entry->BeginRead() : JS::KandeloBacking::AllocationRef{};
++      if (!allocation) { ReportDataCloneError(cx, callbacks, JS_SCERR_TRANSFERABLE, closure); return false; }
++      bool committed = false;
++      auto cancel = mozilla::MakeScopeExit([&] { if (!committed) entry->CancelRead(); });
++      auto kind = ArrayBufferObject::BufferKind(entry->kind);
++      if (!allocation->Committed() || allocation->Shared() ||
++          entry->kind > ArrayBufferObject::KIND_MASK || kind == ArrayBufferObject::INLINE_DATA || kind == ArrayBufferObject::WASM ||
++          (kind == ArrayBufferObject::EXTERNAL && (!entry->externalFree || entry->resizable)) ||
++          (kind == ArrayBufferObject::NO_DATA && entry->maxByteLength) ||
++          entry->byteLength > entry->maxByteLength || entry->maxByteLength > allocation->Capacity()) {
++        ReportDataCloneError(cx, callbacks, JS_SCERR_TRANSFERABLE, closure); return false;
++      }
++      auto contents = ArrayBufferObject::BufferContents::createRetained(allocation, kind, entry->externalFree, entry->externalUser);
++      obj = ArrayBufferObject::createForRetainedContents(cx, entry->byteLength, entry->maxByteLength, entry->resizable, contents);
++      if (!obj) return false;
++      if (!entry->CommitRead()) {
++        Rooted<ArrayBufferObject*> failed(cx, &obj->as<ArrayBufferObject>());
++        ArrayBufferObject::detach(cx, failed);
++        ReportDataCloneError(cx, callbacks, JS_SCERR_TRANSFERABLE, closure); return false;
++      }
++      committed = true;
++    } else if (tag == SCTAG_TRANSFER_MAP_ARRAY_BUFFER) {
+       MOZ_ASSERT(allowedScope <= JS::StructuredCloneScope::LastResolvedScope);
+       if (allowedScope == JS::StructuredCloneScope::DifferentProcess) {
+         // Transferred ArrayBuffers in a DifferentProcess clone buffer
