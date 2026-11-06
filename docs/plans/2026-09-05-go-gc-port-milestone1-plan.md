@@ -442,6 +442,15 @@ times differ by at most 0.21s across its four recorded stages. The guest
 Caddy process reports seven threads. The inspector's one direct page-worker
 counter sees the kernel worker, not its nested guest workers.
 
+Between the one-thread login/editor and editor-burst snapshots, its guest
+thread count stays at seven and the module cache stays at six compiles with
+zero thread-module compiles. That interval's native allocation growth is
+not accompanied by more guest threads or a new cache compilation. In the
+six-thread control, Caddy stays at thirteen threads throughout traffic and
+the soak; compile count remains six until the intentional process restart.
+These observations still do not measure individual instance allocation
+sizes or identify the retaining JavaScript objects in worker VMs.
+
 The six-thread case records 351 native samples without a native kill. It
 completes editor traffic, 40-request churn, a 90-second soak (182 requests),
 intentional Caddy SIGKILL/restart and held PHP draining, but fails the
@@ -460,6 +469,21 @@ standalone Caddy 10, FrankenPHP classic 33, FrankenPHP+Caddy 12 and WordPress
 claims or comparisons. The old preview remains identified as revision 37.
 The new target-OS waits pass 159/159 browser cases and four standard-library
 builds without compiler or collector edits.
+
+### Wait checkpoint: signals, callbacks and retirement — 2026-11-06
+
+Additional regressions pass on Go `5834adc`: three Node callback cases and
+nine callback browser cases (Go-owned M, foreign-pthread stack growth and
+concurrent Go/C allocation churn), followed by ten Node signal modes,
+two Node cooperative-retirement cases and 57 signal/retirement browser
+cases. The browser cases include HTTP draining, cgo restart, collection
+during interrupted reads, selected upstream signal tests, fatal defaults,
+bounded blocked waits and cooperative shutdown on all three engines.
+These fixtures use the unchanged ABI-55 kernel; they are distinct from
+validation of the still-building WordPress revision-38 package artifacts.
+Evidence: `go-waits-callback-regression-1106-132941-ddfc` (41s),
+`go-waits-signals-and-retirement-1106-133003-f8d5` (2m52s), and
+`.context/go-waits-validation-evidence.json`.
 
 ### Allocation, scavenging and reuse — 2026-11-06
 
