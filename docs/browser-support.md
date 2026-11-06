@@ -2795,6 +2795,15 @@ explicit read reloads that body through the service worker, evicting only
 its exact entry in the current scope's lazy cache. It does not require
 clearing the browser profile or deleting another deployment's caches.
 
+An unresolved failed download remains visible ahead of active transfers until
+it is dismissed or a new attempt updates its state. Switching/remounting the
+UI restores failures from the authoritative summary; it does not acknowledge
+them. Dismissing one failure does not suppress a later rejection of the same
+asset. Replacing the machine clears the previous machine's failure state.
+Transport failures retain their actual HTTP or native byte-bound
+cause. Size-bound failures remain terminal for that machine's transport slot;
+no oversized bytes reach the kernel and no automatic retry is introduced.
+
 If one prefix retains a stale worker, unregister only that exact registration
 from a page on the same origin, then reload that prefix:
 

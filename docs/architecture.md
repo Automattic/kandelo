@@ -2637,6 +2637,18 @@ that exact entry from its own scoped lazy cache and replaces it from the
 origin. Node carries the same request through its transport. Content
 admission still belongs to Rust's size/digest checks, not the service worker.
 
+Transfer failures preserve their underlying transport cause in the shared
+Node/browser progress event rather than flattening HTTP, native size-bound
+and network failures into missing bytes. Terminal transport slots keep their
+existing bounded EIO policy. The UI retains unresolved errors ahead of active
+transfers, including after remount, while successful transfers may fade. A
+dismissal acknowledges one observed event sequence; a later failure must be
+acknowledged again even if its URL and wall-clock timestamp are unchanged.
+A new machine boot clears its predecessor's summaries and visible failures;
+old acknowledgements cannot suppress the replacement's errors. This
+presentation consumes authoritative download state and never changes VFS
+admission or invents a successful desktop state.
+
 Relative URIs are resolved against the deployment at fetch time: the browser
 uses `BrowserKernel`'s `lazyUrlBase`, Node the peer
 `NodeKernelHost.rootfsLazyUrlBase`. The image itself is never rewritten.

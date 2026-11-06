@@ -57,6 +57,39 @@ explicitly wants to wait until all changes are integrated into a normally
 built preview that passes its required checks. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Lazy asset failure visibility, 2026-11-05 (R454/R459)
+
+Native VFS already rejects lazy bytes with the wrong declared length/digest
+using EIO and an attributed integrity diagnostic. The remaining reproduced
+defect was presentation: the React hook forgot failed summaries on remount,
+both its timer and CSS hid errors after five seconds, and acknowledgements
+could suppress a later same-URL failure. Unresolved errors now survive until
+acknowledgement or authoritative recovery, with a UI-only machine/event
+identity. Failed bars are static and details wrap visibly. Shared transport
+events retain the actual fetch failure cause. Native admission, retries,
+syscall results, memory authority and ABI remain unchanged.
+
+Private R454 preserves causal failures of the original hook, reset handling
+and CSS. Integration job
+`graphics-lazy-integration-r459-1105-214931-4b15` runs the frozen
+`.context/graphics-lazy-integration-r459/final-r4/validate.sh` and remains
+FAILED after1m10 solely on126 existing browser-app compiler diagnostics.
+Compared with clean c4c's128 findings, there are zero additions; the normal
+generated catalog present in integration removes two missing-catalog findings.
+This compiler gate remains open, without suppressions or allowances.
+
+The same run passes115 source checks/seven files, full host compiler0,
+12 production hook/toast/style cases, two actual Node native-VFS controls,
+and three real browser SW CacheStorage-to-native-VFS-to-visible-alert/reload
+cases, one per engine. Frozen source/config/product hashes pass. Exact normal
+kernel/image-writer bytes from R432 are retained with provenance; no producer,
+ABI stamp or source-cache identity was substituted. Wrong cached bytes remain
+unaccepted with unchanged inode metadata; only a deliberate later read reloads
+and verifies the repaired body. The original Brave/r8 tofu incident remains
+an unverified historical cache hypothesis. Final combined normal desktop/font
+and manual profile checks are still required; these synthetic lazy-body
+regressions do not establish that historical root cause or a new preview.
+
 ## Frozen full-audit Chromium result, 2026-11-05 (R406)
 
 The full fatal-audit job `graphics-cts-full-audit-r406-1105-131623-15de`

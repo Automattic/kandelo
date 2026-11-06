@@ -210,6 +210,14 @@ export function buildRootfsLazyWiring(
           status: "complete",
           loadedBytes: bytes.byteLength,
         });
+      }).catch((reason: unknown) => {
+        slots.set(uri, { state: "failed" });
+        // WHY: the guest sees EIO for all transport failures. Keep the actual
+        // HTTP, native byte-bound or decoder cause in the shared host event,
+        // otherwise a missing font looks like an unexplained rendering defect.
+        const detail = reason instanceof Error ? reason.message : String(reason);
+        report(onProgress, { ...base, status: "error", loadedBytes: 0,
+          error: `fetching ${uri} failed: ${detail}` });
       }).finally(() => {
         inFlight.delete(uri);
       });
@@ -281,7 +289,7 @@ export async function waitForDeferredFetch(
 }
 
 /**
- * Fetch the address, and return nothing if it does not answer.
+ * Fetch the address, preserving a rejection for the provider's diagnostic.
  *
  * ONE ADDRESS, NO ALTERNATES. This walked a transport list and compared each
  * answer's length against a declared size, trying the next on a mismatch.
@@ -295,9 +303,7 @@ async function fetchDeferred(
   fetcher: (url: string, onProgress?: DeferredByteProgress) => Promise<Uint8Array>,
   onProgress: DeferredByteProgress,
 ): Promise<Uint8Array | undefined> {
-  try {
-    return await fetcher(uri, onProgress);
-  } catch {
-    return undefined;
-  }
+  // Let the provider record the real failure before settling its EIO slot;
+  // converting every rejection to undefined erased its attributed cause.
+  return fetcher(uri, onProgress);
 }

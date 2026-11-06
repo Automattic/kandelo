@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { LazyDownloadEvent, LazyDownloadSummary } from "../src/kernel-host";
 import {
   activeLazyDownloadSummaries,
+  visibleLazyDownloadSummaries,
   advanceLazyDownloadSummary,
   lazyDownloadAssetLabel,
 } from "../src/lazy-download";
@@ -156,4 +157,16 @@ describe("lazy download summaries", () => {
       summary("new-start", "started", 30),
     ]).map(({ id }) => id)).toEqual(["new-start", "old-progress"]);
   });
+});
+
+
+it("keeps unresolved failures visible ahead of newer active downloads on remount", () => {
+  const summaries = [
+    advanceLazyDownloadSummary(undefined, event({ id: "failed-font", status: "error", t: 1, error: "SHA-256 mismatch" })),
+    advanceLazyDownloadSummary(undefined, event({ id: "new-progress", status: "progress", t: 100 })),
+    advanceLazyDownloadSummary(undefined, event({ id: "success", status: "complete", t: 200 })),
+  ];
+  expect(visibleLazyDownloadSummaries(summaries).map(({ id }) => id)).toEqual(["failed-font", "new-progress"]);
+  const recovered = advanceLazyDownloadSummary(summaries[0], event({ id: "failed-font", status: "complete", t: 300 }));
+  expect(visibleLazyDownloadSummaries([recovered])).toEqual([]);
 });

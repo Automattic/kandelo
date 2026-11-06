@@ -1357,3 +1357,12 @@ controls and the12 captured long-multiplication compiler controls across three
 engines; its graphics/compiler/shader/registry checks pass. Final actual-guest
 GLES2/EGL execution remains required in this iteration. Direct shader checks do
 not establish conformance, B1 completion or native desktop feel.
+
+R454/R459 close reproduced lazy-failure presentation and attribution gaps:
+unresolved errors survive remount/CSS expiry and new attempts have distinct
+acknowledgement identity. Actual Node and three-engine SW/native integrity
+and verified-reload controls pass. The original Brave/r8 tofu report is still
+an unverified historical cache hypothesis; final normal desktop/font/profile
+and manual verification remain required. R459's browser-app compiler gate
+still fails126 existing diagnostics, with no additions against the clean
+baseline; this is separate from its passing source/runtime checks.

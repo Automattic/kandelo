@@ -1487,7 +1487,8 @@
 
 .kdownload-toast-error {
   border-color: color-mix(in oklch, var(--k-err) 52%, var(--k-border));
-  animation: kdownload-toast-fade-error 5s ease-out forwards;
+  /* An unresolved VFS/transport failure needs acknowledgement or recovery;
+     fading it independently would hide the retained error state. */
 }
 
 .kpcm-audio-status {
@@ -1590,6 +1591,9 @@
 
 .kdownload-toast-error .kdownload-toast-detail {
   color: var(--k-err-ink);
+  /* The attributed failure must be readable without discovering a tooltip. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .kdownload-toast-bar {
@@ -1632,16 +1636,6 @@
   }
 }
 
-@keyframes kdownload-toast-fade-error {
-  0%, 72% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-}
 
 .kdock-icon {
   width: 18px;

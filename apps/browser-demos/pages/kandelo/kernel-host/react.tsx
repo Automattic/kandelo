@@ -12,7 +12,7 @@ import type {
   SurfaceAvailability, GalleryItem, GalleryTab, LazyDownloadEvent, LazyDownloadSummary,
   MachineProgress,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import { activeLazyDownloadSummaries } from "../../../../../web-libs/kandelo-session/src/lazy-download";
+import { visibleLazyDownloadSummaries } from "../../../../../web-libs/kandelo-session/src/lazy-download";
 import type {
   DemoDockActionConfig,
   DemoGuideConfig,
@@ -26,7 +26,6 @@ import type {
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
 const LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS = 2400;
-const LAZY_DOWNLOAD_ERROR_VISIBLE_MS = 5000;
 
 export const KernelHostProvider: React.FC<{
   host: KernelHost;
@@ -85,16 +84,22 @@ export function useMachineProgress(): MachineProgress | null {
   return progress;
 }
 
-export function useLazyDownloads(): LazyDownloadEvent[] {
+type VisibleLazyDownload = LazyDownloadEvent & { notificationGeneration: number };
+
+export function useLazyDownloads(): VisibleLazyDownload[] {
   const host = useKernelHost();
-  const [items, setItems] = React.useState<LazyDownloadEvent[]>([]);
+  const generation = React.useRef(0);
+  const [items, setItems] = React.useState<VisibleLazyDownload[]>([]);
 
   React.useEffect(() => {
+    generation.current++;
     const timers = new Map<string, ReturnType<typeof setTimeout>>();
-    const sortEvents = (events: Iterable<LazyDownloadEvent>) =>
-      Array.from(events).sort((a, b) => b.t - a.t);
+    const notice = (event: LazyDownloadEvent): VisibleLazyDownload =>
+      ({ ...event, notificationGeneration: generation.current });
+    const sortEvents = (events: Iterable<VisibleLazyDownload>) =>
+      Array.from(events).sort((a, b) => Number(b.status === "error") - Number(a.status === "error") || b.t - a.t);
 
-    setItems(activeLazyDownloadSummaries(host.lazyDownloadSummaries()));
+    setItems(visibleLazyDownloadSummaries(host.lazyDownloadSummaries()).map(notice));
 
     const applyEvent = (event: LazyDownloadEvent) => {
       const latest = host.lazyDownloadSummaries().find(({ id }) => id === event.id)
@@ -105,24 +110,41 @@ export function useLazyDownloads(): LazyDownloadEvent[] {
         timers.delete(latest.id);
       }
 
+      const incoming = notice(latest);
       setItems((prev) => {
         const next = new Map(prev.map((item) => [item.id, item]));
-        next.set(latest.id, latest);
+        next.set(latest.id, incoming);
         return sortEvents(next.values());
       });
 
-      if (latest.status === "complete" || latest.status === "error") {
+      // A successful transfer may fade; an unresolved failure is not a timed
+      // notification. Its VFS data may still be unavailable to running clients.
+      if (latest.status === "complete") {
         const timer = setTimeout(() => {
           timers.delete(latest.id);
-          setItems((prev) => prev.filter((item) => item.id !== latest.id));
-        }, latest.status === "error" ? LAZY_DOWNLOAD_ERROR_VISIBLE_MS : LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS);
+          setItems((prev) => prev.filter((item) => item.id !== latest.id ||
+            item.notificationGeneration !== incoming.notificationGeneration));
+        }, LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS);
         timers.set(latest.id, timer);
       }
     };
 
     const off = host.subscribeLazyDownloads(applyEvent);
+    const offSummaries = host.subscribeLazyDownloadSummaries(() => {
+      if (host.lazyDownloadSummaries().length !== 0) return;
+      // WHY: persistent failures belong to this machine's asset state. A new
+      // boot clears that authoritative state without a raw transfer event;
+      // carrying the old error forward would falsely accuse the replacement.
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
+      // A replacement can fail before React paints the empty snapshot. Its
+      // counters may restart, so acknowledgements also need this owner epoch.
+      generation.current++;
+      setItems([]);
+    });
     return () => {
       off();
+      offSummaries();
       for (const timer of timers.values()) clearTimeout(timer);
       timers.clear();
     };
