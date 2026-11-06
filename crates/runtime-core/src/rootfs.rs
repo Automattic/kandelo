@@ -19034,6 +19034,7 @@ mod tests {
     fn boot_records_abi_version_wasm_width_memory_budget_and_rootfs_identity() {
         let _guard = TestGuard::acquire();
         crate::kmsg::reset_test_ring();
+        crate::kmsg::with_ring(|ring| ring.set_clock_baseline(1_000_000_000));
         let image = image_declaring(Some(wasm_posix_shared::ABI_VERSION));
         let entries = load_image(image.len() as u64, image_host(&image)).expect("load");
         let mut host = crate::test_fixtures::ClockHost::at(3, 500_000_000);
@@ -19047,7 +19048,7 @@ mod tests {
             log[0],
             (
                 crate::kmsg::LOG_INFO,
-                3_500_000_000,
+                2_500_000_000,
                 alloc::format!(
                     "kernel ABI {}, {width}; memory budgets: rootfs metadata {} B, journal state {} B, I/O {} B",
                     wasm_posix_shared::ABI_VERSION,
@@ -19069,6 +19070,7 @@ mod tests {
     fn mounting_a_vfs_image_records_the_mount() {
         let _guard = TestGuard::acquire();
         crate::kmsg::reset_test_ring();
+        crate::kmsg::with_ring(|ring| ring.set_clock_baseline(500_000_000));
         let image = image_declaring(Some(wasm_posix_shared::ABI_VERSION));
         let entries = load_image(image.len() as u64, image_host(&image)).expect("load");
         let mut host = crate::test_fixtures::ClockHost::at(1, 0);
@@ -19077,7 +19079,7 @@ mod tests {
             kernel_log()[1],
             (
                 crate::kmsg::LOG_INFO,
-                1_000_000_000,
+                500_000_000,
                 alloc::format!(
                     "rootfs: mounted VFS image of {} bytes, {entries} entries, built for kernel ABI {}",
                     image.len(),

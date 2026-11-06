@@ -60,8 +60,10 @@
 //! contract; the record struct in [`crate::kmsg`] deliberately is not.
 //!
 //! * `pri` is `facility * 8 + level`, as in [`crate::klogctl`]'s `<pri>`.
-//! * `ts_usec` is microseconds of `CLOCK_MONOTONIC` since boot. The ring
-//!   stores nanoseconds; the conversion truncates.
+//! * `ts_usec` is microseconds since the kernel's first reading of the host's
+//!   `CLOCK_MONOTONIC` (see [`crate::kmsg::KmsgRing::rebase`]), so it is
+//!   machine-relative and identical across hosts. The ring stores
+//!   nanoseconds; the conversion truncates.
 //! * `flag` is `-` for a plain record and `t` when the text was truncated at
 //!   [`crate::kmsg::KMSG_MAX_TEXT_BYTES`]. `t` is Kandelo's own choice for a
 //!   facility POSIX does not describe. Readers are expected to skip the field,

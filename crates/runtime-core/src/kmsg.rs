@@ -158,7 +158,8 @@ pub const KMSG_RATE_INTERVAL_NSEC: u64 = 60 * 1_000_000_000;
 #[derive(Debug, Clone, Copy)]
 pub struct KmsgRecordRef<'a> {
     pub seq: u64,
-    /// `CLOCK_MONOTONIC` nanoseconds since kernel boot, as supplied to `push`.
+    /// Nanoseconds, as supplied to `push`. The kernel's own records carry
+    /// time since the ring's first reading (see [`KmsgRing::rebase`]).
     pub ts_nsec: u64,
     pub facility: u8,
     pub level: u8,
@@ -276,6 +277,9 @@ pub struct KmsgRing {
     /// for, one bit per key. Like the records, it lives and dies with the
     /// machine.
     first_seen: u64,
+    /// The raw host clock reading that [`rebase`](KmsgRing::rebase) counts
+    /// from, taken on the first reading. `None` until then.
+    clock_baseline: Option<u64>,
 }
 
 impl KmsgRing {
@@ -289,6 +293,7 @@ impl KmsgRing {
             live_bytes: 0,
             limiter: CallsiteLimiter::new(),
             first_seen: 0,
+            clock_baseline: None,
         }
     }
 
@@ -397,6 +402,31 @@ impl KmsgRing {
     /// One past the newest `seq`: the `seq` the next push will be assigned.
     pub fn head_seq(&self) -> u64 {
         self.next_seq
+    }
+
+    /// Turn a raw host `CLOCK_MONOTONIC` reading into this ring's time:
+    /// nanoseconds since the first reading the ring was given. The first
+    /// record therefore sits near zero, and the two hosts agree on what a
+    /// timestamp means.
+    ///
+    /// The host's clock cannot be used as it stands: its origin is not the
+    /// machine's. Node answers `process.hrtime.bigint()`, whose origin is
+    /// arbitrary (typically host uptime), and a browser answers
+    /// `performance.now()`, which counts from the worker's start. Rebasing the
+    /// host clock instead would change what every guest `clock_gettime`
+    /// returns, and POSIX asks of `CLOCK_MONOTONIC` only that it never goes
+    /// backwards. So the origin is chosen here, for this one consumer.
+    ///
+    /// A reading earlier than the baseline (a host clock that went backwards)
+    /// is reported as zero.
+    pub fn rebase(&mut self, raw_nsec: u64) -> u64 {
+        raw_nsec.saturating_sub(*self.clock_baseline.get_or_insert(raw_nsec))
+    }
+
+    /// Fix the baseline, so a test can check the subtraction itself.
+    #[cfg(test)]
+    pub(crate) fn set_clock_baseline(&mut self, raw_nsec: u64) {
+        self.clock_baseline = Some(raw_nsec);
     }
 
     /// `true` the first time it is asked about `key` (below 64), `false`
@@ -651,9 +681,10 @@ impl core::fmt::Write for EventText {
     }
 }
 
-/// `CLOCK_MONOTONIC` as nanoseconds since kernel boot, which is the time base
-/// `dmesg` prints. `None` when the host cannot say, and a caller then writes
-/// no record: a made-up timestamp is indistinguishable from a real one.
+/// The host's `CLOCK_MONOTONIC` as raw nanoseconds, whose origin is the host's
+/// and not the machine's: callers rebase it with [`KmsgRing::rebase`]. `None`
+/// when the host cannot say, and a caller then writes no record: a made-up
+/// timestamp is indistinguishable from a real one.
 fn monotonic_nsec<H: HostIO + ?Sized>(host: &mut H) -> Option<u64> {
     let (sec, nsec) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC).ok()?;
     u64::try_from(sec).ok()?.checked_mul(1_000_000_000)?.checked_add(u64::try_from(nsec).ok()?)
@@ -674,17 +705,20 @@ fn format_event(args: core::fmt::Arguments<'_>) -> EventText {
 /// Where it does not, thread it through from the caller rather than
 /// stamping the record with a guess.
 pub fn klog<H: HostIO + ?Sized>(host: &mut H, site: KlogSite, args: core::fmt::Arguments<'_>) -> Option<u64> {
-    let ts_nsec = monotonic_nsec(host)?;
+    let raw = monotonic_nsec(host)?;
     let text = format_event(args);
-    with_ring(|ring| ring.push_limited(site.id(), LOG_KERN, site.level(), ts_nsec, &text.bytes[..text.len]))
+    with_ring(|ring| {
+        let ts_nsec = ring.rebase(raw);
+        ring.push_limited(site.id(), LOG_KERN, site.level(), ts_nsec, &text.bytes[..text.len])
+    })
 }
 
 /// [`klog`], but only the first time `key` (below 64) is seen since boot.
 ///
 /// For events that mark a thing becoming live, such as a device's first
 /// open: the limiter would let the first ten opens through, which is not
-/// "the first". The latch is spent only by a record that is written, so a
-/// clock failure does not use up the one chance.
+/// "the first". The latch is spent only after a record has been written, so
+/// neither a clock failure nor a rate-limit drop uses up the one chance.
 ///
 /// Keys are one namespace across every site, so two callers must not pick the
 /// same number.
@@ -699,11 +733,13 @@ pub fn klog_once<H: HostIO + ?Sized>(
     if with_ring(|ring| ring.already_seen(key)) {
         return None;
     }
-    let ts_nsec = monotonic_nsec(host)?;
+    let raw = monotonic_nsec(host)?;
     let text = format_event(args);
     with_ring(|ring| {
+        let ts_nsec = ring.rebase(raw);
+        let seq = ring.push_limited(site.id(), LOG_KERN, site.level(), ts_nsec, &text.bytes[..text.len])?;
         ring.first_time(key);
-        ring.push_limited(site.id(), LOG_KERN, site.level(), ts_nsec, &text.bytes[..text.len])
+        Some(seq)
     })
 }
 
@@ -718,18 +754,39 @@ pub(crate) fn with_ring<R>(f: impl FnOnce(&mut KmsgRing) -> R) -> R {
 std::thread_local! {
     static TEST_RING: core::cell::RefCell<alloc::boxed::Box<KmsgRing>> =
         core::cell::RefCell::new(alloc::boxed::Box::new(KmsgRing::new()));
+    static USE_GLOBAL_RING: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
 /// Under test each thread writes its own events to its own ring, so a test
 /// that kills a process or opens a device cannot put records into the global
-/// ring that `/dev/kmsg` and `klogctl` tests are reading.
+/// ring that `/dev/kmsg` and `klogctl` tests are reading. A test that needs
+/// the global ring, to prove the writer and the readers share it, asks for it
+/// with [`with_global_ring_selected`].
 #[cfg(test)]
 pub(crate) fn with_ring<R>(f: impl FnOnce(&mut KmsgRing) -> R) -> R {
+    if USE_GLOBAL_RING.with(|selected| selected.get()) {
+        // SAFETY: tests that select the global ring hold `kmsg_device::TEST_LOCK`.
+        return f(unsafe { global_kmsg_ring() });
+    }
     TEST_RING.with(|ring| f(&mut ring.borrow_mut()))
 }
 
-/// Start the calling thread's test ring over: empty, sequence at zero, and
-/// no once-latch spent.
+/// Run `f` with [`klog`] writing to the global ring: the one the readers read.
+#[cfg(test)]
+pub(crate) fn with_global_ring_selected<R>(f: impl FnOnce() -> R) -> R {
+    struct Deselect;
+    impl Drop for Deselect {
+        fn drop(&mut self) {
+            USE_GLOBAL_RING.with(|selected| selected.set(false));
+        }
+    }
+    USE_GLOBAL_RING.with(|selected| selected.set(true));
+    let _deselect = Deselect;
+    f()
+}
+
+/// Start the calling thread's test ring over: empty, sequence at zero, no
+/// once-latch spent and no clock baseline taken.
 #[cfg(test)]
 pub(crate) fn reset_test_ring() {
     TEST_RING.with(|ring| **ring.borrow_mut() = KmsgRing::new());
@@ -1117,12 +1174,41 @@ mod tests {
     #[test]
     fn klog_stamps_the_record_from_the_monotonic_clock() {
         reset_test_ring();
+        // The ring counts from a baseline earlier than this reading, so the
+        // subtraction is checked and not only the read.
+        with_ring(|ring| ring.set_clock_baseline(2_000_000_000));
         let mut host = ClockHost::at(12, 345_678_901);
         let seq = klog(&mut host, KlogSite::BootIdentity, format_args!("hello {}", 7));
         assert!(seq.is_some());
         assert_eq!(host.clock_reads, 1);
-        assert_eq!(logged(), [(LOG_INFO, 12_345_678_901, "hello 7".into())]);
+        assert_eq!(logged(), [(LOG_INFO, 10_345_678_901, "hello 7".into())]);
         with_ring(|ring| assert_eq!(ring.read_at(seq.unwrap()).unwrap().facility, LOG_KERN));
+    }
+
+    #[test]
+    fn klog_timestamps_count_from_the_first_reading_whatever_the_hosts_origin() {
+        // Two hosts whose CLOCK_MONOTONIC has different origins (host uptime,
+        // a worker's start) must produce the same log for the same elapsed time.
+        let mut logs = Vec::new();
+        for origin in [4_000, 40_000_000i64] {
+            reset_test_ring();
+            klog(&mut ClockHost::at(origin, 0), KlogSite::BootIdentity, format_args!("first"));
+            klog(&mut ClockHost::at(origin + 2, 500), KlogSite::BootIdentity, format_args!("later"));
+            logs.push(logged());
+        }
+        assert_eq!(logs[0], logs[1]);
+        assert_eq!(logs[0][0].1, 0, "the first record sits at zero");
+        assert_eq!(logs[0][1].1, 2_000_000_500);
+
+        // A host clock that steps back is reported as zero, not as a huge
+        // wrapped value.
+        klog(&mut ClockHost::at(1, 0), KlogSite::BootIdentity, format_args!("back"));
+        assert_eq!(logged().last().unwrap().1, 0);
+
+        // Starting the test ring over forgets the baseline.
+        reset_test_ring();
+        klog(&mut ClockHost::at(777, 0), KlogSite::BootIdentity, format_args!("again"));
+        assert_eq!(logged()[0].1, 0);
     }
 
     #[test]
@@ -1198,6 +1284,21 @@ mod tests {
         let exact = "z".repeat(KMSG_MAX_TEXT_BYTES);
         let seq = klog(&mut host, KlogSite::BootIdentity, format_args!("{exact}")).unwrap();
         with_ring(|ring| assert_eq!(ring.read_at(seq).unwrap().flags, 0));
+    }
+
+    #[test]
+    fn klog_once_is_not_spent_by_a_record_the_limiter_drops() {
+        reset_test_ring();
+        let mut host = ClockHost::at(1, 0);
+        // The device site's burst is used up by other records.
+        for _ in 0..KMSG_RATE_BURST {
+            assert!(klog(&mut host, KlogSite::DeviceFirstOpen, format_args!("filler")).is_some());
+        }
+        assert_eq!(klog_once(&mut host, KlogSite::DeviceFirstOpen, 9, format_args!("dropped")), None);
+        // A window later the same event is still "the first".
+        let mut later = ClockHost::at(1 + 61, 0);
+        assert!(klog_once(&mut later, KlogSite::DeviceFirstOpen, 9, format_args!("kept")).is_some());
+        assert!(logged().iter().any(|(_, _, text)| text == "kept"));
     }
 
     #[test]

@@ -10753,6 +10753,14 @@ fn record_death_by_signal(pid: u32, signum: u32, host: &mut dyn HostIO) {
     use crate::kmsg::{klog, KlogSite};
     // The exit status keeps the low seven bits; name what the parent will see.
     let signum = signum & 0x7f;
+    // SIGPIPE is how every `yes | head` ends. It is left out because of the
+    // rate limiter, not only the noise: the "other signals" site admits a
+    // burst of KMSG_RATE_BURST records per window, so routine SIGPIPE deaths
+    // would spend it and a real SIGTERM or SIGKILL from the same site would be
+    // dropped while the suppression record claimed only information.
+    if signum == wasm_posix_shared::signal::SIGPIPE {
+        return;
+    }
     let site = if crate::signal::is_fault_signal(signum) {
         KlogSite::ProcessKilledByFault
     } else {
@@ -56609,6 +56617,14 @@ impl HostIO for RelSymlinkMock {
     mod kernel_event_tests {
         use super::*;
         use crate::kmsg::{reset_test_ring, with_ring, LOG_INFO, LOG_WARNING};
+
+        /// Start the log over with its clock baseline one second before the
+        /// hosts below start counting, so the subtraction shows in the expected
+        /// timestamps.
+        fn fresh_log() {
+            reset_test_ring();
+            with_ring(|ring| ring.set_clock_baseline(1_000_000_000));
+        }
         use wasm_posix_shared::mmap::{MAP_PRIVATE, PROT_READ, PROT_WRITE};
 
         fn log() -> Vec<(u8, u64, String)> {
@@ -56636,7 +56652,7 @@ impl HostIO for RelSymlinkMock {
             crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
             crate::clipboard::reset_for_test();
             crate::audio::reset_for_test();
-            reset_test_ring();
+            fresh_log();
             let mut proc = Process::new(7);
             let mut host = host_at(5);
 
@@ -56654,7 +56670,7 @@ impl HostIO for RelSymlinkMock {
             }
             let expected: Vec<_> = devices
                 .iter()
-                .map(|(path, _)| (LOG_INFO, 5_000_000_000, format!("{}: first opened by process 7", String::from_utf8_lossy(path))))
+                .map(|(path, _)| (LOG_INFO, 4_000_000_000, format!("{}: first opened by process 7", String::from_utf8_lossy(path))))
                 .collect();
             assert_eq!(log(), expected);
 
@@ -56672,7 +56688,7 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(log().len(), 6);
 
             // openat is the same path: a device first opened through it counts.
-            reset_test_ring();
+            fresh_log();
             for fd in fds {
                 sys_close(&mut proc, &mut host, fd).unwrap();
             }
@@ -56680,7 +56696,7 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(log().len(), 1);
 
             // A device that fails to open was not opened.
-            reset_test_ring();
+            fresh_log();
             let mut first = Process::new(9);
             let mut second = Process::new(10);
             let held = sys_open(&mut first, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
@@ -56694,7 +56710,7 @@ impl HostIO for RelSymlinkMock {
             use wasm_posix_shared::dri::*;
             let _registry = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             crate::dri::bo::reset_registry();
-            reset_test_ring();
+            fresh_log();
             let mut proc = Process::new(1);
             let mut host = host_at(9);
             let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
@@ -56713,7 +56729,7 @@ impl HostIO for RelSymlinkMock {
                 log(),
                 [(
                     LOG_WARNING,
-                    9_000_000_000,
+                    8_000_000_000,
                     "host capability unavailable: WebGL (GPU buffer for process 1 refused, host answered ENOSYS)".into()
                 )]
             );
@@ -56732,7 +56748,7 @@ impl HostIO for RelSymlinkMock {
             let map = |proc: &mut Process, host: &mut MockHostIO, addr: usize, len: usize, flags: u32| {
                 sys_mmap(proc, host, addr, len, PROT_READ | PROT_WRITE, flags, -1, 0)
             };
-            reset_test_ring();
+            fresh_log();
             let mut proc = Process::new(21);
             let mut host = host_at(4);
 
@@ -56745,13 +56761,13 @@ impl HostIO for RelSymlinkMock {
                 log(),
                 [(
                     LOG_WARNING,
-                    4_000_000_000,
+                    3_000_000_000,
                     format!("process 21: mmap of {} bytes refused: no free address range that large (0 mappings, ceiling {ceiling:#x})", 2 * page)
                 )]
             );
 
             // Out of kernel memory for its own table, with room to spare.
-            reset_test_ring();
+            fresh_log();
             let mut proc = Process::new(22);
             {
                 let held = crate::io_buffer::IO_MEMORY.usage().0;
@@ -56762,14 +56778,14 @@ impl HostIO for RelSymlinkMock {
                 log(),
                 [(
                     LOG_WARNING,
-                    4_000_000_000,
+                    3_000_000_000,
                     format!("process 22: mmap of {page} bytes refused: the kernel could not grow its mapping table (memory budget or kernel heap exhausted)")
                 )]
             );
 
             // A request that was never going to work is not a budget refusal
             // and is not reported as one.
-            reset_test_ring();
+            fresh_log();
             let mut proc = Process::new(23);
             let past = proc.memory.layout_metadata().max_addr;
             assert_eq!(map(&mut proc, &mut host, past, page, anon | wasm_posix_shared::mmap::MAP_FIXED), Err(Errno::ENOMEM));
@@ -56829,6 +56845,39 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(VirtualDevice::from_host_handle(-12), Some(VirtualDevice::Clipboard));
             assert_ne!(VirtualDevice::Kmsg.ino(), VirtualDevice::Clipboard.ino());
             assert_eq!(match_virtual_device(KMSG), Some(VirtualDevice::Kmsg));
+        }
+
+        #[test]
+        fn what_klog_writes_is_what_dev_kmsg_and_klogctl_read() {
+            // `klog` normally writes to the global ring under test through a
+            // thread-local stand-in. This is the one test that points it at the
+            // global ring, the one the readers read, so the writer and the
+            // readers are proven to share it.
+            use crate::kmsg::{klog, with_global_ring_selected, KlogSite};
+            use crate::test_fixtures::ClockHost;
+            let (_guard, ring) = lock_ring();
+            // The ring counts from its first clock reading; fix that reading
+            // so the rendered timestamp is exact.
+            ring.set_clock_baseline(1_000_000_000);
+            let mut clock = ClockHost::at(3, 250_000_000);
+            let seq = with_global_ring_selected(|| {
+                klog(&mut clock, KlogSite::ProcessKilledByFault, format_args!("process 5 killed by signal 11 (SIGSEGV)"))
+            })
+            .expect("written");
+            assert_eq!(ring.head_seq(), seq + 1, "it landed in the global ring");
+
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = open_kmsg(&mut proc, &mut host);
+            // pri = LOG_KERN * 8 + LOG_WARNING; ts_usec is (3.25 s - 1 s).
+            assert_eq!(
+                read_line(&mut proc, &mut host, fd).unwrap(),
+                format!("4,{seq},2250000,-;process 5 killed by signal 11 (SIGSEGV)\n").into_bytes()
+            );
+
+            let mut out = vec![0u8; 4096];
+            let n = sys_syslog(3, Some(&mut out), 0).unwrap() as usize; // SYSLOG_ACTION_READ_ALL
+            assert_eq!(&out[..n], b"<4>process 5 killed by signal 11 (SIGSEGV)\n");
         }
 
         #[test]

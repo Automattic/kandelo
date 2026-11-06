@@ -1101,19 +1101,21 @@ mod tests {
 
         // An ordinary termination is informational.
         reset_test_ring();
+        crate::kmsg::with_ring(|ring| ring.set_clock_baseline(1_000_000_000));
         let mut proc = Process::new(52);
         let mut host = ClockHost::at(7, 250_000_000);
         assert!(proc.raise_signal(SIGTERM));
         deliver_pending_signals(&mut proc, &mut host);
         assert_eq!(proc.state, ProcessState::Exited);
-        assert_eq!(kernel_log(), [(LOG_INFO, 7_250_000_000, "process 52 killed by signal 15 (SIGTERM)".into())]);
+        assert_eq!(kernel_log(), [(LOG_INFO, 6_250_000_000, "process 52 killed by signal 15 (SIGTERM)".into())]);
 
         // A fault in the program is a warning, and has its own rate limit.
         reset_test_ring();
+        crate::kmsg::with_ring(|ring| ring.set_clock_baseline(1_000_000_000));
         let mut proc = Process::new(53);
         assert!(proc.raise_signal(11));
         deliver_pending_signals(&mut proc, &mut host);
-        assert_eq!(kernel_log(), [(LOG_WARNING, 7_250_000_000, "process 53 killed by signal 11 (SIGSEGV)".into())]);
+        assert_eq!(kernel_log(), [(LOG_WARNING, 6_250_000_000, "process 53 killed by signal 11 (SIGSEGV)".into())]);
 
         // A real-time signal has a number and no name.
         reset_test_ring();
@@ -1139,6 +1141,34 @@ mod tests {
         for signum in [SIGHUP, SIGINT, SIGABRT, SIGKILL, SIGPIPE, SIGTERM, 40] {
             assert!(!is_fault_signal(signum), "{signum}");
         }
+    }
+
+    #[test]
+    fn a_death_by_sigpipe_is_not_recorded_so_it_cannot_hide_a_real_kill() {
+        use crate::process::{Process, ProcessState};
+        use crate::test_fixtures::ClockHost;
+
+        // `yes | head` ends in SIGPIPE every time: routine, and not worth a
+        // record. The reason it must be excluded is the rate limiter: the
+        // "other signals" site has a burst of KMSG_RATE_BURST per window, and
+        // routine deaths would spend it, after which a real SIGTERM or SIGKILL
+        // from the same site would be dropped.
+        crate::kmsg::reset_test_ring();
+        let mut host = ClockHost::at(1, 0);
+        for pid in 0..(crate::kmsg::KMSG_RATE_BURST * 3) {
+            let mut proc = Process::new(100 + pid);
+            terminate_process_by_signal(&mut proc, &mut host, SIGPIPE);
+            assert_eq!(proc.state, ProcessState::Exited);
+            assert_eq!(proc.exit_signal, SIGPIPE, "the death itself is untouched");
+        }
+        assert!(kernel_log().is_empty());
+
+        let mut victim = Process::new(7);
+        terminate_process_by_signal(&mut victim, &mut host, SIGTERM);
+        terminate_process_by_signal(&mut Process::new(8), &mut host, SIGKILL);
+        let log = kernel_log();
+        assert_eq!(log.len(), 2, "{log:?}");
+        assert!(log[0].2.starts_with("process 7 killed by signal 15"));
     }
 
     #[test]
