@@ -20,6 +20,9 @@ in the layout document rather than copying a neighboring recipe's accident.
   `/var/log`, caches in `/var/cache` and transient state in `/run`.
 - Keep `/usr` usable read-only. Writable test work trees and generated
   application state do not belong beside installed executables or static data.
+- Preserve the core image's account databases and supplementary groups when
+  adding services. `maker` inherits sudo access through `wheel`; a service
+  image must not replace that foundation with a smaller account/group list.
 - Update every consumer of a moved path: compiled prefixes, archive members,
   manifests, lazy specs, provenance, service definitions, launchers, demo and
   session metadata, suite runners, tests and current reference docs.
