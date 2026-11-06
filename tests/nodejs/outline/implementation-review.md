@@ -1,5 +1,10 @@
 # Broad implementation review
 
+Source158 corrects the actual shared-buffer header alignment failure from the
+normal source157 engine build. Source replay and14 package checks pass; the
+combined engine still needs compilation. See [alignment scope](shared-backing-alignment-integration.md).
+Overall suites/full product rebuild and current four-host acceptance remain deferred.
+
 Source157 integrates actual X509 material/metadata/key ownership and a source-
 realm view correction. Twenty-one native component groups, the private Buffer
 owner check,32 web tests and14 package checks pass. Production JSAPI/current

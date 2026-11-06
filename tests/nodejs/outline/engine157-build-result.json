@@ -1,0 +1,24 @@
+{
+  "at": "2026-11-06T19:22:42.696055+00:00",
+  "jobId": "node26-engine157-1106-140451-23bf",
+  "sourceCommit": "69663f9eee7dbf5801a0613054ee50975016d6a7",
+  "recipeRevision": 157,
+  "terminal": {
+    "at": "2026-11-06T19:16:28.917101+00:00",
+    "buildExitCode": 1,
+    "changedFrozenSourcePaths": [],
+    "scope": "Selected engine157/dependency resolve only; build result is not runtime or four-host conformance."
+  },
+  "firstErrors": [
+    " 2:05.25 /Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/programs/.spidermonkey-140.11.0esr-rev157-wasm32-abi55-19dd652d0d8400f69c45ff3482b355b04f7e93f2b57d5296b7b0636c16ccc83b.work-93098-1/recipe-work/spidermonkey-source/js/src/vm/SharedArrayObject.cpp:90:17: error: static assertion failed due to requirement 'sizeof(js::SharedArrayRawBuffer) % ArrayBufferObject::ARRAY_BUFFER_ALIGNMENT == 0': sizeof(SharedArrayRawBuffer) is a multiple of the array buffer alignment, so |p + sizeof(SharedArrayRawBuffer)| is also array buffer aligned",
+    " 2:05.25 /Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/programs/.spidermonkey-140.11.0esr-rev157-wasm32-abi55-19dd652d0d8400f69c45ff3482b355b04f7e93f2b57d5296b7b0636c16ccc83b.work-93098-1/recipe-work/spidermonkey-source/js/src/vm/SharedArrayObject.cpp:91:67: note: expression evaluates to '4 == 0'"
+  ],
+  "files": {
+    "meta.json": "87553cbdfe04e17b45b5bbced2eb982d60b7f30db02bb7cdce1a94dd582a2023",
+    "output.log": "2c002fa4894b3ec72d2adb010ec394ab1a948ebda4aa604a8200824c4bc6c1e4",
+    "result.json": "4a7197e00a163a3588c90e4d2211edd71922c850dc123988091801699c3f0d98",
+    "terminal.json": "870f6362204b181d3f0ad3ea6a376677a743be5ae8814c0f7bcd2c24512d5b88"
+  },
+  "frozenInputs": 1554,
+  "scope": "Actual normal selected wasm32 engine compilation failure; no current accepted artifact, no runtime or four-host evidence."
+}

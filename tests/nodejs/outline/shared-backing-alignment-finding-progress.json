@@ -1,0 +1,60 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/engine-contracts.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "engine",
+      "values",
+      "workers",
+      "filesystem",
+      "compression"
+    ],
+    "scope": "Original retained-allocation header alignment prerequisite; no API closure"
+  },
+  "sourceImplemented": [
+    "Align the real SharedArrayRawBuffer class to existing engine ARRAY_BUFFER_ALIGNMENT, retaining original assertion/fields/sizeof allocation and data/deallocation/accounting arithmetic"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-shared-alignment158-source-r1/report.json",
+    "sha256": "b5e928a2a3ad2e11a45ba81d8269e639871ac5309c80804a60dfe1e11fdbeb9d",
+    "guardedInputs": 740,
+    "scope": "Actual pinned source/patch replay, normal source generation/input checks; no full native object/engine compilation or runtime conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-shared-alignment158-affected-r1.json",
+    "sha256": "cc039b7361c149654c7b9f51e74ebe06ea922b83e5ef0734307395f92095e0bf",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing package-source checks only; no engine/runtime acceptance"
+  },
+  "targetedEngineFailure": {
+    "report": "tests/nodejs/outline/engine157-build-result.json",
+    "sha256": "a34699a081328bc8219dcd422185fc98b2221e74bd25ba350f84fe06da308880",
+    "recipeRevision": 157,
+    "exitCode": 1,
+    "scope": "Actual normal selected wasm32 engine compilation failure; no current accepted artifact, no runtime or four-host evidence."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-engine157-failure-final/output.log",
+      "sha256": "2c002fa4894b3ec72d2adb010ec394ab1a948ebda4aa604a8200824c4bc6c1e4",
+      "kind": "production-C++-compile",
+      "reason": "Actual original alignment assertion fails with expression 4==0; frozen sources unchanged; no accepted artifact"
+    }
+  ],
+  "remaining": [
+    "Normal selected current-engine compilation, actual native/GC/realm/transfer behavior and identified-artifact conformance on all four hosts",
+    "Integrate queued reviewed TCP, crypto, signal, TTY and UDP source work breadth first; implementation gaps remain open",
+    "All nineteen public families remain partial; overall suites and full product rebuild remain deferred"
+  ],
+  "at": "2026-11-06T23:43:06.833706+00:00",
+  "recipeRevision": 158,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

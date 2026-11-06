@@ -1,0 +1,14 @@
+--- a/js/src/vm/SharedArrayObject.h
++++ b/js/src/vm/SharedArrayObject.h
+@@ -55,7 +55,10 @@
+  * toward sourceMaxPages_. See extensive comments above WasmArrayRawBuffer in
+  * ArrayBufferObject.cpp. length_ only grows when the lock is held.
+  */
+-class SharedArrayRawBuffer {
++// The data begins immediately after this header. Native-only retained-owner
++// fields must not weaken the original typed-array data alignment on 32-bit
++// targets, whose member alignment can be smaller than the buffer alignment.
++class alignas(ArrayBufferObject::ARRAY_BUFFER_ALIGNMENT) SharedArrayRawBuffer {
+  protected:
+   // Whether this is a WasmSharedArrayRawBuffer.
+   bool isWasm_;

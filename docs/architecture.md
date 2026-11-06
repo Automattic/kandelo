@@ -5983,6 +5983,13 @@ after the private engine link commits. GC retires its cell charge before the
 last native owner may free the allocation on a worker. No rooted JS view is
 substituted for native deallocation ownership.
 
+The shared-buffer header retains the engine's actual array-buffer alignment
+even when native ownership metadata changes its member layout. Its class
+alignment keeps the immediately following data aligned without guessed target
+padding. The original allocation assertion, size arithmetic and ownership
+fields remain intact. The source157 targeted engine compile exposed this
+layout defect; the source158 correction still needs production compilation.
+
 Focused native-component and frontend controls pass with explicit dependencies.
 The combined engine, actual GC/realm behavior and four-host conformance remain
 unvalidated; UDP/socket consumers and shared-codec races remain separate gaps.
