@@ -177,7 +177,8 @@ export class GlProgramJournal {
 
   /** Cold preparation is memoized, including partial native failure. Publish
    * the receiver before initialization so retirement can never lose a copy.
-   * No production wire entry invokes this until the driver transport exists. */
+   * Action10 uses the sealed mutation receipt: lost copyout must recover the
+   * same partial preparation instead of allocating a second native bank. */
   prepareBufferSnapshots(capacity=BUFFER_SNAPSHOT_CAPACITY):number {
     if(!this.ready || this.closed || this.poisoned || !this.execution)return 0;
     if(this.bufferSnapshots && this.bufferSnapshots.capacity!==capacity)return 0;
@@ -187,6 +188,13 @@ export class GlProgramJournal {
   defineBufferSnapshot(index:number,token:number,target:number,data:number|Uint8Array<ArrayBuffer>,usage:number):boolean {
     if(!this.ready || this.closed || this.poisoned || !this.bufferSnapshots){recordGlError(this.binding,0x502);return false;}
     return this.bufferSnapshots.define(this.binding,index,token,target,data,usage);
+  }
+  captureBufferAttribute(index:number,token:number,attribute:number):number|null {
+    if(!this.ready || this.closed || this.poisoned || !this.bufferSnapshots){recordGlError(this.binding,0x502);return null;}
+    return this.bufferSnapshots.captureAttribute(this.binding,index,token,attribute);
+  }
+  bufferDrawExecutionView():GlBinding|null {
+    return this.ready&&!this.closed&&!this.poisoned?this.bufferSnapshots?.executionView(this.binding)??null:null;
   }
   resolveBufferSnapshot(index:number,token:number,object:WebGLBuffer,requiredBytes:number):WebGLBuffer|null {
     return this.ready&&!this.closed&&!this.poisoned?this.bufferSnapshots?.resolve(this.binding,index,token,object,requiredBytes)??null:null;

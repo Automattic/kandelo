@@ -1,3 +1,4 @@
+import {drawBufferSnapshots,validBufferSnapshotDraw} from "./private-buffer-draw.js";
 import {nativeGlFault} from "./native-recovery.js";
 import {journalInteger} from "./program-journal-query.js";
 import { interruptCompressedUpload } from "./compressed-upload.js";
@@ -421,6 +422,8 @@ function validPayload(op: number, v: DataView): boolean {
         v.getUint32(12,true)<=0x1f_ffff && journalInteger(v,8)!==0;
     case O.OP_DRAW_CLIENT_ARRAYS:
       return validPrivateClientDraw(v);
+    case O.OP_DRAW_BUFFER_SNAPSHOTS:
+      return validBufferSnapshotDraw(v);
     case O.OP_BEGIN_CLIENT_ARRAY:
     case O.OP_END_CLIENT_ARRAY:
       return exact(v,0);
@@ -1657,6 +1660,8 @@ function dispatch(
     }
     case O.OP_DRAW_CLIENT_ARRAYS:
       drawPrivateClientArrays(b,v); return;
+    case O.OP_DRAW_BUFFER_SNAPSHOTS:
+      drawBufferSnapshots(b,v); return;
     case O.OP_DRAW_ARRAYS:
       if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
       if (v.getUint32(p,true) > 6) { recordGlError(b,0x500); return; }

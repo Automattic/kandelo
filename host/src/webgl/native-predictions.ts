@@ -121,6 +121,7 @@ const OP_GAPS: ReadonlyMap<number, readonly Gap[]> = new Map<number, readonly Ga
   [O.OP_DRAW_ARRAYS, [gap(DRAW, "drawArrays")]],
   [O.OP_DRAW_ELEMENTS, [gap(DRAW, "drawElements")]],
   [O.OP_DRAW_CLIENT_ARRAYS, [gap(DRAW, "drawArrays")]],
+  [O.OP_DRAW_BUFFER_SNAPSHOTS, [gap(DRAW, "drawArrays")]],
   [O.OP_DRAW_BUFFER, [gap(DRAW_BUFFERS, "drawBuffers")]],
   [O.OP_DRAW_BUFFERS, [gap(DRAW_BUFFERS, "drawBuffers")]],
   [O.OP_READ_BUFFER, [gap(READ_BUFFER, "readBuffer")]],

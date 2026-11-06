@@ -4178,6 +4178,8 @@ pub mod gl {
     pub const OP_DRAW_ARRAYS: u16 = 0x0503;
     /// Bounded, owned client-array bytes and one nonindexed draw. Never public buffer names.
     pub const OP_DRAW_CLIENT_ARRAYS: u16 = 0x0506;
+    /// Own-context buffer generations; no guest address or public name.
+    pub const OP_DRAW_BUFFER_SNAPSHOTS: u16 = 0x0507;
     pub const OP_DRAW_ELEMENTS: u16 = 0x0504;
     /// `glVertexAttrib4fv(index, value)` — constant (non-array) vertex
     /// attribute. ScummVM's shader pipeline feeds the per-draw color
@@ -6778,6 +6780,7 @@ mod gl_tests {
             OP_VERTEX_ATTRIB_POINTER,
             OP_DRAW_ARRAYS,
             OP_DRAW_CLIENT_ARRAYS,
+            OP_DRAW_BUFFER_SNAPSHOTS,
             OP_DRAW_ELEMENTS,
             OP_VERTEX_ATTRIB_4FV,
             OP_GEN_VERTEX_ARRAYS,

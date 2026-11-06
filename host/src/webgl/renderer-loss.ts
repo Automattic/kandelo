@@ -88,6 +88,15 @@ export function observeRendererLoss(b: { gl: WebGL2RenderingContext | null }): v
   else counter.lost = false;
 }
 
+/** A cold execution view has different derived draw state, but belongs to the
+ * SAME logical context. Sharing this record prevents a reset of the view from
+ * leaving its public owner apparently healthy. No ordinary entry adds a lookup.
+ */
+export function shareRendererLossAuthority(owner:{gl:WebGL2RenderingContext|null},view:{gl:WebGL2RenderingContext|null}):void {
+  if(!owner.gl || view.gl!==owner.gl)throw new Error("Execution view has a foreign renderer");
+  observeRendererLoss(owner);baselines.set(view,baselines.get(owner)!);
+}
+
 /** True once the binding's renderer has been lost. */
 export function rendererLost(b: { gl: WebGL2RenderingContext | null }): boolean {
   const gl = b.gl;

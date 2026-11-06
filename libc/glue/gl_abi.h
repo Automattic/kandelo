@@ -108,6 +108,7 @@
 #define OP_VERTEX_ATTRIB_POINTER       0x0502u
 #define OP_DRAW_ARRAYS                 0x0503u
 #define OP_DRAW_CLIENT_ARRAYS          0x0506u
+#define OP_DRAW_BUFFER_SNAPSHOTS 0x0507u
 #define OP_DRAW_ELEMENTS               0x0504u
 #define OP_VERTEX_ATTRIB_4FV           0x0505u
 
@@ -347,6 +348,10 @@ int      _wpk_gl_robustness_state(unsigned int pname, int32_t *value);
  * fork guard returns 0 when a fork child could not be made to advance it. */
 void     _wpk_gl_note_device_request(void);
 uint64_t _wpk_gl_device_requests(void);
+/* Controlled library calls keep the same request counter; external raw I/O
+ * also revokes buffer/layout authority through a separate monotonic epoch. */
+void _wpk_gl_note_known_device_request(void);
+uint64_t _wpk_gl_raw_device_requests(void);
 int      _wpk_gl_device_requests_fork_safe(void);
 /* Private library ownership epoch; initialize fork tracking before acquiring
  * local authority. Zero means tracking has not been installed successfully. */

@@ -82,6 +82,7 @@ struct wpk_object_group {
      * Only the outer operation reconciles shared unpublished candidates. */
     unsigned dispatch_depth;
     unsigned references;
+    _Atomic int ever_shared;
     GLuint next_name[WPK_NAMES_COUNT];
     uint64_t next_serial;
     struct wpk_object_name *names, *retired_objects;
@@ -164,11 +165,22 @@ static struct wpk_object_group *object_group_create(void) {
 static int object_group_retain(struct wpk_object_group *group) {
     uint64_t owner=atomic_load_explicit(&group->program_owner_epoch,memory_order_relaxed);
     if (!owner || owner!=_wpk_gl_device_owner_epoch()) {errno=EACCES;return 0;}
+    int cancel_state;
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+    /* WHY: first sharing revokes local byte/layout proofs. Publish that
+     * transition under the same dispatch lock as admission, or a peer can
+     * appear between an owned draw's test and its retained capture. */
+    if(pthread_mutex_lock(&group->dispatch_mutex))abort();
     pthread_mutex_lock(&group->mutex);
     int retained = group->references < UINT_MAX;
-    if (retained)
+    if (retained) {
         group->references++;
+        // Returning to one member cannot prove the storage was never shared.
+        atomic_store_explicit(&group->ever_shared,1,memory_order_release);
+    }
     pthread_mutex_unlock(&group->mutex);
+    if(pthread_mutex_unlock(&group->dispatch_mutex))abort();
+    pthread_setcancelstate(cancel_state,NULL);
     return retained;
 }
 static void object_group_release(struct wpk_object_group *group) {
@@ -361,6 +373,9 @@ struct wpk_uniform_signature {
     int valid, guest_known;
 };
 struct wpk_draw_signature { uint32_t token; int known, simple; };
+/* valid: -1 completed-unavailable, 0 invalidated, 1 retained generation.
+ * Memoize unavailable captures so unused large stores add no per-frame query. */
+struct wpk_buffer_snapshot { uint64_t serial;uint32_t token,bytes;int valid; };
 struct wpk_program_intent {
     struct wpk_program_stream *owner;
     struct wpk_program_intent *next;
@@ -379,6 +394,9 @@ struct wpk_program_stream {
     struct wpk_uniform_signature signatures[WPK_PROGRAM_CACHE];
     struct wpk_draw_signature draw_signatures[WPK_PROGRAM_CACHE];
     uint32_t draw_cursor, draw_slot;
+    struct wpk_buffer_snapshot buffers[32];
+    uint32_t buffer_cursor;int buffer_bank_ready;
+
     uint32_t signature_request[4], signature_reply[12];
     struct wpk_program_intent slots[WPK_PROGRAM_SLOTS];
     uint32_t request[3+8*WPK_PROGRAM_SLOTS], reply[12], recovery[12], read_request[2];
@@ -440,8 +458,10 @@ struct wpk_gles_context {
     /* An indeterminate mutation can change the host binding without a C
      * publication. Draining error flags cannot restore this separate proof. */
     int array_binding_known;
+    uint64_t buffer_raw_known_at;
+    int default_framebuffer_rearmable;
     int default_vertex_array_only;
-    /* Never rearm after selecting a user FBO or losing an ordered prefix. */
+    /* Known current default target; raw I/O or a lost prefix revokes it. */
     int default_framebuffer_only;
     uint64_t array_serial;
     struct wpk_object_name *array_object;
@@ -598,6 +618,8 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
     state->array_binding_known = 1; /* The initial binding is zero. */
     state->default_vertex_array_only = 1;
     state->default_framebuffer_only = 1;
+    state->default_framebuffer_rearmable = 1;
+    state->buffer_raw_known_at = _wpk_gl_raw_device_requests();
     init_vertex_array(&state->default_vertex_array);
     return state;
 }
@@ -621,6 +643,7 @@ static inline void w_f32(uint8_t **c, float v)    { memcpy(*c, &v, 4); *c += 4; 
 static void invalidate_binding_rows(struct wpk_gles_context *state) {
     state->array_binding_known = 0;
     state->default_framebuffer_only = 0;
+    state->default_framebuffer_rearmable = 0;
     for (uint32_t i=0; i<state->default_vertex_array.attrib_count; i++)
         state->default_vertex_array.attribs[i].host_row_known = 0;
 }
@@ -629,8 +652,23 @@ static void invalidate_binding_knowledge(struct wpk_gles_context *state) {
     atomic_store_explicit(&state->objects->program_records_known, 0, memory_order_relaxed);
 }
 
+static void invalidate_buffer_snapshot(struct wpk_gles_context *state,uint64_t serial,int resize) {
+    struct wpk_program_stream *stream=state->program_stream;
+    if(stream && stream->buffer_bank_ready)for(unsigned i=0;i<32;i++)
+        if(stream->buffers[i].serial==serial && (resize || stream->buffers[i].valid>=0))stream->buffers[i].valid=0;
+}
+static int buffer_snapshot_epoch(struct wpk_gles_context *state) {
+    struct wpk_program_stream *stream=state->program_stream;
+    if(state->buffer_raw_known_at==_wpk_gl_raw_device_requests())return 1;
+    // Unknown raw I/O may have changed layouts or the selected VAO/FBO as well
+    // as bytes. Clearing only sizes would let stale C state authorize a draw.
+    for(unsigned i=0;i<32;i++)stream->buffers[i].valid=0;
+    invalidate_binding_rows(state);state->default_vertex_array_only=0;
+    return 0;
+}
+
 static int gl_device_ioctl(int fd, unsigned long request, void *arg) {
-    _wpk_gl_note_device_request(); /* Voids local glGetError knowledge. */
+    _wpk_gl_note_known_device_request(); /* Voids local glGetError knowledge. */
     int rc = ioctl(fd, request, arg);
     if (rc != 0) {
         struct wpk_gles_context *state = _wpk_gl_current_encoder();
@@ -1080,6 +1118,8 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
         return;
     }
     if (!data) { raise_client_error(GL_INVALID_VALUE); return; }
+    invalidate_buffer_snapshot(_wpk_gl_current_encoder(),target==GL_ARRAY_BUFFER?
+        _wpk_gl_current_encoder()->array_serial:_wpk_gl_current_encoder()->current_vertex_array->element_serial,0);
     /* Payload: u32 target, i32 dstOffset, u32 dataLen, u8 data[dataLen].
      * The TLV payload-length field is u16, so larger updates split into
      * consecutive records with the destination offset advanced. */
@@ -1091,6 +1131,7 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
  * native allocation failure retains the context-reset boundary. Element
  * binding also depends on VAO selection, whose queued acceptance is not yet
  * mirrored exactly, so that target must retain the ordinary error drain. */
+static int emit_snapshot_definition(GLenum,uint32_t,const void *,GLenum);
 static void finish_buffer_definition(uint8_t *start, uint8_t *end, GLenum target) {
     if (target == GL_ARRAY_BUFFER && _wpk_gl_current_encoder()->array_binding_known)
         finish_predicted_command(start, end, GL_NO_ERROR);
@@ -1126,6 +1167,15 @@ void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage
     /* With data: u32 target, u32 dataLen, u8 data[dataLen], u32 usage.
      * Without data: u32 target, u32 byteLength, u32 usage. */
     uint32_t dlen = (uint32_t)size;
+    int copied=emit_snapshot_definition(target,dlen,data,usage);
+    if(copied)return;
+    invalidate_buffer_snapshot(state,target==GL_ARRAY_BUFFER?state->array_serial:state->current_vertex_array->element_serial,1);
+    if(state->program_stream && state->program_stream->buffer_bank_ready && dlen>32768){
+        uint64_t serial=target==GL_ARRAY_BUFFER?state->array_serial:state->current_vertex_array->element_serial;
+        for(unsigned i=0;i<32;i++)if(state->program_stream->buffers[i].serial==serial){
+            state->program_stream->buffers[i].bytes=dlen;state->program_stream->buffers[i].valid=-1;
+        }
+    }
     if (data == NULL || dlen == 0) {
         EMIT_BEGIN(OP_BUFFER_DATA, 12u)
         uint8_t *start = _c - 4;
@@ -1572,6 +1622,7 @@ failed:
  * encoder; the device receives packed referenced elements without public names
  * or ARRAY mutations. Return zero only before admission for the legacy path. */
 static int inline_client_error_prediction(void);
+static int emit_owned_buffer_arrays(GLenum,GLint,GLsizei);
 static int emit_inline_client_arrays(GLenum mode, GLint first, GLsizei count) {
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
     if (count <= 0 || state->current_vertex_array->name)
@@ -1678,6 +1729,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     }
     if (emit_inline_client_arrays(mode, first, count) != 0)
         return;
+    if(emit_owned_buffer_arrays(mode,first,count))return;
     GLuint initial_staged[WPK_GL_INITIAL_ATTRIBS], *staged = staging_names(initial_staged);
     if (!staged)
         return;
@@ -2352,7 +2404,7 @@ static int program_stream_io(struct wpk_program_stream *stream,uint32_t op,
     memset(reply,0,48);
     struct gl_query_info query={.op=op,.in_buf_ptr=(uintptr_t)request,.in_buf_len=words*4,
         .out_buf_ptr=(uintptr_t)reply,.out_buf_len=48};
-    _wpk_gl_note_device_request();
+    _wpk_gl_note_known_device_request();
     int rc=ioctl(stream->fd,GLIO_QUERY,&query);
     if (rc && errno==ENODEV) {
         stream->blocked|=WPK_PROGRAM_BLOCKED_EXECUTION;
@@ -2373,6 +2425,8 @@ static int valid_program_mutation_receipt(struct wpk_program_stream *stream,cons
     if (action==3) return reply[4]==stream->request[2] &&
         program_counter(reply+5)==program_counter(stream->request+3+8*(stream->request[2]-1)+4);
     if (action==4) return reply[4]==stream->request[3];
+    if(action==10)return reply[4]==32;
+    if(action==11)return reply[4]<=32768;
     return action==5 && !reply[4];
 }
 /* One entry, then read-only reconciliation. Never replay a mutation after an
@@ -2569,6 +2623,7 @@ static int disable_program_stream(struct wpk_gles_context *state) {
     stream->active=0;stream->id=0;stream->ticket=0;stream->current_token=0;
     memset(stream->signatures,0,sizeof stream->signatures);stream->signature_cursor=0;
     memset(stream->draw_signatures,0,sizeof stream->draw_signatures);stream->draw_cursor=stream->draw_slot=0;
+    stream->buffer_bank_ready=0;memset(stream->buffers,0,sizeof stream->buffers);stream->buffer_cursor=0;
     for (unsigned i=0;i<WPK_PROGRAM_CACHE;i++) {
         struct wpk_program_generation *g=&stream->generations[i];
         g->token=0; // The acknowledged journal closure retired every token.
@@ -4006,9 +4061,9 @@ static int uniform_error_prediction(GLint location,GLsizei count,uint32_t type,
 }
 
 
-/* Only a private client-array record can use this proof: its complete fetch
- * spans were packed locally, every enabled row is a known client definition,
- * and the untouched EGL default framebuffer has a live draw surface. Native
+/* Only separately range-proven private client or retained-buffer draws use
+ * this sampler proof. Their callers establish every enabled fetch span and
+ * a known EGL default framebuffer with a live draw surface. Native
  * imported-image sampling views are separate textures, not default attachments.
  * Samplers of one guest kind cannot have a mixed-sampler unit conflict regardless
  * of shared uniform writes. Mixed/unknown guest kinds keep observation; native
@@ -4052,6 +4107,99 @@ complete:
     stream->draw_slot=stream->draw_cursor++%WPK_PROGRAM_CACHE;
     stream->draw_signatures[stream->draw_slot]=(struct wpk_draw_signature){stream->current_token,1,simple};
     return simple;
+}
+
+/* Bounded numeric metadata has no public-name authority. Reusing a cell
+ * advances its token in command order, after earlier draws that borrowed it. */
+static unsigned buffer_snapshot_slot(struct wpk_program_stream *stream,uint64_t serial,uint32_t chosen) {
+    for(unsigned i=0;i<32;i++)if(stream->buffers[i].serial==serial)return i;
+    for(unsigned i=0;i<32;i++){
+        unsigned slot=stream->buffer_cursor++%32;
+        if(!(chosen&(1u<<slot)) && stream->buffers[slot].token!=UINT32_MAX)return slot;
+    }
+    return 32;
+}
+static int emit_snapshot_definition(GLenum target,uint32_t bytes,const void *data,GLenum usage) {
+    struct wpk_gles_context *state=_wpk_gl_current_encoder();struct wpk_program_stream *stream=state->program_stream;
+    if(!stream || !stream->buffer_bank_ready || !stream->active || stream->blocked || target!=GL_ARRAY_BUFFER ||
+       !state->array_binding_known || !state->array_serial || bytes>32768 ||
+       atomic_load_explicit(&state->objects->ever_shared,memory_order_acquire))return 0;
+    struct wpk_gl_name_scope guard __attribute__((cleanup(_wpk_gl_end_name_scope)))=begin_dispatch_scope(state);
+    if(!guard.group)return -1;
+    // The optimistic test can race the first peer; recheck after exclusion.
+    if(atomic_load_explicit(&state->objects->ever_shared,memory_order_acquire))return 0;
+    if(!buffer_snapshot_epoch(state))return 0;
+    unsigned slot=buffer_snapshot_slot(stream,state->array_serial,0);if(slot==32)return 0;
+    struct wpk_buffer_snapshot *entry=&stream->buffers[slot];if(entry->token==UINT32_MAX)return 0;
+    uint32_t tail=data?bytes:0;uint8_t *cursor=reserve(28+tail);if(!cursor)return -1;
+    uint8_t *start=cursor;uint32_t token=entry->token+1;
+    w_u16(&cursor,OP_BUFFER_DATA_SNAPSHOT);w_u16(&cursor,24+tail);
+    w_u32(&cursor,stream->id);w_u32(&cursor,slot);w_u32(&cursor,token);w_u32(&cursor,target);w_u32(&cursor,bytes);w_u32(&cursor,usage);
+    if(tail){memcpy(cursor,data,tail);cursor+=tail;}
+    *entry=(struct wpk_buffer_snapshot){state->array_serial,token,bytes,1};
+    finish_predicted_command(start,cursor,GL_NO_ERROR);return 1;
+}
+static int emit_owned_buffer_arrays(GLenum mode,GLint first,GLsizei count) {
+    struct wpk_gles_context *state=_wpk_gl_current_encoder();struct wpk_program_stream *stream=state->program_stream;
+    if(count<=0 || !stream || !stream->active || !state->default_vertex_array_only ||
+       state->current_vertex_array!=&state->default_vertex_array || !state->default_framebuffer_only ||
+       !_wpk_gl_has_draw_surface() || atomic_load_explicit(&state->objects->ever_shared,memory_order_acquire))return 0;
+    struct wpk_gl_name_scope guard __attribute__((cleanup(_wpk_gl_end_name_scope)))=begin_dispatch_scope(state);
+    if(!guard.group)return -1;if(stream->blocked){raise_client_error(GL_INVALID_OPERATION);return -1;}
+    if(atomic_load_explicit(&state->objects->ever_shared,memory_order_acquire))return 0;
+    if(!buffer_snapshot_epoch(state))return 0;
+    uint32_t rows=0,indices[16],slots[16];
+    for(unsigned i=0;i<state->current_vertex_array->attrib_count;i++){
+        const struct wpk_client_attrib *a=&g_attribs[i];if(!a->enabled)continue;
+        uint32_t width=attrib_type_size(a->type);
+        if(rows==16 || i>=16 || a->client || !a->host_row_known || !a->buffer_serial ||
+           !width || a->type==GL_FIXED || a->size<1 || a->size>4 || a->stride<0 || a->stride>255 ||
+           (uint32_t)a->stride%width || (uintptr_t)a->pointer>INT32_MAX || (uintptr_t)a->pointer%width)return 0;
+        indices[rows++]=i;
+    }
+    if(!rows)return 0;
+    int exact=inline_client_error_prediction();if(exact<=0)return exact;
+    if(!stream->buffer_bank_ready){
+        // Prepare once, before locally accepting any owned draw. Generic
+        // receipt recovery retains partial native admission without replay.
+        if(!publish_program_intents_from_encoder(state,1) || flush_commands()!=0)return -1;
+        stream->request[2]=stream->id;stream->request[3]=32;
+        if(program_stream_mutate(stream,10,4,QOP_PROGRAM_JOURNAL)!=1)return -1;
+        stream->buffer_bank_ready=1;
+    }
+    // Later cold captures may evict cache entries, but never an earlier row
+    // already selected for THIS draw. Otherwise its encoded token could be
+    // silently replaced while gathering the remaining attributes.
+    uint32_t chosen=0;
+    for(unsigned row=0;row<rows;row++){
+        const struct wpk_client_attrib *a=&g_attribs[indices[row]];
+        unsigned slot=buffer_snapshot_slot(stream,a->buffer_serial,chosen);if(slot==32)return 0;
+        struct wpk_buffer_snapshot *entry=&stream->buffers[slot];
+        if(entry->serial==a->buffer_serial && entry->valid<0)return 0;
+        if(!entry->valid || entry->serial!=a->buffer_serial){
+            // Static attributes may predate the journal. Capture the actual
+            // retained source cold; a GLuint/size cache cannot own its bytes.
+            if(entry->token==UINT32_MAX)return 0;
+            if(!publish_program_intents_from_encoder(state,1) || flush_commands()!=0)return -1;
+            uint32_t token=entry->token+1;entry->valid=0;
+            stream->request[2]=stream->id;stream->request[3]=slot;stream->request[4]=token;stream->request[5]=indices[row];
+            if(program_stream_mutate(stream,11,6,QOP_PROGRAM_JOURNAL)!=1)return -1;
+            *entry=(struct wpk_buffer_snapshot){a->buffer_serial,token,stream->reply[4],stream->reply[4]?1:-1};
+            if(entry->valid<0)return 0;
+        }
+        uint32_t element=attrib_type_size(a->type)*(uint32_t)a->size,stride=a->stride?(uint32_t)a->stride:element;
+        uint64_t required=(uint64_t)(uintptr_t)a->pointer+((uint64_t)(uint32_t)first+(uint32_t)count-1)*stride+element;
+        if(required>entry->bytes)return 0;slots[row]=slot;chosen|=1u<<slot;
+    }
+    uint32_t payload=20+rows*32;uint8_t *cursor=reserve(4+payload);if(!cursor)return -1;uint8_t *start=cursor;
+    w_u16(&cursor,OP_DRAW_BUFFER_SNAPSHOTS);w_u16(&cursor,payload);w_u32(&cursor,stream->id);w_u32(&cursor,mode);
+    w_i32(&cursor,first);w_i32(&cursor,count);w_u32(&cursor,rows);
+    for(unsigned row=0;row<rows;row++){
+        const struct wpk_client_attrib *a=&g_attribs[indices[row]];const struct wpk_buffer_snapshot *entry=&stream->buffers[slots[row]];
+        w_u32(&cursor,indices[row]);w_u32(&cursor,slots[row]);w_u32(&cursor,entry->token);w_u32(&cursor,a->size);w_u32(&cursor,a->type);
+        w_u32(&cursor,!!a->normalized);w_u32(&cursor,a->stride);w_u32(&cursor,(uintptr_t)a->pointer);
+    }
+    finish_predicted_command(start,cursor,GL_NO_ERROR);return 1;
 }
 
 void glUniform1i(GLint location, GLint v) {
@@ -4247,6 +4395,9 @@ void glBindFramebuffer(GLenum target, GLuint fb) {
         EMIT_INFALLIBLE_BEGIN(OP_BIND_FRAMEBUFFER,8)
         w_u32(&_c,target); w_u32(&_c,fb);
         EMIT_INFALLIBLE_END()
+        // Logical zero is infallible on a live draw surface. Re-establish
+        // current knowledge after offscreen use, not an "ever default" flag.
+        state->default_framebuffer_only = state->default_framebuffer_rearmable;
     } else {
         state->default_framebuffer_only = 0;
         EMIT_BEGIN(OP_BIND_FRAMEBUFFER,8)

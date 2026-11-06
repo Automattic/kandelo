@@ -527,6 +527,12 @@ int graphics_pthread_mutex_lock(pthread_mutex_t *mutex) {
     }
     return pthread_mutex_lock(mutex);
 }
+/* First sharing must wait for in-flight local admission. The lock hook
+ * proves contention before release, without a timing-dependent sleep. */
+static void *create_peer_during_admission(void *source) {
+    observe_dispatch_lock=1;
+    return _wpk_gl_create_shared_encoder(source);
+}
 static int capture_array_upload;
 static unsigned char captured_bytes[524288];
 static uint32_t captured_size, captured_type, captured_stride, captured_offset, captured_pointers;
@@ -4874,7 +4880,9 @@ int main(int argc, char **argv) {
             glBindFramebuffer(GL_FRAMEBUFFER,17);glBindFramebuffer(GL_FRAMEBUFFER,0);
             assert(glGetError()==GL_NO_ERROR);
             unsigned queries=error_queries;
-            glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_NO_ERROR && error_queries==queries+1);
+            // A known, infallible bind0 restores the current target proof.
+            // The lost-prefix and surfaceless guards below remain unknown.
+            glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_NO_ERROR && error_queries==queries);
             /* A different fresh context loses its prefix without selecting
              * a user FBO. Later drains/default binds must not rearm it. */
             EGLContext other=eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs);
@@ -8399,6 +8407,20 @@ int main(int argc, char **argv) {
         return 0;
     }
 #ifdef WPK_GL_OBJECT_GROUPS
+    if (!strcmp(argv[1], "group-share-admission")) {
+        struct wpk_gles_context *source=_wpk_gl_current_encoder();
+        record_dispatch_lock=1;
+        struct wpk_gl_name_scope scope=_wpk_gl_begin_name_scope(source);
+        assert(scope.group);
+        pthread_t thread;void *peer=NULL;
+        assert(!pthread_create(&thread,NULL,create_peer_during_admission,source));
+        overlap_wait(2);
+        _wpk_gl_end_name_scope(&scope);
+        assert(!pthread_join(thread,&peer)&&peer);
+        _wpk_gl_destroy_encoder(peer);
+        assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy)&&allocation_count()==0);
+        puts("PASS group-share-admission");return 0;
+    }
     if (!strcmp(argv[1], "group-metadata")) {
         struct wpk_gles_context *source = _wpk_gl_current_encoder(),
                                 *peer = _wpk_gl_create_shared_encoder(source);

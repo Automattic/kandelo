@@ -1,3 +1,6 @@
+import {GlProgramJournal} from "../src/webgl/program-journal.js";
+import {drawBufferSnapshots,validBufferSnapshotDraw} from "../src/webgl/private-buffer-draw.js";
+import {markRendererReset} from "../src/webgl/renderer-loss.js";
 import {afterEach,expect,it,vi} from "vitest";
 import {GlBufferSnapshots,BUFFER_SNAPSHOT_CAPACITY,BUFFER_SNAPSHOT_MAX_BYTES} from "../src/webgl/buffer-snapshots.js";
 import {bindBufferObject,replaceBufferData,updateBufferData} from "../src/webgl/buffer-storage.js";
@@ -12,6 +15,10 @@ const ARRAY=0x8892,STATIC=0x88e4;
 class NativeBuffers {
   alive=new Set<object>();data=new Map<object,Uint8Array>();bindings=new Map<number,object|null>();
   errors:number[]=[];created=0;defineCalls=0;errorReads=0;failCreateAt=0;failDelete=false;failWrite:object|null=null;writeError=0x505;
+  draws=0;pointers=new Map<number,object|null>();
+  vertexAttribPointer(index:number){this.pointers.set(index,this.bindings.get(ARRAY)??null);}
+  drawArrays(){this.draws++;}
+  copyBufferSubData(read:number,write:number,from:number,to:number,length:number){this.data.get(this.bindings.get(write)!)!.set(this.data.get(this.bindings.get(read)!)!.subarray(from,from+length),to);}
   getError(){this.errorReads++;return this.errors.shift()??0;}isContextLost(){return false;}
   getParameter(target:number){return this.bindings.get(target)??null;}
   createBuffer(){if(++this.created===this.failCreateAt)return null;const buffer={};this.alive.add(buffer);return buffer;}
@@ -141,4 +148,46 @@ it("reserves a copy receiver before ordinary storage changes when metadata alloc
     expect(f.b.errors).toEqual([0x505]);expect(f.bank.resolve(f.b,0,1,f.object,2)).toBeNull();
     expect(f.bank.define(f.b,0,2,ARRAY,new Uint8Array([3,4]),STATIC)).toBe(true);
   }finally{f.dispose();}
+});
+
+function sourceAttribute(f:ReturnType<typeof fixture>,index=0){
+  f.b.vertexArrays.get(0)!.attributes.set(index,{buffer:f.object,enabled:true,size:2,type:0x1406,normalized:false,stride:0,offset:0});
+}
+function ownedDraw(id:number,token=1,count=3):DataView{
+  return new DataView(new Uint32Array([id,4,0,count,1,0,0,token,2,0x1406,0,0,0]).buffer);
+}
+it("cold-captures actual static attribute bytes before a future peer changes their store",()=>{
+  const f=fixture();sourceAttribute(f);expect(replaceBufferData(f.b,ARRAY,new Uint8Array([1,2,3,4,5,6,7,8]),STATIC)).toBe(true);
+  expect(f.bank.captureAttribute(f.b,0,1,0)).toBe(8);const native=f.bank.resolve(f.b,0,1,f.object,8)!;
+  const peer=f.peer();expect(bindBufferObject(peer,ARRAY,7)).toBe(true);replaceBufferData(peer,ARRAY,new Uint8Array([9]),STATIC);
+  expect([...f.native.data.get(native)!]).toEqual([1,2,3,4,5,6,7,8]);expect(f.bank.captureAttribute(f.b,0,1,0)).toBeNull();f.dispose();
+});
+it("completes an unavailable cold capture without inventing a guest API error",()=>{
+  const f=fixture();expect(f.bank.captureAttribute(f.b,0,1,0)).toBe(0);expect(f.b.errors).toEqual([]);
+  sourceAttribute(f);replaceBufferData(f.b,ARRAY,BUFFER_SNAPSHOT_MAX_BYTES+1,STATIC);
+  expect(f.bank.captureAttribute(f.b,0,2,0)).toBe(0);expect(f.b.errors).toEqual([]);f.dispose();
+});
+it("retains the public owner's reset identity in the cold range-proven execution view",()=>{
+  const f=fixture(),peer=f.peer(),view=f.bank.executionView(f.b)!;f.b.robustAccess=true;
+  expect(view.robustAccess).toBe(false);expect(f.b.robustAccess).toBe(true);markRendererReset(view);
+  expect(rendererLost(f.b)).toBe(true);expect(rendererLost(view)).toBe(true);expect(rendererLost(peer)).toBe(false);f.dispose();
+});
+it("draws an in-range retained generation after the ordinary robust store shrinks",()=>{
+  const f=fixture(),journal=GlProgramJournal.create(f.execution,4)!;expect(journal.prepareBufferSnapshots(2)).toBe(2);
+  sourceAttribute(f);f.b.robustAccess=true;f.b.currentProgram={} as WebGLProgram;
+  expect(journal.defineBufferSnapshot(0,1,ARRAY,new Uint8Array(24),STATIC)).toBe(true);
+  const retained=journal.resolveBufferSnapshot(0,1,f.object,24)!;
+  const peer=f.peer();bindBufferObject(peer,ARRAY,7);replaceBufferData(peer,ARRAY,new Uint8Array(2),STATIC);
+  expect(validBufferSnapshotDraw(ownedDraw(journal.id))).toBe(true);const before=f.native.errorReads;
+  expect(withNativeBatch(f.b,"owned-buffer-draw",()=>{expect(drawBufferSnapshots(f.b,ownedDraw(journal.id))).toBe(true);})).toBe(0);
+  expect(f.native.errorReads-before).toBe(1);expect(f.native.draws).toBe(1);expect(f.native.pointers.get(0)).toBe(f.object);
+  expect(f.native.data.get(retained)!.byteLength).toBe(24);expect(f.b.bufferStores.get(f.object)!.size).toBe(2);expect(f.b.robustAccess).toBe(true);
+  f.b.currentProgram=null;journal.retire();f.dispose();
+});
+it("refuses stale token, incomplete rows and oversized spans before native drawing",()=>{
+  const f=fixture(),journal=GlProgramJournal.create(f.execution,4)!;expect(journal.prepareBufferSnapshots(2)).toBe(2);sourceAttribute(f);
+  journal.defineBufferSnapshot(0,1,ARRAY,new Uint8Array(24),STATIC);
+  for(const v of [ownedDraw(journal.id,2),ownedDraw(journal.id,1,4)])expect(drawBufferSnapshots(f.b,v)).toBe(false);
+  sourceAttribute(f,1);expect(drawBufferSnapshots(f.b,ownedDraw(journal.id))).toBe(false);expect(f.native.draws).toBe(0);
+  journal.retire();f.dispose();
 });

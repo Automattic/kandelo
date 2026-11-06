@@ -78,7 +78,9 @@ if(faultMode||captureFault){
         if(action===1)captures.add([args[0],args[6],view.getUint32(Number(args[4])+8,true)].join(':'));
         if(action===3)captures.delete([args[0],args[6],view.getUint32(pointer+4,true)].join(':'));
       }
-      if(journal&&op!==0x3a&&action!==6&&action!==7&&result===48){
+      // Read-only signatures carry a journal ID in word1, not a transaction.
+      // Counting actions8/9 as effects falsely calls a warm lookup a replay.
+      if(journal&&op!==0x3a&&action!==6&&action!==7&&action!==8&&action!==9&&result===48){
         const key=[args[0],args[6],tx].join(':');
         if(entered.has(key))recovery.duplicates++;entered.add(key);
       }

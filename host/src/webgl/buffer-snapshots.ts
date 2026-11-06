@@ -4,12 +4,14 @@
  * This bank is prepared cold, then used only by its retained execution owner.
  */
 import type {GlBinding,GlContextExecutionLease} from "./registry.js";
-import {canonicalBuffer,replaceBufferData} from "./buffer-storage.js";
+import {canonicalBuffer,replaceBufferData,prepareBufferDraw,withBufferTransfer} from "./buffer-storage.js";
 import {checkedGlCall,recordGlError} from "./program-objects.js";
 import {withNativeBookkeeping} from "./native-batch.js";
-import {rendererLost,rendererLossCount} from "./renderer-loss.js";
+import {rendererLost,rendererLossCount,shareRendererLossAuthority} from "./renderer-loss.js";
 import {applyNativeChanges,nativeInverse,nativeGlFault,reserveNativeRetirement,retireNativeRetirement,
   rethrowNativeGlFault,type NativeRetirement} from "./native-recovery.js";
+import {activeVertexArray} from "./buffer-references.js";
+import {packedVertexLayout} from "./vertex-data.js";
 import {isKernelExportFailure} from "../kernel-entry-gate.js";
 
 export const BUFFER_SNAPSHOT_CAPACITY=32;
@@ -29,9 +31,15 @@ export class GlBufferSnapshots {
   private readonly objects:GlBinding["objects"];
   private readonly contextId:GlBinding["contextId"];
   private retirement:NativeRetirement|null=null;
+  private readonly drawView:GlBinding;
   private constructor(readonly binding:GlBinding,private readonly cells:Cell[]){
     this.epoch=rendererLossCount(binding.gl!);
     this.objects=binding.objects;this.contextId=binding.contextId;
+    // Only a fully range-proven snapshot draw borrows this view. The ordinary
+    // robust path reads mutable public storage, which a peer may have shrunk;
+    // letting it substitute that store would replace our retained bytes.
+    this.drawView=Object.create(binding,{robustAccess:{value:false}}) as GlBinding;
+    shareRendererLossAuthority(binding,this.drawView);
   }
   get capacity():number {return this.cells.length;}
 
@@ -125,6 +133,35 @@ export class GlBufferSnapshots {
     }
     cell.object=object;cell.bytes=bytes;cell.ready=true;return true;
   }
+
+  /** Cold capture is by the caller's actual retained attribute, never by a
+   * GLuint lookup. A source defined before journal admission still needs real
+   * bytes. Zero is a completed unavailable result, not a new guest API error.
+   */
+  captureAttribute(authority:GlBinding,index:number,token:number,attribute:number):number|null {
+    if(!this.owns(authority) || !Number.isInteger(index) || index<0 || index>=this.cells.length ||
+      !Number.isInteger(token) || token<1 || token>0xffff_ffff || !Number.isInteger(attribute) || attribute<0 || attribute>=16){
+      recordGlError(authority,0x502);return null;
+    }
+    const cell=this.cells[index]!;
+    if(cell.token===0xffff_ffff || token!==cell.token+1){recordGlError(authority,0x502);return null;}
+    cell.token=token;cell.ready=false;cell.object=null;cell.bytes=0;
+    const b=this.binding,a=activeVertexArray(b).attributes.get(attribute),object=a?.buffer;
+    const store=object&&b.bufferStores.get(object);
+    if(!a?.enabled || !object || !store || a.view || packedVertexLayout(a) ||
+      store.size<=0 || store.size>BUFFER_SNAPSHOT_MAX_BYTES)return 0;
+    if(!prepareBufferDraw(b,false))return null;
+    const source=store.views.get(ARRAY);
+    if(!source?.valid)return 0;
+    if(!withBufferTransfer(b,source.native,cell.native!,()=>
+      checkedGlCall(b,()=>b.gl!.bufferData(0x8f37,store.size,0x88e4)) &&
+      checkedGlCall(b,()=>b.gl!.copyBufferSubData(0x8f36,0x8f37,0,0,store.size))))return null;
+    cell.object=object;cell.bytes=store.size;cell.ready=true;return cell.bytes;
+  }
+
+  /** Own-context only; the view borrows the bank's execution lease and shares
+   * the original error/reset identity. It adds no work to ordinary draws. */
+  executionView(authority:GlBinding):GlBinding|null {return this.owns(authority)?this.drawView:null;}
 
   /** Borrow only for the synchronous draw currently being executed. Names
    * are intentionally absent: deletion and numeric reuse cannot retarget it.

@@ -22,6 +22,7 @@
       "channel_status_codes",
       "clipboard_device_abi",
       "custom_sections",
+      "gl_buffer_snapshot_draw",
       "gl_compressed_upload",
       "gl_context_reset_scope",
       "gl_error_drain_receipt",
@@ -29,6 +30,7 @@
       "gl_image_container_receipts",
       "gl_inline_client_draw",
       "gl_object_capture",
+      "gl_program_buffer_attribute_capture",
       "gl_program_buffer_snapshots",
       "gl_program_capture",
       "gl_program_journal",
@@ -1403,6 +1405,35 @@
       "__abi_"
     ]
   },
+  "gl_buffer_snapshot_draw": {
+    "attribute_bytes": 32,
+    "attribute_fields": [
+      "index",
+      "cell",
+      "token",
+      "size",
+      "type",
+      "normalized",
+      "stride",
+      "offset"
+    ],
+    "authority": "own-context-live-journal; exact-canonical-object-token-and-byte-span-for-every-enabled-row",
+    "execution": "same-stack-borrow; native-pointer-substitution-and-exact-restoration; public-VAO-unchanged",
+    "header_bytes": 20,
+    "header_fields": [
+      "own_journal",
+      "mode",
+      "first",
+      "positive_count",
+      "attribute_count"
+    ],
+    "lifetime": "journal-execution-lease; shared-original-logical-reset-identity",
+    "maximum_attributes": 16,
+    "maximum_cells": 32,
+    "opcode": 1287,
+    "shape": "sorted-unique-attributes; GLES-native-layout; exact-whole-record-before-effects",
+    "validation": "original-program-framebuffer-and-shader-emulations; in-range-retained-storage-proof"
+  },
   "gl_compressed_upload": {
     "actions": {
       "abort": 4,
@@ -1664,6 +1695,28 @@
     "tokens": "monotonic-per-context-no-query-replay",
     "units": "bytes-except-attached-shaders-u32",
     "value": "original-unit-count,[active-size,active-type],requested-prefix"
+  },
+  "gl_program_buffer_attribute_capture": {
+    "action": 11,
+    "authority": "own-current-context-tid-journal-and-logical-attribute; no-public-name-resolution",
+    "effects": "cold-native-copy; source-buffer-and-layout-unchanged; strict-next-cell-token",
+    "lifecycle_barrier": "forbidden",
+    "maximum_attributes": 16,
+    "maximum_bytes": 32768,
+    "query": 59,
+    "recovery": "read-last-same-completed-copy; never-recapture-after-copyout-loss",
+    "reply": "sealed-journal-receipt; value-is-copied-store-size-or-zero-unavailable",
+    "reply_bytes": 48,
+    "request_bytes": 24,
+    "request_fields": [
+      "action",
+      "transaction",
+      "own_journal",
+      "cell",
+      "next_token",
+      "attribute_index"
+    ],
+    "unavailable": "completed-zero; no-new-guest-API-error; no-draw-authority"
   },
   "gl_program_buffer_snapshots": {
     "authority": "own-current-context-tid-and-journal; no-lifecycle-barrier-or-peer-execution",

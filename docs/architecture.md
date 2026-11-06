@@ -7294,7 +7294,21 @@ OP_BUFFER_DATA_SNAPSHOT0x0107 independently validates and copies original
 ARRAY definitions. Lost preparation replies recover without native replay.
 Restoration metadata is reserved before the original storage mutation, so
 CPU reservation refusal cannot leave an accepted definition without its copy.
-The ordinary C driver does not request these banks or emit copied definitions
-yet. Static source capture, owned draws, C integration and framebuffer-generation
-authority remain required implementation work. The duplicate-upload cost is
-unmeasured. See the graphics compatibility ledger's R420 evidence and limits.
+The ordinary C driver now activates the bank for eligible small-buffer draws
+on a known default framebuffer. Cold action11 captures the actual retained
+attribute store, including definitions older than journal admission. Its sealed
+receipt recovers the same generation after copyout loss. Opcode0x0507 validates
+every enabled row against canonical identity, token, layout and byte span before
+borrowing native sources and restoring the public VAO. A cold derived binding
+shares the original logical reset identity and excludes ordinary robust padding
+only for these independently range-proven sources.
+
+The C cache uses object serials and nonwrapping tokens, revokes standalone
+updates and unknown raw I/O, and does not evict a row while gathering one draw.
+First sharing is ordered with local admission; new local proofs remain revoked
+after the last peer leaves. Known own bind0 can restore default-target knowledge
+only while its independent rearmable proof survives. Ordinary inactive paths
+allocate no bank or duplicate uploads. The duplicate-upload/application cost is
+unmeasured. Offscreen generation/feedback authority, raw-target proof closure,
+full B1 application/conformance acceptance and the complete normal preview remain
+required. See the compatibility ledger's R432–R444 evidence and limits.

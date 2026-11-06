@@ -41,15 +41,99 @@ under concurrent application load on Chromium, Firefox and WebKit. Report
 latency distributions, missed frames, idle CPU and instrumentation overhead.
 Average FPS and isolated benchmarks do not establish native feel.
 
+Each stage also requires concise inline Why comments for architectural and
+non-obvious choices, reviewed for accuracy before landing. Explain the
+protected invariant and the failure a plausible simplification would cause,
+especially ownership, ordering, errors, parity and performance-sensitive code.
+
 These are acceptance targets, not supported-performance claims. First
 establish trustworthy input-to-display observations, then remove synchronous
 graphics round trips, isolate GPU work from kernel scheduling, bound frames
 in flight and address pacing and latency tails. All original correctness,
 cross-host, build, defect, conformance and final-validation requirements
 remain required, with ABI program 56 / unpublished host 3 / GL 17 / fork 21.
-Announce each runnable prototype and its URL separately from its validation
-status so the maintainer can try intermediate stages. Proposed subsequent
+Announce availability separately from validation. For B1, the maintainer
+explicitly wants to wait until all changes are integrated into a normally
+built preview that passes its required checks. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
+
+## Connected owned buffer draws, 2026-11-05 (R432–R444)
+
+The ordinary guest C driver now uses the bounded private buffer bank for
+eligible small buffer-backed draws on a known default framebuffer. Cold
+journal action11 copies the actual retained attribute store, including buffers
+defined before journal admission. Its sealed receipt returns the same copy
+after lost copyout; it never recaptures later peer bytes. Opcode0x0507 names
+sorted exact attribute layouts and canonical object/cell/token/byte spans.
+Every enabled row is validated before native effects. Native pointers are
+borrowed and restored on one command stack, preserving public VAO metadata.
+A derived execution view excludes robust padding from a peer's replacement
+store only after independent range proof, and shares the original context's
+sticky reset identity.
+
+The C cache uses object serials and nonwrapping cell generations, invalidates
+standalone updates and memoizes unavailable captures. It never evicts a row
+already selected for the same draw. Controlled EGL requests preserve the
+copy authority; unknown raw I/O revokes it. First sharing is serialized with
+local admission and checked again after exclusion. Returning to one member
+does not restore a never-shared proof. A known own bind0 can restore the
+default-target proof; lost-prefix uncertainty cannot restore it. These are
+internal eligibility rules, not new API boundaries. Other draws retain the
+ordinary observed path. Offscreen generation/feedback authority and a
+separately reproduced raw-target/empty-drain issue remain required B1 work.
+
+| Exact supervised job | Result and scope |
+| --- | --- |
+| `graphics-owned-vbo-normal-r436-r2-1105-191301-7e3e` | PASS10m41: four Rust journal controls,847 xtask unit/eight integration controls, normal SDK32/64/kernel/image-writer/ABI/evidence710 and graphics2224/89. Initial launcher fails before compilation because the dev shell's copy tool lacks its private clone option; no repository build-script change |
+| `graphics-owned-vbo-baseline-r437-r2-1105-191442-6307`,6187 | PASS1m11:48 actual-C baseline cases, three engines/both widths/ordinary/admitted/automatic/raw and production/fatal. Initial private config path fails before guest execution |
+| `graphics-owned-vbo-share-before-r438-1105-191927-308e` | Causal native first-sharing control fails before dispatch exclusion. Initial private after-fix draft has an overbroad text replacement/compile error; corrected `graphics-owned-vbo-share-after-r438-r2-1105-192057-60a7` passes8s |
+| `graphics-owned-vbo-final-build-r439-1105-192413-30cd` | PASS6m33: native489, workspace Rust3645, normal SDK32/64/kernel/image-writer, ABI/evidence710 and graphics2224/89; frozen source hashes match |
+| `graphics-owned-vbo-guest-final-r440-1105-193100-524a`,6188 | FAILED23m05: graphics2224/89 andNode20/6 pass; browser576 pass/36 fail. Twelve failures expect the obsolete cold matrix count3 instead of0;24 falsely count read-only signatures as mutator replay. Full compiler also retains the identical24 diagnostics. Both corrected controls are rerun below; this original run remains failed |
+| `graphics-owned-vbo-integration-r442-1105-193638-c9b8` | PASS6m13: integration's own release tool, SDK32/64/kernel/image-writer, ABI/evidence710 and graphics2224/89. All nine products byte-identical to R439 |
+| `graphics-owned-vbo-integration-check-r44-1105-194325-e16e`,6189 | FAILED6m48 solely on the identical24 full compiler diagnostics; graphics2224/89,Node20/6 and all96 GPU cases pass, source/product hashes match |
+| `graphics-owned-vbo-recovery-r444-1105-195114-3309`,6186 | PASS1m20:24 actual-C lost-publication/malformed-receipt controls on three engines/both widths/production+fatal. The probe now excludes read-only actions8/9 from mutator replay counting; their word1 is a journal ID, not a transaction. Zero-replay assertions remain unchanged |
+
+The broader frozen R440612-case run preserves its initial cold-matrix and
+probe failures. Owned draws warm the uniform layout before the matrix setter,
+so its admitted cold request count becomes0 rather than the former3; the
+corrected exact assertion passes in R443. R444 corrects the independent
+read-only probe classification. R440 terminates at576 pass/36 fail, with all36 failures in these two test
+oracles. Its frozen source/product checks pass. It is not described as green.
+
+The same C fixture and engine versions are matched against the intermediate
+c6e baseline: Chromium153.0.8010.12, Firefox155.0 and WebKit26.6, both widths
+and production/fatal. Each row counts four warmed draw/error pairs, not time.
+Admitted/automatic cohorts have the following exact counts on every engine:
+
+| Cohort | c6e baseline | Connected driver |
+| --- | ---: | ---: |
+| Pre-existing static buffers |4|0|
+| Two changed definitions plus a retained static source |4|0|
+| After standalone SubData |4|0|
+| After EGL swap |4|0|
+| After known return from a nondefault framebuffer |4|0|
+
+Ordinary/raw controls remain4. All48 matched guest executions exit0 with exact
+pixels and error/sharing controls. This establishes these request counts,
+not Node GPU execution, application latency, comparison with main, GPU-memory
+reclamation or native feel. Duplicate upload/application cost is unmeasured.
+Normal kernel is
+`f37b28585fe825e0053b84eb0d666cd9dfe6fb196febd8081368d3a4312030ae`;
+snapshot is
+`15e15f7bd71f791394361dfd4cf0321b20769d771b8c8e2ef241e0a5d7882f5d`.
+The additive Program entries preserve56/3/17/21 and require coherent normal
+program/image rebuilding. The old5693 preview remains pinned and excludes
+this increment. All B1 changes and required checks still precede its requested
+complete-preview notification; all final goal gates remain required.
+
+Exact commands are `scripts/dev-shell.sh bash` followed by the private
+`graphics-owned-vbo-r432-runs/normal-final/build.sh`,
+`graphics-owned-vbo-integration-r442/build.sh`, its `validation/validate.sh`,
+and `graphics-owned-vbo-recovery-r444/validate.sh`. Full commands, frozen
+source/product identities, original failures,48 per-case comparison records
+and Why-comment review are under those root `.context/` directories. Nine
+baseline products and exact fixture sources are archived before the baseline
+tree is reused; no unchanged-rerunnable claim is made about that reused tree.
 
 ## Owned buffer-copy wire, 2026-11-05 (R422–R428)
 

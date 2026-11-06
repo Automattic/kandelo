@@ -4552,6 +4552,28 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "ownership":"canonical-object-identity-and-byte-span; synchronous-borrow; ordered-cell-reuse",
         "legacy":"all-existing-journal-actions-and-BufferData-records-unchanged",
     }));
+    s.add(Program, "gl_program_buffer_attribute_capture", json!({
+        "query":shared::gl::QOP_PROGRAM_JOURNAL,"action":11,"request_bytes":24,
+        "request_fields":["action","transaction","own_journal","cell","next_token","attribute_index"],
+        "reply_bytes":48,"reply":"sealed-journal-receipt; value-is-copied-store-size-or-zero-unavailable",
+        "authority":"own-current-context-tid-journal-and-logical-attribute; no-public-name-resolution",
+        "maximum_bytes":32768,"maximum_attributes":16,
+        "effects":"cold-native-copy; source-buffer-and-layout-unchanged; strict-next-cell-token",
+        "recovery":"read-last-same-completed-copy; never-recapture-after-copyout-loss",
+        "unavailable":"completed-zero; no-new-guest-API-error; no-draw-authority",
+        "lifecycle_barrier":"forbidden",
+    }));
+    s.add(Program, "gl_buffer_snapshot_draw", json!({
+        "opcode":shared::gl::OP_DRAW_BUFFER_SNAPSHOTS,"header_bytes":20,"attribute_bytes":32,
+        "header_fields":["own_journal","mode","first","positive_count","attribute_count"],
+        "attribute_fields":["index","cell","token","size","type","normalized","stride","offset"],
+        "maximum_attributes":16,"maximum_cells":32,
+        "shape":"sorted-unique-attributes; GLES-native-layout; exact-whole-record-before-effects",
+        "authority":"own-context-live-journal; exact-canonical-object-token-and-byte-span-for-every-enabled-row",
+        "execution":"same-stack-borrow; native-pointer-substitution-and-exact-restoration; public-VAO-unchanged",
+        "validation":"original-program-framebuffer-and-shader-emulations; in-range-retained-storage-proof",
+        "lifetime":"journal-execution-lease; shared-original-logical-reset-identity",
+    }));
     s.add(Program, "gl_error_drain_receipt", json!({
         "query":shared::gl::QOP_GET_ERROR,
         "request_mode":shared::gl::error_drain_receipt::REQUEST,
@@ -8680,6 +8702,8 @@ fn additive_top_level_section(section: &str) -> bool {
             | "gl_program_uniform_signature"
             | "gl_program_uniform_guest_signature"
             | "gl_program_buffer_snapshots"
+            | "gl_program_buffer_attribute_capture"
+            | "gl_buffer_snapshot_draw"
             | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
@@ -10434,6 +10458,22 @@ mod tests {
             assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
         }
         assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn buffer_capture_and_draw_are_additive_but_existing_contracts_stay_exact() {
+        for section in ["gl_program_buffer_attribute_capture","gl_buffer_snapshot_draw"] {
+            let old=base_snapshot();let mut new=old.clone();
+            new[section]=json!({"authority":"own-context-exact-generations","layout":"bounded","recovery":"no-replay"});
+            assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());
+            for field in new[section].as_object().unwrap().keys() {
+                let mut changed=new.clone();changed[section][field]=json!("different");
+                assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{section}.{field}");
+                changed[section].as_object_mut().unwrap().remove(field);
+                assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{section}.{field}");
+            }
+            assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+        }
     }
 
     #[test]

@@ -344,7 +344,7 @@ static void mark_context_reset(struct egl_context_record *context) {
     const struct gl_query_info query = {.op = QOP_CONTEXT_RESET_SCOPE,
         .out_buf_ptr = (uintptr_t)reply, .out_buf_len = sizeof reply};
     const int saved_errno = errno;
-    _wpk_gl_note_device_request();
+    _wpk_gl_note_known_device_request();
     const int rc = ioctl(context->session->fd, GLIO_QUERY, &query);
     if (!rc && reply[0] == 0 && reply[2] == WPK_GL_QUERY_REPLY_MAGIC && reply[1] == 2)
         atomic_store_explicit(&context->reset_group->lost, 1, memory_order_relaxed);
@@ -399,8 +399,22 @@ static _Atomic uint64_t g_device_requests;
 static _Atomic uint64_t g_device_owner_epoch;
 static pthread_once_t g_device_requests_fork_once = PTHREAD_ONCE_INIT;
 static int g_device_requests_fork_tracked;
-void _wpk_gl_note_device_request(void) {
+static _Atomic uint64_t g_raw_device_requests;
+void _wpk_gl_note_known_device_request(void) {
     atomic_fetch_add_explicit(&g_device_requests, 1, memory_order_seq_cst);
+}
+/* WHY: a successful error drain does not repair stale binding/byte metadata.
+ * External raw packets revoke that authority even before the first copy bank
+ * exists. Normal EGL/GLES calls preserve this epoch, so swaps add no new
+ * atomic operation or cold storage query to the ordinary frame path. */
+void _wpk_gl_note_device_request(void) {
+    _wpk_gl_note_known_device_request();
+    uint64_t previous=atomic_fetch_add_explicit(&g_raw_device_requests,1,memory_order_seq_cst);
+    // A wrapped epoch would revive previously revoked layout authority.
+    if(previous==UINT64_MAX)abort();
+}
+uint64_t _wpk_gl_raw_device_requests(void) {
+    return atomic_load_explicit(&g_raw_device_requests,memory_order_seq_cst);
 }
 uint64_t _wpk_gl_device_requests(void) {
     return atomic_load_explicit(&g_device_requests, memory_order_seq_cst);
@@ -428,7 +442,7 @@ uint64_t _wpk_gl_device_owner_epoch(void) {
     return atomic_load_explicit(&g_device_owner_epoch,memory_order_relaxed);
 }
 static int egl_device_ioctl(int fd, unsigned long request, const void *arg) {
-    _wpk_gl_note_device_request();
+    _wpk_gl_note_known_device_request();
     return ioctl(fd, request, arg);
 }
 /* EXT_robustness/KHR_robustness section 2.6: the reset is reported once,

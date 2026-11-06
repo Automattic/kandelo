@@ -22,6 +22,7 @@ export function validProgramJournalRequest(input:Uint8Array,outputBytes:number):
   if(n<8 || !v.getUint32(4,true))return false;
   if(action===8 || action===9)return n===16;
   if(action===10)return n===16 && v.getUint32(8,true)!==0 && v.getUint32(12,true)>0 && v.getUint32(12,true)<=32;
+  if(action===11)return n===24 && v.getUint32(8,true)!==0 && v.getUint32(12,true)<32 && v.getUint32(16,true)!==0 && v.getUint32(20,true)<16;
   if(action===1)return n===12 && v.getUint32(8,true)>0 && v.getUint32(8,true)<=256;
   if(action===2)return n===12 && v.getUint32(8,true)!==0;
   if(action===4)return n===16 && v.getUint32(8,true)!==0 && v.getUint32(12,true)!==0;
@@ -115,6 +116,13 @@ export function runProgramJournalQuery(b:GlBinding,input:Uint8Array,out:Uint8Arr
     // not the read-only signature reply: copyout loss recovers via READ_LAST.
     if(journal?.id===v.getUint32(8,true))value=journal.prepareBufferSnapshots(v.getUint32(12,true));
     accepted=value!==0;
+  }else if(action===11){
+    // Capture is effectful: READ_LAST must return the SAME bytes after copyout
+    // loss, rather than recapturing a source that a peer may already have changed.
+    if(journal?.id===v.getUint32(8,true)){
+      const bytes=journal.captureBufferAttribute(v.getUint32(12,true),v.getUint32(16,true),v.getUint32(20,true));
+      accepted=bytes!==null;value=bytes??0;
+    }
   }
   if(!accepted && !b.errors.length)recordGlError(b,0x502);
   words[3]=journal?.id??0;words[4]=value;snapshot(words,b,journal);

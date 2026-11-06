@@ -62,8 +62,11 @@ for(const mode of ["ordinary","admitted","automatic"] as const) for(const arch o
       expect((byName.get(name) as any).total).toBe(0);
     expect((byName.get("program-pair") as any).total).toBe(mode==="ordinary"?40:0);
     expect((byName.get("matrix4") as any).total).toBe(mode==="ordinary"?20:0);
+    expect((byName.get("draw-arrays") as any).total).toBe(mode==="ordinary"?20:0);
     expect(setup).toHaveLength(14);
-    expect(setup.find((row:any)=>row.operation==="matrix4").deviceRequests).toBe(mode==="admitted"?3:mode==="automatic"?0:1);
+    // Owned-buffer draws already learned this executable's uniform layout.
+    // The later matrix setter must reuse that proof, not repeat cold queries.
+    expect(setup.find((row:any)=>row.operation==="matrix4").deviceRequests).toBe(mode==="ordinary"?1:0);
     expect(lines).toContain(`INITIAL_MATRIX ${mode==="automatic"?2:1}`);
     expect(lines).toContain("MATRIX_PROOFS 19");
     expect(lines).toContain("UNIFORM_PROOFS 40");
@@ -77,7 +80,7 @@ for(const mode of ["ordinary","admitted","automatic"] as const) for(const arch o
     expect(inlineCounts).toHaveLength(10);
     expect(new Set(inlineCounts.map((row:any)=>row.operation)).size).toBe(10);
     for(const row of inlineCounts){
-      const exact=mode!=="ordinary" && ["no-sampler","one-sampler","old-link","new-link-multi-sampler","same-kind-sampler-array"].includes(row.operation);
+      const exact=mode!=="ordinary" && ["no-sampler","one-sampler","old-link","new-link-multi-sampler","same-kind-sampler-array","restored-framebuffer"].includes(row.operation);
       expect(row.requests,row.operation).toBe(exact?0:4);
     }
     // Permit future improvements, while rejecting one drain for every large

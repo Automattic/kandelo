@@ -38,6 +38,21 @@ function fixture(){
   execution.release();registry.unbind(1);expect(native.size).toBe(0);};
  return {b,gl,program,registry,muxer,execution,capture,selected,native,bind,query,emit,setup,dispose};
 }
+it("static capture receipt recovers the original size and bytes without recapturing a changed source",()=>{
+ const f=fixture();f.setup();let bound:object|null=null;const data=new Map<object,Uint8Array>(),bindings=new Map<number,object|null>();
+ Object.assign(f.gl,{createBuffer:()=>{const x={};f.native.add(x);return x;},deleteBuffer:(x:object)=>f.native.delete(x),
+  bindBuffer:(t:number,x:object|null)=>{bindings.set(t,x);},getParameter:(t:number)=>bindings.get(t)??null,
+  bufferData:(t:number,x:number|Uint8Array)=>data.set(bindings.get(t)!,typeof x==="number"?new Uint8Array(x):new Uint8Array(x)),
+  copyBufferSubData:(r:number,w:number,from:number,to:number,n:number)=>data.get(bindings.get(w)!)!.set(data.get(bindings.get(r)!)!.subarray(from,from+n),to)});
+ expect(f.query([10,3,1,2]).words[0]).toBe(0);expect(bindBufferObject(f.b,0x8892,7)).toBe(true);bound=f.b.buffers.get(7)!;
+ const store=f.b.bufferStores.get(bound)!;store.size=8;data.set(bound,new Uint8Array([1,2,3,4,5,6,7,8]));
+ f.b.vertexArrays.get(0)!.attributes.set(0,{buffer:bound,enabled:true,size:2,type:0x1406,normalized:false,stride:0,offset:0});
+ const out=new Uint8Array(48),failure=vi.spyOn(out,"set").mockImplementation(()=>{throw new Error("capture reply lost");});
+ try{expect(()=>f.query([11,4,1,0,1,0],out)).toThrow("capture reply lost");}finally{failure.mockRestore();}
+ store.size=2;data.set(bound,new Uint8Array([9,10]));expect(f.query([6]).words.slice(0,5)).toEqual([0,4,11,1,8]);
+ const retained=f.b.programJournal!.resolveBufferSnapshot(0,1,bound,8)!;expect([...data.get(retained)!]).toEqual([1,2,3,4,5,6,7,8]);
+ expect(f.query([11,4,1,0,1,0]).rc).toBe(-22);f.dispose();
+});
 it("snapshot wire recovers cold preparation after copyout loss without native replay",()=>{
  const f=fixture();f.setup();let created=0;
  Object.assign(f.gl,{createBuffer:()=>{created++;const buffer={};f.native.add(buffer);return buffer;},deleteBuffer:(buffer:object|null)=>{if(buffer)f.native.delete(buffer);}});

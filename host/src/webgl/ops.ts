@@ -77,6 +77,8 @@ export const OP_VERTEX_ATTRIB_POINTER       = 0x0502;
 export const OP_DRAW_ARRAYS                 = 0x0503;
 /** Owned packed client attributes and one nonindexed draw; u16-bounded payload. */
 export const OP_DRAW_CLIENT_ARRAYS          = 0x0506;
+/** Exact retained buffer generations and logical attribute layouts. */
+export const OP_DRAW_BUFFER_SNAPSHOTS       = 0x0507;
 export const INLINE_DRAW_HEADER_BYTES = 16;
 export const INLINE_DRAW_ATTRIBUTE_BYTES = 20;
 export const INLINE_DRAW_MAX_BYTES = 65535;
