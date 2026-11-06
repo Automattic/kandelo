@@ -5160,3 +5160,21 @@ the established cause of WordPress failures. The source build continues
 with its stable 9301243/revision-35 snapshot; the new callback commit is
 pushed but not yet pinned or part of an application image. The real
 PHP/Caddy shutdown probe is still pending that image.
+
+
+The new callback pin also passes the existing ordinary callback regression
+selection after rebuilding and stamping both artifacts. All three Node
+probes pass with clean stderr/diagnostics; Chromium, Firefox, and WebKit
+pass all nine browser cases in 23 seconds. These include Go-owned callbacks
+that yield and call C again, stack growth on C-created pthreads, and eight
+rounds of concurrent Go/C allocation churn
+(`go-signal-callback-regression-1105-191037-1ebc`, 42 seconds including builds).
+
+A freshly built, instrumented, and stamped cgo-enabled upstream `os` binary
+passes the complete image-backed VFS run: 224 top-level tests/examples,
+21 skips, zero failures, empty guest stderr and host diagnostics. Raw output
+is `.context/go-signal-system-stack-os.json`; build and host-console output
+is `.context/go-signal-system-stack-os-build.log`. The latter retains the
+existing macOS port-49152 publication warning; no host service was stopped.
+This is a runtime/standard-library gate, not validation of the pending
+WordPress image.
