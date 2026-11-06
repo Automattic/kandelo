@@ -6017,6 +6017,21 @@ pass; the combined guest engine, ICU77 runtime behavior and four-host evidence
 remain unvalidated. CPU topology/capacity and measurements remain implementation
 gaps. See [default locale scope](../tests/nodejs/outline/default-locale-integration.md).
 
+### Native Node execution and exception ownership source
+
+The source149 candidate shares one native execution-stack owner across native
+callbacks and JavaScript task scopes. Actual resource/context roots, IDs and
+allocation claims remain alive through uncaught handling. Clear epochs prevent
+late callback/job restoration from resurrecting cleared state. Outermost
+callback errors use the owning process handler; nested synchronous failures
+remain catchable. Recovered errors use the pinned after-hook draining algorithm
+instead of taking the normal successful-callback checkpoint path.
+
+Portable native and scoped frontend controls pass with explicit dependencies.
+Production SpiderMonkey/GC/realm/loop and guest recovery remain unvalidated;
+fatal getter/reentry, startup IDs and Promise-policy gaps stay open. See
+[execution and recovery scope](../tests/nodejs/outline/callback-recovery-integration.md).
+
 ### Node stdio stream source candidate
 
 The Node compatibility source now routes process stdio through

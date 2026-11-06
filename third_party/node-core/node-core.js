@@ -8111,8 +8111,6 @@ function _createNodeAsyncPlatform(platform) {
     } = primordials;
     const kEmptyObject = ObjectFreeze(ObjectCreate(null));
     const root = ObjectFreeze({ __proto__: null, frame: undefined, id: 0, triggerId: 0, resource: {} });
-    let scopeDepth = 0;
-    const stack = [];
     // The pinned public AsyncHook mutates these callback counts and arrays.
     // Only resource IDs/context and destroy delivery cross the native boundary.
     const kInit = 0, kBefore = 1, kAfter = 2, kDestroy = 3,
@@ -8134,7 +8132,7 @@ function _createNodeAsyncPlatform(platform) {
         const error = new Error(message); error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
     }
     function executionState() {
-        if (scopeDepth === 0 && state().untrackedTask) {
+        if (!platform.native.hasAsyncExecution() && state().untrackedTask) {
             incomplete('Native async execution IDs and resources are not implemented');
         }
         return state();
@@ -8346,20 +8344,19 @@ function createHook(fns) {
         finally { setState(prior); }
     }
     function emitBefore(asyncId, triggerId, resource) {
-        ArrayPrototypePush(stack, state());
-        scopeDepth++;
+        platform.native.pushAsyncExecution(asyncId, triggerId, resource, false);
         setState(ObjectFreeze({ __proto__: null, frame: frame(), id: asyncId, triggerId, resource }));
-        try { emit('before', [asyncId]); }
-        catch (error) {
-            scopeDepth--; setState(ArrayPrototypePop(stack)); throw error;
-        }
+        emit('before', [asyncId]);
     }
     function emitAfter(asyncId) {
         try { emit('after', [asyncId]); }
-        finally {
-            const prior = ArrayPrototypePop(stack);
-            scopeDepth--; setState(prior);
-        }
+        finally { setState(platform.native.popAsyncExecution(asyncId)); }
+    }
+    // Fatal recovery emits after hooks while the failing frame is still
+    // installed. Its native scope owns final restoration/epoch invalidation.
+    function emitRecoveredAfter(asyncId) {
+        emit('after', [asyncId]);
+        platform.native.popAsyncExecution(asyncId);
     }
     const validators = platform.values.validators;
     const modules = new SafeMap([
@@ -8611,7 +8608,7 @@ module.exports = RunScope;
     const initHooksExist = () => hookExists('init');
     const destroyHooksExist = () => hookExists('destroy');
     const emitInit = (id, type, triggerId, resource) => emit('init', [id, type, triggerId, resource]);
-    const hasAsyncIdStack = () => stack.length > 0;
+    const hasAsyncIdStack = () => platform.native.hasAsyncExecution();
     const registerDestroyHook = (resource, asyncId, destroyed) => finalizers.register(resource, { asyncId, destroyed });
     const destroyedSymbol = Symbol('destroyed');
 const contextFrameSymbol = Symbol('context_frame');
@@ -8738,9 +8735,13 @@ class AsyncResource {
         if (kind === 'callback:zero') {
             // Pinned InternalCallbackScope({0,0}) pushes its actual execution
             // resource/default frame without manufacturing an AsyncWrap ID.
+            platform.native.pushAsyncExecution(0, 0, resource, true);
             setState(ObjectFreeze({ __proto__: null, frame: undefined,
                 id: 0, triggerId: 0, resource }));
             return;
+        }
+        if (kind === 'callback:zero:after') {
+            setState(platform.native.popAsyncExecution(0)); return;
         }
         const record = nativeResource(resource);
         if (kind === 'promise:init' || kind === 'task:init' || kind === 'native:init') {
@@ -8748,11 +8749,14 @@ class AsyncResource {
         } else if (kind === 'promise:resolve') {
             emit('promiseResolve', [record.id], true);
         } else if (kind === 'before') {
+            platform.native.pushAsyncExecution(record.id, record.triggerId, resource, true);
             setState(ObjectFreeze({ __proto__: null, frame: capturedFrame,
                 id: record.id, triggerId: record.triggerId, resource }));
             emit('before', [record.id], record.isPromise);
         } else if (kind === 'after') {
-            emit('after', [record.id], record.isPromise);
+            const enteringId = platform.native.executionAsyncId();
+            emit('after', [enteringId], record.isPromise);
+            setState(platform.native.popAsyncExecution(enteringId));
         } else incomplete('Unknown native async lifecycle event: ' + kind);
     }
     // The override belongs to the native environment, never a captured frame.
@@ -8782,17 +8786,16 @@ class AsyncResource {
         if (record === undefined || record.destroyed) incomplete('Async callback has no live owning resource');
         const prior = platform.native.getAsyncContext();
         setFrame(record.frame);
+        emitBefore(record.id, record.triggerId, resource);
+        let completed = false;
         try {
-            emitBefore(record.id, record.triggerId, resource);
-            let completed = false;
-            try {
-                const result = ReflectApply(fn, receiver, args);
-                completed = true; return result;
-            } finally {
-                if (completed) emitAfter(record.id);
-                else { scopeDepth--; setState(ArrayPrototypePop(stack)); }
-            }
-        } finally { setState(prior); }
+            const result = ReflectApply(fn, receiver, args);
+            completed = true; return result;
+        } finally {
+            // On throw, the real entry/loop invokes the actual process handler
+            // before retiring this stack. It must still see its IDs and frame.
+            if (completed) { emitAfter(record.id); setState(prior); }
+        }
     }
     class TickObject {
   constructor(callback, args, asyncId, triggerAsyncId) {
@@ -8828,9 +8831,9 @@ class AsyncResource {
     }
     platform.native.setAsyncLifecycle(lifecycle);
     platform.native.setAsyncDestroyTracking(false);
-    function executionAsyncId() { return executionState().id; }
-    function triggerAsyncId() { return executionState().triggerId; }
-    function executionAsyncResource() { return executionState().resource; }
+    function executionAsyncId() { executionState(); return platform.native.executionAsyncId(); }
+    function triggerAsyncId() { executionState(); return platform.native.triggerAsyncId(); }
+    function executionAsyncResource() { executionState(); return platform.native.executionAsyncResource() ?? root.resource; }
     const api = {
         get AsyncLocalStorage() {
             return require('internal/async_local_storage/async_context_frame');
@@ -8919,6 +8922,14 @@ VERIFYREQUEST: 68
         symbols: { owner_symbol, async_id_symbol, trigger_async_id_symbol },
         createTask, runTask, retireTask, enqueueTick, drainTicks, drainDestroys, runInternalImmediate, defaultTriggerAsyncIdScope,
         hasTicks: () => tickCursor < tickQueue.length,
+        uncaught: {
+            executionAsyncId, hasAsyncIdStack,
+            clearDefaultTriggerAsyncId: () => platform.native.swapDefaultTriggerAsyncId(-1),
+            clearAsyncIdStack: () => platform.native.clearAsyncExecution(),
+            afterHooksExist: () => hookExists('after'),
+            emitAfter: emitRecoveredAfter,
+            popAsyncContext: id => platform.native.popAsyncExecution(id),
+        },
     };
 }
 
@@ -9040,6 +9051,112 @@ function lazyEventEmitterAsyncResource() {
 }
 
     return lazyEventEmitterAsyncResource;
+}
+
+// Process-level recovery uses the pinned unchanged handler and the actual
+// native execution stack. Reporting measurements and abort CLI remain gaps.
+function _installNodeProcessExceptions(platform) {
+    'use strict';
+    const { Error } = _createNodePrimordials();
+    const process = platform.process;
+    const { ERR_INVALID_ARG_TYPE, ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET } = platform.values.errors.codes;
+    const { executionAsyncId, clearDefaultTriggerAsyncId, clearAsyncIdStack,
+        hasAsyncIdStack, afterHooksExist, emitAfter, popAsyncContext } = platform.async.uncaught;
+    const kGenericUserError = 1;
+    const exceptionHandlerState = { captureFn: null, auxiliaryCallbacks: [], reportFlag: false };
+    function require(name) {
+        if (name === 'timers') return platform.timers;
+        throw new Error('Unexpected exception-handler dependency: ' + name);
+    }
+    function noop() {}
+
+// XXX(joyeecheung): for some reason this cannot be defined at the top-level
+// and exported to be written to process._fatalException, it has to be
+// returned as an *anonymous function* wrapped inside a factory function,
+// otherwise it breaks the test-timers.setInterval async hooks test -
+// this may indicate that node::errors::TriggerUncaughtException() should
+// fix up the callback scope before calling into process._fatalException,
+// or this function should take extra care of the async hooks before it
+// schedules a setImmediate.
+function createOnGlobalUncaughtException() {
+  // The C++ land node::errors::TriggerUncaughtException() will
+  // exit the process if it returns false, and continue execution if it
+  // returns true (which indicates that the exception is handled by the user).
+  return (er, fromPromise) => {
+    // It's possible that defaultTriggerAsyncId was set for a constructor
+    // call that threw and was never cleared. So clear it now.
+    clearDefaultTriggerAsyncId();
+
+    const type = fromPromise ? 'unhandledRejection' : 'uncaughtException';
+    process.emit('uncaughtExceptionMonitor', er, type);
+    // Primary callback (e.g., domain) has priority and always handles the exception
+    if (exceptionHandlerState.captureFn !== null) {
+      exceptionHandlerState.captureFn(er);
+    } else {
+      // If no primary callback, try auxiliary callbacks (e.g., REPL)
+      // They must return true to indicate handling
+      let handled = false;
+      for (let i = exceptionHandlerState.auxiliaryCallbacks.length - 1; i >= 0; i--) {
+        if (exceptionHandlerState.auxiliaryCallbacks[i](er) === true) {
+          handled = true;
+          break;
+        }
+      }
+      if (!handled && !process.emit('uncaughtException', er, type)) {
+        // If someone handled it, then great. Otherwise, die in C++ land
+        // since that means that we'll exit the process, emit the 'exit' event.
+        try {
+          if (!process._exiting) {
+            process._exiting = true;
+            process.exitCode = kGenericUserError;
+            process.emit('exit', kGenericUserError);
+          }
+        } catch {
+          // Nothing to be done about it at this point.
+        }
+        return false;
+      }
+    }
+
+    // If we handled an error, then make sure any ticks get processed
+    // by ensuring that the next Immediate cycle isn't empty.
+    require('timers').setImmediate(noop);
+
+    // Emit the after() hooks now that the exception has been handled.
+    if (afterHooksExist()) {
+      do {
+        const asyncId = executionAsyncId();
+        if (asyncId === 0)
+          popAsyncContext(0);
+        else
+          emitAfter(asyncId);
+      } while (hasAsyncIdStack());
+    }
+    // And completely empty the id stack, including anything that may be
+    // cached on the native side.
+    clearAsyncIdStack();
+
+    return true;
+  };
+}
+
+    process._fatalException = createOnGlobalUncaughtException();
+    process.setUncaughtExceptionCaptureCallback = function setUncaughtExceptionCaptureCallback(fn) {
+        if (fn === null) {
+            exceptionHandlerState.captureFn = null;
+            process.report.reportOnUncaughtException = exceptionHandlerState.reportFlag;
+            return;
+        }
+        if (typeof fn !== 'function') throw new ERR_INVALID_ARG_TYPE('fn', ['Function', 'null'], fn);
+        if (exceptionHandlerState.captureFn !== null) throw new ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET();
+        exceptionHandlerState.captureFn = fn;
+        exceptionHandlerState.reportFlag = process.report.reportOnUncaughtException === true;
+        process.report.reportOnUncaughtException = false;
+    };
+    process.hasUncaughtExceptionCaptureCallback = function hasUncaughtExceptionCaptureCallback() {
+        return exceptionHandlerState.captureFn !== null;
+    };
+    platform.native.setUncaughtProcess(process);
 }
 
 

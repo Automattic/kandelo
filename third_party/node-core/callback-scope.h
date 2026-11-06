@@ -35,6 +35,15 @@ template<class Host> class CallbackScope {
   bool Close(bool succeeded = true) {
     if (closed_) return result_;
     closed_ = true;
+    succeeded = succeeded && !host_.HasError();
+    if (counted_ && entered_ && !succeeded && host_.Depth() == 1 &&
+        !host_.Stopping() && host_.HasError()) {
+      const bool recovered = host_.Recover();
+      host_.Restore();
+      // Recovery itself emitted the owning after hooks. A failed callback
+      // never re-enters the successful callback/checkpoint path.
+      return result_ = recovered || Stopped();
+    }
     bool ok = counted_ && entered_ && succeeded && !host_.Stopping();
     if (ok) ok = host_.After();
     // Restoration never invokes user JS, including a throwing/fatal hook.

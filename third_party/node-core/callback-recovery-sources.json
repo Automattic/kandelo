@@ -1,0 +1,38 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "execution": {
+      "path": "upstream/callback-recovery/lib/internal/process/execution.js",
+      "upstreamPath": "lib/internal/process/execution.js",
+      "sha256": "45fd02bdf2b3163ecd57e5bf3fdbf327153d1082edd86ec5d8181e0b3edb96f1"
+    },
+    "native-errors": {
+      "path": "upstream/callback-recovery/src/node_errors.cc",
+      "upstreamPath": "src/node_errors.cc",
+      "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d"
+    },
+    "native-callback": {
+      "path": "upstream/callback-recovery/src/api/callback.cc",
+      "upstreamPath": "src/api/callback.cc",
+      "sha256": "0488c28167ecd95e8406bfd86bf1d226acb17a5e6b547b573873de8777305c36"
+    },
+    "async-hooks": {
+      "path": "upstream/callback-recovery/lib/internal/async_hooks.js",
+      "upstreamPath": "lib/internal/async_hooks.js",
+      "sha256": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533"
+    },
+    "public-cpp-resource": {
+      "path": "upstream/callback-recovery/src/api/async_resource.cc",
+      "upstreamPath": "src/api/async_resource.cc",
+      "sha256": "5f0a797695d8892c4539ce3ebcba7ef3a78c2b00737e9358f2ef63f22722a416"
+    }
+  },
+  "selection": {
+    "source": "execution",
+    "start": "function noop() {}",
+    "length": 2891,
+    "sha256": "8a462b1dd684455f01964eb343474b79745de7265983ff44f307e774ba01a834"
+  },
+  "scope": "Unchanged complete native-control source and unchanged createOnGlobalUncaughtException algorithm. Public capture registration adapted at actual guest process/report boundary; no abort CLI, reporting measurement or rejection-policy completeness claim."
+}

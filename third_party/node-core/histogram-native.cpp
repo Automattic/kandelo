@@ -250,35 +250,35 @@ struct KandeloHistogramQrdeWork final : js::shell::KandeloNativeWork {
     RootedValue packet(cx), value(cx);
     if (failure != Failure::None) {
       if (!KandeloHistogramError(cx, failure == Failure::Cancelled ? nullptr : "ERR_MEMORY_ALLOCATION_FAILED",
-          "Error", failure == Failure::Cancelled ? "QRDE job was canceled" : "QRDE job failed", &packet)) return false;
+          "Error", failure == Failure::Cancelled ? "QRDE job was canceled" : "QRDE job failed", &packet)) return scope.Fail();
     } else {
       RootedObject result(cx, JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
-      if (!result) return false;
+      if (!result) return scope.Fail();
       const auto& data = qrdeResult;
       const std::pair<const char*, const std::vector<double>*> arrays[] = {
           {"probabilities", &probabilities}, {"quantiles", &data.quantiles},
           {"densities", &data.densities}};
       for (auto item : arrays) {
         if (!KandeloHistogramNumbers(cx, *item.second, &value, true) ||
-            !JS_DefineProperty(cx, result, item.first, value, JSPROP_ENUMERATE)) return false;
+            !JS_DefineProperty(cx, result, item.first, value, JSPROP_ENUMERATE)) return scope.Fail();
       }
       if (!KandeloHistogramBig(cx, snapshot->total_count, &value) ||
           !JS_DefineProperty(cx, result, "count", value, JSPROP_ENUMERATE) ||
           !JS_DefineProperty(cx, result, "bucketCount", double(snapshot->buckets.size()), JSPROP_ENUMERATE) ||
           !JS_DefineProperty(cx, result, "corrections", double(data.corrections), JSPROP_ENUMERATE) ||
-          !KandeloHistogramString(cx, result, "dequantize", mode == 0 ? "none" : mode == 1 ? "hdr" : "all")) return false;
+          !KandeloHistogramString(cx, result, "dequantize", mode == 0 ? "none" : mode == 1 ? "hdr" : "all")) return scope.Fail();
       value.setObject(*result);
-      if (!KandeloHistogramPacket(cx, value, &packet)) return false;
+      if (!KandeloHistogramPacket(cx, value, &packet)) return scope.Fail();
     }
     RootedValue callbackValue(cx, ObjectValue(*deliver)), ignored(cx);
     // The resolver can belong to a submitting VM compartment. Calling it from
     // the primary environment requires its real cross-compartment wrapper.
-    if (!JS_WrapValue(cx, &callbackValue)) return false;
+    if (!JS_WrapValue(cx, &callbackValue)) return scope.Fail();
     JS::RootedValueArray<1> arguments(cx); arguments[0].set(packet);
     const bool delivered = JS_CallFunctionValue(cx, owner, callbackValue, arguments, &ignored);
     // Match resolver_.Reset() before InternalCallbackScope retires/checkpoints.
     callback.reset();
-    if (!delivered) return false;
+    if (!delivered) return scope.Fail();
     return scope.Close();
   }
   void Cancel(JSContext*) override {

@@ -1,0 +1,271 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3492,4 +3492,6 @@
+   }
+   cx->kandeloAsyncLifecycleHook() = args[0];
++  cx->setKandeloExecutionProvider(js::shell::KandeloReadExecutionIds,
++      js::shell::KandeloReadExecutionEpoch, KandeloRecoverUncaughtException);
+   args.rval().setUndefined();
+   return true;
+@@ -3530,4 +3532,13 @@
+   { AutoReportException report(cx); }
+   ShellContext* sc = GetShellContext(cx);
++  auto* state = sc->kandeloNativeAsync;
++  if (state && state->process.initialized() && state->process) {
++    RootedObject process(cx, state->process);
++    JSAutoRealm realm(cx, process);
++    RootedValue exit(cx), ignored(cx);
++    JS::RootedValueArray<1> status(cx); status[0].setInt32(1);
++    if (JS_GetProperty(cx, process, "exit", &exit))
++      (void)JS_CallFunctionValue(cx, process, exit, status, &ignored);
++  }
+   sc->exitCode = EXIT_FAILURE;
+   sc->quitting = true;
+@@ -3541,6 +3552,8 @@
+   RootedValue callback(cx, args.callee().as<JSFunction>().getExtendedSlot(0));
+   if (!JS::Call(cx, UndefinedHandleValue, callback, HandleValueArray::empty(), args.rval())) {
+-    GetShellContext(cx)->exitCode = EXIT_FAILURE;
+-    js::StopDrainingJobQueue(cx);
++    if (!IsKandeloNodeMode()) {
++      GetShellContext(cx)->exitCode = EXIT_FAILURE;
++      js::StopDrainingJobQueue(cx);
++    }
+     return false;
+   }
+@@ -3965,4 +3978,12 @@
+       JS_FN("hasObjectKind", KandeloNativeHasObjectKind, 2, 0),
+       JS_FN("getAsyncContext", KandeloNativeGetAsyncContext, 0, 0),
++      JS_FN("pushAsyncExecution", KandeloNativePushAsyncExecution, 4, 0),
++      JS_FN("popAsyncExecution", KandeloNativePopAsyncExecution, 1, 0),
++      JS_FN("clearAsyncExecution", KandeloNativeClearAsyncExecution, 0, 0),
++      JS_FN("executionAsyncId", KandeloNativeAsyncExecutionId, 0, 0),
++      JS_FN("triggerAsyncId", KandeloNativeAsyncTriggerId, 0, 0),
++      JS_FN("hasAsyncExecution", KandeloNativeHasAsyncExecution, 0, 0),
++      JS_FN("executionAsyncResource", KandeloNativeAsyncExecutionResource, 0, 0),
++      JS_FN("setUncaughtProcess", KandeloNativeSetUncaughtProcess, 1, 0),
+       JS_FN("allocateAsyncId", KandeloNativeAllocateAsyncId, 0, 0),
+       JS_FN("getDefaultTriggerAsyncId", KandeloNativeGetDefaultTriggerAsyncId, 0, 0),
+@@ -5327,10 +5348,15 @@
+       }
+     } else if (IsKandeloNodeMode()) {
+-      // A thrown timer callback is an uncaught exception, not a completed
+-      // callback. Report it before leaving the Node event loop.
+       if (GetShellContext(cx)->quitting) return fired;
+-      AutoReportException report(cx);
+-      GetShellContext(cx)->exitCode = EXIT_FAILURE;
+-      return fired;
++      if (KandeloRecoverUncaughtException(cx)) {
++        // The callback failed, but the actual process handler kept the loop
++        // alive. Preserve real timer/reference state and query its next due.
++        ++fired;
++      } else {
++        if (GetShellContext(cx)->quitting) return fired;
++        AutoReportException report(cx);
++        GetShellContext(cx)->exitCode = EXIT_FAILURE;
++        return fired;
++      }
+     } else {
+       JS_ClearPendingException(cx);
+@@ -5446,4 +5472,6 @@
+       if (!KandeloCallAsyncQueue(cx, "__kandeloRunNextTicks", &ticks)) {
+         if (sc->quitting) return;
++        if (KandeloRecoverUncaughtException(cx)) continue;
++        if (sc->quitting) return;
+         AutoReportException report(cx);
+         sc->exitCode = EXIT_FAILURE;
+@@ -5454,7 +5482,11 @@
+     if (!KandeloRunMicrotaskCheckpoint(cx)) {
+       if (sc->quitting) return;
++      if (KandeloRecoverUncaughtException(cx)) continue;
++      if (sc->quitting) return;
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+     }
+     if (IsKandeloNodeMode() && cx->isExceptionPending()) {
++      if (sc->quitting) return;
++      if (KandeloRecoverUncaughtException(cx)) continue;
+       if (sc->quitting) return;
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+@@ -5467,8 +5499,12 @@
+       if (!KandeloCallAsyncQueue(cx, "__kandeloHasNextTicks", &ticks)) {
+         if (sc->quitting) return;
++        if (KandeloRecoverUncaughtException(cx)) continue;
++        if (sc->quitting) return;
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+       }
+       if (ticks) continue;
+       if (!KandeloCallAsyncQueue(cx, "__kandeloRunAsyncDestroys", &destroyed)) {
++        if (sc->quitting) return;
++        if (KandeloRecoverUncaughtException(cx)) continue;
+         if (sc->quitting) return;
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+@@ -5486,4 +5522,6 @@
+       bool timerReferences;
+       if (!KandeloNodeTimersHaveReferences(cx, &timerReferences)) {
++        if (sc->quitting) return;
++        if (KandeloRecoverUncaughtException(cx)) continue;
+         if (sc->quitting) return;
+         AutoReportException report(cx);
+@@ -5504,4 +5542,6 @@
+         if (!entry.Ready() || !KandeloCallAsyncQueue(cx, "__kandeloNodeBeforeExit", &ignored)) {
+           if (sc->quitting) return;
++          if (KandeloRecoverUncaughtException(cx)) continue;
++          if (sc->quitting) return;
+           AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+         }
+@@ -5516,7 +5556,11 @@
+
+     if (IsKandeloNodeMode() && !KandeloELDUpdateAndRunTimers(cx)) {
++      if (KandeloRecoverUncaughtException(cx)) continue;
++      if (sc->quitting) return;
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+     }
+     if (IsKandeloNodeMode() && KandeloDispatchStatWatchers(cx, false) < 0) {
++      if (KandeloRecoverUncaughtException(cx)) continue;
++      if (sc->quitting) return;
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+     }
+@@ -5527,4 +5571,6 @@
+     int ranNative = KandeloSocketDispatch(cx);
+     if (ranNative < 0) {
++      if (sc->quitting) return;
++      if (KandeloRecoverUncaughtException(cx)) continue;
+       if (sc->quitting) return;
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+@@ -5546,11 +5592,17 @@
+       if (!KandeloCallAsyncQueue(cx, "__kandeloRunNextTicks", &ticks)) {
+         if (sc->quitting) return;
++        if (KandeloRecoverUncaughtException(cx)) continue;
++        if (sc->quitting) return;
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+       }
+       if (!KandeloRunMicrotaskCheckpoint(cx)) {
+         if (sc->quitting) return;
++        if (KandeloRecoverUncaughtException(cx)) continue;
++        if (sc->quitting) return;
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+       }
+       if (cx->isExceptionPending()) {
++        if (sc->quitting) return;
++        if (KandeloRecoverUncaughtException(cx)) continue;
+         if (sc->quitting) return;
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+@@ -5586,4 +5638,6 @@
+     if (sc->quitting) return;
+     if (ranProvider < 0) {
++      if (KandeloRecoverUncaughtException(cx)) continue;
++      if (sc->quitting) return;
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+     }
+@@ -5594,4 +5648,6 @@
+     if (sc->quitting) return;
+     if (ranStatClose < 0) {
++      if (KandeloRecoverUncaughtException(cx)) continue;
++      if (sc->quitting) return;
+       AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+     }
+@@ -16799,4 +16855,5 @@
+   KandeloShutdownHistograms(cx_);
+   KandeloShutdownNativeAsync(this);
++  if (cx_) cx_->setKandeloExecutionProvider(nullptr, nullptr, nullptr);
+   markObservers.reset();
+   if (cx_) {
+@@ -16885,5 +16942,6 @@
+       AutoReportException are(cx);
+       if (!ProcessArgs(cx, op) && !sc->quitting) {
+-        result = EXITCODE_RUNTIME_ERROR;
++        if (!IsKandeloNodeMode() || !KandeloRecoverUncaughtException(cx))
++          result = EXITCODE_RUNTIME_ERROR;
+       }
+     }
+diff --git a/js/src/vm/JSContext.h b/js/src/vm/JSContext.h
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -611,4 +611,10 @@
+   js::ContextData<double> kandeloAsyncIdCounter_;
+   js::ContextData<double> kandeloAsyncParentId_;
++  using KandeloExecutionIds = bool (*)(JSContext*, double*, double*);
++  using KandeloExecutionEpoch = uint64_t (*)(JSContext*);
++  using KandeloUncaughtHandler = bool (*)(JSContext*);
++  js::ContextData<KandeloExecutionIds> kandeloExecutionIds_;
++  js::ContextData<KandeloExecutionEpoch> kandeloExecutionEpoch_;
++  js::ContextData<KandeloUncaughtHandler> kandeloUncaughtHandler_;
+   js::ContextData<kandelo::async::DefaultTrigger> kandeloDefaultTrigger_;
+   js::ContextData<JS::PersistentRootedObject> kandeloObjectMarks_;
+@@ -659,4 +665,18 @@
+   kandelo::async::DefaultTrigger& kandeloDefaultTrigger() { return kandeloDefaultTrigger_.ref(); }
+   bool getKandeloDefaultTriggerAsyncId(double* result);
++  void setKandeloExecutionProvider(KandeloExecutionIds ids,
++                                 KandeloExecutionEpoch epoch,
++                                 KandeloUncaughtHandler recover) {
++    kandeloExecutionIds_ = ids;
++    kandeloExecutionEpoch_ = epoch;
++    kandeloUncaughtHandler_ = recover;
++  }
++  uint64_t kandeloExecutionEpoch() {
++    auto read = kandeloExecutionEpoch_.ref(); return read ? read(this) : 0;
++  }
++  bool hasKandeloUncaughtHandler() { return kandeloUncaughtHandler_.ref() != nullptr; }
++  bool recoverKandeloUncaughtException() {
++    auto recover = kandeloUncaughtHandler_.ref(); return recover && recover(this);
++  }
+   JS::Value& kandeloAsyncLifecycleHook() {
+     if (!kandeloAsyncLifecycleHook_.ref().initialized()) kandeloAsyncLifecycleHook_.ref().init(this);
+diff --git a/js/src/vm/JSContext.cpp b/js/src/vm/JSContext.cpp
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -841,4 +841,8 @@
+   const double override = kandeloDefaultTrigger().Raw();
+   if (override >= 0) { *result = override; return true; }
++  if (auto read = kandeloExecutionIds_.ref()) {
++    double trigger;
++    if (read(this, result, &trigger)) return true;
++  }
+   RootedValue current(this);
+   if (!kandeloAsyncProperty("id", &current)) return false;
+@@ -1019,8 +1023,10 @@
+       queue.popFront();
+       RootedValue priorContext(cx, cx->kandeloAsyncContext());
++      const uint64_t priorExecutionEpoch = cx->kandeloExecutionEpoch();
+       const bool priorJobActive = cx->kandeloAsyncJobActive();
+       cx->kandeloAsyncJobActive() = true;
+       auto restoreContext = mozilla::MakeScopeExit([&] {
+-        cx->kandeloAsyncContext() = priorContext;
++        if (priorExecutionEpoch == cx->kandeloExecutionEpoch())
++          cx->kandeloAsyncContext() = priorContext;
+         cx->kandeloAsyncJobActive() = priorJobActive;
+       });
+@@ -1037,8 +1043,9 @@
+         break;
+       }
++      bool emitAfter = true;
+       auto afterResource = mozilla::MakeScopeExit([&] {
+         // Any failure here is fatal to the owning Node process, not a
+         // fabricated successful callback. The embedder sets exit status.
+-        if (!cx->notifyKandeloAsyncLifecycle("after", resource, snapshot)) interrupted_ = true;
++        if (emitAfter && !cx->notifyKandeloAsyncLifecycle("after", resource, snapshot)) interrupted_ = true;
+       });
+       {
+@@ -1047,4 +1054,14 @@
+           if (!cx->isExceptionPending()) {
+             continue;
++          }
++
++          if (cx->hasKandeloUncaughtHandler()) {
++            // Real queueMicrotask/job failure goes through the owning process
++            // before its after hook or snapshot is retired. Promise reactions
++            // normally convert throws to rejection before reaching this path.
++            emitAfter = false;
++            if (cx->recoverKandeloUncaughtException()) continue;
++            interrupted_ = true;
++            break;
+           }
+
+@@ -1186,4 +1203,7 @@
+       kandeloAsyncIdCounter_(this, 0),
+       kandeloAsyncParentId_(this, -1),
++      kandeloExecutionIds_(this, nullptr),
++      kandeloExecutionEpoch_(this, nullptr),
++      kandeloUncaughtHandler_(this, nullptr),
+       kandeloDefaultTrigger_(this, kandelo::async::DefaultTrigger()),
+       kandeloObjectMarks_(this),

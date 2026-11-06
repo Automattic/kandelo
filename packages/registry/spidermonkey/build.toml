@@ -190,6 +190,14 @@ inputs = [
   "third_party/node-core/async-default-trigger.h",
   "third_party/node-core/native-callback.cpp",
   "third_party/node-core/callback-scope.h",
+  "third_party/node-core/callback-execution-stack.h",
+  "third_party/node-core/process-exception-adapter.js",
+  "third_party/node-core/callback-recovery-sources.json",
+  "third_party/node-core/upstream/callback-recovery/lib/internal/process/execution.js",
+  "third_party/node-core/upstream/callback-recovery/src/node_errors.cc",
+  "third_party/node-core/upstream/callback-recovery/src/api/callback.cc",
+  "third_party/node-core/upstream/callback-recovery/lib/internal/async_hooks.js",
+  "third_party/node-core/upstream/callback-recovery/src/api/async_resource.cc",
   "third_party/node-core/native-fs.cpp",
   "third_party/node-core/fs-truncate-adapter.js",
   "third_party/node-core/native-file-handle.cpp",
@@ -571,4 +579,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 148
+revision = 149

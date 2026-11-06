@@ -158,7 +158,7 @@ struct KandeloCpWork final : js::shell::KandeloNativeWork {
     if (!callback.isObject() || !JS::IsCallable(&callback.toObject())) return true;
     KandeloNativeCallbackScope scope(cx,resource,frame);
     if (!scope.Enter()) return scope.Stopped();
-    if (!JS_CallFunctionValue(cx,resource,callback,fields,&ignored)) return false;
+    if (!JS_CallFunctionValue(cx,resource,callback,fields,&ignored)) return scope.Fail();
     return scope.Close();
   }
 };

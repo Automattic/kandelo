@@ -59,6 +59,7 @@ struct Host {
     if (env.fatalBefore) { env.trace.push_back("before-fatal"); env.stop = true; return true; }
     env.trace.push_back("before:" + name + ":" + env.store); return true;
   }
+  bool Recover() { return false; }
   bool After() { env.trace.push_back("after:" + name + ":" + env.store); return true; }
   void Restore() { env.store = prior; }
   bool Checkpoint() {

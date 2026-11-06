@@ -241,17 +241,17 @@ struct KandeloFsWork : js::shell::KandeloNativeWork {
     if (!scope.Enter()) return scope.Stopped();
     if (ResultIsException()) {
       RootedValue exception(cx);
-      if (!ResultValue(cx, &exception)) return false;
+      if (!ResultValue(cx, &exception)) return scope.Fail();
       if (state->kind == FsResourceKind::Promise) {
         RootedObject promise(cx, &JS::GetReservedSlot(resource, FsRequestPromise).toObject());
-        if (!JS::RejectPromise(cx, promise, exception)) return false;
+        if (!JS::RejectPromise(cx, promise, exception)) return scope.Fail();
       } else {
         // FSReqCallback::Reject receives the actual conversion exception,
         // rather than an invented errno or a fatal completion-loop error.
         RootedValue oncomplete(cx);
         JS::RootedValueArray<1> rejected(cx); rejected[0].set(exception);
         if (!JS_GetProperty(cx, resource, "oncomplete", &oncomplete) ||
-            !JS_CallFunctionValue(cx, resource, oncomplete, rejected, &ignored)) return false;
+            !JS_CallFunctionValue(cx, resource, oncomplete, rejected, &ignored)) return scope.Fail();
       }
     } else if (operation == Operation::CloseHandle || state->kind == FsResourceKind::Promise) {
       RootedObject promise(cx, &JS::GetReservedSlot(resource, FsRequestPromise).toObject());
@@ -264,14 +264,14 @@ struct KandeloFsWork : js::shell::KandeloNativeWork {
         errorArguments[0].set(arguments[0]); errorArguments[1].set(arguments[1]); errorArguments[2].set(arguments[3]);
         errorArguments[3].set(arguments[4]);
         if (!JS_CallFunctionValue(cx, parent, makeError, errorArguments, &error) ||
-            !JS::RejectPromise(cx, promise, error)) return false;
+            !JS::RejectPromise(cx, promise, error)) return scope.Fail();
       } else {
         RootedValue value(cx);
-        if (!ResultValue(cx, &value) || !JS::ResolvePromise(cx, promise, value)) return false;
+        if (!ResultValue(cx, &value) || !JS::ResolvePromise(cx, promise, value)) return scope.Fail();
       }
     } else {
-      if (succeeded && !ResultValue(cx, arguments[2])) return false;
-      if (!JS_CallFunctionValue(cx, resource, callback, arguments, &ignored)) return false;
+      if (succeeded && !ResultValue(cx, arguments[2])) return scope.Fail();
+      if (!JS_CallFunctionValue(cx, resource, callback, arguments, &ignored)) return scope.Fail();
     }
     return scope.Close();
   }

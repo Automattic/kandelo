@@ -1,5 +1,13 @@
 # Broad implementation review
 
+Source checkpoint149 integrates actual native execution ownership and outer
+callback recovery, preserving catchable nested errors and clear epochs.
+Four native helper compilations, six bounded component processes and36affected
+checks pass with explicit dependencies. Current SpiderMonkey/guest/four-host
+validation and documented fatal/main/Promise gaps remain open. See the
+[recovery scope](callback-recovery-integration.md).
+
+
 Source checkpoint148 adds actual runtime-owned default-locale source and
 private bootstrap capture. Header compilation against real Mozilla ICU77 and
 21affected frontend/package checks pass; guest engine/ICU runtime and four-host

@@ -12,6 +12,7 @@ struct Host {
   bool Stopping() const { return stopping; }
   bool HasError() const { return error; }
   bool Before() { prior = context; context = "zero/default/object"; return true; }
+  bool Recover() { return false; }
   bool After() { return true; } // IDs zero never emit AsyncWrap hooks.
   void Restore() { context = prior; }
   bool Checkpoint() { assert(retired && context == "prior"); ++checkpoint; return true; }

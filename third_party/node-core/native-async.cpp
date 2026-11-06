@@ -19,7 +19,24 @@ static bool KandeloFsPathString(JSContext* cx, const char* bytes, size_t length,
 }
 }  // namespace
 
+#include "kandelo-node-callback-execution-stack.h"
+#include "native-retained-memory.h"
+namespace { static kandelo::memory::AccountHandle KandeloNativeMemoryOwner(JSContext* cx); }
+static bool KandeloRecoverUncaughtException(JSContext* cx);
 namespace js::shell {
+
+struct KandeloExecutionPayload {
+  JS::PersistentRootedValue prior;
+  JS::PersistentRootedObject resource;
+  kandelo::memory::Allocation retained;
+  kandelo::memory::Claim claim;
+  using Info = kandelo::async::ExecutionStack<KandeloExecutionPayload>::Info;
+  KandeloExecutionPayload(Info info, JSContext* cx, HandleObject entering)
+      : prior(cx, cx->kandeloAsyncContext()), resource(cx, entering),
+        retained(info.allocationBytes),
+        claim(retained.Handle(), KandeloNativeMemoryOwner(cx)) {}
+};
+using KandeloExecutionStack = kandelo::async::ExecutionStack<KandeloExecutionPayload>;
 
 struct KandeloTerminalLease;
 struct KandeloNativeAsyncState;
@@ -40,6 +57,9 @@ struct KandeloNativeAsyncState {
   bool detached = false;
   bool allocationFailed = false;
   unsigned callbackDepth = 0;  // Owning-context scopes, including checkpoint jobs.
+  KandeloExecutionStack execution;
+  JS::PersistentRootedObject process;
+  bool handlingUncaught = false;
   Vector<KandeloNativeDestroyRecord, 0, SystemAllocPolicy> destroyIds;
   Vector<KandeloNativeDestroyRecord, 0, SystemAllocPolicy> retryIds;
   Vector<KandeloFsGcCloseRecord, 0, SystemAllocPolicy> fsGcCloses;
@@ -74,6 +94,82 @@ static KandeloNativeAsyncState* KandeloGetNativeAsyncState(JSContext* cx) {
     if (!sc->kandeloNativeAsync) JS_ReportOutOfMemory(cx);
   }
   return sc->kandeloNativeAsync;
+}
+
+// Existing state only: engine reads never allocate a new async environment.
+static bool KandeloReadExecutionIds(JSContext* cx, double* id, double* trigger) {
+  auto* state = GetShellContext(cx)->kandeloNativeAsync;
+  if (!state || state->detached) return false;
+  *id = state->execution.Id(); *trigger = state->execution.Trigger(); return true;
+}
+static uint64_t KandeloReadExecutionEpoch(JSContext* cx) {
+  auto* state = GetShellContext(cx)->kandeloNativeAsync;
+  return state ? state->execution.Epoch() : 0;
+}
+static bool KandeloNativePushAsyncExecution(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  if (!args.get(0).isNumber() || !args.get(1).isNumber() || !args.get(2).isObject()) {
+    JS_ReportErrorASCII(cx, "Async execution requires numeric IDs and an actual resource"); return false;
+  }
+  auto* state = KandeloGetNativeAsyncState(cx); if (!state) return false;
+  RootedObject resource(cx, &args[2].toObject());
+  try {
+    state->execution.PushScope(args[0].toNumber(), args[1].toNumber(),
+        args.get(3).isTrue() ? KandeloExecutionStack::Owner::NativeScope :
+                            KandeloExecutionStack::Owner::JavaScriptScope,
+        cx, resource);
+  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
+  args.rval().setUndefined(); return true;
+}
+static bool KandeloNativePopAsyncExecution(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  auto* state = GetShellContext(cx)->kandeloNativeAsync;
+  if (!state || !args.get(0).isNumber()) {
+    JS_ReportErrorASCII(cx, "Async execution pop requires its actual ID"); return false;
+  }
+  const auto popped = state->execution.Pop(args[0].toNumber(), [&](const auto& entry) {
+    args.rval().set(entry.prior);
+  });
+  if (popped == KandeloExecutionStack::PopResult::WrongId) {
+    JS_ReportErrorASCII(cx, "Async execution stack is corrupted"); return false;
+  }
+  if (popped == KandeloExecutionStack::PopResult::Empty) args.rval().setUndefined();
+  return JS_WrapValue(cx, args.rval());
+}
+static bool KandeloNativeClearAsyncExecution(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  auto* state = GetShellContext(cx)->kandeloNativeAsync;
+  if (state) state->execution.Clear();
+  cx->kandeloAsyncContext() = UndefinedValue();
+  args.rval().setUndefined(); return true;
+}
+static bool KandeloNativeAsyncExecutionId(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp); double id = 0, trigger = 0;
+  KandeloReadExecutionIds(cx, &id, &trigger); args.rval().setNumber(id); return true;
+}
+static bool KandeloNativeAsyncTriggerId(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp); double id = 0, trigger = 0;
+  KandeloReadExecutionIds(cx, &id, &trigger); args.rval().setNumber(trigger); return true;
+}
+static bool KandeloNativeHasAsyncExecution(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  auto* state = GetShellContext(cx)->kandeloNativeAsync;
+  args.rval().setBoolean(state && !state->execution.Empty()); return true;
+}
+static bool KandeloNativeAsyncExecutionResource(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  auto* state = GetShellContext(cx)->kandeloNativeAsync;
+  if (state && state->execution.Top()) args.rval().setObject(*state->execution.Top()->resource);
+  else args.rval().setUndefined();
+  return JS_WrapValue(cx, args.rval());
+}
+static bool KandeloNativeSetUncaughtProcess(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  if (!args.get(0).isObject()) { JS_ReportErrorASCII(cx, "Uncaught owner requires the actual process"); return false; }
+  auto* state = KandeloGetNativeAsyncState(cx); if (!state) return false;
+  if (!state->process.initialized()) state->process.init(cx);
+  state->process = &args[0].toObject();
+  args.rval().setUndefined(); return true;
 }
 
 static bool KandeloFsGcErrorsPending(JSContext* cx) {
@@ -194,6 +290,8 @@ static void KandeloShutdownNativeAsync(ShellContext* sc) {
   sc->kandeloNativeAsync = nullptr;
   state->detached = true;
   state->trackingDestroy = false;
+  state->execution.Clear();
+  state->process.reset();
   state->destroyIds.clearAndFree();
   state->retryIds.clearAndFree();
   state->fsGcRetry.reset();

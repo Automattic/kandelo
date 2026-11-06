@@ -161,7 +161,7 @@ class KandeloDnsRecordWork final : public js::shell::KandeloNativeWork {
     KandeloNativeCallbackScope scope(cx, owner, frame);
     if (!scope.Enter()) return scope.Stopped();
     if (!JS_CallFunctionValue(cx, owner, callback,
-            JS::HandleValueArray::subarray(arguments, 0, count), &ignored)) return false;
+            JS::HandleValueArray::subarray(arguments, 0, count), &ignored)) return scope.Fail();
     return scope.Close();
   }
   void Cancel(JSContext*) override {

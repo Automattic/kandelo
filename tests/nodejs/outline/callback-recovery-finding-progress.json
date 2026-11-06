@@ -1,0 +1,114 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/async.md",
+    "findingIds": [
+      "A-021",
+      "A-022",
+      "A-025"
+    ],
+    "supportingDocuments": [
+      "tests/nodejs/audit/filesystem-contracts.md",
+      "tests/nodejs/audit/process-contracts.md"
+    ],
+    "relatedFamilies": [
+      "async",
+      "filesystem",
+      "network",
+      "compression",
+      "observability",
+      "processes",
+      "engine"
+    ],
+    "scope": "Actual native execution/fatal callback ownership and explicit failure routing subset;not full fatal/Promise/resource closure"
+  },
+  "sourceImplemented": [
+    "Actual native execution-stack allocation/IDs/prior-context/resource roots shared by native callback andJS scopes;read-only existing-state engine default-trigger provider",
+    "Clear epochs prevent callback/job cleanup resurrecting cleared context;context teardown releases actual roots",
+    "Outermost native callback failure invokes real mutable guest process fatal handler before request retirement;unchanged pinned JS handler owns recoveredAfter/Immediate/clear",
+    "Nested synchronous errors remain catchable without global recovery orAfter;timer/tick/job errors recover at actualeventboundary",
+    "FS/Cp/DNS/codec/histogram/StatWatcher actualfailedcalls use scope.Fail;hookfatal uses actualguestprocess exit",
+    "All8productionforwarders,normalprocessbootstrap/staging/declaredsource and3fileengine0119 over148;independent6patchcontextcomposition and7indentationonlycorrections"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-callback-recovery-source-r1/report.json",
+    "sha256": "eff3fe5f8d3a6db987e444e416176fc5ae7a48c6a9a63b027ad5b687e13602d6",
+    "guardedInputs": 715,
+    "wholeNodeReferences": 5,
+    "napiHeaders": 4,
+    "engineFiles": 3,
+    "scope": "Actual execution/fatal recovery source and seven explicit native failure consumers;normal staging/unity/fullbootstrapparse, five exact Node references and four exact NAPIheaders. Actual production SpiderMonkey/JSAPI/GC/realm/loop/guest/four-host remains uncompiled/unvalidated;documentedfatal/main/Promise deviations remain gaps."
+  },
+  "nativeComponentControls": {
+    "report": ".context/node26-callback-recovery-controls-r1/report.json",
+    "sha256": "da4de42d7ef2e3419633f6ea56b60a8a6d08cce4a3e48d8df89a0ffefae49f91",
+    "compileAttempts": 4,
+    "compileFailures": 0,
+    "boundedProcesses": 6,
+    "componentJsGroups": 8,
+    "scope": "Actual portable native execution owner/ledger/callback policy + explicit stand-in payload/Host and NAPI reference roots. Actual generated async/fatal JS and production adapter execute with declared event/timer/metadata/destroy dependencies. Not production SpiderMonkey callbacks/GC/realm/loop/guest/four-host acceptance."
+  },
+  "affectedControls": {
+    "report": ".context/node26-callback-recovery-affected-r1.json",
+    "sha256": "de0ef5d2493e93e353f6f2f91a10c727d21acf2e0e6b1d6c54b0b5eb5c170dca",
+    "passed": 36,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "22existing async/frontend controls with declared test-only arrayexecutionbridge plus14package sourcechecks;not independent native-owner or guest proof"
+  },
+  "packageChecks": {
+    "report": ".context/node26-callback-recovery-affected-r1.json",
+    "sha256": "de0ef5d2493e93e353f6f2f91a10c727d21acf2e0e6b1d6c54b0b5eb5c170dca",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14within36aggregate,not extra passes"
+  },
+  "privateHandoff": {
+    "report": ".context/callback-recovery-agent/handoff.json",
+    "sha256": "289c808bc6e583ce373527d95bc2b7b4ff4ced1dddaa88d9222b958e883a530e",
+    "sealSha256": "c06c717089c8a4bba05f941083a6a052140927658bb66638de05f68b4b9c677b",
+    "entries": 1163,
+    "scope": "Immutable147proposal32source/3engine/8newinputs;root149retains148locale/staging and exact sourcepostimages,engineindentation correction only"
+  },
+  "historicalProposalEvidence": {
+    "report": ".context/callback-recovery-agent/verification.json",
+    "sha256": "17834712ecc169a54f7f833a82dec91a7e119eb9ca5a0809149f8473b2697db5",
+    "rerunThisSlice": false,
+    "scope": "Original8helpercompiles/8JSgroups/22Node26checks and16historicalnative traces kept as identified prior evidence,not newrootpasses;unintendedsetupattempt retained"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-callback-recovery-integration-r1.log",
+      "sha256": "da2d6277c7610205f7a5314b3dee7ae3d2432a5bf6c3d0da953831a81968c2a1",
+      "kind": "root-seal-schema-precondition",
+      "reason": "Root expected dictionary;seal useslist. Failedbeforeanysource mutation;parser corrected without bypassing SHAchecks"
+    },
+    {
+      "report": ".context/callback-recovery-agent/failure-events.json",
+      "sha256": "6870a782ef895fb6ff279a73eb960eb67c0ade3a1e2c8073fde04633538cac74",
+      "kind": "original-source-control-reference-and-setup-failures",
+      "reason": "Original stalebundle/privatebase/rebase/projection/nativeheader/signature/Node24failures and interruptedbaseline provisioning retained with individual scopes"
+    },
+    {
+      "report": ".context/copy-directory-agent/controls-final/report.json",
+      "sha256": "94ce8f72801d75b6cb4e0a2e20286d32a5cef57f45c9231f55c2dfc55965c6cc",
+      "kind": "historical-cp-callback-after-mismatch",
+      "reason": "Historical16matching/1nonpass retained;newsource recoveryrouting is not a currentguestCp pass"
+    }
+  ],
+  "remaining": [
+    "Actual SpiderMonkey C++/JSAPI/GC/realm/OOM/loop/native callback andcurrent identified-artifact four-host validation",
+    "Nativegetterthrow0/proposal7,reentrantfatalabort/inspector,mainstartupIDs,Promiseactivation/rejection andabort/reporting/fatalformatting remain implementationgaps",
+    "Integrate separate TCPreceiveralias/cache/reset and four explicitfailure-route followup;do notuse provisionaloldAfterstack",
+    "Complete perprovider/cancel/teardown/error/ref/auxiliaryREPL/domain ownership andallAPI findings;all19familiespartial,noacceptedplatformexclusions"
+  ],
+  "at": "2026-11-06T16:00:05.653104+00:00",
+  "recipeRevision": 149,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

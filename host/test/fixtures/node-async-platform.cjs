@@ -65,12 +65,31 @@ function createAsyncPlatformControl({ defaultTrigger } = {}) {
   const allocated = new Map(), records = new WeakMap(), driverResources = new Map();
   let lifecycle, nativeHook, priorDriverState;
   const destroyTrackingChanges = [];
+  // Explicit test-only execution bridge for registry/public class controls.
+  // This array is NOT the production native owner. The independently compiled
+  // callback-recovery owner controls validate that portable C++ implementation.
+  const execution = [];
+
   const native = {
+    pushAsyncExecution(id, triggerId, resource) {
+      execution.push({ id, triggerId, resource, prior: state.getStore() });
+    },
+    popAsyncExecution(id) {
+      if (!execution.length) return undefined;
+      const entry = execution[execution.length - 1];
+      if (entry.id !== id) throw Error('Fixture async execution ID mismatch');
+      execution.pop(); return entry.prior;
+    },
+    clearAsyncExecution() { execution.length = 0; state.enterWith(undefined); },
+    executionAsyncId: () => execution[execution.length - 1]?.id ?? 0,
+    triggerAsyncId: () => execution[execution.length - 1]?.triggerId ?? 0,
+    executionAsyncResource: () => execution[execution.length - 1]?.resource,
+    hasAsyncExecution: () => execution.length > 0,
     getAsyncContext: () => state.getStore(),
     // Ordinary registry controls only need the current execution default.
     // Override controls inject the compiled native owner, never a JS duplicate.
     getDefaultTriggerAsyncId: () => defaultTrigger ?
-      defaultTrigger.resolve(state.getStore()?.id ?? 0) : state.getStore()?.id ?? 0,
+      defaultTrigger.resolve(execution[execution.length - 1]?.id ?? 0) : execution[execution.length - 1]?.id ?? 0,
     swapDefaultTriggerAsyncId(value) {
       if (!defaultTrigger) throw Error('Native default-trigger owner was not supplied');
       return defaultTrigger.swap(value);

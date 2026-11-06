@@ -2519,6 +2519,9 @@ Object.assign(fs, _nodeTempdirPlatform.api);
 Object.assign(fs.promises, _nodeTempdirPlatform.promises);
 
 
+_installNodeProcessExceptions({ process, values: _nodeValues,
+    async: _nodeAsyncPlatform, timers, native: _nodeNative });
+
 const timersPromises = (() => {
     function invalid(name, expected) {
         const error = new TypeError('The "' + name + '" argument must be of type ' + expected);

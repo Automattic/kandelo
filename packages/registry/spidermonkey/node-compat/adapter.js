@@ -70,8 +70,9 @@
         const prior = native.getAsyncContext();
         const active = asyncAssign(asyncCreate(null), context, { untrackedTask: true });
         native.setAsyncContext(asyncFreeze(active));
-        try { return asyncApply(fn, receiver, args); }
-        finally { native.setAsyncContext(prior); }
+        let completed = false;
+        try { const result = asyncApply(fn, receiver, args); completed = true; return result; }
+        finally { if (completed) native.setAsyncContext(prior); }
     }
     // The deadline heap owns pending callbacks; reference state is independent
     // of wakeup deadlines. Unreferenced timers remain eligible during live work.
@@ -504,6 +505,14 @@
         getProxyDetails: (value, full) => native.getProxyDetails(value, full),
         getConstructorName: value => native.getConstructorName(value),
         getAsyncContext: () => native.getAsyncContext(),
+        pushAsyncExecution: (...args) => native.pushAsyncExecution(...args),
+        popAsyncExecution: (...args) => native.popAsyncExecution(...args),
+        clearAsyncExecution: (...args) => native.clearAsyncExecution(...args),
+        executionAsyncId: (...args) => native.executionAsyncId(...args),
+        triggerAsyncId: (...args) => native.triggerAsyncId(...args),
+        hasAsyncExecution: (...args) => native.hasAsyncExecution(...args),
+        executionAsyncResource: (...args) => native.executionAsyncResource(...args),
+        setUncaughtProcess: (...args) => native.setUncaughtProcess(...args),
         allocateAsyncId: () => native.allocateAsyncId(),
         getDefaultTriggerAsyncId: () => native.getDefaultTriggerAsyncId(),
         swapDefaultTriggerAsyncId: value => native.swapDefaultTriggerAsyncId(value),

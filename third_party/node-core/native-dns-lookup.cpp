@@ -189,7 +189,7 @@ class KandeloDnsRequestWork final : public js::shell::KandeloNativeWork {
     } else {
       ok = JS_CallFunctionValue(cx, owner, callback, arguments, &ignored);
     }
-    if (!ok) return false;
+    if (!ok) return scope.Fail();
     return scope.Close();
   }
   void Cancel(JSContext*) override {

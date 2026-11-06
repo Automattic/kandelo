@@ -13,8 +13,6 @@ function _createNodeAsyncPlatform(platform) {
     } = primordials;
     const kEmptyObject = ObjectFreeze(ObjectCreate(null));
     const root = ObjectFreeze({ __proto__: null, frame: undefined, id: 0, triggerId: 0, resource: {} });
-    let scopeDepth = 0;
-    const stack = [];
     // The pinned public AsyncHook mutates these callback counts and arrays.
     // Only resource IDs/context and destroy delivery cross the native boundary.
     const kInit = 0, kBefore = 1, kAfter = 2, kDestroy = 3,
@@ -36,7 +34,7 @@ function _createNodeAsyncPlatform(platform) {
         const error = new Error(message); error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
     }
     function executionState() {
-        if (scopeDepth === 0 && state().untrackedTask) {
+        if (!platform.native.hasAsyncExecution() && state().untrackedTask) {
             incomplete('Native async execution IDs and resources are not implemented');
         }
         return state();
@@ -145,20 +143,19 @@ function _createNodeAsyncPlatform(platform) {
         finally { setState(prior); }
     }
     function emitBefore(asyncId, triggerId, resource) {
-        ArrayPrototypePush(stack, state());
-        scopeDepth++;
+        platform.native.pushAsyncExecution(asyncId, triggerId, resource, false);
         setState(ObjectFreeze({ __proto__: null, frame: frame(), id: asyncId, triggerId, resource }));
-        try { emit('before', [asyncId]); }
-        catch (error) {
-            scopeDepth--; setState(ArrayPrototypePop(stack)); throw error;
-        }
+        emit('before', [asyncId]);
     }
     function emitAfter(asyncId) {
         try { emit('after', [asyncId]); }
-        finally {
-            const prior = ArrayPrototypePop(stack);
-            scopeDepth--; setState(prior);
-        }
+        finally { setState(platform.native.popAsyncExecution(asyncId)); }
+    }
+    // Fatal recovery emits after hooks while the failing frame is still
+    // installed. Its native scope owns final restoration/epoch invalidation.
+    function emitRecoveredAfter(asyncId) {
+        emit('after', [asyncId]);
+        platform.native.popAsyncExecution(asyncId);
     }
     const validators = platform.values.validators;
     const modules = new SafeMap([
@@ -211,7 +208,7 @@ function _createNodeAsyncPlatform(platform) {
     const initHooksExist = () => hookExists('init');
     const destroyHooksExist = () => hookExists('destroy');
     const emitInit = (id, type, triggerId, resource) => emit('init', [id, type, triggerId, resource]);
-    const hasAsyncIdStack = () => stack.length > 0;
+    const hasAsyncIdStack = () => platform.native.hasAsyncExecution();
     const registerDestroyHook = (resource, asyncId, destroyed) => finalizers.register(resource, { asyncId, destroyed });
     /* NODE_ASYNC_RESOURCE */
     const nativeResources = new primordials.SafeWeakMap();
@@ -234,9 +231,13 @@ function _createNodeAsyncPlatform(platform) {
         if (kind === 'callback:zero') {
             // Pinned InternalCallbackScope({0,0}) pushes its actual execution
             // resource/default frame without manufacturing an AsyncWrap ID.
+            platform.native.pushAsyncExecution(0, 0, resource, true);
             setState(ObjectFreeze({ __proto__: null, frame: undefined,
                 id: 0, triggerId: 0, resource }));
             return;
+        }
+        if (kind === 'callback:zero:after') {
+            setState(platform.native.popAsyncExecution(0)); return;
         }
         const record = nativeResource(resource);
         if (kind === 'promise:init' || kind === 'task:init' || kind === 'native:init') {
@@ -244,11 +245,14 @@ function _createNodeAsyncPlatform(platform) {
         } else if (kind === 'promise:resolve') {
             emit('promiseResolve', [record.id], true);
         } else if (kind === 'before') {
+            platform.native.pushAsyncExecution(record.id, record.triggerId, resource, true);
             setState(ObjectFreeze({ __proto__: null, frame: capturedFrame,
                 id: record.id, triggerId: record.triggerId, resource }));
             emit('before', [record.id], record.isPromise);
         } else if (kind === 'after') {
-            emit('after', [record.id], record.isPromise);
+            const enteringId = platform.native.executionAsyncId();
+            emit('after', [enteringId], record.isPromise);
+            setState(platform.native.popAsyncExecution(enteringId));
         } else incomplete('Unknown native async lifecycle event: ' + kind);
     }
     // The override belongs to the native environment, never a captured frame.
@@ -278,17 +282,16 @@ function _createNodeAsyncPlatform(platform) {
         if (record === undefined || record.destroyed) incomplete('Async callback has no live owning resource');
         const prior = platform.native.getAsyncContext();
         setFrame(record.frame);
+        emitBefore(record.id, record.triggerId, resource);
+        let completed = false;
         try {
-            emitBefore(record.id, record.triggerId, resource);
-            let completed = false;
-            try {
-                const result = ReflectApply(fn, receiver, args);
-                completed = true; return result;
-            } finally {
-                if (completed) emitAfter(record.id);
-                else { scopeDepth--; setState(ArrayPrototypePop(stack)); }
-            }
-        } finally { setState(prior); }
+            const result = ReflectApply(fn, receiver, args);
+            completed = true; return result;
+        } finally {
+            // On throw, the real entry/loop invokes the actual process handler
+            // before retiring this stack. It must still see its IDs and frame.
+            if (completed) { emitAfter(record.id); setState(prior); }
+        }
     }
     /* NODE_TICK_OBJECT */
     function enqueueTick(fn, ...args) {
@@ -315,9 +318,9 @@ function _createNodeAsyncPlatform(platform) {
     }
     platform.native.setAsyncLifecycle(lifecycle);
     platform.native.setAsyncDestroyTracking(false);
-    function executionAsyncId() { return executionState().id; }
-    function triggerAsyncId() { return executionState().triggerId; }
-    function executionAsyncResource() { return executionState().resource; }
+    function executionAsyncId() { executionState(); return platform.native.executionAsyncId(); }
+    function triggerAsyncId() { executionState(); return platform.native.triggerAsyncId(); }
+    function executionAsyncResource() { executionState(); return platform.native.executionAsyncResource() ?? root.resource; }
     const api = {
         get AsyncLocalStorage() {
             return require('internal/async_local_storage/async_context_frame');
@@ -338,6 +341,14 @@ function _createNodeAsyncPlatform(platform) {
         symbols: { owner_symbol, async_id_symbol, trigger_async_id_symbol },
         createTask, runTask, retireTask, enqueueTick, drainTicks, drainDestroys, runInternalImmediate, defaultTriggerAsyncIdScope,
         hasTicks: () => tickCursor < tickQueue.length,
+        uncaught: {
+            executionAsyncId, hasAsyncIdStack,
+            clearDefaultTriggerAsyncId: () => platform.native.swapDefaultTriggerAsyncId(-1),
+            clearAsyncIdStack: () => platform.native.clearAsyncExecution(),
+            afterHooksExist: () => hookExists('after'),
+            emitAfter: emitRecoveredAfter,
+            popAsyncContext: id => platform.native.popAsyncExecution(id),
+        },
     };
 }
 

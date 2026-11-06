@@ -377,6 +377,7 @@ cp "$REPO_ROOT/third_party/node-core/sqlite-limit-names.h" "$SRC_DIR/js/src/shel
 python3 "$REPO_ROOT/third_party/node-core/generate-sqlite-constants.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-sqlite-constants.h"
 cp "$REPO_ROOT/third_party/node-core/callback-scope.h" "$SRC_DIR/js/src/shell/kandelo-node-callback-scope.h"
+cp "$REPO_ROOT/third_party/node-core/callback-execution-stack.h" "$SRC_DIR/js/src/shell/kandelo-node-callback-execution-stack.h"
 cp "$REPO_ROOT/third_party/node-core/native-retained-memory.h" "$SRC_DIR/js/src/shell/native-retained-memory.h"
 python3 "$REPO_ROOT/third_party/node-core/stage-stat-watcher.py" \
     --shell-dir "$SRC_DIR/js/src/shell"

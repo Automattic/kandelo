@@ -245,7 +245,7 @@ static bool KandeloCodecCall(JSContext* cx, HandleObject owner,
   RootedValue frame(cx, JS::GetReservedSlot(owner, CodecContextFrame));
   KandeloNativeCallbackScope scope(cx, owner, frame);
   if (!scope.Enter()) return scope.Stopped();
-  if (!JS_CallFunctionValue(cx, owner, callback, arguments, result)) return false;
+  if (!JS_CallFunctionValue(cx, owner, callback, arguments, result)) return scope.Fail();
   return scope.Close();
 }
 

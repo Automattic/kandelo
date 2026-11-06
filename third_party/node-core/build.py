@@ -153,6 +153,30 @@ if async_platform.count(marker) != 1:
     raise ValueError('Missing or ambiguous TickObject marker')
 async_platform = async_platform.replace(marker, raw.decode('utf-8'))
 bundle += async_platform + '\n'
+
+exception_spec = json.loads((root / 'callback-recovery-sources.json').read_text())
+if exception_spec['version'] != target['version'] or exception_spec['commit'] != target['source']['commit']:
+    raise ValueError('Exception recovery target/source mismatch')
+for name, reference in exception_spec['sources'].items():
+    if hashlib.sha256((root / reference['path']).read_bytes()).hexdigest() != reference['sha256']:
+        raise ValueError('Exception recovery reference identity mismatch: ' + name)
+exception_source = exception_spec['sources']['execution']
+exception_raw = (root / exception_source['path']).read_bytes()
+if hashlib.sha256(exception_raw).hexdigest() != exception_source['sha256']:
+    raise ValueError('Exception recovery complete source identity mismatch')
+selection = exception_spec['selection']
+text = exception_raw.decode('utf-8')
+if text.count(selection['start']) != 1:
+    raise ValueError('Ambiguous exception recovery algorithm')
+start = text.index(selection['start'])
+body = text[start:start + selection['length']]
+if hashlib.sha256(body.encode()).hexdigest() != selection['sha256']:
+    raise ValueError('Exception recovery algorithm identity mismatch')
+adapter = (root / 'process-exception-adapter.js').read_text()
+marker = '/* NODE_GLOBAL_UNCAUGHT_EXCEPTION */'
+if adapter.count(marker) != 1: raise ValueError('Review exception recovery marker')
+bundle += adapter.replace(marker, body) + '\n'
+
 path_factories = []
 for name, item in manifest['pathPlatform'].items():
     raw = (root / item['path']).read_bytes()
