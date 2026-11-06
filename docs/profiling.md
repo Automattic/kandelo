@@ -462,7 +462,10 @@ Sampling follows the timed phases, so native process inspection does not
 affect their latency samples. Node reports the whole round's child process,
 including its worker threads, image staging, native code, and allocator pages.
 Chromium reports the sum of RSS for processes returned by its browser
-debugging session. That sum can count shared native pages more than once;
+debugging session, using `benchmarks/process-rss.py` and the dev shell's
+declared psutil library. Failed queries remain errors rather than zero
+samples. Darwin's Nix `ps` cannot query RSS without a system entitlement.
+That sum can count shared native pages more than once;
 it is not unique physical footprint or guest linear-memory usage. Each
 Chromium round already uses a fresh browser. A bounded run and an RSS trend
 do not by themselves prove a leak fix or long-term production stability.

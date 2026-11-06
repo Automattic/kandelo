@@ -231,7 +231,9 @@
             #   gh     — only used by stage-pr-staging release lookup
             pkgs.curl
             pkgs.perl
-            pkgs.python3
+            # psutil supplies native RSS queries for browser benchmarks;
+            # Darwin's unentitled Nix ps cannot read the rss field.
+            (pkgs.python3.withPackages (pythonPackages: [ pythonPackages.psutil ]))
             # Ruby's standard Psych parser is used by workflow trust tests
             # so workflow contracts are checked as YAML data.
             pkgs.ruby

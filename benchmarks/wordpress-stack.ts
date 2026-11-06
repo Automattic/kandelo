@@ -95,11 +95,14 @@ async function chromiumRss(browser: Browser): Promise<number> {
     const { processInfo } = await session.send("SystemInfo.getProcessInfo");
     const pids = processInfo.map(process => process.id);
     if (pids.length === 0) throw new Error("Chromium reported no processes for RSS measurement");
-    const values = execFileSync("ps", ["-o", "rss=", "-p", pids.join(",")], { encoding: "utf8" });
-    const rssKiB = values.trim().split(/\s+/).map(Number);
-    if (rssKiB.some(value => !Number.isFinite(value))) throw new Error("Invalid native RSS sample");
+    const sample = JSON.parse(execFileSync("python3", [
+      resolve(repoRoot, "benchmarks/process-rss.py"), ...pids.map(String),
+    ], { encoding: "utf8" })) as { rssBytes: number };
+    if (!Number.isSafeInteger(sample.rssBytes) || sample.rssBytes <= 0) {
+      throw new Error("Invalid native RSS sample");
+    }
     // Sum of process RSS can count shared native pages more than once.
-    return rssKiB.reduce((total, value) => total + value, 0) * 1024;
+    return sample.rssBytes;
   } finally { await session.detach(); }
 }
 

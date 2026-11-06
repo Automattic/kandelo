@@ -97,7 +97,10 @@ production readiness, a physical-memory plateau, or superiority over PHP-FPM.
    nine published) in 21m06s after initializing the exact pinned Rust libc
    submodule. All nine Node and nine Chromium suites are now provisioned;
    provisioning under build load is not a performance comparison. Browser
-   RSS sampling also needs its missing declared `ps` tool. The
+   RSS sampling now uses declared psutil after Nix Darwin `ps` rejected
+   its RSS query for a missing entitlement. A real four-process Chromium
+   sample passes; full WordPress sampling and the coherent tool-input
+   rebuild remain pending. The
    baseline commit `5e25c7365` is an intermediate branch revision, so those
    comparisons cannot establish superiority over main.
 5. Review the remaining general Go/POSIX gaps: child credentials, inherited
@@ -133,6 +136,22 @@ standard-library, libc, kernel, or ABI modification is involved.
 The earlier failed dinit retirement remains historical evidence. Its exact
 waiter ordering was not captured, so the focused reproduction and eight
 successful real cases do not establish the complete lifecycle release gate.
+
+### Declared browser RSS tooling — 2026-11-06
+
+The first declared-tool attempt (`pkgs.unixtools.ps`) exposes a real Darwin
+boundary: its `rss` field requires a system entitlement. It is not retained
+in the flake. The existing declared Python now includes pinned psutil, and
+`benchmarks/process-rss.py` samples the exact Chromium process IDs returned
+by the browser debugging session. Failed queries fail the observation;
+missing processes are never silently assigned zero memory. The sum can
+still count shared native pages more than once.
+
+The real blank-page Chromium check reads all four reported processes and
+records 254,181,376 bytes in `.context/declared-browser-rss-check.log`.
+This proves tool availability, not WordPress memory behavior or stability.
+The flake is a global package input, so the next build regenerates its
+cohort normally instead of bypassing cache identity or ambient host tools.
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task.
