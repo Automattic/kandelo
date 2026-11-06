@@ -9,7 +9,7 @@ async function ready(page: Page): Promise<void> {
     if (status === "error") throw new Error(await page.locator("body").innerText());
     return status;
   }, { timeout: 120_000 }).toBe("running");
-  await expect.poll(() => page.locator(".xterm-rows").first().textContent(), { timeout: 60_000 }).toMatch(/kandelo(?:-bash-[0-9.]+)?\$ ?/);
+  await expect.poll(() => page.locator(".xterm-rows").first().textContent(), { timeout: 60_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
 }
 
 test("bare entry defaults to temporary, reload preserves its disk, and keeping it requires confirmation without another download", async ({ page }, testInfo) => {

@@ -105,7 +105,7 @@ for (const source of ["freedoom1", "freedoom2", "freedm"]) {
       // A separate command terminal observes the real installed license file.
       await terminal(other.page);
       await other.page.getByRole("button", { name: "New terminal", exact: true }).click();
-      await expect.poll(() => terminal(other.page)).toContain("kandelo$");
+      await expect.poll(() => terminal(other.page)).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
       const prepared = await runTerminalCommand(other.page, "test -s /tmp/kandelo-doom-data.bin && head -c 4 /tmp/kandelo-doom.wad && head -1 /tmp/kandelo-doom-notices/COPYING.txt");
       expect(prepared.output).toContain("IWAD");
       expect(prepared.output).toContain("Copyright");
@@ -288,7 +288,7 @@ for (const pkg of ["python-browser-bundle", "php"]) {
         const local = await runTerminalCommand(other.page, "mkdir -p /tmp/local-www && echo local-preview-file > /tmp/local-www/index.html");
         expect(local.exitCode).toBe(0);
         await other.page.getByRole("button", { name: "New terminal", exact: true }).click();
-        await expect.poll(() => terminal(other.page)).toContain("kandelo$");
+        await expect.poll(() => terminal(other.page)).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
         await other.page.locator(".kshell-host:visible .xterm-helper-textarea").focus();
         await other.page.keyboard.type("php -S 0.0.0.0:8081 -t /tmp/local-www");
         await other.page.keyboard.press("Enter");

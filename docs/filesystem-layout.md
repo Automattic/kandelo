@@ -40,6 +40,8 @@ Core images share the rootfs account and privilege foundation: `maker` belongs
 to `wheel`, and `/etc/sudoers` grants that group password-authenticated sudo.
 Service builders preserve inherited account databases and supplementary groups;
 fresh images use the rootfs account files instead of independent account lists.
+The shared maker Bash prompt uses `\u@\h:\W\$ ` so the user, current hostname,
+and directory basename are expanded when the prompt is displayed.
 
 Kandelo retains separate `/bin` and `/usr/bin` directories and installs each
 command once. The FHS distinction is about purpose, not whether a command

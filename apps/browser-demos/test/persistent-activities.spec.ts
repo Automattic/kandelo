@@ -60,7 +60,7 @@ for (const initialProfile of ["shell", "doom"]) test(`Doom menu saves survive qu
     if (initialProfile !== "doom") return;
     await page.getByRole("button", { name: "Terminal", exact: true }).click();
     await page.getByRole("button", { name: "New terminal", exact: true }).click();
-    await expect(page.locator(".kshell-host:visible .xterm-rows")).toContainText(/kandelo(?:-bash-[0-9.]+)?\$ ?/, { timeout: 30000 });
+    await expect(page.locator(".kshell-host:visible .xterm-rows")).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, { timeout: 30000 });
     await page.getByRole("button", { name: "Graphics", exact: true }).click();
   };
   await page.goto(await machineUrl(page, initialProfile));
@@ -81,7 +81,7 @@ for (const initialProfile of ["shell", "doom"]) test(`Doom menu saves survive qu
   await doomKeys(page, ["Escape", "ArrowDown", "ArrowDown", "Enter", "y"]);
   await expect(page.getByRole("button", { name: "Graphics", exact: true })).toBeDisabled({ timeout: 30000 });
   await page.getByRole("tab", { name: initialProfile === "doom" ? "TTY1" : "fbDOOM", exact: true }).click();
-  await expect(page.locator(".kshell-host:visible .xterm-rows")).toContainText(/kandelo(?:-bash-[0-9.]+)?\$ ?/, { timeout: 30000 });
+  await expect(page.locator(".kshell-host:visible .xterm-rows")).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, { timeout: 30000 });
   await page.locator(".kshell-host:visible").click();
   await page.keyboard.press("Control+u");
   await page.keyboard.insertText("printf '%s%s=%s\\n' DOOM_ EXIT \"$?\"");

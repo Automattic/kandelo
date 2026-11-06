@@ -163,7 +163,7 @@ async function runInShell(page: Page, command: string): Promise<string> {
     await page.getByRole("button", { name: "New terminal", exact: true }).click();
     await expect
       .poll(() => terminalText(page), { timeout: 60_000 })
-      .toMatch(/kandelo\$\s*$/);
+      .toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
     expect(await terminalText(page), "the probe shell is ScummVM's terminal")
       .not.toMatch(/\/usr\/bin\/scummvm/);
     probeTerminalOpen = true;

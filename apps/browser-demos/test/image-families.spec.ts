@@ -125,7 +125,7 @@ test("Web and Graphics switch independently without reloading the website or res
   await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/separate-views-${testInfo.project.name}.png`) });
   await terminal(page);
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
-  await expect(page.locator(".kshell-host:visible .xterm-rows").first()).toContainText(/kandelo(?:-bash-[0-9.]+)?\$ ?/, { timeout: 120000 });
+  await expect(page.locator(".kshell-host:visible .xterm-rows").first()).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, { timeout: 120000 });
   await runTerminalCommand(page, "ps -A | grep '[d]init' | awk '{print $1}' >/tmp/display-supervisor-after; cmp /tmp/display-supervisor-pid /tmp/display-supervisor-after && kandelo-service list | grep -E 'web-static +running +enabled' && printf 'VIEW_SERVICES_RETAINED\\n'", "VIEW_SERVICES_RETAINED");
   expect(kernels).toHaveLength(originalKernelCount);
   expect(await currentComputerMetadata(page)).toMatchObject(original);
