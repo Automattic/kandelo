@@ -1,0 +1,84 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem-contracts.md",
+    "findingIds": [
+      "FS-017"
+    ],
+    "relatedFamilies": [
+      "values",
+      "filesystem",
+      "observability"
+    ],
+    "scope": "Post-audit shared helper/first-read date semantics correction;not full Stats/util/metadata closure"
+  },
+  "sourceImplemented": [
+    "Actual setOwnProperty returns its stored value after defining the real own data property",
+    "Unchanged pinned Number/BigInt Stats lazy Date getters now return/cache the real Date on first access",
+    "Current generated bundle retains exactly the same one-line semantic delta;native/backing/engine owners unchanged"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-own-property-source-r1/report.json",
+    "sha256": "0e8b38c842caa12a9d7274442159b28cebc69aeb73e00a80893ab6272fcf02ce",
+    "guardedInputs": 687,
+    "wholeNodeReferences": 2,
+    "scope": "One-line actual shared helper and exact generated bundle delta. Eight first-read cached-date/descriptor observations over Number/BigInt Stats plus native/candidate helper identity/exception controls. Actual native stat records are a dependency;guest metadata/JSAPI/four-host behavior unvalidated. No compilation or product build."
+  },
+  "nativeDependencyControls": {
+    "report": ".context/node26-own-property-after.log",
+    "sha256": "2828fe7276a015e1e0de7ab05e94e176ce06c0d86ae09e413df40850bc208397",
+    "statsModes": 2,
+    "dateObservations": 8,
+    "helperOwners": 2,
+    "scope": "Actual candidate values/Stats JS over native stat records and native util comparison;not guest/four-host conformance"
+  },
+  "affectedControls": {
+    "report": ".context/node26-own-property-affected-r1.json",
+    "sha256": "60efb41a4cf7da23fd76120dcb20f0791bd528129993a06129284ec1af478aed",
+    "passed": 37,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "23pathname/util groups+14package source checks;explicit native dependencies"
+  },
+  "packageChecks": {
+    "report": ".context/node26-own-property-affected-r1.json",
+    "sha256": "60efb41a4cf7da23fd76120dcb20f0791bd528129993a06129284ec1af478aed",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "14package checks within37aggregate,not extra passes"
+  },
+  "privateHandoff": {
+    "report": ".context/stat-watcher-agent/shared-helper/identities.json",
+    "sha256": "d535f82eaeb9d249a20a8f2d553ff8d7ce19c139611cdfffd61203120ff1ebe3",
+    "sealSha256": "d017bab45db88069214d74e4a59295d4ba70ba85b61c0a28008768f5d90564a8",
+    "scope": "Immutable one-line source and independent original Date failure preserved"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-own-property-before.log",
+      "sha256": "cd301ede2e893d9ae2d90f1b4fcf8b839b1b16138a9267f97a8925e53b67af62",
+      "kind": "first-stats-date-access",
+      "reason": "Actual candidate Number Stats atime returns undefined on first read;exit1. Identical assertions pass after helper return correction."
+    },
+    {
+      "report": ".context/stat-watcher-agent/shared-helper/component-date-nonpass.log",
+      "sha256": "695019d45dfa0e4ebe986fe992aa5b9bb32aaa0f51ac9b1d86c008ef574c8a41",
+      "kind": "independent-original-watcher-component",
+      "reason": "Original Date expectation unchanged;one-line shared helper correction supplies real value"
+    }
+  ],
+  "remaining": [
+    "Current guest/backend stat/time/birthtime/Temporal/path metadata and four-host validation remain open",
+    "Integrate watcher/TLS/lazy Worker and production original-span routing,then targeted combined engine build within deferral",
+    "All19families remain partial;no API closure or accepted platform exclusion"
+  ],
+  "at": "2026-11-06T06:15:01.437664+00:00",
+  "recipeRevision": 141,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -1,5 +1,11 @@
 # Node 26 core implementation outline
 
+Source checkpoint141 fixes the shared own-property helper's stored-value
+return. First-read Number/BigInt Stats dates and37 affected/package checks pass
+with native dependencies. Guest metadata and four-host conformance remain open.
+See the [helper scope](own-property-return-integration.md).
+
+
 Source checkpoint140 adds actual retained-backing engine/native capabilities
 and correct known-owner controller accounting. Portable ownership controls and14
 package checks pass; production byte-consumer routing, VM/GC/transport and all

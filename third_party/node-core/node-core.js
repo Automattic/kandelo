@@ -17100,6 +17100,7 @@ module.exports = {
                 setOwnProperty(object, key, value) {
                     ObjectDefineProperty(object, key, { __proto__: null, value,
                         writable: true, enumerable: true, configurable: true });
+                    return value;
                 },
                 lazyDOMException(message, name) {
                     return new (platform.getDOMException())(message, name);
