@@ -1,8 +1,8 @@
 # Kandelo
 
-Kandelo is an operating system kernel for WebAssembly (Wasm). It runs Unix
+Kandelo is an operating system kernel for WebAssembly (Wasm). It runs Unix-style
 software — shells, editors, web servers, databases, and games — in a browser
-or Node.js. Programs use POSIX, the standard Unix interfaces for files,
+or Node.js. Programs use POSIX, the standard interfaces for files,
 processes, pipes, signals, and sockets, to work together.
 
 **[Try Kandelo in your browser](https://kandelo.dev/)** — open the Library
