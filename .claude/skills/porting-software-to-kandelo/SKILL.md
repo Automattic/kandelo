@@ -36,6 +36,7 @@ The current shape: `source scripts/package-build-roots.sh`, `kandelo_package_pre
 | `kernel_abi` value | Current `ABI_VERSION` in `crates/program-abi/src/lib.rs`. Required with `[build]`; recorded as a floor but not yet enforced, so neighbouring manifests and doc examples carry stale values. Do not copy them. |
 | C++ programs | `depends_on` libcxx plus `kandelo_package_prepare_private_sysroot`, as in `packages/registry/dinit/` |
 | Rust programs and dependency portability | `sdk/rust/README.md` "Porting Rust dependencies"; termchat is the standalone program reference, librsvg/rsvg-convert cover native dependencies |
+| Go programs, modules, and Go/Wasm cgo | `docs/go.md` for supported package entry points and limits; `packages/registry/go-hello/` for plain Go and `packages/registry/frankenphp-caddy/` for cgo. Changes to the target runtime, linker, or standard-library port follow `docs/agent-guidance/go-runtime.md` |
 | Fork-using programs | `docs/fork-instrumentation.md` |
 | The build compiles helpers and runs them to generate headers or data the program reads (type sizes, struct layouts, OS names must be the target's) | Build inside a Kandelo machine with `scripts/guest-build.sh`: `docs/package-management.md` "Building inside Kandelo". `host/test/fixtures/guest-build/gen-header` is the smallest working example. Do not patch layouts to agree with a host-built helper |
 | Large compiler builds or engine resource failures | `docs/porting-guide.md` "Large compiler builds and runtime limits"; `docs/browser-support.md` "Firefox executable-code limit" |

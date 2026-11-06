@@ -5639,3 +5639,8 @@ optional Go sample alongside the previous products and benchmark inputs.
 No overlapping WordPress image builds are started. The revised image must
 still prove startup without a fatal trace or hidden restart, actual PHP
 draining on both hosts, and complete machine retirement.
+
+The porting skill's reference table now routes Go packages directly to the
+public support overview, plain-Go/cgo registry examples, and the focused Go
+runtime/linker guide. This completes the guidance-discovery link for the
+earlier Go-specific guidance work item. It changes documentation only.
