@@ -395,7 +395,9 @@ dynamic homepage responses through the actual dinit service stacks, once on
 the Node host and once through the Chromium browser demo. It verifies that
 the browser-served image has the same SHA-256 as the Node input before
 recording browser samples. Each profile boots a fresh machine per round;
-profile order alternates. Three requests warm the stack, then 12 unique-query
+profile order alternates. Each Node round runs in a fresh child process and
+records its native process ID, just as each Chromium round launches a fresh
+browser. Three requests warm the stack, then 12 unique-query
 responses per round are timed including full response bodies. A separate
 four-client phase issues four requests per client and records completed
 requests per second over the whole concurrent phase. HTTP errors,
@@ -416,6 +418,8 @@ scripts/dev-shell.sh bash -c 'export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
 The default report is `.context/wordpress-stack-benchmark.json`; use
 `--output=...`, `--host=node|browser|both`, `--alternative=classic|caddy`, `--browser-base-url=...`, or
 `--port=...`, `--clients=...`, or `--concurrent-samples=...` to change it.
+Use `--image-path=...` to select an archived immutable image for a Node
+comparison. Browser runs still require the served image to match its hash.
 This is a paired, single-machine latency, cold-boot, and bounded
 multi-client throughput comparison, not a statistically powered superiority
 test. Node and Chromium medians describe different
@@ -432,6 +436,19 @@ a full-page cache: these results cannot establish the performance of a
 cache-enabled visitor experience. The Caddy profile also requests a 1 GiB
 Wasm memory ceiling, versus 256 MiB for the nginx/PHP-FPM profile; this is
 an address-space ceiling, not a measurement of host physical memory.
+
+Add `--soak-seconds=900` for a sustained four-client phase after each
+profile's timed measurements. Every response must still contain the real
+WordPress page without PHP diagnostics. The report keeps completed request
+counts and native RSS samples at the start, every 15 seconds, and the end.
+Sampling follows the timed phases, so native process inspection does not
+affect their latency samples. Node reports the whole round's child process,
+including its worker threads, image staging, native code, and allocator pages.
+Chromium reports the sum of RSS for processes returned by its browser
+debugging session. That sum can count shared native pages more than once;
+it is not unique physical footprint or guest linear-memory usage. Each
+Chromium round already uses a fresh browser. A bounded run and an RSS trend
+do not by themselves prove a leak fix or long-term production stability.
 
 #### mariadb
 

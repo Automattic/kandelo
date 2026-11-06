@@ -5196,3 +5196,43 @@ intermittent failure, not a green full-inventory result. Its actual failure
 payload and source-log hash are retained under
 `tests/baselines/2026-11-05-go-signals/`. A smaller stop/continue pipe
 reproducer with child-error capture is running before any behavior change.
+
+
+**2026-11-05 — Add reproducible sustained-load and native-RSS sampling.**
+The existing paired stack benchmark now accepts `--soak-seconds` and
+`--image-path`, validates every sustained-load response, and records
+request counts plus native RSS every fifteen seconds. This optional phase
+follows timed latency/throughput phases. Node rounds now run in separate
+child processes, record each child PID, and wait for its exit before the
+next round. Chromium already launches a fresh browser per round; its RSS
+collector sums the processes reported by the browser debugging session.
+That sum can double-count shared pages and is not unique physical footprint.
+
+The first Node smoke run exposed memory retained across profiles in the
+same parent. After process isolation, the two-profile smoke passes again
+with distinct PIDs and image revision 32, SHA-256
+`9dbe6dc206daf91f6831c21e4b3908cc7ad859d7a67f64a98308b8515e1fe88b`.
+FPM completes 32 requests in its fifteen-second phase and classic completes
+58. Whole-process RSS samples are approximately 5.08 -> 4.72 GiB for FPM
+and 9.04 -> 8.02 GiB for classic. These include image staging, native code,
+kernel/guest workers, and allocator pages. They are not PHP-only footprints,
+current-image measurements, evidence of a plateau, or performance comparisons:
+compilers and another probe were active, and the timed smoke has one sample.
+Raw provenance and measurements are in
+`.context/wordpress-isolated-soak-smoke.json`; the complete command and log
+are in `wordpress-isolated-soak-smoke-1105-192927-5e10` (1m03s).
+
+The archived-image Node smoke validates the harness only. Its Chromium
+RSS/sustained-load path and long runs still await the current application
+image. A direct TypeScript invocation cannot type-check the whole benchmark
+import graph because of existing Vite-only imports and browser filesystem
+ambient types; its diagnostics are retained in
+`.context/wordpress-stack-typecheck.log`. The strict portable graceful-PHP
+helper check passes. Actual PHP/Caddy shutdown remains pending.
+
+The standalone stop/continue reproducer passes 200 rounds in each Node
+mode with clean child stderr/diagnostics (2m42s including builds). Its
+Chromium preparation first hit duplicate Playwright installations and an
+ES-module directory import; neither attempt ran guest tests. The corrected
+module/runner selection is now running. These observations do not establish
+the cause of the upstream Chromium TestWaitid failure.

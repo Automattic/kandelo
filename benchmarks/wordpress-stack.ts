@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
+import { execFileSync, fork } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { cpus, platform, arch } from "node:os";
 import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { chromium, type Page } from "playwright";
+import { chromium, type Browser, type Page } from "playwright";
 import { machineUrl } from "../apps/browser-demos/test/support/kandelo-machine.ts";
 import { writeVfsFile } from "../host/src/vfs/image-helpers.ts";
 import {
@@ -34,6 +35,8 @@ interface Options {
   port: number;
   browserBaseUrl: string;
   output: string;
+  imagePath?: string;
+  soakSeconds: number;
   profiles: readonly Profile[];
 }
 
@@ -45,6 +48,57 @@ interface RoundResult {
   latenciesMs: number[];
   throughputRequests: number;
   throughputDurationMs: number;
+  nodeProcessId?: number;
+  soak?: SoakResult;
+}
+
+interface SoakResult {
+  requests: number;
+  durationMs: number;
+  memoryScope: string;
+  samples: { elapsedMs: number; rssBytes: number }[];
+}
+
+// These samples follow the timed benchmark, so process inspection does not
+// contaminate request-latency measurements. No forced collection or restart.
+async function measureSoak(
+  seconds: number,
+  clients: number,
+  batch: () => Promise<void>,
+  memory: () => Promise<number>,
+  memoryScope: string,
+): Promise<SoakResult> {
+  const began = performance.now();
+  const samples: { elapsedMs: number; rssBytes: number }[] = [];
+  let requests = 0;
+  const sample = async () => {
+    const rssBytes = await memory();
+    const record = { elapsedMs: performance.now() - began, rssBytes };
+    samples.push(record);
+    console.log(`soak ${memoryScope}: ${JSON.stringify({ ...record, requests })}`);
+  };
+  await sample();
+  while (performance.now() - began < seconds * 1000) {
+    await batch();
+    requests += clients;
+    if (performance.now() - began - samples.at(-1)!.elapsedMs >= 15_000) await sample();
+  }
+  await sample();
+  return { requests, durationMs: performance.now() - began, memoryScope, samples };
+}
+
+async function chromiumRss(browser: Browser): Promise<number> {
+  const session = await browser.newBrowserCDPSession();
+  try {
+    const { processInfo } = await session.send("SystemInfo.getProcessInfo");
+    const pids = processInfo.map(process => process.id);
+    if (pids.length === 0) throw new Error("Chromium reported no processes for RSS measurement");
+    const values = execFileSync("ps", ["-o", "rss=", "-p", pids.join(",")], { encoding: "utf8" });
+    const rssKiB = values.trim().split(/\s+/).map(Number);
+    if (rssKiB.some(value => !Number.isFinite(value))) throw new Error("Invalid native RSS sample");
+    // Sum of process RSS can count shared native pages more than once.
+    return rssKiB.reduce((total, value) => total + value, 0) * 1024;
+  } finally { await session.detach(); }
 }
 
 function parseOptions(): Options {
@@ -65,7 +119,7 @@ function parseOptions(): Options {
   if (host !== "node" && host !== "browser" && host !== "both") {
     throw new Error("--host must be node, browser, or both");
   }
-  const known = new Set(["host", "rounds", "warmups", "samples", "clients", "concurrent-samples", "port", "browser-base-url", "output", "alternative"]);
+  const known = new Set(["host", "rounds", "warmups", "samples", "clients", "concurrent-samples", "port", "browser-base-url", "output", "alternative", "soak-seconds", "image-path"]);
   for (const name of values.keys()) {
     if (!known.has(name)) throw new Error(`Unknown option --${name}`);
   }
@@ -88,6 +142,8 @@ function parseOptions(): Options {
     port,
     browserBaseUrl: values.get("browser-base-url") ?? "http://127.0.0.1:5401",
     output: resolve(values.get("output") ?? ".context/wordpress-stack-benchmark.json"),
+    imagePath: values.has("image-path") ? resolve(values.get("image-path")!) : undefined,
+    soakSeconds: integer("soak-seconds", 0, 0),
     profiles: ["wordpress-sqlite", alternative === "caddy" ? "wordpress-frankenphp-caddy" : "wordpress-frankenphp"],
   };
 }
@@ -177,10 +233,18 @@ async function measureNode(profile: Profile, round: number, options: Options, im
       }
       await Promise.all(requests);
     }
+    const throughputDurationMs = performance.now() - throughputStarted;
+    const soak = options.soakSeconds > 0 ? await measureSoak(
+      options.soakSeconds, options.clients,
+      () => Promise.all(Array.from({ length: options.clients }, () =>
+        fetchWordPress(`${baseUrl}?kandelo_soak=${performance.now()}`))).then(() => {}),
+      async () => process.memoryUsage.rss(), "whole-node-process",
+    ) : undefined;
     return {
       host: "node", profile, round, startupMs, latenciesMs,
       throughputRequests: options.clients * options.concurrentSamples,
-      throughputDurationMs: performance.now() - throughputStarted,
+      throughputDurationMs, soak,
+      nodeProcessId: process.pid,
     };
   } finally {
     try {
@@ -191,6 +255,45 @@ async function measureNode(profile: Profile, round: number, options: Options, im
     }
     if (diagnostics.length > 0) throw new Error(`Node host diagnostics: ${JSON.stringify(diagnostics)}`);
   }
+}
+
+interface NodeMeasurement {
+  profile: Profile;
+  round: number;
+  options: Options;
+  imagePath: string;
+}
+
+// Each browser round already gets a fresh process. Do the same for Node:
+// prior image staging, module caches, and allocator pages must not accumulate
+// in a parent whose RSS is attributed to the next profile.
+function measureNodeIsolated(measurement: NodeMeasurement): Promise<RoundResult> {
+  return new Promise((resolveResult, reject) => {
+    const child = fork(fileURLToPath(import.meta.url), [], {
+      env: { ...process.env, KANDELO_WORDPRESS_STACK_WORKER: "1" },
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+    });
+    let result: RoundResult | undefined;
+    let failure: Error | undefined;
+    const { options } = measurement;
+    const limitMs = 240_000 + options.soakSeconds * 1000 +
+      (options.warmups + options.samples + options.concurrentSamples + 1) * 30_000;
+    const timer = setTimeout(() => {
+      failure = new Error(`Node benchmark round exceeded ${limitMs} ms`);
+      child.kill("SIGTERM");
+    }, limitMs);
+    child.on("message", message => { result = message as RoundResult; });
+    child.once("error", error => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      if (!failure && code === 0 && result?.nodeProcessId === child.pid) resolveResult(result);
+      else reject(failure ?? new Error(`Node benchmark worker exited: ${code ?? signal}`));
+    });
+    child.send(measurement);
+  });
 }
 
 async function browserImageDigest(page: Page, profiles: readonly Profile[]): Promise<string> {
@@ -208,6 +311,7 @@ async function browserImageDigest(page: Page, profiles: readonly Profile[]): Pro
 }
 
 async function measureBrowser(
+  browser: Browser,
   page: Page,
   profile: Profile,
   round: number,
@@ -263,24 +367,41 @@ async function measureBrowser(
   if (measurements.latenciesMs.length !== options.samples) {
     throw new Error(`Browser measured ${measurements.latenciesMs.length} requests, expected ${options.samples}`);
   }
+  const soak = options.soakSeconds > 0 ? await measureSoak(
+    options.soakSeconds, options.clients,
+    () => body.evaluate(async (_element, clients) => {
+      await Promise.all(Array.from({ length: clients }, async () => {
+        const url = new URL(location.href);
+        url.searchParams.set("kandelo_soak", String(performance.now()));
+        const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(30_000) });
+        const html = await response.text();
+        if (response.status !== 200 || !html.includes("WordPress on Kandelo") ||
+            /<b>(?:Fatal error|Parse error|Warning)<\/b>:/.test(html)) {
+          throw new Error(`Invalid WordPress soak response: ${response.status}`);
+        }
+      }));
+    }, options.clients),
+    () => chromiumRss(browser), "chromium-process-rss-sum",
+  ) : undefined;
   return {
     host: "browser", profile, round, startupMs,
     latenciesMs: measurements.latenciesMs,
     throughputRequests: options.clients * options.concurrentSamples,
     throughputDurationMs: measurements.throughputDurationMs,
+    soak,
   };
 }
 
 async function main(): Promise<void> {
   const options = parseOptions();
-  const imagePath = resolveServiceVfsImage(image);
+  const imagePath = options.imagePath ?? resolveServiceVfsImage(image);
   const imageDigest = createHash("sha256").update(readFileSync(imagePath)).digest("hex");
   const results: RoundResult[] = [];
 
   if (options.host === "node" || options.host === "both") {
     for (let round = 0; round < options.rounds; round++) {
       for (const profile of orderForRound(round, options.profiles)) {
-        const result = await measureNode(profile, round, options, imagePath);
+        const result = await measureNodeIsolated({ profile, round, options, imagePath });
         results.push(result);
         console.log(`node round ${round + 1} ${profile}: ${percentile(result.latenciesMs, 0.5).toFixed(1)} ms median`);
       }
@@ -310,7 +431,7 @@ async function main(): Promise<void> {
         try {
           const context = await browser.newContext({ baseURL: options.browserBaseUrl });
           const page = await context.newPage();
-          const result = await measureBrowser(page, profile, round, options);
+          const result = await measureBrowser(browser, page, profile, round, options);
           results.push(result);
           console.log(`browser round ${round + 1} ${profile}: ${percentile(result.latenciesMs, 0.5).toFixed(1)} ms median`);
         } finally {
@@ -349,4 +470,18 @@ async function main(): Promise<void> {
   console.log(`Raw samples and provenance: ${options.output}`);
 }
 
-await main();
+if (process.env.KANDELO_WORDPRESS_STACK_WORKER === "1") {
+  process.once("message", async (measurement: NodeMeasurement) => {
+    try {
+      const result = await measureNode(measurement.profile, measurement.round,
+        measurement.options, measurement.imagePath);
+      process.send!(result, () => process.disconnect());
+    } catch (error) {
+      console.error(error);
+      process.exitCode = 1;
+      process.disconnect();
+    }
+  });
+} else {
+  await main();
+}
