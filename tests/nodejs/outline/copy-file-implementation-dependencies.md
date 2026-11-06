@@ -1,5 +1,16 @@
 # Descriptor-owned filesystem copying
 
+Source128 selects the copy owner’s reflink header by actual availability.
+Targeted engine127failed on an absent linux/fs.h selected by the existing
+package macro;it also recorded an unresolved SDK calltypes-plugin crash.
+Both failures remain saved. The corrected header compiles through the actual
+SDK in normal and legacy-macro control modes.20zero-directory controls and
+12package checks pass;the43-case portable matrix retains1errno mismatch.
+Accepted engine116remains stale;source117–128is uncompiled as a full engine.
+All19families remain partial;overall suites/full product rebuild stay deferred.
+See [copy ownership](copy-file-implementation-dependencies.md).
+
+
 Source127 imports exact public copyFile/copyFileSync and promise algorithms
 from pinned Node26.13.0. The native owner opens real source/destination fds,
 checks inode identity before truncating,uses O_EXCL on the actual destination
@@ -58,3 +69,32 @@ four-host conformance remain open. Source117–127is uncompiled and accepted116
 is stale. No package/engine/kernel/product compilation or overall suite ran
 for this slice;one standalone host helper compiled. No performance claim.
 Kernel/host ABI and exact audited target/source/native pins are unchanged.
+
+## Source128 build follow-up
+
+Targeted127engine compilation failed on missing linux/fs.h. The header had
+selected that include from __linux__,which the existing engine recipe defines
+although the guest SDK lacks that header. Source128 selects the actual header
+with __has_include;FICLONE still gates the real ioctl and force still truthfully
+fails when it is absent. This is capability selection,not a fabricated ioctl.
+The package’s inherited Linux target/macro remains separate portability debt
+to replace with accurate platform feature configuration;this fix does not
+claim to remove it or establish a Linux guest identity.
+
+Two actual SDK Wasm object compilations pass,normal target and explicit legacy
+package-macro control. Initial fixture checks failed on an unused driver linker
+argument and missing declared C++ headers;both logs are retained. The corrected
+control uses resolved libcxx headers and suppresses only the irrelevant driver
+argument warning. The portable host helper was rebuilt:20zero-directory passes
+and43controls(42pass1existing errno nonpass). Twelve package checks pass.
+No additional frontend or upstream runs were needed for this header-only edit;
+source127’s35frontend/4upstream runs retain their original scope.
+
+The failed127log also shows an SDK-owned KandeloCallTypes referencedFn stack
+and frontend exit139. Its cause/recovery relationship remains unresolved;no
+external compiler defect or workaround is claimed. No127artifact was accepted
+and128was not rebuilt as a complete engine. Overall58package/engine compile
+attempts are now recorded;full product rebuilds and overall suites remain0.
+Separate adversarial reviews found lock Promise/snapshot/retention defects
+and JWK private-codec/error-state defects;fixes are in private worktrees and
+are not part of128or passing guest evidence.

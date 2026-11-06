@@ -8,7 +8,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#if defined(__linux__)
+#if __has_include(<linux/fs.h>)
 #include <linux/fs.h>
 #endif
 namespace kandelo::nodefs {

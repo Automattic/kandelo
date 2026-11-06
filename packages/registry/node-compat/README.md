@@ -1,5 +1,16 @@
 # Node core compatibility target
 
+Source128 selects the copy owner’s reflink header by actual availability.
+Targeted engine127failed on an absent linux/fs.h selected by the existing
+package macro;it also recorded an unresolved SDK calltypes-plugin crash.
+Both failures remain saved. The corrected header compiles through the actual
+SDK in normal and legacy-macro control modes.20zero-directory controls and
+12package checks pass;the43-case portable matrix retains1errno mismatch.
+Accepted engine116remains stale;source117–128is uncompiled as a full engine.
+All19families remain partial;overall suites/full product rebuild stay deferred.
+See [copy ownership](../../../tests/nodejs/outline/copy-file-implementation-dependencies.md).
+
+
 Source127 routes filesystem copyFile sync/callback/promise wrappers through a
 bounded descriptor owner and the existing real FSReq queue. Actual O_EXCL,
 inode checks before truncation,metadata/cleanup and S_IFDIR rejection replace
