@@ -25701,3 +25701,15 @@ descriptor numbers. Focused controls are not combined normal SDK/kernel/
 browser admission. Host retry integration, inherited-resource reconstruction,
 a coherent normal rebuild and remaining B1 gates are still required. No
 performance improvement or native-feel claim follows from this checkpoint.
+
+The test command is now corrected to `first_timeout`. Its server helper
+rejects unknown-setting/command diagnostics even when the server exits zero.
+Private causal run `graphics-freeciv-console-causal-r543-r7-1106-130103-bde2`
+passed its expected before/after judgment in19s: the old spelling plus the
+new rejection assertion fails on the actual server diagnostic, while both
+complete corrected package cases pass on the unchanged normal products.
+Patch SHA256 `e9b575f2833ec872a91f3b38c2f2b9fe16d705b0bcad56836866d8f0c114d134`;
+command, source identities and outputs are in
+`.context/graphics-native-freeciv-r543-runs/console-test-r7/`. This changes
+only acceptance-test configuration and assertions, not Freeciv or its recipe.
+It does not resolve the browser startup/interaction failures above.
