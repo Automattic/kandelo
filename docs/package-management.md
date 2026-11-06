@@ -2573,8 +2573,28 @@ not Kandelo defects. They stay until the engine or the upstream code changes.
 
 **Target recognition and upstream defects.**
 
+Harper also exposed two shared Kandelo build gaps, fixed outside its recipe:
+the Rust helper now excludes its private dependency directory roots from
+existing Cargo workspaces, and the Rust sysroot retains LLVM bitcode so
+upstream LTO profiles can link against its prebuilt standard library. Harper
+does not carry application-manifest patches for either issue.
+
+Burn's no-std ndarray backend generates a tensor RNG seed at compile time.
+The Harper recipe sets its dependency's documented `CONST_RANDOM_SEED` build
+option to the verified upstream source hash, so independent builds retain
+the same compiled constants. Runtime OS entropy is unaffected.
+
+Its `tree-sitter-gitcommit-0.5.0.patch` skips LLVM's costly irreducibility
+analysis only for that grammar's reducible generated state machines. The
+complete grammar still compiles through the SDK and normal instrumentation.
+The standalone reproduction and retirement conditions are recorded in
+[the compiler reachability-cost entry](../tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.md).
+This compiler option is unsuitable as a general SDK default: other programs
+can have irreducible control flow and need the analysis.
+
 | Package | Patch | Reason | Follow-up |
 |---|---|---|---|
+| `harper` | `patches/chrono-0.4.45.patch`, `cubecl-common-0.8.1.patch`, `dirs-7.0.0.patch`, `getrandom-0.3.4.patch`, `getrandom-0.4.3.patch`, `mio-1.2.4.patch`, `tokio-1.53.3.patch`, `socket2-0.6.5.patch`, `parking_lot_core-0.9.12.patch`, `open-5.4.4.patch`. | Recognize Unix Wasm and Kandelo's existing libc interfaces: time, XDG directories, entropy, native future execution, threads, files, sockets, epoll/eventfd, peer credentials, and musl layouts. `open` selects guest Unix launcher commands; no opener is bundled, and an absent launcher remains an I/O failure. | Upstream target-recognition changes and the musl field-initialization fix; retain the actual Unix APIs rather than replacing them with browser stubs. |
 | `vim` | `patches/0001-clamp-expired-input-check.patch`: clamp an expired calculated input timeout to zero before the first availability check. | Upstream `inchar_loop()` subtracts elapsed time from a zero/finite timeout, then passes a negative result to a helper that means "wait indefinitely". Slow or preempted execution stalls startup and insert-mode redraw until another key arrives. Clock and POSIX select behavior are correct; this is an upstream timing defect. | Send upstream; drop the patch when the pinned release includes the correction. |
 | `sdl2` | `patches/0001-recognize-kandelo-as-unix.patch`: `configure` accepts `wasm32-*-none` as a Unix target. `patches/0002-kmsdrm-display-dpi-from-connector.patch`: the KMSDRM backend answers `SDL_GetDisplayDPI` from the connector's physical size. | SDL's `configure` has a fixed list of host triples. SDL2's KMSDRM backend has no DPI query, unlike its X11 and Wayland backends, so a fullscreen client that scales by DPI (ScummVM) stayed at 1x. | Both are upstreamable: generic-Unix detection, and a missing backend feature that is not Kandelo-specific. |
 | `scummvm` | `patches/0001-kandelo-host-triple.patch`: `configure` maps the `wasm32posix` host to its generic POSIX/SDL backend (every `wasm32-*` triple otherwise selects the Emscripten port). `patches/0002-kandelo-opengl-default-graphics-manager.patch`: default to the OpenGL graphics manager. | ScummVM's hand-written `configure` keys on the triple. Kandelo's SDL2 is built without `SDL_Render`, so the OpenGL manager is the only presentation path. | The first is upstreamable. The second goes away if SDL2 is built with a renderer. |

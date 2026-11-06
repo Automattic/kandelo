@@ -3416,6 +3416,17 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
+The shell recipe registers Harper 3.0.0 as two lazy archive members:
+`/usr/bin/harper-cli` and `/usr/bin/harper-ls`. For example, use
+`harper-cli lint --format json file.md` for batch checking, or let an LSP
+client launch `harper-ls --stdio`. First use of either command downloads the
+shared `harper-browser-bundle` ZIP (about 23 MiB for the current build);
+launching the other command reuses that archive in the same running machine.
+The ZIP compresses both complete executables; it does not deduplicate their
+uncompressed code or data. Building `harper` prepares the binaries, and
+`harper-browser-bundle` packages them without recompiling. An existing shell
+image gains these references when the shell image is next rebuilt.
+
 Node, WordPress, and LAMP are optional demo profiles. Their VFS asset imports
 are resolved only after that profile is requested; loading the main shell does
 not require or fetch those image bytes. If the selected profile's local or
@@ -3576,6 +3587,14 @@ authenticated VFS group below belongs to production output and is generated
 only when building a deployable directory-scoped distribution.
 
 ### Directory-scoped production hosting
+
+The Vite preview server preserves the built service worker's authenticated
+VFS manifest cache version while applying its local CORS proxy configuration.
+Replacing a build at the same URL therefore updates the worker and retires
+its previous scoped lazy-asset cache. Saved computers and other deployment
+scopes are not cleared by this cache rotation.
+Browser startup waits for worker updates before resolving catalog manifests,
+so the new catalog cannot race the previous worker's cached group.
 
 The standalone [`apps/spacefast-cors-proxy`](../apps/spacefast-cors-proxy/README.md)
 implements the Playground proxy protocol for Spacefast Functions,

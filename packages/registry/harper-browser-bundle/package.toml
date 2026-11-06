@@ -1,0 +1,23 @@
+kind = "program"
+name = "harper-browser-bundle"
+version = "3.0.0"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = ["harper@3.0.0"]
+
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/Automattic/harper/blob/v3.0.0/LICENSE"
+
+[build]
+script_path = "packages/registry/harper-browser-bundle/build-harper-browser-bundle.sh"
+
+[[outputs]]
+name = "harper"
+wasm = "harper.zip"
+fork_instrumentation = "disabled"
