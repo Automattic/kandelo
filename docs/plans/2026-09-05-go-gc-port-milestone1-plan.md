@@ -29,9 +29,14 @@ exact bytes. The preview URL and HTTP identity record are in
 - Both actual revision-37 Node services pass startup, WordPress HTTP,
   held-PHP draining after listener closure, and zero server/controller
   exits. The initial two-case run also passes cooperative machine
-  retirement. A stronger rerun requires actual service log files; classic
-  passes, while Caddy again reaches a forced-retirement warning after its
-  normal PHP/server shutdown. This intermittent teardown gate remains open.
+  retirement. Stronger reruns exposed intermittent forced retirement of
+  the root dinit worker after normal PHP/server shutdown. A native-waiter
+  regression now reproduces a terminal-notification defect before the fix:
+  an outstanding host waiter consumes the guest's only wake. Terminal
+  publication now wakes every waiter on that exact retiring channel. All
+  28 related host checks pass, followed by eight actual service drain and
+  cooperative-retirement cases across four fresh Node runs. The broader
+  Node/Bun/browser lifecycle gate remains pending.
 - The visible Caddy UI case passes in Chromium and Firefox: homepage,
   Shortcuts admin login, Appearance/site editor, template canvas blocks,
   and 20 seconds of editor HTTP health. The real service log contains no
@@ -47,6 +52,12 @@ exact bytes. The preview URL and HTTP identity record are in
   and a trace are retained outside the page. Native browser stderr reports
   a 21,182 MB footprint exceeding its 16,384 MB kill threshold. A plain-page
   70-second control passes. The source of the memory use remains unknown.
+  A fresh Caddy-only run also reaches a native footprint kill (19,981 MB
+  against 16,384 MB). Its last kernel/guest linear-memory snapshot totals
+  about 499 MiB, with six compiled modules accounting for 210,675,443 input
+  bytes and no thread-module compilations. These counters do not identify
+  the remaining native footprint. The Caddy binary has no DWARF sections;
+  stripping debug information is not an evidence-backed fix.
 - Current C signal/I/O conformance passes 89 cases on Node and 89 on
   Chromium, with two existing skips per host and no failures/timeouts.
   Both hosts use the same admitted kernel/rootfs bytes and host sources.
@@ -70,9 +81,10 @@ production readiness, a physical-memory plateau, or superiority over PHP-FPM.
 
 ### Remaining release gates
 
-1. Resolve the intermittent machine-retirement failure after actual PHP
-   shutdown. Retain forced-containment evidence and identify the process
-   and channel state before changing runtime behavior.
+1. Complete the full Node/Bun/browser memory and lifecycle gate for the
+   terminal-channel wake fix. The focused regression fails before and
+   passes afterward; real service repetitions pass. The exact waiter order
+   behind the original intermittent dinit retirement was not captured.
 2. Complete browser PHP draining and retirement for Caddy on WebKit.
    Reduce or explain the workload memory use behind the observed native
    content-process kill; a same-URL reload is distinct from a Go exit.
@@ -81,9 +93,11 @@ production readiness, a physical-memory plateau, or superiority over PHP-FPM.
    classic WebKit health/navigation failures; their cause remains unknown.
 4. Finish sustained traffic/memory checks, paired PHP-FPM/classic/Caddy
    comparisons, and all nine Node/Chromium incremental before/after
-   benchmark suites. The original baseline build drained after five hours
-   with three missing-Rust-submodule failures; its cached retry is running.
-   Browser RSS sampling also needs its missing declared `ps` tool. The
+   benchmark suites. The baseline retry completes all 160 nodes (151 cached,
+   nine published) in 21m06s after initializing the exact pinned Rust libc
+   submodule. All nine Node and nine Chromium suites are now provisioned;
+   provisioning under build load is not a performance comparison. Browser
+   RSS sampling also needs its missing declared `ps` tool. The
    baseline commit `5e25c7365` is an intermediate branch revision, so those
    comparisons cannot establish superiority over main.
 5. Review the remaining general Go/POSIX gaps: child credentials, inherited
@@ -92,6 +106,33 @@ production readiness, a physical-memory plateau, or superiority over PHP-FPM.
    conformance. Keep unsupported behavior explicit.
 6. Push validated checkpoints, update this log, the draft PR and guidance,
    and keep the verified current-image preview running.
+
+### Terminal-channel notification checkpoint — 2026-11-06
+
+A terminal completion must wake all waiters on its exact channel object.
+The former one-waiter notification could wake a queued host observer and
+leave the guest parked. The fix marks process/thread exit and teardown
+channels before publication, and broadcasts only terminal completions.
+Ordinary active-channel notifications remain unchanged. No compiler,
+standard-library, libc, kernel, or ABI modification is involved.
+
+- Before: `.context/terminal-channel-observer-before/vitest.JgqCTj/`
+  retains the native-waiter regression failure: the guest times out after
+  the observer consumes the sole notification.
+- After: `.context/terminal-channel-observer-after/vitest.ZDwBiL/`
+  records 28/28 checks across six channel/lifecycle suites.
+- Job `frankenphp-terminal-wake-real-services-1106-024551-e7df`
+  passes both real WordPress services four times each in fresh Node test
+  processes: actual held PHP response, zero service/controller exits,
+  real service logs, and cooperative machine retirement. Last report:
+  `.context/frankenphp-node-image-oNT3U5/`.
+- `.context/frankenphp-webkit-host-1deKzl/` retains the separate native
+  footprint kill and external memory/phase samples. This is unresolved
+  resource evidence, not proof of an engine defect or guest heap leak.
+
+The earlier failed dinit retirement remains historical evidence. Its exact
+waiter ordering was not captured, so the focused reproduction and eight
+successful real cases do not establish the complete lifecycle release gate.
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task.

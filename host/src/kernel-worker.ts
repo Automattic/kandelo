@@ -1628,6 +1628,8 @@ interface ChannelInfo {
    *  retry/sleep/fork/exec path. Prevents the poller from re-entering a
    *  channel that is already in flight. Only used when usePolling=true. */
   handling?: boolean;
+  /** The owner is exiting; every waiter must observe its terminal completion. */
+  retiring?: boolean;
   /**
    * Handle for this channel's kernel-owned wait deadline, or undefined when
    * no wait is armed. Minted by `kernel_wait_deadline_open` and never reused,
@@ -12483,6 +12485,7 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     entry?: KernelWorkerEntryContext,
   ): void {
+    channel.retiring = true;
     const view = new DataView(channel.memory.buffer, channel.channelOffset);
     view.setUint32(CH_SIG_SIGNUM, SIGKILL, true);
     view.setUint32(CH_SIG_HANDLER, 0, true);
@@ -12522,6 +12525,7 @@ export class CentralizedKernelWorker {
     syscallNr: number,
     entry?: KernelWorkerEntryContext,
   ): void {
+    channel.retiring = true;
     this.completeChannelRaw(channel, 0, 0, entry);
     if (syscallNr === SYS_EXIT_GROUP) {
       // musl follows a returning EXIT_GROUP with the non-returning SYS_EXIT
@@ -15112,7 +15116,8 @@ export class CentralizedKernelWorker {
     kernelEntryIntrinsicApply(
       kernelEntryIntrinsicAtomicsNotify,
       kernelEntryIntrinsicAtomics,
-      [i32View, statusIndex, 1],
+      // A queued host listener must not consume the retiring guest's only wake.
+      [i32View, statusIndex, channel.retiring ? Infinity : 1],
     );
     if (prepared.relistenRequested && this.isRegisteredChannel(channel)) {
       this.relistenChannel(channel);
@@ -16042,6 +16047,7 @@ export class CentralizedKernelWorker {
     entry: KernelWorkerEntryContext,
     alreadyExited = false,
   ): void {
+    channel.retiring = true;
     if (alreadyExited || this.hostReaped?.has(channel.pid)) {
       this.wakeExitedChannelForRetirement(channel, entry);
       return;
@@ -23146,6 +23152,7 @@ export class CentralizedKernelWorker {
     const isMainChannel = this.isMainProcessChannel(channel);
 
     if (syscallNr === SYS_EXIT && !isMainChannel) {
+      channel.retiring = true;
       // Thread exit: finalize kernel-side thread state, complete the channel,
       // then ask the host to tear down the backing Worker (browser + Node both
       // wire onThreadExit).

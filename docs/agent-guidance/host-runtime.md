@@ -95,6 +95,13 @@ its processor, and cancel device timers. Exit must escape guest exception
 handlers; a JavaScript-thrown RuntimeError is catchable by Wasm handlers.
 Preserve Rust's exit status and avoid guest deallocators on retired channels.
 
+Terminal channel publication must wake all queued waiters. An outstanding
+host `Atomics.waitAsync` listener can consume a one-waiter notification and
+leave the retiring guest blocked. Mark the exact exiting channel before its
+completion; keep that state out of replacement images and reused thread
+slots. The native-waiter regression in `kernel-teardown-pipe-entry.test.ts`
+exercises actual completion publication with an observer queued first.
+
 For ownership, memory-ceiling, audio, framebuffer, graphics-lifecycle, or
 machine-teardown changes, run `./run.sh test browser-memory`. See the
 [validation contract](validation.md#browser-memory-regression-gate) for its

@@ -3615,7 +3615,12 @@ async function performDestroy() {
   }
   destroyProgress.drained(retiringPids.size - liveWoken);
   if (liveWoken > 0) {
-    console.warn(`[node-kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
+    const waiting = [...retiringPids].flatMap(pid => {
+      const info = processes.get(pid);
+      return info ? [{ pid, quiescent: info.workerQuiescence.settled,
+        exitTeardownStarted: processTeardowns.has(info.worker) }] : [];
+    });
+    console.warn(`[node-kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating: ${JSON.stringify(waiting)}`);
   }
 
   const retireCurrentGenerations = async (): Promise<void> => {

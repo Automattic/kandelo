@@ -1,4 +1,4 @@
-import { createReadStream, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, createReadStream, existsSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, resolve } from "node:path";
@@ -11,6 +11,11 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const churnRequests = Number(process.env.KANDELO_FRANKENPHP_CHURN_REQUESTS ?? "0");
 const editorBurstRounds = Number(process.env.KANDELO_FRANKENPHP_EDITOR_BURST_ROUNDS ?? "0");
 const parallelEditorRequests = process.env.KANDELO_FRANKENPHP_PARALLEL_EDITOR_REQUESTS === "1";
+const memoryDiagnostics = process.env.KANDELO_FRANKENPHP_MEMORY_DIAGNOSTICS === "1";
+const soakSeconds = Number(process.env.KANDELO_FRANKENPHP_SOAK_SECONDS ?? "0");
+if (!Number.isSafeInteger(soakSeconds) || soakSeconds < 0 || soakSeconds > 600) {
+  throw new Error("KANDELO_FRANKENPHP_SOAK_SECONDS must be an integer from 0 to 600");
+}
 if (!Number.isSafeInteger(churnRequests) || churnRequests < 0 || churnRequests > 40) {
   throw new Error("KANDELO_FRANKENPHP_CHURN_REQUESTS must be an integer from 0 to 40");
 }
@@ -62,7 +67,8 @@ const artifactTest = test.extend<{ artifactUrls: { imageUrl: string; kernelUrl: 
 
 for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
   artifactTest(`WordPress on ${serviceName} serves PHP in the browser kernel host`, async ({ page, baseURL, browser, artifactUrls }) => {
-    test.setTimeout(serviceName === "frankenphp-caddy" || parallelEditorRequests ? 300_000 : 240_000);
+    test.setTimeout(Math.max(serviceName === "frankenphp-caddy" || parallelEditorRequests ? 300_000 : 240_000,
+      (soakSeconds + 240) * 1000));
     test.skip(!imagePath, "Build the WordPress image and set KANDELO_WORDPRESS_FRANKENPHP_VFS");
     expect(baseURL).toBeTruthy();
     const { imageUrl, kernelUrl } = artifactUrls;
@@ -80,13 +86,27 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
       if (message.type() === "error" || message.type() === "warning") record(`console ${message.type()}: ${message.text()}`);
     });
     // Retain phase evidence outside the page if its execution context is lost.
-    await page.exposeFunction("recordFrankenPhpStage", (stage: string) => record(`stage: ${stage}`));
+    const memoryEvidencePath = test.info().outputPath("browser-memory-samples.jsonl");
+    await page.exposeFunction("recordFrankenPhpStage", (stage: string, memory?: unknown) => {
+      record(`stage: ${stage}`);
+      if (memory !== undefined) appendFileSync(memoryEvidencePath,
+        JSON.stringify({ recordedAt: new Date().toISOString(), stage, memory }) + "\n");
+    });
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName }) => {
-      const stage = (message: string) => (globalThis as typeof globalThis & {
-        recordFrankenPhpStage: (message: string) => Promise<void>;
-      }).recordFrankenPhpStage(message);
+    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds }) => {
+      let readMemory: (() => Promise<unknown>) | undefined;
+      const stage = async (message: string) => {
+        let snapshot: unknown;
+        try {
+          if (memoryDiagnostics && readMemory) snapshot = await readMemory();
+        } catch (error) {
+          snapshot = { error: String(error) };
+        }
+        await (globalThis as typeof globalThis & {
+          recordFrankenPhpStage: (message: string, memory?: unknown) => Promise<void>;
+        }).recordFrankenPhpStage(message, snapshot);
+      };
       await stage("loading artifacts");
       const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
       const { observeProcessExits, verifyFrankenPhpGracefulShutdown } = await import(/* @vite-ignore */ gracefulProbeUrl);
@@ -125,6 +145,12 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
           // Use the app's ordinary transport for the image's deferred bodies.
           lazyAssetDirectory: imageOwnedLazyAssetDirectory(),
         });
+        readMemory = async () => {
+          const [kernelPages, processes, modules] = await Promise.all([
+            kernel.getKernelMemoryPages(), kernel.enumProcs(), kernel.getWasmModuleCacheStats(),
+          ]);
+          return { kernelBytes: kernelPages * 65536, processes, modules };
+        };
         await stage("kernel initialized");
         const template = await kernel.readFileFromVfs("/etc/wp-config-template.php");
         if (!template) throw new Error("WordPress config template missing");
@@ -271,8 +297,25 @@ echo json_encode([
             throw new Error(`WordPress PHP request ${index} returned ${response.status}`);
           }
         }
-        let restarted = false;
         await stage("request churn complete");
+        const soakStarted = performance.now();
+        let soakSampledAt = soakStarted;
+        let soakRequests = 0;
+        while (performance.now() - soakStarted < soakSeconds * 1000) {
+          const response = await kernel.fetchInKernel(8080, {
+            method: "GET", url: `/?soak=${soakRequests}`, headers: { Host: "localhost:8080" }, body: null,
+          }, { timeoutMs: 30_000 });
+          if (response.status !== 200 || !decoder.decode(response.body).includes("WordPress on Kandelo")) {
+            throw new Error(`Soak request ${soakRequests} returned ${response.status}`);
+          }
+          soakRequests++;
+          if (performance.now() - soakSampledAt >= 15_000) {
+            await stage(`soak requests: ${soakRequests}`);
+            soakSampledAt = performance.now();
+          }
+        }
+        const soakDurationMs = performance.now() - soakStarted;
+        let restarted = false;
         if (serviceName === "frankenphp-caddy") {
           const listener = await kernel.pickListenerTarget(8080);
           if (!listener) throw new Error("FrankenPHP listener missing before restart test");
@@ -315,6 +358,8 @@ echo json_encode([
           churnCompleted: churnRequests,
           editorBurstCompleted: editorBurstRounds,
           parallelEditorCompleted: parallelEditorRequests,
+          soakRequests,
+          soakDurationMs,
           restarted,
           serviceLog: decoder.decode(serviceLog),
           diagnostics,
@@ -335,10 +380,12 @@ echo json_encode([
           new Promise<number>((resolveWait) => setTimeout(() => resolveWait(-1), 5_000)),
         ]);
         await kernel.destroy();
+        readMemory = undefined;
         await stage("machine destroyed");
       }
     }, {
       imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName,
+      memoryDiagnostics, soakSeconds,
       gracefulProbeUrl: new URL(`/@fs/${resolve(repoRoot, "host/test/support/frankenphp-graceful.ts")}`, baseURL!).href,
       runtimeUrlsModuleUrl: new URL("/lib/init/image-owned-runtime-urls.ts", baseURL!).href,
     }).catch(async error => {
@@ -346,6 +393,9 @@ echo json_encode([
       writeFileSync(evidencePath, JSON.stringify({ url: page.url(), lifecycle }, null, 2));
       await test.info().attach("browser-page-lifecycle", {
         path: evidencePath, contentType: "application/json",
+      });
+      if (existsSync(memoryEvidencePath)) await test.info().attach("browser-memory-samples", {
+        path: memoryEvidencePath, contentType: "application/x-ndjson",
       });
       throw error;
     });
@@ -368,6 +418,8 @@ echo json_encode([
     expect(result.churnCompleted).toBe(churnRequests);
     expect(result.editorBurstCompleted).toBe(editorBurstRounds);
     expect(result.parallelEditorCompleted).toBe(parallelEditorRequests);
+    expect(result.soakDurationMs).toBeGreaterThanOrEqual(soakSeconds * 1000);
+    if (soakSeconds > 0) expect(result.soakRequests).toBeGreaterThan(0);
     if (serviceName === "frankenphp-caddy") {
       expect(result.restarted).toBe(true);
     }

@@ -4366,7 +4366,12 @@ async function performDestroy() {
   }
   destroyProgress.drained(retiringPids.size - liveWoken);
   if (liveWoken > 0) {
-    console.warn(`[kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
+    const waiting = [...retiringPids].flatMap(pid => {
+      const info = processes.get(pid);
+      return info ? [{ pid, quiescent: info.workerQuiescence.settled,
+        exitTeardownStarted: info.worker ? processTeardowns.has(info.worker) : false }] : [];
+    });
+    console.warn(`[kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating: ${JSON.stringify(waiting)}`);
   }
 
   // Phase 3 — terminate any stragglers (non-blocked workers, or any that

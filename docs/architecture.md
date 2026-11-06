@@ -1278,7 +1278,13 @@ until Worker termination completes.
 Once Rust has made that Process Exited, the host retires pending sibling
 mailboxes with the private cooperative-exit signal and a raw interruption,
 never by dispatching their old syscall into Rust. Host timers, engine futex
-waiters and request capabilities are retired before that publication. A later
+waiters and request capabilities are retired before that publication. A
+terminal completion wakes every waiter on the retiring channel: a host
+`Atomics.waitAsync` listener can otherwise consume the single notification
+and leave the guest parked despite its completed exit reply. The retiring
+state belongs to the exact channel object; a new process image or reused
+thread slot gets a fresh object. Active channels retain their ordinary
+single-waiter notification. A later
 `exit_group`/`exit` completes only its transport handshake; it cannot replace
 the original Rust exit status or repeat parent notification. Late clone
 continuations must still own their original request and a live process, and

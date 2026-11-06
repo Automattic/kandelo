@@ -55,7 +55,7 @@ interface EntryHarness {
   readonly completeChannel: ReturnType<typeof vi.fn>;
 }
 
-function makeHarness(): EntryHarness {
+function makeHarness(useCompletionHook = true): EntryHarness {
   const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   const processMemory = new WebAssembly.Memory({
     initial: 2,
@@ -122,9 +122,11 @@ function makeHarness(): EntryHarness {
     tcpScratch: scratch,
   });
   const completeChannel = vi.fn();
-  worker.testAuthority.configureScratchBoundaryHooksForTest({
-    completeChannel,
-  });
+  if (useCompletionHook) {
+    worker.testAuthority.configureScratchBoundaryHooksForTest({
+      completeChannel,
+    });
+  }
 
   const state = worker as unknown as {
     processes: Map<number, {
@@ -200,6 +202,27 @@ function mutableState(harness: EntryHarness) {
 }
 
 describe("teardown and pipe notifications at the kernel entry gate", () => {
+  it("wakes the retiring guest when another channel waiter was queued first", async () => {
+    const harness = makeHarness(false);
+    const words = harness.channel.i32View;
+    const statusIndex = CH_STATUS / Int32Array.BYTES_PER_ELEMENT;
+    const observer = Atomics.waitAsync(words, statusIndex, CHANNEL_STATUS_PENDING, 2000);
+    const guest = Atomics.waitAsync(words, statusIndex, CHANNEL_STATUS_PENDING, 2000);
+    expect(observer.async).toBe(true);
+    expect(guest.async).toBe(true);
+    // Keep this a completion-publication check rather than installing another
+    // listener after the terminal wake.
+    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: () => {} });
+    try {
+      await harness.worker.beginKernelTeardown();
+      expect(harness.channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+      expect(await guest.value).toBe("ok");
+      expect(await observer.value).toBe("ok");
+    } finally {
+      Atomics.notify(words, statusIndex);
+    }
+  });
+
   it("includes an already-exited parked worker in terminal retirement without dispatching Rust", async () => {
     const harness = makeHarness();
     const state = harness.worker as unknown as { hostReaped: Set<number> };
