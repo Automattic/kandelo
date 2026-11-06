@@ -20,7 +20,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { cpus, homedir, loadavg } from "node:os";
 import { join } from "node:path";
-import type { Reporter, SerializedError, TestModule, TestRunEndReason } from "vitest/node";
+import type { Reporter, SerializedError, TestModule, TestRunEndReason, TestSpecification } from "vitest/node";
 
 // A load error "dominates" when it explains at least half of the failing
 // files, and at least 3 of them. Below that, the per-cause list already says
@@ -116,12 +116,20 @@ function causeOf(error: SerializedError, root: string): string {
 export default class SuiteHealthReporter implements Reporter {
   private root = process.cwd();
   private startLoad = loadavg()[0];
+  private selected = new Map<string, string>();
 
   onInit(vitest: { config: { root: string } }): void {
     // Strip the repo root (one level above host/) from error text, because
     // absolute paths differ between worktrees and would split one cause in two.
     this.root = vitest.config.root.replace(/\/host\/?$/, "/");
     this.startLoad = loadavg()[0];
+  }
+
+  onTestRunStart(specifications: ReadonlyArray<TestSpecification>): void {
+    // WHY: a lost worker need not return a TestModule. Snapshot selection by
+    // task ID (which includes project identity), rather than mistaking the
+    // surviving files for the complete run. Replace it for every watch rerun.
+    this.selected = new Map(specifications.map((spec) => [spec.taskId, spec.moduleId]));
   }
 
   onTestRunEnd(
@@ -135,8 +143,17 @@ export default class SuiteHealthReporter implements Reporter {
     const loadFailures = new Map<string, string[]>();
     const wholeFileSkips: string[] = [];
     const timedFailures: { name: string; ms: number }[] = [];
+    const incomplete = new Set<string>();
+    let pending = 0;
+    let moduleFailed = false;
+    const reported = new Set(testModules.map((module) => module.id));
+    const missing = [...this.selected].filter(([id]) => !reported.has(id));
+    for (const [id] of missing) incomplete.add(id);
 
     for (const module of testModules) {
+      const moduleState = module.state();
+      if (moduleState === "queued" || moduleState === "pending") incomplete.add(module.id);
+      if (moduleState === "failed") moduleFailed = true;
       let moduleTests = 0;
       let moduleSkipped = 0;
       for (const test of module.children.allTests()) {
@@ -150,6 +167,10 @@ export default class SuiteHealthReporter implements Reporter {
         else if (state === "skipped") {
           skipped++;
           moduleSkipped++;
+        }
+        else if (state === "pending") {
+          pending++;
+          incomplete.add(module.id);
         }
       }
       const errors = module.errors();
@@ -172,14 +193,28 @@ export default class SuiteHealthReporter implements Reporter {
     }
 
     const loadFailed = [...loadFailures.values()].reduce((n, files) => n + files.length, 0);
+    // WHY: Vitest can supply reason "passed" after a worker dies, even while
+    // its unhandled-error list makes the process exit 1. Coverage and verdict
+    // must use the actual outcomes; pending work is not a passed/skipped test.
+    // Explicit cancellation stays interrupted unless a real failure occurred.
+    const runFailed = failed > 0 || loadFailed > 0 || moduleFailed || unhandledErrors.length > 0 ||
+      (reason !== "interrupted" && incomplete.size > 0);
+    const outcome = runFailed ? "failed" : reason;
     const lines: string[] = [];
     lines.push(
       `[suite-health] files ${testModules.length} (${loadFailed} did not load, ` +
         `${wholeFileSkips.length} fully skipped); tests ${passed + failed + skipped}: ` +
         `${passed} passed, ${failed} failed, ${skipped} skipped` +
         (unhandledErrors.length ? `; ${unhandledErrors.length} unhandled errors` : "") +
-        `; run ${reason}`,
+        `; run ${outcome}`,
     );
+    if (incomplete.size > 0) {
+      lines.push(
+        `[suite-health] WARN ${incomplete.size} selected file(s) did not finish: ` +
+          `${missing.length} missing reports, ${pending} pending tests. ` +
+          `Completed test counts exclude pending work.`,
+      );
+    }
 
     // An interrupted run legitimately stops early; any other run that
     // executed no test proves nothing, even though vitest may exit 0.
@@ -223,7 +258,7 @@ export default class SuiteHealthReporter implements Reporter {
     // because the machine was busy" from "slow because of a regression" (a
     // regression can make the machine busy too), so a failure here stays a
     // failure; the line only says whether a quiet rerun is worth trying.
-    if (failed > 0 || loadFailed > 0) {
+    if (outcome === "failed") {
       const { jobs, cpuKnown } = concurrentAgentJobs();
       lines.push(
         `[suite-health] info: machine load ${this.startLoad.toFixed(1)} at start, ` +

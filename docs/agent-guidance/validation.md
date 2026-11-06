@@ -433,8 +433,12 @@ run used the wrong config and toolchain, and its results are invalid.
 - **Every Vitest run** ends with a `[suite-health]` line. When many files
   fail to load, it groups them by the missing thing, so one line replaces
   scrolling hundreds of failure blocks. `WARN` means part of the suite did
-  not run (a load error or zero tests). Check discovered/run/skipped
-  counts: zero tests or load failures cannot support a passing-suite claim.
+  not run (a load error, unfinished worker, or zero tests). Unhandled errors
+  and unfinished selected files make its verdict failed even if Vitest's
+  callback reason says passed. Completed test and skip counts stay separate
+  from pending work; intentional cancellation remains interrupted. Check
+  discovered/run/skipped counts: zero tests or load failures cannot support
+  a passing-suite claim.
 - **Optional guard hook:** `.claude/hooks/wait-guard.py` denies the costly
   patterns as they happen. It blocks `sleep`-then-`tail` poll turns,
   `pgrep -f` waiters, and subagents running whole-tree builds or full
