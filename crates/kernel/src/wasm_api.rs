@@ -5527,6 +5527,21 @@ const _: extern "C" fn(i32, u32, u32, *mut u8, u32, *mut u32, u32) -> i32 = kern
 const _: extern "C" fn(*mut u8, u32, u32, i32) -> i32 = kernel_poll;
 const _: extern "C" fn(i32, *mut u8, u32, *mut u8, u32, *mut u8, u32, i32) -> i32 = kernel_select;
 
+/// Refuse syscall `nr`, which has no implementation, with `ENOSYS`, and record
+/// the refusal in the kernel log (`/dev/kmsg`, `klogctl`) so the gap is
+/// visible to whoever is assembling an image or porting software.
+///
+/// Only the dispatcher arms that have no implementation call this. An
+/// implemented syscall that returns `ENOSYS` for an argument it rejects does
+/// not, and neither do `execve`/`fork` below: the host answers those before
+/// they reach the kernel, so the `ENOSYS` there is a guard and not a gap.
+/// The log call is on this refusal path only, never on a path that succeeds.
+fn refuse_unimplemented_syscall(nr: u32, name: Option<&str>) -> i32 {
+    let mut host = WasmHostIO;
+    crate::kmsg::klog_unimplemented_syscall(&mut host, nr, name);
+    -(Errno::ENOSYS as i32)
+}
+
 /// Dispatch a syscall by number with raw musl arguments.
 ///
 /// IMPORTANT: The args are in musl's raw format, NOT the kernel_* export format.
@@ -7704,9 +7719,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         // events, which defeats the polling fallback in Qt's
         // QFileSystemWatcher and glib's GFileMonitor — both only fall
         // back when inotify_init fails. ---
-        247 | 381 => -(Errno::ENOSYS as i32), // SYS_INOTIFY_INIT1 / SYS_INOTIFY_INIT
-        248 => -(Errno::ENOSYS as i32),       // SYS_INOTIFY_ADD_WATCH
-        249 => -(Errno::ENOSYS as i32),       // SYS_INOTIFY_RM_WATCH
+        // Each is reported to the kernel log (`dmesg`) as it is refused.
+        247 => refuse_unimplemented_syscall(nr, Some("inotify_init1")), // SYS_INOTIFY_INIT1
+        381 => refuse_unimplemented_syscall(nr, Some("inotify_init")),  // SYS_INOTIFY_INIT
+        248 => refuse_unimplemented_syscall(nr, Some("inotify_add_watch")), // SYS_INOTIFY_ADD_WATCH
+        249 => refuse_unimplemented_syscall(nr, Some("inotify_rm_watch")),  // SYS_INOTIFY_RM_WATCH
 
         // --- mknod/mknodat: create regular files and FIFOs ---
         // S_IFIFO nodes are real named pipes (see `crate::fifo`); other node
@@ -8173,11 +8190,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         | 348..=349
         | 362..=369
         | 373..=376 => {
-            // Remaining stubs: return ENOSYS
-            -(Errno::ENOSYS as i32)
+            // Remaining stubs: return ENOSYS, and say so in the kernel log.
+            refuse_unimplemented_syscall(nr, None)
         }
 
-        _ => -(Errno::ENOSYS as i32),
+        // A number with no handler at all.
+        _ => refuse_unimplemented_syscall(nr, None),
     }
 }
 

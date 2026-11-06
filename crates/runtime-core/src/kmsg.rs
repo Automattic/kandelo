@@ -705,12 +705,61 @@ fn format_event(args: core::fmt::Arguments<'_>) -> EventText {
 /// Where it does not, thread it through from the caller rather than
 /// stamping the record with a guess.
 pub fn klog<H: HostIO + ?Sized>(host: &mut H, site: KlogSite, args: core::fmt::Arguments<'_>) -> Option<u64> {
+    klog_at(host, site.id(), site.level(), args)
+}
+
+/// The writer under [`klog`]: read the clock, rebase it, format, push through
+/// the limiter. Private because it takes a bare level and callsite id, which
+/// [`KlogSite`] exists to keep a caller from choosing freely; each public
+/// writer fixes both.
+fn klog_at<H: HostIO + ?Sized>(
+    host: &mut H,
+    callsite: CallsiteId,
+    level: u8,
+    args: core::fmt::Arguments<'_>,
+) -> Option<u64> {
     let raw = monotonic_nsec(host)?;
     let text = format_event(args);
     with_ring(|ring| {
         let ts_nsec = ring.rebase(raw);
-        ring.push_limited(site.id(), LOG_KERN, site.level(), ts_nsec, &text.bytes[..text.len])
+        ring.push_limited(callsite, LOG_KERN, level, ts_nsec, &text.bytes[..text.len])
     })
+}
+
+/// Report that the kernel refused syscall `number` because it has no
+/// implementation: the `ENOSYS` answer, and nothing else.
+///
+/// A POSIX program learns of a missing function from one errno it may never
+/// print, and POSIX has no facility for asking the system what it refused.
+/// This is that facility's answer, so that a person assembling an image or
+/// porting software can read the gap from the log: `ENOSYS` is a gap the
+/// platform has not closed, and it stays visible as one.
+///
+/// Call it only from the arm that has no implementation for `number`. A
+/// syscall that exists and rejects its caller's arguments, with `ENOSYS` or
+/// any other errno, is the caller's error and is not reported.
+///
+/// Each syscall number owns its own limiter slot (the number is the callsite
+/// id), so a program spinning on one missing syscall cannot hide a different
+/// one. A number above [`KMSG_MAX_SYSCALL_CALLSITE_ID`] belongs to no slot of
+/// its own: a guest chooses the number it passes, and one just past the range
+/// would otherwise spend a kernel event's slot, so it is limited, together
+/// with the other such numbers, in the limiter's overflow slot.
+///
+/// `name` is the syscall's name where the call site knows it. Kandelo's
+/// syscall numbers are its own, so a name is given only where the kernel
+/// itself names the syscall, never guessed from another system's table.
+pub fn klog_unimplemented_syscall<H: HostIO + ?Sized>(host: &mut H, number: u32, name: Option<&str>) -> Option<u64> {
+    let callsite = if number <= KMSG_MAX_SYSCALL_CALLSITE_ID { number } else { CallsiteId::MAX };
+    match name {
+        Some(name) => klog_at(
+            host,
+            callsite,
+            LOG_WARNING,
+            format_args!("syscall {number} ({name}) is not implemented (ENOSYS)"),
+        ),
+        None => klog_at(host, callsite, LOG_WARNING, format_args!("syscall {number} is not implemented (ENOSYS)")),
+    }
 }
 
 /// [`klog`], but only the first time `key` (below 64) is seen since boot.
@@ -1349,5 +1398,112 @@ mod tests {
         let seq = ring.push_limited(3, 1, 2, 2, b"limited").unwrap();
         let record = ring.read_at(seq).unwrap();
         assert_eq!((record.facility, record.level, record.text), (1, 2, &b"limited"[..]));
+    }
+
+    // ---- klog_unimplemented_syscall: ENOSYS reporting ----------------------
+
+    /// The text of every record in the calling thread's ring.
+    fn texts_logged() -> Vec<alloc::string::String> {
+        logged().into_iter().map(|(_, _, text)| text).collect()
+    }
+
+    #[test]
+    fn an_unimplemented_syscall_records_its_number_and_name() {
+        reset_test_ring();
+        let mut host = ClockHost::at(5, 0);
+        assert!(klog_unimplemented_syscall(&mut host, 247, Some("inotify_init1")).is_some());
+        // A syscall the call site cannot name is still reported by number.
+        assert!(klog_unimplemented_syscall(&mut host, 253, None).is_some());
+        assert_eq!(
+            logged().iter().map(|(level, _, text)| (*level, text.as_str())).collect::<Vec<_>>(),
+            [
+                (LOG_WARNING, "syscall 247 (inotify_init1) is not implemented (ENOSYS)"),
+                (LOG_WARNING, "syscall 253 is not implemented (ENOSYS)"),
+            ]
+        );
+        with_ring(|ring| assert_eq!(ring.read_at(0).unwrap().facility, LOG_KERN));
+    }
+
+    #[test]
+    fn a_spinning_caller_is_suppressed_and_the_boot_log_survives() {
+        reset_test_ring();
+        let mut host = ClockHost::at(1, 0);
+        klog(&mut host, KlogSite::BootIdentity, format_args!("boot: identity"));
+        klog(&mut host, KlogSite::RootImageMounted, format_args!("boot: root mounted"));
+
+        // A program retrying inotify_init1 in a tight loop: a hundred thousand
+        // refusals inside one rate-limit window.
+        let spins = 100_000u64;
+        let mut written = 0;
+        for i in 0..spins {
+            let mut host = ClockHost::at(1, i as i64);
+            if klog_unimplemented_syscall(&mut host, 247, Some("inotify_init1")).is_some() {
+                written += 1;
+            }
+        }
+        assert_eq!(written, KMSG_RATE_BURST as u64, "only the burst is admitted");
+
+        // The boot log is intact, and the ring holds the two boot records and
+        // the burst, not the flood.
+        let lines = texts_logged();
+        assert_eq!(lines[0], "boot: identity");
+        assert_eq!(lines[1], "boot: root mounted");
+        assert_eq!(lines.len(), 2 + KMSG_RATE_BURST as usize);
+
+        // A different unimplemented syscall has its own budget, however hard
+        // the first is spinning.
+        assert!(klog_unimplemented_syscall(&mut ClockHost::at(1, spins as i64), 248, Some("inotify_add_watch")).is_some());
+
+        // After the quiet interval the window reopens and the count of what was
+        // dropped is reported.
+        let mut later = ClockHost::at(1 + 61, 0);
+        assert!(klog_unimplemented_syscall(&mut later, 247, Some("inotify_init1")).is_some());
+        let dropped = spins - u64::from(KMSG_RATE_BURST);
+        assert!(
+            texts_logged().contains(&format!("{dropped} messages suppressed")),
+            "the suppression record must say how many were dropped",
+        );
+    }
+
+    #[test]
+    fn syscall_numbers_outside_the_syscall_range_cannot_borrow_an_event_slot() {
+        // A guest chooses its syscall number. One just above the syscall range
+        // must not land on a kernel event's slot and spend that event's burst.
+        reset_test_ring();
+        let mut host = ClockHost::at(1, 0);
+        for number in (KMSG_MAX_SYSCALL_CALLSITE_ID + 1)..=KMSG_MAX_CALLSITE_ID + 1 {
+            for _ in 0..KMSG_RATE_BURST + 1 {
+                klog_unimplemented_syscall(&mut host, number, None);
+            }
+        }
+        for site in KlogSite::ALL {
+            assert!(klog(&mut host, site, format_args!("event")).is_some(), "{site:?} lost its budget");
+        }
+    }
+
+    #[test]
+    fn a_syscall_that_cannot_be_timestamped_is_not_reported() {
+        reset_test_ring();
+        let mut host = ClockHost::at(1, 0);
+        host.monotonic = Err(wasm_posix_shared::Errno::ENOSYS);
+        assert_eq!(klog_unimplemented_syscall(&mut host, 247, Some("inotify_init1")), None);
+        assert!(logged().is_empty());
+    }
+
+    #[test]
+    fn enosys_records_do_not_appear_for_implemented_syscalls() {
+        // The report is made by the dispatcher's arms for syscalls that have
+        // no implementation. An implemented syscall that refuses its caller,
+        // with any errno, ENOSYS from a rejected argument included, reaches no
+        // log call: that is the caller's error and not a platform gap.
+        use crate::process::Process;
+        use crate::syscalls::{sys_close, sys_execve};
+        reset_test_ring();
+        let mut proc = Process::new(1);
+        let mut host = ClockHost::at(1, 0);
+        assert_eq!(sys_close(&mut proc, &mut host, 999), Err(wasm_posix_shared::Errno::EBADF));
+        assert_eq!(sys_execve(&mut proc, &mut host, b"/bin/true"), Err(wasm_posix_shared::Errno::ENOSYS));
+        assert!(logged().is_empty());
+        assert_eq!(host.clock_reads, 0, "a refusal that is not reported must not read the clock");
     }
 }
