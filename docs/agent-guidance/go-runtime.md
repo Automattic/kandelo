@@ -100,7 +100,12 @@ failure in unchanged `regexp/syntax` compilation. The same source on both
 upstream WASI architectures reproduces it without Kandelo imports. Do not
 reintroduce the legacy iterative fallback described in historical evidence
 below without discussing that library-algorithm change with the maintainer.
-The legacy workaround is absent from the current prototype. Keep this
+The legacy workaround is absent from the current prototype. The maintainer
+has since approved evaluating a single shared iterative upstream candidate.
+Its clean-build correctness checks pass, but deep Wasm compilation is slower;
+normal pins remain unchanged. See the
+[measured evaluation](../plans/2026-11-07-go-regexp-upstream-evaluation.md)
+before promotion or further algorithm changes. Keep this
 finite native-depth boundary separate from collector, linear-memory,
 shadow-stack and POSIX correctness.
 

@@ -128,7 +128,7 @@ try {
       (opcache?.status !== 200 ||
         opcacheResult?.loaded !== true || opcacheResult?.fileCacheOnly !== true ||
         opcacheResult?.compiled !== true || opcacheResult?.cacheFilePresent !== true) ||
-      !stderr.includes("num_threads=3") ||
+      !stderr.includes("total_threads=3") ||
       diagnostics.length !== 0) {
     process.exitCode = 1;
   }

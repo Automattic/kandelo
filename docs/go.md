@@ -123,10 +123,12 @@ The current unmodified regexp compiler still exceeds WebKit's native Wasm
 call depth on the bounded-repeat fixture. Both upstream WASI architectures
 reproduce it without Kandelo imports; Chromium and Firefox pass. The full
 wasm32 browser inventory is 254/255 passing, with that failure retained.
-The maintainer approved evaluating a shared iterative regexp compiler as
-an upstream candidate. It passes the focused regression on Node and three
-browsers, but compilation/allocation tradeoffs are still under evaluation;
-the normal package pins have not adopted it.
+The approved shared iterative regexp candidate passes the focused regression
+on Node and three browsers, with full-program equivalence tests. Its clean
+build and compilation benchmarks are recorded in the
+[upstream evaluation](plans/2026-11-07-go-regexp-upstream-evaluation.md).
+Deep-pattern compilation is slower on the tested Wasm hosts. Actual service
+evaluation remains pending; normal package pins have not adopted it.
 
 Caddy 2.10.2 also rejects Go 1.28's default JSON type alias during module
 configuration. Upstream corrected this in

@@ -7,26 +7,27 @@ four-byte Go/C pointers and eight-byte scalar alignment. Latest pushed Go
 source is
 [`a0b048e19e1b`](https://github.com/kandelo-dev/go/commit/a0b048e19e1b183db33f52d26c08d1c63b4f1c1d).
 Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
-Kandelo checkpoint `beef7d811` is pushed to draft PR #1492, including the
-classic application proof and the selected upstream Caddy dependency upgrade.
-The full WordPress service goal remains unfinished. The maintainer approved
-developing and evaluating a shared upstream regexp improvement. Candidate
-[`06870345`](https://github.com/kandelo-dev/go/commit/06870345)
-on `kandelo-wasm32-regexp-candidate` uses one iterative traversal, with no
-collector or code-generator changes. Native regexp suites pass; complete
-bytecode matches the recursive reference for 2,022 expressions. The exact
-URL regression passes both WASI architectures in three browsers and the
-Kandelo Node/three-browser gate (3/3, 13.5 seconds). The first timing iteration adds deep-stack allocations and regresses some
-compilation workloads (Node/WASI URL compilation +40.7%). A pooled iteration
-reduces that allocation cost but makes the inline array escape, adding an
-allocation even to shallow patterns. The next local iteration separates
-pooled storage from the inline array; escape analysis and a literal smoke
-check confirm the original four allocations. Both native regexp suites and
-the 2,022-program comparison still pass. Full timing rechecks and a clean
-candidate-toolchain rebuild remain pending, so package pins stay A0.
-The first browser timing run was invalid because its WASI host lacked
-`poll_oneoff`; a clock implementation now honors deadlines and passes a
-three-engine smoke run. Retain the invalid rows separately from measurements.
+Kandelo checkpoint `2e774fe1c` is pushed to draft PR #1492, including the
+unadapted FrankenPHP 1.13.5/Caddy 2.11.9 build and request proof. The full
+WordPress service goal remains unfinished.
+
+**Approved upstream regexp candidate:**
+[`f6053060`](https://github.com/kandelo-dev/go/commit/f60530600f70a5ea905a907ac311ec8bd2ae8ac4)
+uses one shared iterative traversal with no collector/code-generator
+changes. A clean compiler build, native regexp suites, race-enabled syntax
+suite, 2,022 full-program comparisons and deep/concurrent tests pass.
+The exact regression passes Node, six WASI architecture/browser controls
+and Kandelo's three-browser gate (3/3, 9.6 seconds). Normal package pins
+remain A0. Final alternating timings retain shallow allocation counts but
+show URL compilation 50–58% slower on Node/WASI, Chromium and Firefox;
+WebKit's baseline overflows and the candidate completes. These are compile
+costs, not request throughput. The full measured table, failed/skipped
+attempts, source provenance and adoption gates are in the
+[regexp evaluation](2026-11-07-go-regexp-upstream-evaluation.md).
+The reusable harness is `benchmarks/go-regexp/`. A private normal-resolver
+FrankenPHP+Caddy build changes only the Go pin to evaluate actual service
+behavior; the existing preview and normal package recipes are preserved.
+That build and its Node/three-browser service gate remain pending.
 
 **Normal build integration:** the declared Nix Go 1.25.8 builds verified
 Go 1.26.10 source, which bootstraps the pinned Go 1.28 compiler. These are
@@ -210,12 +211,13 @@ Evidence: `.context/go32-clean-a0-*`,
 
 Remaining order:
 
-1. Complete the upstream Caddy dependency upgrade and real request/GC proof;
-   discuss the WebKit native-stack strategy before changing library
-   algorithms or code generation. Finish normal package/reproducibility
-   and coherent Node/three-engine gates with failures retained explicitly.
-2. Remove obsolete application adaptations after their replacement proof;
-   complete remaining Go consumer builds and coherent WordPress images.
+1. Finish the approved regexp candidate's real FrankenPHP+Caddy evaluation
+   and decide promotion with the measured compilation cost explicit. Finish
+   normal reproducibility and coherent Node/three-engine compiler/cgo/POSIX
+   gates. The upstream Caddy dependency upgrade and obsolete application
+   patch removal are complete; the full service goal is not.
+2. Complete remaining Go consumer builds and coherent WordPress images.
+   Preserve the existing preview until its replacement passes validation.
 3. Finish login/editor/post/template saves/uploads and lifecycle/recovery,
    blocking waits, memory accounting, WebKit footprint and resource gates.
 4. Run sustained traffic, fair PHP-FPM and user-facing comparisons, and
