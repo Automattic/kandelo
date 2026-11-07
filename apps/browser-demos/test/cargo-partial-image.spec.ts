@@ -38,8 +38,12 @@ test("the partial Rust shell builds a Cargo workspace through its login terminal
   }
   await runTerminalCommand(page, seed.join("\n"));
   await runTerminalCommand(page, "cargo new --vcs none /home/maker/hello");
-  await runTerminalCommand(page, "set -eu\ncargo --version\nrustc --version");
+  await runTerminalCommand(page, "set -eu\ncargo --version\nrustc --version\nrustdoc --version\ncargo fmt --version\ncargo clippy --version");
   const inProject = (command: string) => `cd /home/maker/rust-demo && ${command}`;
+  await runTerminalCommand(page, inProject("cargo fmt --all"), undefined, 600_000);
+  await runTerminalCommand(page, inProject("cargo fmt --all -- --check"));
+  await runTerminalCommand(page, inProject("cargo clippy --offline -j1 --workspace -- -D warnings"), undefined, 600_000);
+  await runTerminalCommand(page, inProject("cargo doc --offline --no-deps -j1 -p message && test -s target/doc/message/index.html"), undefined, 600_000);
   await runTerminalCommand(page, inProject("cargo check --offline -j1"), undefined, 600_000);
   await runTerminalCommand(page, inProject("cargo run --offline -j1 -p cargo-hello"),
     cargoProjectOutput.trim(), 600_000);

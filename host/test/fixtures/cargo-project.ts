@@ -107,9 +107,9 @@ mod tests {
 }\n`,
 };
 export const cargoProjectOutput = "Cargo inside Kandelo: child=42\n";
-// Explicit target selection runs unit and integration tests without invoking
-// rustdoc, which the guest SDK does not ship yet. No tests are disabled.
-export const cargoTestArgs = ["test", "--offline", "-j1", "--workspace", "--tests", "--", "--test-threads=1"];
+// Exercise ordinary Cargo test selection, including library documentation
+// tests now that the matching rustdoc is included in the SDK.
+export const cargoTestArgs = ["test", "--offline", "-j1", "--workspace", "--", "--test-threads=1"];
 export const cargoFailingTestArgs = ["test", "--offline", "-j1", "-p", "message", "--lib", "--",
   "--test-threads=1", "--ignored", "--exact", "tests::deliberately_fails"];
 export const cargoWrongPanicArgs = [...cargoFailingTestArgs.slice(0, -1), "tests::wrong_panic_message"];

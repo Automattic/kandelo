@@ -32,6 +32,7 @@ WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot rustc "$repo/sysro
   kandelo_package_rust_build_env "$repo" "$src" "$work" "$here/patches"
   export CFG_VERSION='1.97.0-nightly (ca9a134e0 2026-04-26)'
   export CFG_RELEASE=1.97.0-nightly CFG_RELEASE_CHANNEL=nightly
+  export DOC_RUST_LANG_ORG_CHANNEL=nightly
   export CFG_VER_HASH="$commit" CFG_VER_DATE=2026-04-26
   export CFG_COMPILER_HOST_TRIPLE=wasm32-unknown-kandelo-std
   export CFG_DEFAULT_CODEGEN_BACKEND=llvm CFG_LIBDIR_RELATIVE=lib RUSTC_INSTALL_BINDIR=bin

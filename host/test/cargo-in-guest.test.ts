@@ -2,16 +2,14 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { tryResolveBinaries } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { cargoProjectOutput, cargoTestArgs, cargoFailingTestArgs, cargoWrongPanicArgs } from "./fixtures/cargo-project";
-import { createRustCargoImage } from "./fixtures/rust-cargo";
+import { createRustCargoImage, resolveRustCargoArtifacts } from "./fixtures/rust-cargo";
 import { readRustCompilerJob, rustCompilerEnv } from "./fixtures/rust-compiler";
 
-const resolved = tryResolveBinaries(["kernel.wasm", "programs/wasm32/kandelo-rust-sdk.zip"]);
 // Test the optional bundle from its resolver output without publishing it
 // into the supported image projection.
-const paths = [resolved[0], process.env.KANDELO_GUEST_RUST_SDK_BUNDLE ?? resolved[1]];
+const paths = resolveRustCargoArtifacts();
 const available = paths.every(path => path !== null);
 if (!available && process.env.KANDELO_REQUIRE_GUEST_CARGO === "1") {
   throw new Error("Build kernel and kandelo-rust-sdk before Cargo acceptance");

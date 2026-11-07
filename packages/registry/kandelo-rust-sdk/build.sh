@@ -15,6 +15,10 @@ install -m755 "$WASM_POSIX_DEP_RUSTC_DIR/clippy-driver.wasm" "$stage/libexec/cli
 for tool in rustfmt cargo-fmt cargo-clippy; do
   install -m755 "$WASM_POSIX_DEP_RUSTC_DIR/$tool.wasm" "$stage/bin/$tool"
 done
+# Cargo discovers external subcommands with the host target's EXE_SUFFIX.
+# Kandelo's Rust target uses .wasm, while direct Unix command names stay usable.
+ln -s cargo-fmt "$stage/bin/cargo-fmt.wasm"
+ln -s cargo-clippy "$stage/bin/cargo-clippy.wasm"
 install -m755 "${WASM_POSIX_DEP_CARGO_DIR:?missing Cargo}/cargo.wasm" "$stage/bin/cargo"
 install -m755 "${WASM_POSIX_DEP_KANDELO_RUSTC_DIR:?missing compiler entry point}/kandelo-rustc.wasm" "$stage/bin/kandelo-rustc"
 install -m755 "${WASM_POSIX_DEP_WASM_FORK_INSTRUMENT_DIR:?missing fork instrumenter}/wasm-fork-instrument.wasm" "$stage/bin/wasm-fork-instrument"

@@ -3,14 +3,12 @@ import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { expect } from "@playwright/test";
 import { opfsTest as test } from "./support/opfs-page";
-import { tryResolveBinaries } from "../../../host/src/binary-resolver";
 import { rustCompilerEnv } from "../../../host/test/fixtures/rust-compiler";
 
-const resolved = tryResolveBinaries(["kernel.wasm", "programs/wasm32/kandelo-rust-sdk.zip"]);
-const paths = [resolved[0], process.env.KANDELO_GUEST_RUST_SDK_BUNDLE ?? resolved[1]];
-import { createRustCargoImage } from "../../../host/test/fixtures/rust-cargo";
+import { createRustCargoImage, resolveRustCargoArtifacts } from "../../../host/test/fixtures/rust-cargo";
 import { cargoProjectOutput, cargoTestArgs, cargoFailingTestArgs, cargoWrongPanicArgs } from "../../../host/test/fixtures/cargo-project";
 
+const paths = resolveRustCargoArtifacts();
 const available = paths.every(path => path !== null);
 if (!available && process.env.KANDELO_REQUIRE_GUEST_CARGO === "1") {
   throw new Error("Build kernel and kandelo-rust-sdk before Cargo acceptance");

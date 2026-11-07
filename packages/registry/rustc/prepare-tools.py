@@ -47,7 +47,7 @@ for tool in tools:
     required = set()
     for entrypoint in entrypoints:
         if entrypoint.exists():
-            required.update(re.findall(r"^extern crate (rustc_\w+|thin_vec);", entrypoint.read_text(), re.M))
+            required.update(re.findall(r"^\s*(?:pub(?:\([^)]*\))?\s+)?extern\s+crate\s+(rustc_\w+|thin_vec)\b", entrypoint.read_text(), re.M))
     additions = []
     for name in sorted(required):
         if name == "thin_vec":
@@ -63,7 +63,10 @@ for tool in tools:
                 raise SystemExit(f"missing pinned compiler dependency {name}")
             value = '{ path = "' + Path(os.path.relpath(dependency, directory)).as_posix() + '" }'
         if key in data.get("dependencies", {}):
-            raise SystemExit(f"unexpected pre-existing {key} dependency in {manifest}")
+            expected = tomllib.loads(f"{key} = {value}")[key]
+            if data["dependencies"][key] != expected:
+                raise SystemExit(f"unexpected pre-existing {key} dependency in {manifest}")
+            continue
         additions.append(f"{key} = {value}\n")
     header = "[dependencies]\n"
     if header in original:
