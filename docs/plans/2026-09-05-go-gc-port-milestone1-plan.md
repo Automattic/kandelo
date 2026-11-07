@@ -38,6 +38,23 @@ change is not adopted; maintained test integration, inter-isolate growth,
 footprint measurements, final-image lifecycle, conformance and performance
 gates remain required. No memory benefit is claimed.
 
+**Incremental Node memory diagnostic:** three alternating rounds use six
+fresh Node parents, the same f605 memory-accounting fixture (`2859460c`)
+and kernel (`a991e3cf`), comparing the current primary host with the isolated
+growth candidate. Peak RSS is 1,278.50/1,029.88/1,035.91 MiB for primary and
+805.08/581.17/581.77 MiB for the candidate; medians are 1,035.91 and
+581.77 MiB. All six processes pass the real Go/C allocation/reuse checks.
+Initial linear bytes (560,726,016), initial Go Sys (19,922,944), final
+linear bytes (594,804,736), final Go Sys (87,425,024) and scavenged
+HeapReleased (67,371,008) match exactly across the six runs. The selected
+target's sysUnusedOS remains a no-op. This supports reduced page touching
+for this Node workload, not physical scavenger reclamation or smaller
+linear memory. First-pair peaks are higher for both variants; raw values
+are retained. Other compilation was active, so this is not a quiet
+benchmark, a main-versus-final comparison, browser/WordPress evidence or a
+sustained-memory bound. Evidence and exact host-source hashes are in
+`.context/mmap-go-memory-diagnostic/`. The candidate is still unadopted.
+
 **Cgo package reproducibility — stable archive prefixes:** the independent
 same-key classic 38 rebuild fails byte equivalence while preserving the
 canonical generation. Native Go 1.25.8 and Kandelo/wasm32 f605 controls both

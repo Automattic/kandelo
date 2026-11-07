@@ -161,6 +161,23 @@ POSIX behavior. Consumer/image rebuilds and final WordPress gates remain.
   consumer pin. Extending an earlier x/sys CPU file while omitting newer
   Unix APIs can compile FrankenPHP's archive but fail Caddy's dependencies.
   Preserve existing target API coverage, then validate the actual consumers.
+- Separate Go address reservations, live allocations and dirty host pages.
+  The wasm32 allocation fixture starts with about 535 MiB of linear memory
+  but 19 MiB of Go Sys. Preserve the collector's allocation policy rather
+  than disguising mmap as sbrk or inventing allocation failures to shrink
+  that reservation. When evaluating redundant host zeroing, only the
+  previous-page count returned by the actual Memory.grow identifies pages
+  appended by that operation. An earlier size sample races with guest
+  threads; their appended pages may already contain data and must still be
+  cleared on mapping reuse. Verify fixed mappings, file tails and both
+  remap forms as well as real cross-host growth.
+- The selected target's `sysUnusedOS` is a no-op, and
+  `needZeroAfterSysUnusedOS` remains true. `debug.FreeOSMemory` and an
+  increased HeapReleased count therefore establish Go's logical reuse,
+  not physical page release. Record guest linear size, Go Sys/HeapReleased,
+  C allocations and native process memory separately. A lower fresh-process
+  RSS peak after avoiding redundant writes does not prove scavenger-driven
+  reclamation, smaller linear memory or sustained WordPress memory bounds.
 
 - For large Go/cgo browser workloads, retain native browser stderr alongside
   guest service logs. A same-URL page reload and a lost evaluation context
