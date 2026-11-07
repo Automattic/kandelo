@@ -18,6 +18,11 @@ export type ProgramOriginalResolver = (
 export interface ProgramOriginalImageOptions {
   resolveOriginal?: ProgramOriginalResolver;
   existingProgramDependencies?: ReadonlySet<string>;
+  /**
+   * Whether a package's files belong in the image. Absent means every
+   * package (the canonical shell); a partial shell passes its selection.
+   */
+  includesPackage?: (pkg: string) => boolean;
 }
 
 export function resolveProgramOriginalForImage(resolverPath: string, dependency: string, executablePath: string, program: Uint8Array): ResolvedProgramOriginalWasmArtifact | null {

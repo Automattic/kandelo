@@ -2293,7 +2293,7 @@ struct DependencyOriginalArtifact {
 }
 
 #[cfg(unix)]
-fn write_dependency_original_inputs(
+pub(crate) fn write_dependency_original_inputs(
     target: &DepsManifest,
     registry: &Registry,
     dependencies: &BTreeMap<String, PathBuf>,
@@ -2356,7 +2356,7 @@ fn write_dependency_original_inputs(
 }
 
 #[cfg(not(unix))]
-fn write_dependency_original_inputs(
+pub(crate) fn write_dependency_original_inputs(
     _target: &DepsManifest, registry: &Registry, dependencies: &BTreeMap<String, PathBuf>,
     _arch: TargetArch, _abi_version: u32, _policy: ResolvePolicy, _work: &Path,
 ) -> Result<Option<PathBuf>, String> {
@@ -17895,6 +17895,31 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             }
         }
     }
+}
+
+/// The compiled-cache directory the SourceOnly resolver uses for package
+/// `name` at `arch` — what `WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+/// build-deps path <name>` prints. Plans only: nothing is created, so a
+/// caller must have built the package (the local-build engine does) before
+/// reading from it.
+pub(crate) fn source_only_package_dir(
+    registry: &Registry,
+    name: &str,
+    arch: TargetArch,
+) -> Result<PathBuf, String> {
+    let manifest = registry.load(name)?;
+    let abi_version = current_abi_version();
+    let sha = compute_sha_for_policy(
+        &manifest,
+        registry,
+        arch,
+        abi_version,
+        ResolvePolicy::SourceOnlyV1,
+        &mut BTreeMap::new(),
+        &mut Vec::new(),
+    )?;
+    let cache_root = plan_source_only_cache_roots()?.compiled;
+    Ok(canonical_path(&cache_root, &manifest, arch, abi_version, &sha))
 }
 
 fn load_target(target: &str, registry: &Registry) -> Result<DepsManifest, String> {

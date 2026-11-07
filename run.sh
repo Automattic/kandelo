@@ -12,6 +12,10 @@
 #   ./run.sh local-build --plan [--all] [--json]
 #                                 Preview it: cache hits, nodes to build, and
 #                                 an estimated duration
+#   ./run.sh partial <image> [pkg...] [--with-tests]
+#                                 Compose a partial image for fast iteration:
+#                                 the rootfs base plus only the named packages
+#                                 (local-binaries/partial/, never cached)
 #   ./run.sh cache-gc [args]      Garbage-collect the shared SourceOnly build
 #                                 cache (dry run unless --apply)
 #   ./run.sh run <example> [args] Run a Node.js example
@@ -2735,6 +2739,24 @@ cmd_setup() {
         bash "$REPO_ROOT/scripts/setup.sh" ${args[@]+"${args[@]}"}
 }
 
+# Partial image: one product image composed from the rootfs base plus only
+# the named packages, so a worktree can try a package without building the
+# whole shell. Delegates to xtask partial-image inside the dev shell; see
+# docs/superpowers/specs/2026-11-07-partial-image-builds-design.md.
+cmd_partial() {
+    if [ $# -eq 0 ]; then
+        err "Usage: $0 partial <image> [package...] [--with-tests] [--jobs N]"
+        err "Images: shell"
+        exit 1
+    fi
+    local_build_events_env
+    exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
+        ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
+        bash -c 'host_target="$(rustc -vV | sed -n "s/^host: //p")" &&
+            exec cargo run -q -p xtask --target "$host_target" -- partial-image "$@"' \
+        partial "$@"
+}
+
 cmd_run() {
     if [ $# -eq 0 ]; then
         err "Usage: $0 run <example> [args...]"
@@ -3114,6 +3136,13 @@ cmd_list() {
     echo "                                        --all: every supported package),"
     echo "                                        then the TypeScript host"
     echo ""
+    echo "${BOLD}Partial image (fast iteration):${RESET}"
+    echo "  ./run.sh partial shell [pkg...]     Compose the shell from the rootfs base"
+    echo "                                        plus only the named packages; the"
+    echo "                                        browser lists it as its own machine"
+    echo "  ./run.sh partial shell pkg --with-tests"
+    echo "                                        ...then run those packages' tests"
+    echo ""
     echo "${BOLD}Local SourceOnly build:${RESET}"
     echo "  ./run.sh local-build                Build the active VFS products, their"
     echo "                                        package dependencies, and the"
@@ -3246,6 +3275,7 @@ case "${1:-list}" in
     local-build) cmd_local_build "${@:2}" ;;
     cache-gc) cmd_cache_gc "${@:2}" ;;
     setup)    cmd_setup "${@:2}" ;;
+    partial)  cmd_partial "${@:2}" ;;
     prepare-browser) cmd_prepare_browser ;;
     build-browser) cmd_build_browser "${@:2}" ;;
     run)      cmd_run "${@:2}" ;;
