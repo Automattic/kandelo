@@ -471,6 +471,45 @@ git commit -m "POSIX: Allow a syslog daemon to bind /dev/log"
 
 ---
 
+### Task 20: Cross-process AF_UNIX datagram routing
+
+**Added 2026-11-07, on the maintainer's decision, after Task 10's review found the syslog half blocked.** Runs **before** Task 11.
+
+**Why this exists.** The spec claimed that making `/dev/log` bindable "is what makes musl's `syslog(3)` start working, with no libc change." That was wrong. Kandelo has **no cross-process AF_UNIX datagram delivery**: `crates/runtime-core/src/syscalls.rs:15253` refuses it outright when `peer.pid != proc.pid`, with a comment saying cross-process datagram routing "needs ProcessTable ownership and is handled by a later machine-wide routing repair", and `docs/posix-status.md:302` has documented the gap all along. So a daemon can bind `/dev/log` and nothing can send to it — Tasks 11, 13 and 14 cannot work, and Task 13's `logger -t test hello` → `/var/log/messages` test cannot pass.
+
+Closing a POSIX gap at the layer where it lives is what this project's contract asks for, rather than working around it in the facility above.
+
+**What is known, so the implementer need not rediscover it:**
+- `Process` owns its `SocketTable` (`crates/runtime-core/src/process.rs:1146`), and the `ProcessTable` owns the processes (`crates/runtime-core/src/process_table.rs:258`, `:348`), so reaching another process's socket state is possible in principle.
+- **AF_UNIX streams already work cross-process** — `docs/posix-status.md:302` says they "support same- and cross-process pathname or abstract-namespace listeners… including cross-process retries". That existing mechanism is the thing to study first; it defers to the owning process rather than indexing its table directly.
+- A datagram's received data currently sits in a per-socket queue inside the owning process's `SocketTable`, which is exactly why the current code cannot deliver across the boundary.
+- The path registry already maps path → `(pid, sock_idx)` with fork inheritance, rename re-keying and correct lifetimes (`crates/runtime-core/src/unix_socket.rs`).
+
+**The ABI question is the risk, and it must be settled before implementing.** Moving or duplicating datagram receive state could touch `process_snapshot_wire` or fork's socket serialization (`crates/runtime-core/src/fork.rs` encodes socket domains), which is **kernel-host** surface governed by `HOST_ADAPTER_VERSION` — currently 5. A kernel-host bump is cheap in rebuild terms, because no guest artifact is invalidated, but it is not free: the host adapter manifest refuses an already-published projection kernel at boot, so `prepare-browser` becomes mandatory. The **program** ABI must stay at 55 behind its affirmed-predecessor entry; if the program digest moves, stop.
+
+- [ ] **Step 1: Establish the design before writing code.** Read the stream cross-process path, decide between deferring to the owning process and kernel-owned queues, and say which and why. Report if the honest answer is that this needs more than the facility can absorb.
+- [ ] **Step 2: Determine the ABI impact** — run `cargo xtask dump-abi --check` against a scratch change if needed. Program digest must not move. A `HOST_ADAPTER_VERSION` bump is permitted if justified in writing.
+- [ ] **Step 3: Write the failing tests first.**
+
+```rust
+#[test] fn a_datagram_sent_from_another_process_reaches_the_bound_peer()
+#[test] fn connect_to_a_cross_process_pathname_peer_succeeds()
+#[test] fn a_missing_or_wrong_type_peer_still_returns_econnrefused()
+#[test] fn the_peer_exiting_makes_further_sends_fail_truthfully()
+#[test] fn fork_inheritance_of_a_bound_datagram_socket_still_resolves()
+```
+
+- [ ] **Step 4: Implement, keeping every existing refusal that is still correct.** A missing, wrong-type or genuinely unreachable peer must still return `ECONNREFUSED`; only the cross-process case changes.
+- [ ] **Step 5: Verify `syslog(3)`'s actual sequence works** — `socket(AF_UNIX, SOCK_DGRAM)`, `connect("/dev/log")`, `send` — from a process other than the one that bound it.
+- [ ] **Step 6: Update `docs/posix-status.md`** — both the `connect()` row at `:302` and the `/dev/log` row, which currently document the gap this task closes.
+- [ ] **Step 7: Commit.**
+
+```bash
+git commit -m "POSIX: Route AF_UNIX datagrams between processes"
+```
+
+---
+
 ### Task 11: sysklogd package
 
 **Files:**
