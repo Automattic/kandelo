@@ -23,6 +23,10 @@ namespace kandelo::process_state {
 inline std::mutex environment_mutex;
 inline std::mutex umask_mutex;
 
+// Abort is signal death, not a normal _exit(128 + SIGABRT). libc owns
+// unblock/reset/re-raise behavior, so waiters receive the real signal status.
+[[noreturn]] inline void Abort() { std::abort(); }
+
 // Copy borrowed libc storage while this bridge's mutations are excluded.
 // No borrowed environ pointer survives the lock or a JavaScript allocation.
 inline std::optional<std::string> GetEnvironment(const char* key) {

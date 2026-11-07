@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "87b1fe7ea15db5a84382219bc9ea30ca0bd01d34fa1951ae9e26b72a35e51980",
+    "packages/registry/node-compat/bootstrap.js": "1b1a0369ca3ae8ccb72c31570f9c965a296bbac4ed71e4af02901d478624f0ab",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
@@ -83,7 +83,7 @@
     "third_party/node-core/process-exception-adapter.js": "a4bcbd7ea7cf8cc11782ad7d89f0657a426830d67b01815230fab5c321709c73",
     "third_party/node-core/process-lifetime-adapter.js": "c10aa4e4f2c8e1701f5fd6d6958cf32ec6870070d46e9f33b7b5ca7947f16fff",
     "third_party/node-core/process-signals-platform-adapter.js": "f1e3e1dcfbb46b6b0f38638eb9e6390d19023b808238a68dcee8086bc5eeb521",
-    "third_party/node-core/process-state-adapter.js": "44aaeb3cb8504ff1f7c7fcf94954d9874e283df6668bc75ebcc78dd7414d8792",
+    "third_party/node-core/process-state-adapter.js": "57397c85d76802270608617d2c46947aa573e907116daa2a11eadb3ebfd35322",
     "third_party/node-core/process-usage-adapter.js": "ad4a506a23019556ac4557a8198c4f0f03e6e360490a2cc82124b577361a22ae",
     "third_party/node-core/public-constants-platform-adapter.js": "b6fb6bd1674b6533b098bbb5d484693ca7c4eccb6191eedf64033801f5699a47",
     "third_party/node-core/query-codecs-platform-adapter.js": "38065f1cb667ab06a30f3a337ad8fbb771882ae28b2b233def2e1705c90a9766",
@@ -2391,7 +2391,7 @@
       "selectedAdapterLiteralOccurrences": [
         {
           "path": "packages/registry/node-compat/bootstrap.js",
-          "line": 2932
+          "line": 2933
         }
       ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",

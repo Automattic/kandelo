@@ -1,0 +1,23 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2410,2 +2410,16 @@
+   return true;
++}
++
++static bool KandeloNativeProcessAbort(JSContext* cx, unsigned argc, Value* vp) {
++  if (GetShellContext(cx)->isWorker) {
++    // Public Workers use the pinned ERR_WORKER_UNSUPPORTED_OPERATION wrapper.
++    // Keep the private binding from terminating a process owned elsewhere.
++    JS_ReportErrorASCII(cx, "process.abort() is unavailable in Workers");
++    return false;
++  }
++  // Dump real executing guest frames without invoking user getters, exit
++  // listeners or the orderly environment teardown path. Native stack/report
++  // diagnostics remain a separate owning instrumentation prerequisite.
++  js::DumpBacktrace(cx, stderr);
++  kandelo::process_state::Abort();
+ }
+@@ -4624,2 +4638,3 @@
+       JS_FN("processParentPid", KandeloNativeProcessParentPid, 0, 0),
++      JS_FN("abort", KandeloNativeProcessAbort, 0, 0),
+       JS_FN("operatingSystem", (KandeloFsPromiseGuard<KandeloNativeOS>), 3, 0),

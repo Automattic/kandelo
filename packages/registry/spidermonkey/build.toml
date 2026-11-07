@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0163-node-public-process-abort.patch",
   "packages/registry/spidermonkey/patches/0162-node-process-capture-abort-owner.patch",
   "packages/registry/spidermonkey/patches/0161-node-vm-script-import-owner.patch",
   "packages/registry/spidermonkey/patches/0160-node-process-tracing-teardown.patch",
@@ -738,4 +739,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 217
+revision = 218

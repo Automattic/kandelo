@@ -70,6 +70,21 @@ function _createNodeProcessState(platform) {
         }, P.ObjectPrototype);
     }
 
+    function createAbort(ownsProcessState = true) {
+        if (ownsProcessState) return native.processAbort;
+        const { ERR_WORKER_UNSUPPORTED_OPERATION } = platform.getValues().errors.codes;
+        // Unchanged pinned internal/process/worker_thread_only.js factory.
+        function unavailable(name) {
+          function unavailableInWorker() {
+            throw new ERR_WORKER_UNSUPPORTED_OPERATION(name);
+          }
+
+          unavailableInWorker.disabled = true;
+          return unavailableInWorker;
+        }
+        return unavailable('process.abort()');
+    }
+
     function createUmask(ownsProcessState = true) {
         const rawMethods = { umask: mask => native.processUmask(mask) };
         if (ownsProcessState) {
@@ -81,6 +96,6 @@ function _createNodeProcessState(platform) {
         /* NODE_UMASK_WORKER */
         return wrappedUmask;
     }
-    return { createEnvironment, createUmask, installVersions,
+    return { createEnvironment, createAbort, createUmask, installVersions,
         parentPid: () => native.processParentPid() };
 }

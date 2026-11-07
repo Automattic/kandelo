@@ -1,0 +1,86 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/processes.md",
+    "findingIds": [
+      "PROC-003"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "processes",
+      "async",
+      "workers",
+      "engine"
+    ],
+    "scope": "Partial real public abort signal-death prerequisite. Complete termination/fatal/rejection/beforeExit/signal/Worker/diagnostics/guest behavior remains open."
+  },
+  "sourceImplemented": [
+    "Replace std.exit(134) with the actual native abort alias, retaining real callable name/arity/receiver semantics",
+    "Invoke actual engine frame dump and shared process-state std::abort owner without ordinary exit listeners or numeric status fabrication",
+    "Use unchanged pinned Worker unavailable factory after actual error-owner initialization, with independent native Worker ownership refusal",
+    "Retain real libc signal unblock/reset/re-raise and existing kernel exact-task signal/wait ownership rather than inventing termination metadata",
+    "Compose additive engine patch0163 and regenerate real current core/bootstrap, preserving217Blob and215/216VM/capture owners",
+    "Remove only a trailing whitespace line identified by independent review; original seal/patch and native algorithm tokens unchanged"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-abort218-source-r1/report.json",
+    "sha256": "4850a7294f17fb544db64263a091f382bbdbd4fae7476cf14ce2992b6c2563cf",
+    "guardedInputs": 885,
+    "scope": "Real public main abort/native libc owner and pinned public Worker refusal; normal staging/style/source checks plus scoped native-dependent controls, not new guest JSAPI/signal/wait/diagnostics/fourhost proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-abort218-affected-r1.json",
+    "sha256": "cda9d7d4886e10c861c49bfd1b63272e58306c7f62fa433bbdcebe335f526ea6",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-abort218-source-r1/report.json",
+    "sha256": "4850a7294f17fb544db64263a091f382bbdbd4fae7476cf14ce2992b6c2563cf",
+    "freshNativeDependentGroups": 2,
+    "reusedNativeFatalGroup": 1,
+    "reusedActualNativeHeaderCases": 4,
+    "compilerAttemptsIntegrated": 2,
+    "newRootCompilerAttempts": 0,
+    "unchangedStyleCheckerPassed": true,
+    "productionJSAPICompiled": false,
+    "guestSignalWaitValidated": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Main native alias/Worker algorithms over explicit native Node errors/abort; actual shared C++ header4cases native libc only. Fresh2groups plus reused fatal1/header4 do not validate new guest JSAPI, musl signal death/wait or diagnostics."
+  },
+  "sealedEvidence": {
+    "report": ".context/process-abort-owner-agent/report.json",
+    "sha256": "bba12ef53cbdb5b4936ffaa89c54a3be0fa4e64c8a9a1efe93edd4f213760d80",
+    "reusedEvidence": true,
+    "scope": "Actual C++ shared header4native-libc cases plus3native-dependent public groups;2tiny successful compiles, original helper exit31/invalid syntax harness attempts retained. New guest JSAPI uncompiled; diagnostics/musl/kernel/parent wait/fourhost unvalidated."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/process-abort-owner-agent/report.json",
+      "sha256": "bba12ef53cbdb5b4936ffaa89c54a3be0fa4e64c8a9a1efe93edd4f213760d80",
+      "scope": "Original native helper run exit31 from unflushed parent stdout inherited across fork, corrected helper retains actual header; two invalid syntax assembly attempts and original source/evidence predicate false retained. No compiler failure or runtime defect inferred."
+    },
+    {
+      "report": ".context/process-abort-review-agent/REPORT.md",
+      "sha256": "f48dba12ae249e354c805a35803e6766429e66b621a9221b1399e018911a2d0d",
+      "scope": "Independent read-only review found only trailing whitespace integration defect ABORT-REVIEW-001; root removes whitespace only. Native JSAPI signatures/init/Worker/libc source traced, not compiled/guest validated."
+    }
+  ],
+  "remaining": [
+    "Actual new JSAPI compilation and identified guest signal death/parent wait/Worker/private guard across all four hosts",
+    "Complete native stack diagnostics, exact abort output/core dump/report production and error behavior",
+    "Separate default uncaught hard_abort SIGTRAP versus guest SIGABRT and other fatal/report/getter-throw/beforeExit/rejection gaps",
+    "Complete original PROC-003/process/signal/IPC/lifecycle/resource/realm/GC obligations; no API/family closure"
+  ],
+  "at": "2026-11-07T14:28:11.458650+00:00",
+  "recipeRevision": 218,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

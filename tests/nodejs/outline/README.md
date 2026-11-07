@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source218 routes public main abort to genuine native/libc signal death and applies pinned Worker refusal. Native header/frontend evidence remains explicitly scoped; new guest binding/signal-wait/diagnostics behavior is uncompiled/unvalidated.
+See [source scope](public-abort-integration.md).
+
 Source217 corrects real shared Blob construction/slice conversion and byte-snapshot order.19focused native-dependent groups match; unchanged upstream Blob test remains nonpassing on custom inspection. No new guest binding build or four-host acceptance.
 See [source scope](blob-construction-integration.md).
 

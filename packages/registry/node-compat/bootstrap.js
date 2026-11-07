@@ -1459,9 +1459,7 @@ const process = (() => {
             std.exit(proc.exitCode === undefined ? 0 : proc.exitCode);
         },
 
-        abort() {
-            std.exit(134); // SIGABRT
-        },
+        abort: _nodeNative.processAbort,
 
         getuid() { return _nodeNative.credentials().uid; },
         geteuid() { return _nodeNative.credentials().euid; },
@@ -2151,7 +2149,10 @@ _nodeWarnings = _createNodeWarningPlatform({
 _nodeWarnings.install();
 // OS accounting currently returns placeholder getrusage data. Keep that
 // owner gap explicit; do not reinterpret elapsed time or host-wide totals.
-if (_nodeNative.workerEnvironment) process.umask = _nodeProcessState.createUmask(false);
+if (_nodeNative.workerEnvironment) {
+    process.umask = _nodeProcessState.createUmask(false);
+    process.abort = _nodeProcessState.createAbort(false);
+}
 Object.assign(process, _createNodeProcessUsage({
     process, values: _nodeValues, binding: _createNodeUnavailableProcessUsage(_nodeValues),
 }));

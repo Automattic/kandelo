@@ -492,6 +492,8 @@
         createEnvironmentObject(callbacks, prototype) { return native.createEnvironmentObject(callbacks, prototype); },
         processUmask(mask) { return native.processUmask(mask); },
         processParentPid() { return native.processParentPid(); },
+        // Retain the actual native function's abort name/arity/receiver policy.
+        processAbort: native.abort,
         parseEnv(content) { return native.parseEnv(content); },
         loadEnvFile(path) { return native.loadEnvFile(path); },
         randomFillBytes(bytes) { return native.randomFillBytes(bytes); },
