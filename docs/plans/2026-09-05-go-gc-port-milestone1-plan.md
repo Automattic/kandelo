@@ -10,6 +10,51 @@ Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
 Implementation/evaluation checkpoints are pushed to draft PR #1492.
 The full WordPress service goal remains unfinished.
 
+**Image build stopped at input drift, not compilation:** job
+`wordpress-wasm32-final-1107-054136-cf6a` terminates after 5h43m. Shell
+assembly rejects the changed `coreutils-docs` key and blocks WordPress;
+the completed package generations remain cached. The earlier offline-link
+test change modified `host/test/centralized-test-helper.ts` after the docs
+node ran. That helper is an explicitly declared docs build input, which
+the parallel-work freeze missed. The resolver correctly refuses to pair
+the old receipt (`ac2879a8ba6e`) with the new expected key (`1e6e6bbd7681`).
+No receipt is edited or equality check relaxed. The next normal build must
+use stable declared inputs and a fresh projection, retaining the failed
+log/projection separately. Guidance now covers inputs outside the registry.
+
+**Startup source ownership experiment:** isolated
+`.context/thread-startup-bytes` consumes thread-private source buffers
+after startup metadata is decoded, using ordinary ArrayBuffer transfer
+where available. The kernel keeps its original source for later launches
+and fork. The compiler, collector and applications are unchanged. Own
+normal image-writer and compiled-host/declaration preparation passes in
+4m15s. Seven Go runtime/cgo Node cases, real Caddy/PHP and all eight
+unchanged original ABI-program cases pass. A first WebKit service sample
+reports `4.8G` physical footprint versus the earlier `5.9G`; these single
+observations under build load do not establish a stable reduction. Node
+RSS overlaps the exploratory baseline observations, so no Node improvement
+is established.
+
+The expanded browser run has 298 passes and two outer two-minute timeouts
+in the full os.Root sweep (Firefox and WebKit), zero skips/flakes. Separate
+fresh Firefox invocations of that exact fixture pass on unchanged and
+experimental hosts in 87.0s and 88.7s overall, respectively. Those focused
+passes do not replace the mixed full result. Keep the candidate isolated
+pending a coherent full gate and final memory/lifecycle measurements.
+
+**Pthread fork regressions refreshed:** both nested and concurrent pthread
+fork fixtures are compiled through the normal SDK fixture helper, fork
+instrumented and ABI-stamped as fresh outputs. Node's existing test now
+uses the developer-fixture path instead of querying package-only authority
+and silently skipping. Node/browser share one fixture-root helper, with
+explicit prepared-root selection for isolated evaluations. Both unchanged
+and experimental hosts pass two Node and six three-engine browser cases,
+zero skips/flakes. Seven ownership/source-literal checks pass. These prove
+real child/grandchild continuations after startup, not physical reclamation.
+Evidence is `.context/thread-fork-baseline-gates/` and the isolated
+candidate's `.context/thread-fork-gates/`; its broad browser report remains
+separate under `.context/broad-browser-reports/`.
+
 **Module/native footprint controls:** a maintained module-only control
 passes all three browsers (58.6 seconds), then a separate WebKit run
 captures all eight phase-held OS snapshots (25.3 seconds). It compiles the

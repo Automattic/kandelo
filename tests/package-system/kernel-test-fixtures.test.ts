@@ -42,6 +42,8 @@ const expectedFixtureIds = [
   "exec-caller:wasm32",
   "exec-child:wasm32",
   "fork-exec:wasm32",
+  "fork-from-concurrent-threads:wasm32",
+  "fork-from-thread:wasm32",
   "hello64:wasm64",
   "ifhwaddr:wasm32",
   "ifhwaddr:wasm64",

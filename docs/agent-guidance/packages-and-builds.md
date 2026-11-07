@@ -66,6 +66,15 @@ The resolver enforces the recipe-directory part of this rule: it records the
 package directory and the build script's directory before the script runs,
 and fails the build, publishing nothing, if anything in them changed.
 
+Freeze every declared build input during a live publication, including
+files outside `packages/registry/`. Test helpers can be real recipe inputs:
+`coreutils-docs/build.toml` names `host/test/centralized-test-helper.ts`
+because it runs actual guests to generate documentation. Changing that
+helper after the docs build changes the expected key during downstream
+image assembly. The resolver correctly rejects the inconsistent receipts;
+retain the completed caches and rebuild through the normal pipeline with
+stable inputs. Do not edit receipts or weaken their equality checks.
+
 The persistent SourceOnly build cache lives at
 `$HOME/.cache/kandelo/source-only` and is **shared across every worktree on
 the machine** by default. This is deliberate: the cache is content-addressed,

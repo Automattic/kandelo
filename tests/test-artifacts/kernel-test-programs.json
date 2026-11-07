@@ -97,6 +97,30 @@
         "host/test/wasm64.test.ts",
         "host/test/worker-entry.test.ts"
       ]
+    },
+    {
+      "id": "fork-from-thread:wasm32",
+      "name": "fork-from-thread",
+      "arch": "wasm32",
+      "source": "programs/fork-from-thread.c",
+      "binary": "programs/wasm32/fork-from-thread.wasm",
+      "resolver_path": "programs/fork-from-thread.wasm",
+      "consumers": [
+        "apps/browser-demos/test/threaded-fork-startup.spec.ts",
+        "host/test/fork-from-thread.test.ts"
+      ]
+    },
+    {
+      "id": "fork-from-concurrent-threads:wasm32",
+      "name": "fork-from-concurrent-threads",
+      "arch": "wasm32",
+      "source": "programs/fork-from-concurrent-threads.c",
+      "binary": "programs/wasm32/fork-from-concurrent-threads.wasm",
+      "resolver_path": "programs/fork-from-concurrent-threads.wasm",
+      "consumers": [
+        "apps/browser-demos/test/threaded-fork-startup.spec.ts",
+        "host/test/fork-from-thread.test.ts"
+      ]
     }
   ],
   "legacy_outputs": [

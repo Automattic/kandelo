@@ -14,19 +14,18 @@
  * `waitpid` then deadlocks because the host never tells the kernel
  * the child died (see PR #465 for the orthogonal crash-reap fix).
  */
-import { describe, it, expect } from "vitest";
+import { beforeAll, describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { buildProgramsFixture, requireBuiltFixtures } from "../../tests/support/program-fixtures";
 
-const forkFromThreadBinary = tryResolveBinary("programs/fork-from-thread.wasm");
-const hasFork = !!forkFromThreadBinary;
-const concurrentForkBinary = tryResolveBinary(
-  "programs/fork-from-concurrent-threads.wasm",
+const forkFromThreadBinary = buildProgramsFixture("programs/wasm32/fork-from-thread.wasm");
+const concurrentForkBinary = buildProgramsFixture(
+  "programs/wasm32/fork-from-concurrent-threads.wasm",
 );
-const hasConcurrentFork = !!concurrentForkBinary;
 
 describe("fork-from-non-main-thread", () => {
-  it.skipIf(!hasFork)(
+  beforeAll(() => requireBuiltFixtures([forkFromThreadBinary, concurrentForkBinary]));
+  it(
     "a pthread fork child can fork again from its inherited continuation",
     async () => {
       const result = await runCentralizedProgram({
@@ -62,7 +61,7 @@ describe("fork-from-non-main-thread", () => {
     20_000,
   );
 
-  it.skipIf(!hasConcurrentFork)(
+  it(
     "concurrent pthread forks keep their continuation frames isolated",
     async () => {
       const result = await runCentralizedProgram({
