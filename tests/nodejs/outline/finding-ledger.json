@@ -25,7 +25,7 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 100,
+    "sourceSliceRecords": 101,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 249
@@ -5896,6 +5896,13 @@
         {
           "slice": "fetch-body",
           "relation": "proposed-named-owner"
+        },
+        {
+          "slice": "response-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/web.md",
+          "scope": "Real Response constructor/statics/private body/header/clone and consumed HTTP publication source contribution; not complete Fetch/dependency semantics or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -6020,6 +6027,13 @@
         {
           "slice": "fetch-body",
           "relation": "proposed-named-owner"
+        },
+        {
+          "slice": "response-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/web.md",
+          "scope": "Real Response constructor/statics/private body/header/clone and consumed HTTP publication source contribution; not complete Fetch/dependency semantics or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -19214,6 +19228,74 @@
       "auditDocument": "tests/nodejs/audit/secure-network.md",
       "findingScope": "Actual shared prepared SSL_CTX credential/reference prerequisite; not full public SecureContext/TLS or finding closure",
       "additionalAuditDocuments": {}
+    },
+    "response-owner": {
+      "document": "tests/nodejs/outline/response-owner-finding-progress.json",
+      "sha256": "663acc05d60166684d19d25b7d4868b239448c9bc05b512d5d4fbd58965a4116",
+      "recordedRevision": 183,
+      "explicitFindingIds": [
+        "WEB-004",
+        "WEB-009"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-response183-source-r1/report.json",
+          "sha256": "604c15ca68172f74f659a90229445c95380ae930732b0bab5ecfa341c3e3326e",
+          "guardedInputs": 820,
+          "scope": "Full unchanged pinned Response owns actual shared Body/Header/Request state and existing HTTP publication; real guest dependency/GC/realm/fourhost and full Fetch transport remain open."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-response183-affected-r1.json",
+          "sha256": "2e25da24c3c592f826d6126b2c2f4ad8b4983abb11c05fe5923131a5b0603dcf",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-response183-source-r1/report.json",
+          "sha256": "604c15ca68172f74f659a90229445c95380ae930732b0bab5ecfa341c3e3326e",
+          "responseDifferentialGroups": 13,
+          "unchangedRequestGroups": 14,
+          "unchangedBodyTests": 13,
+          "packageChecks": 14,
+          "actualProductionResponseAndHTTPPublicationExecuted": true,
+          "newCompilerAttempts": 0,
+          "scope": "Actual current complete Response source over explicit native stream/URL/codec/clone/event/HTTP dependencies. Original bytes/private owner/guard and real loopback publication exercised; guest dependency/GC/realm/fourhost not established."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/response-owner-agent/handoff.json",
+          "sha256": "d046f3c97fe09354f17693ddc505f495da82bff9e431db7bd7545cdef1b424dd",
+          "reusedEvidence": true,
+          "scope": "13Response/14Request native-candidate groups,13unchanged Body tests,54source checks/809private declared inputs and exact0fuzzsource roundtrip. Existing unchanged upstream Fetch ordinary-function failure retained;0compiles/builds."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/response-owner-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/response-owner-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Complete unchanged pinned Undici Response module is actually loaded over shared Body/Headers/WebIDL/Request owners, replacing separate custom constructor/private state/clone code",
+        "Real Response.error/json/redirect statics and exact WebIDL conversion/validation/error order, brand/descriptors/subclass/private header guard/list behavior",
+        "Actual existing byte/view/Blob/FormData extraction, stream tee/clone/cancel and Body consumption lifecycle shared with Request",
+        "Existing HTTP consumer publishes genuine immutable fromInnerResponse(makeResponse(...)) with actual body stream/HeadersList/URL list rather than copied public fields",
+        "Four exact pinned source utility sections added with full-source and section hash guards; no target/ABI pin or production input change"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/response-owner-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Full Fetch controller/transport redirect/filter/CORS/cache/dispatcher/scheme/decompression and abort/upload/early-response policy",
+        "Existing flowing classic-HTTP publication lacks pull/backpressure-owned Fetch transport; existing async-function wrapper fails ordinary-function assertion",
+        "Actual guest Body/stream/Blob/Headers/URL/clone/encoding dependencies, finalizer ownership and realm/worker transfer/teardown conformance",
+        "Preserved earlier Body late-abort cancellation question, original failure/unsupported cases and all-four-host identified-artifact conformance"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/web.md",
+      "findingScope": "Real Response constructor/statics/private body/header/clone and consumed HTTP publication source contribution; not complete Fetch/dependency semantics or finding closure",
+      "additionalAuditDocuments": {}
     }
   },
   "dependencyNarratives": {
@@ -21113,6 +21195,26 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current181HTTP/182TLS source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T05:15:14.202980+00:00",
+        "sourceCheckpoint": 183,
+        "sourceHead": "229616bfffb91ab46259952f8ad3ee113e094655",
+        "addedSourceSlices": [
+          "response-owner"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "6e60bc16f46d5048194e0538ef249719dade2d4a9fead5e9064e8af29518c4b4"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current183Response shared private owner source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
       }
     ]
   }

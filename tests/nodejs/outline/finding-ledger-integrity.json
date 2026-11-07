@@ -1,14 +1,14 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T05:09:23.519984+00:00",
-  "sourceHead": "014552ea41478bc44c708d035477626697d824e3",
-  "recipeRevision": 182,
+  "at": "2026-11-07T05:15:14.202980+00:00",
+  "sourceHead": "229616bfffb91ab46259952f8ad3ee113e094655",
+  "recipeRevision": 183,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 100,
+    "sourceSliceRecords": 101,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 249
@@ -26,22 +26,21 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 100,
+  "sourceSliceIdentitiesVerified": 101,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "fb79b26c306a2f7c65a8ea4e7c685923631abb49a4d7eec6f1d69e9af1a73d38"
+    "sha256": "a645e836353387991afb2fccdef03c68245ede7a919743fe18707f72436f1353"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/link verification only; original definition/range lines retain previously verified immutable audit identity; no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "7ad710c6c1dbd7f90210152cc2c3fbac3bce48f06634711e66273a6729b9d81d",
-    "sourceHead": "810b8bead907f01f3483b9a72878cef187c815e9",
+    "sha256": "ab5b48595ba0a02aa61db8584493912212bd2f5b3268e962a84b38b143399ab6",
+    "sourceHead": "014552ea41478bc44c708d035477626697d824e3",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "http-synchronous-headers",
-    "tls-credential-owner"
+    "response-owner"
   ]
 }

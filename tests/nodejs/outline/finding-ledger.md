@@ -16,7 +16,7 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 100 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 101 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
 | Findings lacking an exact source-slice link | 249 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
@@ -151,3 +151,15 @@ Native3.5.9 and guest3.5.9 are distinct artifacts/configurations; existing guest
 source pin is unchanged. Accepted173predates current182; combined compilation,
 product projection and guest/four-host conformance remain unestablished.
 Nested guest Wasm execution remains in scope and explicitly scheduled last.
+
+## Source183 Response progress overlay
+
+WEB-004/WEB-009 now link to the complete unchanged pinned Response source,
+shared private Body/HeadersList/WebIDL/Request state and consumed immutable
+HTTP publication. Constructor/statics/clone/brand/descriptor and actual stream
+controls are bounded native-dependent evidence, not guest conformance.
+Full Fetch transport/controller/backpressure/policy and the unchanged upstream
+ordinary-function failure remain open. Accepted173predates current183; guest
+finalization/dependencies/realm/worker behavior and four-host conformance are
+unestablished. No finding or family closes. Nested guest Wasm execution stays
+in scope, scheduled after independent core-module work.
