@@ -1688,37 +1688,7 @@ fn current_pid_eids() -> (u32, u32, u32) {
 }
 
 // ---------------------------------------------------------------------------
-// 3b. Memory growth helper
-// ---------------------------------------------------------------------------
-
-/// Grow Wasm memory if `end_addr` exceeds the current memory size.
-/// Wasm pages are 64KB each. Returns true if memory was sufficient or grown.
-#[cfg(target_arch = "wasm32")]
-fn ensure_memory_covers(end_addr: usize) {
-    let current_pages = core::arch::wasm32::memory_size(0);
-    let current_bytes = current_pages * 65536;
-    if end_addr > current_bytes {
-        let needed_pages = (end_addr - current_bytes + 65535) / 65536;
-        core::arch::wasm32::memory_grow(0, needed_pages);
-    }
-}
-
-#[cfg(target_arch = "wasm64")]
-fn ensure_memory_covers(end_addr: usize) {
-    let current_pages = core::arch::wasm64::memory_size(0);
-    let current_bytes = current_pages * 65536;
-    if end_addr > current_bytes {
-        let needed_pages = (end_addr - current_bytes + 65535) / 65536;
-        core::arch::wasm64::memory_grow(0, needed_pages);
-    }
-}
-
-#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-fn ensure_memory_covers(_end_addr: usize) {
-    // No-op on non-Wasm targets (tests)
-}
-
-// 3c. Signal delivery at syscall boundaries
+// 3b. Signal delivery at syscall boundaries
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -5441,9 +5411,6 @@ fn dispatch_channel_mmap(
     if let Ok(mapped_address) = result {
         unsafe { crate::memory::global_shared_mapping_table() }
             .bind_kernel_file_mapping(proc.pid, mapped_address as u64).expect("mmap preparation changed before address binding");
-        if protection != 0 {
-            ensure_memory_covers(mapped_address.saturating_add(length));
-        }
     }
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     if result.is_err() {
@@ -11908,15 +11875,12 @@ pub fn kernel_munmap(addr: usize, len: usize) -> i32 {
 }
 
 /// brk. Returns the current or new program break.
-/// Grows Wasm memory if the new break exceeds the current memory size.
 pub fn kernel_brk(addr: usize) -> usize {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    // WHY: this is a process address, not a kernel allocation. The shared
+    // host adapter grows the separate process memory after dispatch; growing
+    // memory index zero here would also enlarge the kernel for that address.
     let result = syscalls::sys_brk(proc, addr);
-
-    // Ensure Wasm memory covers the new program break.
-    if result > 0 {
-        ensure_memory_covers(result);
-    }
 
     let mut host = WasmHostIO;
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);

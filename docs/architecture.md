@@ -718,6 +718,14 @@ kernel heap for reuse. This is required for ordinary long-running workloads:
 a monotonic allocator would make total historical syscall activity determine
 whether a later allocation succeeds.
 
+Guest addresses do not determine kernel capacity. `brk`, `mmap` and
+`mremap` update the process's virtual-memory metadata; the shared Node/browser
+host adapter grows the separate process backing, populates file mappings,
+clears reused anonymous pages and copies moving remaps. Kernel memory grows
+for kernel-owned allocations, not to mirror a guest's highest address.
+The retired direct `kernel_brk` import is not part of the current SDK or
+supported program surface; normal programs use syscall channels.
+
 WebAssembly linear memory cannot shrink. Freeing a kernel allocation makes its
 chunk reusable, but the kernel's visible page count remains at its high-water
 mark. `NodeKernelHost.getKernelMemoryPages()` and

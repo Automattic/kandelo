@@ -2,6 +2,34 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Kernel/process memory separation candidate:** a normal-SDK regression
+reproduces redundant kernel growth on Node and all three browser engines,
+for both pointer widths. Its guest mappings reach 278,724,608 bytes while
+the old kernel follows them to 278,462,464 bytes. After removing the two
+legacy growth calls and their helper, the same browser cases keep kernel
+capacity at 1,966,080 bytes while guest data, zero-fill, remap, file mapping
+and logical refusal checks pass. Forty-two focused Node cases and 36
+browser cases pass with zero skips/flaky cases on normal kernel artifact
+`3db2d239c003` in the isolated `kernel-memory-separation` checkout. The Node
+selection includes unchanged ABI-55 programs and allocator reuse. No Go,
+PHP, SDK, process-memory budget or application algorithm changes are made.
+This proves separate logical capacities in the focused workload, not lower
+native WordPress footprint or full lifecycle/performance acceptance.
+
+The direct-call audit finds `kernel_brk` internal and channel-only; the
+normal SDK does not link the retired direct-import glue. The fixture
+exercises brk query/refusal, not positive brk growth: normal C startup has
+already placed a live mapping beside the break. A proposed custom-entry
+fixture was discarded instead of changing the SDK/CRT for this test.
+Broader Rust, ABI, libc/POSIX, final-image and real workload memory checks
+remain pending. A first Rust workspace invocation incorrectly overrode the
+repository's serial `RUST_TEST_THREADS=1` with two threads and aborted in
+image-module tests; preserve that runner-error evidence and rerun with the
+committed setting. Reports are under the isolated checkout's
+`.context/baseline-tests/` and `.context/candidate-tests/`. The existing
+verified WordPress preview remains unchanged during evaluation.
+
+
 **Active migration:** Go 1.28 development `kandelo/wasm32`, with matching
 four-byte Go/C pointers and eight-byte scalar alignment. Latest selected Go
 source is

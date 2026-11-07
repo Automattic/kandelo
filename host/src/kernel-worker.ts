@@ -24153,11 +24153,10 @@ export class CentralizedKernelWorker {
   // -----------------------------------------------------------------------
   // Process memory management
   //
-  // The kernel's ensure_memory_covers() grows the KERNEL's Wasm memory
-  // (memory index 0 in the kernel module). But the
-  // process runs in a different WebAssembly.Memory. After brk/mmap/mremap
-  // syscalls, we must grow the process's memory to cover the returned
-  // addresses — otherwise the process gets "memory access out of bounds".
+  // A process runs in a different WebAssembly.Memory from the kernel.
+  // After brk/mmap/mremap syscalls, grow that process's backing to cover
+  // the returned addresses. These addresses never size kernel memory;
+  // only allocations owned by the kernel grow its backing.
   // -----------------------------------------------------------------------
 
   private ensureFixedMmapProcessMemoryCapacity(

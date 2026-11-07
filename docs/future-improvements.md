@@ -467,14 +467,12 @@ listed path or a claim that existing admission limits bound total memory.
   when they can directly return an owned promise. Preserve synchronous
   activation/error semantics and terminal late-completion checks; do not use
   presumed engine optimization of dead locals as the release proof.
-- **Guest-address versus kernel-memory growth.** The channel `mmap` dispatcher
-  and `kernel_brk` still call `ensure_memory_covers`, which grows memory index
-  zero of the kernel module, while the host separately grows the process's
-  memory. Audit the remaining direct-call assumptions before removing this
-  legacy coupling. A guest address is not a kernel allocation requirement;
-  test ordinary and fixed maps, remap, brk, direct import paths and failure
-  rollback with separate kernel/process page measurements. No memory saving
-  or performance improvement is established by this source observation alone.
+- **Independent address spaces and native-memory accounting.** Guest addresses
+  no longer grow the kernel's separate linear memory. Keep regression coverage
+  for ordinary/fixed mappings, remap, file population and brk query/refusal
+  with separate kernel/process page measurements. Reducing redundant linear
+  capacity does not establish native footprint, physical reclamation or a
+  whole-machine bound; measure real application workloads and engine owners.
 - **Stage VM growth before authoritative mutation.** The storage-mapping
   work adds rollback for nonfixed `mmap` when process-memory growth fails.
   Audit `brk` and `mremap` for the same ordering: a host allocation failure
