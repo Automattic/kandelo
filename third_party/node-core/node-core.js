@@ -95635,6 +95635,7 @@ function _createNodeTestOptionReader(platform) {
     const options = platform.cliOptions;
     return function getOptionValue(name) {
         if (name === '--experimental-test-module-mocks') return options.experimentalTestModuleMocks === true;
+        if (name === '--test-update-snapshots') return options.testUpdateSnapshots === true;
         if (name === '--strip-types') return options.stripTypes === true;
         if (defaults.has(name)) return defaults.get(name);
         const error = new Error('Test option ownership is not implemented: ' + name);

@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source169 integrates real snapshot-update CLI activation.8current public pairs match native, including preserved missing/changed failures and real identical file bytes;13CLI pairs are reused with identical actual parser source.14package checks pass; guest/fourhost remain open.
+See [source scope](snapshot-activation-integration.md).
+
 Source168 integrates actual ChildProcess.kill public error ownership.35current differential judges, two real-own-child comparisons and14package checks pass with explicit native boundaries; guest process/permissions/JSAPI/fourhost remain open.
 See [source scope](child-kill-error-integration.md).
 

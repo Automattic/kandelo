@@ -1,0 +1,26 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -11448,0 +11449 @@
++  bool testUpdateSnapshots = false;
+@@ -11521,0 +11523,4 @@
++  if (name == "--test-update-snapshots") {
++    kandeloNodeCLI.testUpdateSnapshots = value;
++    return true;
++  }
+@@ -11564,0 +11570,14 @@
++      const auto optionName = KandeloNodeOptionName(arg);
++      // Pinned node_options.cc marks snapshot rewriting CLI-only. Applying
++      // boolean options before this admission check would enable writes from
++      // a disallowed inherited environment option.
++      if (optionName == "--test-update-snapshots" ||
++          optionName == "--no-test-update-snapshots") {
++        // Keep original spelling and the '=' marker like pinned original_name.
++        const auto equals = arg.find('=');
++        const auto originalName = equals == std::string::npos
++            ? arg : arg.substr(0, equals + 1);
++        fprintf(stderr, "%s: %s is not allowed in NODE_OPTIONS\n", argv[0],
++                originalName.c_str());
++        return false;
++      }
+@@ -16566,0 +16586 @@
++        !KandeloDefineBooleanProperty(cx, cli, "testUpdateSnapshots", kandeloNodeCLI.testUpdateSnapshots, 0) ||

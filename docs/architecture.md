@@ -6852,3 +6852,7 @@ Source167 routes local source addresses, resolver server tuples and reverse-addr
 ### Child process public kill error source ownership
 
 Source168 normalizes actual native kill errno through unchanged pinned ErrnoException and the real compiler-selected UV map. ESRCH returns false, EINVAL/ENOSYS throw and other failures emit synchronously; killed changes only after actual success. Existing zero/default/unknown conversion remains intact. Host-boundary controls are separate from guest process/permission/four-host proof. See [scope](../tests/nodejs/outline/child-kill-error-integration.md).
+
+### Test snapshot update CLI source ownership
+
+Source169 admits --test-update-snapshots in the actual command-line owner, preserves execArgv and projects its real boolean to the test option reader. It rejects the option and negation in NODE_OPTIONS before applying values, following the pinned policy. Existing SnapshotManager/filesystem/VM/serializer algorithms own the writes and real errors. Current component controls do not establish guest startup, JSAPI projection or four-host behavior. See [scope](../tests/nodejs/outline/snapshot-activation-integration.md).

@@ -92,7 +92,7 @@
     "third_party/node-core/string-decoder-adapter.js": "7e1e21f39f36fcf0e7228afd85beeb581caf6fec095eb5c9f91bee798b772e13",
     "third_party/node-core/tempdir-platform-adapter.js": "5102bbeeeb0ca8ffe47dec42d4edad3a91e0e8c6842903b3d3fb904b237afa39",
     "third_party/node-core/terminal-platform-adapter.js": "9aa2a1a70dcc46a872589562a30a10009a0deea57d5a8becd4b34f7e7e1ea3cc",
-    "third_party/node-core/testing-platform-adapter.js": "fa85040d7cdee8356ff15486489246b5cd0977df2b43b4b9213b28545db54c8f",
+    "third_party/node-core/testing-platform-adapter.js": "1b9c955795c16145a5fa9ab1d42d04802ec3e9762f6557a1e1e93c4ddaf7c812",
     "third_party/node-core/tls-context-adapter.js": "c072933785d58f03a21c2672a34bf2e480533feea7a6ac5213d3fd5f36b123dc",
     "third_party/node-core/tls-identity-adapter.js": "7e1688bff98af17878908679a8c58fc084730e4c1dd6daa03975e0fcdb525760",
     "third_party/node-core/url-path-platform-adapter.js": "bf72745440f0b19df5ba74f3989aa16951e2e64d478ab8d7d6835c92b1e036c0",

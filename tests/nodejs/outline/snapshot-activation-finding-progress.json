@@ -1,0 +1,73 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/testing.md",
+    "findingIds": [
+      "TEST-002"
+    ],
+    "relatedDocuments": [
+      "tests/nodejs/audit/testing-contracts.md"
+    ],
+    "relatedFamilies": [
+      "testing",
+      "processes",
+      "filesystem",
+      "engine"
+    ],
+    "scope": "Actual snapshot opt-in activation subset; full runner/testing findings remain open"
+  },
+  "sourceImplemented": [
+    "Actual CLI boolean storage/admission/rawexecArgv/projection and existing reader route for --test-update-snapshots",
+    "Reject option/negation in NODE_OPTIONS before boolean application with exact original error spelling/equals",
+    "Keep actual SnapshotManager/serializers/VM/fs/Test lifecycle and MockTracker/MockTimers/clock source unchanged",
+    "Compose exact canonical current shell with Signal/UDP and verify normal engine patch forward/reverse plus identical compiled parser body"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-snapshot169-source-r1/report.json",
+    "sha256": "3a78181f49cad26d3dd29acd33bddb6e45ad10cf8321713ea2c468b3b0388d40",
+    "guardedInputs": 786,
+    "scope": "Current actual snapshot/testing/reader source with8public native-dependent pairs and identical compiled actualCLIparser body; deliberate missing/changed failures remain failures. No current productionJSAPI/main/guest/fourhost acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-snapshot169-affected-r1.json",
+    "sha256": "d1783d46ae5eca691fa70bbdde131a1ff658ce0ebc2c54528470787804970643",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-snapshot169-source-r1/report.json",
+    "sha256": "3a78181f49cad26d3dd29acd33bddb6e45ad10cf8321713ea2c468b3b0388d40",
+    "matchingPublicPairs": 8,
+    "reusedCliPairs": 13,
+    "deliberateTestFailuresPreserved": true,
+    "scope": "Current actual snapshot source/native file bytes with compiled actual parser body, explicit native boundaries, no guestJSAPI/main"
+  },
+  "sealedEvidence": {
+    "report": ".context/testing-snapshot-agent/handoff.json",
+    "sha256": "21a7344bf7af580cf9ac12247c549fd5feaa69cc64961476dbfbe78935a9882e",
+    "reusedEvidence": true,
+    "scope": "13CLI+8public pairs and3tinyparsercompiles; actual projection/main/guest uncompiled; all initial/error/negative evidence retained"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/testing-snapshot-agent/SEAL.json",
+      "sha256": "6d719af45d4b1cdea8e65c0a54fff40d6be0319f377583890f64c05f582e3c55",
+      "kind": "preparation-and-preserved-real-test-failures",
+      "reason": "Original11pass2failCLI spelling and both-subject path assertion error; missing/changed/old-reader tests remain failed as expected"
+    }
+  ],
+  "remaining": [
+    "Normal selected currentengine compilation and actualJSAPI/main/guest startup/flag metadata",
+    "Guest snapshot/filesystem/VM/async/fatal/worker/child flag propagation on allfourhosts",
+    "Complete snapshots/runner/discovery/isolation/module mocking/coverage/benchmark behavior"
+  ],
+  "at": "2026-11-07T01:29:05.272703+00:00",
+  "recipeRevision": 169,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
