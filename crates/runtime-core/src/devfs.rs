@@ -8,7 +8,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK};
+use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFSOCK};
 use wasm_posix_shared::{Errno, WasmStat};
 
 /// Sentinel host_handle for devfs directory OFDs.
@@ -17,6 +17,7 @@ pub const DEVFS_DIR_HANDLE: i64 = -160;
 const DT_DIR: u8 = 4;
 const DT_CHR: u8 = 2;
 const DT_LNK: u8 = 10;
+const DT_SOCK: u8 = 12;
 
 /// Devfs directory entries that can be listed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +56,43 @@ pub fn is_delegated_path(path: &[u8]) -> bool {
     path == b"/dev/shm" || path.starts_with(b"/dev/shm/")
 }
 
+/// Whether `path` is the one name under `/dev` that `bind(2)` may create.
+///
+/// `/dev/log` is where `syslog(3)` connects a datagram socket (musl hardcodes
+/// the path), so a syslog daemon has to be able to listen there. This is a
+/// chosen design for a facility POSIX does not describe, and it is exactly one
+/// name: `/dev` does not become writable. Every other new name under it still
+/// fails with `EROFS`, and `/dev/log` itself cannot be created by anything but
+/// `bind` (not `open(O_CREAT)`, `mknod`, `mkdir`, `symlink`, `link` or
+/// `rename`), nor chmod'ed, chown'ed, or renamed.
+///
+/// This is deliberately not an extension of [`is_delegated_path`]. Delegation
+/// hands a whole subtree to some other authority; devfs stays the authority
+/// for `/dev/log`. Devfs owns only the name's existence, `stat(2)` and
+/// `unlink(2)`. The endpoint (who is bound, who may connect, the datagram
+/// queue) lives in the path-keyed unix socket registry like any other
+/// pathname socket, and the name exists exactly while that registry holds an
+/// entry for it: devfs keeps no second record that could disagree. A pathname
+/// socket's entry survives the last close until `unlink`, which is what makes
+/// the name behave like a socket inode.
+pub fn is_bindable_socket_path(path: &[u8]) -> bool {
+    path == b"/dev/log"
+}
+
+/// Whether a bindable socket name currently exists, i.e. has been bound and
+/// not yet unlinked.
+pub fn bindable_socket_exists(path: &[u8]) -> bool {
+    is_bindable_socket_path(path)
+        && unsafe { crate::unix_socket::global_unix_socket_registry() }.contains(path)
+}
+
+/// Release a bindable socket name (`unlink(2)`). The caller has already
+/// resolved `path` and checked privilege; returns whether a name was removed.
+pub fn unlink_bindable_socket(path: &[u8]) -> bool {
+    is_bindable_socket_path(path)
+        && unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(path)
+}
+
 /// Whether the kernel's devfs — not a host mount and not the rootfs overlay —
 /// is the authority for `path`.
 ///
@@ -88,6 +126,30 @@ pub fn match_devfs_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
             st_ino: devfs_ino(path),
             st_mode: S_IFDIR | 0o755,
             st_nlink: 2,
+            st_uid: uid,
+            st_gid: gid,
+            st_size: 0,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
+            _pad: 0,
+            st_rdev: 0,
+        });
+    }
+    if bindable_socket_exists(path) {
+        // The node carries no stored attributes of its own: mode, owner and
+        // timestamps are not recorded, so it reports what a logging socket
+        // needs (connectable by anyone) and the caller as owner, as the other
+        // devfs nodes do. chmod and chown refuse with EROFS rather than
+        // accepting a change nothing would remember.
+        return Some(WasmStat {
+            st_dev: 5,
+            st_ino: devfs_ino(path),
+            st_mode: S_IFSOCK | 0o666,
+            st_nlink: 1,
             st_uid: uid,
             st_gid: gid,
             st_size: 0,
@@ -180,6 +242,11 @@ pub(crate) fn dir_entries(
             entries.try_push((crate::IoBuffer::copy_from(b"fb0")?, DT_CHR, devfs_ino(b"/dev/fb0")))?;
             entries.try_push((crate::IoBuffer::copy_from(b"dsp")?, DT_CHR, devfs_ino(b"/dev/dsp")))?;
             entries.try_push((crate::IoBuffer::copy_from(b"kmsg")?, DT_CHR, devfs_ino(b"/dev/kmsg")))?;
+
+            // A socket name, present while a syslog daemon holds it bound.
+            if bindable_socket_exists(b"/dev/log") {
+                entries.try_push((crate::IoBuffer::copy_from(b"log")?, DT_SOCK, devfs_ino(b"/dev/log")))?;
+            }
 
             // Symlinks
             entries.try_push((crate::IoBuffer::copy_from(b"stdin")?, DT_LNK, devfs_ino(b"/dev/stdin")))?;
@@ -332,6 +399,30 @@ mod tests {
         assert_eq!(st.st_mode & 0o170000, S_IFDIR);
 
         assert!(match_devfs_stat(b"/dev/null", 0, 0).is_none());
+    }
+
+    #[test]
+    fn exactly_one_name_under_dev_is_bindable() {
+        assert!(is_bindable_socket_path(b"/dev/log"));
+        for other in [
+            b"/dev".as_slice(),
+            b"/dev/",
+            b"/dev/logs",
+            b"/dev/Log",
+            b"/dev/log/",
+            b"/dev/log/x",
+            b"/dev/syslog",
+            b"/dev/null",
+            b"/dev/shm/log",
+            b"/dev/kandelo/log",
+            b"/tmp/log",
+            b"/log",
+        ] {
+            assert!(!is_bindable_socket_path(other), "{:?}", core::str::from_utf8(other));
+        }
+        // It stays a devfs name, not a delegated subtree.
+        assert!(owns_path(b"/dev/log"));
+        assert!(!is_delegated_path(b"/dev/log"));
     }
 
     #[test]

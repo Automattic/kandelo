@@ -2465,6 +2465,10 @@ struct PathResolveOptions {
     allow_missing_final: bool,
     allow_missing_directory: bool,
     use_real_ids: bool,
+    /// `bind(2)` of a socket name may create `/dev/log` (see
+    /// `devfs::is_bindable_socket_path`). No other caller sets this, so every
+    /// other operation that would create under `/dev` keeps its `EROFS`.
+    create_bindable_devfs_socket: bool,
 }
 
 impl PathResolveOptions {
@@ -2473,6 +2477,7 @@ impl PathResolveOptions {
         allow_missing_final: false,
         allow_missing_directory: false,
         use_real_ids: false,
+        create_bindable_devfs_socket: false,
     };
 
     const NOFOLLOW: Self = Self {
@@ -2480,6 +2485,7 @@ impl PathResolveOptions {
         allow_missing_final: false,
         allow_missing_directory: false,
         use_real_ids: false,
+        create_bindable_devfs_socket: false,
     };
 
     const CREATE_ENTRY: Self = Self {
@@ -2487,6 +2493,14 @@ impl PathResolveOptions {
         allow_missing_final: true,
         allow_missing_directory: false,
         use_real_ids: false,
+        create_bindable_devfs_socket: false,
+    };
+
+    /// `CREATE_ENTRY` for `bind(2)`: additionally lets a missing final
+    /// `/dev/log` resolve instead of failing `EROFS`.
+    const CREATE_SOCKET_ENTRY: Self = Self {
+        create_bindable_devfs_socket: true,
+        ..Self::CREATE_ENTRY
     };
 
     const CREATE_DIRECTORY: Self = Self {
@@ -2494,6 +2508,7 @@ impl PathResolveOptions {
         allow_missing_final: true,
         allow_missing_directory: true,
         use_real_ids: false,
+        create_bindable_devfs_socket: false,
     };
 }
 
@@ -2770,9 +2785,12 @@ fn resolve_namespace_path_from(
         let stat = match namespace_lstat_raw(proc, host, &candidate) {
             Ok(stat) => stat,
             Err(Errno::ENOENT) if is_final && options.allow_missing_final => {
+                let bindable_devfs_name = options.create_bindable_devfs_socket
+                    && crate::devfs::is_bindable_socket_path(&candidate);
                 if is_procfs_namespace_path(&candidate)
                     || (is_devfs_namespace_path(&candidate)
-                        && !is_delegated_devfs_path(&candidate))
+                        && !is_delegated_devfs_path(&candidate)
+                        && !bindable_devfs_name)
                 {
                     return Err(Errno::EROFS);
                 }
@@ -3150,6 +3168,38 @@ fn ensure_host_mutable_namespace_path(path: &[u8]) -> Result<(), Errno> {
         return Err(Errno::EROFS);
     }
     Ok(())
+}
+
+/// `open(2)` of an existing `/dev/log`. It is a socket node, and a socket
+/// cannot be opened as a file: ENXIO, or EEXIST when the open asked to create
+/// it exclusively. Without this the name, which only devfs knows, would fall
+/// through to a host `open` of a path the host has never heard of.
+fn refuse_open_of_devfs_socket(resolved: &[u8], oflags: u32) -> Result<(), Errno> {
+    if !crate::devfs::bindable_socket_exists(resolved) {
+        return Ok(());
+    }
+    if oflags & O_CREAT != 0 && oflags & O_EXCL != 0 {
+        return Err(Errno::EEXIST);
+    }
+    Err(Errno::ENXIO)
+}
+
+/// `unlink(2)` of a devfs-owned socket name (`/dev/log`), or `None` when
+/// `resolved` is not one. The name is released by dropping its registry entry,
+/// which is also what a datagram sender parked on the old endpoint must
+/// observe. Root only, matching bind: `/dev` is root's directory.
+fn unlink_devfs_socket_name(proc: &Process, resolved: &[u8]) -> Option<Result<(), Errno>> {
+    if !crate::devfs::is_bindable_socket_path(resolved) {
+        return None;
+    }
+    if proc.effective_uid() != 0 {
+        return Some(Err(Errno::EACCES));
+    }
+    if !crate::devfs::unlink_bindable_socket(resolved) {
+        return Some(Err(Errno::ENOENT));
+    }
+    crate::wakeup::push_datagram_writable();
+    Some(Ok(()))
 }
 
 fn parent_path(path: &[u8]) -> Vec<u8> {
@@ -3763,6 +3813,7 @@ pub fn sys_open(
         allow_missing_final: oflags & O_CREAT != 0,
         allow_missing_directory: false,
         use_real_ids: false,
+        create_bindable_devfs_socket: false,
     };
     let resolved_entry = resolve_namespace_path(proc, host, path, resolve_options)?;
     if resolved_entry
@@ -3893,6 +3944,8 @@ pub fn sys_open(
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
     }
+
+    refuse_open_of_devfs_socket(&resolved, oflags)?;
 
     // Devfs (/dev, /dev/pts, etc.) — in-kernel directory listing
     if !is_delegated_devfs_path(&resolved) && crate::devfs::match_devfs_dir(&resolved).is_some() {
@@ -9055,6 +9108,9 @@ pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
             crate::wakeup::push_datagram_writable();
         }
         return crate::rootfs::unlink(&resolved);
+    }
+    if let Some(result) = unlink_devfs_socket_name(proc, &resolved) {
+        return result;
     }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_parent_writable(proc, host, &resolved)?;
@@ -14389,7 +14445,7 @@ pub fn sys_bind(
                         proc,
                         host,
                         &original,
-                        PathResolveOptions::CREATE_ENTRY,
+                        PathResolveOptions::CREATE_SOCKET_ENTRY,
                     )?
                     .path,
                     original,
@@ -14403,7 +14459,21 @@ pub fn sys_bind(
             // for a missing parent directory, propagate unchanged.
             let prepared_name = unsafe { crate::unix_socket::global_unix_socket_registry() }
                 .prepare_registration(&resolved, proc.pid, sock_idx)?;
-            if !abstract_unix {
+            // `/dev/log` is the one name under `/dev` that bind may create: the
+            // name a syslog daemon listens on. Devfs owns that name's existence
+            // but keeps no inode for it -- the registry entry published below
+            // IS the node (and `prepare_registration` above already returned
+            // EADDRINUSE if the name is taken) -- so no filesystem node is made
+            // and the host is never consulted. Only root may create it, as
+            // `/dev` is root's on a real system; devfs reports itself as owned
+            // by the caller, so the usual parent-writable check would admit
+            // anyone.
+            let devfs_socket_name =
+                !abstract_unix && crate::devfs::is_bindable_socket_path(&resolved);
+            if devfs_socket_name && proc.effective_uid() != 0 {
+                return Err(Errno::EACCES);
+            }
+            if !abstract_unix && !devfs_socket_name {
                 use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
                 // Kernel devfs owns its namespace. A name that does not exist
                 // under `/dev` already failed resolution with EROFS, so a name
@@ -14469,7 +14539,7 @@ pub fn sys_bind(
             // unwind the host inode so we don't leak.
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
             if !registry.publish_registration(prepared_name) {
-                if !abstract_unix {
+                if !abstract_unix && !devfs_socket_name {
                     if crate::tmpfs::claims_path(&resolved) {
                         let _ = crate::tmpfs::unlink(&resolved);
                     } else if crate::rootfs::claims_path(&resolved) {
@@ -16287,6 +16357,7 @@ pub fn sys_openat(
         allow_missing_final: oflags & O_CREAT != 0,
         allow_missing_directory: false,
         use_real_ids: false,
+        create_bindable_devfs_socket: false,
     };
     let resolved_entry = resolve_at_path(proc, host, dirfd, path, resolve_options)?;
     if resolved_entry
@@ -16415,6 +16486,8 @@ pub fn sys_openat(
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
     }
+
+    refuse_open_of_devfs_socket(&resolved, oflags)?;
 
     // Devfs (/dev, /dev/pts, etc.) — in-kernel directory listing
     if !is_delegated_devfs_path(&resolved) && crate::devfs::match_devfs_dir(&resolved).is_some() {
@@ -16634,6 +16707,9 @@ pub fn sys_unlinkat(
         return crate::rootfs::unlink(&resolved);
     }
 
+    if let Some(result) = unlink_devfs_socket_name(proc, &resolved) {
+        return result;
+    }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_parent_writable(proc, host, &resolved)?;
     check_sticky_child(proc, host, &resolved)?;
@@ -57447,6 +57523,263 @@ impl HostIO for RelSymlinkMock {
             for forbidden in ["kmsg", "klog", "KmsgRing", "with_ring"] {
                 assert!(!code.contains(forbidden), "console_device.rs names `{forbidden}`");
             }
+        }
+    }
+
+    /// `/dev/log`: the one name under `/dev` that `bind(2)` may create.
+    mod dev_log {
+        use super::*;
+        use wasm_posix_shared::mode::{S_IFMT, S_IFSOCK};
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM};
+
+        fn sockaddr(path: &[u8]) -> Vec<u8> {
+            let mut addr = alloc::vec![0u8; 2 + path.len() + 1];
+            addr[0] = 1; // AF_UNIX
+            addr[2..2 + path.len()].copy_from_slice(path);
+            addr
+        }
+
+        fn bind_dgram(proc: &mut Process, host: &mut MockHostIO, path: &[u8]) -> Result<i32, Errno> {
+            let fd = sys_socket(proc, host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            sys_bind(proc, host, fd, &sockaddr(path)).map(|()| fd)
+        }
+
+        /// Leaves the global registry without `/dev/log` and without `pid`'s
+        /// sockets on entry and, via `Drop`, on exit -- including when an
+        /// assertion fails, so one failing test cannot cascade into the rest.
+        struct Release(u32);
+
+        impl Release {
+            fn new(pid: u32) -> Self {
+                let guard = Release(pid);
+                guard.run();
+                guard
+            }
+
+            fn run(&self) {
+                let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+                registry.cleanup_process(self.0);
+                registry.unregister(b"/dev/log");
+            }
+        }
+
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.run();
+            }
+        }
+
+        fn dev_listing(proc: &mut Process, host: &mut MockHostIO) -> Vec<(Vec<u8>, u8)> {
+            let fd = sys_open(proc, host, b"/dev", O_RDONLY | O_DIRECTORY, 0).unwrap();
+            let mut buf = [0u8; 4096];
+            let len = sys_getdents64(proc, host, fd, &mut buf).unwrap();
+            let mut out = Vec::new();
+            let mut pos = 0usize;
+            while pos < len {
+                let reclen = u16::from_le_bytes(buf[pos + 16..pos + 18].try_into().unwrap()) as usize;
+                let end = buf[pos + 19..pos + reclen].iter().position(|b| *b == 0).unwrap();
+                out.push((buf[pos + 19..pos + 19 + end].to_vec(), buf[pos + 18]));
+                pos += reclen;
+            }
+            sys_close(proc, host, fd).unwrap();
+            out
+        }
+
+        #[test]
+        fn binding_dev_log_creates_the_socket_instead_of_erofs() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _release = Release::new(9101);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            proc.set_pid_for_test(9101);
+            assert_eq!(sys_stat(&mut proc, &mut host, b"/dev/log").map(|_| ()), Err(Errno::ENOENT));
+
+            bind_dgram(&mut proc, &mut host, b"/dev/log").unwrap();
+            assert!(unsafe { crate::unix_socket::global_unix_socket_registry() }.contains(b"/dev/log"));
+            // A path spelled differently reaches the same name.
+            assert!(sys_stat(&mut proc, &mut host, b"/dev/../dev/./log").is_ok());
+        }
+
+        #[test]
+        fn a_second_bind_of_dev_log_returns_eaddrinuse() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _release = Release::new(9102);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            proc.set_pid_for_test(9102);
+            bind_dgram(&mut proc, &mut host, b"/dev/log").unwrap();
+            assert_eq!(bind_dgram(&mut proc, &mut host, b"/dev/log").map(|_| ()), Err(Errno::EADDRINUSE));
+            // The first endpoint is untouched by the failed second bind.
+            assert!(unsafe { crate::unix_socket::global_unix_socket_registry() }
+                .lookup(b"/dev/log")
+                .is_some());
+        }
+
+        #[test]
+        fn dev_log_appears_in_dev_listings_and_stats_as_a_socket() {
+            use wasm_posix_shared::flags::AT_FDCWD;
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _release = Release::new(9103);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            proc.set_pid_for_test(9103);
+            assert!(!dev_listing(&mut proc, &mut host).iter().any(|(name, _)| name == b"log"));
+
+            let fd = bind_dgram(&mut proc, &mut host, b"/dev/log").unwrap();
+            assert!(dev_listing(&mut proc, &mut host)
+                .iter()
+                .any(|(name, kind)| name == b"log" && *kind == 12 /* DT_SOCK */));
+            for st in [
+                sys_stat(&mut proc, &mut host, b"/dev/log").unwrap(),
+                sys_lstat(&mut proc, &mut host, b"/dev/log").unwrap(),
+                sys_fstatat(&mut proc, &mut host, AT_FDCWD, b"/dev/log", 0).unwrap(),
+            ] {
+                assert_eq!(st.st_mode & S_IFMT, S_IFSOCK);
+                assert_eq!(st.st_mode & 0o7777, 0o666);
+                assert_eq!(st.st_dev, 5);
+            }
+
+            // Like any pathname socket the name outlives the last close, until
+            // it is unlinked.
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert_eq!(sys_stat(&mut proc, &mut host, b"/dev/log").unwrap().st_mode & S_IFMT, S_IFSOCK);
+            _release.run();
+            assert_eq!(sys_stat(&mut proc, &mut host, b"/dev/log").map(|_| ()), Err(Errno::ENOENT));
+        }
+
+        #[test]
+        fn unlinking_dev_log_releases_the_name_for_rebinding() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _release = Release::new(9104);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            proc.set_pid_for_test(9104);
+            bind_dgram(&mut proc, &mut host, b"/dev/log").unwrap();
+
+            sys_unlink(&mut proc, &mut host, b"/dev/log").unwrap();
+            assert_eq!(sys_stat(&mut proc, &mut host, b"/dev/log").map(|_| ()), Err(Errno::ENOENT));
+            assert!(!dev_listing(&mut proc, &mut host).iter().any(|(name, _)| name == b"log"));
+            assert_eq!(sys_unlink(&mut proc, &mut host, b"/dev/log"), Err(Errno::ENOENT));
+
+            bind_dgram(&mut proc, &mut host, b"/dev/log").unwrap();
+            // unlinkat is the same operation under another name.
+            sys_unlinkat(&mut proc, &mut host, wasm_posix_shared::flags::AT_FDCWD, b"/dev/log", 0)
+                .unwrap();
+            bind_dgram(&mut proc, &mut host, b"/dev/log").unwrap();
+        }
+
+        #[test]
+        fn other_new_names_under_dev_still_return_erofs() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _release = Release::new(9105);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            proc.set_pid_for_test(9105);
+            for name in [
+                b"/dev/syslog".as_slice(),
+                b"/dev/logs",
+                b"/dev/Log",
+                b"/dev/kandelo/log",
+                b"/dev/pts/log",
+            ] {
+                assert_eq!(
+                    bind_dgram(&mut proc, &mut host, name).map(|_| ()),
+                    Err(Errno::EROFS),
+                    "{}",
+                    core::str::from_utf8(name).unwrap()
+                );
+                assert!(!unsafe { crate::unix_socket::global_unix_socket_registry() }.contains(name));
+            }
+
+            // Binding is the only thing that may create /dev/log: every other
+            // way to make a new name there is refused while it is absent...
+            assert_eq!(
+                sys_open(&mut proc, &mut host, b"/dev/log", O_RDWR | O_CREAT, 0o644),
+                Err(Errno::EROFS)
+            );
+            assert_eq!(sys_mkdir(&mut proc, &mut host, b"/dev/log", 0o755), Err(Errno::EROFS));
+            assert_eq!(
+                sys_symlink(&mut proc, &mut host, b"/tmp/x", b"/dev/log"),
+                Err(Errno::EROFS)
+            );
+            assert_eq!(
+                sys_rename(&mut proc, &mut host, b"/dev/null", b"/dev/log"),
+                Err(Errno::EROFS)
+            );
+            assert_eq!(
+                sys_link(&mut proc, &mut host, b"/dev/null", b"/dev/log"),
+                Err(Errno::EROFS)
+            );
+            assert!(!unsafe { crate::unix_socket::global_unix_socket_registry() }.contains(b"/dev/log"));
+
+            // ...and once it is bound, it is a socket node that devfs will not
+            // let anything but unlink change.
+            bind_dgram(&mut proc, &mut host, b"/dev/log").unwrap();
+            assert_eq!(sys_chmod(&mut proc, &mut host, b"/dev/log", 0o600), Err(Errno::EROFS));
+            assert_eq!(sys_chown(&mut proc, &mut host, b"/dev/log", 1, 1), Err(Errno::EROFS));
+            assert_eq!(
+                sys_rename(&mut proc, &mut host, b"/dev/log", b"/tmp/log"),
+                Err(Errno::EROFS)
+            );
+            assert_eq!(
+                sys_rename(&mut proc, &mut host, b"/dev/null", b"/dev/log"),
+                Err(Errno::EROFS)
+            );
+            assert_eq!(
+                sys_link(&mut proc, &mut host, b"/dev/log", b"/tmp/log"),
+                Err(Errno::EROFS)
+            );
+            assert_eq!(
+                sys_open(&mut proc, &mut host, b"/dev/log", O_RDWR | O_CREAT | O_EXCL, 0o644),
+                Err(Errno::EEXIST)
+            );
+            assert_eq!(sys_open(&mut proc, &mut host, b"/dev/log", O_RDONLY, 0), Err(Errno::ENXIO));
+            assert!(unsafe { crate::unix_socket::global_unix_socket_registry() }.contains(b"/dev/log"));
+        }
+
+        #[test]
+        fn only_root_may_create_or_remove_dev_log() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _release = Release::new(9106);
+            let mut user = Process::new(1);
+            let mut host = MockHostIO::new();
+            user.set_pid_for_test(9106);
+            user.configure_ids(Some(1000), Some(1000));
+            assert_eq!(bind_dgram(&mut user, &mut host, b"/dev/log").map(|_| ()), Err(Errno::EACCES));
+            assert!(!unsafe { crate::unix_socket::global_unix_socket_registry() }.contains(b"/dev/log"));
+
+            let mut root = Process::new(2);
+            root.set_pid_for_test(9107);
+            bind_dgram(&mut root, &mut host, b"/dev/log").unwrap();
+            assert_eq!(sys_unlink(&mut user, &mut host, b"/dev/log"), Err(Errno::EACCES));
+            assert!(unsafe { crate::unix_socket::global_unix_socket_registry() }.contains(b"/dev/log"));
+        }
+
+        #[test]
+        fn connecting_to_dev_log_reaches_the_bound_endpoint() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _release = Release::new(9108);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            proc.set_pid_for_test(9108);
+            let server = bind_dgram(&mut proc, &mut host, b"/dev/log").unwrap();
+
+            // What musl's syslog(3) does: a datagram socket connected to
+            // exactly this path.
+            let client = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            sys_connect(&mut proc, &mut host, client, &sockaddr(b"/dev/log")).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, client, b"<13>hello").unwrap(), 9);
+            let mut buf = [0u8; 32];
+            let n = sys_read(&mut proc, &mut host, server, &mut buf).unwrap();
+            assert_eq!(&buf[..n], b"<13>hello");
+
+            // Once the name is unlinked there is nothing to connect to.
+            sys_unlink(&mut proc, &mut host, b"/dev/log").unwrap();
+            let late = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            assert_eq!(
+                sys_connect(&mut proc, &mut host, late, &sockaddr(b"/dev/log")),
+                Err(Errno::ENOENT)
+            );
         }
     }
 }
