@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T02:08:25.765951+00:00",
+  "updatedAt": "2026-11-07T02:17:33.041155+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -707,7 +707,7 @@
     "host/test/fixtures/node-string-decoder-controls.cjs": "f8486de93aad5c3ba6340de8f3d3a1389485f1aa10c5c5534b636c22dca8d339",
     "third_party/node-core/upstream/string-decoder/src/string_bytes.cc": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d",
     "third_party/node-core/upstream/random-jobs/src/async_wrap.h": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6",
-    "tests/nodejs/outline/README.md": "6e5d40c4bb0331f54942112a65437eba867fd9790380493fcb53f516924a4f80",
+    "tests/nodejs/outline/README.md": "66ad3267af408ade4c6535c8def0caf57f9e7247a7cac248def434c290995fdd",
     "tests/nodejs/outline/string-decoder-implementation-dependencies.md": "3954deecf903ff0155e74951f7ddbc7c0b63ef93b0c90d93512a688cd1a97d63",
     "host/test/node-text-decoder.test.ts": "c259e4757d83bc7ac1a3251ce93d0d348b94add348212f99ecf9bcec2616f365",
     "tests/nodejs/outline/random-implementation-dependencies.md": "0d14d44be5c1d2f6d84dfd7665ffb2be82bda0fa8ce0aebc8a28100ffd921196",
@@ -1980,7 +1980,10 @@
     "tests/nodejs/outline/pkcs12-implementation-dependencies.md": "6ed17dd351e3a6de1701eba289ded22927f1990294e5defad4d83fffb50f3182",
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
-    "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e"
+    "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
+    "tests/nodejs/outline/finding-ledger.json": "0c8c390f7ab06df0c39435524baf18e21fea947b46cc4bef6fdd1e8d8ddf84da",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "739677fd52397fda11fb2f7f4e9fb0b65d9644988199aa001802504823b873ea",
+    "tests/nodejs/outline/finding-ledger.md": "676852fbcf728bbd37e6b9636d9bb596c257b6b14c1e7210c6ae672273ef9702"
   },
   "changes": [
     {
@@ -6188,8 +6191,8 @@
     "Integrate compactfinding reconciliation without pretending unknown per-IDlinks are implementation gaps or sourceclosure; continue VM/TTY input work"
   ],
   "previousGoalTurnClassification": {
-    "classification": "progress",
-    "reason": "Restored actual DNS component execution via real prerequisite owners, retained original harness failure and unchanged assertions, collected26currentcases without runtime recipe churn or full suites."
+    "classification": "no progress",
+    "reason": "Previous turn reported current status without changing authoritative state."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -42020,10 +42023,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/pkcs12-parser-20261107T020826Z.tar.gz",
-    "sha256": "70052169cfc2e93480372e86bf29053690d4e812a0e433f725713f6e492131fa",
-    "bytes": 29892183,
-    "scope": "172realpublicPKCS12 source/currentnative-dependent controls and exact171compiled-linked normal-style failure;172guest/TLS/fourhost unproven",
+    "path": ".context/node26-implementation-snapshots/finding-ledger-20261107T021733Z.tar.gz",
+    "sha256": "5e845d8d2d10da26887c05bac8927d3a9a096306907be9591fcf7486750983c4",
+    "bytes": 10093246,
+    "scope": "Source172 unchanged runtime plus original finding reconciliation",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -45321,7 +45324,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated real public PKCS12 parsing/material ownership, verified current comparisons/upstream file and preserved actual171production compile/link success with normal style failure and no runtime acceptance."
+    "reason": "Integrated original document-qualified finding ledger with scoped source links, current overlay and integrity evidence; no runtime change or API closure."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -50839,6 +50842,13 @@
       "sha256": "e95c79eec5d5b088a86215fffd5462eb551be2493136d8b72d482e40f9c48a29",
       "bytes": 14901011,
       "scope": "Fixture-only171genuine dependency repair and current26resolver component cases; runtimeinputs/recipe unchanged, guest/fourhost unproven",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/pkcs12-parser-20261107T020826Z.tar.gz",
+      "sha256": "70052169cfc2e93480372e86bf29053690d4e812a0e433f725713f6e492131fa",
+      "bytes": 29892183,
+      "scope": "172realpublicPKCS12 source/currentnative-dependent controls and exact171compiled-linked normal-style failure;172guest/TLS/fourhost unproven",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -84013,13 +84023,6 @@
       "scope": "Partial real fs.watch native owner/frontend; kernelENOSYS remains",
       "status": "sealed-pending-root-integration",
       "currentGuestConformance": false
-    },
-    {
-      "path": ".context/node26-finding-reconciliation-171-agent",
-      "sealSha256": "f930089baf7147810da177810c1776345ed5a47c5df6f40f4f6277678b203507",
-      "scope": "Document-qualified original finding navigation/progress reconciliation",
-      "status": "sealed-pending-root-integration",
-      "currentGuestConformance": false
     }
   ],
   "dnsScopedAddressImplementation": {
@@ -84555,5 +84558,27 @@
     "guestExecuted": false,
     "fourHostConformance": false,
     "scope": "Actual cross-target production native source/link, not execution or public API coverage"
+  },
+  "originalFindingLedger": {
+    "path": "tests/nodejs/outline/finding-ledger.json",
+    "sha256": "0c8c390f7ab06df0c39435524baf18e21fea947b46cc4bef6fdd1e8d8ddf84da",
+    "documentation": "tests/nodejs/outline/finding-ledger.md",
+    "integrity": {
+      "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+      "sha256": "739677fd52397fda11fb2f7f4e9fb0b65d9644988199aa001802504823b873ea"
+    },
+    "sourceCheckpoint": 172,
+    "counts": {
+      "families": 19,
+      "uniqueLexicalFindingIds": 357,
+      "documentQualifiedDefinitionRecords": 417,
+      "originalRangeRecords": 52,
+      "sourceSliceRecords": 91,
+      "dependencyNarrativeRecords": 66,
+      "findingsWithoutRecoveredStandaloneDefinition": 34,
+      "findingsWithoutExplicitOrProposedSourceSlice": 264
+    },
+    "individualApiClosure": false,
+    "fourHostConformance": false
   }
 }

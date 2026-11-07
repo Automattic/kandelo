@@ -1,5 +1,9 @@
 # Node 26 core implementation outline
 
+The [finding ledger](finding-ledger.md) preserves document-qualified audit
+requirements and links scoped implementation progress. Unknown dispositions
+and runtime validation debt remain explicit; no finding is closed by metadata.
+
 Source172 integrates real PKCS12 material ownership:47current native-dependent comparisons, unchanged upstream file eachsubject and14package checks pass.171native compilation/link succeeded but normalstyle failed;172newcode/guest/fourhost uncompiled/unvalidated.
 See [source scope](pkcs12-parser-integration.md).
 

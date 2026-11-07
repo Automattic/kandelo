@@ -1,0 +1,38 @@
+{
+  "kind": "read-only-finding-ledger-integrity",
+  "at": "2026-11-07T02:17:33.041155+00:00",
+  "sourceHead": "7df5cbc20967d79aec2cd1177dbe73fabfd8e07b",
+  "recipeRevision": 172,
+  "counts": {
+    "families": 19,
+    "uniqueLexicalFindingIds": 357,
+    "documentQualifiedDefinitionRecords": 417,
+    "originalRangeRecords": 52,
+    "sourceSliceRecords": 91,
+    "dependencyNarrativeRecords": 66,
+    "findingsWithoutRecoveredStandaloneDefinition": 34,
+    "findingsWithoutExplicitOrProposedSourceSlice": 264
+  },
+  "auditIdentitiesVerified": 136,
+  "definitionLinesVerified": 417,
+  "rangeDerivedDefinitionLines": [
+    "tests/nodejs/audit/async.md#A-019:L100",
+    "tests/nodejs/audit/async.md#A-023:L102",
+    "tests/nodejs/audit/async.md#A-024:L102",
+    "tests/nodejs/audit/documentation-contracts.md#DOC-004:L104",
+    "tests/nodejs/audit/documentation-contracts.md#DOC-002:L104",
+    "tests/nodejs/audit/documentation-contracts.md#DOC-006:L104",
+    "tests/nodejs/audit/documentation-contracts.md#DOC-003:L104",
+    "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
+  ],
+  "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
+  "sourceSliceIdentitiesVerified": 91,
+  "ledger": {
+    "path": "tests/nodejs/outline/finding-ledger.json",
+    "sha256": "0c8c390f7ab06df0c39435524baf18e21fea947b46cc4bef6fdd1e8d8ddf84da"
+  },
+  "runtimeTests": 0,
+  "compilations": 0,
+  "closedFindings": 0,
+  "scope": "Document references, identities and metadata only; no new API/runtime conformance claim"
+}
