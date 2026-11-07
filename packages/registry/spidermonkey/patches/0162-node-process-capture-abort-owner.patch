@@ -1,0 +1,41 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -282,2 +282,3 @@
+ static bool gKandeloZeroFillBuffers = false;
++static bool gKandeloAbortOnUncaughtException = false;
+ // Main, Worker and destructor share one actual native retirement owner.
+@@ -4440,2 +4441,3 @@
+       JS_FN("setUncaughtProcess", KandeloNativeSetUncaughtProcess, 1, 0),
++      JS_FN("uncaughtExceptionCaptureToggle", KandeloNativeUncaughtCaptureToggle, 0, 0),
+       JS_FN("setDomainTrampoline", KandeloNativeSetDomainTrampoline, 2, 0),
+@@ -11939,2 +11941,6 @@
+   // supply the boolean value (see pinned node_options-inl.h, kBoolean).
++  if (name == "--abort-on-uncaught-exception") {
++    gKandeloAbortOnUncaughtException = value;
++    return true;
++  }
+   if (name == "--warnings") {
+@@ -11995,2 +12001,15 @@
+   }
++  return false;
++}
++
++static bool KandeloValidateAbortBooleanOption(const std::string& arg) {
++  std::string name = KandeloNodeOptionName(arg);
++  if (name.find("--no-") == 0) name.erase(2, 3);
++  if (name != "--abort-on-uncaught-exception" || arg.find('=') == std::string::npos)
++    return true;
++  // Pinned V8 boolean grammar uses only --flag/--no-flag, unlike Node's
++  // ordinary presence-only booleans. Reject before mutating native policy.
++  fprintf(stderr, "Error: illegal value for flag %s of type bool\n"
++                  "To set or unset a boolean flag, use --flag or --no-flag.\n"
++                  "Try --help for options\n", arg.c_str());
+   return false;
+@@ -12052,2 +12071,3 @@
+       }
++      if (!KandeloValidateAbortBooleanOption(arg)) return false;
+       if (ApplyKandeloNodeBooleanOption(arg)) continue;
+@@ -12082,2 +12102,3 @@
+     std::string arg = argv[i];
++    if (!KandeloValidateAbortBooleanOption(arg)) return false;
+     if (ApplyKandeloNodeBooleanOption(arg)) {

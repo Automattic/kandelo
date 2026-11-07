@@ -20,6 +20,7 @@ static bool KandeloFsPathString(JSContext* cx, const char* bytes, size_t length,
 }  // namespace
 
 #include "kandelo-node-callback-execution-stack.h"
+#include "js/experimental/TypedData.h"
 #include "native-retained-memory.h"
 namespace { static kandelo::memory::AccountHandle KandeloNativeMemoryOwner(JSContext* cx); }
 static bool KandeloRecoverUncaughtException(JSContext* cx);
@@ -65,6 +66,10 @@ struct KandeloNativeAsyncState {
   // keys, so TCP prototypes do not keep otherwise-dead realms alive.
   JS::PersistentRootedObject socketPrototypes;
   JS::PersistentRootedObject terminalPrototypes;
+  // Actual per-environment suppression storage, shared with the pinned JS
+  // capture functions. Never retain a movable data pointer across JS or GC.
+  JS::PersistentRootedObject uncaughtCaptureToggle;
+  bool abortOnUncaughtException = false;
   bool handlingUncaught = false;
   Vector<KandeloNativeDestroyRecord, 0, SystemAllocPolicy> destroyIds;
   Vector<KandeloNativeDestroyRecord, 0, SystemAllocPolicy> retryIds;
@@ -98,6 +103,12 @@ static KandeloNativeAsyncState* KandeloGetNativeAsyncState(JSContext* cx) {
   if (!sc->kandeloNativeAsync) {
     sc->kandeloNativeAsync = js_new<KandeloNativeAsyncState>();
     if (!sc->kandeloNativeAsync) JS_ReportOutOfMemory(cx);
+    else {
+      // Pinned Environment clears this option when it does not own process
+      // state. Actual Worker shell kind is native authority, not a JS flag.
+      sc->kandeloNativeAsync->abortOnUncaughtException =
+          !sc->isWorker && gKandeloAbortOnUncaughtException;
+    }
   }
   return sc->kandeloNativeAsync;
 }
@@ -188,6 +199,41 @@ static bool KandeloNativeSetUncaughtProcess(JSContext* cx, unsigned argc, Value*
   if (!state->process.initialized()) state->process.init(cx);
   state->process = &args[0].toObject();
   args.rval().setUndefined(); return true;
+}
+
+// The real private Uint32Array is rooted by the environment and consumed
+// directly by native fatal admission. It is not a copied support indicator.
+static bool KandeloNativeUncaughtCaptureToggle(JSContext* cx, unsigned argc,
+                                               Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  auto* state = KandeloGetNativeAsyncState(cx); if (!state) return false;
+  if (state->detached) { JS_ReportErrorASCII(cx, "Capture environment is retired"); return false; }
+  if (!state->uncaughtCaptureToggle.initialized()) {
+    RootedObject toggle(cx, JS_NewUint32Array(cx, 1)); if (!toggle) return false;
+    {
+      JS::AutoCheckCannotGC nogc; bool shared;
+      auto* data = JS_GetUint32ArrayData(toggle, &shared, nogc);
+      MOZ_RELEASE_ASSERT(data && !shared);
+      data[0] = 1;
+    }
+    state->uncaughtCaptureToggle.init(cx, toggle);
+  }
+  RootedObject toggle(cx, state->uncaughtCaptureToggle);
+  if (!JS_WrapObject(cx, &toggle)) return false;
+  args.rval().setObject(*toggle); return true;
+}
+static bool KandeloShouldAbortOnUncaught(JSContext* cx) {
+  auto* state = GetShellContext(cx)->kandeloNativeAsync;
+  if (!state || state->detached || !state->abortOnUncaughtException) return false;
+  // Before capture registration, ordinary uncaught exceptions are unsuppressed.
+  if (!state->uncaughtCaptureToggle.initialized()) return true;
+  RootedObject toggle(cx, state->uncaughtCaptureToggle);
+  JSAutoRealm realm(cx, toggle);
+  JS::AutoCheckCannotGC nogc; bool shared;
+  MOZ_RELEASE_ASSERT(JS_IsUint32Array(toggle) && JS_GetTypedArrayLength(toggle) == 1);
+  const auto* data = JS_GetUint32ArrayData(toggle, &shared, nogc);
+  MOZ_RELEASE_ASSERT(data && !shared);
+  return data[0] != 0;
 }
 
 static bool KandeloFsGcErrorsPending(JSContext* cx) {
@@ -313,6 +359,8 @@ static void KandeloShutdownNativeAsync(ShellContext* sc) {
   state->terminalPrototypes.reset();
   state->domainTrampoline.reset();
   state->domainTrampolineGate.reset();
+  state->uncaughtCaptureToggle.reset();
+  state->abortOnUncaughtException = false;
   state->process.reset();
   state->destroyIds.clearAndFree();
   state->retryIds.clearAndFree();

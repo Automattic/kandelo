@@ -1,0 +1,91 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/process-contracts.md",
+    "findingIds": [
+      "PROC-009"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "processes",
+      "async",
+      "terminal",
+      "engine"
+    ],
+    "scope": "Partial actual process capture/native suppression/fatal ownership prerequisite; no complete exit/rejection/report/CLI/Worker/REPL or four-host closure"
+  },
+  "sourceImplemented": [
+    "Select complete contiguous unchanged pinned set/add/has capture functions with the actual fatal handler",
+    "Root genuine per-environment Uint32 suppression state, return real wrapped view and read only in owning realm/no-GC scope at native fatal admission",
+    "Parse real native abort-on-uncaught CLI policy before JSContext/environment creation; native Worker kind disables abort behavior",
+    "Preserve primary precedence, reverse-order strict-true auxiliaries, primary-only has() meaning and actual reportFlag getter/setter ordering",
+    "Retire actual suppression root at environment teardown and use genuine native libc abort consumer rather than JS exit-code fabrication",
+    "Compose narrow curated adapter/0162 engine patch over215VM callback/source owner without dropping existing APIs"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-capture216-source-r1/report.json",
+    "sha256": "c1bb75f6a2d20a9db40829346805174272cc607a0b1edb95aae5aeba2ce056ab",
+    "guardedInputs": 885,
+    "scope": "Actual primary/additive capture and rooted per-environment native suppression/CLI/fatal owner;12native-dependent groups/8CLI cases/3unchanged upstream files. Guest C++/report provider/default hard-crash parity/four-host behavior remain incomplete."
+  },
+  "packageChecks": {
+    "report": ".context/node26-capture216-affected-r1.json",
+    "sha256": "232b6dbdc7cb58c775a068bba52e1316a2d5f55d6389b2ef71c91f60beb013a4",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-capture216-source-r1/report.json",
+    "sha256": "c1bb75f6a2d20a9db40829346805174272cc607a0b1edb95aae5aeba2ce056ab",
+    "publicNativeDependentGroups": 12,
+    "cliGrammarCases": 8,
+    "unchangedUpstreamFiles": 3,
+    "upstreamSubjects": 6,
+    "upstreamFailures": 0,
+    "priorNativeCompilerAttemptsIntegrated": 1,
+    "newCompilerAttempts": 0,
+    "unchangedStyleCheckerPassed": true,
+    "guestDefaultHardCrashParityEstablished": false,
+    "guestReportProviderValidated": false,
+    "productionJSAPICompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Current unchanged capture algorithms over actual native Node toggle/fatal/ALS/Worker fixture, not guest owner proof. CLI helper reused after exact production selection match. Native report getter/setter order is algorithm evidence only; guest report owner and libc SIGABRT versus default V8 SIGTRAP remain open."
+  },
+  "sealedEvidence": {
+    "report": ".context/process-capture-owner-agent/report.json",
+    "sha256": "c0d24556d99a09fbde7845fb59614eefa2eb13da355da6a75b120cebb0014bb2",
+    "reusedEvidence": true,
+    "scope": "Original318-file capture source/evidence seal:31source checks,12native-dependent groups,8CLI grammar cases,3unchanged upstream files per native/candidate subject.1tiny C++ grammar helper compile; actual new guest owner uncompiled. Native default hard_abort and report-provider limits explicit."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/process-capture-owner-agent/report.json",
+      "sha256": "c0d24556d99a09fbde7845fb59614eefa2eb13da355da6a75b120cebb0014bb2",
+      "scope": "Original missing-bundle/generation/setup nonpasses, wrong authored SIGABRT expectation, Worker fixture missing real fatal wrapper and private sparse-symlink incident retained. Exact own new root files moved back privately; no old source changed. Final fixture uses unchanged pinned Worker wrapper over actual native transport."
+    },
+    {
+      "report": ".context/process-capture-review-agent/review.json",
+      "sha256": "c744d926f73c52ee860b467e63ba9e33880f7bcfa1cc1f9f7d25c69ddba939d3",
+      "scope": "Independent source review found no new verified blocker; preserves actual SIGTRAP/SIGABRT/timing, preexisting fatal-getter exit mismatch and guest report-provider limits. No tests/compiles or guest acceptance."
+    }
+  ],
+  "remaining": [
+    "Actual guest native JSAPI/realm/CCW/GC/OOM/environment/Worker/teardown validation on identified artifacts",
+    "Default pinned V8 hard_abort SIGTRAP versus guest libc SIGABRT, fatal diagnostics/timing and full native throw admission; not an accepted platform exclusion",
+    "Actual guest report descriptors/configuration/schema/metrics/emission: native report-order controls validate copied algorithm ordering only",
+    "Preexisting _fatalException getter-throw exit mismatch, full fatal/rejection/beforeExit/CLI/signal/Worker behavior",
+    "Remaining genuine REPL loader/parser/context/readline/history/standalone prerequisites; no REPL facade activation",
+    "Identified current-artifact conformance across Node/Chromium/Firefox/WebKit; no finding/family closes"
+  ],
+  "at": "2026-11-07T13:55:48.552119+00:00",
+  "recipeRevision": 216,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -30,9 +30,9 @@
   },
   "selection": {
     "source": "execution",
-    "start": "function noop() {}",
-    "length": 2891,
-    "sha256": "8a462b1dd684455f01964eb343474b79745de7265983ff44f307e774ba01a834"
+    "start": "const exceptionHandlerState = {",
+    "length": 4653,
+    "sha256": "5b744a757c91458822750379ff34a17c1be60ec465bd10f184d913b966233147"
   },
-  "scope": "Unchanged complete native-control source and unchanged createOnGlobalUncaughtException algorithm. Public capture registration adapted at actual guest process/report boundary; no abort CLI, reporting measurement or rejection-policy completeness claim."
+  "scope": "Unchanged complete capture state/set/add/has/noop/global-handler algorithms. Actual environment-owned native Uint32 toggle controls abort admission; report measurements, complete rejection/fatal/REPL conformance remain separate."
 }

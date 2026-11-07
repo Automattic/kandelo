@@ -9096,22 +9096,70 @@ function lazyEventEmitterAsyncResource() {
     return lazyEventEmitterAsyncResource;
 }
 
-// Process-level recovery uses the pinned unchanged handler and the actual
-// native execution stack. Reporting measurements and abort CLI remain gaps.
+// Pinned process capture algorithms consume actual environment-owned state.
+// The native toggle is consulted by the owning fatal/abort path, not metadata.
 function _installNodeProcessExceptions(platform) {
     'use strict';
-    const { Error } = _createNodePrimordials();
+    const { ArrayPrototypePush, Error } = _createNodePrimordials();
     const process = platform.process;
     const { ERR_INVALID_ARG_TYPE, ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET } = platform.values.errors.codes;
+    const { validateFunction } = platform.values.validators;
     const { executionAsyncId, clearDefaultTriggerAsyncId, clearAsyncIdStack,
         hasAsyncIdStack, afterHooksExist, emitAfter, popAsyncContext } = platform.async.uncaught;
+    const shouldAbortOnUncaughtToggle = platform.native.uncaughtExceptionCaptureToggle();
     const kGenericUserError = 1;
-    const exceptionHandlerState = { captureFn: null, auxiliaryCallbacks: [], reportFlag: false };
     function require(name) {
         if (name === 'timers') return platform.timers;
         throw new Error('Unexpected exception-handler dependency: ' + name);
     }
-    function noop() {}
+    const exceptionHandlerState = {
+  captureFn: null,           // Primary callback (for domain's exclusive use)
+  auxiliaryCallbacks: [],    // Auxiliary callbacks (for REPL, etc.) - always called
+  reportFlag: false,
+};
+
+function setUncaughtExceptionCaptureCallback(fn) {
+  if (fn === null) {
+    exceptionHandlerState.captureFn = fn;
+    if (exceptionHandlerState.auxiliaryCallbacks.length === 0) {
+      shouldAbortOnUncaughtToggle[0] = 1;
+      process.report.reportOnUncaughtException = exceptionHandlerState.reportFlag;
+    }
+    return;
+  }
+  if (typeof fn !== 'function') {
+    throw new ERR_INVALID_ARG_TYPE('fn', ['Function', 'null'], fn);
+  }
+  if (exceptionHandlerState.captureFn !== null) {
+    throw new ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET();
+  }
+  exceptionHandlerState.captureFn = fn;
+  shouldAbortOnUncaughtToggle[0] = 0;
+  exceptionHandlerState.reportFlag =
+    process.report.reportOnUncaughtException === true;
+  process.report.reportOnUncaughtException = false;
+}
+
+// Add an auxiliary callback that coexists with the primary callback.
+// Auxiliary callbacks are called first; if any returns true, the error is handled.
+// Otherwise, the primary callback (if set) is called.
+function addUncaughtExceptionCaptureCallback(fn) {
+  validateFunction(fn, 'fn');
+  if (exceptionHandlerState.auxiliaryCallbacks.length === 0 &&
+      exceptionHandlerState.captureFn === null) {
+    exceptionHandlerState.reportFlag =
+      process.report.reportOnUncaughtException === true;
+    process.report.reportOnUncaughtException = false;
+    shouldAbortOnUncaughtToggle[0] = 0;
+  }
+  ArrayPrototypePush(exceptionHandlerState.auxiliaryCallbacks, fn);
+}
+
+function hasUncaughtExceptionCaptureCallback() {
+  return exceptionHandlerState.captureFn !== null;
+}
+
+function noop() {}
 
 // XXX(joyeecheung): for some reason this cannot be defined at the top-level
 // and exported to be written to process._fatalException, it has to be
@@ -9184,21 +9232,9 @@ function createOnGlobalUncaughtException() {
 }
 
     process._fatalException = createOnGlobalUncaughtException();
-    process.setUncaughtExceptionCaptureCallback = function setUncaughtExceptionCaptureCallback(fn) {
-        if (fn === null) {
-            exceptionHandlerState.captureFn = null;
-            process.report.reportOnUncaughtException = exceptionHandlerState.reportFlag;
-            return;
-        }
-        if (typeof fn !== 'function') throw new ERR_INVALID_ARG_TYPE('fn', ['Function', 'null'], fn);
-        if (exceptionHandlerState.captureFn !== null) throw new ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET();
-        exceptionHandlerState.captureFn = fn;
-        exceptionHandlerState.reportFlag = process.report.reportOnUncaughtException === true;
-        process.report.reportOnUncaughtException = false;
-    };
-    process.hasUncaughtExceptionCaptureCallback = function hasUncaughtExceptionCaptureCallback() {
-        return exceptionHandlerState.captureFn !== null;
-    };
+    process.setUncaughtExceptionCaptureCallback = setUncaughtExceptionCaptureCallback;
+    process.addUncaughtExceptionCaptureCallback = addUncaughtExceptionCaptureCallback;
+    process.hasUncaughtExceptionCaptureCallback = hasUncaughtExceptionCaptureCallback;
     platform.native.setUncaughtProcess(process);
 }
 

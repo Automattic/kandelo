@@ -537,6 +537,7 @@
         hasAsyncExecution: (...args) => native.hasAsyncExecution(...args),
         executionAsyncResource: (...args) => native.executionAsyncResource(...args),
         setUncaughtProcess: (...args) => native.setUncaughtProcess(...args),
+        uncaughtExceptionCaptureToggle: () => native.uncaughtExceptionCaptureToggle(),
         setDomainTrampoline: (...args) => native.setDomainTrampoline(...args),
         allocateAsyncId: () => native.allocateAsyncId(),
         getDefaultTriggerAsyncId: () => native.getDefaultTriggerAsyncId(),

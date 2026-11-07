@@ -80,7 +80,7 @@
     "third_party/node-core/performance-observer-adapter.js": "bda107bcc11475c7000add254580c5d927c0eb2bbaa0b4804e48950716f34d57",
     "third_party/node-core/ports-platform-adapter.js": "3c62c3de8b83e0e8299d53a5d828613e158bb6d2bb26cc346771bf7480a83338",
     "third_party/node-core/process-clock-adapter.js": "f88ea5cdc9890104bf5ff8075a586cad55da60f41bfafebdb9de199748baaeca",
-    "third_party/node-core/process-exception-adapter.js": "0bca9492048b73c0d82a875db2073aca28cbe50aa97dd8fcf7ea72b2fe756295",
+    "third_party/node-core/process-exception-adapter.js": "a4bcbd7ea7cf8cc11782ad7d89f0657a426830d67b01815230fab5c321709c73",
     "third_party/node-core/process-lifetime-adapter.js": "c10aa4e4f2c8e1701f5fd6d6958cf32ec6870070d46e9f33b7b5ca7947f16fff",
     "third_party/node-core/process-signals-platform-adapter.js": "f1e3e1dcfbb46b6b0f38638eb9e6390d19023b808238a68dcee8086bc5eeb521",
     "third_party/node-core/process-state-adapter.js": "44aaeb3cb8504ff1f7c7fcf94954d9874e283df6668bc75ebcc78dd7414d8792",

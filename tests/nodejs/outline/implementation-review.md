@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source216 integrates unchanged primary/additive capture over actual native environment suppression and CLI/fatal ownership, preserving215VM imports.12native-dependent groups,8grammar controls and3upstream files pass; default hard-crash/report/guest gaps remain explicit.
+See [source scope](process-capture-owner-integration.md).
+
 Source215 integrates actual VM Script/function import callback/referrer/source/promise ownership and one shared pinned module frontend.15native-dependent groups and3unchanged upstream files pass; new guest C++ remains uncompiled and default-loader/context-eval/REPL/four-host gaps stay open.
 See [source scope](vm-import-callback-integration.md).
 

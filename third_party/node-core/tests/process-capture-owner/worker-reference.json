@@ -1,0 +1,9 @@
+{
+  "targetVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sourceSha256": "747b4d8fb9df3452bde13c5647daa6d39d879c2d71d6f5bdd602c6e710c74eeb",
+  "selectionSha256": "e62d3b25dca58c0d830e4f39c38be7030be77af481b21ea02dc1894cb6849429",
+  "start": 8670,
+  "length": 1193,
+  "scope": "Unchanged actual Worker fatal transport algorithm, fixture only; genuine native Node private port/error serialization/process owners."
+}

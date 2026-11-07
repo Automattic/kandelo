@@ -117,6 +117,15 @@ static bool KandeloRecoverUncaughtException(JSContext* cx) {
     // not evidence of a browser/runtime defect.
     sc->exitCode = 7; sc->quitting = true; return false;
   }
+  if (js::shell::KandeloShouldAbortOnUncaught(cx)) {
+    // Like V8's abort admission guard, prevent reporting from recursively
+    // dispatching another uncaught exception before the real abort completes.
+    state->handlingUncaught = true;
+    // This is real guest libc abort/SIGABRT, not an invented status or a
+    // catchable JavaScript error. Existing pending exception remains reportable.
+    { AutoReportException report(cx); }
+    abort();
+  }
   state->handlingUncaught = true;
   auto leave = mozilla::MakeScopeExit([&] { state->handlingUncaught = false; });
   const uint64_t epoch = state->execution.Epoch();
