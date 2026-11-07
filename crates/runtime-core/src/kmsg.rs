@@ -726,8 +726,68 @@ fn klog_at<H: HostIO + ?Sized>(
     })
 }
 
-/// Report that the kernel refused syscall `number` because it has no
-/// implementation: the `ENOSYS` answer, and nothing else.
+/// The syscalls the dispatcher refuses by name: numbers that Kandelo's libc
+/// binds to a function (`libc/musl-overlay/arch/*/bits/syscall.h.in`) and the
+/// kernel has no implementation of. [`klog_unimplemented_syscall`] names
+/// them in the log so a reader can tell which function is missing.
+///
+/// Not a table of every refused number: a stub whose identity the overlay does
+/// not record is reported by number alone, and a number that is no syscall at
+/// all is [`klog_unknown_syscall`]'s. Only the names Kandelo's own header gives
+/// are listed; none is borrowed from another system's table. A test holds each
+/// entry to the header.
+pub(crate) const UNIMPLEMENTED_SYSCALL_NAMES: &[(u32, &str)] = &[
+    (247, "inotify_init1"),
+    (248, "inotify_add_watch"),
+    (249, "inotify_rm_watch"),
+    (253, "recvmmsg"),
+    (254, "sendmmsg"),
+    (265, "chroot"),
+    (266, "mount"),
+    (267, "umount2"),
+    (268, "reboot"),
+    (289, "unshare"),
+    (292, "tee"),
+    (301, "acct"),
+    (302, "capget"),
+    (303, "capset"),
+    (305, "ptrace"),
+    (309, "name_to_handle_at"),
+    (310, "open_by_handle_at"),
+    (311, "setns"),
+    (312, "process_vm_readv"),
+    (313, "process_vm_writev"),
+    (314, "pivot_root"),
+    (315, "swapon"),
+    (316, "swapoff"),
+    (317, "delete_module"),
+    (318, "init_module"),
+    (319, "quotactl"),
+    (320, "sethostname"),
+    (321, "setdomainname"),
+    (322, "vhangup"),
+    (324, "remap_file_pages"),
+    (348, "fanotify_init"),
+    (349, "fanotify_mark"),
+    (363, "utimes"),
+    (364, "futimesat"),
+    (365, "clock_adjtime"),
+    (366, "adjtimex"),
+    (367, "settimeofday"),
+    (368, "semtimedop"),
+    (369, "vmsplice"),
+    (374, "set_thread_area"),
+    (375, "ioperm"),
+    (376, "iopl"),
+    (381, "inotify_init"),
+];
+
+fn unimplemented_syscall_name(number: u32) -> Option<&'static str> {
+    UNIMPLEMENTED_SYSCALL_NAMES.iter().find(|(known, _)| *known == number).map(|(_, name)| *name)
+}
+
+/// Report that the kernel refused syscall `number`, a syscall it knows of and
+/// has no implementation for: the `ENOSYS` answer, and nothing else.
 ///
 /// A POSIX program learns of a missing function from one errno it may never
 /// print, and POSIX has no facility for asking the system what it refused.
@@ -739,29 +799,25 @@ fn klog_at<H: HostIO + ?Sized>(
 /// syscall that exists and rejects its caller's arguments, with `ENOSYS` or
 /// any other errno, is the caller's error and is not reported.
 ///
-/// Each syscall number owns its own limiter slot (the number is the callsite
-/// id), so a program spinning on one missing syscall cannot hide a different
-/// one. A number above [`KMSG_MAX_SYSCALL_CALLSITE_ID`] belongs to no slot of
-/// its own: a guest chooses the number it passes, and one just past the range
-/// would otherwise spend a kernel event's slot, so it is limited, together
-/// with the other such numbers, in the limiter's overflow slot.
+/// Each such syscall number owns its own limiter slot (the number is the
+/// callsite id), so a program spinning on one missing syscall cannot hide a
+/// different one. That independence is affordable only because the set of
+/// these numbers is small and fixed. A number the kernel does not know at all
+/// is [`klog_unknown_syscall`]'s, which shares one slot, because a guest
+/// chooses the number it passes and could otherwise write a burst per number
+/// until the boot log was gone. A number above [`KMSG_MAX_SYSCALL_CALLSITE_ID`]
+/// also lands in the shared slot: it would otherwise spend a kernel event's.
 ///
 /// `pid` is the process that made the call, so a reader can tell which of
 /// several running programs is hitting the gap. A limiter slot is per syscall
 /// number, not per process: two programs spinning on the same missing syscall
 /// share one burst.
 ///
-/// `name` is the syscall's name where the call site knows it. Kandelo's
-/// syscall numbers are its own, so a name is given only where the kernel
-/// itself names the syscall, never guessed from another system's table.
-pub fn klog_unimplemented_syscall<H: HostIO + ?Sized>(
-    host: &mut H,
-    pid: u32,
-    number: u32,
-    name: Option<&str>,
-) -> Option<u64> {
-    let callsite = if number <= KMSG_MAX_SYSCALL_CALLSITE_ID { number } else { CallsiteId::MAX };
-    match name {
+/// The syscall's name is added where Kandelo's libc header records one
+/// ([`UNIMPLEMENTED_SYSCALL_NAMES`]).
+pub fn klog_unimplemented_syscall<H: HostIO + ?Sized>(host: &mut H, pid: u32, number: u32) -> Option<u64> {
+    let callsite = if number <= KMSG_MAX_SYSCALL_CALLSITE_ID { number } else { SHARED_UNKNOWN_SYSCALL_CALLSITE };
+    match unimplemented_syscall_name(number) {
         Some(name) => klog_at(
             host,
             callsite,
@@ -775,6 +831,28 @@ pub fn klog_unimplemented_syscall<H: HostIO + ?Sized>(
             format_args!("pid {pid} called syscall {number}, which is not implemented (ENOSYS)"),
         ),
     }
+}
+
+/// The one limiter slot every unknown syscall number shares: the limiter's
+/// overflow slot, which no event or named syscall owns.
+const SHARED_UNKNOWN_SYSCALL_CALLSITE: CallsiteId = CallsiteId::MAX;
+
+/// Report that a process called syscall `number`, which the kernel has no
+/// handler for and no record of: garbage, or a number from some other ABI.
+///
+/// Unlike [`klog_unimplemented_syscall`] this is one limiter slot for every
+/// such number. They carry little diagnostic value one by one, and they are
+/// the unbounded set: a guest that calls each of hundreds of distinct numbers
+/// a few times would, with a slot apiece, write enough records to push the
+/// boot log out of the ring. Sharing the slot caps the whole sweep at one
+/// burst plus its suppression count.
+pub fn klog_unknown_syscall<H: HostIO + ?Sized>(host: &mut H, pid: u32, number: u32) -> Option<u64> {
+    klog_at(
+        host,
+        SHARED_UNKNOWN_SYSCALL_CALLSITE,
+        LOG_WARNING,
+        format_args!("pid {pid} called unknown syscall {number} (ENOSYS)"),
+    )
 }
 
 /// [`klog`], but only the first time `key` (below 64) is seen since boot.
@@ -1426,15 +1504,15 @@ mod tests {
     fn an_unimplemented_syscall_records_its_number_and_name() {
         reset_test_ring();
         let mut host = ClockHost::at(5, 0);
-        assert!(klog_unimplemented_syscall(&mut host, 42, 247, Some("inotify_init1")).is_some());
-        // A syscall the call site cannot name is still reported by number, and
+        assert!(klog_unimplemented_syscall(&mut host, 42, 247).is_some());
+        // A stub Kandelo's libc header does not name is reported by number, and
         // each record names the process that made the call.
-        assert!(klog_unimplemented_syscall(&mut host, 7, 253, None).is_some());
+        assert!(klog_unimplemented_syscall(&mut host, 7, 362).is_some());
         assert_eq!(
             logged().iter().map(|(level, _, text)| (*level, text.as_str())).collect::<Vec<_>>(),
             [
                 (LOG_WARNING, "pid 42 called syscall 247 (inotify_init1), which is not implemented (ENOSYS)"),
-                (LOG_WARNING, "pid 7 called syscall 253, which is not implemented (ENOSYS)"),
+                (LOG_WARNING, "pid 7 called syscall 362, which is not implemented (ENOSYS)"),
             ]
         );
         with_ring(|ring| assert_eq!(ring.read_at(0).unwrap().facility, LOG_KERN));
@@ -1453,7 +1531,7 @@ mod tests {
         let mut written = 0;
         for i in 0..spins {
             let mut host = ClockHost::at(1, i as i64);
-            if klog_unimplemented_syscall(&mut host, 42, 247, Some("inotify_init1")).is_some() {
+            if klog_unimplemented_syscall(&mut host, 42, 247).is_some() {
                 written += 1;
             }
         }
@@ -1468,12 +1546,12 @@ mod tests {
 
         // A different unimplemented syscall has its own budget, however hard
         // the first is spinning.
-        assert!(klog_unimplemented_syscall(&mut ClockHost::at(1, spins as i64), 42, 248, Some("inotify_add_watch")).is_some());
+        assert!(klog_unimplemented_syscall(&mut ClockHost::at(1, spins as i64), 42, 248).is_some());
 
         // After the quiet interval the window reopens and the count of what was
         // dropped is reported.
         let mut later = ClockHost::at(1 + 61, 0);
-        assert!(klog_unimplemented_syscall(&mut later, 42, 247, Some("inotify_init1")).is_some());
+        assert!(klog_unimplemented_syscall(&mut later, 42, 247).is_some());
         let dropped = spins - u64::from(KMSG_RATE_BURST);
         assert!(
             texts_logged().contains(&format!("{dropped} messages suppressed")),
@@ -1489,7 +1567,7 @@ mod tests {
         let mut host = ClockHost::at(1, 0);
         for number in (KMSG_MAX_SYSCALL_CALLSITE_ID + 1)..=KMSG_MAX_CALLSITE_ID + 1 {
             for _ in 0..KMSG_RATE_BURST + 1 {
-                klog_unimplemented_syscall(&mut host, 42, number, None);
+                klog_unimplemented_syscall(&mut host, 42, number);
             }
         }
         for site in KlogSite::ALL {
@@ -1502,24 +1580,103 @@ mod tests {
         reset_test_ring();
         let mut host = ClockHost::at(1, 0);
         host.monotonic = Err(wasm_posix_shared::Errno::ENOSYS);
-        assert_eq!(klog_unimplemented_syscall(&mut host, 42, 247, Some("inotify_init1")), None);
+        assert_eq!(klog_unimplemented_syscall(&mut host, 42, 247), None);
         assert!(logged().is_empty());
     }
 
     #[test]
     fn enosys_records_do_not_appear_for_implemented_syscalls() {
-        // The report is made by the dispatcher's arms for syscalls that have
-        // no implementation. An implemented syscall that refuses its caller,
-        // with any errno, ENOSYS from a rejected argument included, reaches no
-        // log call: that is the caller's error and not a platform gap.
-        use crate::process::Process;
-        use crate::syscalls::{sys_close, sys_execve};
+        // futex is implemented; an operation it does not support is refused by
+        // its own handler with ENOSYS. That is a rejected argument and not a
+        // missing syscall. A change that reported every ENOSYS, rather than
+        // only the dispatcher arms with no implementation, would start to
+        // list it as a platform gap, and this would fail. `ClockHost` is a
+        // host that would stamp a record if one were written.
+        use crate::syscalls::{sys_futex, GuestTask};
+        const NO_SUCH_FUTEX_OP: u32 = 99;
         reset_test_ring();
-        let mut proc = Process::new(1);
         let mut host = ClockHost::at(1, 0);
-        assert_eq!(sys_close(&mut proc, &mut host, 999), Err(wasm_posix_shared::Errno::EBADF));
-        assert_eq!(sys_execve(&mut proc, &mut host, b"/bin/true"), Err(wasm_posix_shared::Errno::ENOSYS));
-        assert!(logged().is_empty());
-        assert_eq!(host.clock_reads, 0, "a refusal that is not reported must not read the clock");
+        let outcome = sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, NO_SUCH_FUTEX_OP, 0, 0, 0, 0);
+        assert_eq!(outcome.err(), Some(wasm_posix_shared::Errno::ENOSYS));
+        assert!(logged().is_empty(), "an implemented syscall's ENOSYS was reported: {:?}", texts_logged());
+        assert_eq!(host.clock_reads, 0, "nothing was reported, so nothing was stamped");
+    }
+
+    #[test]
+    fn a_sweep_of_distinct_unknown_syscall_numbers_cannot_flush_the_boot_log() {
+        // Unlike the named stubs, the numbers a guest can make up are
+        // unbounded. A slot apiece would admit KMSG_RATE_BURST records for each
+        // of the ~500 numbers in the syscall range, about 5000 records, far
+        // more than the ring holds (131072 bytes at ~100 a record).
+        reset_test_ring();
+        let mut host = ClockHost::at(1, 0);
+        klog(&mut host, KlogSite::BootIdentity, format_args!("boot: identity"));
+        klog(&mut host, KlogSite::RootImageMounted, format_args!("boot: root mounted"));
+
+        for number in 0..=KMSG_MAX_SYSCALL_CALLSITE_ID + 100 {
+            for _ in 0..KMSG_RATE_BURST * 2 {
+                klog_unknown_syscall(&mut host, 42, number);
+            }
+        }
+
+        let lines = texts_logged();
+        assert_eq!(lines[0], "boot: identity");
+        assert_eq!(lines[1], "boot: root mounted");
+        // The whole sweep is one burst.
+        assert_eq!(lines.len(), 2 + KMSG_RATE_BURST as usize, "{lines:?}");
+        assert_eq!(with_ring(|ring| ring.oldest_seq()), 0, "the boot records were evicted");
+
+        // The sweep did not use up a named stub's budget, and the kernel's own
+        // events keep theirs.
+        assert!(klog_unimplemented_syscall(&mut host, 42, 248).is_some());
+        assert!(klog(&mut host, KlogSite::ProcessKilledByFault, format_args!("event")).is_some());
+    }
+
+    #[test]
+    fn an_unknown_syscall_is_reported_as_unknown() {
+        reset_test_ring();
+        assert!(klog_unknown_syscall(&mut ClockHost::at(1, 0), 9, 777).is_some());
+        assert_eq!(texts_logged(), ["pid 9 called unknown syscall 777 (ENOSYS)"]);
+    }
+
+    #[test]
+    fn named_stub_syscalls_are_named_and_unnamed_ones_are_not() {
+        reset_test_ring();
+        let mut host = ClockHost::at(1, 0);
+        klog_unimplemented_syscall(&mut host, 3, 319);
+        klog_unimplemented_syscall(&mut host, 3, 253);
+        assert_eq!(
+            texts_logged(),
+            [
+                "pid 3 called syscall 319 (quotactl), which is not implemented (ENOSYS)",
+                "pid 3 called syscall 253 (recvmmsg), which is not implemented (ENOSYS)",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_stub_names_are_the_ones_kandelos_libc_header_binds() {
+        // The names come from the libc overlay's syscall headers, Kandelo's own
+        // record of which function each number is. Hold every entry to both
+        // headers so a renumbering cannot leave the log naming the wrong one.
+        let headers = [
+            include_str!("../../../libc/musl-overlay/arch/wasm32posix/bits/syscall.h.in"),
+            include_str!("../../../libc/musl-overlay/arch/wasm64posix/bits/syscall.h.in"),
+        ];
+        let mut previous = 0;
+        for &(number, name) in UNIMPLEMENTED_SYSCALL_NAMES {
+            assert!(number > previous, "the table must be sorted and free of duplicates at {number}");
+            assert!(number <= KMSG_MAX_SYSCALL_CALLSITE_ID, "{name} would not have a slot of its own");
+            previous = number;
+            for header in headers {
+                let defined = header.lines().any(|line| {
+                    let mut words = line.split_whitespace();
+                    words.next() == Some("#define")
+                        && words.next() == Some(&format!("__NR_{name}")[..])
+                        && words.next().and_then(|value| value.parse::<u32>().ok()) == Some(number)
+                });
+                assert!(defined, "the libc header does not define __NR_{name} as {number}");
+            }
+        }
     }
 }

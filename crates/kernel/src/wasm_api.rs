@@ -5536,10 +5536,21 @@ const _: extern "C" fn(i32, *mut u8, u32, *mut u8, u32, *mut u8, u32, i32) -> i3
 /// not, and neither do `execve`/`fork` below: the host answers those before
 /// they reach the kernel, so the `ENOSYS` there is a guard and not a gap.
 /// The log call is on this refusal path only, never on a path that succeeds.
-fn refuse_unimplemented_syscall(nr: u32, name: Option<&str>) -> i32 {
+fn refuse_unimplemented_syscall(nr: u32) -> i32 {
     let mut host = WasmHostIO;
     let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-    crate::kmsg::klog_unimplemented_syscall(&mut host, pid, nr, name);
+    crate::kmsg::klog_unimplemented_syscall(&mut host, pid, nr);
+    -(Errno::ENOSYS as i32)
+}
+
+/// [`refuse_unimplemented_syscall`] for a number the dispatcher has no arm
+/// for at all. A guest picks the number, so these share one rate-limit slot
+/// instead of one apiece: a sweep of distinct numbers must not write enough
+/// records to push the boot log out of the ring.
+fn refuse_unknown_syscall(nr: u32) -> i32 {
+    let mut host = WasmHostIO;
+    let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+    crate::kmsg::klog_unknown_syscall(&mut host, pid, nr);
     -(Errno::ENOSYS as i32)
 }
 
@@ -7721,10 +7732,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         // QFileSystemWatcher and glib's GFileMonitor — both only fall
         // back when inotify_init fails. ---
         // Each is reported to the kernel log (`dmesg`) as it is refused.
-        247 => refuse_unimplemented_syscall(nr, Some("inotify_init1")), // SYS_INOTIFY_INIT1
-        381 => refuse_unimplemented_syscall(nr, Some("inotify_init")),  // SYS_INOTIFY_INIT
-        248 => refuse_unimplemented_syscall(nr, Some("inotify_add_watch")), // SYS_INOTIFY_ADD_WATCH
-        249 => refuse_unimplemented_syscall(nr, Some("inotify_rm_watch")),  // SYS_INOTIFY_RM_WATCH
+        247..=249 | 381 => refuse_unimplemented_syscall(nr), // SYS_INOTIFY_INIT1 / ADD_WATCH / RM_WATCH / INIT
 
         // --- mknod/mknodat: create regular files and FIFOs ---
         // S_IFIFO nodes are real named pipes (see `crate::fifo`); other node
@@ -8192,11 +8200,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         | 362..=369
         | 373..=376 => {
             // Remaining stubs: return ENOSYS, and say so in the kernel log.
-            refuse_unimplemented_syscall(nr, None)
+            refuse_unimplemented_syscall(nr)
         }
 
-        // A number with no handler at all.
-        _ => refuse_unimplemented_syscall(nr, None),
+        // A number with no handler and no entry in any table: reported, but
+        // through one shared rate-limit slot (see `refuse_unknown_syscall`).
+        _ => refuse_unknown_syscall(nr),
     }
 }
 

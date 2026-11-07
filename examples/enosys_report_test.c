@@ -1,6 +1,8 @@
 /*
  * enosys_report_test.c — prove a syscall the kernel has no implementation for
- * leaves a record in the kernel log, and an ordinary failure does not.
+ * leaves a record in the kernel log, that an ordinary failure (including an
+ * ENOSYS an implemented syscall returns for an argument it rejects) does not,
+ * and that a sweep of made-up syscall numbers cannot flood the log.
  *
  * Kandelo's kernel log (read here through klogctl) answers "what did this
  * program ask for that Kandelo lacks?". The Rust unit tests prove the
@@ -29,6 +31,18 @@
 #include <unistd.h>
 
 #define KLOG_READ_ALL 3
+
+/* KMSG_RATE_BURST (crates/runtime-core/src/kmsg.rs): records one callsite may
+ * write per window. Unknown syscall numbers share one callsite. */
+#define KMSG_RATE_BURST 10
+
+/* Numbers above every dispatcher arm (the highest is 415) and below the
+ * host-intercepted spawn (500): no syscall at all. */
+#define UNKNOWN_FIRST 450
+#define UNKNOWN_LAST 499
+
+/* An operation futex does not support: its own handler answers ENOSYS. */
+#define NO_SUCH_FUTEX_OP 99
 
 /* The ring holds 128 KiB; a fresh machine's log is a few hundred bytes. READ_ALL
  * returns the newest whole records that fit, which is every record that
@@ -74,7 +88,9 @@ int main(void)
 	static const char any_report[] = "which is not implemented (ENOSYS)";
 	char ours[160];
 	int before_all, before_ours, mid_all, after_all, after_ours;
+	int before_unknown, after_unknown, n;
 	int fd;
+	int futex_word = 0;
 
 	/* The record that must appear: this process, this syscall, its number and
 	 * name, at warning severity (<4>: facility kern, level warning). */
@@ -98,6 +114,14 @@ int main(void)
 	errno = 0;
 	if (lseek(-1, 0, SEEK_SET) != -1 || errno != EBADF) {
 		fail("lseek(-1) should be EBADF");
+	}
+	/* futex exists. An operation it does not support is refused by futex's own
+	 * handler with ENOSYS: a rejected argument, not a missing syscall, and it
+	 * must not be listed as one. */
+	errno = 0;
+	if (syscall(SYS_futex, &futex_word, NO_SUCH_FUTEX_OP, 0, NULL, NULL, 0) != -1
+	    || errno != ENOSYS) {
+		fail("futex with an unsupported operation should be ENOSYS");
 	}
 	mid_all = count(any_report);
 	if (mid_all != before_all) {
@@ -132,6 +156,34 @@ int main(void)
 		        " record, the count went %d -> %d\n", before_all, after_all);
 		failures++;
 	}
+
+	/* A program that makes up syscall numbers must not be able to write the
+	 * log full: unknown numbers share one rate limit. Fifty distinct numbers
+	 * add at most one burst of records, not one burst each. */
+	before_unknown = count("unknown syscall ");
+	for (n = UNKNOWN_FIRST; n <= UNKNOWN_LAST; n++) {
+		errno = 0;
+		if (syscall(n) != -1 || errno != ENOSYS) fail("an unknown syscall should be ENOSYS");
+	}
+	after_unknown = count("unknown syscall ");
+	if (after_unknown - before_unknown < 1
+	    || after_unknown - before_unknown > KMSG_RATE_BURST) {
+		fprintf(stderr,
+		        "enosys-report failure: %d unknown syscall numbers wrote %d records,"
+		        " expected between 1 and %d\n",
+		        UNKNOWN_LAST - UNKNOWN_FIRST + 1, after_unknown - before_unknown,
+		        KMSG_RATE_BURST);
+		failures++;
+	}
+	/* ... and the flood spent none of a named stub's budget. */
+	errno = 0;
+	if (syscall(SYS_inotify_add_watch, -1, "/", 0) != -1 || errno != ENOSYS) {
+		fail("inotify_add_watch should be ENOSYS");
+	}
+	snprintf(ours, sizeof ours,
+	         "<4>pid %d called syscall 248 (inotify_add_watch), %s\n",
+	         (int)getpid(), any_report);
+	if (count(ours) != 1) fail("inotify_add_watch was not reported after the sweep");
 
 	if (failures != 0) {
 		fprintf(stderr, "enosys-report-test: %d failure(s); log was:\n%s",
