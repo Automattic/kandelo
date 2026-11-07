@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { gotoMachine as gotoDefaultMachine } from "./support/kandelo-machine";
 import { writeFileSync } from "node:fs";
 import { buildTerminalCommand, parseTerminalCommandResult } from "./support/terminal-command";

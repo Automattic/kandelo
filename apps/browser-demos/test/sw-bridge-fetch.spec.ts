@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { attachBridgeToKernel } from "../lib/init/sw-bridge-fetch";
 import { HttpBridgeHost, type HttpResponse } from "../lib/http-bridge";
 

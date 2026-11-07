@@ -114,6 +114,13 @@ changes, package artifacts, or performance claims.
 
 ## Validation Contract
 
+Keep automated browser tests silent through the shared
+`apps/browser-demos/playwright-test.ts` fixture, including private diagnostic
+specs. Leave guest PCM and analysers running for audio checks. Do not mute the
+computer's system output, which can disrupt calls. Audible playback requires
+the user's explicit intent and the documented test opt-in. See
+`docs/agent-guidance/validation.md` "Keep browser tests quiet".
+
 Validation is evidence for a specific claim. Do not say "tests pass", "the
 branch is complete", "the browser works", "ABI is fine", or "performance
 improved" unless the evidence for that exact claim has been run and reported.

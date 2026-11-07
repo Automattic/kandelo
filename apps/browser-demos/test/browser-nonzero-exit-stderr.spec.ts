@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { readFile } from "node:fs/promises";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import type { HostDiagnostic } from "../../../host/src/host-diagnostic";

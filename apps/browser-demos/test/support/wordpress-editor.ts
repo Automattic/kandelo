@@ -1,4 +1,4 @@
-import { expect, type FrameLocator } from "@playwright/test";
+import { expect, type FrameLocator } from "../../playwright-test";
 
 export async function expectWordPressEditor(frame: FrameLocator): Promise<void> {
   await expect(frame.locator("body.wp-admin")).toBeVisible({ timeout: 180_000 });

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { expect } from "@playwright/test";
+import { expect } from "../playwright-test";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import { withSparseFileLength } from "../../../host/test/fixtures/sparse-composer-file-image";

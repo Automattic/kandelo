@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 test("Kandelo modeset demo commits PAGE_FLIPs through /dev/dri/card0", async ({ page }) => {

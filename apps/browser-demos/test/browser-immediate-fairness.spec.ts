@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 test("continuous browser immediates admit worker input and timers", async ({ page }) => {
   await page.goto("/trap-signal-test.html");

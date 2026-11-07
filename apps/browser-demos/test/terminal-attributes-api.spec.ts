@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runFetchedWasmProgram } from "./run-fetched-wasm-program";

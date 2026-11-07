@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 test("full-screen terminal state survives tab changes and hidden output", async ({ page }) => {
   await page.goto("/test/fixtures/terminal-repaint.html");

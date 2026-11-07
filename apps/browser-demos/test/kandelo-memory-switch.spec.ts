@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page } from "../playwright-test";
 import { test } from "./support/persistent-page";
 import { gotoMachine, gotoMachineOrSkip, previewFrame } from "./support/kandelo-machine";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures, memoryBoundaryRealmId } from "./support/browser-memory-boundary";

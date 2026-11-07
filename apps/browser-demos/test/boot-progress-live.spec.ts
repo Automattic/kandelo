@@ -3,7 +3,7 @@
 // from `presentation.bootPrimary`, so a bar attached to a pane that boot does
 // not select passes every unit test and is never seen by a user.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 const appUrl = (path: string): string => {
   const baseUrl = process.env.KANDELO_TEST_BASE_URL;

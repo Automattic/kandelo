@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "../playwright-test";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import type { OpfsImageIntegrity } from "../../../host/src/vfs/opfs-image-reader";

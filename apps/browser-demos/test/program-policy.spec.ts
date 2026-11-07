@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import type { ProgramPolicyFixture } from "../pages/program-policy-test/main";
 
 test("isolates Rust metadata allocation failure and recovers offline", async ({ page, context }) => {

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 

@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Page } from "../../playwright-test";
 import { MAX_IMAGE_MANIFEST_BYTES } from "../../../../host/src/vfs/image-manifest-memory";
 
 export function planPersistentFailureCapture(

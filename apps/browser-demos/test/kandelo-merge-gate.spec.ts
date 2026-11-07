@@ -1,4 +1,4 @@
-import { expect, test, type FrameLocator, type Page } from "@playwright/test";
+import { expect, test, type FrameLocator, type Page } from "../playwright-test";
 import { runTerminalCommand } from "./support/terminal-command";
 import { configureNewComputer, currentComputerMetadata } from "./support/computer-library";
 import {

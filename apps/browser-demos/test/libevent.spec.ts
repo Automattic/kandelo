@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { libeventCases, libeventModes, libeventProgramRelPath } from "../../../host/test/support/libevent-programs";
 import { runFetchedWasmProgram } from "./run-fetched-wasm-program";
 import { devServerAssetUrl } from "./support/dev-server-assets";

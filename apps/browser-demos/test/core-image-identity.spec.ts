@@ -1,4 +1,4 @@
-import { expect } from "@playwright/test";
+import { expect } from "../playwright-test";
 import { resolve } from "node:path";
 import { test } from "./support/persistent-page";
 import { machineUrl } from "./support/kandelo-machine";

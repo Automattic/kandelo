@@ -9,7 +9,7 @@ import { setInternalsOpen } from "./support/dock";
 // demo's own shell keeps the assertions on real system state rather than on
 // pixels the offscreen KMS canvas makes unreliable to sample.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

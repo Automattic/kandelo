@@ -1,4 +1,4 @@
-import { expect } from "@playwright/test";
+import { expect } from "../playwright-test";
 import { test } from "./support/persistent-page";
 import { resolve } from "node:path";
 

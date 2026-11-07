@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { chromium, expect, test, type Page } from "@playwright/test";
+import { chromium, expect, test, type Page } from "../playwright-test";
 import { runTerminalCommand } from "./support/terminal-command";
 
 // A computer made from the worktree's partial image keeps its files across

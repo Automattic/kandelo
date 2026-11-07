@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { gotoInPreview } from "./support/kandelo-machine";
 
 test("preview navigation waits for the destination document to commit", async ({ page, baseURL }) => {

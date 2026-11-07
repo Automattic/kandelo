@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Page, type TestInfo } from "../playwright-test";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import { gotoInPreview, machineAppPrefix, machineUrl, previewFrame } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";

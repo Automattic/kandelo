@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { registerDeclaredShellLazyArchive, SHELL_LAZY_ARCHIVE_SPECS } from "../../../images/vfs/scripts/shell-lazy-archives";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";

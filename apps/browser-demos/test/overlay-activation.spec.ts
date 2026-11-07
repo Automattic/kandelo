@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { expect } from "@playwright/test";
+import { expect } from "../playwright-test";
 import { opfsTest as test } from "./support/opfs-page";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";

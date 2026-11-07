@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 test("Kandelo page is cross-origin isolated for SharedArrayBuffer", async ({
   page,

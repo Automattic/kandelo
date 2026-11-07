@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Page } from "../../playwright-test";
 
 /**
  * The URL the app's dev server serves a package artifact at, obtained through
