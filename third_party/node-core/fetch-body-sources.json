@@ -46,6 +46,26 @@
       "path": "upstream/fetch-body/deps/undici/src/lib/core/constants.js",
       "upstreamPath": "deps/undici/src/lib/core/constants.js",
       "sha256": "7a27b3232c6157c58942adad922bc2af060e49201ee49d205a829973dec92063"
+    },
+    "request": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/web/fetch/request.js",
+      "upstreamPath": "deps/undici/src/lib/web/fetch/request.js",
+      "sha256": "63fb5c976978e2b0f23b1064888c4775f9889a28e2422e0b2e1daa123c4420ac"
+    },
+    "fetchConstants": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/web/fetch/constants.js",
+      "upstreamPath": "deps/undici/src/lib/web/fetch/constants.js",
+      "sha256": "2e0f11d1ba87ce83219dff50325be48704931af5cd03a749fe710590bfd5bfb5"
+    },
+    "globalOrigin": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/web/fetch/global.js",
+      "upstreamPath": "deps/undici/src/lib/web/fetch/global.js",
+      "sha256": "6b38813b82ec8d5002009640515d35f83ab96d4f8e0066d71fae89324079a289"
+    },
+    "responseSource": {
+      "path": "upstream/fetch-body/deps/undici/src/lib/web/fetch/response.js",
+      "upstreamPath": "deps/undici/src/lib/web/fetch/response.js",
+      "sha256": "851520e91226ecfc8421037b6c5a894c3b7a91013e9988d74a32f08cb3ae94ad"
     }
   },
   "sections": {
@@ -90,6 +110,54 @@
       "start": "function bufferToLowerCasedHeaderName (",
       "length": 121,
       "sha256": "583c6be8f5c70851d1bd6aa0064f3668c986114472ac9b2ae04a1f9bf830d004"
+    },
+    "readableStreamClose": {
+      "source": "utilSource",
+      "start": "function readableStreamClose (",
+      "length": 346,
+      "sha256": "1dfb263ceb87bd48433ed50a94eb030702f331b5dffc54478099ed6bb04c3635"
+    },
+    "requestOrigin": {
+      "source": "utilSource",
+      "start": "function sameOrigin (",
+      "length": 433,
+      "sha256": "a1d1e0ba1f4128165b6727af962ac4c857fc54ac57dd4da916c2ee613e95c455"
+    },
+    "policyContainer": {
+      "source": "utilSource",
+      "start": "function makePolicyContainer (",
+      "length": 259,
+      "sha256": "6092e6efd85d8641a47272740dd8817a1d4ded7e3efced7ade770d6a9f4777fc"
+    },
+    "environmentSettings": {
+      "source": "utilSource",
+      "start": "class EnvironmentSettingsObjectBase {",
+      "length": 350,
+      "sha256": "14be21f30006d727396abf1193b3c1204d11442f2dcd482fadfc6b6ce1531210"
+    },
+    "tokenValidation": {
+      "source": "coreUtilSource",
+      "start": "const validTokenChars =",
+      "length": 1672,
+      "sha256": "601cfa6be2a9ffe6577227c63d6fe770e41462eee0b3fd0f0386430beec19ba1"
+    },
+    "methodNormalization": {
+      "source": "coreUtilSource",
+      "start": "const normalizedMethodRecordsBase =",
+      "length": 591,
+      "sha256": "9977860f4997b3aaa007f0f732be6bfad1f58952f33aaba76d070b25c84508a6"
+    },
+    "addAbortListener": {
+      "source": "coreUtilSource",
+      "start": "function addAbortListener (",
+      "length": 437,
+      "sha256": "7edd15db6ba2ed11490bc6b4dc42ced163c5a7511b8c777a4791ac00b4bc0965"
+    },
+    "bodyInitConverters": {
+      "source": "responseSource",
+      "start": "webidl.converters.XMLHttpRequestBodyInit =",
+      "length": 798,
+      "sha256": "ba907657edf355e9ea47d59caa8296fb85d1ebdc2a7eda593948a854244bf643"
     }
   }
 }

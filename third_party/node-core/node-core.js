@@ -37094,8 +37094,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 */
-// Pinned Undici owns FormData/Headers state, Web IDL and live iterators. Multipart
-// extraction/parsing and Fetch transport are separate consumers to implement.
+// Pinned Undici owns FormData/Headers state, Web IDL and live iterators. Fetch
+// Body extraction/parsing consumes these same owners; transport is separate.
 function _createNodeFormDataPlatform(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
@@ -39908,7 +39908,7 @@ module.exports = { iteratorMixin, isValidHeaderName, isValidHeaderValue, setHead
         catch (error) { modules.delete(id); throw error; }
         return module.exports;
     }
-    return { ...require('formdata'), headers: require('headers'), webidl: require('webidl').webidl, get messageEvents() { return require('websocketEvents'); } };
+    return { ...require('formdata'), headers: require('headers'), coreSymbols: require('coreSymbols'), webidl: require('webidl').webidl, get messageEvents() { return require('websocketEvents'); } };
 }
 
 // Pinned filesystem utilities and Stats over the guest's actual stat record.
@@ -111427,14 +111427,14 @@ function unwatchFile(filename, listener) {
 
     return { watchFile, unwatchFile, watchers };
 }
-// Pinned Undici Body consumers over the existing actual stream, header-list,
-// FormData and File owners. Extraction/transport remain separate consumers.
+// Pinned Undici Request and Body algorithms share actual stream, header-list,
+// FormData, Blob/File and abort owners. HTTP transport remains its own owner.
 function _createNodeFetchBodyPlatform(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
     const { SafeMap, ObjectPrototypeHasOwnProperty, Error } = primordials;
-    const { Buffer, Blob, File, URLSearchParams, TextEncoder, TextDecoder, TextDecoderStream } = platform;
-    const { ReadableStream } = platform.stream.web;
+    const { Buffer, Blob, File, URL, URLSearchParams, AbortController, TextEncoder, TextDecoder, TextDecoderStream, process } = platform;
+    const { ReadableStream, TransformStream } = platform.stream.web;
     const factories = {
         __proto__: null,
         "multipart": function(module, exports, require) {
@@ -113213,231 +113213,318 @@ module.exports = {
 }
 
 },
-"util": function(module, exports, require) {
-const assert = require('node:assert');
-const { isUint8Array } = require('node:util/types');
-const { parseMIMEType, collectAnHTTPQuotedString } = require('./data-url');
-const { collectASequenceOfCodePoints, removeChars } = require('../infra');
-function fullyReadBody (body, processBody, processBodyError) {
-  // 1. If taskDestination is null, then set taskDestination to
-  //    the result of starting a new parallel queue.
-
-  // 2. Let successSteps given a byte sequence bytes be to queue a
-  //    fetch task to run processBody given bytes, with taskDestination.
-  const successSteps = processBody
-
-  // 3. Let errorSteps be to queue a fetch task to run processBodyError,
-  //    with taskDestination.
-  const errorSteps = processBodyError
-
-  try {
-  // 4. Let reader be the result of getting a reader for body’s stream.
-  //    If that threw an exception, then run errorSteps with that
-  //    exception and return.
-    const reader = body.stream.getReader()
-
-    // 5. Read all bytes from reader, given successSteps and errorSteps.
-    readAllBytes(reader, successSteps, errorSteps)
-  } catch (e) {
-    errorSteps(e)
-  }
-}
-
-
-async function readAllBytes (reader, successSteps, failureSteps) {
-  try {
-    const bytes = []
-    let byteLength = 0
-
-    do {
-      const { done, value: chunk } = await reader.read()
-
-      if (done) {
-        // 1. Call successSteps with bytes.
-        successSteps(Buffer.concat(bytes, byteLength))
-        return
-      }
-
-      // 1. If chunk is not a Uint8Array object, call failureSteps
-      //    with a TypeError and abort these steps.
-      if (!isUint8Array(chunk)) {
-        failureSteps(new TypeError('Received non-Uint8Array chunk'))
-        return
-      }
-
-      // 2. Append the bytes represented by chunk to bytes.
-      bytes.push(chunk)
-      byteLength += chunk.length
-
-    // 3. Read-loop given reader, bytes, successSteps, and failureSteps.
-    } while (true)
-  } catch (e) {
-    // 1. Call failureSteps with e.
-    failureSteps(e)
-  }
-}
-
-
-function extractMimeType (headers) {
-  // 1. Let charset be null.
-  let charset = null
-
-  // 2. Let essence be null.
-  let essence = null
-
-  // 3. Let mimeType be null.
-  let mimeType = null
-
-  // 4. Let values be the result of getting, decoding, and splitting `Content-Type` from headers.
-  const values = getDecodeSplit('content-type', headers)
-
-  // 5. If values is null, then return failure.
-  if (values === null) {
-    return 'failure'
-  }
-
-  // 6. For each value of values:
-  for (const value of values) {
-    // 6.1. Let temporaryMimeType be the result of parsing value.
-    const temporaryMimeType = parseMIMEType(value)
-
-    // 6.2. If temporaryMimeType is failure or its essence is "*/*", then continue.
-    if (temporaryMimeType === 'failure' || temporaryMimeType.essence === '*/*') {
-      continue
-    }
-
-    // 6.3. Set mimeType to temporaryMimeType.
-    mimeType = temporaryMimeType
-
-    // 6.4. If mimeType’s essence is not essence, then:
-    if (mimeType.essence !== essence) {
-      // 6.4.1. Set charset to null.
-      charset = null
-
-      // 6.4.2. If mimeType’s parameters["charset"] exists, then set charset to
-      //        mimeType’s parameters["charset"].
-      if (mimeType.parameters.has('charset')) {
-        charset = mimeType.parameters.get('charset')
-      }
-
-      // 6.4.3. Set essence to mimeType’s essence.
-      essence = mimeType.essence
-    } else if (!mimeType.parameters.has('charset') && charset !== null) {
-      // 6.5. Otherwise, if mimeType’s parameters["charset"] does not exist, and
-      //      charset is non-null, set mimeType’s parameters["charset"] to charset.
-      mimeType.parameters.set('charset', charset)
-    }
-  }
-
-  // 7. If mimeType is null, then return failure.
-  if (mimeType == null) {
-    return 'failure'
-  }
-
-  // 8. Return mimeType.
-  return mimeType
-}
-
-
-function gettingDecodingSplitting (value) {
-  // 1. Let input be the result of isomorphic decoding value.
-  const input = value
-
-  // 2. Let position be a position variable for input, initially pointing at the start of input.
-  const position = { position: 0 }
-
-  // 3. Let values be a list of strings, initially empty.
-  const values = []
-
-  // 4. Let temporaryValue be the empty string.
-  let temporaryValue = ''
-
-  // 5. While position is not past the end of input:
-  while (position.position < input.length) {
-    // 5.1. Append the result of collecting a sequence of code points that are not U+0022 (")
-    //      or U+002C (,) from input, given position, to temporaryValue.
-    temporaryValue += collectASequenceOfCodePoints(
-      (char) => char !== '"' && char !== ',',
-      input,
-      position
-    )
-
-    // 5.2. If position is not past the end of input, then:
-    if (position.position < input.length) {
-      // 5.2.1. If the code point at position within input is U+0022 ("), then:
-      if (input.charCodeAt(position.position) === 0x22) {
-        // 5.2.1.1. Append the result of collecting an HTTP quoted string from input, given position, to temporaryValue.
-        temporaryValue += collectAnHTTPQuotedString(
-          input,
-          position
-        )
-
-        // 5.2.1.2. If position is not past the end of input, then continue.
-        if (position.position < input.length) {
-          continue
-        }
-      } else {
-        // 5.2.2. Otherwise:
-
-        // 5.2.2.1. Assert: the code point at position within input is U+002C (,).
-        assert(input.charCodeAt(position.position) === 0x2C)
-
-        // 5.2.2.2. Advance position by 1.
-        position.position++
-      }
-    }
-
-    // 5.3. Remove all HTTP tab or space from the start and end of temporaryValue.
-    temporaryValue = removeChars(temporaryValue, true, true, (char) => char === 0x9 || char === 0x20)
-
-    // 5.4. Append temporaryValue to values.
-    values.push(temporaryValue)
-
-    // 5.6. Set temporaryValue to the empty string.
-    temporaryValue = ''
-  }
-
-  // 6. Return values.
-  return values
-}
-
-
-function getDecodeSplit (name, list) {
-  // 1. Let value be the result of getting name from list.
-  const value = list.get(name, true)
-
-  // 2. If value is null, then return null.
-  if (value === null) {
-    return null
-  }
-
-  // 3. Return the result of getting, decoding, and splitting value.
-  return gettingDecodingSplitting(value)
-}
-
-
-module.exports = { fullyReadBody, extractMimeType };
-
-},
-"corePrimitive": function(module, exports, require) {
-const { tree } = require('./tree');
-function bufferToLowerCasedHeaderName (value) {
-  return tree.lookup(value) ?? value.toString('latin1').toLowerCase()
-}
-
-
-module.exports = { bufferToLowerCasedHeaderName };
-
-},
 "body": function(module, exports, require) {
-const util = require('../../core/util');
-const { fullyReadBody, extractMimeType } = require('./util');
-const { FormData, setFormDataState } = require('./formdata');
-const { webidl } = require('../webidl');
-const { serializeAMimeType } = require('./data-url');
-const { multipartFormDataParser } = require('./formdata-parser');
-const { parseJSONFromBytes } = require('../infra');
-const { utf8DecodeBytes } = require('../../encoding');
+'use strict'
+
+const util = require('../../core/util')
+const {
+  readableStreamClose,
+  fullyReadBody,
+  extractMimeType
+} = require('./util')
+const { FormData, setFormDataState, getFormDataBoundary } = require('./formdata')
+const { webidl } = require('../webidl')
+const assert = require('node:assert')
+const { isErrored, isDisturbed } = require('node:stream')
+const { isUint8Array } = require('node:util/types')
+const { serializeAMimeType } = require('./data-url')
+const { multipartFormDataParser } = require('./formdata-parser')
+const { parseJSONFromBytes } = require('../infra')
+const { utf8DecodeBytes } = require('../../encoding')
+const { ReadableStreamTee } = require('node:stream/web')
+
+const textEncoder = new TextEncoder()
+function noop () {}
+
+const streamRegistry = new FinalizationRegistry((weakRef) => {
+  const stream = weakRef.deref()
+  if (stream && !stream.locked && !isDisturbed(stream) && !isErrored(stream)) {
+    stream.cancel('Response object has been garbage collected').catch(noop)
+  }
+})
+
+/**
+ * Extract a body with type from a byte sequence or BodyInit object
+ *
+ * @param {import('../../../types').BodyInit} object - The BodyInit object to extract from
+ * @param {boolean} [keepalive=false] - If true, indicates that the body
+ * @returns {[{stream: ReadableStream, source: any, length: number | null}, string | null]} - Returns a tuple containing the body and its type
+ *
+ * @see https://fetch.spec.whatwg.org/#concept-bodyinit-extract
+ */
+function extractBody (object, keepalive = false) {
+  // 1. Let stream be null.
+  let stream = null
+
+  // 2. If object is a ReadableStream object, then set stream to object.
+  if (webidl.is.ReadableStream(object)) {
+    stream = object
+  } else if (webidl.is.Blob(object)) {
+    // 3. Otherwise, if object is a Blob object, set stream to the
+    //    result of running object’s get stream.
+    stream = object.stream()
+  } else {
+    // 4. Otherwise, set stream to a new ReadableStream object, and set
+    //    up stream with byte reading support.
+    stream = new ReadableStream({
+      start () {},
+      async pull (controller) {
+        // 19.1. Run action.
+        const result = action()
+
+        const iterator = result?.[Symbol.asyncIterator]?.()
+        if (iterator == null) {
+          // 19.2. Whenever one or more bytes are available and stream is not errored,
+          // enqueue the result of creating a Uint8Array from the available bytes into stream.
+          if (result?.length && !isErrored(stream)) {
+            controller.enqueue(typeof result === 'string' ? textEncoder.encode(result) : new Uint8Array(result))
+          }
+
+          // 19.3. When running action is done, close stream.
+          queueMicrotask(() => readableStreamClose(controller))
+          return
+        }
+
+        while (true) {
+          const { value, done } = await iterator.next()
+
+          // 19.3. When running action is done, close stream.
+          if (done) {
+            queueMicrotask(() => readableStreamClose(controller))
+            return
+          }
+
+          // 19.2. Whenever one or more bytes are available and stream is not errored,
+          // enqueue the result of creating a Uint8Array from the available bytes into stream.
+          if (value.length && !isErrored(stream)) {
+            controller.enqueue(new Uint8Array(value))
+            return
+          }
+        }
+      },
+      cancel (reason) {
+        return action()[Symbol.asyncIterator]?.().return(reason)
+      },
+      type: 'bytes'
+    })
+  }
+
+  // 5. Assert: stream is a ReadableStream object.
+  assert(webidl.is.ReadableStream(stream))
+
+  // 6. Let action be null.
+  let action = null
+
+  // 7. Let source be null.
+  let source = null
+
+  // 8. Let length be null.
+  let length = null
+
+  // 9. Let type be null.
+  let type = null
+
+  // 10. Switch on object:
+  if (typeof object === 'string') {
+    // Set source to the UTF-8 encoding of object.
+    // Note: setting source to a Uint8Array here breaks some mocking assumptions.
+    source = object
+
+    // Set type to `text/plain;charset=UTF-8`.
+    type = 'text/plain;charset=UTF-8'
+  } else if (webidl.is.URLSearchParams(object)) {
+    // URLSearchParams
+
+    // spec says to run application/x-www-form-urlencoded on body.list
+    // this is implemented in Node.js as apart of an URLSearchParams instance toString method
+    // See: https://github.com/nodejs/node/blob/e46c680bf2b211bbd52cf959ca17ee98c7f657f5/lib/internal/url.js#L490
+    // and https://github.com/nodejs/node/blob/e46c680bf2b211bbd52cf959ca17ee98c7f657f5/lib/internal/url.js#L1100
+
+    // Set source to the result of running the application/x-www-form-urlencoded serializer with object’s list.
+    source = object.toString()
+
+    // Set type to `application/x-www-form-urlencoded;charset=UTF-8`.
+    type = 'application/x-www-form-urlencoded;charset=UTF-8'
+  } else if (webidl.is.BufferSource(object)) {
+    // Set source to a copy of the bytes held by object.
+    source = webidl.util.getCopyOfBytesHeldByBufferSource(object)
+  } else if (webidl.is.FormData(object)) {
+    const boundary = getFormDataBoundary(object)
+    const prefix = `--${boundary}\r\nContent-Disposition: form-data`
+
+    /*! formdata-polyfill. MIT License. Jimmy Wärting <https://jimmy.warting.se/opensource> */
+    const formdataEscape = (str) =>
+      str.replace(/\n/g, '%0A').replace(/\r/g, '%0D').replace(/"/g, '%22')
+    const normalizeLinefeeds = (value) => value.replace(/\r?\n|\r/g, '\r\n')
+
+    // Set action to this step: run the multipart/form-data
+    // encoding algorithm, with object’s entry list and UTF-8.
+    // - This ensures that the body is immutable and can't be changed afterwords
+    // - That the content-length is calculated in advance.
+    // - And that all parts are pre-encoded and ready to be sent.
+
+    const blobParts = []
+    const rn = new Uint8Array([13, 10]) // '\r\n'
+    length = 0
+    let hasUnknownSizeValue = false
+
+    for (const [name, value] of object) {
+      if (typeof value === 'string') {
+        const chunk = textEncoder.encode(prefix +
+          `; name="${formdataEscape(normalizeLinefeeds(name))}"` +
+          `\r\n\r\n${normalizeLinefeeds(value)}\r\n`)
+        blobParts.push(chunk)
+        length += chunk.byteLength
+      } else {
+        const chunk = textEncoder.encode(`${prefix}; name="${formdataEscape(normalizeLinefeeds(name))}"` +
+          (value.name ? `; filename="${formdataEscape(value.name)}"` : '') + '\r\n' +
+          `Content-Type: ${
+            value.type || 'application/octet-stream'
+          }\r\n\r\n`)
+        blobParts.push(chunk, value, rn)
+        if (typeof value.size === 'number') {
+          length += chunk.byteLength + value.size + rn.byteLength
+        } else {
+          hasUnknownSizeValue = true
+        }
+      }
+    }
+
+    // CRLF is appended to the body to function with legacy servers and match other implementations.
+    // https://github.com/curl/curl/blob/3434c6b46e682452973972e8313613dfa58cd690/lib/mime.c#L1029-L1030
+    // https://github.com/form-data/form-data/issues/63
+    const chunk = textEncoder.encode(`--${boundary}--\r\n`)
+    blobParts.push(chunk)
+    length += chunk.byteLength
+    if (hasUnknownSizeValue) {
+      length = null
+    }
+
+    // Set source to object.
+    source = object
+
+    const parts = (async function * () {
+      for (const part of blobParts) {
+        if (part.stream) {
+          yield * part.stream()
+        } else {
+          yield part
+        }
+      }
+    })()
+    action = () => parts
+
+    // Set type to `multipart/form-data; boundary=`,
+    // followed by the multipart/form-data boundary string generated
+    // by the multipart/form-data encoding algorithm.
+    type = `multipart/form-data; boundary=${boundary}`
+  } else if (webidl.is.Blob(object)) {
+    // Blob
+
+    // Set source to object.
+    source = object
+
+    // Set length to object’s size.
+    length = object.size
+
+    // If object’s type attribute is not the empty byte sequence, set
+    // type to its value.
+    if (object.type) {
+      type = object.type
+    }
+  } else if (typeof object[Symbol.asyncIterator] === 'function') {
+    // If keepalive is true, then throw a TypeError.
+    if (keepalive) {
+      throw new TypeError('keepalive')
+    }
+
+    // If object is disturbed or locked, then throw a TypeError.
+    if (util.isDisturbed(object) || object.locked) {
+      throw new TypeError(
+        'Response body object should not be disturbed or locked'
+      )
+    }
+
+    stream = webidl.is.ReadableStream(object)
+      ? object
+      : ReadableStream.from(object).pipeThrough(new TransformStream({
+        transform (chunk, controller) {
+          const bytes = isUint8Array(chunk) ? chunk : Buffer.from(chunk)
+          if (bytes.byteLength) {
+            controller.enqueue(bytes)
+          }
+        }
+      }))
+  }
+
+  // 18. If source is a byte sequence, then set action to a
+  // step that returns source and length to source’s length.
+  if (typeof source === 'string' || isUint8Array(source)) {
+    action = () => source
+    length = typeof source === 'string' ? Buffer.byteLength(source) : source.length
+  }
+
+  // 19. If action is non-null, then run these steps in parallel:
+  // Note: this is done in the pull method of the stream created above
+
+  // 20. Let body be a body whose stream is stream, source is source,
+  // and length is length.
+  const body = { stream, source, length }
+
+  // 21. Return (body, type).
+  return [body, type]
+}
+
+/**
+ * @typedef {object} ExtractBodyResult
+ * @property {ReadableStream<Uint8Array<ArrayBuffer>>} stream - The ReadableStream containing the body data
+ * @property {any} source - The original source of the body data
+ * @property {number | null} length - The length of the body data, or null
+ */
+
+/**
+ * Safely extract a body with type from a byte sequence or BodyInit object.
+ *
+ * @param {import('../../../types').BodyInit} object - The BodyInit object to extract from
+ * @param {boolean} [keepalive=false] - If true, indicates that the body
+ * @returns {[ExtractBodyResult, string | null]} - Returns a tuple containing the body and its type
+ *
+ * @see https://fetch.spec.whatwg.org/#bodyinit-safely-extract
+ */
+function safelyExtractBody (object, keepalive = false) {
+  // To safely extract a body and a `Content-Type` value from
+  // a byte sequence or BodyInit object object, run these steps:
+
+  // 1. If object is a ReadableStream object, then:
+  if (webidl.is.ReadableStream(object)) {
+    // Assert: object is neither disturbed nor locked.
+    assert(!util.isDisturbed(object), 'The body has already been consumed.')
+    assert(!object.locked, 'The stream is locked.')
+  }
+
+  // 2. Return the results of extracting object.
+  return extractBody(object, keepalive)
+}
+
+function cloneBody (body) {
+  // To clone a body body, run these steps:
+
+  // https://fetch.spec.whatwg.org/#concept-body-clone
+
+  // 1. Let « out1, out2 » be the result of teeing body’s stream.
+  const { 0: out1, 1: out2 } = ReadableStreamTee?.(body.stream, true) ?? body.stream.tee()
+
+  // 2. Set body’s stream to out1.
+  body.stream = out1
+
+  // 3. Return a body whose stream is out2 and other members are copied from body.
+  return {
+    stream: out2,
+    length: body.length,
+    source: body.source
+  }
+}
+
 function bodyMixinMethods (brandCheck, getInternalState) {
   const methods = {
     blob () {
@@ -113682,25 +113769,1765 @@ function bodyMimeType (requestOrResponse) {
   return mimeType
 }
 
+module.exports = {
+  extractBody,
+  safelyExtractBody,
+  cloneBody,
+  mixinBody,
+  streamRegistry,
+  bodyUnusable
+}
 
-module.exports = { mixinBody };
+},
+"request": function(module, exports, require) {
+/* globals AbortController */
+
+'use strict'
+
+const { extractBody, mixinBody, cloneBody, bodyUnusable } = require('./body')
+const { Headers, fill: fillHeaders, HeadersList, setHeadersGuard, getHeadersGuard, setHeadersList, getHeadersList } = require('./headers')
+const util = require('../../core/util')
+const nodeUtil = require('node:util')
+const {
+  isValidHTTPToken,
+  sameOrigin,
+  environmentSettingsObject
+} = require('./util')
+const {
+  forbiddenMethodsSet,
+  corsSafeListedMethodsSet,
+  referrerPolicy,
+  requestRedirect,
+  requestMode,
+  requestCredentials,
+  requestCache,
+  requestDuplex
+} = require('./constants')
+const { kEnumerableProperty, normalizedMethodRecordsBase, normalizedMethodRecords } = util
+const { webidl } = require('../webidl')
+const { URLSerializer } = require('./data-url')
+const { kConstruct } = require('../../core/symbols')
+const assert = require('node:assert')
+const { getMaxListeners, setMaxListeners, defaultMaxListeners } = require('node:events')
+
+const kAbortController = Symbol('abortController')
+
+const requestFinalizer = new FinalizationRegistry(({ signal, abort }) => {
+  signal.removeEventListener('abort', abort)
+})
+
+const dependentControllerMap = new WeakMap()
+
+let abortSignalHasEventHandlerLeakWarning
+
+try {
+  abortSignalHasEventHandlerLeakWarning = getMaxListeners(new AbortController().signal) > 0
+} catch {
+  abortSignalHasEventHandlerLeakWarning = false
+}
+
+function buildAbort (acRef) {
+  return abort
+
+  function abort () {
+    const ac = acRef.deref()
+    if (ac !== undefined) {
+      // Currently, there is a problem with FinalizationRegistry.
+      // https://github.com/nodejs/node/issues/49344
+      // https://github.com/nodejs/node/issues/47748
+      // In the case of abort, the first step is to unregister from it.
+      // If the controller can refer to it, it is still registered.
+      // It will be removed in the future.
+      requestFinalizer.unregister(abort)
+
+      // Unsubscribe a listener.
+      // FinalizationRegistry will no longer be called, so this must be done.
+      this.removeEventListener('abort', abort)
+
+      ac.abort(this.reason)
+
+      const controllerList = dependentControllerMap.get(ac.signal)
+
+      if (controllerList !== undefined) {
+        if (controllerList.size !== 0) {
+          for (const ref of controllerList) {
+            const ctrl = ref.deref()
+            if (ctrl !== undefined) {
+              ctrl.abort(this.reason)
+            }
+          }
+          controllerList.clear()
+        }
+        dependentControllerMap.delete(ac.signal)
+      }
+    }
+  }
+}
+
+let patchMethodWarning = false
+let setRequestSignal, getRequestDispatcher, setRequestDispatcher, setRequestHeaders, getRequestState, setRequestState, removeRequestAbortListener
+
+// https://fetch.spec.whatwg.org/#request-class
+class Request {
+  /** @type {AbortSignal} */
+  #signal
+
+  /** @type {import('../../dispatcher/dispatcher')} */
+  #dispatcher
+
+  /** @type {Headers} */
+  #headers
+
+  #state
+
+  /**
+   * Removes the `abort` listener that makes this request's signal follow the
+   * passed signal. `null` when no such listener was registered.
+   * @type {(() => void) | null}
+   */
+  #abortCleanup = null
+
+  // https://fetch.spec.whatwg.org/#dom-request
+  constructor (input, init = undefined) {
+    webidl.util.markAsUncloneable(this)
+
+    if (input === kConstruct) {
+      return
+    }
+
+    const prefix = 'Request constructor'
+    webidl.argumentLengthCheck(arguments, 1, prefix)
+
+    input = webidl.converters.RequestInfo(input)
+    init = webidl.converters.RequestInit(init)
+
+    // 1. Let request be null.
+    let request = null
+
+    // 2. Let fallbackMode be null.
+    let fallbackMode = null
+
+    // 3. Let baseURL be this’s relevant settings object’s API base URL.
+    const baseUrl = environmentSettingsObject.settingsObject.baseUrl
+
+    // 4. Let signal be null.
+    let signal = null
+
+    // 5. If input is a string, then:
+    if (typeof input === 'string') {
+      this.#dispatcher = init.dispatcher
+
+      // 1. Let parsedURL be the result of parsing input with baseURL.
+      // 2. If parsedURL is failure, then throw a TypeError.
+      let parsedURL
+      try {
+        parsedURL = new URL(input, baseUrl)
+      } catch (err) {
+        throw new TypeError('Failed to parse URL from ' + input, { cause: err })
+      }
+
+      // 3. If parsedURL includes credentials, then throw a TypeError.
+      if (parsedURL.username || parsedURL.password) {
+        throw new TypeError(
+          'Request cannot be constructed from a URL that includes credentials: ' +
+            input
+        )
+      }
+
+      // 4. Set request to a new request whose URL is parsedURL.
+      request = makeRequest({ urlList: [parsedURL] })
+
+      // 5. Set fallbackMode to "cors".
+      fallbackMode = 'cors'
+    } else {
+      // 6. Otherwise:
+
+      // 7. Assert: input is a Request object.
+      assert(webidl.is.Request(input))
+
+      // 8. Set request to input’s request.
+      request = input.#state
+
+      // 9. Set signal to input’s signal.
+      signal = input.#signal
+
+      this.#dispatcher = init.dispatcher || input.#dispatcher
+    }
+
+    // 7. Let origin be this’s relevant settings object’s origin.
+    const origin = environmentSettingsObject.settingsObject.origin
+
+    // 8. Let window be "client".
+    let window = 'client'
+
+    // 9. If request’s window is an environment settings object and its origin
+    // is same origin with origin, then set window to request’s window.
+    if (
+      request.window?.constructor?.name === 'EnvironmentSettingsObject' &&
+      sameOrigin(request.window, origin)
+    ) {
+      window = request.window
+    }
+
+    // 10. If init["window"] exists and is non-null, then throw a TypeError.
+    if (init.window != null) {
+      throw new TypeError(`'window' option '${window}' must be null`)
+    }
+
+    // 11. If init["window"] exists, then set window to "no-window".
+    if ('window' in init) {
+      window = 'no-window'
+    }
+
+    // 12. Set request to a new request with the following properties:
+    request = makeRequest({
+      // URL request’s URL.
+      // undici implementation note: this is set as the first item in request's urlList in makeRequest
+      // method request’s method.
+      method: request.method,
+      // header list A copy of request’s header list.
+      // undici implementation note: headersList is cloned in makeRequest
+      headersList: request.headersList,
+      // unsafe-request flag Set.
+      unsafeRequest: request.unsafeRequest,
+      // client This’s relevant settings object.
+      client: environmentSettingsObject.settingsObject,
+      // window window.
+      window,
+      // priority request’s priority.
+      priority: request.priority,
+      // origin request’s origin. The propagation of the origin is only significant for navigation requests
+      // being handled by a service worker. In this scenario a request can have an origin that is different
+      // from the current client.
+      origin: request.origin,
+      // referrer request’s referrer.
+      referrer: request.referrer,
+      // referrer policy request’s referrer policy.
+      referrerPolicy: request.referrerPolicy,
+      // mode request’s mode.
+      mode: request.mode,
+      // credentials mode request’s credentials mode.
+      credentials: request.credentials,
+      // cache mode request’s cache mode.
+      cache: request.cache,
+      // redirect mode request’s redirect mode.
+      redirect: request.redirect,
+      // integrity metadata request’s integrity metadata.
+      integrity: request.integrity,
+      // keepalive request’s keepalive.
+      keepalive: request.keepalive,
+      // reload-navigation flag request’s reload-navigation flag.
+      reloadNavigation: request.reloadNavigation,
+      // history-navigation flag request’s history-navigation flag.
+      historyNavigation: request.historyNavigation,
+      // URL list A clone of request’s URL list.
+      urlList: [...request.urlList]
+    })
+
+    const initHasKey = Object.keys(init).length !== 0
+
+    // 13. If init is not empty, then:
+    if (initHasKey) {
+      // 1. If request’s mode is "navigate", then set it to "same-origin".
+      if (request.mode === 'navigate') {
+        request.mode = 'same-origin'
+      }
+
+      // 2. Unset request’s reload-navigation flag.
+      request.reloadNavigation = false
+
+      // 3. Unset request’s history-navigation flag.
+      request.historyNavigation = false
+
+      // 4. Set request’s origin to "client".
+      request.origin = 'client'
+
+      // 5. Set request’s referrer to "client"
+      request.referrer = 'client'
+
+      // 6. Set request’s referrer policy to the empty string.
+      request.referrerPolicy = ''
+
+      // 7. Set request’s URL to request’s current URL.
+      request.url = request.urlList[request.urlList.length - 1]
+
+      // 8. Set request’s URL list to « request’s URL ».
+      request.urlList = [request.url]
+    }
+
+    // 14. If init["referrer"] exists, then:
+    if (init.referrer !== undefined) {
+      // 1. Let referrer be init["referrer"].
+      const referrer = init.referrer
+
+      // 2. If referrer is the empty string, then set request’s referrer to "no-referrer".
+      if (referrer === '') {
+        request.referrer = 'no-referrer'
+      } else {
+        // 1. Let parsedReferrer be the result of parsing referrer with
+        // baseURL.
+        // 2. If parsedReferrer is failure, then throw a TypeError.
+        let parsedReferrer
+        try {
+          parsedReferrer = new URL(referrer, baseUrl)
+        } catch (err) {
+          throw new TypeError(`Referrer "${referrer}" is not a valid URL.`, { cause: err })
+        }
+
+        // 3. If one of the following is true
+        // - parsedReferrer’s scheme is "about" and path is the string "client"
+        // - parsedReferrer’s origin is not same origin with origin
+        // then set request’s referrer to "client".
+        if (
+          (parsedReferrer.protocol === 'about:' && parsedReferrer.hostname === 'client') ||
+          (origin && !sameOrigin(parsedReferrer, environmentSettingsObject.settingsObject.baseUrl))
+        ) {
+          request.referrer = 'client'
+        } else {
+          // 4. Otherwise, set request’s referrer to parsedReferrer.
+          request.referrer = parsedReferrer
+        }
+      }
+    }
+
+    // 15. If init["referrerPolicy"] exists, then set request’s referrer policy
+    // to it.
+    if (init.referrerPolicy !== undefined) {
+      request.referrerPolicy = init.referrerPolicy
+    }
+
+    // 16. Let mode be init["mode"] if it exists, and fallbackMode otherwise.
+    let mode
+    if (init.mode !== undefined) {
+      mode = init.mode
+    } else {
+      mode = fallbackMode
+    }
+
+    // 17. If mode is "navigate", then throw a TypeError.
+    if (mode === 'navigate') {
+      throw webidl.errors.exception({
+        header: 'Request constructor',
+        message: 'invalid request mode navigate.'
+      })
+    }
+
+    // 18. If mode is non-null, set request’s mode to mode.
+    if (mode != null) {
+      request.mode = mode
+    }
+
+    // 19. If init["credentials"] exists, then set request’s credentials mode
+    // to it.
+    if (init.credentials !== undefined) {
+      request.credentials = init.credentials
+    }
+
+    // 18. If init["cache"] exists, then set request’s cache mode to it.
+    if (init.cache !== undefined) {
+      request.cache = init.cache
+    }
+
+    // 21. If request’s cache mode is "only-if-cached" and request’s mode is
+    // not "same-origin", then throw a TypeError.
+    if (request.cache === 'only-if-cached' && request.mode !== 'same-origin') {
+      throw new TypeError(
+        "'only-if-cached' can be set only with 'same-origin' mode"
+      )
+    }
+
+    // 22. If init["redirect"] exists, then set request’s redirect mode to it.
+    if (init.redirect !== undefined) {
+      request.redirect = init.redirect
+    }
+
+    // 23. If init["integrity"] exists, then set request’s integrity metadata to it.
+    if (init.integrity != null) {
+      request.integrity = String(init.integrity)
+    }
+
+    // 24. If init["keepalive"] exists, then set request’s keepalive to it.
+    if (init.keepalive !== undefined) {
+      request.keepalive = Boolean(init.keepalive)
+    }
+
+    // 25. If init["method"] exists, then:
+    if (init.method !== undefined) {
+      // 1. Let method be init["method"].
+      let method = init.method
+
+      const mayBeNormalized = normalizedMethodRecords[method]
+
+      if (mayBeNormalized !== undefined) {
+        // Note: Bypass validation DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH and these lowercase ones
+        request.method = mayBeNormalized
+      } else {
+        // 2. If method is not a method or method is a forbidden method, then
+        // throw a TypeError.
+        if (!isValidHTTPToken(method)) {
+          throw new TypeError(`'${method}' is not a valid HTTP method.`)
+        }
+
+        const upperCase = method.toUpperCase()
+
+        if (forbiddenMethodsSet.has(upperCase)) {
+          throw new TypeError(`'${method}' HTTP method is unsupported.`)
+        }
+
+        // 3. Normalize method.
+        // https://fetch.spec.whatwg.org/#concept-method-normalize
+        // Note: must be in uppercase
+        method = normalizedMethodRecordsBase[upperCase] ?? method
+
+        // 4. Set request’s method to method.
+        request.method = method
+      }
+
+      if (!patchMethodWarning && request.method === 'patch') {
+        process.emitWarning('Using `patch` is highly likely to result in a `405 Method Not Allowed`. `PATCH` is much more likely to succeed.', {
+          code: 'UNDICI-FETCH-patch'
+        })
+
+        patchMethodWarning = true
+      }
+    }
+
+    // 26. If init["signal"] exists, then set signal to it.
+    if (init.signal !== undefined) {
+      signal = init.signal
+    }
+
+    // 27. Set this’s request to request.
+    this.#state = request
+
+    // 28. Set this’s signal to a new AbortSignal object with this’s relevant
+    // Realm.
+    // TODO: could this be simplified with AbortSignal.any
+    // (https://dom.spec.whatwg.org/#dom-abortsignal-any)
+    const ac = new AbortController()
+    this.#signal = ac.signal
+
+    // 29. If signal is not null, then make this’s signal follow signal.
+    if (signal != null) {
+      if (signal.aborted) {
+        ac.abort(signal.reason)
+      } else {
+        // Keep a strong ref to ac while request object
+        // is alive. This is needed to prevent AbortController
+        // from being prematurely garbage collected.
+        // See, https://github.com/nodejs/undici/issues/1926.
+        this[kAbortController] = ac
+
+        const acRef = new WeakRef(ac)
+        const abort = buildAbort(acRef)
+
+        // If the max amount of listeners is equal to the default, increase it
+        if (abortSignalHasEventHandlerLeakWarning && getMaxListeners(signal) === defaultMaxListeners) {
+          setMaxListeners(1500, signal)
+        }
+
+        const removeAbortListener = util.addAbortListener(signal, abort)
+        // The third argument must be a registry key to be unregistered.
+        // Without it, you cannot unregister.
+        // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/FinalizationRegistry
+        // abort is used as the unregister key. (because it is unique)
+        requestFinalizer.register(ac, { signal, abort }, abort)
+
+        // Allow the listener to be removed deterministically once the fetch
+        // that owns this request has settled, instead of relying solely on the
+        // FinalizationRegistry (i.e. garbage collection). Reusing a single
+        // signal across many requests would otherwise leak listeners.
+        // See https://github.com/nodejs/undici/issues/5285
+        this.#abortCleanup = () => {
+          requestFinalizer.unregister(abort)
+          removeAbortListener()
+          this.#abortCleanup = null
+        }
+      }
+    }
+
+    // 30. Set this’s headers to a new Headers object with this’s relevant
+    // Realm, whose header list is request’s header list and guard is
+    // "request".
+    this.#headers = new Headers(kConstruct)
+    setHeadersList(this.#headers, request.headersList)
+    setHeadersGuard(this.#headers, 'request')
+
+    // 31. If this’s request’s mode is "no-cors", then:
+    if (mode === 'no-cors') {
+      // 1. If this’s request’s method is not a CORS-safelisted method,
+      // then throw a TypeError.
+      if (!corsSafeListedMethodsSet.has(request.method)) {
+        throw new TypeError(
+          `'${request.method} is unsupported in no-cors mode.`
+        )
+      }
+
+      // 2. Set this’s headers’s guard to "request-no-cors".
+      setHeadersGuard(this.#headers, 'request-no-cors')
+    }
+
+    // 32. If init is not empty, then:
+    if (initHasKey) {
+      /** @type {HeadersList} */
+      const headersList = getHeadersList(this.#headers)
+      // 1. Let headers be a copy of this’s headers and its associated header
+      // list.
+      // 2. If init["headers"] exists, then set headers to init["headers"].
+      const headers = init.headers !== undefined ? init.headers : new HeadersList(headersList)
+
+      // 3. Empty this’s headers’s header list.
+      headersList.clear()
+
+      // 4. If headers is a Headers object, then for each header in its header
+      // list, append header’s name/header’s value to this’s headers.
+      if (headers instanceof HeadersList) {
+        for (const { name, value } of headers.rawValues()) {
+          headersList.append(name, value, false)
+        }
+        // Note: Copy the `set-cookie` meta-data.
+        headersList.cookies = headers.cookies
+      } else {
+        // 5. Otherwise, fill this’s headers with headers.
+        fillHeaders(this.#headers, headers)
+      }
+    }
+
+    // 33. Let inputBody be input’s request’s body if input is a Request
+    // object; otherwise null.
+    const inputBody = webidl.is.Request(input) ? input.#state.body : null
+
+    // 34. If either init["body"] exists and is non-null or inputBody is
+    // non-null, and request’s method is `GET` or `HEAD`, then throw a
+    // TypeError.
+    if (
+      (init.body != null || inputBody != null) &&
+      (request.method === 'GET' || request.method === 'HEAD')
+    ) {
+      throw new TypeError('Request with GET/HEAD method cannot have body.')
+    }
+
+    // 35. Let initBody be null.
+    let initBody = null
+
+    // 36. If init["body"] exists and is non-null, then:
+    if (init.body != null) {
+      // 1. Let Content-Type be null.
+      // 2. Set initBody and Content-Type to the result of extracting
+      // init["body"], with keepalive set to request’s keepalive.
+      const [extractedBody, contentType] = extractBody(
+        init.body,
+        request.keepalive
+      )
+      initBody = extractedBody
+
+      // 3, If Content-Type is non-null and this’s headers’s header list does
+      // not contain `Content-Type`, then append `Content-Type`/Content-Type to
+      // this’s headers.
+      if (contentType && !getHeadersList(this.#headers).contains('content-type', true)) {
+        this.#headers.append('content-type', contentType, true)
+      }
+    }
+
+    // 37. Let inputOrInitBody be initBody if it is non-null; otherwise
+    // inputBody.
+    const inputOrInitBody = initBody ?? inputBody
+
+    // 38. If inputOrInitBody is non-null and inputOrInitBody’s source is
+    // null, then:
+    if (inputOrInitBody != null && inputOrInitBody.source == null) {
+      // 1. If initBody is non-null and init["duplex"] does not exist,
+      //    then throw a TypeError.
+      if (initBody != null && init.duplex == null) {
+        throw new TypeError('RequestInit: duplex option is required when sending a body.')
+      }
+
+      // 2. If this’s request’s mode is neither "same-origin" nor "cors",
+      // then throw a TypeError.
+      if (request.mode !== 'same-origin' && request.mode !== 'cors') {
+        throw new TypeError(
+          'If request is made from ReadableStream, mode should be "same-origin" or "cors"'
+        )
+      }
+
+      // 3. Set this’s request’s use-CORS-preflight flag.
+      request.useCORSPreflightFlag = true
+    }
+
+    // 39. Let finalBody be inputOrInitBody.
+    let finalBody = inputOrInitBody
+
+    // 40. If initBody is null and inputBody is non-null, then:
+    if (initBody == null && inputBody != null) {
+      // 1. If input is unusable, then throw a TypeError.
+      if (bodyUnusable(input.#state)) {
+        throw new TypeError(
+          'Cannot construct a Request with a Request object that has already been used.'
+        )
+      }
+
+      // 2. Set finalBody to the result of creating a proxy for inputBody.
+      // https://streams.spec.whatwg.org/#readablestream-create-a-proxy
+      const identityTransform = new TransformStream()
+      inputBody.stream.pipeThrough(identityTransform)
+      finalBody = {
+        source: inputBody.source,
+        length: inputBody.length,
+        stream: identityTransform.readable
+      }
+    }
+
+    // 41. Set this’s request’s body to finalBody.
+    this.#state.body = finalBody
+  }
+
+  // Returns request’s HTTP method, which is "GET" by default.
+  get method () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The method getter steps are to return this’s request’s method.
+    return this.#state.method
+  }
+
+  // Returns the URL of request as a string.
+  get url () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The url getter steps are to return this’s request’s URL, serialized.
+    return URLSerializer(this.#state.url)
+  }
+
+  // Returns a Headers object consisting of the headers associated with request.
+  // Note that headers added in the network layer by the user agent will not
+  // be accounted for in this object, e.g., the "Host" header.
+  get headers () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The headers getter steps are to return this’s headers.
+    return this.#headers
+  }
+
+  // Returns the kind of resource requested by request, e.g., "document"
+  // or "script".
+  get destination () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The destination getter are to return this’s request’s destination.
+    return this.#state.destination
+  }
+
+  // Returns the referrer of request. Its value can be a same-origin URL if
+  // explicitly set in init, the empty string to indicate no referrer, and
+  // "about:client" when defaulting to the global’s default. This is used
+  // during fetching to determine the value of the `Referer` header of the
+  // request being made.
+  get referrer () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // 1. If this’s request’s referrer is "no-referrer", then return the
+    // empty string.
+    if (this.#state.referrer === 'no-referrer') {
+      return ''
+    }
+
+    // 2. If this’s request’s referrer is "client", then return
+    // "about:client".
+    if (this.#state.referrer === 'client') {
+      return 'about:client'
+    }
+
+    // Return this’s request’s referrer, serialized.
+    return this.#state.referrer.toString()
+  }
+
+  // Returns the referrer policy associated with request.
+  // This is used during fetching to compute the value of the request’s
+  // referrer.
+  get referrerPolicy () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The referrerPolicy getter steps are to return this’s request’s referrer policy.
+    return this.#state.referrerPolicy
+  }
+
+  // Returns the mode associated with request, which is a string indicating
+  // whether the request will use CORS, or will be restricted to same-origin
+  // URLs.
+  get mode () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The mode getter steps are to return this’s request’s mode.
+    return this.#state.mode
+  }
+
+  // Returns the credentials mode associated with request,
+  // which is a string indicating whether credentials will be sent with the
+  // request always, never, or only when sent to a same-origin URL.
+  get credentials () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The credentials getter steps are to return this’s request’s credentials mode.
+    return this.#state.credentials
+  }
+
+  // Returns the cache mode associated with request,
+  // which is a string indicating how the request will
+  // interact with the browser’s cache when fetching.
+  get cache () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The cache getter steps are to return this’s request’s cache mode.
+    return this.#state.cache
+  }
+
+  // Returns the redirect mode associated with request,
+  // which is a string indicating how redirects for the
+  // request will be handled during fetching. A request
+  // will follow redirects by default.
+  get redirect () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The redirect getter steps are to return this’s request’s redirect mode.
+    return this.#state.redirect
+  }
+
+  // Returns request’s subresource integrity metadata, which is a
+  // cryptographic hash of the resource being fetched. Its value
+  // consists of multiple hashes separated by whitespace. [SRI]
+  get integrity () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The integrity getter steps are to return this’s request’s integrity
+    // metadata.
+    return this.#state.integrity
+  }
+
+  // Returns a boolean indicating whether or not request can outlive the
+  // global in which it was created.
+  get keepalive () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The keepalive getter steps are to return this’s request’s keepalive.
+    return this.#state.keepalive
+  }
+
+  // Returns a boolean indicating whether or not request is for a reload
+  // navigation.
+  get isReloadNavigation () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The isReloadNavigation getter steps are to return true if this’s
+    // request’s reload-navigation flag is set; otherwise false.
+    return this.#state.reloadNavigation
+  }
+
+  // Returns a boolean indicating whether or not request is for a history
+  // navigation (a.k.a. back-forward navigation).
+  get isHistoryNavigation () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The isHistoryNavigation getter steps are to return true if this’s request’s
+    // history-navigation flag is set; otherwise false.
+    return this.#state.historyNavigation
+  }
+
+  // Returns the signal associated with request, which is an AbortSignal
+  // object indicating whether or not request has been aborted, and its
+  // abort event handler.
+  get signal () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // The signal getter steps are to return this’s signal.
+    return this.#signal
+  }
+
+  get body () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    return this.#state.body ? this.#state.body.stream : null
+  }
+
+  get bodyUsed () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    return !!this.#state.body && util.isDisturbed(this.#state.body.stream)
+  }
+
+  get duplex () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    return 'half'
+  }
+
+  // Returns a clone of request.
+  clone () {
+    webidl.brandCheck(this, webidl.is.Request)
+
+    // 1. If this is unusable, then throw a TypeError.
+    if (bodyUnusable(this.#state)) {
+      throw new TypeError('unusable')
+    }
+
+    // 2. Let clonedRequest be the result of cloning this’s request.
+    const clonedRequest = cloneRequest(this.#state)
+
+    // 3. Let clonedRequestObject be the result of creating a Request object,
+    // given clonedRequest, this’s headers’s guard, and this’s relevant Realm.
+    // 4. Make clonedRequestObject’s signal follow this’s signal.
+    const ac = new AbortController()
+    if (this.signal.aborted) {
+      ac.abort(this.signal.reason)
+    } else {
+      let list = dependentControllerMap.get(this.signal)
+      if (list === undefined) {
+        list = new Set()
+        dependentControllerMap.set(this.signal, list)
+      }
+      const acRef = new WeakRef(ac)
+      list.add(acRef)
+      util.addAbortListener(
+        ac.signal,
+        buildAbort(acRef)
+      )
+    }
+
+    // 4. Return clonedRequestObject.
+    return fromInnerRequest(clonedRequest, this.#dispatcher, ac.signal, getHeadersGuard(this.#headers))
+  }
+
+  [nodeUtil.inspect.custom] (depth, options) {
+    if (options.depth === null) {
+      options.depth = 2
+    }
+
+    options.colors ??= true
+
+    const properties = {
+      method: this.method,
+      url: this.url,
+      headers: this.headers,
+      destination: this.destination,
+      referrer: this.referrer,
+      referrerPolicy: this.referrerPolicy,
+      mode: this.mode,
+      credentials: this.credentials,
+      cache: this.cache,
+      redirect: this.redirect,
+      integrity: this.integrity,
+      keepalive: this.keepalive,
+      isReloadNavigation: this.isReloadNavigation,
+      isHistoryNavigation: this.isHistoryNavigation,
+      signal: this.signal
+    }
+
+    return `Request ${nodeUtil.formatWithOptions(options, properties)}`
+  }
+
+  static {
+    /**
+     * @param {Request} request
+     * @param {AbortSignal} newSignal
+     */
+    setRequestSignal = (request, newSignal) => {
+      request.#signal = newSignal
+    }
+
+    /**
+     * @param {Request} request
+     */
+    getRequestDispatcher = (request) => {
+      return request.#dispatcher
+    }
+
+    /**
+     * @param {Request} request
+     * @param {import('../../dispatcher/dispatcher')} newDispatcher
+     */
+    setRequestDispatcher = (request, newDispatcher) => {
+      request.#dispatcher = newDispatcher
+    }
+
+    /**
+     * @param {Request} request
+     * @param {Headers} newHeaders
+     */
+    setRequestHeaders = (request, newHeaders) => {
+      request.#headers = newHeaders
+    }
+
+    /**
+     * @param {Request} request
+     */
+    getRequestState = (request) => {
+      return request.#state
+    }
+
+    /**
+     * @param {Request} request
+     * @param {any} newState
+     */
+    setRequestState = (request, newState) => {
+      request.#state = newState
+    }
+
+    /**
+     * Removes the `abort` listener that makes this request's signal follow the
+     * signal passed to its constructor, if any. Idempotent.
+     * @param {Request} request
+     */
+    removeRequestAbortListener = (request) => {
+      request.#abortCleanup?.()
+    }
+
+    webidl.is.Request = (arg) => {
+      return arg != null && typeof arg === 'object' && #state in arg
+    }
+  }
+}
+
+mixinBody(Request, getRequestState, webidl.is.Request)
+
+// https://fetch.spec.whatwg.org/#requests
+function makeRequest (init) {
+  return {
+    method: init.method ?? 'GET',
+    localURLsOnly: init.localURLsOnly ?? false,
+    unsafeRequest: init.unsafeRequest ?? false,
+    body: init.body ?? null,
+    client: init.client ?? null,
+    reservedClient: init.reservedClient ?? null,
+    replacesClientId: init.replacesClientId ?? '',
+    window: init.window ?? 'client',
+    keepalive: init.keepalive ?? false,
+    serviceWorkers: init.serviceWorkers ?? 'all',
+    initiator: init.initiator ?? '',
+    destination: init.destination ?? '',
+    priority: init.priority ?? 'auto',
+    origin: init.origin ?? 'client',
+    policyContainer: init.policyContainer ?? 'client',
+    referrer: init.referrer ?? 'client',
+    referrerPolicy: init.referrerPolicy ?? '',
+    mode: init.mode ?? 'no-cors',
+    useCORSPreflightFlag: init.useCORSPreflightFlag ?? false,
+    // TODO: is this credentials mode? https://fetch.spec.whatwg.org/#concept-request-credentials-mode
+    credentials: init.credentials ?? 'same-origin',
+    useCredentials: init.useCredentials ?? false,
+    cache: init.cache ?? 'default',
+    redirect: init.redirect ?? 'follow',
+    integrity: init.integrity ?? '',
+    cryptoGraphicsNonceMetadata: init.cryptoGraphicsNonceMetadata ?? '',
+    parserMetadata: init.parserMetadata ?? '',
+    reloadNavigation: init.reloadNavigation ?? false,
+    historyNavigation: init.historyNavigation ?? false,
+    userActivation: init.userActivation ?? false,
+    taintedOrigin: init.taintedOrigin ?? false,
+    redirectCount: init.redirectCount ?? 0,
+    responseTainting: init.responseTainting ?? 'basic',
+    preventNoCacheCacheControlHeaderModification: init.preventNoCacheCacheControlHeaderModification ?? false,
+    done: init.done ?? false,
+    timingAllowFailed: init.timingAllowFailed ?? false,
+    useURLCredentials: init.useURLCredentials ?? undefined,
+    traversableForUserPrompts: init.traversableForUserPrompts ?? 'client',
+    urlList: init.urlList,
+    url: init.urlList[0],
+    headersList: init.headersList
+      ? new HeadersList(init.headersList)
+      : new HeadersList()
+  }
+}
+
+// https://fetch.spec.whatwg.org/#concept-request-clone
+function cloneRequest (request) {
+  // To clone a request request, run these steps:
+
+  // 1. Let newRequest be a copy of request, except for its body.
+  const newRequest = makeRequest({ ...request, body: null })
+
+  // 2. If request’s body is non-null, set newRequest’s body to the
+  // result of cloning request’s body.
+  if (request.body != null) {
+    newRequest.body = cloneBody(request.body)
+  }
+
+  // 3. Return newRequest.
+  return newRequest
+}
+
+/**
+ * @see https://fetch.spec.whatwg.org/#request-create
+ * @param {any} innerRequest
+ * @param {import('../../dispatcher/agent')} dispatcher
+ * @param {AbortSignal} signal
+ * @param {'request' | 'immutable' | 'request-no-cors' | 'response' | 'none'} guard
+ * @returns {Request}
+ */
+function fromInnerRequest (innerRequest, dispatcher, signal, guard) {
+  const request = new Request(kConstruct)
+  setRequestState(request, innerRequest)
+  setRequestDispatcher(request, dispatcher)
+  setRequestSignal(request, signal)
+  const headers = new Headers(kConstruct)
+  setRequestHeaders(request, headers)
+  setHeadersList(headers, innerRequest.headersList)
+  setHeadersGuard(headers, guard)
+  return request
+}
+
+Object.defineProperties(Request.prototype, {
+  method: kEnumerableProperty,
+  url: kEnumerableProperty,
+  headers: kEnumerableProperty,
+  redirect: kEnumerableProperty,
+  clone: kEnumerableProperty,
+  signal: kEnumerableProperty,
+  duplex: kEnumerableProperty,
+  destination: kEnumerableProperty,
+  body: kEnumerableProperty,
+  bodyUsed: kEnumerableProperty,
+  isHistoryNavigation: kEnumerableProperty,
+  isReloadNavigation: kEnumerableProperty,
+  keepalive: kEnumerableProperty,
+  integrity: kEnumerableProperty,
+  cache: kEnumerableProperty,
+  credentials: kEnumerableProperty,
+  attribute: kEnumerableProperty,
+  referrerPolicy: kEnumerableProperty,
+  referrer: kEnumerableProperty,
+  mode: kEnumerableProperty,
+  [Symbol.toStringTag]: {
+    value: 'Request',
+    configurable: true
+  }
+})
+
+/**
+ * @param {*} V
+ * @returns {import('../../../types/fetch').Request|string}
+ *
+ * @see https://fetch.spec.whatwg.org/#requestinfo
+ */
+webidl.converters.RequestInfo = function (V) {
+  if (typeof V === 'string') {
+    return webidl.converters.USVString(V)
+  }
+
+  if (webidl.is.Request(V)) {
+    return V
+  }
+
+  return webidl.converters.USVString(V)
+}
+
+/**
+ * @param {*} V
+ * @returns {import('../../../types/fetch').RequestInit}
+ * @see https://fetch.spec.whatwg.org/#requestinit
+ */
+webidl.converters.RequestInit = webidl.dictionaryConverter([
+  {
+    key: 'method',
+    converter: webidl.converters.ByteString
+  },
+  {
+    key: 'headers',
+    converter: webidl.converters.HeadersInit
+  },
+  {
+    key: 'body',
+    converter: webidl.nullableConverter(
+      webidl.converters.BodyInit
+    )
+  },
+  {
+    key: 'referrer',
+    converter: webidl.converters.USVString
+  },
+  {
+    key: 'referrerPolicy',
+    converter: webidl.converters.DOMString,
+    // https://w3c.github.io/webappsec-referrer-policy/#referrer-policy
+    allowedValues: referrerPolicy
+  },
+  {
+    key: 'mode',
+    converter: webidl.converters.DOMString,
+    // https://fetch.spec.whatwg.org/#concept-request-mode
+    allowedValues: requestMode
+  },
+  {
+    key: 'credentials',
+    converter: webidl.converters.DOMString,
+    // https://fetch.spec.whatwg.org/#requestcredentials
+    allowedValues: requestCredentials
+  },
+  {
+    key: 'cache',
+    converter: webidl.converters.DOMString,
+    // https://fetch.spec.whatwg.org/#requestcache
+    allowedValues: requestCache
+  },
+  {
+    key: 'redirect',
+    converter: webidl.converters.DOMString,
+    // https://fetch.spec.whatwg.org/#requestredirect
+    allowedValues: requestRedirect
+  },
+  {
+    key: 'integrity',
+    converter: webidl.converters.DOMString
+  },
+  {
+    key: 'keepalive',
+    converter: webidl.converters.boolean
+  },
+  {
+    key: 'signal',
+    converter: webidl.nullableConverter(
+      (signal) => webidl.converters.AbortSignal(
+        signal,
+        'RequestInit',
+        'signal'
+      )
+    )
+  },
+  {
+    key: 'window',
+    converter: webidl.converters.any
+  },
+  {
+    key: 'duplex',
+    converter: webidl.converters.DOMString,
+    allowedValues: requestDuplex
+  },
+  {
+    key: 'dispatcher', // undici specific option
+    converter: webidl.converters.any
+  },
+  {
+    key: 'priority',
+    converter: webidl.converters.DOMString,
+    allowedValues: ['high', 'low', 'auto']
+  }
+])
+
+module.exports = {
+  Request,
+  makeRequest,
+  fromInnerRequest,
+  cloneRequest,
+  getRequestDispatcher,
+  getRequestState,
+  removeRequestAbortListener
+}
+
+},
+"fetchConstants": function(module, exports, require) {
+'use strict'
+
+const corsSafeListedMethods = /** @type {const} */ (['GET', 'HEAD', 'POST'])
+const corsSafeListedMethodsSet = new Set(corsSafeListedMethods)
+
+const nullBodyStatus = /** @type {const} */ ([101, 204, 205, 304])
+
+const redirectStatus = /** @type {const} */ ([301, 302, 303, 307, 308])
+const redirectStatusSet = new Set(redirectStatus)
+
+/**
+ * @see https://fetch.spec.whatwg.org/#block-bad-port
+ */
+const badPorts = /** @type {const} */ ([
+  '1', '7', '9', '11', '13', '15', '17', '19', '20', '21', '22', '23', '25', '37', '42', '43', '53', '69', '77', '79',
+  '87', '95', '101', '102', '103', '104', '109', '110', '111', '113', '115', '117', '119', '123', '135', '137',
+  '139', '143', '161', '179', '389', '427', '465', '512', '513', '514', '515', '526', '530', '531', '532',
+  '540', '548', '554', '556', '563', '587', '601', '636', '989', '990', '993', '995', '1719', '1720', '1723',
+  '2049', '3659', '4045', '4190', '5060', '5061', '6000', '6566', '6665', '6666', '6667', '6668', '6669', '6679',
+  '6697', '10080'
+])
+const badPortsSet = new Set(badPorts)
+
+/**
+ * @see https://w3c.github.io/webappsec-referrer-policy/#referrer-policy-header
+ */
+const referrerPolicyTokens = /** @type {const} */ ([
+  'no-referrer',
+  'no-referrer-when-downgrade',
+  'same-origin',
+  'origin',
+  'strict-origin',
+  'origin-when-cross-origin',
+  'strict-origin-when-cross-origin',
+  'unsafe-url'
+])
+
+/**
+ * @see https://w3c.github.io/webappsec-referrer-policy/#referrer-policies
+ */
+const referrerPolicy = /** @type {const} */ ([
+  '',
+  ...referrerPolicyTokens
+])
+const referrerPolicyTokensSet = new Set(referrerPolicyTokens)
+
+const requestRedirect = /** @type {const} */ (['follow', 'manual', 'error'])
+
+const safeMethods = /** @type {const} */ (['GET', 'HEAD', 'OPTIONS', 'TRACE', 'QUERY'])
+const safeMethodsSet = new Set(safeMethods)
+
+const requestMode = /** @type {const} */ (['navigate', 'same-origin', 'no-cors', 'cors'])
+
+const requestCredentials = /** @type {const} */ (['omit', 'same-origin', 'include'])
+
+const requestCache = /** @type {const} */ ([
+  'default',
+  'no-store',
+  'reload',
+  'no-cache',
+  'force-cache',
+  'only-if-cached'
+])
+
+/**
+ * @see https://fetch.spec.whatwg.org/#request-body-header-name
+ */
+const requestBodyHeader = /** @type {const} */ ([
+  'content-encoding',
+  'content-language',
+  'content-location',
+  'content-type',
+  // See https://github.com/nodejs/undici/issues/2021
+  // 'Content-Length' is a forbidden header name, which is typically
+  // removed in the Headers implementation. However, undici doesn't
+  // filter out headers, so we add it here.
+  'content-length'
+])
+
+/**
+ * @see https://fetch.spec.whatwg.org/#enumdef-requestduplex
+ */
+const requestDuplex = /** @type {const} */ ([
+  'half'
+])
+
+/**
+ * @see http://fetch.spec.whatwg.org/#forbidden-method
+ */
+const forbiddenMethods = /** @type {const} */ (['CONNECT', 'TRACE', 'TRACK'])
+const forbiddenMethodsSet = new Set(forbiddenMethods)
+
+const subresource = /** @type {const} */ ([
+  'audio',
+  'audioworklet',
+  'font',
+  'image',
+  'manifest',
+  'paintworklet',
+  'script',
+  'style',
+  'track',
+  'video',
+  'xslt',
+  ''
+])
+const subresourceSet = new Set(subresource)
+
+module.exports = {
+  subresource,
+  forbiddenMethods,
+  requestBodyHeader,
+  referrerPolicy,
+  requestRedirect,
+  requestMode,
+  requestCredentials,
+  requestCache,
+  redirectStatus,
+  corsSafeListedMethods,
+  nullBodyStatus,
+  safeMethods,
+  badPorts,
+  requestDuplex,
+  subresourceSet,
+  badPortsSet,
+  redirectStatusSet,
+  corsSafeListedMethodsSet,
+  safeMethodsSet,
+  forbiddenMethodsSet,
+  referrerPolicyTokens: referrerPolicyTokensSet
+}
+
+},
+"globalOrigin": function(module, exports, require) {
+'use strict'
+
+// In case of breaking changes, increase the version
+// number to avoid conflicts.
+const globalOrigin = Symbol.for('undici.globalOrigin.1')
+
+function getGlobalOrigin () {
+  return globalThis[globalOrigin]
+}
+
+function setGlobalOrigin (newOrigin) {
+  if (newOrigin === undefined) {
+    Object.defineProperty(globalThis, globalOrigin, {
+      value: undefined,
+      writable: true,
+      enumerable: false,
+      configurable: false
+    })
+
+    return
+  }
+
+  const parsedURL = new URL(newOrigin)
+
+  if (parsedURL.protocol !== 'http:' && parsedURL.protocol !== 'https:') {
+    throw new TypeError(`Only http & https urls are allowed, received ${parsedURL.protocol}`)
+  }
+
+  Object.defineProperty(globalThis, globalOrigin, {
+    value: parsedURL,
+    writable: true,
+    enumerable: false,
+    configurable: false
+  })
+}
+
+module.exports = {
+  getGlobalOrigin,
+  setGlobalOrigin
+}
+
+},
+"util": function(module, exports, require) {
+const assert = require('node:assert');
+const { isUint8Array } = require('node:util/types');
+const { parseMIMEType, collectAnHTTPQuotedString } = require('./data-url');
+const { collectASequenceOfCodePoints, removeChars } = require('../infra');
+const { getGlobalOrigin } = require('./global');
+const { isValidHTTPToken } = require('../../core/util');
+function fullyReadBody (body, processBody, processBodyError) {
+  // 1. If taskDestination is null, then set taskDestination to
+  //    the result of starting a new parallel queue.
+
+  // 2. Let successSteps given a byte sequence bytes be to queue a
+  //    fetch task to run processBody given bytes, with taskDestination.
+  const successSteps = processBody
+
+  // 3. Let errorSteps be to queue a fetch task to run processBodyError,
+  //    with taskDestination.
+  const errorSteps = processBodyError
+
+  try {
+  // 4. Let reader be the result of getting a reader for body’s stream.
+  //    If that threw an exception, then run errorSteps with that
+  //    exception and return.
+    const reader = body.stream.getReader()
+
+    // 5. Read all bytes from reader, given successSteps and errorSteps.
+    readAllBytes(reader, successSteps, errorSteps)
+  } catch (e) {
+    errorSteps(e)
+  }
+}
+
+
+async function readAllBytes (reader, successSteps, failureSteps) {
+  try {
+    const bytes = []
+    let byteLength = 0
+
+    do {
+      const { done, value: chunk } = await reader.read()
+
+      if (done) {
+        // 1. Call successSteps with bytes.
+        successSteps(Buffer.concat(bytes, byteLength))
+        return
+      }
+
+      // 1. If chunk is not a Uint8Array object, call failureSteps
+      //    with a TypeError and abort these steps.
+      if (!isUint8Array(chunk)) {
+        failureSteps(new TypeError('Received non-Uint8Array chunk'))
+        return
+      }
+
+      // 2. Append the bytes represented by chunk to bytes.
+      bytes.push(chunk)
+      byteLength += chunk.length
+
+    // 3. Read-loop given reader, bytes, successSteps, and failureSteps.
+    } while (true)
+  } catch (e) {
+    // 1. Call failureSteps with e.
+    failureSteps(e)
+  }
+}
+
+
+function extractMimeType (headers) {
+  // 1. Let charset be null.
+  let charset = null
+
+  // 2. Let essence be null.
+  let essence = null
+
+  // 3. Let mimeType be null.
+  let mimeType = null
+
+  // 4. Let values be the result of getting, decoding, and splitting `Content-Type` from headers.
+  const values = getDecodeSplit('content-type', headers)
+
+  // 5. If values is null, then return failure.
+  if (values === null) {
+    return 'failure'
+  }
+
+  // 6. For each value of values:
+  for (const value of values) {
+    // 6.1. Let temporaryMimeType be the result of parsing value.
+    const temporaryMimeType = parseMIMEType(value)
+
+    // 6.2. If temporaryMimeType is failure or its essence is "*/*", then continue.
+    if (temporaryMimeType === 'failure' || temporaryMimeType.essence === '*/*') {
+      continue
+    }
+
+    // 6.3. Set mimeType to temporaryMimeType.
+    mimeType = temporaryMimeType
+
+    // 6.4. If mimeType’s essence is not essence, then:
+    if (mimeType.essence !== essence) {
+      // 6.4.1. Set charset to null.
+      charset = null
+
+      // 6.4.2. If mimeType’s parameters["charset"] exists, then set charset to
+      //        mimeType’s parameters["charset"].
+      if (mimeType.parameters.has('charset')) {
+        charset = mimeType.parameters.get('charset')
+      }
+
+      // 6.4.3. Set essence to mimeType’s essence.
+      essence = mimeType.essence
+    } else if (!mimeType.parameters.has('charset') && charset !== null) {
+      // 6.5. Otherwise, if mimeType’s parameters["charset"] does not exist, and
+      //      charset is non-null, set mimeType’s parameters["charset"] to charset.
+      mimeType.parameters.set('charset', charset)
+    }
+  }
+
+  // 7. If mimeType is null, then return failure.
+  if (mimeType == null) {
+    return 'failure'
+  }
+
+  // 8. Return mimeType.
+  return mimeType
+}
+
+
+function gettingDecodingSplitting (value) {
+  // 1. Let input be the result of isomorphic decoding value.
+  const input = value
+
+  // 2. Let position be a position variable for input, initially pointing at the start of input.
+  const position = { position: 0 }
+
+  // 3. Let values be a list of strings, initially empty.
+  const values = []
+
+  // 4. Let temporaryValue be the empty string.
+  let temporaryValue = ''
+
+  // 5. While position is not past the end of input:
+  while (position.position < input.length) {
+    // 5.1. Append the result of collecting a sequence of code points that are not U+0022 (")
+    //      or U+002C (,) from input, given position, to temporaryValue.
+    temporaryValue += collectASequenceOfCodePoints(
+      (char) => char !== '"' && char !== ',',
+      input,
+      position
+    )
+
+    // 5.2. If position is not past the end of input, then:
+    if (position.position < input.length) {
+      // 5.2.1. If the code point at position within input is U+0022 ("), then:
+      if (input.charCodeAt(position.position) === 0x22) {
+        // 5.2.1.1. Append the result of collecting an HTTP quoted string from input, given position, to temporaryValue.
+        temporaryValue += collectAnHTTPQuotedString(
+          input,
+          position
+        )
+
+        // 5.2.1.2. If position is not past the end of input, then continue.
+        if (position.position < input.length) {
+          continue
+        }
+      } else {
+        // 5.2.2. Otherwise:
+
+        // 5.2.2.1. Assert: the code point at position within input is U+002C (,).
+        assert(input.charCodeAt(position.position) === 0x2C)
+
+        // 5.2.2.2. Advance position by 1.
+        position.position++
+      }
+    }
+
+    // 5.3. Remove all HTTP tab or space from the start and end of temporaryValue.
+    temporaryValue = removeChars(temporaryValue, true, true, (char) => char === 0x9 || char === 0x20)
+
+    // 5.4. Append temporaryValue to values.
+    values.push(temporaryValue)
+
+    // 5.6. Set temporaryValue to the empty string.
+    temporaryValue = ''
+  }
+
+  // 6. Return values.
+  return values
+}
+
+
+function getDecodeSplit (name, list) {
+  // 1. Let value be the result of getting name from list.
+  const value = list.get(name, true)
+
+  // 2. If value is null, then return null.
+  if (value === null) {
+    return null
+  }
+
+  // 3. Return the result of getting, decoding, and splitting value.
+  return gettingDecodingSplitting(value)
+}
+
+
+function readableStreamClose (controller) {
+  try {
+    controller.close()
+    controller.byobRequest?.respond(0)
+  } catch (err) {
+    // TODO: add comment explaining why this error occurs.
+    if (!err.message.includes('Controller is already closed') && !err.message.includes('ReadableStream is already closed')) {
+      throw err
+    }
+  }
+}
+
+
+function sameOrigin (A, B) {
+  // 1. If A and B are the same opaque origin, then return true.
+  if (A.origin === B.origin && A.origin === 'null') {
+    return true
+  }
+
+  // 2. If A and B are both tuple origins and their schemes,
+  //    hosts, and port are identical, then return true.
+  if (A.protocol === B.protocol && A.hostname === B.hostname && A.port === B.port) {
+    return true
+  }
+
+  // 3. Return false.
+  return false
+}
+
+
+function makePolicyContainer () {
+  // Note: the fetch spec doesn't make use of embedder policy or CSP list
+  return {
+    referrerPolicy: 'strict-origin-when-cross-origin'
+  }
+}
+
+// https://html.spec.whatwg.org/multipage/origin.html#clone-a-policy-container
+
+class EnvironmentSettingsObjectBase {
+  get baseUrl () {
+    return getGlobalOrigin()
+  }
+
+  get origin () {
+    return this.baseUrl?.origin
+  }
+
+  policyContainer = makePolicyContainer()
+}
+
+class EnvironmentSettingsObject {
+  settingsObject = new EnvironmentSettingsObjectBase()
+}
+
+const environmentSettingsObject = new EnvironmentSettingsObject()
+
+
+module.exports = { fullyReadBody, extractMimeType, readableStreamClose, sameOrigin, isValidHTTPToken, environmentSettingsObject };
+
+},
+"corePrimitive": function(module, exports, require) {
+const { tree } = require('./tree');
+const { addAbortListener: addAbortListenerNative } = require('node:events');
+function bufferToLowerCasedHeaderName (value) {
+  return tree.lookup(value) ?? value.toString('latin1').toLowerCase()
+}
+
+
+const validTokenChars = new Uint8Array([
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0-15
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 16-31
+  0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1, 0, // 32-47 (!"#$%&'()*+,-./)
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, // 48-63 (0-9:;<=>?)
+  0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 64-79 (@A-O)
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, // 80-95 (P-Z[\]^_)
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 96-111 (`a-o)
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, // 112-127 (p-z{|}~)
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 128-143
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 144-159
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 160-175
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 176-191
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 192-207
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 208-223
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 224-239
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  // 240-255
+])
+
+/**
+ * @see https://tools.ietf.org/html/rfc7230#section-3.2.6
+ * @param {number} c
+ * @returns {boolean}
+ */
+function isTokenCharCode (c) {
+  return (validTokenChars[c] === 1)
+}
+
+const tokenRegExp = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/
+
+/**
+ * @param {string} characters
+ * @returns {boolean}
+ */
+function isValidHTTPToken (characters) {
+  if (characters.length >= 12) return tokenRegExp.test(characters)
+  if (characters.length === 0) return false
+
+  for (let i = 0; i < characters.length; i++) {
+    if (validTokenChars[characters.charCodeAt(i)] !== 1) {
+      return false
+    }
+  }
+  return true
+}
+
+
+const normalizedMethodRecordsBase = {
+  delete: 'DELETE',
+  DELETE: 'DELETE',
+  get: 'GET',
+  GET: 'GET',
+  head: 'HEAD',
+  HEAD: 'HEAD',
+  options: 'OPTIONS',
+  OPTIONS: 'OPTIONS',
+  post: 'POST',
+  POST: 'POST',
+  put: 'PUT',
+  PUT: 'PUT',
+  query: 'QUERY',
+  QUERY: 'QUERY'
+}
+
+const normalizedMethodRecords = {
+  ...normalizedMethodRecordsBase,
+  patch: 'patch',
+  PATCH: 'PATCH'
+}
+
+// Note: object prototypes should not be able to be referenced. e.g. `Object#hasOwnProperty`.
+Object.setPrototypeOf(normalizedMethodRecordsBase, null)
+Object.setPrototypeOf(normalizedMethodRecords, null)
+
+
+function addAbortListener (signal, listener) {
+  if (!signal || 'aborted' in signal) {
+    return addAbortListenerNative(signal, listener)[Symbol.dispose]
+  }
+
+  if (typeof signal.addEventListener === 'function') {
+    signal.addEventListener('abort', listener, { once: true })
+    return () => signal.removeEventListener('abort', listener)
+  }
+  signal.once('abort', listener)
+  return () => signal.removeListener('abort', listener)
+}
+
+
+module.exports = { bufferToLowerCasedHeaderName, isValidHTTPToken, normalizedMethodRecordsBase, normalizedMethodRecords, addAbortListener };
+
+},
+"bodyInit": function(module, exports, require) {
+const { webidl } = require('../webidl');
+webidl.converters.XMLHttpRequestBodyInit = function (V, prefix, name) {
+  if (typeof V === 'string') {
+    return webidl.converters.USVString(V, prefix, name)
+  }
+
+  if (webidl.is.Blob(V)) {
+    return V
+  }
+
+  if (webidl.is.BufferSource(V)) {
+    return V
+  }
+
+  if (webidl.is.FormData(V)) {
+    return V
+  }
+
+  if (webidl.is.URLSearchParams(V)) {
+    return V
+  }
+
+  return webidl.converters.DOMString(V, prefix, name)
+}
+
+// https://fetch.spec.whatwg.org/#bodyinit
+webidl.converters.BodyInit = function (V, prefix, argument) {
+  if (webidl.is.ReadableStream(V)) {
+    return V
+  }
+
+  // Note: the spec doesn't include async iterables,
+  // this is an undici extension.
+  if (V?.[Symbol.asyncIterator]) {
+    return V
+  }
+
+  return webidl.converters.XMLHttpRequestBodyInit(V, prefix, argument)
+}
+
 
 }
     };
     const modules = new SafeMap();
-    function require(name) {
+    function require(name, from) {
         if (name === 'node:assert') return platform.assert;
+        if (name === 'node:util') return platform.util;
+        if (name === 'node:events') return platform.events;
+        if (name === 'node:stream') return platform.stream.api;
+        if (name === 'node:stream/web') return platform.stream.web;
+        if (name === './headers') return platform.formData.headers;
+        if (name === '../../core/symbols') return platform.formData.coreSymbols;
         if (name === 'node:util/types') return platform.types;
         if (name === './formdata') return platform.formData;
         if (name === '../webidl') return { webidl: platform.formData.webidl };
-        if (name === '../../core/util') return {
+        if (name === '../../core/util') return { ...require('corePrimitive'),
             isDisturbed: platform.stream.api.isDisturbed,
-            bufferToLowerCasedHeaderName: require('corePrimitive').bufferToLowerCasedHeaderName,
-        };
+            kEnumerableProperty: platform.values.util.kEnumerableProperty };
         const id = name === './data-url' ? 'dataURL' : name === '../infra' ? 'infra' :
             name === './formdata-parser' ? 'multipart' : name === './util' ? 'util' :
             name === '../../encoding' ? 'encoding' : name === './tree' ? 'tree' :
-            name === './constants' ? 'coreConstants' : name;
+            name === './constants' ? (from === 'tree' ? 'coreConstants' : 'fetchConstants') :
+            name === './global' ? 'globalOrigin' : name === './body' ? 'body' : name;
         if (modules.has(id)) return modules.get(id).exports;
         if (!ObjectPrototypeHasOwnProperty(factories, id)) {
             const error = new Error('Unsupported Fetch Body dependency: ' + name);
@@ -113708,11 +115535,14 @@ module.exports = { mixinBody };
         }
         const module = { exports: {} };
         modules.set(id, module);
-        try { factories[id](module, module.exports, require); }
+        try { factories[id](module, module.exports, name => require(name, id)); }
         catch (error) { modules.delete(id); throw error; }
         return module.exports;
     }
-    return { mixinBody: require('body').mixinBody };
+    const body = require('body');
+    require('bodyInit');
+    return { ...body, ...require('request'),
+        isFormData: platform.formData.webidl.is.FormData };
 }
 // Unchanged pinned X509 wrapper/cache/validation over real native certificates.
 function _createNodeX509Platform(platform) {

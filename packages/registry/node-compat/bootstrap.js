@@ -6066,7 +6066,6 @@ globalThis.exports = globalThis.module.exports;
     // HTTP bodies and consumer-created streams must use the same class.
     // A start-only shim strands clients that wrap a body with a pull source.
     const WebReadableStream = _nodeWebPlatform.streams.ReadableStream;
-    const FormDataBody = globalThis.FormData;
 
     const streamState = _nodeWebPlatform.streamState;
     const streamPrototype = WebReadableStream.prototype;
@@ -6146,7 +6145,10 @@ globalThis.exports = globalThis.module.exports;
             _nodeFormDataPlatform.headers.setHeadersGuard(headers, 'response');
             let stream = null, contentType = null;
             if (body != null) {
-                if (streamState.isReadable(body)) {
+                if (bodyPlatform.isFormData(body)) {
+                    const [extracted, type] = bodyPlatform.extractBody(body);
+                    stream = extracted.stream; contentType = type;
+                } else if (streamState.isReadable(body)) {
                     if (unusable(body)) throw new TypeError('Response body is disturbed or locked');
                     stream = body;
                 } else {
@@ -6156,9 +6158,6 @@ globalThis.exports = globalThis.module.exports;
                     else {
                         bytes = _nodeBodyData.copyBytes(body);
                         if (bytes === null) {
-                            if (typeof FormDataBody === 'function' && body instanceof FormDataBody) {
-                                throw new TypeError('FormData body support is not implemented');
-                            }
                             if (body instanceof _nodeWebPlatform.URLSearchParams) {
                                 bytes = _nodeBodyData.stringBytes(body.toString());
                                 contentType = 'application/x-www-form-urlencoded;charset=UTF-8';
@@ -6206,7 +6205,8 @@ globalThis.exports = globalThis.module.exports;
     }
     const bodyPlatform = _createNodeFetchBodyPlatform({
         Buffer, Blob: _nodeBodyData.Blob, File: globalThis.File,
-        URLSearchParams: _nodeWebPlatform.URLSearchParams,
+        URL: _nodeWebPlatform.URL, URLSearchParams: _nodeWebPlatform.URLSearchParams,
+        AbortController: globalThis.AbortController, process, util, events, values: _nodeValues,
         TextEncoder, TextDecoder, TextDecoderStream: _nodeWebPlatform.streams.TextDecoderStream,
         stream: _nodeStreamPlatform, formData: _nodeFormDataPlatform,
         assert, types: util.types,
@@ -6225,47 +6225,16 @@ globalThis.exports = globalThis.module.exports;
         Object.defineProperty(FetchResponse.prototype, name, { enumerable: true });
     }
 
-    class FetchRequest {
-        constructor(input, init = {}) {
-            _nodeClonePlatform.protocol.markTransferMode(this, false, false);
-            if (input instanceof FetchRequest) {
-                this.url = input.url;
-                this.method = (init.method || input.method || 'GET').toUpperCase();
-                this.headers = new FetchHeaders(init.headers !== undefined ? init.headers : input.headers);
-                this.body = init.body !== undefined ? init.body : input.body;
-                this.signal = init.signal || input.signal || null;
-            } else {
-                this.url = typeof input === 'string' ? input : (input && input.url);
-                this.method = (init.method || 'GET').toUpperCase();
-                this.headers = new FetchHeaders(init.headers);
-                this.body = init.body !== undefined ? init.body : null;
-                this.signal = init.signal || null;
-            }
-            _nodeFormDataPlatform.headers.setHeadersGuard(this.headers, 'request');
-        }
-    }
+    const FetchRequest = bodyPlatform.Request;
 
     async function fetch(input, init) {
-        init = init || {};
-        let urlStr;
-        let mergedHeaders;
-        let bodyIn;
-        let signal;
-        let method;
-        if (input instanceof FetchRequest) {
-            urlStr = input.url;
-            mergedHeaders = new FetchHeaders(init.headers !== undefined ? init.headers : input.headers);
-            bodyIn = init.body !== undefined ? init.body : input.body;
-            signal = init.signal || input.signal;
-            method = (init.method || input.method || 'GET').toUpperCase();
-        } else {
-            urlStr = typeof input === 'string' ? input : (input && input.url);
-            mergedHeaders = new FetchHeaders(init.headers);
-            bodyIn = init.body;
-            signal = init.signal;
-            method = (init.method || 'GET').toUpperCase();
-        }
-        if (!urlStr) throw new TypeError('fetch: invalid input');
+        const request = new FetchRequest(input, init);
+        const requestState = bodyPlatform.getRequestState(request);
+        const urlStr = request.url;
+        const mergedHeaders = request.headers;
+        const signal = request.signal;
+        const method = request.method;
+        const requestBody = requestState.body;
 
         const parsed = new URL(urlStr);
         const client = parsed.protocol === 'https:' ? https : http;
@@ -6278,16 +6247,9 @@ globalThis.exports = globalThis.module.exports;
         for (const [k, v] of headerList) headerObj[k] = v;
         if (headerList.cookies !== null) headerObj['set-cookie'] = headerList.cookies.slice();
 
-        let bodyBuf = null;
-        if (bodyIn != null) {
-            if (typeof bodyIn === 'string') bodyBuf = Buffer.from(bodyIn, 'utf8');
-            else if (bodyIn instanceof Uint8Array) bodyBuf = Buffer.from(bodyIn.buffer, bodyIn.byteOffset, bodyIn.byteLength);
-            else if (bodyIn instanceof ArrayBuffer) bodyBuf = Buffer.from(bodyIn);
-            else if (Buffer.isBuffer && Buffer.isBuffer(bodyIn)) bodyBuf = bodyIn;
-            else bodyBuf = Buffer.from(String(bodyIn), 'utf8');
-            if (bodyBuf && !headerObj['content-length'] && !headerObj['transfer-encoding']) {
-                headerObj['content-length'] = String(bodyBuf.length);
-            }
+        if (requestBody !== null && requestBody.length !== null &&
+            !Object.hasOwn(headerObj, 'content-length') && !Object.hasOwn(headerObj, 'transfer-encoding')) {
+            headerObj['content-length'] = String(requestBody.length);
         }
 
         return new Promise((resolve, reject) => {
@@ -6295,7 +6257,10 @@ globalThis.exports = globalThis.module.exports;
             let resStream = null;
             let resCtrl = null;
             let abortDisposable;
-            const cleanupAbort = () => { abortDisposable?.[_nodeDispose](); abortDisposable = undefined; };
+            const cleanupAbort = () => {
+                abortDisposable?.[_nodeDispose](); abortDisposable = undefined;
+                bodyPlatform.removeRequestAbortListener(request);
+            };
             const abortReason = () => {
                 const reason = signal.reason;
                 return reason === undefined ? new DOMException('This operation was aborted', 'AbortError') : reason;
@@ -6377,8 +6342,13 @@ globalThis.exports = globalThis.module.exports;
                 abortDisposable = _nodeEventPlatform.addAbortListener(signal, onAbort);
             }
 
-            if (bodyBuf) req.write(bodyBuf);
-            req.end();
+            if (requestBody === null) req.end();
+            else {
+                // The real stream adapter owns lock, byte validation, backpressure
+                // and cancellation; ClientRequest owns actual HTTP publication.
+                const source = stream.Readable.fromWeb(requestBody.stream);
+                stream.pipeline(source, req, error => { if (error) req.destroy(error); });
+            }
         });
     }
 

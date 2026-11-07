@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
+import * as events from 'node:events';
+import * as stream from 'node:stream';
 import assert from 'node:assert';
 import * as util from 'node:util';
 import { inspect } from 'node:util';
@@ -11,9 +13,7 @@ function failure(fn:()=>unknown){try{fn();}catch(e:any){return{name:e.name,code:
 function section(start:string,end:string){const a=bootstrap.indexOf(start),b=bootstrap.indexOf(end,a);if(a<0||b<a)throw Error('Missing Fetch source boundary');return bootstrap.slice(a,b);}
 function fetchControl() {
  const owner=createWebDataPlatform();
- const vendor=readFileSync(new URL('../../third_party/node-web-platform/node-web-platform.js',import.meta.url),'utf8');
- const web=Function(vendor+';return _createNodeWebPlatform();')();
- const body=Function('_nodeWebPlatform','_nodeClonePlatform',section('const _nodeBodyData =',"if (typeof globalThis.Blob === 'undefined')")+';return _nodeBodyData;')(web,owner.cloneOwner);
+ const web=owner.webPlatform,body=owner.bodyData;
  let requestOptions:any;
  // Only the HTTP transport boundary is controlled. The actual Fetch source
  // consumes candidate Headers, builds its request and owns response guards.
@@ -25,10 +25,11 @@ function fetchControl() {
  const core=readFileSync(new URL('../../third_party/node-core/node-core.js',import.meta.url),'utf8');
  const bodyFactory=Function(core+';return _createNodeFetchBodyPlatform;')();
  const api=Function('_nodeWebPlatform','_nodeBodyData','_nodeNative','_nodeFormDataPlatform','_nodeClonePlatform','http','https',
-  '_createNodeFetchBodyPlatform','_nodeStreamPlatform','assert','util',
+  '_createNodeFetchBodyPlatform','_nodeStreamPlatform','_nodeValues','assert','util','events','process','stream','_nodeEventPlatform','_nodeDispose','globalThis',
   section('    const FetchHeaders =','    globalThis.fetch = fetch;')+';return {Headers:FetchHeaders,Request:FetchRequest,Response:FetchResponse,fetch};')(
    web,body,{cloneValue:structuredClone},owner.formDataInternals,owner.cloneOwner,http,http,
-   bodyFactory,{api:{isDisturbed:web.streamState.isDisturbed},web:web.streams},assert,util);
+   bodyFactory,owner.streamBoundary,owner.values,assert,util,events,process,stream,
+   {addAbortListener:events.addAbortListener},Symbol.dispose,{File:owner.File,FormData:owner.FormData,AbortController});
  return {...api,headerInternals:owner.headerInternals,get requestOptions(){return requestOptions;}};
 }
 describe.skipIf(process.versions.node!==target.version)('pinned Headers shared WebIDL and Fetch ownership',()=>{

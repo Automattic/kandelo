@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import assert from 'node:assert';
 import * as util from 'node:util';
+import * as events from 'node:events';
 import { describe, expect, it } from 'vitest';
 import { createWebDataPlatform } from './fixtures/node-web-data-platform';
 
@@ -12,17 +13,18 @@ function section(start: string, end: string) {
   if (a < 0 || b < 0) throw Error('Missing body source boundary');
   return source.slice(a, b);
 }
-const web = Function(`${vendor};return _createNodeWebPlatform();`)();
 const headerOwner = createWebDataPlatform();
-const data = Function('_nodeWebPlatform', '_nodeClonePlatform', section('const _nodeBodyData =', "if (typeof globalThis.Blob === 'undefined')") + ';return _nodeBodyData;')(web, headerOwner.cloneOwner);
+const web = headerOwner.webPlatform;
+const data = headerOwner.bodyData;
 const core = readFileSync(new URL('../../third_party/node-core/node-core.js', import.meta.url), 'utf8');
 const bodyFactory = Function(`${core};return _createNodeFetchBodyPlatform;`)();
 const subject = Function('_nodeWebPlatform', '_nodeBodyData', '_nodeNative', '_nodeFormDataPlatform', '_nodeClonePlatform',
-  '_createNodeFetchBodyPlatform', '_nodeStreamPlatform', 'assert', 'util',
-  section('    const FetchHeaders =', '    class FetchRequest {') +
+  '_createNodeFetchBodyPlatform', '_nodeStreamPlatform', '_nodeValues', 'assert', 'util', 'events', 'process', 'globalThis',
+  section('    const FetchHeaders =', '    const FetchRequest =') +
   ';return {Response:FetchResponse,Headers:FetchHeaders,ReadableStream:WebReadableStream,Blob:_nodeBodyData.Blob,URLSearchParams:_nodeWebPlatform.URLSearchParams};')
   (web, data, { cloneValue: structuredClone }, headerOwner.formDataInternals, headerOwner.cloneOwner,
-    bodyFactory, { api: { isDisturbed: web.streamState.isDisturbed }, web: web.streams }, assert, util);
+    bodyFactory, headerOwner.streamBoundary, headerOwner.values, assert, util, events, process,
+    { File: headerOwner.File, FormData: headerOwner.FormData, AbortController });
 const native = { Response, Headers, ReadableStream, Blob, URLSearchParams };
 const target = JSON.parse(readFileSync(new URL('../../packages/registry/node-compat/target.json', import.meta.url), 'utf8'));
 const state = (response: any) => [response.bodyUsed, response.body?.locked ?? null];

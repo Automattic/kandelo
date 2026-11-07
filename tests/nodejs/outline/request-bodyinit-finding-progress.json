@@ -1,0 +1,74 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/web-contracts.md",
+    "findingIds": [
+      "WEB-003",
+      "WEB-004",
+      "WEB-005",
+      "WEB-009"
+    ],
+    "relatedFamilies": [
+      "web",
+      "streams",
+      "network",
+      "http",
+      "engine"
+    ],
+    "scope": "Request/BodyInit/multipart and actual HTTP body consumption subset; full Fetch/Response/transport lifecycle findings remain open"
+  },
+  "sourceImplemented": [
+    "Complete unchanged pinned Request/body algorithms over real shared Header/WebIDL/Blob/File/FormData/URL/abort/stream owners",
+    "Real immutable multipart entry extraction/boundary ownership/length/framing and genuine Response FormData branch",
+    "Existing realHTTP consumes actualRequest/privatebody through Readable.fromWeb/pipeline; no body stringification",
+    "Adapt only genuine dependency setup in existing component controls, preserve assertion bodies; add current-root differential fixtures with dependency path changes only"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-request171-source-r1/report.json",
+    "sha256": "b391958b879bd7acce33db0a306408c5fbc543f1c368cdc67b63711b598451ad",
+    "guardedInputs": 790,
+    "scope": "Current genuine Request/BodyInit/FormData/stream/abort source and HTTP consumer,14actualnative-boundary groups; no guest/kernel/browser/fourhost/fullFetch policy acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-request171-affected-r1.json",
+    "sha256": "833e65119edd82e3af77f3fc1facc8c2163d6b1c670f8434b2c929793e169780",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-request171-source-r1/report.json",
+    "sha256": "b391958b879bd7acce33db0a306408c5fbc543f1c368cdc67b63711b598451ad",
+    "nativeDifferentialGroups": 14,
+    "existingComponentTests": 32,
+    "existingAssertionBodiesByteIdentical": true,
+    "scope": "Actual current owners with explicit native class/stream/event/HTTP boundaries, no guest/kernel/browser/fullFetch acceptance"
+  },
+  "sealedEvidence": {
+    "report": ".context/web-request-owner-agent/REPORT.json",
+    "sha256": "0c7972b31dcabdfb7a0b9e70bd7c711c1cf444073f01dec663a88e60ba08e3d9",
+    "reusedEvidence": true,
+    "scope": "14differential groups/32existingcomponents/62sourcechecks;13wholefiles15sections pinned; lateabort nonpass and selector setup error retained"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/web-request-owner-agent/SEAL.json",
+      "sha256": "dd9f9709729e76a39ebed39ebf6ba9d2dd8cd7515c01a3479ba8a295f8ecd497",
+      "kind": "unresolved-native-contract-probe-and-selector-error",
+      "reason": "Native/candidate late-upload expectation each times out1s/exit1; source-only cleanup alternative not adopted; original selector marker preparation failure retained"
+    }
+  ],
+  "remaining": [
+    "Full Fetch redirect/filter/decompression/cache/scheme/dispatcher/errors/framing/option effects and upload/abort cleanup",
+    "Response static constructors/remaining WebIDL/encoding/transfer/clone/GC/realm/lifecycle semantics",
+    "Current selectedengine/guest/kernel/browser and identified-artifact conformance on allfourhosts"
+  ],
+  "at": "2026-11-07T01:36:11.439175+00:00",
+  "recipeRevision": 171,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -4,6 +4,7 @@ import * as util from 'node:util';
 import * as crypto from 'node:crypto';
 import assert from 'node:assert';
 import * as streams from 'node:stream/web';
+import * as stream from 'node:stream';
 import { MessagePort, markAsUncloneable } from 'node:worker_threads';
 
 const bootstrap = readFileSync(new URL('../../../packages/registry/node-compat/bootstrap.js', import.meta.url), 'utf8');
@@ -34,7 +35,17 @@ export function createWebDataPlatform() {
   const formdata = factories.formdata({ Blob: body.Blob, File: file.File,
     ReadableStream: streams.ReadableStream, URL, URLSearchParams, AbortSignal, MessagePort,
     values, assert, util, crypto, clone });
-  return { Blob: body.Blob, File: file.File, FormData: formdata.FormData, Headers: formdata.headers.Headers, headerInternals: formdata.headers, formDataInternals: formdata, cloneOwner: clone, modes,
+  const locked = Object.getOwnPropertyDescriptor(streams.ReadableStream.prototype, 'locked')!.get!;
+  const streamState = {
+    isReadable(value: unknown) { try { Reflect.apply(locked, value, []); return true; } catch { return false; } },
+    isLocked: (value: unknown) => Reflect.apply(locked, value, []),
+    isDisturbed: stream.isDisturbed,
+    isByteStream(value: any) { try { value.getReader({ mode: 'byob' }).releaseLock(); return true; } catch { return false; } },
+  };
+  // These are explicit native component dependencies. Production shares its
+  // actual pinned Node stream graph, Blob/File state and value owners too.
+  return { values, bodyData: body, streamBoundary: { api: stream, web: streams },
+    webPlatform: { streams, URL, URLSearchParams, streamState }, Blob: body.Blob, File: file.File, FormData: formdata.FormData, Headers: formdata.headers.Headers, headerInternals: formdata.headers, formDataInternals: formdata, cloneOwner: clone, modes,
     clonePayload(value: any) {
       const payload = value[clone.protocol.kClone]();
       const copy = structuredClone(payload.data);

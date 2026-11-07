@@ -1,5 +1,5 @@
-// Pinned Undici owns FormData/Headers state, Web IDL and live iterators. Multipart
-// extraction/parsing and Fetch transport are separate consumers to implement.
+// Pinned Undici owns FormData/Headers state, Web IDL and live iterators. Fetch
+// Body extraction/parsing consumes these same owners; transport is separate.
 function _createNodeFormDataPlatform(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
@@ -36,5 +36,5 @@ function _createNodeFormDataPlatform(platform) {
         catch (error) { modules.delete(id); throw error; }
         return module.exports;
     }
-    return { ...require('formdata'), headers: require('headers'), webidl: require('webidl').webidl, get messageEvents() { return require('websocketEvents'); } };
+    return { ...require('formdata'), headers: require('headers'), coreSymbols: require('coreSymbols'), webidl: require('webidl').webidl, get messageEvents() { return require('websocketEvents'); } };
 }

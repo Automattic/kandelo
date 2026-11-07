@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source171 integrates pinned Request/completeBody/FormData and actual streamingHTTP consumption.14currentnative differential groups plus32unchangedcomponent and14package checks pass; fullFetchpolicy/lateabort/guest/fourhost remain open.
+See [source scope](request-bodyinit-integration.md).
+
 Source170 integrates actual pre-publication accepted TCP ownership and watch reentry fencing.4current native-boundary scenarios/12accepts plus unchanged getter reference and14package checks pass; listener/guest/fatal/fourhost remain open.
 See [source scope](accepted-tcp-owner-integration.md).
 

@@ -6860,3 +6860,7 @@ Source169 admits --test-update-snapshots in the actual command-line owner, prese
 ### Accepted TCP resource publication source ownership
 
 Source170 constructs the real accepted TCP owner before publication and retains it behind the existing null-prototype capability. Adoption returns that same owner once; unclaimed cleanup queues close of the actual owner. Accept completions detach their watch before JS init/rejection and return without a stale raw next pointer. Listener ownership, native callback/fatal phases and other dispatcher branches remain gaps. See [scope](../tests/nodejs/outline/accepted-tcp-owner-integration.md).
+
+### Request and multipart BodyInit source ownership
+
+Source171 selects unchanged pinned Undici Request and complete Body extraction over actual shared Headers/WebIDL/Blob/File/FormData/abort/stream owners. The existing HTTP consumer now publishes that real Request body with Readable.fromWeb/pipeline instead of stringification; Response gains genuine FormData extraction. Complete Fetch redirect/filter/dispatcher/decompression/cache/scheme and lifecycle policy remain gaps, as do guest/four-host execution. See [scope](../tests/nodejs/outline/request-bodyinit-integration.md).

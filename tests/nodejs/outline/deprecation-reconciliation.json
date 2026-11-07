@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "2d34ab92127f03cb25872183a586628e7182a4d0dc6b7636507038b7aae3e8d0",
+    "packages/registry/node-compat/bootstrap.js": "fda83506e29c495cebbc9a43740339016e6740be34caaf5b1fb100bb7b3e08e6",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "2b4311bb7771028882a70bcf432bc1ebb887dcce9f75786ba7df896850a01022",
@@ -37,11 +37,11 @@
     "third_party/node-core/event-loop-delay-platform-adapter.js": "37ed94c3eb86ecda79c69f3ac563d5878bf2e965741ca3f45b1ef15c8510728f",
     "third_party/node-core/event-platform-adapter.js": "83c398737e7a7fa0af9b86f10ee289057b10f2a210e7a31a0025301e2e1773ed",
     "third_party/node-core/fd-stream-platform-adapter.js": "c4905014ca96885343e03908477ea2718ff79eab749b8774212f13d857f8c5d7",
-    "third_party/node-core/fetch-body-platform-adapter.js": "69140b479c3216373a2fea9aecef941ded81cec3adb51fa6a52ec66ee07a71bb",
+    "third_party/node-core/fetch-body-platform-adapter.js": "a36571fa02e7017bc62344970591a1be58a982c98b957f0dc6cceec21f66b1ec",
     "third_party/node-core/file-jobs-adapter.js": "421c39f5139be3c48861f6e881eba2520118d621d757c1cfa40351aa41168a60",
     "third_party/node-core/file-platform-adapter.js": "14f6702bde786ab09e9e05cd86c743a548c9cc33074716ee616ac995c11e348c",
     "third_party/node-core/file-sync-adapter.js": "a764abfd8bb8697006b467a4c32f9a6a7c2f4eb3f616b250cbfa6151996dd767",
-    "third_party/node-core/formdata-platform-adapter.js": "1753441fb7dfcfcba598e87425242bbdb7160e069b70f29faa1ab6a693122741",
+    "third_party/node-core/formdata-platform-adapter.js": "c0406a4abc4606cef8297a04d6166402630884fbbed4f64ed1c1cfc67cc08cf7",
     "third_party/node-core/fs-callback-adapter.js": "c14f00872d51a8b3ec137b527800113fad55696ed43e342de5b0a43ead0e0112",
     "third_party/node-core/fs-handle-adapter.js": "b3748d8178658dfe81d1b972dd53c044cac5ddffd194a1048d1d353f76a52809",
     "third_party/node-core/fs-stats-adapter.js": "41a86e7b35c8521aa874bb8ccc953da6c0574851e02afad80f0bbaff645d24b1",
