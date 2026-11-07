@@ -375,9 +375,13 @@ static bool KandeloKeyExportJwk(JSContext* cx, const kandelo::crypto::KeyMateria
   throw kandelo::crypto::KeyError("Unsupported JWK Key Type.", "ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE");
 }
 static bool KandeloKeyParsePKCS12(JSContext* cx, const CallArgs& args, MutableHandleValue output);
+static bool KandeloCreateSecretKeyGen(JSContext*, const CallArgs&, MutableHandleValue);
+static bool KandeloRunSecretKeyGen(JSContext*, const CallArgs&, MutableHandleValue);
 static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandleValue output) {
   std::string name; if (!KandeloKeyString(cx, args.get(0), &name)) return false;
   if (name == "parsePKCS12") return KandeloKeyParsePKCS12(cx, args, output);
+  if (name == "createSecretGen") return KandeloCreateSecretKeyGen(cx, args, output);
+  if (name == "runSecretGen") return KandeloRunSecretKeyGen(cx, args, output);
   if (name == "constants") {
     using Key = kandelo::crypto::KeyMaterial::Key;
     RootedObject object(cx, JS_NewPlainObject(cx)); if (!object) return false;

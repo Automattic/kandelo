@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source232 wires actual symmetric generateKey/generateKeySync to real owned entropy/native jobs.16native-dependent groups, unchanged upstream two subjects and14package checks pass; new guest bridge/provider/fullcrypto/fourhost remain open.
+See [source scope](symmetric-keygen-integration.md).
+
 Source231 replaces empty private os.signal resize registration with genuine main stdio SIGWINCH subscriptions and captured-owner publication rollback.1native resize+7candidate components pass; publicTTY/guest/fourhost remain open.
 See [source scope](stdio-resize-integration.md).
 

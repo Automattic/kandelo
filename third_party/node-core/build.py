@@ -1755,6 +1755,27 @@ for marker, replacement in [
         raise ValueError('Review key marker: ' + marker)
     key_adapter = key_adapter.replace(marker, replacement)
 bundle += key_adapter + '\n'
+secret_gen_spec = json.loads((root / 'symmetric-keygen-sources.json').read_text())
+if secret_gen_spec['version'] != target['version'] or secret_gen_spec['commit'] != target['source']['commit']:
+    raise ValueError('Secret key generation pin mismatch')
+secret_gen_sources = {}
+for name, item in secret_gen_spec['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Secret key generation source mismatch: ' + name)
+    secret_gen_sources[name] = raw.decode('utf-8')
+secret_gen_adapter = (root / 'symmetric-keygen-platform-adapter.js').read_text()
+for name, marker in [('wrap', '/* NODE_SECRET_KEY_WRAP */'), ('symmetric', '/* NODE_SECRET_KEY_GENERATION */')]:
+    item = secret_gen_spec['sections'][name]
+    source = secret_gen_sources[item['source']]
+    if source.count(item['start']) != 1 or secret_gen_adapter.count(marker) != 1:
+        raise ValueError('Review secret key generation section: ' + name)
+    begin = source.index(item['start'])
+    section = source[begin:begin + item['length']]
+    if hashlib.sha256(section.encode()).hexdigest() != item['sha256']:
+        raise ValueError('Secret key generation section mismatch: ' + name)
+    secret_gen_adapter = secret_gen_adapter.replace(marker, section)
+bundle += secret_gen_adapter + '\n'
 cipher_spec = manifest['cipherPlatform']
 cipher_sources = {}
 for name, item in cipher_spec['sources'].items():

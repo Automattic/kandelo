@@ -8,7 +8,7 @@
 namespace {
 enum FsRequestSlot { FsRequestState, FsRequestFrame, FsRequestCallback,
                      FsRequestParent, FsRequestPromise, FsRequestBuffers, FsRequestResult, FsRequestSlots };
-enum class FsResourceKind { Callback, Promise, FileHandle, FileHandleClose, FileRead, FileWrite, Random, Directory, Pbkdf2, Scrypt, Argon2, Hkdf, Sign };
+enum class FsResourceKind { Callback, Promise, FileHandle, FileHandleClose, FileRead, FileWrite, Random, Directory, Pbkdf2, Scrypt, Argon2, Hkdf, Sign, Keygen };
 static int KandeloFsDoClose(int fd) {
   int result = close(fd);
   // libuv treats EINTR/EINPROGRESS as an in-progress close and never retries
@@ -89,10 +89,13 @@ static const JSClass KandeloHkdfRequestClass = {
 static const JSClass KandeloSignRequestClass = {
     "SignJob", JSCLASS_HAS_RESERVED_SLOTS(FsRequestSlots) |
     JSCLASS_FOREGROUND_FINALIZE, &KandeloFsRequestClassOps};
+static const JSClass KandeloSecretKeyGenRequestClass = {
+    "SecretKeyGenJob", JSCLASS_HAS_RESERVED_SLOTS(FsRequestSlots) |
+    JSCLASS_FOREGROUND_FINALIZE, &KandeloFsRequestClassOps};
 static KandeloFsRequestState* KandeloFsRequestStateOf(JSContext* cx, HandleObject owner) {
   if ((JS::GetClass(owner) != &KandeloFsRequestClass && JS::GetClass(owner) != &KandeloRandomRequestClass &&
        JS::GetClass(owner) != &KandeloPbkdf2RequestClass && JS::GetClass(owner) != &KandeloScryptRequestClass &&
-       JS::GetClass(owner) != &KandeloArgon2RequestClass && JS::GetClass(owner) != &KandeloHkdfRequestClass && JS::GetClass(owner) != &KandeloSignRequestClass) ||
+       JS::GetClass(owner) != &KandeloArgon2RequestClass && JS::GetClass(owner) != &KandeloHkdfRequestClass && JS::GetClass(owner) != &KandeloSignRequestClass && JS::GetClass(owner) != &KandeloSecretKeyGenRequestClass) ||
       JS::GetReservedSlot(owner, FsRequestState).isUndefined()) {
     JS_ReportErrorASCII(cx, "Invalid native filesystem request"); return nullptr;
   }
@@ -104,7 +107,7 @@ static bool KandeloFsRequestResourceInfo(JSContext* cx, HandleObject owner, Muta
   JS::RootedValueArray<4> entries(cx);
   entries[0].setNumber(state->id); entries[1].setNumber(state->trigger);
   entries[2].set(JS::GetReservedSlot(owner, FsRequestFrame));
-  const char* provider = state->kind == FsResourceKind::Sign ? "SIGNREQUEST" : state->kind == FsResourceKind::Hkdf ? "DERIVEBITSREQUEST" : state->kind == FsResourceKind::Argon2 ? "ARGON2REQUEST" : state->kind == FsResourceKind::Pbkdf2 ? "PBKDF2REQUEST" :
+  const char* provider = state->kind == FsResourceKind::Keygen ? "KEYGENREQUEST" : state->kind == FsResourceKind::Sign ? "SIGNREQUEST" : state->kind == FsResourceKind::Hkdf ? "DERIVEBITSREQUEST" : state->kind == FsResourceKind::Argon2 ? "ARGON2REQUEST" : state->kind == FsResourceKind::Pbkdf2 ? "PBKDF2REQUEST" :
       state->kind == FsResourceKind::Scrypt ? "SCRYPTREQUEST" : state->kind == FsResourceKind::Directory ? "DIRHANDLE" :
       state->kind == FsResourceKind::Random ? "RANDOMBYTESREQUEST" : (state->kind == FsResourceKind::Callback || state->kind == FsResourceKind::FileRead || state->kind == FsResourceKind::FileWrite) ? "FSREQCALLBACK" :
       state->kind == FsResourceKind::Promise ? "FSREQPROMISE" :
@@ -120,7 +123,7 @@ static bool KandeloFsRequestResourceInfo(JSContext* cx, HandleObject owner, Muta
 static bool KandeloCreateFsResource(JSContext* cx, HandleObject prototype,
                                     HandleValue callback, FsResourceKind kind,
                                     MutableHandleObject result) {
-  const JSClass* klass = kind == FsResourceKind::Sign ? &KandeloSignRequestClass : kind == FsResourceKind::Hkdf ? &KandeloHkdfRequestClass : kind == FsResourceKind::Argon2 ? &KandeloArgon2RequestClass : kind == FsResourceKind::Pbkdf2 ? &KandeloPbkdf2RequestClass :
+  const JSClass* klass = kind == FsResourceKind::Keygen ? &KandeloSecretKeyGenRequestClass : kind == FsResourceKind::Sign ? &KandeloSignRequestClass : kind == FsResourceKind::Hkdf ? &KandeloHkdfRequestClass : kind == FsResourceKind::Argon2 ? &KandeloArgon2RequestClass : kind == FsResourceKind::Pbkdf2 ? &KandeloPbkdf2RequestClass :
       kind == FsResourceKind::Scrypt ? &KandeloScryptRequestClass :
       kind == FsResourceKind::Random ? &KandeloRandomRequestClass : &KandeloFsRequestClass;
   RootedObject owner(cx, JS_NewObjectWithGivenProto(cx, klass, prototype));

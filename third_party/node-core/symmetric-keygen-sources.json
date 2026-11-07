@@ -1,0 +1,32 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/internal/crypto/keygen.js": {
+      "path": "upstream/symmetric-keygen/lib/internal/crypto/keygen.js",
+      "sha256": "11f62343421173bbe2e29726f55f8d1ee5db492e3f04fa8d07bbc93547dc9b4e"
+    },
+    "src/crypto/crypto_keygen.cc": {
+      "path": "upstream/symmetric-keygen/src/crypto/crypto_keygen.cc",
+      "sha256": "63dd29db755b0770b1bb928e56911345fde2643a132e971e4081692b0a175c9f"
+    },
+    "src/crypto/crypto_keygen.h": {
+      "path": "upstream/symmetric-keygen/src/crypto/crypto_keygen.h",
+      "sha256": "24355e2a2ad286f253fbaaa219c71c07b583d78bdc78305aa74ea1ad4c78d42e"
+    }
+  },
+  "sections": {
+    "wrap": {
+      "source": "lib/internal/crypto/keygen.js",
+      "start": "function isJwk(obj) {",
+      "length": 228,
+      "sha256": "19b1b5f699fb23f71d62ecabdd306d3e16ad9d16348ddec03660dd8451604890"
+    },
+    "symmetric": {
+      "source": "lib/internal/crypto/keygen.js",
+      "start": "function generateKeyJob(mode, keyType, options) {",
+      "length": 1352,
+      "sha256": "9ad77f0998254d5dfe02d08ff11079790f94a3398b5fd2b35bd24d599e8b511a"
+    }
+  }
+}

@@ -3372,6 +3372,10 @@ const _nodeCryptoKeys = _createNodeCryptoKeys({
     },
 });
 Object.assign(crypto, _nodeCryptoKeys.api);
+Object.assign(crypto, _createNodeSymmetricKeygen({
+    keys: _nodeCryptoKeys, values: _nodeValues, types: util.types,
+    makeError: _nodeFsTruncation.makeError,
+}));
 Object.assign(crypto, _createNodeCryptoKdf({
     native: _nodeNative, values: _nodeValues, Buffer, digestHelpers: _nodeDigestHelpers,
     makeError: _nodeFsTruncation.makeError, keys: _nodeCryptoKeys, types: util.types,
@@ -3397,7 +3401,7 @@ Object.assign(crypto, _createNodeSignaturePlatform({
     constants: _nodeConstantBinding,
     makeError: _nodeFsTruncation.makeError,
 }));
-// Key generation still needs its separate native owner.
+// Asymmetric keypair generation still needs its separate native owner.
 // Imported keys above own real ncrypto material; their presence does not
 // establish those separate consumers or WebCrypto algorithm compatibility.
 crypto.generateKeyPairSync = _notImpl('crypto', 'generateKeyPairSync');

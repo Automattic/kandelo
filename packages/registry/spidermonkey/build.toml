@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0169-node-secret-keygen.patch",
   "third_party/node-core/stdio-output-platform-adapter.js",
   "packages/registry/spidermonkey/patches/0168-node-eval-presence.patch",
   "packages/registry/spidermonkey/patches/0167-node-socket-shutdown-owner.patch",
@@ -309,6 +310,13 @@ inputs = [
   "third_party/node-core/upstream/native-string-bytes",
   "third_party/node-core/native-incremental-hash.cpp",
   "third_party/node-core/native-keys.cpp",
+  "third_party/node-core/symmetric-keygen-platform-adapter.js",
+  "third_party/node-core/symmetric-keygen-sources.json",
+  "third_party/node-core/secret-keygen-operations.h",
+  "third_party/node-core/native-secret-keygen.cpp",
+  "third_party/node-core/upstream/symmetric-keygen/lib/internal/crypto/keygen.js",
+  "third_party/node-core/upstream/symmetric-keygen/src/crypto/crypto_keygen.cc",
+  "third_party/node-core/upstream/symmetric-keygen/src/crypto/crypto_keygen.h",
   "third_party/node-core/native-cipher.cpp",
   "third_party/node-core/cipher-operations.h",
   "third_party/node-core/rsa-operations.h",
@@ -752,4 +760,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 231
+revision = 232

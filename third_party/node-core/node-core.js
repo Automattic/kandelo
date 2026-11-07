@@ -102291,6 +102291,102 @@ module.exports = {
         keyOperation: call, nativeHandlePrototype: KeyObjectHandle.prototype };
 }
 
+// Complete pinned symmetric public algorithms over the real native key job.
+function _createNodeSymmetricKeygen(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { FunctionPrototypeCall } = primordials;
+    const { validateString, validateObject, validateInteger, validateOneOf,
+        validateFunction } = platform.values.validators;
+    const { codes: { ERR_INVALID_ARG_VALUE } } = platform.values.errors;
+    const { isArrayBufferView } = platform.types;
+    const { SecretKeyObject } = platform.keys;
+    const kCryptoJobAsync = 0, kCryptoJobSync = 1;
+    function complete(status, syscall, packet) {
+        const error = status < 0 ? platform.makeError(status, syscall) : packet[0];
+        return primordials.ReflectApply(this.ondone, this,
+            [error, status < 0 ? undefined : packet[1]]);
+    }
+    function SecretKeyGenJob(mode, length) {
+        return platform.keys.keyOperation('createSecretGen', SecretKeyGenJob.prototype,
+            complete, mode, length, platform.keys.nativeHandlePrototype);
+    }
+    primordials.ObjectDefineProperty(SecretKeyGenJob.prototype, 'run', {
+        configurable: true, writable: true,
+        value: function run() { return platform.keys.keyOperation('runSecretGen', this); },
+    });
+    function isJwk(obj) {
+  return obj != null && obj.kty !== undefined;
+}
+
+function wrapKey(key, ctor) {
+  if (typeof key === 'string' ||
+      isArrayBufferView(key) ||
+      isJwk(key))
+    return key;
+  return new ctor(key);
+}
+
+
+    function generateKeyJob(mode, keyType, options) {
+  validateString(keyType, 'type');
+  validateObject(options, 'options');
+  const { length } = options;
+  switch (keyType) {
+    case 'hmac':
+      validateInteger(length, 'options.length', 8, 2 ** 31 - 1);
+      break;
+    case 'aes':
+      validateOneOf(length, 'options.length', [128, 192, 256]);
+      break;
+    default:
+      throw new ERR_INVALID_ARG_VALUE(
+        'type',
+        keyType,
+        'must be a supported key type');
+  }
+
+  return new SecretKeyGenJob(mode, length);
+}
+
+function handleGenerateKeyError(ret) {
+  if (ret === undefined)
+    return; // async
+
+  const { 0: err, 1: key } = ret;
+  if (err !== undefined)
+    throw err;
+
+  return wrapKey(key, SecretKeyObject);
+}
+
+function generateKey(type, options, callback) {
+  if (typeof options === 'function') {
+    callback = options;
+    options = undefined;
+  }
+
+  validateFunction(callback, 'callback');
+
+  const job = generateKeyJob(kCryptoJobAsync, type, options);
+
+  job.ondone = (error, key) => {
+    if (error) return FunctionPrototypeCall(callback, job, error);
+    FunctionPrototypeCall(callback, job, null, wrapKey(key, SecretKeyObject));
+  };
+
+  handleGenerateKeyError(job.run());
+}
+
+function generateKeySync(type, options) {
+  return handleGenerateKeyError(
+    generateKeyJob(kCryptoJobSync, type, options).run());
+}
+
+
+    return { generateKey, generateKeySync };
+}
+
 // Pinned Cipheriv/Decipheriv classes over real private native EVP state.
 function _createNodeCipherPlatform(platform) {
     'use strict';

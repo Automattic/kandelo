@@ -1,0 +1,95 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto.md",
+    "findingIds": [
+      "C-015"
+    ],
+    "relatedFamilies": [
+      "crypto",
+      "values",
+      "async",
+      "engine"
+    ],
+    "publicApiInventoryRefs": [
+      "crypto-requirements.json:generateKey@27",
+      "crypto-requirements.json:generateKeySync@28"
+    ],
+    "scope": "Partial real symmetric generation/KEYGENREQUEST ownership; complete C-015, keypairs, WebCrypto and native/guest/four-host behavior remain open"
+  },
+  "sourceImplemented": [
+    "Consume complete unchanged pinned isJwk/wrapKey and1580byte public symmetric generation functions through actual crypto export after real key-platform creation",
+    "Generate genuine ncrypto CSPRNG DataPointer on existing CPU queue and move original storage into immutable KeyMaterial/KeyObjectHandle/SecretKeyObject",
+    "Create actual KEYGENREQUEST/native resource with rooted completion/prototype/frame/default trigger and real cancellation/result/error/retirement paths; worker code touches no JS",
+    "Keep local creator abandonment through final cross-realm wrapping; remove non-target inner ClearErrorOnReturn and preserve actual failure/error capture",
+    "Compose normal0169resource-info class admission and7declaredinputs over preserved231stdio/230Meta/shutdown/eval; no new JS_FN or host production delegation"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-keygen232-source-r1/report.json",
+    "sha256": "27275b261cc05f862dcfd3c1e77ba24b538a5ea86618601e4ef69567a7761fef",
+    "guardedInputs": 896,
+    "scope": "Actual current root key/secret generation factories and pinned public algorithms over exact frozen native component/V8/uv/private frame/KeyObject adoption; not guest bridge/GC/error-fault/full keygen/four-host acceptance. Historical3helperattempts/1fixturefailure accounted only by parent232metadata."
+  },
+  "packageChecks": {
+    "report": ".context/node26-keygen232-affected-r1.json",
+    "sha256": "b6bee4aff5f7bbe69d8c1f0e7a3b142e1ae9bdb63a3910561134cdbbef307b11",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-keygen232-source-r1/report.json",
+    "sha256": "27275b261cc05f862dcfd3c1e77ba24b538a5ea86618601e4ef69567a7761fef",
+    "nativeDependentGroups": 16,
+    "candidateGroups": 16,
+    "unchangedUpstreamFiles": 1,
+    "upstreamSubjectsPassed": 2,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Fresh actual ROOT key/frontend/Buffer factories and portable generation over exact frozen final r3binary/header. Native V8/uv/private frame and copied native KeyObject adoption remain explicit. Production moves storage, fixture copies it; no new guest JSAPI or guest entropy/configuration proof."
+  },
+  "sealedEvidence": {
+    "report": ".context/symmetric-keygen-owner-agent/handoff/report.json",
+    "sha256": "c4d245d4e5b8243b089bcdfa13995f4968d94330c62e9c0e1ea6b701230c4497",
+    "reusedEvidence": true,
+    "scope": "Final16/16native/candidate comparisons and unchanged test-crypto-secret-keygen.js two subjects;3tiny helper compile attempts/1authored fixture compilefailure, finalr3artifact retained. Native exported OpenSSL3.5.9 configuration is distinct from guest backend. All original intermediate failures and missing historicalr2binary remain explicit."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/symmetric-keygen-owner-agent/handoff/REPORT.md",
+      "sha256": "c98435d8f28c5584c84dc8576a89ba76d245d18019a98e1316843fe9a62fb920",
+      "scope": "Private missing2oldrecipepatch coregen setup failure, authored Set/v8::Set compilefailure, initial candidate9/16+upstream prototype failure, upstream global-leak fixture failure and current231shared-preimage guard all retained; no upstream assertion edits."
+    },
+    {
+      "report": ".context/symmetric-keygen-owner-agent/handoff/report.json",
+      "sha256": "c4d245d4e5b8243b089bcdfa13995f4968d94330c62e9c0e1ea6b701230c4497",
+      "scope": "Historicalr2successful helperbinary overwritten before archive; exact executedSHA/source/rawresults retained, artifact unavailable/not reconstructed and not used for finalpassing claim. Actual3compilerattempts/1failure accounted once."
+    },
+    {
+      "report": ".context/symmetric-keygen-review-agent/REPORT.md",
+      "sha256": "195a3847c971a82a6065cf9208ddc94242bb441f66c91523d7a53156fcfad76e",
+      "scope": "Creator abandon guard must span final wrapping; actual source corrected. Separate shared outer packet-publication/MarkPop and complete AsyncWrap obligations remain open; no guest review execution."
+    },
+    {
+      "report": ".context/symmetric-keygen-review-agent/ERROR-QUEUE-ADDENDUM.md",
+      "sha256": "89e6b02cad17f6233e71b39ed3fa6bfce4939a7e078aa7aa93c63926afc5d0c5",
+      "scope": "Extra inner ClearErrorOnReturn absent from pinned KeyGenJob removed; immutable initialreview and later finalsource refresh preserve exact correction. Shared outerMarkPop remains separate."
+    }
+  ],
+  "remaining": [
+    "Compile and execute actual guest JSAPI/entropy/configuration/realm/GC/error/OOM/fatal/ref/cancellation/context teardown and allfourhosts",
+    "Implement shared outer keyOperation packet-publication ownership and reconcile MarkPop/error-queue policy; independent publication slice is reviewed privately, not yet root integrated",
+    "Complete real inherited AsyncWrap/prototype/provider/permissions and backend entropy/allocator fault controls",
+    "Implement asymmetric keypair generation/encoding/options and WebCrypto; no C-015/API/family closure"
+  ],
+  "at": "2026-11-07T19:12:53.363042+00:00",
+  "recipeRevision": 232,
+  "lastAcceptedEngine": 230,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

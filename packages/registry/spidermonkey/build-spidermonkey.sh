@@ -388,6 +388,7 @@ cp "$REPO_ROOT/third_party/node-core/cipher-operations.h" "$SRC_DIR/js/src/shell
 cp "$REPO_ROOT/third_party/node-core/rsa-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-rsa-operations.h"
 cp "$REPO_ROOT/third_party/node-core/signature-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-signature-operations.h"
 cp "$REPO_ROOT/third_party/node-core/signature-job-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-signature-job-operations.h"
+cp "$REPO_ROOT/third_party/node-core/secret-keygen-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-secret-keygen-operations.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-crypto-errors.py" --check
 cp "$REPO_ROOT/third_party/node-core/crypto-errors.h" "$SRC_DIR/js/src/shell/crypto-errors.h"
 cp "$REPO_ROOT/third_party/node-core/digest-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-digest-operations.h"

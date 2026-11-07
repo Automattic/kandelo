@@ -1,0 +1,9 @@
+# Symmetric key generation owner
+
+Public crypto.generateKey/generateKeySync consume complete unchanged Node26.13.0 keygen wrapper sections over actual SecretKeyGenJob/KEYGENREQUEST resources. HMAC uses whole-byte truncation; AES accepts its pinned lengths. Validation/getter/callback error chronology stays in pinned source. This does not implement asymmetric keypair or WebCrypto generation.
+
+The owning native job uses packaged ncrypto::DataPointer::Alloc and CSPRNG, moves the real allocation into existing immutable KeyMaterial, and publishes actual KeyObjectHandle/SecretKeyObject brands. Async work uses the existing CPU work queue, captured root/frame/provider and callbackscope/retirement; canceled work suppresses callbacks. Sync jobs remain weak/GC owned like pinned CryptoJob. Actual allocation length is accounted as requested native storage, not RSS. No JS metadata key, synthetic entropy, host production delegation or completed-job facade.
+
+Focused component evidence:16native/candidate semantic groups plus unchanged test-crypto-secret-keygen.js each subject. Portable generation header compiled over exact pinned native Node26.13.0/OpenSSL3.5.9 exports; V8/uv/InternalMakeCallback/frame and copied native KeyObject adoption are explicit control dependencies. That fixture copies generated storage into a native Node key handle; production instead moves original DataPointer ownership. Native component evidence does not compile or execute the guest JSAPI bridge or guest OpenSSL dependency/configuration.
+
+Preserve original source/fixture failures and corrected publication/queue-policy review. Shared outer keyOperation packet publication and MarkPop wrapper, full AsyncWrap inherited surface, actual guest entropy/error/OOM/GC/realm/fatal/ref/shutdown behavior, provider/permissions and all4hosts remain open. Backend fault/allocator-injection controls were not run. No complete keygen/crypto/API-family or runtime conformance claim.
