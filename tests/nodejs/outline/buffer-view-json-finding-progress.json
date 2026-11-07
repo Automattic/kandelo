@@ -1,0 +1,82 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/values-contracts.md",
+    "findingIds": [
+      "V-030"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "values",
+      "streams",
+      "workers"
+    ],
+    "scope": "Partial actual Buffer inherited view/JSON/offset/dispatch behavior, not full overload/codec/backing/realm/GC/guest coverage."
+  },
+  "sourceImplemented": [
+    "Consume complete unchanged pinned toJSON/adjustOffset/subarray/slice selection through the existing normal section installer",
+    "Use genuine Array/MathTrunc primordials and actual FastBuffer constructor/prototype/backing owners",
+    "Avoid public iterator/constructor/species during target operations while preserving required public buffer/offset/slice-dispatch chronology",
+    "Keep actual aliasing, error/coercion/descriptor and typed storage behavior rather than relabeling a generic view",
+    "Regenerate current combined source without new native registration, API pin or backing model change"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-buffer222-source-r1/report.json",
+    "sha256": "fde869f80f75e78930c3abdda4123ffc0967b34c9a7839ef704bce0c596407ba",
+    "guardedInputs": 885,
+    "scope": "Actual complete pinned Buffer JSON/adjustOffset/subarray/slice algorithms over real FastBuffer/backing owners;14native-dependent groups and2unchanged upstream files/native+candidate, not guest/fullBuffer/fourhost."
+  },
+  "packageChecks": {
+    "report": ".context/node26-buffer222-affected-r1.json",
+    "sha256": "6234d16512a8e05935e349e77402da70bbf3d4d076840a3528b89fdfa7397c8c",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-buffer222-source-r1/report.json",
+    "sha256": "fde869f80f75e78930c3abdda4123ffc0967b34c9a7839ef704bce0c596407ba",
+    "nativeDependentGroups": 14,
+    "unchangedUpstreamFiles": 2,
+    "upstreamSubjectsPassed": 4,
+    "upstreamSkips": 0,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "engineCXXChanged": false,
+    "scope": "Actual current pinned Buffer view/JSON installation over explicit native byte/value/codec/VM/brand dependencies; genuine shared-array aliases in fixture, not guest constructor/backing/realm/GC/fourhost proof."
+  },
+  "sealedEvidence": {
+    "report": ".context/buffer-view-json-owner-agent/report.json",
+    "sha256": "89a8dbf55f50b2ebea8b4cdf8c212cdb90b2985e9aacb5e80a1f8bbf7d2ee9f8",
+    "reusedEvidence": true,
+    "scope": "14native-dependent groups vs4/14baseline,2unchanged upstream files/native+candidate and14source checks;0compiles. Independent1372member review finds no new verified production defect, no guest validation."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/buffer-view-json-owner-agent/report.json",
+      "sha256": "89a8dbf55f50b2ebea8b4cdf8c212cdb90b2985e9aacb5e80a1f8bbf7d2ee9f8",
+      "scope": "Original baseline10mismatch groups and3authored -2**40 syntax exits retained; parentheses correction changes control syntax only. Native fixture backing/realm/brand dependencies remain explicit."
+    },
+    {
+      "report": ".context/buffer-view-json-review-agent/REPORT.md",
+      "sha256": "1624470aeda3a649201546658fffce23cd149cff51cfd25c06f47f90478af80d",
+      "scope": "Independent read-only actual pinned section/installer/prototype/species/backing/realm review,0tests/builds and no new verified production blocker. Does not establish full Buffer/guest acceptance."
+    }
+  ],
+  "remaining": [
+    "Full Buffer overload/codec/allocation/pool/transfer/shared-backing and public inherited method findings",
+    "Guest actual constructor/backing/CCW/realm/GC/OOM/resize/detach/concurrent storage and primitive behavior",
+    "Prototype mutation/inspection/error shape and complete public API inventory obligations",
+    "Identified-artifact Node/Chromium/Firefox/WebKit conformance; no API/family closure"
+  ],
+  "at": "2026-11-07T15:14:51.028355+00:00",
+  "recipeRevision": 222,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

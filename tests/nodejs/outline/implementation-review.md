@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source222 installs complete pinned Buffer view/JSON algorithms over the existing real class/backing owner.14native-dependent groups and2unchanged upstream files match; full Buffer and guest/four-host behavior remain open.
+See [source scope](buffer-view-json-integration.md).
+
 Source221 retires real captured TTY output on failed inner writable publication.6real-PTY component groups pass; successful stdio lifetime is preserved. Native direct-close evidence is not guest queued-close or full TTY conformance.
 See [source scope](tty-output-publication-integration.md).
 

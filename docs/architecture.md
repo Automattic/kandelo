@@ -7131,3 +7131,7 @@ The shared decoder owns pending bytes/code points and successful BOM state. A st
 ### Failed stdio publication retires its captured TTY output
 
 The real borrowed-stdio writable factory acquires a captured TTY output before evaluating options and constructing Writable. Failed construction or inner publication now invokes the existing captured-owner close and preserves the original thrown value even when cleanup fails. It does not close a public descriptor number or its replacement. Successful write and stdio dummyDestroy retain the existing owner. Six native PTY component groups pass using actual current generated factories and real OutputHandle; native direct close/Node Writable/errors/NAPI are explicit fixture boundaries. Guest queued-close/async lifecycle, outer bootstrap bind failure, native close-root OOM/init rollback and full public TTY remain open.
+
+### Buffer view and JSON behavior consumes the pinned byte owner
+
+The existing Buffer byte installer now consumes the complete pinned toJSON/adjustOffset/subarray/slice section. JSON reads genuine typed storage without a mutable public iterator. subarray uses the lexical real FastBuffer constructor over the actual public buffer/byteOffset in target order, avoiding species lookup; slice deliberately dispatches the public subarray as Node does. Existing prototype/class and backing owners remain. Fourteen native-dependent groups and two unchanged upstream files pass; native byte/brand/value/codec/VM dependencies do not prove guest constructor/realm/GC/shared-storage or four-host behavior.

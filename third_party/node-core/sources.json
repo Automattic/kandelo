@@ -1519,6 +1519,11 @@
         "start": "function swap(b, n, m) {",
         "length": 1967,
         "sha256": "115e3406929304a2247b4d68a9bf9d5387e37a74064d39861af418d76e04a34f"
+      },
+      "jsonAndViews": {
+        "start": "Buffer.prototype.toJSON = function toJSON() {",
+        "length": 1211,
+        "sha256": "f2080d7de6499fecfe61c3bd132b7db11a4931f31a187ea3b6bf572fa5ac802b"
       }
     },
     "scope": "Unchanged public conversion/copy/compare/concat/swap and descriptor algorithms; allocation pool, string codecs, constructor/transfer and remaining Buffer APIs retain separate ownership/gaps"

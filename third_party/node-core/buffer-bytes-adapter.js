@@ -5,7 +5,7 @@ function _installNodeBufferBytes(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
     const {
-        ArrayBufferIsView, ArrayIsArray, MathFloor, MathMin,
+        Array, ArrayBufferIsView, ArrayIsArray, MathFloor, MathMin, MathTrunc,
         NumberIsInteger, NumberIsNaN, NumberMAX_SAFE_INTEGER, NumberMIN_SAFE_INTEGER,
         ObjectDefineProperty, ReflectApply, ReflectDeleteProperty, SymbolToPrimitive,
         TypedArrayPrototypeFill, TypedArrayPrototypeGetBuffer,
@@ -89,7 +89,7 @@ function _installNodeBufferBytes(platform) {
     // methods by assignment, so recreate their descriptors as well as values.
     for (const name of ['from', 'copyBytesFrom', 'of', 'compare', 'concat', 'isEncoding'])
         ReflectDeleteProperty(Buffer, name);
-    for (const name of ['copy', 'equals', 'compare', 'swap16', 'swap32', 'swap64'])
+    for (const name of ['copy', 'equals', 'compare', 'swap16', 'swap32', 'swap64', 'toJSON', 'subarray', 'slice'])
         ReflectDeleteProperty(Buffer.prototype, name);
     /* NODE_BUFFER_BYTE_ALGORITHMS */
 }

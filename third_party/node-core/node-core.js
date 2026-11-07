@@ -21513,7 +21513,7 @@ function _installNodeBufferBytes(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
     const {
-        ArrayBufferIsView, ArrayIsArray, MathFloor, MathMin,
+        Array, ArrayBufferIsView, ArrayIsArray, MathFloor, MathMin, MathTrunc,
         NumberIsInteger, NumberIsNaN, NumberMAX_SAFE_INTEGER, NumberMIN_SAFE_INTEGER,
         ObjectDefineProperty, ReflectApply, ReflectDeleteProperty, SymbolToPrimitive,
         TypedArrayPrototypeFill, TypedArrayPrototypeGetBuffer,
@@ -21597,7 +21597,7 @@ function _installNodeBufferBytes(platform) {
     // methods by assignment, so recreate their descriptors as well as values.
     for (const name of ['from', 'copyBytesFrom', 'of', 'compare', 'concat', 'isEncoding'])
         ReflectDeleteProperty(Buffer, name);
-    for (const name of ['copy', 'equals', 'compare', 'swap16', 'swap32', 'swap64'])
+    for (const name of ['copy', 'equals', 'compare', 'swap16', 'swap32', 'swap64', 'toJSON', 'subarray', 'slice'])
         ReflectDeleteProperty(Buffer.prototype, name);
     function toInteger(n, defaultVal) {
   n = +n;
@@ -22021,6 +22021,46 @@ Buffer.prototype.swap64 = function swap64() {
   }
   _swap64(this);
   return this;
+};
+
+Buffer.prototype.toJSON = function toJSON() {
+  const bufferLength = TypedArrayPrototypeGetLength(this);
+  if (bufferLength > 0) {
+    const data = new Array(bufferLength);
+    for (let i = 0; i < bufferLength; ++i)
+      data[i] = this[i];
+    return { type: 'Buffer', data };
+  }
+  return { type: 'Buffer', data: [] };
+};
+
+function adjustOffset(offset, length) {
+  // Use Math.trunc() to convert offset to an integer value that can be larger
+  // than an Int32. Hence, don't use offset | 0 or similar techniques.
+  offset = MathTrunc(offset);
+  if (offset === 0) {
+    return 0;
+  }
+  if (offset < 0) {
+    offset += length;
+    return offset > 0 ? offset : 0;
+  }
+  if (offset < length) {
+    return offset;
+  }
+  return NumberIsNaN(offset) ? 0 : length;
+}
+
+Buffer.prototype.subarray = function subarray(start, end) {
+  const srcLength = TypedArrayPrototypeGetLength(this);
+  start = adjustOffset(start, srcLength);
+  end = end !== undefined ? adjustOffset(end, srcLength) : srcLength;
+  const newLength = end > start ? end - start : 0;
+  return new FastBuffer(this.buffer, this.byteOffset + start, newLength);
+};
+
+Buffer.prototype.slice = function slice(start, end) {
+  return this.subarray(start, end);
 };
 
 }
