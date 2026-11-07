@@ -26354,3 +26354,29 @@ This closes the observed same-BO prefix rejection and establishes the selected
 normal-target ownership controls. It does not establish full raw Wayland
 callback enforcement, application/desktop acceptance, browser-memory, complete
 B1, final conformance or native feel; those requirements remain in this PR.
+
+The broader current Rust checkpoint
+`graphics-rust-complete-r667-1107-030241-b49a` passes4m59s through the canonical
+dev shell: `cargo test --locked --workspace --exclude xtask --target
+aarch64-apple-darwin` passes3686 tests across98 test/doc-test binary groups,
+and `cargo test --locked -p xtask --target aarch64-apple-darwin` passes849 unit
+and8 integration tests. No failed, ignored or filtered tests in the primary
+groups; nested filtered subprocess controls are not double-counted. All617
+Rust/tool/ABI inputs remain unchanged. The provisioned normal worktree's098b
+Rust sources exactly match integration ace362b4cb; that intervening change is
+documentation only. Commands, complete logs and per-group judgment are in
+`.context/graphics-rust-complete-r667/`. These results do not pre-validate
+subsequent B/C work or replace full host, browser and conformance acceptance.
+
+Storage maintenance preserves the executable previews and validation inputs.
+After live process/cwd checks, obsolete compiler intermediates in retired
+private trees remove1358261878+872240220 logical bytes; all44 retained top-level
+tool/kernel outputs remain byte-identical. The first plan safely refuses the
+live integration preview supervisor and excludes that entire tree thereafter.
+Canonical cache GC also removes251.0MiB of abandoned ordinary-cache work.
+Its19.9GiB dry-run plan is not a reclamation claim: another build reacquires
+the shared source-cache lock before apply, so that cache is skipped. No lock
+is bypassed and no foreign process is stopped. Exact plans, removal ledgers,
+hashes and outcomes are in `.context/graphics-obsolete-intermediates-r660/`
+and `.context/graphics-legacy-gc-r666/`. Physical free-space deltas are confounded
+by APFS sharing and concurrent workspace activity.
